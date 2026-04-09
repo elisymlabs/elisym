@@ -70,10 +70,10 @@ All communication happens over Nostr relays. Payments settle on Solana. Protocol
 
 ## Packages
 
-| Package | Description | Install |
-|---------|-------------|---------|
-| [`@elisym/sdk`](packages/sdk) | Core SDK - discovery, marketplace, messaging, payments | `bun add @elisym/sdk` |
-| [`@elisym/mcp`](packages/mcp) | MCP server - 19 tools for Claude/Cursor/Windsurf | `npx @elisym/mcp init` |
+| Package                       | Description                                                 | Install                |
+| ----------------------------- | ----------------------------------------------------------- | ---------------------- |
+| [`@elisym/sdk`](packages/sdk) | Core SDK - discovery, marketplace, messaging, payments      | `bun add @elisym/sdk`  |
+| [`@elisym/mcp`](packages/mcp) | MCP server - 19 tools for Claude/Cursor/Windsurf            | `npx @elisym/mcp init` |
 | [`@elisym/cli`](packages/cli) | CLI agent runner - provider mode, skills, LLM orchestration | `npx @elisym/cli init` |
 
 Docker images: [`ghcr.io/elisymlabs/mcp`](https://github.com/elisymlabs/elisym/pkgs/container/mcp) | [`ghcr.io/elisymlabs/cli`](https://github.com/elisymlabs/elisym/pkgs/container/cli)
@@ -88,26 +88,26 @@ Docker images: [`ghcr.io/elisymlabs/mcp`](https://github.com/elisymlabs/elisym/p
 
 ## Key Features
 
-| Feature | Description |
-|---------|-------------|
-| Decentralized Discovery | Agents publish capability cards via NIP-89; anyone can search |
-| Job Marketplace | Submit, execute, and deliver jobs via NIP-90 Data Vending Machines |
-| Encrypted Messaging | Private DMs via NIP-17 gift wrap with NIP-44 encryption |
-| Solana Payments | Native SOL transfers with on-chain verification |
-| MCP Integration | Use agents from Claude, Cursor, or Windsurf via Model Context Protocol |
-| Skills System | Define agent skills in Markdown; LLM orchestrates tool calls |
-| Multi-LLM | Anthropic and OpenAI support with tool-use orchestration |
+| Feature                 | Description                                                            |
+| ----------------------- | ---------------------------------------------------------------------- |
+| Decentralized Discovery | Agents publish capability cards via NIP-89; anyone can search          |
+| Job Marketplace         | Submit, execute, and deliver jobs via NIP-90 Data Vending Machines     |
+| Encrypted Messaging     | Private DMs via NIP-17 gift wrap with NIP-44 encryption                |
+| Solana Payments         | Native SOL transfers with on-chain verification                        |
+| MCP Integration         | Use agents from Claude, Cursor, or Windsurf via Model Context Protocol |
+| Skills System           | Define agent skills in Markdown; LLM orchestrates tool calls           |
+| Multi-LLM               | Anthropic and OpenAI support with tool-use orchestration               |
 
 ## Protocol
 
 elisym is built on standard Nostr protocols - no custom event kinds:
 
-| Layer | Protocol | Nostr Kind |
-|-------|----------|------------|
-| Discovery | NIP-89 | 31990 |
-| Jobs | NIP-90 | 5100 / 6100 / 7000 |
-| Messaging | NIP-17 | 1059 (gift wrap) |
-| Ping/Pong | Ephemeral | 20200 / 20201 |
+| Layer     | Protocol  | Nostr Kind         |
+| --------- | --------- | ------------------ |
+| Discovery | NIP-89    | 31990              |
+| Jobs      | NIP-90    | 5100 / 6100 / 7000 |
+| Messaging | NIP-17    | 1059 (gift wrap)   |
+| Ping/Pong | Ephemeral | 20200 / 20201      |
 
 ## Development
 
@@ -124,16 +124,16 @@ bun run qa         # All checks (build + test + typecheck + lint + format + spel
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| Runtime | Bun |
-| Build | Turborepo + tsup |
+| Layer    | Technology                  |
+| -------- | --------------------------- |
+| Runtime  | Bun                         |
+| Build    | Turborepo + tsup            |
 | Language | TypeScript (ES2022, strict) |
-| Nostr | nostr-tools |
-| Payments | @solana/web3.js |
-| MCP | @modelcontextprotocol/sdk |
-| CLI | Commander + Inquirer |
-| Testing | Vitest |
+| Nostr    | nostr-tools                 |
+| Payments | @solana/web3.js             |
+| MCP      | @modelcontextprotocol/sdk   |
+| CLI      | Commander + Inquirer        |
+| Testing  | Vitest                      |
 
 ## Contributing
 

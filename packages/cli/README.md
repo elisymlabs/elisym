@@ -29,23 +29,37 @@ docker run --rm \
 
 ## Commands
 
-| Command                              | Description                                |
-| ------------------------------------ | ------------------------------------------ |
-| `elisym init`                        | Interactive wizard - create agent identity |
-| `elisym start [name]`                | Start agent in provider mode               |
-| `elisym list`                        | List all agents                            |
-| `elisym status <name>`               | Show agent status                          |
-| `elisym wallet [name]`               | Show Solana wallet balance                 |
-| `elisym send <name> <addr> <amount>` | Send SOL                                   |
-| `elisym config <name>`               | Show config (secrets redacted)             |
-| `elisym delete <name>`               | Delete an agent                            |
+| Command                              | Description                                  |
+| ------------------------------------ | -------------------------------------------- |
+| `elisym init`                        | Interactive wizard - create agent identity   |
+| `elisym start [name]`                | Start agent in provider mode                 |
+| `elisym list`                        | List all agents                              |
+| `elisym status <name>`               | Show agent status                            |
+| `elisym profile [name]`              | Edit agent profile, wallet, and LLM settings |
+| `elisym wallet [name]`               | Show Solana wallet balance                   |
+| `elisym send <name> <addr> <amount>` | Send SOL                                     |
+| `elisym config <name>`               | Show config (secrets redacted)               |
+| `elisym delete <name>`               | Delete an agent                              |
 
 ### Start Options
 
 ```bash
 elisym start my-agent              # Interactive TUI
 elisym start my-agent --headless   # Headless (server mode)
-elisym start my-agent --price 0.05 # Override price to 0.05 SOL
+```
+
+The agent loads skills from `./skills/` in the current working directory. Each skill is a subdirectory with a `SKILL.md` file:
+
+```
+my-project/
+  skills/
+    youtube-summary/
+      SKILL.md
+      scripts/
+        summarize.py
+    general-assistant/
+      SKILL.md
+  ...
 ```
 
 ## Skills
@@ -54,20 +68,20 @@ Skills are defined in `SKILL.md` files inside `./skills/<skill-name>/`:
 
 ```markdown
 ---
-name = "youtube-summary"
-description = "Summarize YouTube videos"
-capabilities = ["youtube-summary", "video-analysis"]
-max_tool_rounds = 10
-
-[[tools]]
-name = "fetch_transcript"
-description = "Fetch YouTube transcript"
-command = ["python3", "scripts/summarize.py"]
-
-[[tools.parameters]]
-name = "url"
-description = "YouTube video URL"
-required = true
+name: youtube-summary
+description: Summarize YouTube videos
+capabilities:
+  - youtube-summary
+  - video-analysis
+max_tool_rounds: 15
+tools:
+  - name: fetch_transcript
+    description: Fetch YouTube transcript
+    command: ['python3', 'scripts/summarize.py']
+    parameters:
+      - name: url
+        description: YouTube video URL
+        required: true
 ---
 
 You are a YouTube video summarizer. Use the fetch_transcript tool to get
@@ -76,29 +90,7 @@ the transcript, then provide a concise summary.
 
 See `skills-examples/` for working examples.
 
-## Architecture
-
-```
-src/
-  index.ts              Commander CLI
-  commands/
-    init.ts             Interactive wizard (inquirer)
-    start.ts            Provider mode entry
-    wallet.ts           Balance and send
-  runtime.ts            Job loop with p-limit(10) concurrency
-  ledger.ts             JSON persistence for crash recovery
-  skill/
-    index.ts            Skill interface and registry
-    script-skill.ts     LLM orchestrator with tool-use
-    loader.ts           SKILL.md parser
-  transport/
-    nostr.ts            NIP-90 subscription via @elisym/sdk
-  llm/
-    index.ts            Anthropic + OpenAI with tool-use
-  config.ts             AgentConfig TOML management
-```
-
-## Build
+## Commands
 
 ```bash
 bun run build      # Build with tsup

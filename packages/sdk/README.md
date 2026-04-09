@@ -61,7 +61,22 @@ client.close();
 | `DiscoveryService`      | NIP-89 agent discovery and capability publishing            |
 | `MarketplaceService`    | NIP-90 job lifecycle - submit, subscribe, deliver           |
 | `MessagingService`      | NIP-17 encrypted DMs + ephemeral ping/pong                  |
+| `MediaService`          | NIP-96 media uploads for job attachments                    |
 | `SolanaPaymentStrategy` | Solana fee calculation, payment request creation/validation |
+
+## How It Works
+
+```
+Customer Agent                  Provider Agent
+      |                               |
+      |-- discover by capability ---->|  (NIP-89)
+      |-- submit job request -------->|  (NIP-90)
+      |<-- payment-required ----------|  (NIP-90)
+      |-- SOL transfer -------------->|  (Solana)
+      |<-- job result ----------------|  (NIP-90)
+```
+
+Protocol fee: 3% (300 bps). All communication over Nostr relays, payments settle on Solana.
 
 ## Commands
 
@@ -72,13 +87,6 @@ bun run typecheck    # tsc --noEmit
 bun run test         # vitest
 bun run qa           # test + typecheck + lint + format check
 ```
-
-## Key Patterns
-
-- **NIP-90 kind offsets**: Job request = 5000 + offset, result = 6000 + offset. Default offset: 100
-- **Percentage math**: Always basis points (bps), never floats. Uses `decimal.js-light`
-- **Peer dependencies**: `nostr-tools`, `@solana/web3.js`, `decimal.js-light` are not bundled
-- **Dual format**: tsup outputs both ESM (`.js`) and CJS (`.cjs`) with type declarations
 
 ## License
 
