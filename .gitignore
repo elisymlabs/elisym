@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+.claude
+node_modules
+dist
+build
+.react-router
+logs
+*.log
+npm-debug.log*
+.vscode
+.idea
+.env.local
+temp/
+.cache/
+CLAUDE.md
+
+# under development
+packages/app/

@@ -1,0 +1,8 @@
+# skills/requirements.txt
+yt-dlp              # youtube-summary (CLI + python package)
+python-whois        # whois-lookup
+requests            # crypto-price, weather, site-status, github-repo, product-price, trending
+duckduckgo-search   # web-search
+beautifulsoup4      # product-price, trending
+dnspython           # dns-lookup
+yfinance            # stock-price

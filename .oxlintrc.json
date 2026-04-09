@@ -1,0 +1,35 @@
+{
+  "$schema": "https://oxc.rs/schema/oxlintrc.json",
+  "plugins": ["typescript", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "eslint/curly": "error",
+    "eslint/eqeqeq": ["error", "always"],
+    "eslint/no-nested-ternary": "error",
+    "eslint/no-shadow": "off",
+    "typescript/consistent-type-definitions": "error",
+    "typescript/consistent-type-imports": "off",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/no-unsafe-type-assertion": "off",
+    "typescript/no-unused-vars": [
+      "error",
+      {
+        "args": "all",
+        "argsIgnorePattern": "^_",
+        "caughtErrors": "all",
+        "caughtErrorsIgnorePattern": "^_",
+        "destructuredArrayIgnorePattern": "^_",
+        "varsIgnorePattern": "^_"
+      }
+    ],
+    "typescript/restrict-template-expressions": ["error", { "allowNumber": true }],
+    "import/no-named-as-default": "off",
+    "import/no-unassigned-import": "off"
+  },
+  "ignorePatterns": ["dist/", "build/", "node_modules/", ".turbo/", "*.mjs"]
+}

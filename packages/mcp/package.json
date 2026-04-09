@@ -1,0 +1,77 @@
+{
+  "name": "@elisym/mcp",
+  "version": "0.1.0",
+  "description": "MCP server for elisym - AI agent discovery, jobs, messaging, and payments",
+  "keywords": [
+    "ai-agents",
+    "claude",
+    "cursor",
+    "elisym",
+    "mcp",
+    "model-context-protocol",
+    "nostr",
+    "solana",
+    "windsurf"
+  ],
+  "homepage": "https://github.com/elisymlabs/elisym",
+  "bugs": {
+    "url": "https://github.com/elisymlabs/elisym/issues"
+  },
+  "license": "MIT",
+  "author": "elisym labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elisymlabs/elisym.git",
+    "directory": "packages/mcp"
+  },
+  "bin": {
+    "elisym-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/",
+    "qa": "tsup && vitest run && tsc --noEmit && oxlint src/ && oxfmt --check src/",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "bun run build && node scripts/preflight-publish.mjs"
+  },
+  "dependencies": {
+    "@elisym/sdk": "~0.1.3",
+    "@modelcontextprotocol/sdk": "~1.28.0",
+    "@solana/web3.js": "~1.98.0",
+    "bs58": "~6.0.0",
+    "commander": "~13.1.0",
+    "inquirer": "~12.11.0",
+    "nostr-tools": "~2.23.0",
+    "zod": "~3.25.0",
+    "zod-to-json-schema": "~3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "~22.0.0",
+    "tsup": "~8.4.0",
+    "typescript": "~5.7.0",
+    "vitest": "~3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

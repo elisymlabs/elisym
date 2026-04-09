@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+  "dictionaryDefinitions": [
+    {
+      "name": "elisym-dictionary",
+      "path": "./cspell-dictionary.txt",
+      "addWords": true
+    }
+  ],
+  "dictionaries": ["elisym-dictionary", "node", "npm", "softwareTerms", "typescript"],
+  "ignorePaths": [
+    "/.git",
+    "/dist",
+    "/build",
+    "/node_modules",
+    "/bun.lock",
+    "/.turbo",
+    "**/*.json",
+    "**/*.css",
+    "**/skills-examples/**",
+    "**/landing/src/components/**",
+    "**/app/app/components/**",
+    "**/app/app/hooks/**",
+    "**/app/app/workers/**",
+    "**/app/app/lib/**"
+  ],
+  "language": "en",
+  "version": "0.2"
+}

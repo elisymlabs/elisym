@@ -1,0 +1,67 @@
+{
+  "name": "@elisym/cli",
+  "version": "0.1.0",
+  "description": "CLI agent runner for elisym - provider mode, skills, TUI dashboard",
+  "keywords": [
+    "ai-agents",
+    "cli",
+    "elisym",
+    "nostr",
+    "provider",
+    "skills",
+    "solana"
+  ],
+  "homepage": "https://github.com/elisymlabs/elisym",
+  "bugs": {
+    "url": "https://github.com/elisymlabs/elisym/issues"
+  },
+  "license": "MIT",
+  "author": "elisym labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elisymlabs/elisym.git",
+    "directory": "packages/cli"
+  },
+  "bin": {
+    "elisym": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "skills-examples",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/",
+    "qa": "tsup && vitest run && tsc --noEmit && oxlint src/ && oxfmt --check src/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@elisym/sdk": "workspace:*",
+    "@solana/web3.js": "~1.98.0",
+    "bs58": "~6.0.0",
+    "chalk": "~5.6.0",
+    "commander": "~13.1.0",
+    "decimal.js-light": "~2.5.0",
+    "inquirer": "~12.11.0",
+    "nostr-tools": "~2.23.0",
+    "ora": "~8.2.0",
+    "p-limit": "~6.2.0",
+    "yaml": "~2.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "~22.0.0",
+    "tsup": "~8.4.0",
+    "typescript": "~5.7.0",
+    "vitest": "~3.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

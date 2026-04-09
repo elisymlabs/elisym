@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "sortPackageJson": true,
+  "sortImports": {
+    "newlinesBetween": false,
+    "groups": ["side_effect", "builtin", "external", "internal", "parent", "sibling"]
+  },
+  "ignorePatterns": ["dist/", "build/", "bun.lock"]
+}

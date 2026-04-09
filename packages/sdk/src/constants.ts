@@ -1,0 +1,77 @@
+export const RELAYS = [
+  'wss://relay.damus.io',
+  'wss://nos.lol',
+  'wss://relay.nostr.band',
+  'wss://relay.primal.net',
+  'wss://relay.snort.social',
+];
+
+export const KIND_APP_HANDLER = 31990;
+export const KIND_JOB_REQUEST_BASE = 5000;
+export const KIND_JOB_RESULT_BASE = 6000;
+export const KIND_JOB_FEEDBACK = 7000;
+export const DEFAULT_KIND_OFFSET = 100;
+export const KIND_GIFT_WRAP = 1059;
+
+/** Default job request kind (5000 + 100). */
+export const KIND_JOB_REQUEST = KIND_JOB_REQUEST_BASE + DEFAULT_KIND_OFFSET;
+/** Default job result kind (6000 + 100). */
+export const KIND_JOB_RESULT = KIND_JOB_RESULT_BASE + DEFAULT_KIND_OFFSET;
+
+/** Compute a job request kind from an offset (5000 + offset). */
+export function jobRequestKind(offset: number): number {
+  if (!Number.isInteger(offset) || offset < 0 || offset >= 1000) {
+    throw new Error(`Invalid kind offset: ${offset}. Must be integer 0-999.`);
+  }
+  return KIND_JOB_REQUEST_BASE + offset;
+}
+
+/** Compute a job result kind from an offset (6000 + offset). */
+export function jobResultKind(offset: number): number {
+  if (!Number.isInteger(offset) || offset < 0 || offset >= 1000) {
+    throw new Error(`Invalid kind offset: ${offset}. Must be integer 0-999.`);
+  }
+  return KIND_JOB_RESULT_BASE + offset;
+}
+
+/** Ephemeral ping/pong kinds (not stored by relays, forwarded in real-time). */
+export const KIND_PING = 20200;
+export const KIND_PONG = 20201;
+
+export const LAMPORTS_PER_SOL = 1_000_000_000;
+
+/** Protocol fee in basis points (300 = 3%). */
+export const PROTOCOL_FEE_BPS = 300;
+/** Solana address of the protocol treasury. */
+export const PROTOCOL_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
+
+/** Default values for timeouts, retries, and batch sizes. */
+export const DEFAULTS = {
+  SUBSCRIPTION_TIMEOUT_MS: 120_000,
+  PING_TIMEOUT_MS: 15_000,
+  PING_RETRIES: 2,
+  PING_CACHE_TTL_MS: 30_000,
+  PAYMENT_EXPIRY_SECS: 600,
+  BATCH_SIZE: 250,
+  QUERY_TIMEOUT_MS: 15_000,
+  EOSE_TIMEOUT_MS: 3_000,
+  VERIFY_RETRIES: 10,
+  VERIFY_INTERVAL_MS: 3_000,
+  VERIFY_BY_REF_RETRIES: 15,
+  VERIFY_BY_REF_INTERVAL_MS: 2_000,
+  RESULT_RETRY_COUNT: 3,
+  RESULT_RETRY_BASE_MS: 1_000,
+  QUERY_MAX_CONCURRENCY: 6,
+  VERIFY_SIGNATURE_LIMIT: 25,
+} as const;
+
+/** Protocol limits for input validation. */
+export const LIMITS = {
+  MAX_INPUT_LENGTH: 100_000,
+  MAX_TIMEOUT_SECS: 600,
+  MAX_CAPABILITIES: 20,
+  MAX_DESCRIPTION_LENGTH: 500,
+  MAX_AGENT_NAME_LENGTH: 64,
+  MAX_MESSAGE_LENGTH: 10_000,
+  MAX_CAPABILITY_LENGTH: 64,
+} as const;

@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Release packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    outputs:
+      mcp_released: ${{ steps.publish.outputs.mcp_released }}
+      mcp_version: ${{ steps.publish.outputs.mcp_version }}
+      cli_released: ${{ steps.publish.outputs.cli_released }}
+      cli_version: ${{ steps.publish.outputs.cli_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.2.0"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build all packages
+        run: bun run build
+
+      - name: Publish packages
+        id: publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+
+          PACKAGES=(
+            "sdk:@elisym/sdk"
+            "mcp:@elisym/mcp"
+            "cli:@elisym/cli"
+          )
+
+          for entry in "${PACKAGES[@]}"; do
+            DIR="${entry%%:*}"
+            PKG_NAME="${entry##*:}"
+            PKG_DIR="packages/${DIR}"
+
+            VERSION=$(node -p "require('./${PKG_DIR}/package.json').version")
+            TAG="${PKG_NAME}@${VERSION}"
+
+            echo "--- Checking ${TAG} ---"
+
+            if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+              echo "  Tag ${TAG} already exists. Skipping."
+              continue
+            fi
+
+            echo "  Publishing ${PKG_NAME}@${VERSION} to npm..."
+            cd "${PKG_DIR}"
+            bun publish --no-interactive --access public
+            cd "${GITHUB_WORKSPACE}"
+
+            echo "  Creating git tag ${TAG}..."
+            git tag "${TAG}"
+            git push origin "${TAG}"
+
+            echo "  Creating GitHub Release for ${TAG}..."
+            gh release create "${TAG}" \
+              --title "${TAG}" \
+              --generate-notes \
+              --verify-tag
+
+            echo "  Done: ${TAG}"
+            echo "${DIR}_released=true" >> "$GITHUB_OUTPUT"
+            echo "${DIR}_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          done
+
+  docker:
+    name: Docker (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    needs: release
+    if: needs.release.outputs.mcp_released == 'true' || needs.release.outputs.cli_released == 'true'
+
+    strategy:
+      matrix:
+        include:
+          - package: mcp
+            image: ghcr.io/elisymlabs/mcp
+            released: ${{ needs.release.outputs.mcp_released }}
+            version: ${{ needs.release.outputs.mcp_version }}
+          - package: cli
+            image: ghcr.io/elisymlabs/cli
+            released: ${{ needs.release.outputs.cli_released }}
+            version: ${{ needs.release.outputs.cli_version }}
+
+    steps:
+      - name: Skip if not released
+        if: matrix.released != 'true'
+        run: echo "Skipping ${{ matrix.package }} - no new release" && exit 0
+
+      - name: Checkout
+        if: matrix.released == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        if: matrix.released == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: matrix.released == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        if: matrix.released == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/${{ matrix.package }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ matrix.image }}:${{ matrix.version }}
+            ${{ matrix.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
