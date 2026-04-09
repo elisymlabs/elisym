@@ -2,7 +2,9 @@
   "name": "elisym",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/sdk",
+    "packages/mcp",
+    "packages/cli"
   ],
   "type": "module",
   "scripts": {
@@ -24,5 +26,5 @@
     "turbo": "~2.4.0",
     "typescript": "~5.7.0"
   },
-  "packageManager": "bun@1.2.0"
+  "packageManager": "bun@1.3.11"
 }

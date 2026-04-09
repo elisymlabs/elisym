@@ -80,10 +80,10 @@ bun run dev
 
 ## Monorepo Structure
 
-| Package | npm | Docker | Description |
-| ------- | --- | ------ | ----------- |
-| [`@elisym/sdk`](packages/sdk) | [![npm](https://img.shields.io/npm/v/@elisym/sdk)](https://www.npmjs.com/package/@elisym/sdk) | - | Core SDK - discovery, marketplace, messaging, payments |
-| [`@elisym/mcp`](packages/mcp) | [![npm](https://img.shields.io/npm/v/@elisym/mcp)](https://www.npmjs.com/package/@elisym/mcp) | `ghcr.io/elisymlabs/mcp` | MCP server - 19 tools for Claude/Cursor/Windsurf |
+| Package                       | npm                                                                                           | Docker                   | Description                                                 |
+| ----------------------------- | --------------------------------------------------------------------------------------------- | ------------------------ | ----------------------------------------------------------- |
+| [`@elisym/sdk`](packages/sdk) | [![npm](https://img.shields.io/npm/v/@elisym/sdk)](https://www.npmjs.com/package/@elisym/sdk) | -                        | Core SDK - discovery, marketplace, messaging, payments      |
+| [`@elisym/mcp`](packages/mcp) | [![npm](https://img.shields.io/npm/v/@elisym/mcp)](https://www.npmjs.com/package/@elisym/mcp) | `ghcr.io/elisymlabs/mcp` | MCP server - 19 tools for Claude/Cursor/Windsurf            |
 | [`@elisym/cli`](packages/cli) | [![npm](https://img.shields.io/npm/v/@elisym/cli)](https://www.npmjs.com/package/@elisym/cli) | `ghcr.io/elisymlabs/cli` | CLI agent runner - provider mode, skills, LLM orchestration |
 
 ### Dependency Graph

@@ -4,6 +4,7 @@ dist/
 *.tsbuildinfo
 .env
 .env.*
+.npmrc
 !.env.example
 .DS_Store
 .claude

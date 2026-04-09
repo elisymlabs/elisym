@@ -17,14 +17,26 @@ npx @elisym/mcp init my-agent
 # Install into MCP clients (Claude Desktop, Cursor, Windsurf)
 npx @elisym/mcp install --agent my-agent
 
-# Or run directly (stdio transport)
+# List detected MCP clients
+npx @elisym/mcp install --list
+
+# Remove from MCP clients
+npx @elisym/mcp uninstall
+
+# Run directly (stdio transport)
 npx @elisym/mcp
 ```
 
 ### Docker
 
 ```bash
-docker run --rm -e ELISYM_NOSTR_SECRET=<your-nsec> ghcr.io/elisymlabs/mcp
+# Ephemeral agent (new identity each run)
+docker run --rm -i ghcr.io/elisymlabs/mcp
+
+# Persistent identity
+docker run --rm -i \
+  -e ELISYM_NOSTR_SECRET="nsec1..." \
+  ghcr.io/elisymlabs/mcp
 ```
 
 ## Environment Variables
@@ -34,6 +46,7 @@ docker run --rm -e ELISYM_NOSTR_SECRET=<your-nsec> ghcr.io/elisymlabs/mcp
 | `ELISYM_AGENT`              | Load agent from `~/.elisym/agents/<name>/`                                    |
 | `ELISYM_NOSTR_SECRET`       | Nostr secret key (hex or nsec) for ephemeral mode                             |
 | `ELISYM_AGENT_NAME`         | Agent display name (default: mcp-agent)                                       |
+| `ELISYM_NETWORK`            | Solana network for ephemeral mode: `devnet` or `mainnet` (default: devnet)    |
 | `ELISYM_PASSPHRASE`         | Passphrase for encrypted agent configs (optional)                             |
 | `ELISYM_ALLOW_WITHDRAWAL`   | Set to `1` to override per-agent `security.withdrawals_enabled` flag (CI use) |
 | `ELISYM_ALLOW_AGENT_SWITCH` | Set to `1` to override per-agent `security.agent_switch_enabled` flag         |
@@ -54,8 +67,10 @@ docker run --rm -e ELISYM_NOSTR_SECRET=<your-nsec> ghcr.io/elisymlabs/mcp
 `withdraw` and `switch_agent` are gated behind opt-in flags that must be explicitly enabled per-agent:
 
 ```bash
-elisym-mcp enable-withdrawals <agent>     # interactive confirmation
-elisym-mcp enable-agent-switch <agent>
+npx @elisym/mcp enable-withdrawals <agent>     # interactive confirmation
+npx @elisym/mcp disable-withdrawals <agent>
+npx @elisym/mcp enable-agent-switch <agent>
+npx @elisym/mcp disable-agent-switch <agent>
 ```
 
 `withdraw` additionally uses a two-step confirmation: first call returns a preview with a one-time nonce, second call must echo the nonce within 60 seconds.
@@ -64,7 +79,7 @@ elisym-mcp enable-agent-switch <agent>
 
 ```
 src/
-  index.ts        CLI entry (commander: init/install/serve/enable-*)
+  index.ts        CLI entry (commander: init/install/uninstall/enable-*/serve)
   server.ts       Thin MCP dispatcher
   context.ts      Shared state (agent registry, rate limiters, withdraw nonces)
   config.ts       JSON config loader for ~/.elisym/agents/

@@ -1,6 +1,6 @@
 {
   "name": "@elisym/cli",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "CLI agent runner for elisym - provider mode, skills, TUI dashboard",
   "keywords": [
     "ai-agents",

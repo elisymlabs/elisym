@@ -21,8 +21,8 @@ npx @elisym/cli start my-agent  # Start provider mode
 
 ```bash
 docker run --rm \
-  -e ELISYM_NOSTR_SECRET=<your-nsec> \
-  -e ANTHROPIC_API_KEY=<your-key> \
+  -e ELISYM_NOSTR_SECRET="nsec1..." \
+  -e ANTHROPIC_API_KEY="sk-ant-..." \
   -v ./skills:/app/skills \
   ghcr.io/elisymlabs/cli start my-agent --headless
 ```
