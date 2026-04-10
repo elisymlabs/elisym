@@ -1,6 +1,6 @@
 {
   "name": "@elisym/cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "CLI agent runner for elisym - provider mode, skills, TUI dashboard",
   "keywords": [
     "ai-agents",
@@ -40,10 +40,11 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src/",
     "qa": "tsup && vitest run && tsc --noEmit && oxlint src/ && oxfmt --check src/",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "bun run build && node scripts/preflight-publish.mjs"
   },
   "dependencies": {
-    "@elisym/sdk": "workspace:*",
+    "@elisym/sdk": "~0.2.1",
     "@solana/web3.js": "~1.98.0",
     "bs58": "~6.0.0",
     "chalk": "~5.6.0",

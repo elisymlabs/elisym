@@ -71,7 +71,7 @@ jobs:
 
             echo "  Publishing ${PKG_NAME}@${VERSION} to npm..."
             cd "${PKG_DIR}"
-            npm publish --access public
+            bun publish --access public
             cd "${GITHUB_WORKSPACE}"
 
             echo "  Creating git tag ${TAG}..."
