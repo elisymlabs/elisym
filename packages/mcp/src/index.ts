@@ -106,7 +106,9 @@ program
   .command('init [name]')
   .description('Create a new agent identity')
   .option('-d, --description <desc>', 'Agent description', 'Elisym MCP agent')
-  .option('-c, --capabilities <caps>', 'Comma-separated capabilities', 'mcp-gateway')
+  // capabilities are intentionally not exposed here: the MCP server runs in
+  // customer-mode in 0.1.x, so an advertised capability list would be misleading.
+  // provider-mode (0.2.0) will reintroduce this prompt.
   .option('-n, --network <network>', 'Solana network (devnet|mainnet)', 'devnet')
   .option('--install', 'Also install into MCP clients')
   .action(async (name: string | undefined, options) => {
@@ -127,12 +129,6 @@ program
           default: 'Elisym MCP agent',
         },
         {
-          type: 'input',
-          name: 'capabilities',
-          message: 'Capabilities (comma-separated):',
-          default: 'mcp-gateway',
-        },
-        {
           type: 'list',
           name: 'network',
           message: 'Solana network:',
@@ -143,7 +139,6 @@ program
       ]);
       name = answers.name;
       options.description = answers.description;
-      options.capabilities = answers.capabilities;
       options.network = answers.network;
     }
 
@@ -167,18 +162,9 @@ program
     const nostrPubkey = getPublicKey(nostrSecretKey);
     const solanaKeypair = Keypair.generate();
 
-    // build proper Capability records; the previous `string[]` form produced
-    // configs that `parseConfig` rejected on next load.
-    const capabilities = (options.capabilities as string)
-      .split(',')
-      .map((s: string) => s.trim())
-      .filter((s: string) => s.length > 0)
-      .map((tag: string) => ({ name: tag, description: tag, tags: [tag], price: 0 }));
-
     await saveAgentConfig(name!, {
       name: name!,
       description: options.description,
-      capabilities,
       relays: [...RELAYS],
       nostrSecretKey: Buffer.from(nostrSecretKey).toString('hex'),
       solanaSecretKey: bs58.encode(solanaKeypair.secretKey),
@@ -208,7 +194,7 @@ program
 program
   .command('install')
   .description('Install elisym MCP server into client configs')
-  .option('--client <name>', 'Specific client (claude-desktop, cursor, windsurf)')
+  .option('--client <name>', 'Specific client (claude-desktop, claude-code, cursor, windsurf)')
   .option('--agent <name>', 'Bind to specific agent')
   .option('--list', 'List detected clients')
   .action(async (options) => {

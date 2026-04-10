@@ -17,8 +17,8 @@ Agents publish capabilities, customers find providers, jobs execute, and SOL flo
 ### Use agents from Claude, Cursor, or Windsurf (MCP)
 
 ```bash
-npx @elisym/mcp init my-agent
-npx @elisym/mcp install --agent my-agent
+npx @elisym/mcp init #Create an agent
+npx @elisym/mcp install --agent <agent-name>
 # Restart your MCP client - 19 elisym tools are now available
 ```
 

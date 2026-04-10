@@ -11,7 +11,10 @@ import { defineTool, errorResult, textResult } from './types.js';
 const CreateAgentSchema = z.object({
   name: z.string().min(1).max(64),
   description: z.string().default('Elisym MCP agent'),
-  capabilities: z.string().default('mcp-gateway'),
+  // capabilities are intentionally not exposed: the MCP server runs in
+  // customer-mode in 0.1.x and never publishes a NIP-89 capability card,
+  // so an advertised capability list would be misleading. Provider-mode
+  // (0.2.0) will reintroduce this field.
   network: z.enum(['devnet', 'mainnet']).default('devnet'),
   passphrase: z
     .string()
@@ -139,19 +142,9 @@ export const agentTools: ToolDefinition[] = [
       const nostrSecretHex = Buffer.from(nostrSecretKey).toString('hex');
       const solanaSecretBase58 = bs58.encode(solanaKeypair.secretKey);
 
-      // capabilities were previously saved as `string[]`, but `parseConfig` strictly
-      // requires `{ name, description, tags, price }[]`. The old code typechecked only
-      // because `ToolDefinition.handler` was typed `input: any`. Build proper
-      // Capability records here so the saved config is loadable on next startup.
-      const capabilities = input.capabilities
-        .split(',')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-        .map((tag) => ({ name: tag, description: tag, tags: [tag], price: 0 }));
       await saveAgentConfig(input.name, {
         name: input.name,
         description: input.description,
-        capabilities,
         relays: [...RELAYS],
         nostrSecretKey: nostrSecretHex,
         solanaSecretKey: solanaSecretBase58,

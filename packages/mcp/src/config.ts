@@ -99,7 +99,13 @@ export async function loadAgentConfig(name: string, passphrase?: string): Promis
 export interface SaveAgentConfigInput {
   name: string;
   description: string;
-  capabilities: { name: string; description: string; tags: string[]; price: number }[];
+  /**
+   * Optional advertised capabilities. Customer-mode agents (the default for the
+   * MCP server in 0.1.x) leave this empty - capabilities are only meaningful for
+   * provider-mode agents that publish a NIP-89 capability card. Existing callers
+   * (e.g. the `create_agent` tool) still pass this through unchanged.
+   */
+  capabilities?: { name: string; description: string; tags: string[]; price: number }[];
   relays: string[];
   nostrSecretKey: string;
   solanaAddress?: string;
@@ -131,7 +137,7 @@ export async function saveAgentConfig(name: string, config: SaveAgentConfigInput
       description: config.description,
     },
     relays: config.relays,
-    capabilities: config.capabilities,
+    capabilities: config.capabilities ?? [],
     ...(config.solanaAddress && {
       payments: [
         {

@@ -31,6 +31,15 @@ const CLIENTS: McpClient[] = [
     },
   },
   {
+    name: 'claude-code',
+    // Claude Code CLI keeps user-scope MCP servers under `mcpServers` at the top
+    // level of `~/.claude.json`. Project-scope (`.mcp.json` in cwd) and local-scope
+    // (`projects.<path>.mcpServers` inside the same file) are deliberately not
+    // touched here - this installer only writes user scope so the server is
+    // available across all projects.
+    configPath: () => join(homedir(), '.claude.json'),
+  },
+  {
     name: 'cursor',
     configPath: () => join(homedir(), '.cursor/mcp.json'),
   },
