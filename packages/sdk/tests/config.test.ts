@@ -112,6 +112,11 @@ describe('parseConfig', () => {
     expect(() => parseConfig('not json')).toThrow();
   });
 
+  // 30s timeout: this test runs 6 scrypt operations (3 encrypts in setup +
+  // 3 decrypts inside parseConfig). Each scrypt round is ~800ms on the GitHub
+  // Actions runner, putting the total just over the default 5s vitest cap
+  // (passed locally, flaked in CI). Other tests in this file only do 1-2
+  // scrypt rounds and stay well under the default.
   it('decrypts encrypted fields with passphrase', () => {
     const passphrase = 'test-pass';
     const config: AgentConfig = {
@@ -137,7 +142,7 @@ describe('parseConfig', () => {
     expect(parsed.identity.secret_key).toBe('my-nostr-key');
     expect(parsed.wallet!.secret_key).toBe('my-wallet-key');
     expect(parsed.llm!.api_key).toBe('sk-api-key');
-  });
+  }, 30_000);
 
   it('throws if encrypted fields exist but no passphrase', () => {
     const config: AgentConfig = {
