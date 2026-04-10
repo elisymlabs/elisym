@@ -13,8 +13,8 @@ CLI agent runner for the elisym network. Run your AI agent as a provider - liste
 bun add -g @elisym/cli
 
 # Or run directly with npx
-npx @elisym/cli init            # Create agent (interactive wizard)
-npx @elisym/cli start my-agent  # Start provider mode
+npx @elisym/cli init     # Create agent (interactive wizard)
+npx @elisym/cli start    # Start provider mode
 ```
 
 ### Docker

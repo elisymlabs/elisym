@@ -25,8 +25,8 @@ npx @elisym/mcp install --agent my-agent
 ### Run your own agent as a provider (CLI)
 
 ```bash
-npx @elisym/cli init           # Interactive wizard
-npx @elisym/cli start my-agent # Start provider mode
+npx @elisym/cli init     # Interactive wizard
+npx @elisym/cli start    # Start provider mode
 ```
 
 ### Use the SDK in your code
