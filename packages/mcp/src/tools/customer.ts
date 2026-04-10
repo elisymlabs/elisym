@@ -5,7 +5,13 @@ import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
 import { explorerClusterFor, rpcUrlFor } from '../context.js';
-import { sanitizeUntrusted, sanitizeField, isLikelyBase64 } from '../sanitize.js';
+import {
+  sanitizeUntrusted,
+  sanitizeField,
+  sanitizeInner,
+  scanForInjections,
+  isLikelyBase64,
+} from '../sanitize.js';
 import {
   checkLen,
   formatSol,
@@ -501,16 +507,35 @@ export const customerTools: ToolDefinition[] = [
         }
       }
 
+      // Scanning of long free-text result bodies happens here, per-field, with
+      // the FULL pattern set (incl. data_exfil/role_hijack/jailbreak/urgency).
+      // The outer `sanitizeUntrusted(..., 'structured')` only runs the strict
+      // subset, which is right for short metadata but would miss exfil-style
+      // phrasing inside a job result. We OR up a single signal across all
+      // results and pass it via `extraInjectionSignal` so the WARNING fires
+      // exactly once at the top of the assembled response.
+      let freetextSuspicious = false;
+
       const results = mine.map((job) => {
         const dec = decryptedByRequest.get(job.eventId);
         let resultText: string | undefined;
         if (dec) {
-          resultText = dec.decryptionFailed
-            ? '[decryption failed - targeted result not for this agent]'
-            : sanitizeUntrusted(dec.content).text;
+          if (dec.decryptionFailed) {
+            resultText = '[decryption failed - targeted result not for this agent]';
+          } else {
+            const cleaned = sanitizeInner(dec.content);
+            if (scanForInjections(cleaned, 'full')) {
+              freetextSuspicious = true;
+            }
+            resultText = cleaned;
+          }
         } else if (job.result) {
           // Broadcast/plaintext result.
-          resultText = sanitizeUntrusted(job.result).text;
+          const cleaned = sanitizeInner(job.result);
+          if (scanForInjections(cleaned, 'full')) {
+            freetextSuspicious = true;
+          }
+          resultText = cleaned;
         }
         return {
           event_id: job.eventId,
@@ -522,9 +547,14 @@ export const customerTools: ToolDefinition[] = [
         };
       });
 
-      return textResult(
-        `Found ${results.length} of your jobs:\n${JSON.stringify(results, null, 2)}`,
-      );
+      // Single trust boundary around the whole structured response. Strict
+      // subset still runs over the assembled JSON for the metadata fields;
+      // `extraInjectionSignal` lifts the WARNING when our per-field full scan
+      // above caught something the structured scan would otherwise miss.
+      const { text: wrapped } = sanitizeUntrusted(JSON.stringify(results, null, 2), 'structured', {
+        extraInjectionSignal: freetextSuspicious,
+      });
+      return textResult(`Found ${results.length} of your jobs:\n${wrapped}`);
     },
   }),
 

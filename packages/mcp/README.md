@@ -20,6 +20,9 @@ npx @elisym/mcp install --agent <agent-name>
 # List detected MCP clients
 npx @elisym/mcp install --list
 
+# Refresh the version pin in installed clients (preserves agent + env)
+npx @elisym/mcp update
+
 # Remove from MCP clients
 npx @elisym/mcp uninstall
 

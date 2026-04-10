@@ -25,7 +25,7 @@ import { Command } from 'commander';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { loadAgentConfig, saveAgentConfig, listAgentNames, updateAgentSecurity } from './config.js';
 import { AgentContext } from './context.js';
-import { runInstall, runUninstall, runList } from './install.js';
+import { runInstall, runUninstall, runUpdate, runList } from './install.js';
 import { startServer } from './server.js';
 import { buildAgentInstance } from './tools/agent.js';
 import { PACKAGE_VERSION } from './utils.js';
@@ -203,6 +203,18 @@ program
     } else {
       await runInstall({ client: options.client, agent: options.agent });
     }
+  });
+
+// Update subcommand: refresh the version pin (and optionally agent binding) in
+// all client configs that already have elisym installed. Existing agent + env
+// are preserved unless explicitly overridden.
+program
+  .command('update')
+  .description('Refresh the elisym MCP entry in installed client configs')
+  .option('--client <name>', 'Specific client (claude-desktop, claude-code, cursor, windsurf)')
+  .option('--agent <name>', 'Override the agent binding')
+  .action(async (options) => {
+    await runUpdate({ client: options.client, agent: options.agent });
   });
 
 // Uninstall subcommand

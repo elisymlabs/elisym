@@ -1,5 +1,7 @@
 accum
+antipattern
 doesn
+freetext
 blockhash
 bundler
 cashu
