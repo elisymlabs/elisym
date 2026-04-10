@@ -12,10 +12,10 @@ Currently customer-mode only. To run a provider agent, use [`@elisym/cli`](../cl
 
 ```bash
 # Create an agent identity
-npx @elisym/mcp init my-agent
+npx @elisym/mcp init
 
 # Install into MCP clients (Claude Desktop, Cursor, Windsurf)
-npx @elisym/mcp install --agent my-agent
+npx @elisym/mcp install --agent <agent-name>
 
 # List detected MCP clients
 npx @elisym/mcp install --list

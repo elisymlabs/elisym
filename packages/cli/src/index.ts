@@ -19,11 +19,12 @@ import { cmdProfile } from './commands/profile.js';
 import { cmdStart } from './commands/start.js';
 import { cmdWallet, cmdSend } from './commands/wallet.js';
 import { loadConfig, listAgents, deleteAgent } from './config.js';
+import { PACKAGE_VERSION } from './version.js';
 
 const program = new Command()
   .name('elisym')
   .description('CLI agent runner for the elisym network')
-  .version('0.1.0');
+  .version(PACKAGE_VERSION);
 
 // Init
 program.command('init').description('Create a new agent (interactive wizard)').action(cmdInit);

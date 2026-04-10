@@ -24,7 +24,7 @@ docker run --rm \
   -e ELISYM_NOSTR_SECRET="nsec1..." \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
   -v ./skills:/app/skills \
-  ghcr.io/elisymlabs/cli start my-agent --headless
+  ghcr.io/elisymlabs/cli start --headless
 ```
 
 ## Commands

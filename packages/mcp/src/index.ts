@@ -1,3 +1,14 @@
+// Suppress Node's DEP0040 (`punycode` deprecation) emitted by a transitive dep.
+// It fires to stderr exactly when inquirer is rendering the `init` prompt and
+// corrupts the TTY output. We filter only that one warning and re-emit the rest.
+process.removeAllListeners('warning');
+process.on('warning', (w) => {
+  if (w.name === 'DeprecationWarning' && /punycode/.test(w.message)) {
+    return;
+  }
+  console.warn(w);
+});
+
 import { ElisymClient, ElisymIdentity, RELAYS } from '@elisym/sdk';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
