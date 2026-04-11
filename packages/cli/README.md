@@ -21,13 +21,45 @@ npx @elisym/cli start    # Start provider mode
 
 ### Docker
 
+The wallet, job ledger, and recovery state live in `~/.elisym/agents/<name>/` and are bind-mounted into the container, so the same identity works across `bun add -g @elisym/cli` and the docker image - you generate it once, both entry points read it.
+
+**1. Bootstrap an agent** (one-time, interactive wizard):
+
 ```bash
-docker run --rm \
-  -e ELISYM_NOSTR_SECRET="nsec1..." \
-  -e ANTHROPIC_API_KEY="sk-ant-..." \
-  -v ./skills:/app/skills \
-  ghcr.io/elisymlabs/cli start
+docker run --rm -it \
+  -v "$HOME/.elisym:/root/.elisym" \
+  ghcr.io/elisymlabs/cli init
 ```
+
+The wizard walks you through agent name, Solana network, wallet funding, and LLM provider, and writes everything to `~/.elisym/agents/<chosen-name>/` on the host.
+
+**2. Start provider mode** with your skills directory mounted:
+
+```bash
+docker run --rm -it \
+  -v "$HOME/.elisym:/root/.elisym" \
+  -v "$PWD/skills:/app/skills" \
+  ghcr.io/elisymlabs/cli start <agent-name>
+```
+
+Omit `<agent-name>` to pick interactively from agents in `~/.elisym/agents/`. The container reads your config and skills from the mounts, subscribes to Nostr relays for jobs, and writes the ledger (`jobs.json`) back to `~/.elisym/agents/<agent-name>/`. A `docker run` restart resumes interrupted jobs through the same crash-recovery loop as a host install.
+
+### Encrypted configs
+
+If you set a passphrase during `init`, the Nostr key, Solana key, **and the LLM `api_key`** are all encrypted at rest. Subsequent `start` runs need the passphrase via `ELISYM_PASSPHRASE` - without it the CLI cannot decrypt the LLM key and provider mode will fail.
+
+```bash
+read -rs ELISYM_PASSPHRASE && export ELISYM_PASSPHRASE
+docker run --rm -it \
+  -v "$HOME/.elisym:/root/.elisym" \
+  -v "$PWD/skills:/app/skills" \
+  -e ELISYM_PASSPHRASE \
+  ghcr.io/elisymlabs/cli start <agent-name>
+```
+
+`read -rs` prompts for the passphrase without echoing it, and `-e ELISYM_PASSPHRASE` (no `=value`) inherits it from the shell - so the value never appears in `~/.bash_history` or in the `docker` command line (`ps auxe`). Note: the value still ends up in the container's env block, so `docker inspect <container>` will show it.
+
+> Env vars are visible to other processes via `/proc/<pid>/environ` on Linux. For production mainnet use, prefer an OS keyring or credential helper.
 
 ## Commands
 
