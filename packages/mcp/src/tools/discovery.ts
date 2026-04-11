@@ -345,7 +345,7 @@ export const discoveryTools: ToolDefinition[] = [
       }
 
       const timeoutMs = timeout_secs * 1000;
-      const result = await agent.client.messaging.pingAgent(pubkey, timeoutMs);
+      const result = await agent.client.ping.pingAgent(pubkey, timeoutMs);
 
       return textResult(
         result.online

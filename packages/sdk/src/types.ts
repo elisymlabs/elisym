@@ -106,7 +106,7 @@ export interface JobSubscriptionOptions {
   sinceOverride?: number;
 }
 
-// --- Messaging ---
+// --- Ping ---
 
 export interface PingResult {
   online: boolean;

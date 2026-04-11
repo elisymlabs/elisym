@@ -103,7 +103,7 @@ const INJECTION_PATTERNS: Array<{
   // Tool call injection
   {
     category: 'tool_injection',
-    pattern: /\b(?:call the tool|send_payment\(|send_message\(|submit_job_result\()\b/i,
+    pattern: /\b(?:call the tool|send_payment\(|submit_job_result\()/i,
   },
   // Delimiter injection
   { category: 'delimiter_injection', pattern: /<\/system>|\[\/INST\]|```system|<\|im_end\|>/i },

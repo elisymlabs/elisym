@@ -16,7 +16,7 @@ export { NostrPool } from './transport/pool';
 export { DiscoveryService, toDTag } from './services/discovery';
 export { MarketplaceService } from './services/marketplace';
 export { MediaService } from './services/media';
-export { MessagingService } from './services/messaging';
+export { PingService } from './services/ping';
 
 // --- Payment ---
 export { SolanaPaymentStrategy } from './payment/solana';
@@ -42,7 +42,6 @@ export {
   DEFAULT_KIND_OFFSET,
   jobRequestKind,
   jobResultKind,
-  KIND_GIFT_WRAP,
   KIND_PING,
   KIND_PONG,
   LAMPORTS_PER_SOL,
@@ -65,7 +64,7 @@ export type {
   SubmitJobOptions,
   JobUpdateCallbacks,
   JobSubscriptionOptions,
-  // Messaging
+  // Ping
   PingResult,
   // Payment
   PaymentRequestData,

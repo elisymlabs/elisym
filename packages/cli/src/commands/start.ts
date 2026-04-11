@@ -259,12 +259,12 @@ export async function cmdStart(name: string | undefined): Promise<void> {
 
   console.log('  Connected.\n');
 
-  // -- Step 14: Start ping responder --
-  const pingSub = client.messaging.subscribeToPings(identity, (senderPubkey, nonce) => {
-    client.messaging.sendPong(identity, senderPubkey, nonce).catch(() => {});
+  // -- Step 13: Start ping responder --
+  const pingSub = client.ping.subscribeToPings(identity, (senderPubkey, nonce) => {
+    client.ping.sendPong(identity, senderPubkey, nonce).catch(() => {});
   });
 
-  // -- Step 13: Start heartbeat (republish first card to update lastSeen) --
+  // -- Step 14: Start heartbeat (republish first card to update lastSeen) --
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   if (allSkills.length > 0) {
     const heartbeatCard = buildCard(allSkills[0]!);
@@ -277,7 +277,7 @@ export async function cmdStart(name: string | undefined): Promise<void> {
     }, HEARTBEAT_INTERVAL_MS);
   }
 
-  // -- Step 14: Build transport + ledger + runtime --
+  // -- Step 15: Build transport + ledger + runtime --
   const transport = new NostrTransport(client, identity, [DEFAULT_KIND_OFFSET]);
   const ledger = new JobLedger(name!);
 
@@ -314,7 +314,7 @@ export async function cmdStart(name: string | undefined): Promise<void> {
     originalStop();
   };
 
-  // -- Step 15: Run --
+  // -- Step 16: Run --
   console.log('  * Running. Press Ctrl+C to stop.\n');
   await runtime.run();
 }

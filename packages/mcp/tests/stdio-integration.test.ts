@@ -146,17 +146,15 @@ describe('stdio MCP integration', () => {
     await rm(tmpHome, { recursive: true, force: true });
   });
 
-  it('initializes and exposes exactly 19 tools', async () => {
+  it('initializes and exposes exactly 17 tools', async () => {
     harness = new McpHarness(tmpHome);
     await harness.initialize();
 
     const response = await harness.send('tools/list', {});
     expect(response.error).toBeUndefined();
     const result = response.result as { tools: Array<{ name: string; inputSchema: unknown }> };
-    expect(result.tools).toHaveLength(19);
+    expect(result.tools).toHaveLength(17);
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toContain('send_message');
-    expect(names).toContain('receive_messages');
     expect(names).toContain('withdraw');
     expect(names).toContain('get_identity');
     // Every tool must have a JSON Schema.

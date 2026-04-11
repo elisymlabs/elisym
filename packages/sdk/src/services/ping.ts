@@ -1,15 +1,12 @@
 import { finalizeEvent, verifyEvent } from 'nostr-tools';
 import type { Filter } from 'nostr-tools';
-import * as nip17 from 'nostr-tools/nip17';
-import * as nip59 from 'nostr-tools/nip59';
-import { KIND_GIFT_WRAP, KIND_PING, KIND_PONG, DEFAULTS, LIMITS } from '../constants';
-import { BoundedSet } from '../primitives/bounded-set';
+import { KIND_PING, KIND_PONG, DEFAULTS } from '../constants';
 import { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type { PingResult, SubCloser } from '../types';
 
 /**
- * Ping/pong and NIP-17 DM service.
+ * Ephemeral ping/pong service (kinds 20200/20201).
  *
  * Uses a session identity (random keypair) for ping operations to avoid
  * relay rate-limiting. The session identity persists for the lifetime of
@@ -17,7 +14,7 @@ import type { PingResult, SubCloser } from '../types';
  *
  * Requires `globalThis.crypto` (Node 20+, Bun, browsers).
  */
-export class MessagingService {
+export class PingService {
   private static readonly PING_CACHE_MAX = 1000;
   private sessionIdentity: ElisymIdentity;
   private pingCache = new Map<string, number>(); // pubkey - timestamp of last online result
@@ -49,7 +46,7 @@ export class MessagingService {
     }
 
     // Lazy sweep: evict stale entries when cache is over half full
-    if (this.pingCache.size > MessagingService.PING_CACHE_MAX / 2) {
+    if (this.pingCache.size > PingService.PING_CACHE_MAX / 2) {
       const now = Date.now();
       for (const [key, ts] of this.pingCache) {
         if (now - ts >= DEFAULTS.PING_CACHE_TTL_MS) {
@@ -65,7 +62,7 @@ export class MessagingService {
     }
 
     // Guard against unbounded pending pings
-    if (this.pendingPings.size >= MessagingService.PING_CACHE_MAX) {
+    if (this.pendingPings.size >= PingService.PING_CACHE_MAX) {
       return { online: false, identity: null };
     }
 
@@ -133,9 +130,13 @@ export class MessagingService {
       sub?.close();
       signal?.removeEventListener('abort', onAbort);
       if (online) {
+        // Re-insert to move key to the tail of the Map's insertion order.
+        // keys().next() below evicts the oldest entry, so we need this entry
+        // to count as the newest. A plain set() on an existing key preserves
+        // position, so the delete is load-bearing - do not "simplify" it away.
         this.pingCache.delete(agentPubkey);
         this.pingCache.set(agentPubkey, Date.now());
-        if (this.pingCache.size > MessagingService.PING_CACHE_MAX) {
+        if (this.pingCache.size > PingService.PING_CACHE_MAX) {
           const oldest = this.pingCache.keys().next().value;
           if (oldest !== undefined) {
             this.pingCache.delete(oldest);
@@ -179,6 +180,10 @@ export class MessagingService {
       return promise;
     }
 
+    // The timer may have fired while we were awaiting subscribeAndWait: in that
+    // case done(false) already ran, but `sub` was still undefined when it called
+    // sub?.close(), so the subscription we just received above would leak on the
+    // relay pool. Close it explicitly here.
     if (resolved) {
       sub?.close();
       return promise;
@@ -243,97 +248,5 @@ export class MessagingService {
       identity.secretKey,
     );
     await this.pool.publishAll(pongEvent);
-  }
-
-  /** Send a NIP-17 DM. */
-  async sendMessage(
-    identity: ElisymIdentity,
-    recipientPubkey: string,
-    content: string,
-  ): Promise<void> {
-    if (!/^[0-9a-f]{64}$/.test(recipientPubkey)) {
-      throw new Error('Invalid recipient pubkey: expected 64 hex characters.');
-    }
-    if (content.length > LIMITS.MAX_MESSAGE_LENGTH) {
-      throw new Error(
-        `Message too long: ${content.length} chars (max ${LIMITS.MAX_MESSAGE_LENGTH}).`,
-      );
-    }
-    const wrap = nip17.wrapEvent(identity.secretKey, { publicKey: recipientPubkey }, content);
-    await this.pool.publish(wrap);
-  }
-
-  /** Fetch historical NIP-17 DMs from relays. Returns decrypted messages sorted by time. */
-  async fetchMessageHistory(
-    identity: ElisymIdentity,
-    since: number,
-  ): Promise<{ senderPubkey: string; content: string; createdAt: number; rumorId: string }[]> {
-    const events = await this.pool.querySync({
-      kinds: [KIND_GIFT_WRAP],
-      '#p': [identity.publicKey],
-      since,
-    } as Filter);
-
-    const seen = new BoundedSet<string>(10_000);
-    const messages: {
-      senderPubkey: string;
-      content: string;
-      createdAt: number;
-      rumorId: string;
-    }[] = [];
-
-    for (const ev of events) {
-      try {
-        const rumor = nip59.unwrapEvent(ev, identity.secretKey);
-        if (rumor.kind !== 14) {
-          continue;
-        } // NIP-17: DM rumor kind must be 14
-        if (seen.has(rumor.id)) {
-          continue;
-        }
-        seen.add(rumor.id);
-        messages.push({
-          senderPubkey: rumor.pubkey,
-          content: rumor.content,
-          createdAt: rumor.created_at,
-          rumorId: rumor.id,
-        });
-      } catch {
-        /* not encrypted for us */
-      }
-    }
-
-    return messages.sort((a, b) => a.createdAt - b.createdAt);
-  }
-
-  /** Subscribe to incoming NIP-17 DMs. */
-  subscribeToMessages(
-    identity: ElisymIdentity,
-    onMessage: (senderPubkey: string, content: string, createdAt: number, rumorId: string) => void,
-    since?: number,
-  ): SubCloser {
-    const seen = new BoundedSet<string>(10_000);
-    const filter: Filter = {
-      kinds: [KIND_GIFT_WRAP],
-      '#p': [identity.publicKey],
-    };
-    if (since !== undefined) {
-      filter.since = since;
-    }
-    return this.pool.subscribe(filter, (ev) => {
-      try {
-        const rumor = nip59.unwrapEvent(ev, identity.secretKey);
-        if (rumor.kind !== 14) {
-          return;
-        } // NIP-17: DM rumor kind must be 14
-        if (seen.has(rumor.id)) {
-          return;
-        }
-        seen.add(rumor.id);
-        onMessage(rumor.pubkey, rumor.content, rumor.created_at, rumor.id);
-      } catch {
-        /* not our message */
-      }
-    });
   }
 }

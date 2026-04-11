@@ -132,12 +132,11 @@ export function checkLen(field: string, value: string, max: number): void {
 //
 // limits shared with the SDK are re-exported from `@elisym/sdk`'s `LIMITS` so a
 // future bump in one place updates both layers. Previously MCP had its own literals
-// (e.g. `MAX_MESSAGE_LEN = 50_000`) which were larger than the SDK's (`10_000`);
-// messages in the gap passed MCP validation and then failed inside the SDK with a
-// confusing low-level error.
+// (e.g. `MAX_CAPABILITIES = 50`) which were larger than the SDK's (`20`); inputs in
+// the gap passed MCP validation and then failed inside the SDK with a confusing
+// low-level error.
 
 export const MAX_INPUT_LEN = LIMITS.MAX_INPUT_LENGTH;
-export const MAX_MESSAGE_LEN = LIMITS.MAX_MESSAGE_LENGTH;
 export const MAX_CAPABILITIES = LIMITS.MAX_CAPABILITIES;
 export const MAX_TIMEOUT_SECS = LIMITS.MAX_TIMEOUT_SECS;
 
@@ -145,7 +144,6 @@ export const MAX_TIMEOUT_SECS = LIMITS.MAX_TIMEOUT_SECS;
 export const MAX_NPUB_LEN = 128;
 export const MAX_EVENT_ID_LEN = 128;
 export const MAX_PAYMENT_REQ_LEN = 10_000;
-export const MAX_MESSAGES = 1_000;
 /** Solana base58 addresses are 32-44 chars; cap comfortably. */
 export const MAX_SOLANA_ADDR_LEN = 64;
 

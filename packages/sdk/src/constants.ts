@@ -11,7 +11,6 @@ export const KIND_JOB_REQUEST_BASE = 5000;
 export const KIND_JOB_RESULT_BASE = 6000;
 export const KIND_JOB_FEEDBACK = 7000;
 export const DEFAULT_KIND_OFFSET = 100;
-export const KIND_GIFT_WRAP = 1059;
 
 /** Default job request kind (5000 + 100). */
 export const KIND_JOB_REQUEST = KIND_JOB_REQUEST_BASE + DEFAULT_KIND_OFFSET;
@@ -72,6 +71,5 @@ export const LIMITS = {
   MAX_CAPABILITIES: 20,
   MAX_DESCRIPTION_LENGTH: 500,
   MAX_AGENT_NAME_LENGTH: 64,
-  MAX_MESSAGE_LENGTH: 10_000,
   MAX_CAPABILITY_LENGTH: 64,
 } as const;

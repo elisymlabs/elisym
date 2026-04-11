@@ -13,9 +13,7 @@ export default defineConfig({
   treeshake: true,
   external: [
     'nostr-tools',
-    'nostr-tools/nip17',
     'nostr-tools/nip44',
-    'nostr-tools/nip59',
     '@solana/web3.js',
     'decimal.js-light',
     'node:crypto',

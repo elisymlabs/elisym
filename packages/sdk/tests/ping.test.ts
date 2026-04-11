@@ -1,8 +1,8 @@
 import { finalizeEvent, verifyEvent, type Event, type Filter } from 'nostr-tools';
 import { describe, it, expect, vi } from 'vitest';
-import { KIND_PING, KIND_PONG, DEFAULTS, LIMITS } from '../src/constants';
+import { KIND_PING, KIND_PONG, DEFAULTS } from '../src/constants';
 import { ElisymIdentity } from '../src/primitives/identity';
-import { MessagingService } from '../src/services/messaging';
+import { PingService } from '../src/services/ping';
 import type { NostrPool } from '../src/transport/pool';
 import type { SubCloser } from '../src/types';
 
@@ -43,7 +43,7 @@ function createMockPool() {
 
 // --- pingAgent ---
 
-describe('MessagingService.pingAgent', () => {
+describe('PingService.pingAgent', () => {
   it('returns cached result within TTL', async () => {
     const pool = createMockPool();
     const agentIdentity = ElisymIdentity.generate();
@@ -71,7 +71,7 @@ describe('MessagingService.pingAgent', () => {
       }
     });
 
-    const svc = new MessagingService(pool as any);
+    const svc = new PingService(pool as any);
     const result1 = await svc.pingAgent(agentIdentity.publicKey, 5000, undefined, 0);
     expect(result1.online).toBe(true);
 
@@ -93,7 +93,7 @@ describe('MessagingService.pingAgent', () => {
     });
     (pool as any).publishAll = vi.fn(async () => {});
 
-    const svc = new MessagingService(pool as any);
+    const svc = new PingService(pool as any);
     // Start two pings concurrently
     const p1 = svc.pingAgent(agent.publicKey, 50, undefined, 0);
     const p2 = svc.pingAgent(agent.publicKey, 50, undefined, 0);
@@ -112,7 +112,7 @@ describe('MessagingService.pingAgent', () => {
 
     (pool as any).subscribeAndWait = vi.fn(async () => ({ close: vi.fn() }));
 
-    const svc = new MessagingService(pool as any);
+    const svc = new PingService(pool as any);
     controller.abort();
     const result = await svc.pingAgent(agent.publicKey, 5000, controller.signal, 0);
     expect(result.online).toBe(false);
@@ -127,55 +127,18 @@ describe('MessagingService.pingAgent', () => {
     (pool as any).subscribeAndWait = vi.fn(async () => ({ close: vi.fn() }));
     (pool as any).publishAll = vi.fn(async () => {});
 
-    const svc = new MessagingService(pool as any);
+    const svc = new PingService(pool as any);
     const result = await svc.pingAgent(agent.publicKey, 50, undefined, 0);
     expect(result.online).toBe(false);
   });
 });
 
-// --- sendMessage ---
-
-describe('MessagingService.sendMessage', () => {
-  it('rejects invalid pubkey', async () => {
-    const pool = createMockPool();
-    const svc = new MessagingService(pool as any);
-    const identity = ElisymIdentity.generate();
-
-    await expect(svc.sendMessage(identity, 'invalid', 'hello')).rejects.toThrow(
-      'Invalid recipient pubkey',
-    );
-  });
-
-  it('rejects too long message', async () => {
-    const pool = createMockPool();
-    const svc = new MessagingService(pool as any);
-    const identity = ElisymIdentity.generate();
-    const recipient = ElisymIdentity.generate();
-
-    await expect(
-      svc.sendMessage(identity, recipient.publicKey, 'x'.repeat(LIMITS.MAX_MESSAGE_LENGTH + 1)),
-    ).rejects.toThrow('Message too long');
-  });
-
-  it('publishes NIP-17 wrapped message', async () => {
-    const pool = createMockPool();
-    const svc = new MessagingService(pool as any);
-    const sender = ElisymIdentity.generate();
-    const recipient = ElisymIdentity.generate();
-
-    await svc.sendMessage(sender, recipient.publicKey, 'hello');
-    expect(pool.published.length).toBe(1);
-    // NIP-17 wraps in kind:1059 (gift wrap)
-    expect(pool.published[0]!.kind).toBe(1059);
-  });
-});
-
 // --- sendPong ---
 
-describe('MessagingService.sendPong', () => {
+describe('PingService.sendPong', () => {
   it('publishes ephemeral pong event', async () => {
     const pool = createMockPool();
-    const svc = new MessagingService(pool as any);
+    const svc = new PingService(pool as any);
     const identity = ElisymIdentity.generate();
     const recipient = ElisymIdentity.generate();
 
@@ -194,10 +157,10 @@ describe('MessagingService.sendPong', () => {
 
 // --- subscribeToPings ---
 
-describe('MessagingService.subscribeToPings', () => {
+describe('PingService.subscribeToPings', () => {
   it('subscribes with correct filter and calls callback for valid pings', () => {
     const pool = createMockPool();
-    const svc = new MessagingService(pool as any);
+    const svc = new PingService(pool as any);
     const identity = ElisymIdentity.generate();
     const sender = ElisymIdentity.generate();
     const callback = vi.fn();
@@ -223,7 +186,7 @@ describe('MessagingService.subscribeToPings', () => {
 
   it('ignores pings with wrong type', () => {
     const pool = createMockPool();
-    const svc = new MessagingService(pool as any);
+    const svc = new PingService(pool as any);
     const identity = ElisymIdentity.generate();
     const sender = ElisymIdentity.generate();
     const callback = vi.fn();
@@ -247,7 +210,7 @@ describe('MessagingService.subscribeToPings', () => {
 
   it('ignores pings with wrong nonce length', () => {
     const pool = createMockPool();
-    const svc = new MessagingService(pool as any);
+    const svc = new PingService(pool as any);
     const identity = ElisymIdentity.generate();
     const sender = ElisymIdentity.generate();
     const callback = vi.fn();

@@ -30,3 +30,7 @@ CLAUDE.md
 
 # under development
 packages/app/
+
+# local-only working copy of architecture docs; canonical source lives outside this repo.
+# do not expect files under /docs to be reviewed in PRs.
+/docs

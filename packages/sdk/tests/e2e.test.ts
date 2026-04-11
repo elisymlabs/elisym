@@ -21,7 +21,7 @@ import { nip44Decrypt } from '../src/primitives/crypto';
 import { ElisymIdentity } from '../src/primitives/identity';
 import { DiscoveryService, toDTag } from '../src/services/discovery';
 import { MarketplaceService } from '../src/services/marketplace';
-import { MessagingService } from '../src/services/messaging';
+import { PingService } from '../src/services/ping';
 import type { CapabilityCard, SubCloser } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -654,26 +654,26 @@ describe('E2E: Error flows', () => {
 
   it('ping returns offline when no pong received', async () => {
     const relay = new RelaySimulator();
-    const messaging = new MessagingService(relay as any);
+    const ping = new PingService(relay as any);
     const offlineAgent = ElisymIdentity.generate();
 
     // No one is listening for pings - agent is offline
-    const result = await messaging.pingAgent(offlineAgent.publicKey, 100, undefined, 0);
+    const result = await ping.pingAgent(offlineAgent.publicKey, 100, undefined, 0);
     expect(result.online).toBe(false);
     expect(result.identity).toBeNull();
   });
 
   it('ping returns online when pong received', async () => {
     const relay = new RelaySimulator();
-    const messaging = new MessagingService(relay as any);
+    const ping = new PingService(relay as any);
     const agentIdentity = ElisymIdentity.generate();
 
     // Agent subscribes to pings and auto-responds with pongs
-    messaging.subscribeToPings(agentIdentity, (senderPubkey, nonce) => {
-      messaging.sendPong(agentIdentity, senderPubkey, nonce);
+    ping.subscribeToPings(agentIdentity, (senderPubkey, nonce) => {
+      ping.sendPong(agentIdentity, senderPubkey, nonce);
     });
 
-    const result = await messaging.pingAgent(agentIdentity.publicKey, 2000, undefined, 0);
+    const result = await ping.pingAgent(agentIdentity.publicKey, 2000, undefined, 0);
     expect(result.online).toBe(true);
     expect(result.identity).not.toBeNull();
   });

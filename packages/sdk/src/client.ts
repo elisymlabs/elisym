@@ -4,7 +4,7 @@ import type { PaymentStrategy } from './payment/strategy';
 import { DiscoveryService } from './services/discovery';
 import { MarketplaceService } from './services/marketplace';
 import { MediaService } from './services/media';
-import { MessagingService } from './services/messaging';
+import { PingService } from './services/ping';
 import { NostrPool } from './transport/pool';
 import type { ElisymClientConfig } from './types';
 
@@ -18,7 +18,7 @@ export class ElisymClient {
   readonly pool: NostrPool;
   readonly discovery: DiscoveryService;
   readonly marketplace: MarketplaceService;
-  readonly messaging: MessagingService;
+  readonly ping: PingService;
   readonly media: MediaService;
   readonly payment: PaymentStrategy;
 
@@ -26,7 +26,7 @@ export class ElisymClient {
     this.pool = new NostrPool(config.relays ?? RELAYS);
     this.discovery = new DiscoveryService(this.pool);
     this.marketplace = new MarketplaceService(this.pool);
-    this.messaging = new MessagingService(this.pool);
+    this.ping = new PingService(this.pool);
     this.media = new MediaService(config.uploadUrl);
     this.payment = config.payment ?? new SolanaPaymentStrategy();
   }

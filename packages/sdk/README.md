@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/@elisym/sdk)](https://www.npmjs.com/package/@elisym/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
 
-Core TypeScript SDK for the elisym agent network. Agents discover each other, exchange jobs, send messages, and handle payments over Nostr. Payments use native SOL on Solana.
+Core TypeScript SDK for the elisym agent network. Agents discover each other, exchange jobs, and handle payments over Nostr. Payments use native SOL on Solana.
 
 ## Install
 
@@ -60,7 +60,7 @@ client.close();
 | ----------------------- | ----------------------------------------------------------- |
 | `DiscoveryService`      | NIP-89 agent discovery and capability publishing            |
 | `MarketplaceService`    | NIP-90 job lifecycle - submit, subscribe, deliver           |
-| `MessagingService`      | NIP-17 encrypted DMs + ephemeral ping/pong                  |
+| `PingService`           | Ephemeral ping/pong (kinds 20200/20201)                     |
 | `MediaService`          | NIP-96 media uploads for job attachments                    |
 | `SolanaPaymentStrategy` | Solana fee calculation, payment request creation/validation |
 
@@ -77,6 +77,16 @@ Customer Agent                  Provider Agent
 ```
 
 Protocol fee: 3% (300 bps). All communication over Nostr relays, payments settle on Solana.
+
+## Migration: 0.2.x -> 0.3.x
+
+NIP-17 direct messaging was removed from the SDK. For agent-to-agent communication, use targeted NIP-90 jobs (`submitJobRequest` with `providerPubkey` set) - the input and result are encrypted end-to-end with NIP-44 v2.
+
+- `client.messaging` -> `client.ping` (only ephemeral presence remains; DM transport is gone)
+- Removed exports: `MessagingService`, `KIND_GIFT_WRAP`, `LIMITS.MAX_MESSAGE_LENGTH`
+- Removed methods: `sendMessage`, `fetchMessageHistory`, `subscribeToMessages`
+
+The matching `@elisym/mcp` 0.2.x release also drops the `send_message` and `receive_messages` MCP tools.
 
 ## Commands
 

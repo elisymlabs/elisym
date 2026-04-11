@@ -19,19 +19,15 @@ import { customerTools } from './tools/customer.js';
 import { dashboardTools } from './tools/dashboard.js';
 // Import all tool modules
 import { discoveryTools } from './tools/discovery.js';
-import { messagingTools } from './tools/messaging.js';
 import type { ToolDefinition } from './tools/types.js';
 import { walletTools } from './tools/wallet.js';
 import { PACKAGE_VERSION, formatSolNumeric } from './utils.js';
 
-// aggregate all tools. `messagingTools` was previously defined but never imported
-// here, which silently hid `send_message` and `receive_messages` from the MCP surface.
-// `ToolDefinition` is a generic type, but at the registry boundary we erase the
-// schema generic to keep the array homogeneous.
+// aggregate all tools. `ToolDefinition` is a generic type, but at the registry
+// boundary we erase the schema generic to keep the array homogeneous.
 const allTools: ToolDefinition[] = [
   ...discoveryTools,
   ...customerTools,
-  ...messagingTools,
   ...walletTools,
   ...dashboardTools,
   ...agentTools,

@@ -83,7 +83,7 @@ export class AgentContext {
   /** Currently active agent name. */
   activeAgentName = '';
 
-  /** Rate limiter for payment/messaging tools (10 calls per 10s). */
+  /** Rate limiter for payment tools (10 calls per 10s). */
   toolRateLimiter = new RateLimiter(10, 10);
 
   /** Stricter rate limiter for withdrawals (3 calls per 60s). */

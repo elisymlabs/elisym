@@ -12,12 +12,6 @@ import { registeredTools } from '../src/server.js';
 import { parseSolToLamports } from '../src/utils.js';
 
 describe('tool registry', () => {
-  it('messagingTools are registered', () => {
-    const names = registeredTools.map((t) => t.name);
-    expect(names).toContain('send_message');
-    expect(names).toContain('receive_messages');
-  });
-
   it('all tool names are unique and non-empty', () => {
     const names = registeredTools.map((t) => t.name);
     expect(names.every((n) => n && n.length > 0)).toBe(true);
@@ -25,8 +19,8 @@ describe('tool registry', () => {
     expect(unique.size).toBe(names.length);
   });
 
-  it('registers exactly 19 tools (get_job_feedback removed)', () => {
-    expect(registeredTools).toHaveLength(19);
+  it('registers exactly 17 tools (messaging tools removed)', () => {
+    expect(registeredTools).toHaveLength(17);
   });
 
   it('every registered tool has a Zod schema and a handler', () => {

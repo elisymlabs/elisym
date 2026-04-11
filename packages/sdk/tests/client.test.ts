@@ -19,7 +19,7 @@ import { SolanaPaymentStrategy } from '../src/payment/solana';
 import type { PaymentStrategy } from '../src/payment/strategy';
 import { DiscoveryService } from '../src/services/discovery';
 import { MarketplaceService } from '../src/services/marketplace';
-import { MessagingService } from '../src/services/messaging';
+import { PingService } from '../src/services/ping';
 
 describe('ElisymClient', () => {
   it('creates all services with default config', () => {
@@ -27,7 +27,7 @@ describe('ElisymClient', () => {
     expect(client.pool).toBeDefined();
     expect(client.discovery).toBeInstanceOf(DiscoveryService);
     expect(client.marketplace).toBeInstanceOf(MarketplaceService);
-    expect(client.messaging).toBeInstanceOf(MessagingService);
+    expect(client.ping).toBeInstanceOf(PingService);
     expect(client.payment).toBeInstanceOf(SolanaPaymentStrategy);
     client.close();
   });
