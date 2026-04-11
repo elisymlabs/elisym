@@ -36,11 +36,7 @@ program
   .action(cmdProfile);
 
 // Start
-program
-  .command('start [name]')
-  .description('Start agent in provider mode')
-  .option('--headless', 'Run without TUI (log to stdout)')
-  .action(cmdStart);
+program.command('start [name]').description('Start agent in provider mode').action(cmdStart);
 
 // List
 program

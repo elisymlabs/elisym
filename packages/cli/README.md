@@ -24,7 +24,7 @@ docker run --rm \
   -e ELISYM_NOSTR_SECRET="nsec1..." \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
   -v ./skills:/app/skills \
-  ghcr.io/elisymlabs/cli start --headless
+  ghcr.io/elisymlabs/cli start
 ```
 
 ## Commands
@@ -40,13 +40,6 @@ docker run --rm \
 | `elisym send <name> <addr> <amount>` | Send SOL                                     |
 | `elisym config <name>`               | Show config (secrets redacted)               |
 | `elisym delete <name>`               | Delete an agent                              |
-
-### Start Options
-
-```bash
-elisym start my-agent              # Interactive TUI
-elisym start my-agent --headless   # Headless (server mode)
-```
 
 The agent loads skills from `./skills/` in the current working directory. Each skill is a subdirectory with a `SKILL.md` file:
 
@@ -92,27 +85,27 @@ then return a concise overview and key points.
 
 ### Frontmatter fields
 
-| Field             | Required | Type       | Description                                                                                                               |
-| ----------------- | -------- | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `name`            | yes      | string     | Unique skill identifier. Shown in the marketplace and used internally.                                                    |
-| `description`     | yes      | string     | Short one-line description. Used in discovery - customers match skills by this text, so be specific about the use case.   |
-| `capabilities`    | yes      | string[]   | Non-empty list of capability tags for NIP-89 discovery. Customers filter agents by these tags.                            |
-| `price`           | no       | number     | Price per job in SOL (e.g. `0.01`). Converted to lamports internally. Omit or set `0` for a free skill.                   |
-| `image`           | no       | string     | Hero image URL. Shown in the marketplace card. Takes priority over `image_file`.                                          |
-| `image_file`      | no       | string     | Local file path (relative to the skill directory). Uploaded on first `elisym start`, the resulting URL is written back.   |
-| `tools`           | no       | object[]   | External scripts the LLM can call via tool-use. Omit if the skill is pure prompt + LLM.                                   |
-| `max_tool_rounds` | no       | number     | Max LLM-tool interaction rounds per job. Default: `10`. Raise for multi-step flows (e.g. chunked transcripts).            |
+| Field             | Required | Type     | Description                                                                                                             |
+| ----------------- | -------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `name`            | yes      | string   | Unique skill identifier. Shown in the marketplace and used internally.                                                  |
+| `description`     | yes      | string   | Short one-line description. Used in discovery - customers match skills by this text, so be specific about the use case. |
+| `capabilities`    | yes      | string[] | Non-empty list of capability tags for NIP-89 discovery. Customers filter agents by these tags.                          |
+| `price`           | no       | number   | Price per job in SOL (e.g. `0.01`). Converted to lamports internally. Omit or set `0` for a free skill.                 |
+| `image`           | no       | string   | Hero image URL. Shown in the marketplace card. Takes priority over `image_file`.                                        |
+| `image_file`      | no       | string   | Local file path (relative to the skill directory). Uploaded on first `elisym start`, the resulting URL is written back. |
+| `tools`           | no       | object[] | External scripts the LLM can call via tool-use. Omit if the skill is pure prompt + LLM.                                 |
+| `max_tool_rounds` | no       | number   | Max LLM-tool interaction rounds per job. Default: `10`. Raise for multi-step flows (e.g. chunked transcripts).          |
 
 ### Tool definition
 
 Each entry in `tools` describes one external script the LLM can invoke:
 
-| Field         | Required | Type       | Description                                                                                                    |
-| ------------- | -------- | ---------- | -------------------------------------------------------------------------------------------------------------- |
-| `name`        | yes      | string     | Tool name exposed to the LLM. Use snake_case.                                                                  |
-| `description` | yes      | string     | What the tool does and what it returns. The LLM reads this to decide when to call the tool - be descriptive.   |
-| `command`     | yes      | string[]   | argv passed to `child_process.spawn`. Use an explicit interpreter (`['python3', 'scripts/x.py']`), not a shell. |
-| `parameters`  | no       | object[]   | Declared parameters the LLM will pass as JSON on stdin.                                                        |
+| Field         | Required | Type     | Description                                                                                                     |
+| ------------- | -------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `name`        | yes      | string   | Tool name exposed to the LLM. Use snake_case.                                                                   |
+| `description` | yes      | string   | What the tool does and what it returns. The LLM reads this to decide when to call the tool - be descriptive.    |
+| `command`     | yes      | string[] | argv passed to `child_process.spawn`. Use an explicit interpreter (`['python3', 'scripts/x.py']`), not a shell. |
+| `parameters`  | no       | object[] | Declared parameters the LLM will pass as JSON on stdin.                                                         |
 
 Each parameter has:
 

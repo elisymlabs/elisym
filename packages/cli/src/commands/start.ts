@@ -32,10 +32,7 @@ import type { SkillContext } from '../skill/index.js';
 import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
 
-export async function cmdStart(
-  name: string | undefined,
-  options: { headless?: boolean },
-): Promise<void> {
+export async function cmdStart(name: string | undefined): Promise<void> {
   // -- Step 1: Resolve agent name --
   if (!name) {
     const agents = listAgents();
@@ -318,6 +315,6 @@ export async function cmdStart(
   };
 
   // -- Step 15: Run --
-  console.log(`  * Running${options.headless ? ' (headless)' : ''}. Press Ctrl+C to stop.\n`);
+  console.log('  * Running. Press Ctrl+C to stop.\n');
   await runtime.run();
 }
