@@ -39,10 +39,26 @@ The wizard walks you through agent name, Solana network, wallet funding, and LLM
 docker run --rm -it \
   -v "$HOME/.elisym:/root/.elisym" \
   -v "$PWD/skills:/app/skills" \
-  ghcr.io/elisymlabs/cli start <agent-name>
+  ghcr.io/elisymlabs/cli start
 ```
 
 Omit `<agent-name>` to pick interactively from agents in `~/.elisym/agents/`. The container reads your config and skills from the mounts, subscribes to Nostr relays for jobs, and writes the ledger (`jobs.json`) back to `~/.elisym/agents/<agent-name>/`. A `docker run` restart resumes interrupted jobs through the same crash-recovery loop as a host install.
+
+### Skill runtime dependencies
+
+The base image ships Node and the elisym runtime only — no Python, no `ffmpeg`, no other interpreters. If your skills shell out to `python3`, `bash`, `yt-dlp`, etc., extend the image:
+
+```dockerfile
+FROM ghcr.io/elisymlabs/cli:latest
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir --break-system-packages \
+         yt-dlp requests beautifulsoup4
+```
+
+Build once (`docker build -t my-elisym-agent .`) and use `my-elisym-agent` in the `docker run` commands above.
 
 ### Encrypted configs
 
@@ -54,7 +70,7 @@ docker run --rm -it \
   -v "$HOME/.elisym:/root/.elisym" \
   -v "$PWD/skills:/app/skills" \
   -e ELISYM_PASSPHRASE \
-  ghcr.io/elisymlabs/cli start <agent-name>
+  ghcr.io/elisymlabs/cli start
 ```
 
 `read -rs` prompts for the passphrase without echoing it, and `-e ELISYM_PASSPHRASE` (no `=value`) inherits it from the shell - so the value never appears in `~/.bash_history` or in the `docker` command line (`ps auxe`). Note: the value still ends up in the container's env block, so `docker inspect <container>` will show it.

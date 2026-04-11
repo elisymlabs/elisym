@@ -55,6 +55,7 @@ Generates a Nostr identity and a Solana keypair and writes them to `~/.elisym/ag
         "run",
         "--rm",
         "-i",
+        "-e", "ELISYM_AGENT=<agent-name>",
         "-v",
         "/Users/<you>/.elisym:/root/.elisym",
         "ghcr.io/elisymlabs/mcp"
@@ -64,7 +65,9 @@ Generates a Nostr identity and a Solana keypair and writes them to `~/.elisym/ag
 }
 ```
 
-With a single agent in `~/.elisym/agents/`, the container picks it up automatically. To pin a specific agent (recommended once you have more than one), add `"-e", "ELISYM_AGENT=<name>"` to `args` before the image reference.
+With a single agent in `~/.elisym/agents/`, you can omit `ELISYM_AGENT`. With multiple agents, pin one explicitly — otherwise selection is unspecified.
+
+**Claude Code shortcut.** Instead of editing `~/.claude.json` by hand, use the built-in CLI: `claude mcp add elisym -- docker run --rm -i -e ELISYM_AGENT=<name> -v "$HOME/.elisym:/root/.elisym" ghcr.io/elisymlabs/mcp`.
 
 Config file locations:
 
