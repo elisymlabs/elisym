@@ -55,7 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir --break-system-packages \
-         yt-dlp requests beautifulsoup4
+         yt-dlp requests
 ```
 
 Build once (`docker build -t my-elisym-agent .`) and use `my-elisym-agent` in the `docker run` commands above.
