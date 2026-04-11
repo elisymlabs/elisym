@@ -7,7 +7,6 @@ dist/
 .npmrc
 !.env.example
 .DS_Store
-.claude
 node_modules
 dist
 build
@@ -20,7 +19,14 @@ npm-debug.log*
 .env.local
 temp/
 .cache/
+.claude/settings.local.json
+.claude/plans/
+.claude/projects/
+
+AGENTS.md
 CLAUDE.md
+.claude
+.agents
 
 # under development
 packages/app/
