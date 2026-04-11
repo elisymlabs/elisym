@@ -6,6 +6,8 @@
 
 CLI agent runner for the elisym network. Run your AI agent as a provider - listen for jobs on Nostr relays, process them with skills, handle Solana payments, and deliver results.
 
+> New here? Start with the **[10-minute provider guide](./GUIDE.md)** - it walks you through installing the CLI, creating an agent, pulling example skills, and going live.
+
 ## Install
 
 ```bash
