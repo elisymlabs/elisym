@@ -5,11 +5,9 @@
  *   elisym init              Create a new agent (interactive wizard)
  *   elisym start [name]      Start agent in provider mode
  *   elisym list              List all agents
- *   elisym status <name>     Show agent status
+ *   elisym profile [name]    Edit agent profile, wallet, and LLM settings
  *   elisym wallet [name]     Show wallet balance
- *   elisym send <name> <address> <amount>  Send SOL
  *   elisym delete <name>     Delete an agent
- *   elisym config <name>     Show agent config (redacted)
  */
 process.removeAllListeners('warning');
 import { Command } from 'commander';
@@ -17,7 +15,7 @@ import { nip19, getPublicKey } from 'nostr-tools';
 import { cmdInit } from './commands/init.js';
 import { cmdProfile } from './commands/profile.js';
 import { cmdStart } from './commands/start.js';
-import { cmdWallet, cmdSend } from './commands/wallet.js';
+import { cmdWallet } from './commands/wallet.js';
 import { loadConfig, listAgents, deleteAgent } from './config.js';
 import { PACKAGE_VERSION } from './version.js';
 
@@ -72,40 +70,8 @@ program
     console.log();
   });
 
-// Status
-program
-  .command('status <name>')
-  .description('Show agent status')
-  .action((name: string) => {
-    try {
-      const config = loadConfig(name);
-      console.log(`\nAgent: ${name}`);
-      console.log(`  Description: ${config.identity.description || '(none)'}`);
-      console.log(
-        `  Capabilities: ${(config.capabilities ?? []).map((c) => c.name).join(', ') || '(none)'}`,
-      );
-      console.log(`  Relays: ${config.relays.join(', ')}`);
-      if (config.payments?.length) {
-        console.log(`  Network: ${config.payments[0].network}`);
-        console.log(`  Address: ${config.payments[0].address}`);
-      }
-      if (config.llm) {
-        console.log(`  LLM: ${config.llm.provider} / ${config.llm.model}`);
-      }
-      console.log();
-    } catch (e: any) {
-      console.error(`Error: ${e.message}`);
-    }
-  });
-
 // Wallet
 program.command('wallet [name]').description('Show wallet balance').action(cmdWallet);
-
-// Send
-program
-  .command('send <name> <address> <amount>')
-  .description('Send SOL from agent wallet')
-  .action(cmdSend);
 
 // Delete
 program
@@ -124,25 +90,6 @@ program
     if (confirm) {
       deleteAgent(name);
       console.log(`Agent "${name}" deleted.`);
-    }
-  });
-
-// Config
-program
-  .command('config <name>')
-  .description('Show agent config (secrets redacted)')
-  .action((name: string) => {
-    try {
-      const config = loadConfig(name);
-      const redacted = {
-        ...config,
-        identity: { ...config.identity, secret_key: '***REDACTED***' },
-        wallet: config.wallet ? { ...config.wallet, secret_key: '***REDACTED***' } : undefined,
-        llm: config.llm ? { ...config.llm, api_key: '***REDACTED***' } : undefined,
-      };
-      console.log(JSON.stringify(redacted, null, 2));
-    } catch (e: any) {
-      console.error(`Error: ${e.message}`);
     }
   });
 

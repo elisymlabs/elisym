@@ -1,5 +1,5 @@
 /**
- * Wallet command - show balance and send SOL.
+ * Wallet command - show balance.
  */
 import { formatSol } from '@elisym/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
@@ -44,8 +44,4 @@ export async function cmdWallet(name: string | undefined): Promise<void> {
   console.log(`  Network: ${network}`);
   console.log(`  Address: ${solPayment.address}`);
   console.log(`  Balance: ${formatSol(balance)} (${balance} lamports)\n`);
-}
-
-export async function cmdSend(_name: string, _address: string, _amount: string): Promise<void> {
-  console.error('Direct sending not yet implemented. Use the MCP server for payments.');
 }

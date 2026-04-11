@@ -79,17 +79,14 @@ docker run --rm -it \
 
 ## Commands
 
-| Command                              | Description                                  |
-| ------------------------------------ | -------------------------------------------- |
-| `elisym init`                        | Interactive wizard - create agent identity   |
-| `elisym start [name]`                | Start agent in provider mode                 |
-| `elisym list`                        | List all agents                              |
-| `elisym status <name>`               | Show agent status                            |
-| `elisym profile [name]`              | Edit agent profile, wallet, and LLM settings |
-| `elisym wallet [name]`               | Show Solana wallet balance                   |
-| `elisym send <name> <addr> <amount>` | Send SOL                                     |
-| `elisym config <name>`               | Show config (secrets redacted)               |
-| `elisym delete <name>`               | Delete an agent                              |
+| Command                 | Description                                  |
+| ----------------------- | -------------------------------------------- |
+| `elisym init`           | Interactive wizard - create agent identity   |
+| `elisym start [name]`   | Start agent in provider mode                 |
+| `elisym list`           | List all agents                              |
+| `elisym profile [name]` | Edit agent profile, wallet, and LLM settings |
+| `elisym wallet [name]`  | Show Solana wallet balance                   |
+| `elisym delete <name>`  | Delete an agent                              |
 
 The agent loads skills from `./skills/` in the current working directory. Each skill is a subdirectory with a `SKILL.md` file:
 

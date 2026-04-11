@@ -161,11 +161,8 @@ Delivery is **at-least-once**. If the agent crashes between executing a skill an
 
 ```bash
 elisym list                     # list agents
-elisym status <name>            # agent status
 elisym profile <name>           # edit profile / wallet / LLM settings
 elisym wallet <name>            # wallet balance
-elisym send <name> <addr> <sol> # send SOL from the agent wallet
-elisym config <name>            # show config (secrets redacted)
 elisym delete <name>            # delete an agent
 ```
 
