@@ -55,7 +55,8 @@ Generates a Nostr identity and a Solana keypair and writes them to `~/.elisym/ag
         "run",
         "--rm",
         "-i",
-        "-e", "ELISYM_AGENT=<agent-name>",
+        "-e",
+        "ELISYM_AGENT=<agent-name>",
         "-v",
         "/Users/<you>/.elisym:/root/.elisym",
         "ghcr.io/elisymlabs/mcp"
