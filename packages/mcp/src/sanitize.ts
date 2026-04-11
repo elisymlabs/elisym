@@ -112,7 +112,7 @@ const INJECTION_PATTERNS: Array<{
     pattern: /\b(?:call the tool|send_payment\(|submit_job_result\()/i,
   },
   // Delimiter injection
-  { category: 'delimiter_injection', pattern: /<\/system>|\[\/INST\]|```system|<\|im_end\|>/i },
+  { category: 'delimiter_injection', pattern: /<\/system>|\[\/INST]|```system|<\|im_end\|>/i },
   // Data exfiltration. Require a composite term ("secret key", "api key") or a strong
   // single noun ("password", "credential", "seed phrase"). The previous version matched
   // the bare word "key", which produces false positives on benign phrases like
