@@ -100,7 +100,13 @@ const INJECTION_PATTERNS: Array<{
     category: 'prompt_extraction',
     pattern: /\b(?:show me your system prompt|what are your instructions|reveal your prompt)\b/i,
   },
-  // Tool call injection
+  // Tool call injection.
+  // No trailing \b on purpose: the last alternative ends in `(`, and a trailing
+  // \b would require a word char to follow — meaning `send_payment()` (empty
+  // args) or `send_payment( ` (whitespace) would slip past the detector while
+  // `send_payment(1)` matched. We want to flag any reference to these tool
+  // invocations regardless of argument shape. Do not "re-align" with the other
+  // \b-terminated patterns in this array.
   {
     category: 'tool_injection',
     pattern: /\b(?:call the tool|send_payment\(|submit_job_result\()/i,

@@ -14,12 +14,14 @@ vi.mock('nostr-tools', async (importOriginal) => {
   };
 });
 
-import { ElisymClient } from '../src/client';
-import { SolanaPaymentStrategy } from '../src/payment/solana';
-import type { PaymentStrategy } from '../src/payment/strategy';
-import { DiscoveryService } from '../src/services/discovery';
-import { MarketplaceService } from '../src/services/marketplace';
-import { PingService } from '../src/services/ping';
+import {
+  DiscoveryService,
+  ElisymClient,
+  MarketplaceService,
+  PingService,
+  SolanaPaymentStrategy,
+  type PaymentStrategy,
+} from '../src';
 
 describe('ElisymClient', () => {
   it('creates all services with default config', () => {

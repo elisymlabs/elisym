@@ -4,7 +4,7 @@
  * Spawns the built `dist/index.js` via node, exchanges JSON-RPC frames with it over
  * stdin/stdout (stderr goes to a buffer we can inspect). Verifies that:
  *   - the server initializes without logging to stdout
- *   - `tools/list` returns all 20 registered tools
+ *   - `tools/list` returns all 17 registered tools
  *   - `tools/call get_identity` works on the auto-generated ephemeral agent
  *   - malformed args produce a helpful `isError: true` result, not a crash
  *   - the server exits cleanly on SIGTERM
@@ -59,12 +59,10 @@ class McpHarness {
         }
         try {
           const msg = JSON.parse(line) as JsonRpcResponse;
-          if (typeof msg.id === 'number') {
-            const cb = this.pending.get(msg.id);
-            if (cb) {
-              this.pending.delete(msg.id);
-              cb(msg);
-            }
+          const cb = this.pending.get(msg.id);
+          if (cb) {
+            this.pending.delete(msg.id);
+            cb(msg);
           }
         } catch {
           // Non-JSON line on stdout is a protocol violation.

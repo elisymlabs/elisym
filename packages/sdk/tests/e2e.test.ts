@@ -1,28 +1,25 @@
-import { Keypair, PublicKey } from '@solana/web3.js';
-import { finalizeEvent, verifyEvent, type Event, type Filter } from 'nostr-tools';
+import { Keypair } from '@solana/web3.js';
+import { finalizeEvent, type Event, type Filter } from 'nostr-tools';
 /**
  * End-to-end tests simulating full customer/provider flows
  * through a local RelaySimulator (no real Nostr relays or Solana).
  */
 import { describe, it, expect, vi } from 'vitest';
-import { ElisymClient } from '../src/client';
 import {
-  KIND_APP_HANDLER,
+  calculateProtocolFee,
+  DiscoveryService,
+  ElisymClient,
+  ElisymIdentity,
+  KIND_JOB_FEEDBACK,
   KIND_JOB_REQUEST,
   KIND_JOB_RESULT,
-  KIND_JOB_FEEDBACK,
-  KIND_PING,
-  KIND_PONG,
+  MarketplaceService,
+  PingService,
   PROTOCOL_TREASURY,
-} from '../src/constants';
-import { calculateProtocolFee } from '../src/payment/fee';
-import { SolanaPaymentStrategy } from '../src/payment/solana';
-import { nip44Decrypt } from '../src/primitives/crypto';
-import { ElisymIdentity } from '../src/primitives/identity';
-import { DiscoveryService, toDTag } from '../src/services/discovery';
-import { MarketplaceService } from '../src/services/marketplace';
-import { PingService } from '../src/services/ping';
-import type { CapabilityCard, SubCloser } from '../src/types';
+  SolanaPaymentStrategy,
+  type CapabilityCard,
+  type SubCloser,
+} from '../src';
 
 // ---------------------------------------------------------------------------
 // RelaySimulator - local Nostr relay for deterministic testing
@@ -136,41 +133,6 @@ function makeCard(name = 'text-gen-agent'): CapabilityCard {
     capabilities: ['text-gen'],
     payment: { chain: 'solana', network: 'devnet', address: PROVIDER_WALLET, job_price: JOB_PRICE },
   };
-}
-
-function publishCapabilityEvent(
-  relay: RelaySimulator,
-  identity: ElisymIdentity,
-  card: CapabilityCard,
-) {
-  const ev = finalizeEvent(
-    {
-      kind: KIND_APP_HANDLER,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [
-        ['d', toDTag(card.name)],
-        ['t', 'elisym'],
-        ...card.capabilities.map((c) => ['t', c]),
-        ['k', String(KIND_JOB_REQUEST)],
-      ],
-      content: JSON.stringify(card),
-    },
-    identity.secretKey,
-  );
-  return relay.publish(ev).then(() => ev);
-}
-
-function publishProfileEvent(relay: RelaySimulator, identity: ElisymIdentity, name: string) {
-  const ev = finalizeEvent(
-    {
-      kind: 0,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [],
-      content: JSON.stringify({ name, about: `${name} agent` }),
-    },
-    identity.secretKey,
-  );
-  return relay.publish(ev).then(() => ev);
 }
 
 function mockSolanaConnection(opts: {

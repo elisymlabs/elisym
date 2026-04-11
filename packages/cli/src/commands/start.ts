@@ -13,8 +13,8 @@ import {
   DEFAULTS,
   DEFAULT_KIND_OFFSET,
   jobRequestKind,
+  type CapabilityCard,
 } from '@elisym/sdk';
-import type { CapabilityCard } from '@elisym/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { loadConfig, listAgents } from '../config.js';
 import {
@@ -25,10 +25,9 @@ import {
   RECOVERY_INTERVAL_SECS,
 } from '../helpers.js';
 import { JobLedger } from '../ledger.js';
-import { createLlmClient } from '../llm/index.js';
+import { createLlmClient } from '../llm';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
-import { SkillRegistry } from '../skill/index.js';
-import type { SkillContext } from '../skill/index.js';
+import { SkillRegistry, type SkillContext } from '../skill';
 import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
 

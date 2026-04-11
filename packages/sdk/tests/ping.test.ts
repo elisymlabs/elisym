@@ -1,10 +1,13 @@
-import { finalizeEvent, verifyEvent, type Event, type Filter } from 'nostr-tools';
+import { finalizeEvent, type Event, type Filter } from 'nostr-tools';
 import { describe, it, expect, vi } from 'vitest';
-import { KIND_PING, KIND_PONG, DEFAULTS } from '../src/constants';
-import { ElisymIdentity } from '../src/primitives/identity';
-import { PingService } from '../src/services/ping';
-import type { NostrPool } from '../src/transport/pool';
-import type { SubCloser } from '../src/types';
+import {
+  ElisymIdentity,
+  KIND_PING,
+  KIND_PONG,
+  NostrPool,
+  PingService,
+  type SubCloser,
+} from '../src';
 
 function createMockPool() {
   const published: Event[] = [];
