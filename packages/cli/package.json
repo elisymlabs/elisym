@@ -1,6 +1,6 @@
 {
   "name": "@elisym/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "CLI agent runner for elisym - provider mode, skills, crash recovery",
   "keywords": [
     "ai-agents",
