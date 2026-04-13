@@ -54,8 +54,7 @@ export async function cmdStart(name: string | undefined): Promise<void> {
   }
 
   // -- Step 2: Load config (with optional passphrase for encrypted keys) --
-  const passphrase = process.env.ELISYM_PASSPHRASE;
-  const config = loadConfig(name!, passphrase);
+  const config = await loadConfigWithPrompt(name!);
 
   // -- Step 3: Banner + starting message --
   console.log(`\n  Starting agent ${name}...\n`);
@@ -316,4 +315,48 @@ export async function cmdStart(name: string | undefined): Promise<void> {
   // -- Step 16: Run --
   console.log('  * Running. Press Ctrl+C to stop.\n');
   await runtime.run();
+}
+
+const MAX_PASSPHRASE_ATTEMPTS = 3;
+
+async function loadConfigWithPrompt(name: string) {
+  const envPassphrase = process.env.ELISYM_PASSPHRASE;
+  try {
+    return loadConfig(name, envPassphrase);
+  } catch (e: any) {
+    const isEncryptedConfigError = /encrypted but no passphrase/i.test(e?.message ?? '');
+    const isWrongPassphrase = /Decryption failed/i.test(e?.message ?? '');
+    if (!isEncryptedConfigError && !isWrongPassphrase) {
+      throw e;
+    }
+    if (!process.stdin.isTTY) {
+      throw e;
+    }
+  }
+
+  const { default: inquirer } = await import('inquirer');
+  for (let attempt = 1; attempt <= MAX_PASSPHRASE_ATTEMPTS; attempt += 1) {
+    const { passphrase } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'passphrase',
+        message: 'Passphrase to decrypt secrets:',
+        mask: '*',
+      },
+    ]);
+    try {
+      return loadConfig(name, passphrase);
+    } catch (e: any) {
+      if (!/Decryption failed/i.test(e?.message ?? '')) {
+        throw e;
+      }
+      const remaining = MAX_PASSPHRASE_ATTEMPTS - attempt;
+      if (remaining === 0) {
+        console.error('  ! Wrong passphrase. Aborting.');
+        process.exit(1);
+      }
+      console.error(`  ! Wrong passphrase. ${remaining} attempt(s) left.`);
+    }
+  }
+  throw new Error('Unreachable');
 }
