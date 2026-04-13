@@ -5,9 +5,12 @@
  *
  * scrypt params: N=2^17, r=8, p=1 (~128 MB RAM per derivation).
  *
- * Node.js/Bun only - not available in browsers.
- * All Node.js APIs are lazy-imported to avoid polluting browser bundles.
+ * Node.js/Bun only - not available in browsers. Reachable only via the
+ * '@elisym/sdk/node' subpath, which browser bundlers will not resolve.
  */
+
+import { Buffer } from 'node:buffer';
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 
 const PREFIX = 'encrypted:v1:';
 const SALT_LENGTH = 16;
@@ -30,9 +33,6 @@ export function encryptSecret(plaintext: string, passphrase: string): string {
   if (!passphrase) {
     throw new Error('Passphrase must not be empty.');
   }
-  const { scryptSync, randomBytes, createCipheriv } =
-    require('node:crypto') as typeof import('node:crypto');
-  const { Buffer } = require('node:buffer') as typeof import('node:buffer');
 
   const salt = randomBytes(SALT_LENGTH);
   const key = scryptSync(passphrase, salt, KEY_LENGTH, {
@@ -59,9 +59,6 @@ export function decryptSecret(encrypted: string, passphrase: string): string {
   if (!passphrase) {
     throw new Error('Passphrase must not be empty.');
   }
-
-  const { scryptSync, createDecipheriv } = require('node:crypto') as typeof import('node:crypto');
-  const { Buffer } = require('node:buffer') as typeof import('node:buffer');
 
   const payload = Buffer.from(encrypted.slice(PREFIX.length), 'base64');
   if (payload.length < SALT_LENGTH + IV_LENGTH + TAG_LENGTH) {
