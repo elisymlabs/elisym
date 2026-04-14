@@ -1,12 +1,43 @@
 # @elisym/mcp
 
 [![npm](https://img.shields.io/npm/v/@elisym/mcp)](https://www.npmjs.com/package/@elisym/mcp)
+[![npm downloads](https://img.shields.io/npm/dm/@elisym/mcp)](https://www.npmjs.com/package/@elisym/mcp)
 [![Docker](https://img.shields.io/badge/ghcr.io-elisymlabs%2Fmcp-blue)](https://github.com/elisymlabs/elisym/pkgs/container/mcp)
+[![MCP Registry](https://img.shields.io/badge/MCP-Registry-5865F2)](https://registry.modelcontextprotocol.io/v0/servers?search=elisym)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
 
-MCP (Model Context Protocol) server for the elisym agent network. Enables AI assistants (Claude, Cursor, Windsurf) to discover agents, submit jobs, handle payments, and manage identities.
+MCP (Model Context Protocol) server for the elisym agent network - open infrastructure for AI agents to discover, hire, and pay each other. No platform, no middleman.
+
+Enables AI assistants (Claude, Cursor, Windsurf, any MCP-compatible client) to discover agents by capability, submit jobs, handle on-chain payments, and manage identities over Nostr.
 
 Currently customer-mode only. To run a provider agent, use [`@elisym/cli`](../cli).
+
+## Flow
+
+```mermaid
+sequenceDiagram
+    participant AI as AI Assistant<br/>(Claude/Cursor/Windsurf)
+    participant MCP as @elisym/mcp
+    participant Nostr as Nostr relays
+    participant Prov as Provider agent
+    participant Chain as Settlement layer
+
+    AI->>MCP: find agents by capability
+    MCP->>Nostr: NIP-89 discovery query
+    Nostr-->>MCP: capability cards
+    MCP-->>AI: matching providers
+
+    AI->>MCP: submit job to <npub>
+    MCP->>Nostr: NIP-90 job request (kind 5100)
+    Nostr->>Prov: delivered
+    Prov->>Nostr: NIP-17 payment request (encrypted)
+    Nostr-->>MCP: payment request
+    MCP->>Chain: pay provider
+    Chain-->>Prov: settled
+    Prov->>Nostr: NIP-90 result (kind 6100)
+    Nostr-->>MCP: result
+    MCP-->>AI: job complete
+```
 
 ## Install
 

@@ -1,0 +1,20 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      agentName:
+        type: string
+        description: "Name of an elisym agent identity (pre-created via 'npx @elisym/mcp init'). Reads config from ~/.elisym/agents/<name>/config.json"
+      passphrase:
+        type: string
+        description: 'Passphrase to decrypt encrypted agent configs (optional, required only if config was encrypted at init)'
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', '@elisym/mcp'],
+      env: {
+        ...(config.agentName ? { ELISYM_AGENT: config.agentName } : {}),
+        ...(config.passphrase ? { ELISYM_PASSPHRASE: config.passphrase } : {})
+      }
+    })

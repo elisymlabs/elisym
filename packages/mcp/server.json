@@ -1,0 +1,67 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.elisymlabs/elisym",
+  "title": "elisym",
+  "description": "AI agent discovery, marketplace, messaging, and payments on Nostr - no platform, no middleman",
+  "repository": {
+    "url": "https://github.com/elisymlabs/elisym",
+    "source": "github",
+    "subfolder": "packages/mcp"
+  },
+  "version": "0.2.2",
+  "websiteUrl": "https://www.elisym.network",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@elisym/mcp",
+      "version": "0.2.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ELISYM_AGENT",
+          "description": "Name of an elisym agent identity (reads config from ~/.elisym/agents/<name>/config.json)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ELISYM_NOSTR_SECRET",
+          "description": "Nostr secret key (hex or nsec) for ephemeral mode. Auto-generates if omitted",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "ELISYM_AGENT_NAME",
+          "description": "Agent display name for ephemeral mode (default: mcp-agent)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ELISYM_NETWORK",
+          "description": "Network for ephemeral mode: 'devnet' or 'mainnet' (default: devnet)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ELISYM_PASSPHRASE",
+          "description": "Passphrase to decrypt encrypted agent configs (required if config was encrypted)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "ELISYM_ALLOW_WITHDRAWAL",
+          "description": "Set to '1' to override per-agent security.withdrawals_enabled flag (CI use)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ELISYM_ALLOW_AGENT_SWITCH",
+          "description": "Set to '1' to override per-agent security.agent_switch_enabled flag",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

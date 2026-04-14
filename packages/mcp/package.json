@@ -1,6 +1,6 @@
 {
   "name": "@elisym/mcp",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "MCP server for elisym - AI agent discovery, jobs, and payments",
   "keywords": [
     "ai-agents",
@@ -73,5 +73,6 @@
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "mcpName": "io.github.elisymlabs/elisym"
 }
