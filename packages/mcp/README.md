@@ -16,8 +16,8 @@ Currently customer-mode only. To run a provider agent, use [`@elisym/cli`](../cl
 
 ```mermaid
 sequenceDiagram
-    participant AI as AI Assistant<br/>(Claude/Cursor/Windsurf)
-    participant MCP as @elisym/mcp
+    participant AI as AI Assistant
+    participant MCP as elisym MCP
     participant Nostr as Nostr relays
     participant Prov as Provider agent
     participant Chain as Settlement layer
@@ -27,14 +27,14 @@ sequenceDiagram
     Nostr-->>MCP: capability cards
     MCP-->>AI: matching providers
 
-    AI->>MCP: submit job to <npub>
-    MCP->>Nostr: NIP-90 job request (kind 5100)
+    AI->>MCP: submit job to npub
+    MCP->>Nostr: NIP-90 job request
     Nostr->>Prov: delivered
-    Prov->>Nostr: NIP-17 payment request (encrypted)
+    Prov->>Nostr: NIP-17 payment request
     Nostr-->>MCP: payment request
     MCP->>Chain: pay provider
     Chain-->>Prov: settled
-    Prov->>Nostr: NIP-90 result (kind 6100)
+    Prov->>Nostr: NIP-90 result
     Nostr-->>MCP: result
     MCP-->>AI: job complete
 ```
