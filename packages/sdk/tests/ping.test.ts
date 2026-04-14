@@ -36,6 +36,7 @@ function createMockPool() {
     ),
     probe: vi.fn().mockResolvedValue(true),
     reset: vi.fn(),
+    onReset: vi.fn((_listener: () => void) => () => {}),
     getRelays: vi.fn().mockReturnValue([]),
     close: vi.fn(),
   } as unknown as NostrPool & {
@@ -133,6 +134,99 @@ describe('PingService.pingAgent', () => {
     const svc = new PingService(pool as any);
     const result = await svc.pingAgent(agent.publicKey, 50, undefined, 0);
     expect(result.online).toBe(false);
+  });
+});
+
+// --- cache invalidation on pool reset ---
+
+describe('PingService cache invalidation', () => {
+  it('registers an onReset listener with the pool in the constructor', () => {
+    const pool = createMockPool();
+    new PingService(pool as any);
+    expect((pool as any).onReset).toHaveBeenCalledTimes(1);
+    expect((pool as any).onReset).toHaveBeenCalledWith(expect.any(Function));
+  });
+
+  it('clearCache() empties the cache so the next pingAgent does a real round-trip', async () => {
+    const pool = createMockPool();
+    const agentIdentity = ElisymIdentity.generate();
+    let capturedOnEvent: ((ev: Event) => void) | null = null;
+
+    (pool as any).subscribeAndWait = vi.fn(async (_f: Filter, onEvent: (ev: Event) => void) => {
+      capturedOnEvent = onEvent;
+      return { close: vi.fn() };
+    });
+    (pool as any).publishAll = vi.fn(async (event: Event) => {
+      if (event.kind === KIND_PING) {
+        const { nonce } = JSON.parse(event.content);
+        const pong = finalizeEvent(
+          {
+            kind: KIND_PONG,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [['p', event.pubkey]],
+            content: JSON.stringify({ type: 'elisym_pong', nonce }),
+          },
+          agentIdentity.secretKey,
+        );
+        capturedOnEvent?.(pong);
+      }
+    });
+
+    const svc = new PingService(pool as any);
+    await svc.pingAgent(agentIdentity.publicKey, 5000, undefined, 0);
+    expect((pool as any).subscribeAndWait).toHaveBeenCalledTimes(1);
+
+    // Within TTL: cached - no new subscribeAndWait call
+    await svc.pingAgent(agentIdentity.publicKey, 5000, undefined, 0);
+    expect((pool as any).subscribeAndWait).toHaveBeenCalledTimes(1);
+
+    // After clearCache: real round-trip again
+    svc.clearCache();
+    await svc.pingAgent(agentIdentity.publicKey, 5000, undefined, 0);
+    expect((pool as any).subscribeAndWait).toHaveBeenCalledTimes(2);
+  });
+
+  it('listener registered in the constructor invokes clearCache', async () => {
+    const pool = createMockPool();
+    let registeredListener: (() => void) | null = null;
+    (pool as any).onReset = vi.fn((listener: () => void) => {
+      registeredListener = listener;
+      return () => {};
+    });
+
+    const agentIdentity = ElisymIdentity.generate();
+    let capturedOnEvent: ((ev: Event) => void) | null = null;
+    (pool as any).subscribeAndWait = vi.fn(async (_f: Filter, onEvent: (ev: Event) => void) => {
+      capturedOnEvent = onEvent;
+      return { close: vi.fn() };
+    });
+    (pool as any).publishAll = vi.fn(async (event: Event) => {
+      if (event.kind === KIND_PING) {
+        const { nonce } = JSON.parse(event.content);
+        const pong = finalizeEvent(
+          {
+            kind: KIND_PONG,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [['p', event.pubkey]],
+            content: JSON.stringify({ type: 'elisym_pong', nonce }),
+          },
+          agentIdentity.secretKey,
+        );
+        capturedOnEvent?.(pong);
+      }
+    });
+
+    const svc = new PingService(pool as any);
+    await svc.pingAgent(agentIdentity.publicKey, 5000, undefined, 0);
+    expect((pool as any).subscribeAndWait).toHaveBeenCalledTimes(1);
+
+    // Simulate pool reset firing its listeners
+    expect(registeredListener).not.toBeNull();
+    registeredListener!();
+
+    // Cache cleared by the listener - next ping does a real round-trip
+    await svc.pingAgent(agentIdentity.publicKey, 5000, undefined, 0);
+    expect((pool as any).subscribeAndWait).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { AgentRuntime, type RuntimeConfig } from '../src/runtime.js';
-import { SkillRegistry } from '../src/skill/index.js';
-import type { Skill } from '../src/skill/index.js';
+import { SkillRegistry } from '../src/skill';
+import type { Skill } from '../src/skill';
 import type { NostrTransport, IncomingJob } from '../src/transport/nostr.js';
 
 // Configurable mock for verifyPayment - reset in beforeEach
@@ -253,6 +253,58 @@ describe('AgentRuntime', () => {
       await runPromise.catch(() => {});
 
       expect(onReceived).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'recv-job' }));
+    });
+
+    it('isolates onStop errors and still completes shutdown', async () => {
+      const skill = makeFakeSkill('test-skill', 'result');
+      const registry = makeFakeRegistry(skill);
+      const { transport } = makeFakeTransport();
+      const onLog = vi.fn();
+      const onStop = vi.fn(() => {
+        throw new Error('teardown boom');
+      });
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog, onStop },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      expect(() => runtime.stop()).not.toThrow();
+      await runPromise.catch(() => {});
+
+      expect(onStop).toHaveBeenCalledTimes(1);
+      expect(onLog).toHaveBeenCalledWith(expect.stringContaining('teardown boom'));
+    });
+
+    it('stop() is idempotent - second call does not re-invoke onStop', async () => {
+      const skill = makeFakeSkill('test-skill', 'result');
+      const registry = makeFakeRegistry(skill);
+      const { transport } = makeFakeTransport();
+      const onStop = vi.fn();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onStop },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      runtime.stop();
+      runtime.stop();
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(onStop).toHaveBeenCalledTimes(1);
     });
   });
 

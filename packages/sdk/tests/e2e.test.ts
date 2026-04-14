@@ -113,6 +113,9 @@ class RelaySimulator {
   reset(): void {
     this.subs.forEach((s) => (s.closed = true));
   }
+  onReset(_listener: () => void): () => void {
+    return () => {};
+  }
   close(): void {
     this.subs.forEach((s) => (s.closed = true));
   }

@@ -32,6 +32,7 @@ export class NostrTransport {
   private sub: SubCloser | null = null;
   private seenIds = new BoundedSet<string>(10_000);
   private lastEventAt = Date.now();
+  private onJob: ((job: IncomingJob) => void) | null = null;
 
   constructor(
     private client: ElisymClient,
@@ -41,6 +42,10 @@ export class NostrTransport {
 
   /** Start listening for targeted job requests. Decrypts NIP-44 content. */
   start(onJob: (job: IncomingJob) => void): void {
+    this.onJob = onJob;
+    // Reset idle clock: a fresh subscription hasn't been idle, even if we're
+    // restarting after a pool reset where the last event is long in the past.
+    this.lastEventAt = Date.now();
     const kinds = this.kindOffsets.map(jobRequestKind);
 
     this.sub = this.client.marketplace.subscribeToJobRequests(
@@ -132,5 +137,19 @@ export class NostrTransport {
   stop(): void {
     this.sub?.close();
     this.sub = null;
+  }
+
+  /**
+   * Re-create the job subscription using the previously registered callback.
+   * Call after `NostrPool.reset()` has torn down the underlying subscriptions.
+   * `seenIds` is preserved across restarts (dedup survives reconnect);
+   * `lastEventAt` is reset by `start()` so `isHealthy()` does not report
+   * stale idleness immediately after a successful recovery.
+   */
+  restart(): void {
+    this.stop();
+    if (this.onJob) {
+      this.start(this.onJob);
+    }
   }
 }

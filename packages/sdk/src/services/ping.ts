@@ -13,6 +13,20 @@ import type { PingResult, SubCloser } from '../types';
  * this instance - recreating the service generates a new keypair.
  *
  * Requires `globalThis.crypto` (Node 20+, Bun, browsers).
+ *
+ * Lifetime / cleanup:
+ * - The constructor registers a listener on `pool.onReset()` and never
+ *   unsubscribes. This is intentional: PingService is expected to share its
+ *   lifetime with the NostrPool it is bound to (both live for the lifetime
+ *   of an ElisymClient). If you ever construct a PingService that outlives
+ *   its pool - or vice versa - add an explicit `dispose()` that calls the
+ *   unsubscribe function returned by `pool.onReset()` to avoid leaking a
+ *   reference to this instance through the pool's listener set.
+ * - `clearCache()` drops cached online results but does NOT cancel in-flight
+ *   pings in `pendingPings`. An in-flight ping started before a pool reset
+ *   may return `online: false` even if the new pool is healthy; the next
+ *   ping attempt will go through the fresh subscription and resolve
+ *   correctly.
  */
 export class PingService {
   private static readonly PING_CACHE_MAX = 1000;
@@ -22,6 +36,15 @@ export class PingService {
 
   constructor(private pool: NostrPool) {
     this.sessionIdentity = ElisymIdentity.generate();
+    // Cached "online" entries become misleading after a pool reconnect -
+    // the new SimplePool has no verified reachability yet. Drop them.
+    pool.onReset(() => this.clearCache());
+  }
+
+  /** Drop cached online results. In-flight pings are left alone - they'll
+   * resolve via their own timeouts and remove themselves from `pendingPings`. */
+  clearCache(): void {
+    this.pingCache.clear();
   }
 
   /**

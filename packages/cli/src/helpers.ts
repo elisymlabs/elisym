@@ -10,6 +10,10 @@ export const HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 export const MAX_CONCURRENT_JOBS = 10;
 export const RECOVERY_MAX_RETRIES = 5;
 export const RECOVERY_INTERVAL_SECS = 60;
+export const WATCHDOG_PROBE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+export const WATCHDOG_PROBE_TIMEOUT_MS = 10_000;
+export const WATCHDOG_SELF_PING_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+export const WATCHDOG_SELF_PING_TIMEOUT_MS = 15_000;
 
 // --- Solana RPC ---
 

@@ -20,7 +20,7 @@ vi.mock('nostr-tools', async (importOriginal) => {
   };
 });
 
-import { NostrPool } from '../src/transport/pool';
+import { NostrPool } from '../src';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -190,6 +190,45 @@ describe('NostrPool.reset', () => {
     const pool = new NostrPool(TEST_RELAYS);
     pool.reset();
     expect(mockClose).toHaveBeenCalledWith(TEST_RELAYS);
+  });
+
+  it('invokes registered onReset listeners after recreating the pool', () => {
+    const pool = new NostrPool(TEST_RELAYS);
+    const listener = vi.fn();
+    pool.onReset(listener);
+
+    pool.reset();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    pool.reset();
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it('unsubscribe stops further listener calls', () => {
+    const pool = new NostrPool(TEST_RELAYS);
+    const listener = vi.fn();
+    const unsubscribe = pool.onReset(listener);
+
+    pool.reset();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    pool.reset();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('isolates listener errors - one bad listener does not block others', () => {
+    const pool = new NostrPool(TEST_RELAYS);
+    const bad = vi.fn(() => {
+      throw new Error('listener boom');
+    });
+    const good = vi.fn();
+    pool.onReset(bad);
+    pool.onReset(good);
+
+    expect(() => pool.reset()).not.toThrow();
+    expect(bad).toHaveBeenCalledTimes(1);
+    expect(good).toHaveBeenCalledTimes(1);
   });
 });
 

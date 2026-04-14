@@ -1,16 +1,35 @@
-import { SimplePool, type Filter, type Event } from 'nostr-tools';
-import { RELAYS, DEFAULTS } from '../constants';
-import { BoundedSet } from '../primitives/bounded-set';
-import type { SubCloser } from '../types';
+import {type Event, type Filter, SimplePool} from 'nostr-tools';
+import {DEFAULTS, RELAYS} from '../constants';
+import {BoundedSet} from '../primitives/bounded-set';
+import type {SubCloser} from '../types';
 
 export class NostrPool {
   private pool: SimplePool;
   private relays: string[];
   private activeSubscriptions = new Set<SubCloser>();
+  private resetListeners = new Set<() => void>();
 
   constructor(relays: string[] = RELAYS) {
     this.pool = new SimplePool();
     this.relays = relays;
+  }
+
+  /**
+   * Register a callback to run after `reset()` completes (new SimplePool in place).
+   * Services that cache pool-derived state (e.g. ping results) must clear it here,
+   * otherwise stale values survive the reconnect. Returns an unsubscribe function.
+   *
+   * Contract:
+   * - Listeners are invoked **synchronously** at the end of `reset()`, in
+   *   registration order. Do not rely on async work inside a listener having
+   *   completed before `reset()` returns.
+   * - Listener exceptions are caught and swallowed so that one faulty listener
+   *   cannot prevent the others from running (or abort the reset itself).
+   *   If a listener needs to surface errors, it must do so out-of-band.
+   */
+  onReset(listener: () => void): () => void {
+    this.resetListeners.add(listener);
+    return () => this.resetListeners.delete(listener);
   }
 
   /** Query relays synchronously. Returns `[]` on timeout (no error thrown). */
@@ -19,13 +38,12 @@ export class NostrPool {
     const query = this.pool.querySync(this.relays, filter);
     query.catch(() => {}); // prevent unhandled rejection if timeout wins
     try {
-      const result = await Promise.race([
+      return await Promise.race([
         query,
         new Promise<Event[]>((resolve) => {
           timer = setTimeout(() => resolve([]), DEFAULTS.QUERY_TIMEOUT_MS);
         }),
       ]);
-      return result;
     } finally {
       clearTimeout(timer);
     }
@@ -241,6 +259,13 @@ export class NostrPool {
       /* ignore */
     }
     this.pool = new SimplePool();
+    for (const listener of this.resetListeners) {
+      try {
+        listener();
+      } catch {
+        /* listener errors must not abort reset - other listeners still run */
+      }
+    }
   }
 
   /**

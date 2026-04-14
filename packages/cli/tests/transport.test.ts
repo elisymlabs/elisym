@@ -347,4 +347,68 @@ describe('NostrTransport', () => {
       transport.stop();
     });
   });
+
+  describe('restart', () => {
+    it('re-subscribes using the original callback and closes the old subscription', () => {
+      const firstClose = vi.fn();
+      const secondClose = vi.fn();
+      mockClient.marketplace.subscribeToJobRequests
+        .mockReset()
+        .mockImplementationOnce((_identity, _kinds, cb) => {
+          capturedCallback = cb;
+          return { close: firstClose } as SubCloser;
+        })
+        .mockImplementationOnce((_identity, _kinds, cb) => {
+          capturedCallback = cb;
+          return { close: secondClose } as SubCloser;
+        });
+
+      const transport = new NostrTransport(
+        mockClient as unknown as ElisymClient,
+        mockIdentity as unknown as ElisymIdentity,
+        [100],
+      );
+      const onJob = vi.fn();
+      transport.start(onJob);
+      expect(mockClient.marketplace.subscribeToJobRequests).toHaveBeenCalledTimes(1);
+      expect(firstClose).not.toHaveBeenCalled();
+
+      transport.restart();
+      expect(firstClose).toHaveBeenCalledTimes(1);
+      expect(mockClient.marketplace.subscribeToJobRequests).toHaveBeenCalledTimes(2);
+      expect(secondClose).not.toHaveBeenCalled();
+
+      capturedCallback!(makeEvent({ id: 'after-restart' }));
+      expect(onJob).toHaveBeenCalledOnce();
+      expect(onJob.mock.calls[0][0].jobId).toBe('after-restart');
+    });
+
+    it('preserves seenIds dedup across restart', () => {
+      const transport = new NostrTransport(
+        mockClient as unknown as ElisymClient,
+        mockIdentity as unknown as ElisymIdentity,
+        [100],
+      );
+      const onJob = vi.fn();
+      transport.start(onJob);
+
+      const event = makeEvent({ id: 'stable-id' });
+      capturedCallback!(event);
+      expect(onJob).toHaveBeenCalledTimes(1);
+
+      transport.restart();
+      capturedCallback!(event);
+      expect(onJob).toHaveBeenCalledTimes(1);
+    });
+
+    it('is a no-op when never started', () => {
+      const transport = new NostrTransport(
+        mockClient as unknown as ElisymClient,
+        mockIdentity as unknown as ElisymIdentity,
+        [100],
+      );
+      transport.restart();
+      expect(mockClient.marketplace.subscribeToJobRequests).not.toHaveBeenCalled();
+    });
+  });
 });

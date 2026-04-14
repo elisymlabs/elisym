@@ -7,7 +7,7 @@ import { Connection } from '@solana/web3.js';
 import pLimit from 'p-limit';
 import { getRpcUrl } from './helpers.js';
 import { JobLedger } from './ledger.js';
-import type { SkillRegistry, SkillContext } from './skill/index.js';
+import type { SkillRegistry, SkillContext } from './skill';
 import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 
 const payment = new SolanaPaymentStrategy();
@@ -30,6 +30,19 @@ export interface RuntimeCallbacks {
   onJobError?: (jobId: string, error: string) => void;
   onPaymentReceived?: (jobId: string, netAmount: number) => void;
   onLog?: (message: string) => void;
+  /**
+   * Invoked at the start of `stop()`, before the abort signal fires and before
+   * the transport is torn down, so callers can tear down external resources
+   * (watchdogs, heartbeats, ping subscriptions) that live outside the runtime.
+   *
+   * Contract:
+   * - Runs exactly once per runtime - `stop()` is idempotent; repeated calls
+   *   do not re-invoke this callback.
+   * - Thrown errors are caught and logged via `onLog`; shutdown continues.
+   * - At invocation time the transport and abort controller are still live;
+   *   callers can safely use transport-backed services for final operations.
+   */
+  onStop?: () => void;
 }
 
 /** Resolve the price for a job by matching its tags against registered skills. */
@@ -51,6 +64,7 @@ export class AgentRuntime {
   private jobAbortControllers = new Set<AbortController>();
   private recoveryInterval: ReturnType<typeof setInterval> | null = null;
   private gcInterval: ReturnType<typeof setInterval> | null = null;
+  private stopped = false;
   /** Per-customer sliding window rate limiter: pubkey -> timestamps. */
   private customerJobs = new Map<string, number[]>();
   /** Global sliding window rate limiter (Sybil protection). */
@@ -208,6 +222,16 @@ export class AgentRuntime {
   }
 
   stop(): void {
+    if (this.stopped) {
+      return;
+    }
+    this.stopped = true;
+    try {
+      this.callbacks.onStop?.();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      (this.callbacks.onLog ?? console.log)(`onStop error: ${msg}`);
+    }
     this.abortController.abort();
     for (const controller of this.jobAbortControllers) {
       controller.abort();

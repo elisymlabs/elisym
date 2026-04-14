@@ -30,6 +30,7 @@ import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SkillRegistry, type SkillContext } from '../skill';
 import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
+import { startWatchdog } from '../watchdog.js';
 
 export async function cmdStart(name: string | undefined): Promise<void> {
   // -- Step 1: Resolve agent name --
@@ -257,10 +258,10 @@ export async function cmdStart(name: string | undefined): Promise<void> {
 
   console.log('  Connected.\n');
 
-  // -- Step 13: Start ping responder --
-  const pingSub = client.ping.subscribeToPings(identity, (senderPubkey, nonce) => {
+  // -- Step 13: Prepare ping responder (watchdog owns the subscription) --
+  const onPing = (senderPubkey: string, nonce: string): void => {
     client.ping.sendPong(identity, senderPubkey, nonce).catch(() => {});
-  });
+  };
 
   // -- Step 14: Start heartbeat (republish first card to update lastSeen) --
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -288,6 +289,16 @@ export async function cmdStart(name: string | undefined): Promise<void> {
     solanaAddress,
   };
 
+  const logWithIndent = (msg: string): void => console.log(`  ${msg}`);
+
+  const watchdog = startWatchdog({
+    client,
+    identity,
+    transport,
+    onPing,
+    log: logWithIndent,
+  });
+
   const runtime = new AgentRuntime(transport, registry, skillCtx, runtimeConfig, ledger, {
     onJobReceived: (job) => {
       const cap = job.tags.find((t) => t !== 'elisym') ?? 'unknown';
@@ -299,18 +310,14 @@ export async function cmdStart(name: string | undefined): Promise<void> {
     onJobError: (jobId, error) => {
       console.error(`  [job] ${jobId.slice(0, 16)} | error: ${error}`);
     },
-    onLog: (msg) => console.log(`  ${msg}`),
+    onLog: logWithIndent,
+    onStop: () => {
+      watchdog.stop();
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+      }
+    },
   });
-
-  // Cleanup on shutdown
-  const originalStop = runtime.stop.bind(runtime);
-  runtime.stop = () => {
-    pingSub.close();
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-    }
-    originalStop();
-  };
 
   // -- Step 16: Run --
   console.log('  * Running. Press Ctrl+C to stop.\n');
