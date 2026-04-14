@@ -1,6 +1,6 @@
 {
   "name": "@elisym/mcp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "MCP server for elisym - AI agent discovery, jobs, and payments",
   "keywords": [
     "ai-agents",
@@ -52,6 +52,7 @@
     "lint": "oxlint src/",
     "qa": "tsup && vitest run && tsc --noEmit && oxlint src/ && oxfmt --check src/",
     "clean": "rm -rf dist",
+    "sync-server-version": "node scripts/sync-server-version.mjs",
     "prepublishOnly": "bun run build && node scripts/preflight-publish.mjs"
   },
   "dependencies": {

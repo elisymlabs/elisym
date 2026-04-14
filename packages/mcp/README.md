@@ -30,8 +30,8 @@ sequenceDiagram
     AI->>MCP: submit job to npub
     MCP->>Nostr: NIP-90 job request
     Nostr->>Prov: delivered
-    Prov->>Nostr: NIP-17 payment request
-    Nostr-->>MCP: payment request
+    Prov->>Nostr: NIP-90 feedback payment-required
+    Nostr-->>MCP: feedback
     MCP->>Chain: pay provider
     Chain-->>Prov: settled
     Prov->>Nostr: NIP-90 result

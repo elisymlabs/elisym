@@ -170,6 +170,10 @@ jobs:
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz
           sudo mv mcp-publisher /usr/local/bin/
 
+      - name: Sync server.json version with package.json
+        run: node scripts/sync-server-version.mjs
+        working-directory: packages/mcp
+
       - name: Authenticate with MCP Registry (OIDC)
         run: mcp-publisher login github-oidc
         working-directory: packages/mcp
