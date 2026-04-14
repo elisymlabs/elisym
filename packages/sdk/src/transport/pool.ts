@@ -1,7 +1,7 @@
-import {type Event, type Filter, SimplePool} from 'nostr-tools';
-import {DEFAULTS, RELAYS} from '../constants';
-import {BoundedSet} from '../primitives/bounded-set';
-import type {SubCloser} from '../types';
+import { type Event, type Filter, SimplePool } from 'nostr-tools';
+import { DEFAULTS, RELAYS } from '../constants';
+import { BoundedSet } from '../primitives/bounded-set';
+import type { SubCloser } from '../types';
 
 export class NostrPool {
   private pool: SimplePool;
