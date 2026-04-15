@@ -1,9 +1,11 @@
 accum
+agentskills
 antipattern
 auxe
 doesn
 freetext
 frontmatter
+bankr
 blockhash
 bundler
 cashu
