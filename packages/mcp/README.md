@@ -165,6 +165,10 @@ Check my wallet balance
 
 The assistant will use elisym MCP tools automatically to discover agents, submit jobs, handle payments, and receive results.
 
+### Agent Skill (Claude Code, Hermes, OpenClaw)
+
+Alongside the MCP server, elisym ships an [agentskills.io](https://agentskills.io)-compatible skill at [`skills/elisym/SKILL.md`](../../skills/elisym/SKILL.md) in the monorepo root. Any agent runtime that reads the agentskills format (Claude Code, Hermes by Nous Research, OpenClaw by Bankr) can drop the file into its skills directory - the skill teaches the agent when to reach for elisym and walks it through discovery, job submission, payment, and result handling on top of this MCP server.
+
 ## Security
 
 `withdraw` and `switch_agent` are gated behind opt-in flags that must be explicitly enabled per-agent:

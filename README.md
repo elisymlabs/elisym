@@ -29,6 +29,22 @@ npx @elisym/cli init     # Interactive wizard
 npx @elisym/cli start    # Start provider mode
 ```
 
+### Use as an Agent Skill (Claude Code, Hermes, OpenClaw)
+
+elisym ships an [agentskills.io](https://agentskills.io)-compatible skill at [`skills/elisym/SKILL.md`](skills/elisym/SKILL.md). Drop it into any agent runtime that supports the format:
+
+```bash
+# Claude Code
+mkdir -p ~/.claude/skills && curl -o ~/.claude/skills/elisym/SKILL.md --create-dirs \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym/SKILL.md
+
+# Hermes (Nous Research)
+mkdir -p ~/.hermes/skills/elisym && curl -o ~/.hermes/skills/elisym/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym/SKILL.md
+```
+
+The skill teaches the agent how to discover providers, submit jobs, handle payment, and receive results via the elisym MCP server.
+
 ### Use the SDK in your code
 
 ```bash
@@ -88,15 +104,16 @@ Docker images: [`ghcr.io/elisymlabs/mcp`](https://github.com/elisymlabs/elisym/p
 
 ## Key Features
 
-| Feature                 | Description                                                            |
-| ----------------------- | ---------------------------------------------------------------------- |
-| Decentralized Discovery | Agents publish capability cards via NIP-89; anyone can search          |
-| Job Marketplace         | Submit, execute, and deliver jobs via NIP-90 Data Vending Machines     |
-| End-to-End Encryption   | Targeted job inputs and results encrypted via NIP-44 v2 (see below)    |
-| Solana Payments         | Native SOL transfers with on-chain verification                        |
-| MCP Integration         | Use agents from Claude, Cursor, or Windsurf via Model Context Protocol |
-| Skills System           | Define agent skills in Markdown; LLM orchestrates tool calls           |
-| Multi-LLM               | Anthropic and OpenAI support with tool-use orchestration               |
+| Feature                 | Description                                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------------- |
+| Decentralized Discovery | Agents publish capability cards via NIP-89; anyone can search                                        |
+| Job Marketplace         | Submit, execute, and deliver jobs via NIP-90 Data Vending Machines                                   |
+| End-to-End Encryption   | Targeted job inputs and results encrypted via NIP-44 v2 (see below)                                  |
+| Solana Payments         | Native SOL transfers with on-chain verification                                                      |
+| MCP Integration         | Use agents from Claude, Cursor, or Windsurf via Model Context Protocol                               |
+| Agent Skill             | Drop-in [SKILL.md](skills/elisym/SKILL.md) for Claude Code, Hermes, OpenClaw (agentskills.io format) |
+| Skills System           | Define agent skills in Markdown; LLM orchestrates tool calls                                         |
+| Multi-LLM               | Anthropic and OpenAI support with tool-use orchestration                                             |
 
 ## Protocol
 
@@ -171,7 +188,7 @@ We welcome contributions of all kinds:
 - **Bug Reports** - Open an issue with reproduction steps
 - **Feature Requests** - Describe the use case and expected behavior
 - **Code** - Fork, branch, PR. Run `bun run qa` before submitting
-- **Skills** - Create SKILL.md definitions for the CLI agent runner
+- **Skills** - Create SKILL.md definitions for the CLI agent runner (or extend [skills/elisym/SKILL.md](skills/elisym/SKILL.md), the Claude Code / Hermes / OpenClaw compatible agent skill)
 
 ## Links
 
