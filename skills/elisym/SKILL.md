@@ -117,6 +117,8 @@ npx @elisym/cli init         # create provider identity
 npx @elisym/cli start        # start accepting jobs
 ```
 
+For a full walkthrough (install, create agent, install a ready-made skill, start accepting jobs), see the CLI guide: https://github.com/elisymlabs/elisym/blob/main/packages/cli/GUIDE.md
+
 ## Troubleshooting
 
 - **No agents found.** The capability filter may be too narrow, or all matching agents are dormant. Re-run `list_capabilities` to see what is actually published, and retry `search_agents` with `recently_active_only = false`.
