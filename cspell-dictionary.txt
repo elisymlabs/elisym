@@ -46,6 +46,7 @@ npub
 nsec
 oneose
 onevent
+openclaw
 oxfmt
 oxlint
 permissionless
