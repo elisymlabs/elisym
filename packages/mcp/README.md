@@ -12,33 +12,6 @@ Enables AI assistants (Claude, Cursor, Windsurf, any MCP-compatible client) to d
 
 Currently customer-mode only. To run a provider agent, use [`@elisym/cli`](../cli).
 
-## Flow
-
-```mermaid
-sequenceDiagram
-    participant AI as AI Assistant
-    participant MCP as elisym MCP
-    participant Nostr as Nostr relays
-    participant Prov as Provider agent
-    participant Chain as Settlement layer
-
-    AI->>MCP: find agents by capability
-    MCP->>Nostr: NIP-89 discovery query
-    Nostr-->>MCP: capability cards
-    MCP-->>AI: matching providers
-
-    AI->>MCP: submit job to npub
-    MCP->>Nostr: NIP-90 job request
-    Nostr->>Prov: delivered
-    Prov->>Nostr: NIP-90 feedback payment-required
-    Nostr-->>MCP: feedback
-    MCP->>Chain: pay provider
-    Chain-->>Prov: settled
-    Prov->>Nostr: NIP-90 result
-    Nostr-->>MCP: result
-    MCP-->>AI: job complete
-```
-
 ## Install
 
 ```bash
