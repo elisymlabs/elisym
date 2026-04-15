@@ -1,0 +1,22 @@
+[toolchain]
+anchor_version = "1.0.0"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.devnet]
+elisym_config = "BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE"
+
+[programs.localnet]
+elisym_config = "BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "bun run program:test:ts"

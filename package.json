@@ -17,7 +17,12 @@
     "format:check": "oxfmt --check .",
     "spell": "cspell --no-progress \"packages/sdk/src/**\" \"packages/mcp/src/**\" \"packages/cli/src/**\" \"*.md\" \"packages/*/README.md\"",
     "qa": "turbo run build && turbo run test && turbo run typecheck && bun run lint && oxfmt --check . && bun run spell",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "program:build": "anchor build",
+    "program:test": "anchor test --skip-local-validator",
+    "program:test:ts": "vitest run --config programs/elisym-config/vitest.config.ts",
+    "program:deploy:devnet": "anchor deploy --provider.cluster devnet",
+    "program:idl:generate": "anchor build && cp target/idl/elisym_config.json packages/program-client/idl.json"
   },
   "devDependencies": {
     "cspell": "~9.0.0",
