@@ -1,3 +1,5 @@
+import type { Address } from '@solana/kit';
+
 export const RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
@@ -39,10 +41,21 @@ export const KIND_PONG = 20201;
 
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 
-/** Protocol fee in basis points (300 = 3%). */
+/**
+ * Protocol fee in basis points (300 = 3%).
+ *
+ * Bundled fallback for `ProtocolConfigInput.feeBps`. Phase 3 will read this
+ * value from the on-chain elisym-config program; until then, callers should
+ * pass this constant explicitly.
+ */
 export const PROTOCOL_FEE_BPS = 300;
-/** Solana address of the protocol treasury. */
-export const PROTOCOL_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
+/**
+ * Solana address of the protocol treasury.
+ *
+ * Bundled fallback for `ProtocolConfigInput.treasury`. Cast to `Address`
+ * (Kit branded type) so it can be used directly with the new payment APIs.
+ */
+export const PROTOCOL_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy' as Address;
 
 /** Default values for timeouts, retries, and batch sizes. */
 export const DEFAULTS = {

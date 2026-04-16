@@ -1,4 +1,10 @@
-import { Keypair } from '@solana/web3.js';
+import {
+  type Address,
+  type Rpc,
+  type Signature,
+  type SolanaRpcApi,
+  getAddressDecoder,
+} from '@solana/kit';
 import { finalizeEvent, type Event, type Filter } from 'nostr-tools';
 /**
  * End-to-end tests simulating full customer/provider flows
@@ -6,6 +12,7 @@ import { finalizeEvent, type Event, type Filter } from 'nostr-tools';
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
+  buildPaymentInstructions,
   calculateProtocolFee,
   DiscoveryService,
   ElisymClient,
@@ -15,11 +22,25 @@ import {
   KIND_JOB_RESULT,
   MarketplaceService,
   PingService,
+  PROTOCOL_FEE_BPS,
   PROTOCOL_TREASURY,
   SolanaPaymentStrategy,
   type CapabilityCard,
+  type ProtocolConfigInput,
   type SubCloser,
 } from '../src';
+
+const ADDRESS_DECODER = getAddressDecoder();
+function makeAddress(): Address {
+  const bytes = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(bytes);
+  return ADDRESS_DECODER.decode(bytes);
+}
+
+const CONFIG: ProtocolConfigInput = {
+  feeBps: PROTOCOL_FEE_BPS,
+  treasury: PROTOCOL_TREASURY,
+};
 
 // ---------------------------------------------------------------------------
 // RelaySimulator - local Nostr relay for deterministic testing
@@ -125,8 +146,8 @@ class RelaySimulator {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const PROVIDER_WALLET = Keypair.generate().publicKey.toBase58();
-const CUSTOMER_WALLET = Keypair.generate().publicKey.toBase58();
+const PROVIDER_WALLET = makeAddress();
+const CUSTOMER_WALLET = makeAddress();
 const JOB_PRICE = 100_000_000; // 0.1 SOL
 
 function makeCard(name = 'text-gen-agent'): CapabilityCard {
@@ -138,33 +159,35 @@ function makeCard(name = 'text-gen-agent'): CapabilityCard {
   };
 }
 
-function mockSolanaConnection(opts: {
-  keys: string[];
+function makeMockSigner(addressValue: Address): { address: Address } {
+  return { address: addressValue };
+}
+
+function mockKitRpc(opts: {
+  keys: (string | null)[];
   preBalances: number[];
   postBalances: number[];
   txSignature?: string;
-}) {
+}): Rpc<SolanaRpcApi> {
   const tx = {
     meta: {
       err: null,
-      preBalances: opts.preBalances,
-      postBalances: opts.postBalances,
+      preBalances: opts.preBalances.map((value) => BigInt(value)),
+      postBalances: opts.postBalances.map((value) => BigInt(value)),
     },
     transaction: {
-      message: {
-        getAccountKeys: () => ({
-          length: opts.keys.length,
-          get: (i: number) => (opts.keys[i] ? { toBase58: () => opts.keys[i] } : null),
-        }),
-      },
+      message: { accountKeys: opts.keys },
     },
   };
+  const wrap = <T>(value: T) => ({ send: vi.fn().mockResolvedValue(value) });
   return {
-    getTransaction: vi.fn().mockResolvedValue(tx),
+    getTransaction: vi.fn().mockReturnValue(wrap(tx)),
     getSignaturesForAddress: vi
       .fn()
-      .mockResolvedValue(opts.txSignature ? [{ signature: opts.txSignature, err: null }] : []),
-  };
+      .mockReturnValue(
+        wrap(opts.txSignature ? [{ signature: opts.txSignature as Signature, err: null }] : []),
+      ),
+  } as unknown as Rpc<SolanaRpcApi>;
 }
 
 // ===========================================================================
@@ -231,7 +254,7 @@ describe('E2E: Targeted job flow', () => {
     expect(receivedJob.id).toBe(jobId);
 
     // --- Provider step 5: submitPaymentRequiredFeedback ---
-    const paymentRequest = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE);
+    const paymentRequest = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
     const paymentRequestJson = JSON.stringify(paymentRequest);
     await providerMkt.submitPaymentRequiredFeedback(
       provider,
@@ -267,19 +290,21 @@ describe('E2E: Targeted job flow', () => {
     // --- Customer step 5: validatePaymentRequest ---
     const validationError = payment.validatePaymentRequest(
       feedbackResult.payReqJson,
+      CONFIG,
       PROVIDER_WALLET,
     );
     expect(validationError).toBeNull();
 
-    // --- Customer step 6: buildTransaction ---
+    // --- Customer step 6: build payment instructions (signing happens wallet-side) ---
     const parsedPayReq = JSON.parse(feedbackResult.payReqJson);
-    const tx = await payment.buildTransaction(CUSTOMER_WALLET, parsedPayReq);
-    expect(tx.instructions.length).toBe(2);
-    const fee = calculateProtocolFee(JOB_PRICE);
+    const customerSigner = makeMockSigner(CUSTOMER_WALLET);
+    const instructions = buildPaymentInstructions(parsedPayReq, customerSigner as never);
+    expect(instructions.length).toBe(2);
+    const fee = calculateProtocolFee(JOB_PRICE, PROTOCOL_FEE_BPS);
     const netAmount = JOB_PRICE - fee;
     expect(fee + netAmount).toBe(JOB_PRICE);
 
-    // --- Customer step 7: sign tx (mocked - SDK builds unsigned tx, signing is wallet-side) ---
+    // --- Customer step 7: sign tx (mocked - signing is wallet-side) ---
     const txSignature = 'mock_tx_sig_12345';
 
     // --- Customer step 8: submitPaymentConfirmation ---
@@ -296,14 +321,14 @@ describe('E2E: Targeted job flow', () => {
     expect(paymentCompletedFeedback!.tags.find((t) => t[0] === 'tx')?.[1]).toBe(txSignature);
 
     // --- Provider step 7: verifyPayment ---
-    const conn = mockSolanaConnection({
+    const rpc = mockKitRpc({
       keys: [CUSTOMER_WALLET, PROVIDER_WALLET, parsedPayReq.reference, PROTOCOL_TREASURY],
       preBalances: [1_000_000_000, 0, 0, 0],
       postBalances: [1_000_000_000 - JOB_PRICE, netAmount, 0, fee],
       txSignature,
     });
-    const verifyResult = await payment.verifyPayment(conn, parsedPayReq, {
-      txSignature,
+    const verifyResult = await payment.verifyPayment(rpc, parsedPayReq, CONFIG, {
+      txSignature: txSignature as Signature,
       retries: 1,
       intervalMs: 10,
     });
@@ -343,7 +368,7 @@ describe('E2E: Broadcast job flow', () => {
     const customer = ElisymIdentity.generate();
     const provider1 = ElisymIdentity.generate();
     const provider2 = ElisymIdentity.generate();
-    const provider1Wallet = Keypair.generate().publicKey.toBase58();
+    const provider1Wallet = makeAddress();
     const BROADCAST_PRICE = 50_000_000;
 
     const customerMkt = new MarketplaceService(relay as any);
@@ -368,7 +393,7 @@ describe('E2E: Broadcast job flow', () => {
     expect(allJobs[0]!.content).toBe('Summarize the news today');
 
     // --- Step 3: Provider1 responds with payment-required ---
-    const payReq = payment.createPaymentRequest(provider1Wallet, BROADCAST_PRICE);
+    const payReq = payment.createPaymentRequest(provider1Wallet, BROADCAST_PRICE, CONFIG);
     await provider1Mkt.submitPaymentRequiredFeedback(
       provider1,
       jobEvent,
@@ -398,13 +423,14 @@ describe('E2E: Broadcast job flow', () => {
     expect(feedback.senderPubkey).not.toBe(provider2.publicKey);
 
     // Customer validates payment request from provider1
-    const valErr = payment.validatePaymentRequest(feedback.payReqJson, provider1Wallet);
+    const valErr = payment.validatePaymentRequest(feedback.payReqJson, CONFIG, provider1Wallet);
     expect(valErr).toBeNull();
 
-    // Customer builds transaction
+    // Customer builds payment instructions (signing happens wallet-side)
     const parsedPayReq = JSON.parse(feedback.payReqJson);
-    const tx = await payment.buildTransaction(CUSTOMER_WALLET, parsedPayReq);
-    expect(tx.instructions.length).toBe(2);
+    const customerSigner = makeMockSigner(CUSTOMER_WALLET);
+    const broadcastInstructions = buildPaymentInstructions(parsedPayReq, customerSigner as never);
+    expect(broadcastInstructions.length).toBe(2);
 
     // Customer sends payment-completed
     const txSig = 'broadcast_tx_sig';
@@ -461,13 +487,13 @@ describe('E2E: Error flows', () => {
 
   it('detects fee hijack in payment request', () => {
     const payment = new SolanaPaymentStrategy();
-    const hackerWallet = Keypair.generate().publicKey.toBase58();
+    const hackerWallet = makeAddress();
 
-    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE);
+    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
     // Attacker tampers with fee address
     request.fee_address = hackerWallet;
 
-    const error = payment.validatePaymentRequest(JSON.stringify(request));
+    const error = payment.validatePaymentRequest(JSON.stringify(request), CONFIG);
     expect(error).not.toBeNull();
     expect(error!.code).toBe('fee_address_mismatch');
     expect(error!.message).toContain('redirect');
@@ -475,22 +501,22 @@ describe('E2E: Error flows', () => {
 
   it('rejects expired payment request', () => {
     const payment = new SolanaPaymentStrategy();
-    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE);
+    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
     // Tamper: set created_at to 2 hours ago
     request.created_at = Math.floor(Date.now() / 1000) - 7200;
 
-    const error = payment.validatePaymentRequest(JSON.stringify(request));
+    const error = payment.validatePaymentRequest(JSON.stringify(request), CONFIG);
     expect(error).not.toBeNull();
     expect(error!.code).toBe('expired');
   });
 
   it('detects fee amount tampering', () => {
     const payment = new SolanaPaymentStrategy();
-    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE);
+    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
     // Attacker sets fee to 0 to steal the protocol fee
     request.fee_amount = 0;
 
-    const error = payment.validatePaymentRequest(JSON.stringify(request));
+    const error = payment.validatePaymentRequest(JSON.stringify(request), CONFIG);
     expect(error).not.toBeNull();
     // Either missing_fee or invalid_fee_params depending on fee_address presence
     expect(['missing_fee', 'invalid_fee_params']).toContain(error!.code);
@@ -645,24 +671,19 @@ describe('E2E: Error flows', () => {
 
   it('payment verification rejects transaction with wrong reference key (replay)', async () => {
     const payment = new SolanaPaymentStrategy();
-    const payReq = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE);
-    const fee = calculateProtocolFee(JOB_PRICE);
+    const payReq = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
+    const fee = calculateProtocolFee(JOB_PRICE, PROTOCOL_FEE_BPS);
     const net = JOB_PRICE - fee;
 
-    const conn = mockSolanaConnection({
-      keys: [
-        CUSTOMER_WALLET,
-        PROVIDER_WALLET,
-        Keypair.generate().publicKey.toBase58(),
-        PROTOCOL_TREASURY,
-      ],
+    const rpc = mockKitRpc({
+      keys: [CUSTOMER_WALLET, PROVIDER_WALLET, makeAddress(), PROTOCOL_TREASURY],
       preBalances: [1_000_000_000, 0, 0, 0],
       postBalances: [1_000_000_000 - JOB_PRICE, net, 0, fee],
       txSignature: 'replay_sig',
     });
 
-    const result = await payment.verifyPayment(conn, payReq, {
-      txSignature: 'replay_sig',
+    const result = await payment.verifyPayment(rpc, payReq, CONFIG, {
+      txSignature: 'replay_sig' as Signature,
       retries: 1,
       intervalMs: 10,
     });

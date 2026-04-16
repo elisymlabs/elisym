@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js-light';
-import { PROTOCOL_FEE_BPS } from '../constants';
+
+const BPS_DENOMINATOR = 10_000;
 
 /** Assert that a value is a non-negative integer (lamports). */
 export function assertLamports(value: number, field: string): void {
@@ -9,20 +10,26 @@ export function assertLamports(value: number, field: string): void {
 }
 
 /**
- * Calculate protocol fee using Decimal basis-point math (no floats).
- * Returns ceil(amount * PROTOCOL_FEE_BPS / 10000).
- * Safe for amounts up to Number.MAX_SAFE_INTEGER - Decimal handles intermediate values.
+ * Calculate the protocol fee using basis-point math (no floats).
+ * Returns ceil(amount * feeBps / 10000).
+ *
+ * The caller passes the current fee (in basis points). Phase 2 of the
+ * Solana Kit migration removes the implicit dependency on PROTOCOL_FEE_BPS
+ * so callers can supply on-chain or test values.
  */
-export function calculateProtocolFee(amount: number): number {
+export function calculateProtocolFee(amount: number, feeBps: number): number {
+  if (!Number.isInteger(feeBps) || feeBps < 0) {
+    throw new Error(`Invalid feeBps: ${feeBps}. Must be a non-negative integer.`);
+  }
   if (!Number.isInteger(amount) || amount < 0) {
     throw new Error(`Invalid fee amount: ${amount}. Must be a non-negative integer.`);
   }
-  if (amount === 0) {
+  if (amount === 0 || feeBps === 0) {
     return 0;
   }
   return new Decimal(amount)
-    .mul(PROTOCOL_FEE_BPS)
-    .div(10000)
+    .mul(feeBps)
+    .div(BPS_DENOMINATOR)
     .toDecimalPlaces(0, Decimal.ROUND_CEIL)
     .toNumber();
 }

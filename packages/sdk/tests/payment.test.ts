@@ -1,121 +1,156 @@
-import { Keypair, PublicKey } from '@solana/web3.js';
-import { describe, it, expect } from 'vitest';
+import { getTransferSolInstructionDataDecoder } from '@solana-program/system';
+import {
+  type Address,
+  type Blockhash,
+  type Rpc,
+  type Signature,
+  type SolanaRpcApi,
+  getAddressDecoder,
+} from '@solana/kit';
+import { describe, expect, it, vi } from 'vitest';
 import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY } from '../src/constants';
 import { calculateProtocolFee } from '../src/payment/fee';
-import { SolanaPaymentStrategy } from '../src/payment/solana';
+import { buildPaymentInstructions, SolanaPaymentStrategy } from '../src/payment/solana';
+import type { ProtocolConfigInput } from '../src/payment/strategy';
+
+const RANDOM_ADDRESS_BYTES = 32;
+const ADDRESS_DECODER = getAddressDecoder();
+
+function makeAddress(): Address {
+  const bytes = new Uint8Array(RANDOM_ADDRESS_BYTES);
+  globalThis.crypto.getRandomValues(bytes);
+  return ADDRESS_DECODER.decode(bytes);
+}
+
+const CONFIG: ProtocolConfigInput = {
+  feeBps: PROTOCOL_FEE_BPS,
+  treasury: PROTOCOL_TREASURY,
+};
 
 const payment = new SolanaPaymentStrategy();
-const validAddress = Keypair.generate().publicKey.toBase58();
+const validAddress = makeAddress();
 
 describe('calculateProtocolFee', () => {
   it('returns 0 for zero amount', () => {
-    expect(calculateProtocolFee(0)).toBe(0);
+    expect(calculateProtocolFee(0, PROTOCOL_FEE_BPS)).toBe(0);
+  });
+
+  it('returns 0 when feeBps is zero', () => {
+    expect(calculateProtocolFee(1_000_000, 0)).toBe(0);
   });
 
   it('calculates 3% fee correctly (ceil)', () => {
     // 100_000_000 lamports (0.1 SOL) -> 3% = 3_000_000
-    expect(calculateProtocolFee(100_000_000)).toBe(3_000_000);
+    expect(calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS)).toBe(3_000_000);
   });
 
   it('rounds up (ceil) for non-divisible amounts', () => {
     // 1 lamport -> ceil(1 * 300 / 10000) = ceil(0.03) = 1
-    expect(calculateProtocolFee(1)).toBe(1);
+    expect(calculateProtocolFee(1, PROTOCOL_FEE_BPS)).toBe(1);
   });
 
   it('handles small amounts correctly', () => {
     // 10 lamports -> ceil(10 * 300 / 10000) = ceil(0.3) = 1
-    expect(calculateProtocolFee(10)).toBe(1);
+    expect(calculateProtocolFee(10, PROTOCOL_FEE_BPS)).toBe(1);
     // 100 lamports -> ceil(100 * 300 / 10000) = ceil(3) = 3
-    expect(calculateProtocolFee(100)).toBe(3);
+    expect(calculateProtocolFee(100, PROTOCOL_FEE_BPS)).toBe(3);
     // 333 lamports -> ceil(333 * 300 / 10000) = ceil(9.99) = 10
-    expect(calculateProtocolFee(333)).toBe(10);
+    expect(calculateProtocolFee(333, PROTOCOL_FEE_BPS)).toBe(10);
   });
 
   it('handles 1 SOL', () => {
     // 1_000_000_000 lamports -> 3% = 30_000_000
-    expect(calculateProtocolFee(1_000_000_000)).toBe(30_000_000);
+    expect(calculateProtocolFee(1_000_000_000, PROTOCOL_FEE_BPS)).toBe(30_000_000);
   });
 
   it('handles large amounts without overflow', () => {
     // 100 SOL = 100_000_000_000 lamports -> 3% = 3_000_000_000
-    expect(calculateProtocolFee(100_000_000_000)).toBe(3_000_000_000);
+    expect(calculateProtocolFee(100_000_000_000, PROTOCOL_FEE_BPS)).toBe(3_000_000_000);
   });
 
   it('throws on negative amount', () => {
-    expect(() => calculateProtocolFee(-1)).toThrow('non-negative');
-    expect(() => calculateProtocolFee(-100_000_000)).toThrow('non-negative');
+    expect(() => calculateProtocolFee(-1, PROTOCOL_FEE_BPS)).toThrow('non-negative');
+    expect(() => calculateProtocolFee(-100_000_000, PROTOCOL_FEE_BPS)).toThrow('non-negative');
+  });
+
+  it('throws on negative feeBps', () => {
+    expect(() => calculateProtocolFee(100, -1)).toThrow('feeBps');
   });
 
   it('matches basis points formula: ceil(amount * BPS / 10000)', () => {
     const amounts = [1, 33, 100, 999, 1337, 50000, 140_000_000, 1_000_000_000];
     for (const amount of amounts) {
       const expected = Math.ceil((amount * PROTOCOL_FEE_BPS) / 10_000);
-      expect(calculateProtocolFee(amount)).toBe(expected);
+      expect(calculateProtocolFee(amount, PROTOCOL_FEE_BPS)).toBe(expected);
     }
   });
 });
 
 describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
-  const recipientAddr = Keypair.generate().publicKey.toBase58();
-  const referenceAddr = Keypair.generate().publicKey.toBase58();
-  const otherAddr = Keypair.generate().publicKey.toBase58();
+  const recipientAddr = makeAddress();
+  const referenceAddr = makeAddress();
+  const otherAddr = makeAddress();
   const validRequest = {
     recipient: recipientAddr,
     amount: 140_000_000,
     reference: referenceAddr,
     fee_address: PROTOCOL_TREASURY,
-    fee_amount: calculateProtocolFee(140_000_000),
+    fee_amount: calculateProtocolFee(140_000_000, PROTOCOL_FEE_BPS),
     created_at: Math.floor(Date.now() / 1000),
     expiry_secs: 3600,
   };
 
   it('accepts valid payment request', () => {
-    const result = payment.validatePaymentRequest(JSON.stringify(validRequest), recipientAddr);
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(validRequest),
+      CONFIG,
+      recipientAddr,
+    );
     expect(result).toBeNull();
   });
 
   it('rejects invalid JSON', () => {
-    const result = payment.validatePaymentRequest('not json');
+    const result = payment.validatePaymentRequest('not json', CONFIG);
     expect(result?.code).toBe('invalid_json');
     expect(result?.message).toContain('Invalid payment request JSON');
   });
 
   it('rejects recipient mismatch', () => {
-    const result = payment.validatePaymentRequest(JSON.stringify(validRequest), otherAddr);
+    const result = payment.validatePaymentRequest(JSON.stringify(validRequest), CONFIG, otherAddr);
     expect(result?.code).toBe('recipient_mismatch');
     expect(result?.message).toContain('Recipient mismatch');
   });
 
   it('rejects wrong fee address', () => {
     const badRequest = { ...validRequest, fee_address: otherAddr };
-    const result = payment.validatePaymentRequest(JSON.stringify(badRequest));
+    const result = payment.validatePaymentRequest(JSON.stringify(badRequest), CONFIG);
     expect(result?.code).toBe('fee_address_mismatch');
     expect(result?.message).toContain('Fee address mismatch');
   });
 
   it('rejects wrong fee amount', () => {
     const badRequest = { ...validRequest, fee_amount: 1 };
-    const result = payment.validatePaymentRequest(JSON.stringify(badRequest));
+    const result = payment.validatePaymentRequest(JSON.stringify(badRequest), CONFIG);
     expect(result?.code).toBe('fee_amount_mismatch');
     expect(result?.message).toContain('Fee amount mismatch');
   });
 
   it('rejects missing fee', () => {
     const { fee_address: _a, fee_amount: _b, ...noFee } = validRequest;
-    const result = payment.validatePaymentRequest(JSON.stringify(noFee));
+    const result = payment.validatePaymentRequest(JSON.stringify(noFee), CONFIG);
     expect(result?.code).toBe('missing_fee');
     expect(result?.message).toContain('missing protocol fee');
   });
 
   it('accepts without expected recipient', () => {
-    const result = payment.validatePaymentRequest(JSON.stringify(validRequest));
+    const result = payment.validatePaymentRequest(JSON.stringify(validRequest), CONFIG);
     expect(result).toBeNull();
   });
 });
 
 describe('SolanaPaymentStrategy.createPaymentRequest', () => {
   it('creates a payment request with correct fee', () => {
-    const pr = payment.createPaymentRequest(validAddress, 100_000_000);
+    const pr = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG);
     expect(pr.recipient).toBe(validAddress);
     expect(pr.amount).toBe(100_000_000);
     expect(pr.fee_address).toBe(PROTOCOL_TREASURY);
@@ -125,111 +160,250 @@ describe('SolanaPaymentStrategy.createPaymentRequest', () => {
     expect(pr.expiry_secs).toBe(600);
   });
 
+  it('respects custom expirySecs option', () => {
+    const pr = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG, {
+      expirySecs: 120,
+    });
+    expect(pr.expiry_secs).toBe(120);
+  });
+
   it('rejects zero amount', () => {
-    expect(() => payment.createPaymentRequest(validAddress, 0)).toThrow('Invalid payment amount');
+    expect(() => payment.createPaymentRequest(validAddress, 0, CONFIG)).toThrow(
+      'Invalid payment amount',
+    );
   });
 
   it('rejects negative amount', () => {
-    expect(() => payment.createPaymentRequest(validAddress, -100)).toThrow(
+    expect(() => payment.createPaymentRequest(validAddress, -100, CONFIG)).toThrow(
       'Invalid payment amount',
     );
   });
 
   it('rejects NaN', () => {
-    expect(() => payment.createPaymentRequest(validAddress, NaN)).toThrow('Invalid payment amount');
+    expect(() => payment.createPaymentRequest(validAddress, NaN, CONFIG)).toThrow(
+      'Invalid payment amount',
+    );
   });
 
   it('rejects Infinity', () => {
-    expect(() => payment.createPaymentRequest(validAddress, Infinity)).toThrow(
+    expect(() => payment.createPaymentRequest(validAddress, Infinity, CONFIG)).toThrow(
       'Invalid payment amount',
     );
+  });
+
+  it('rejects invalid treasury in config', () => {
+    expect(() =>
+      payment.createPaymentRequest(validAddress, 100_000_000, {
+        feeBps: PROTOCOL_FEE_BPS,
+        treasury: 'not-a-valid-address' as Address,
+      }),
+    ).toThrow('Invalid treasury address');
+  });
+});
+
+describe('buildPaymentInstructions', () => {
+  function makeSigner(addressValue: Address): { address: Address } {
+    return { address: addressValue };
+  }
+
+  it('produces 2 instructions when fee is present', () => {
+    const signer = makeSigner(makeAddress());
+    const instructions = buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: PROTOCOL_TREASURY,
+        fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      signer as never,
+    );
+    expect(instructions.length).toBe(2);
+  });
+
+  it('produces 1 instruction when fee is absent', () => {
+    const signer = makeSigner(makeAddress());
+    const instructions = buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      signer as never,
+    );
+    expect(instructions.length).toBe(1);
+  });
+
+  it('fee + providerAmount === totalAmount for various amounts', () => {
+    interface TransferIxLike {
+      data: Uint8Array;
+    }
+    const dataDecoder = getTransferSolInstructionDataDecoder();
+    const decodeAmount = (ix: TransferIxLike): bigint => dataDecoder.decode(ix.data).amount;
+    const signer = makeSigner(makeAddress());
+    const amounts = [10, 33, 100, 333, 999, 1337, 50_000, 140_000_000, 1_000_000_000];
+    for (const amount of amounts) {
+      const fee = calculateProtocolFee(amount, PROTOCOL_FEE_BPS);
+      const instructions = buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount,
+          reference: makeAddress(),
+          fee_address: PROTOCOL_TREASURY,
+          fee_amount: fee,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+        },
+        signer as never,
+      );
+      const provider = decodeAmount(instructions[0] as TransferIxLike);
+      const feeIx = instructions[1] as TransferIxLike | undefined;
+      const feeLamports = feeIx ? decodeAmount(feeIx) : 0n;
+      expect(Number(provider) + Number(feeLamports)).toBe(amount);
+    }
+  });
+
+  it('attaches reference as read-only non-signer account on provider transfer', () => {
+    interface IxLike {
+      accounts: ReadonlyArray<{ address: string; role: number }>;
+    }
+    const reference = makeAddress();
+    const signer = makeSigner(makeAddress());
+    const instructions = buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference,
+        fee_address: PROTOCOL_TREASURY,
+        fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      signer as never,
+    );
+    const providerIx = instructions[0] as IxLike;
+    const lastAccount = providerIx.accounts[providerIx.accounts.length - 1]!;
+    expect(lastAccount.address).toBe(reference);
+    // AccountRole.READONLY === 0
+    expect(lastAccount.role).toBe(0);
   });
 });
 
 describe('SolanaPaymentStrategy.buildTransaction', () => {
-  it('throws on negative provider amount (fee > amount)', async () => {
-    const { PublicKey } = require('@solana/web3.js');
-    await expect(
-      payment.buildTransaction(Keypair.generate().publicKey.toBase58(), {
-        recipient: Keypair.generate().publicKey.toBase58(),
-        amount: 100,
-        reference: Keypair.generate().publicKey.toBase58(),
-        fee_address: PROTOCOL_TREASURY,
-        fee_amount: 999,
-        created_at: Math.floor(Date.now() / 1000),
-        expiry_secs: 600,
+  function createMockRpc(): Rpc<SolanaRpcApi> {
+    return {
+      getLatestBlockhash: () => ({
+        send: () =>
+          Promise.resolve({
+            value: {
+              blockhash: 'GHtXQBsoZHVnNFa9YevAzFr17DJjgHXk3ycTKD5xD3Zi' as Blockhash,
+              lastValidBlockHeight: 1000n,
+            },
+          }),
       }),
+      getTransaction: vi.fn(),
+      getSignaturesForAddress: vi.fn(),
+    } as unknown as Rpc<SolanaRpcApi>;
+  }
+
+  function makeSigner(addressValue: Address): { address: Address; signMessage: () => never } {
+    return {
+      address: addressValue,
+      signMessage: () => {
+        throw new Error('not implemented');
+      },
+    };
+  }
+
+  it('throws on negative provider amount (fee > amount)', async () => {
+    const signer = makeSigner(makeAddress());
+    await expect(
+      payment.buildTransaction(
+        {
+          recipient: makeAddress(),
+          amount: 100,
+          reference: makeAddress(),
+          fee_address: PROTOCOL_TREASURY,
+          fee_amount: 999,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+        },
+        signer as never,
+        createMockRpc(),
+        CONFIG,
+      ),
     ).rejects.toThrow('non-positive provider amount');
   });
 
-  it('fee + providerAmount === totalAmount for various amounts', async () => {
-    // Skip amounts where fee >= amount (e.g. 1 lamport: fee=1, providerAmount=0)
-    const amounts = [10, 33, 100, 333, 999, 1337, 50_000, 140_000_000, 1_000_000_000];
-    for (const amount of amounts) {
-      const fee = calculateProtocolFee(amount);
-      const tx = await payment.buildTransaction(Keypair.generate().publicKey.toBase58(), {
-        recipient: Keypair.generate().publicKey.toBase58(),
-        amount,
-        reference: Keypair.generate().publicKey.toBase58(),
-        fee_address: PROTOCOL_TREASURY,
-        fee_amount: fee,
-        created_at: Math.floor(Date.now() / 1000),
-        expiry_secs: 600,
-      });
-      // Provider transfer is first instruction, fee transfer is second
-      const providerLamports =
-        (tx.instructions[0] as any).data.readBigUInt64LE?.(4) ??
-        Number((tx.instructions[0] as any).lamports);
-      const feeLamports = tx.instructions[1]
-        ? ((tx.instructions[1] as any).data.readBigUInt64LE?.(4) ??
-          Number((tx.instructions[1] as any).lamports))
-        : 0;
-      // Verify the invariant: fee + provider = total
-      expect(Number(providerLamports) + Number(feeLamports)).toBe(amount);
-    }
+  it('throws on fee_address not matching configured treasury', async () => {
+    const signer = makeSigner(makeAddress());
+    await expect(
+      payment.buildTransaction(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: makeAddress(),
+          fee_address: makeAddress(),
+          fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+        },
+        signer as never,
+        createMockRpc(),
+        CONFIG,
+      ),
+    ).rejects.toThrow('Invalid fee address');
+  });
+
+  it('throws on expired payment request', async () => {
+    const signer = makeSigner(makeAddress());
+    await expect(
+      payment.buildTransaction(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: makeAddress(),
+          fee_address: PROTOCOL_TREASURY,
+          fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
+          created_at: Math.floor(Date.now() / 1000) - 7200,
+          expiry_secs: 3600,
+        },
+        signer as never,
+        createMockRpc(),
+        CONFIG,
+      ),
+    ).rejects.toThrow('expired');
   });
 });
 
 describe('SolanaPaymentStrategy.validatePaymentRequest - expiry', () => {
   it('rejects expired payment request', () => {
     const expired = {
-      recipient: Keypair.generate().publicKey.toBase58(),
+      recipient: makeAddress(),
       amount: 100_000_000,
-      reference: Keypair.generate().publicKey.toBase58(),
+      reference: makeAddress(),
       fee_address: PROTOCOL_TREASURY,
-      fee_amount: calculateProtocolFee(100_000_000),
+      fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
       created_at: Math.floor(Date.now() / 1000) - 7200, // 2 hours ago
       expiry_secs: 3600, // 1 hour expiry
     };
-    const result = payment.validatePaymentRequest(JSON.stringify(expired));
+    const result = payment.validatePaymentRequest(JSON.stringify(expired), CONFIG);
     expect(result?.code).toBe('expired');
     expect(result?.message).toContain('expired');
-  });
-});
-
-describe('SolanaPaymentStrategy.buildTransaction - fee address', () => {
-  it('throws on fee_address not matching PROTOCOL_TREASURY', async () => {
-    await expect(
-      payment.buildTransaction(Keypair.generate().publicKey.toBase58(), {
-        recipient: Keypair.generate().publicKey.toBase58(),
-        amount: 100_000_000,
-        reference: Keypair.generate().publicKey.toBase58(),
-        fee_address: Keypair.generate().publicKey.toBase58(),
-        fee_amount: calculateProtocolFee(100_000_000),
-        created_at: Math.floor(Date.now() / 1000),
-        expiry_secs: 600,
-      }),
-    ).rejects.toThrow('Invalid fee address');
   });
 });
 
 // --- verifyPayment tests ---
 
 describe('SolanaPaymentStrategy.verifyPayment', () => {
-  const recipientAddr = Keypair.generate().publicKey.toBase58();
-  const referenceAddr = Keypair.generate().publicKey.toBase58();
+  const recipientAddr = makeAddress();
+  const referenceAddr = makeAddress();
   const amount = 100_000_000;
-  const feeAmount = calculateProtocolFee(amount);
+  const feeAmount = calculateProtocolFee(amount, PROTOCOL_FEE_BPS);
   const netAmount = amount - feeAmount;
 
   function makePR(overrides?: Record<string, unknown>) {
@@ -245,59 +419,60 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     };
   }
 
-  function makeKeys(...addrs: string[]) {
-    return {
-      length: addrs.length,
-      get(i: number) {
-        return addrs[i] ? { toBase58: () => addrs[i] } : null;
-      },
-    };
-  }
-
-  function makeTx(opts: { keys: string[]; pre: number[]; post: number[]; err?: unknown }) {
+  function makeTx(opts: { keys: (string | null)[]; pre: number[]; post: number[]; err?: unknown }) {
     return {
       meta: {
         err: opts.err ?? null,
-        preBalances: opts.pre,
-        postBalances: opts.post,
+        preBalances: opts.pre.map((value) => BigInt(value)),
+        postBalances: opts.post.map((value) => BigInt(value)),
       },
       transaction: {
-        message: { getAccountKeys: () => makeKeys(...opts.keys) },
+        message: {
+          accountKeys: opts.keys,
+        },
       },
     };
   }
 
-  function mockConn(
+  function createMockRpc(
     overrides: {
       getTransaction?: (...args: unknown[]) => unknown;
       getSignaturesForAddress?: (...args: unknown[]) => unknown;
     } = {},
-  ) {
+  ): Rpc<SolanaRpcApi> {
+    const wrap = <T>(value: T) => ({ send: () => Promise.resolve(value) });
+    const getTransactionImpl = overrides.getTransaction ?? (() => wrap<unknown>(null));
+    const getSignaturesForAddressImpl =
+      overrides.getSignaturesForAddress ?? (() => wrap<unknown[]>([]));
     return {
-      getTransaction: overrides.getTransaction ?? (() => Promise.resolve(null)),
-      getSignaturesForAddress: overrides.getSignaturesForAddress ?? (() => Promise.resolve([])),
-    };
+      getLatestBlockhash: () =>
+        wrap({ value: { blockhash: 'mock' as Blockhash, lastValidBlockHeight: 1n } }),
+      getTransaction: (...args: unknown[]) => getTransactionImpl(...args),
+      getSignaturesForAddress: (...args: unknown[]) => getSignaturesForAddressImpl(...args),
+    } as unknown as Rpc<SolanaRpcApi>;
   }
 
   const FAST = { retries: 1, intervalMs: 10 };
 
   describe('by signature', () => {
-    const payerAddr = Keypair.generate().publicKey.toBase58();
+    const payerAddr = makeAddress();
 
     it('verifies valid payment', async () => {
-      const conn = mockConn({
-        getTransaction: () =>
-          Promise.resolve(
-            makeTx({
-              keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
-              pre: [200_000_000, 0, 0, 0],
-              post: [200_000_000 - amount, netAmount, 0, feeAmount],
-            }),
-          ),
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), {
-        txSignature: 'validSig',
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'validSig' as Signature,
         ...FAST,
       });
       expect(result.verified).toBe(true);
@@ -305,20 +480,22 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     });
 
     it('rejects transaction without reference key (replay attack)', async () => {
-      const wrongRef = Keypair.generate().publicKey.toBase58();
-      const conn = mockConn({
-        getTransaction: () =>
-          Promise.resolve(
-            makeTx({
-              keys: [payerAddr, recipientAddr, wrongRef, PROTOCOL_TREASURY],
-              pre: [200_000_000, 0, 0, 0],
-              post: [200_000_000 - amount, netAmount, 0, feeAmount],
-            }),
-          ),
+      const wrongRef = makeAddress();
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, wrongRef, PROTOCOL_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), {
-        txSignature: 'replaySig',
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'replaySig' as Signature,
         ...FAST,
       });
       expect(result.verified).toBe(false);
@@ -326,20 +503,22 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     });
 
     it('rejects failed transaction', async () => {
-      const conn = mockConn({
-        getTransaction: () =>
-          Promise.resolve(
-            makeTx({
-              keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
-              pre: [0, 0, 0, 0],
-              post: [0, 0, 0, 0],
-              err: { InstructionError: [0, 'Custom'] },
-            }),
-          ),
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                pre: [0, 0, 0, 0],
+                post: [0, 0, 0, 0],
+                err: { InstructionError: [0, 'Custom'] },
+              }),
+            ),
+        }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), {
-        txSignature: 'failedSig',
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'failedSig' as Signature,
         ...FAST,
       });
       expect(result.verified).toBe(false);
@@ -347,19 +526,21 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     });
 
     it('rejects insufficient recipient amount', async () => {
-      const conn = mockConn({
-        getTransaction: () =>
-          Promise.resolve(
-            makeTx({
-              keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
-              pre: [200_000_000, 0, 0, 0],
-              post: [200_000_000, 1_000, 0, feeAmount],
-            }),
-          ),
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000, 1_000, 0, feeAmount],
+              }),
+            ),
+        }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), {
-        txSignature: 'lowSig',
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'lowSig' as Signature,
         ...FAST,
       });
       expect(result.verified).toBe(false);
@@ -367,19 +548,21 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     });
 
     it('rejects insufficient fee', async () => {
-      const conn = mockConn({
-        getTransaction: () =>
-          Promise.resolve(
-            makeTx({
-              keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
-              pre: [200_000_000, 0, 0, 0],
-              post: [200_000_000 - amount, netAmount, 0, 1],
-            }),
-          ),
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, 0, 1],
+              }),
+            ),
+        }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), {
-        txSignature: 'lowFeeSig',
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'lowFeeSig' as Signature,
         ...FAST,
       });
       expect(result.verified).toBe(false);
@@ -387,38 +570,21 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     });
 
     it('verifies correctly with sparse account keys (null key in middle)', async () => {
-      const conn = mockConn({
-        getTransaction: () =>
-          Promise.resolve({
-            meta: {
-              err: null,
-              // 5 balance entries: payer(0), null(1), recipient(2), reference(3), treasury(4)
-              preBalances: [200_000_000, 0, 0, 0, 0],
-              postBalances: [200_000_000 - amount, 0, netAmount, 0, feeAmount],
-            },
-            transaction: {
-              message: {
-                getAccountKeys: () => ({
-                  length: 5,
-                  get(i: number) {
-                    const addrs = [
-                      payerAddr,
-                      null,
-                      recipientAddr,
-                      referenceAddr,
-                      PROTOCOL_TREASURY,
-                    ];
-                    const a = addrs[i];
-                    return a ? { toBase58: () => a } : null;
-                  },
-                }),
-              },
-            },
-          }),
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, null, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                pre: [200_000_000, 0, 0, 0, 0],
+                post: [200_000_000 - amount, 0, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), {
-        txSignature: 'sparseSig',
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'sparseSig' as Signature,
         ...FAST,
       });
       expect(result.verified).toBe(true);
@@ -426,22 +592,24 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
 
     it('retries on pending transaction', async () => {
       let calls = 0;
-      const conn = mockConn({
-        getTransaction: () => {
-          calls++;
-          if (calls < 3) return Promise.resolve(null);
-          return Promise.resolve(
-            makeTx({
-              keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
-              pre: [200_000_000, 0, 0, 0],
-              post: [200_000_000 - amount, netAmount, 0, feeAmount],
-            }),
-          );
-        },
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () => {
+            calls++;
+            if (calls < 3) return Promise.resolve(null);
+            return Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, 0, feeAmount],
+              }),
+            );
+          },
+        }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), {
-        txSignature: 'pendingSig',
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'pendingSig' as Signature,
         retries: 5,
         intervalMs: 10,
       });
@@ -451,84 +619,105 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
   });
 
   describe('by reference', () => {
-    const payerAddr = Keypair.generate().publicKey.toBase58();
+    const payerAddr = makeAddress();
 
     it('verifies valid payment by reference', async () => {
-      const conn = mockConn({
-        getSignaturesForAddress: () => Promise.resolve([{ signature: 'refSig1', err: null }]),
-        getTransaction: () =>
-          Promise.resolve(
-            makeTx({
-              keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
-              pre: [200_000_000, 0, 0, 0],
-              post: [200_000_000 - amount, netAmount, 0, feeAmount],
-            }),
-          ),
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () => Promise.resolve([{ signature: 'refSig1' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), FAST);
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
       expect(result.verified).toBe(true);
       expect(result.txSignature).toBe('refSig1');
     });
 
     it('returns error when no matching signatures found', async () => {
-      const conn = mockConn({
-        getSignaturesForAddress: () => Promise.resolve([]),
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({ send: () => Promise.resolve([]) }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), FAST);
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
       expect(result.verified).toBe(false);
       expect(result.error).toContain('No matching transaction found');
     });
 
     it('skips errored signatures', async () => {
-      const conn = mockConn({
-        getSignaturesForAddress: () =>
-          Promise.resolve([{ signature: 'failSig', err: { InstructionError: 'x' } }]),
-        getTransaction: () => Promise.resolve(null),
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () =>
+            Promise.resolve([
+              { signature: 'failSig' as Signature, err: { InstructionError: 'x' } },
+            ]),
+        }),
+        getTransaction: () => ({ send: () => Promise.resolve(null) }),
       });
 
-      const result = await payment.verifyPayment(conn, makePR(), FAST);
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
       expect(result.verified).toBe(false);
     });
   });
 
   describe('input validation', () => {
-    it('rejects invalid connection', async () => {
-      const result = await payment.verifyPayment(null, makePR());
+    it('rejects invalid rpc', async () => {
+      const result = await payment.verifyPayment(
+        null as unknown as Rpc<SolanaRpcApi>,
+        makePR(),
+        CONFIG,
+      );
       expect(result.verified).toBe(false);
-      expect(result.error).toContain('Invalid connection');
+      expect(result.error).toContain('Invalid rpc');
     });
 
     it('rejects zero amount', async () => {
-      const result = await payment.verifyPayment(mockConn(), makePR({ amount: 0 }));
+      const result = await payment.verifyPayment(createMockRpc(), makePR({ amount: 0 }), CONFIG);
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid payment amount');
     });
 
     it('rejects negative amount', async () => {
-      const result = await payment.verifyPayment(mockConn(), makePR({ amount: -1 }));
+      const result = await payment.verifyPayment(createMockRpc(), makePR({ amount: -1 }), CONFIG);
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid payment amount');
     });
 
     it('rejects fee below required', async () => {
-      const result = await payment.verifyPayment(mockConn(), makePR({ fee_amount: 1 }));
+      const result = await payment.verifyPayment(
+        createMockRpc(),
+        makePR({ fee_amount: 1 }),
+        CONFIG,
+      );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Protocol fee');
     });
 
     it('rejects wrong fee address', async () => {
       const result = await payment.verifyPayment(
-        mockConn(),
-        makePR({ fee_address: Keypair.generate().publicKey.toBase58() }),
+        createMockRpc(),
+        makePR({ fee_address: makeAddress() }),
+        CONFIG,
       );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid fee address');
     });
 
     it('rejects fee exceeding amount', async () => {
-      const result = await payment.verifyPayment(mockConn(), makePR({ fee_amount: amount + 1 }));
+      const result = await payment.verifyPayment(
+        createMockRpc(),
+        makePR({ fee_amount: amount + 1 }),
+        CONFIG,
+      );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('exceeds or equals');
     });

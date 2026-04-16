@@ -19,9 +19,9 @@ export { MediaService } from './services/media';
 export { PingService } from './services/ping';
 
 // --- Payment ---
-export { SolanaPaymentStrategy } from './payment/solana';
+export { buildPaymentInstructions, SolanaPaymentStrategy } from './payment/solana';
 export { calculateProtocolFee, validateExpiry, assertExpiry, assertLamports } from './payment/fee';
-export type { PaymentStrategy } from './payment/strategy';
+export type { PaymentStrategy, ProtocolConfigInput } from './payment/strategy';
 
 // --- Primitives ---
 export { ElisymIdentity } from './primitives/identity';

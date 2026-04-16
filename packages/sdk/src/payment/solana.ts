@@ -1,57 +1,96 @@
-import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
-import { PROTOCOL_TREASURY, PROTOCOL_FEE_BPS, DEFAULTS, LIMITS } from '../constants';
+import { getTransferSolInstruction } from '@solana-program/system';
+import {
+  type Rpc,
+  type Signature,
+  type SolanaRpcApi,
+  type TransactionSigner,
+  AccountRole,
+  address,
+  appendTransactionMessageInstructions,
+  createTransactionMessage,
+  getAddressDecoder,
+  isAddress,
+  pipe,
+  setTransactionMessageFeePayerSigner,
+  setTransactionMessageLifetimeUsingBlockhash,
+  signTransactionMessageWithSigners,
+} from '@solana/kit';
+import { DEFAULTS, LIMITS } from '../constants';
 import type {
   PaymentRequestData,
-  VerifyResult,
-  VerifyOptions,
   PaymentValidationError,
+  VerifyOptions,
+  VerifyResult,
 } from '../types';
-import { calculateProtocolFee, validateExpiry, assertExpiry, assertLamports } from './fee';
-import type { PaymentStrategy } from './strategy';
+import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
+import type { PaymentStrategy, ProtocolConfigInput } from './strategy';
 
-function isValidSolanaAddress(address: string): boolean {
-  try {
-    void new PublicKey(address);
-    return true;
-  } catch {
-    return false;
+const REFERENCE_BYTE_LENGTH = 32;
+
+function isValidSolanaAddress(value: string): boolean {
+  return isAddress(value);
+}
+
+function generateReference(): string {
+  const bytes = new Uint8Array(REFERENCE_BYTE_LENGTH);
+  globalThis.crypto.getRandomValues(bytes);
+  return getAddressDecoder().decode(bytes);
+}
+
+function assertReference(reference: string): void {
+  if (!isValidSolanaAddress(reference)) {
+    throw new Error(`Invalid reference address: ${reference}`);
+  }
+}
+
+function assertExpirySecs(expirySecs: number): void {
+  if (!Number.isInteger(expirySecs) || expirySecs <= 0 || expirySecs > LIMITS.MAX_TIMEOUT_SECS) {
+    throw new Error(`Invalid expiry: ${expirySecs}. Must be integer 1-${LIMITS.MAX_TIMEOUT_SECS}.`);
+  }
+}
+
+function assertConfig(config: ProtocolConfigInput): void {
+  if (!Number.isInteger(config.feeBps) || config.feeBps < 0) {
+    throw new Error(`Invalid feeBps: ${config.feeBps}. Must be a non-negative integer.`);
+  }
+  if (typeof config.treasury !== 'string' || !isValidSolanaAddress(config.treasury)) {
+    throw new Error(`Invalid treasury address: ${String(config.treasury)}`);
   }
 }
 
 export class SolanaPaymentStrategy implements PaymentStrategy {
   readonly chain = 'solana';
 
-  calculateFee(amount: number): number {
-    return calculateProtocolFee(amount);
+  calculateFee(amount: number, config: ProtocolConfigInput): number {
+    assertConfig(config);
+    return calculateProtocolFee(amount, config.feeBps);
   }
 
   createPaymentRequest(
     recipientAddress: string,
     amount: number,
-    expirySecs: number = DEFAULTS.PAYMENT_EXPIRY_SECS,
+    config: ProtocolConfigInput,
+    options?: { expirySecs?: number },
   ): PaymentRequestData {
-    try {
-      void new PublicKey(recipientAddress);
-    } catch {
+    assertConfig(config);
+    if (!isValidSolanaAddress(recipientAddress)) {
       throw new Error(`Invalid Solana address: ${recipientAddress}`);
     }
     assertLamports(amount, 'payment amount');
     if (amount === 0) {
       throw new Error('Invalid payment amount: 0. Must be positive.');
     }
-    if (!Number.isInteger(expirySecs) || expirySecs <= 0 || expirySecs > LIMITS.MAX_TIMEOUT_SECS) {
-      throw new Error(
-        `Invalid expiry: ${expirySecs}. Must be integer 1-${LIMITS.MAX_TIMEOUT_SECS}.`,
-      );
-    }
-    const feeAmount = calculateProtocolFee(amount);
-    const reference = Keypair.generate().publicKey.toBase58();
+    const expirySecs = options?.expirySecs ?? DEFAULTS.PAYMENT_EXPIRY_SECS;
+    assertExpirySecs(expirySecs);
+
+    const feeAmount = calculateProtocolFee(amount, config.feeBps);
+    const reference = generateReference();
 
     return {
       recipient: recipientAddress,
       amount,
       reference,
-      fee_address: PROTOCOL_TREASURY,
+      fee_address: config.treasury,
       fee_amount: feeAmount,
       created_at: Math.floor(Date.now() / 1000),
       expiry_secs: expirySecs,
@@ -60,8 +99,10 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
 
   validatePaymentRequest(
     requestJson: string,
+    config: ProtocolConfigInput,
     expectedRecipient?: string,
   ): PaymentValidationError | null {
+    assertConfig(config);
     let data: PaymentRequestData;
     try {
       data = JSON.parse(requestJson);
@@ -111,19 +152,19 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       return { code, message: expiryError };
     }
 
-    const expectedFee = calculateProtocolFee(data.amount);
+    const expectedFee = calculateProtocolFee(data.amount, config.feeBps);
+    const treasury = config.treasury;
 
     const { fee_address, fee_amount } = data;
     const hasFeeAddress = typeof fee_address === 'string' && fee_address.length > 0;
     const hasFeeAmount = typeof fee_amount === 'number' && fee_amount > 0;
 
-    // Branch 1: fee present and valid - verify address and amount
     if (hasFeeAddress && hasFeeAmount) {
-      if (fee_address !== PROTOCOL_TREASURY) {
+      if (fee_address !== treasury) {
         return {
           code: 'fee_address_mismatch',
           message:
-            `Fee address mismatch: expected ${PROTOCOL_TREASURY}, got ${fee_address}. ` +
+            `Fee address mismatch: expected ${treasury}, got ${fee_address}. ` +
             `Provider may be attempting to redirect fees.`,
         };
       }
@@ -132,41 +173,45 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
           code: 'fee_amount_mismatch',
           message:
             `Fee amount mismatch: expected ${expectedFee} lamports ` +
-            `(${PROTOCOL_FEE_BPS}bps of ${data.amount}), got ${fee_amount}. ` +
+            `(${config.feeBps}bps of ${data.amount}), got ${fee_amount}. ` +
             `Provider may be tampering with fee.`,
         };
       }
       return null;
     }
 
-    // Branch 2: fee entirely absent - reject
     if (!hasFeeAddress && (fee_amount === null || fee_amount === undefined || fee_amount === 0)) {
       return {
         code: 'missing_fee',
         message:
-          `Payment request missing protocol fee (${PROTOCOL_FEE_BPS}bps). ` +
-          `Expected fee: ${expectedFee} lamports to ${PROTOCOL_TREASURY}.`,
+          `Payment request missing protocol fee (${config.feeBps}bps). ` +
+          `Expected fee: ${expectedFee} lamports to ${treasury}.`,
       };
     }
 
-    // Branch 3: partial fee params (one present, other missing/zero) - reject
     return {
       code: 'invalid_fee_params',
       message:
         `Invalid fee params in payment request. ` +
-        `Expected fee: ${expectedFee} lamports to ${PROTOCOL_TREASURY}.`,
+        `Expected fee: ${expectedFee} lamports to ${treasury}.`,
     };
   }
 
   /**
-   * Build an unsigned transaction from a payment request.
-   * The caller must set `recentBlockhash` and `feePayer` on the
-   * returned Transaction before signing and sending.
+   * Build, sign, and return a transaction for the supplied payment request.
+   * The caller is responsible for sending it (e.g. via `rpc.sendTransaction`).
+   *
+   * The provider transfer instruction includes the payment reference as a
+   * read-only, non-signer account so providers can detect the payment via
+   * `getSignaturesForAddress(reference)`.
    */
   async buildTransaction(
-    payerAddress: string,
     paymentRequest: PaymentRequestData,
-  ): Promise<Transaction> {
+    payerSigner: TransactionSigner,
+    rpc: Rpc<SolanaRpcApi>,
+    config: ProtocolConfigInput,
+  ): Promise<Readonly<unknown>> {
+    assertConfig(config);
     assertLamports(paymentRequest.amount, 'payment amount');
     if (paymentRequest.amount === 0) {
       throw new Error('Invalid payment amount: 0. Must be positive.');
@@ -180,74 +225,44 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
         `Invalid fee amount: ${paymentRequest.fee_amount}. Must be a non-negative integer (lamports).`,
       );
     }
+    assertReference(paymentRequest.reference);
     assertExpiry(paymentRequest.created_at, paymentRequest.expiry_secs);
 
-    if (paymentRequest.fee_address && paymentRequest.fee_address !== PROTOCOL_TREASURY) {
+    const treasury = config.treasury;
+    if (paymentRequest.fee_address && paymentRequest.fee_address !== treasury) {
       throw new Error(
-        `Invalid fee address: expected ${PROTOCOL_TREASURY}, got ${paymentRequest.fee_address}. ` +
+        `Invalid fee address: expected ${treasury}, got ${paymentRequest.fee_address}. ` +
           `Cannot build transaction with redirected fees.`,
       );
     }
 
-    const payerPubkey = new PublicKey(payerAddress);
-    const recipient = new PublicKey(paymentRequest.recipient);
-    const reference = new PublicKey(paymentRequest.reference);
-    const feeAddress = paymentRequest.fee_address
-      ? new PublicKey(paymentRequest.fee_address)
-      : null;
-    const feeAmount = paymentRequest.fee_amount ?? 0;
+    const instructions = buildPaymentInstructions(paymentRequest, payerSigner);
 
-    // Both amount and feeAmount are validated integers (lamports), so subtraction is exact.
-    const providerAmount =
-      feeAddress && feeAmount > 0 ? paymentRequest.amount - feeAmount : paymentRequest.amount;
+    const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+    const message = pipe(
+      createTransactionMessage({ version: 0 }),
+      (m) => setTransactionMessageFeePayerSigner(payerSigner, m),
+      (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
+      (m) =>
+        appendTransactionMessageInstructions(
+          instructions as Parameters<typeof appendTransactionMessageInstructions>[0],
+          m,
+        ),
+    );
 
-    if (providerAmount <= 0) {
-      throw new Error(
-        `Fee amount (${feeAmount}) exceeds or equals total amount (${paymentRequest.amount}). Cannot create transaction with non-positive provider amount.`,
-      );
-    }
-
-    // Provider transfer with reference key (for payment detection)
-    const transferIx = SystemProgram.transfer({
-      fromPubkey: payerPubkey,
-      toPubkey: recipient,
-      lamports: providerAmount,
-    });
-    // Append reference as read-only non-signer so provider can detect via getSignaturesForAddress
-    transferIx.keys.push({
-      pubkey: reference,
-      isSigner: false,
-      isWritable: false,
-    });
-
-    const tx = new Transaction().add(transferIx);
-
-    // Fee transfer
-    if (feeAddress && feeAmount > 0) {
-      tx.add(
-        SystemProgram.transfer({
-          fromPubkey: payerPubkey,
-          toPubkey: feeAddress,
-          lamports: feeAmount,
-        }),
-      );
-    }
-
-    return tx;
+    return signTransactionMessageWithSigners(message);
   }
 
   async verifyPayment(
-    connection: unknown,
+    rpc: Rpc<SolanaRpcApi>,
     paymentRequest: PaymentRequestData,
+    config: ProtocolConfigInput,
     options?: VerifyOptions,
   ): Promise<VerifyResult> {
-    if (
-      !connection ||
-      typeof (connection as Record<string, unknown>).getTransaction !== 'function'
-    ) {
-      return { verified: false, error: 'Invalid connection: expected Solana Connection instance' };
+    assertConfig(config);
+    if (!rpc || typeof (rpc as { getTransaction?: unknown }).getTransaction !== 'function') {
+      return { verified: false, error: 'Invalid rpc: expected Solana Kit Rpc instance' };
     }
-    const conn = connection as Connection;
 
     if (!paymentRequest.reference || !paymentRequest.recipient) {
       return { verified: false, error: 'Missing required fields in payment request' };
@@ -258,9 +273,6 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
         error: `Invalid payment amount: ${paymentRequest.amount}. Must be a positive integer.`,
       };
     }
-
-    // No expiry check here - verification confirms on-chain payment regardless of timing.
-    // Expiry is enforced before payment in validatePaymentRequest() and buildTransaction().
 
     if (
       paymentRequest.fee_amount !== null &&
@@ -273,27 +285,26 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       };
     }
 
-    const expectedFee = calculateProtocolFee(paymentRequest.amount);
+    const expectedFee = calculateProtocolFee(paymentRequest.amount, config.feeBps);
     const feeAmount = paymentRequest.fee_amount ?? 0;
+    const treasury = config.treasury;
 
     if (expectedFee > 0) {
       if (feeAmount < expectedFee) {
         return {
           verified: false,
-          error: `Protocol fee ${feeAmount} below required ${expectedFee} (${PROTOCOL_FEE_BPS}bps of ${paymentRequest.amount})`,
+          error: `Protocol fee ${feeAmount} below required ${expectedFee} (${config.feeBps}bps of ${paymentRequest.amount})`,
         };
       }
       if (!paymentRequest.fee_address) {
         return { verified: false, error: 'Missing fee address in payment request' };
       }
-      if (paymentRequest.fee_address !== PROTOCOL_TREASURY) {
+      if (paymentRequest.fee_address !== treasury) {
         return { verified: false, error: `Invalid fee address: ${paymentRequest.fee_address}` };
       }
     }
 
-    // Both amount and feeAmount are validated integers (lamports), so subtraction is exact.
     const expectedNet = paymentRequest.amount - feeAmount;
-
     if (expectedNet <= 0) {
       return {
         verified: false,
@@ -301,13 +312,13 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       };
     }
 
-    // If tx signature provided, verify by signature
     if (options?.txSignature) {
       return this._verifyBySignature(
-        conn,
-        options.txSignature,
+        rpc,
+        options.txSignature as Signature,
         paymentRequest.reference,
         paymentRequest.recipient,
+        treasury,
         expectedNet,
         feeAmount,
         options?.retries ?? DEFAULTS.VERIFY_RETRIES,
@@ -315,11 +326,11 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       );
     }
 
-    // Otherwise verify by reference key
     return this._verifyByReference(
-      conn,
+      rpc,
       paymentRequest.reference,
       paymentRequest.recipient,
+      treasury,
       expectedNet,
       feeAmount,
       options?.retries ?? DEFAULTS.VERIFY_BY_REF_RETRIES,
@@ -328,10 +339,11 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
   }
 
   private async _verifyBySignature(
-    connection: Connection,
-    txSignature: string,
+    rpc: Rpc<SolanaRpcApi>,
+    txSignature: Signature,
     referenceKey: string,
     recipientAddress: string,
+    treasuryAddress: string,
     expectedNet: number,
     expectedFee: number,
     retries: number,
@@ -340,14 +352,17 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     let lastError: unknown;
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
-        const tx = await connection.getTransaction(txSignature, {
-          maxSupportedTransactionVersion: 0,
-          commitment: 'confirmed',
-        });
+        const tx = await rpc
+          .getTransaction(txSignature, {
+            commitment: 'confirmed',
+            encoding: 'json',
+            maxSupportedTransactionVersion: 0,
+          })
+          .send();
 
         if (!tx?.meta || tx.meta.err) {
           if (attempt < retries - 1) {
-            await new Promise((r) => setTimeout(r, intervalMs));
+            await waitMs(intervalMs);
             continue;
           }
           return {
@@ -356,58 +371,24 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
           };
         }
 
-        const accountKeys = tx.transaction.message.getAccountKeys();
-        const balanceCount = tx.meta.preBalances.length;
-        // Map address -> original index to preserve balance array correspondence.
-        const keyToIdx = new Map<string, number>();
-        for (let i = 0; i < Math.min(accountKeys.length, balanceCount); i++) {
-          const key = accountKeys.get(i);
-          if (key) {
-            keyToIdx.set(key.toBase58(), i);
-          }
+        const verdict = checkBalanceDiff({
+          accountKeys: tx.transaction.message.accountKeys as readonly string[],
+          preBalances: tx.meta.preBalances as readonly bigint[],
+          postBalances: tx.meta.postBalances as readonly bigint[],
+          referenceKey,
+          recipientAddress,
+          treasuryAddress,
+          expectedNet,
+          expectedFee,
+        });
+        if (verdict.ok) {
+          return { verified: true, txSignature: txSignature as string };
         }
-
-        if (!keyToIdx.has(referenceKey)) {
-          return {
-            verified: false,
-            error: 'Reference key not found in transaction - possible replay',
-          };
-        }
-
-        const recipientIdx = keyToIdx.get(recipientAddress);
-        if (recipientIdx === undefined) {
-          return { verified: false, error: 'Recipient not found in transaction' };
-        }
-
-        const recipientDelta =
-          (tx.meta.postBalances[recipientIdx] ?? 0) - (tx.meta.preBalances[recipientIdx] ?? 0);
-        if (recipientDelta < expectedNet) {
-          return {
-            verified: false,
-            error: `Recipient received ${recipientDelta}, expected >= ${expectedNet}`,
-          };
-        }
-
-        if (expectedFee > 0) {
-          const treasuryIdx = keyToIdx.get(PROTOCOL_TREASURY);
-          if (treasuryIdx === undefined) {
-            return { verified: false, error: 'Treasury not found in transaction' };
-          }
-          const treasuryDelta =
-            (tx.meta.postBalances[treasuryIdx] ?? 0) - (tx.meta.preBalances[treasuryIdx] ?? 0);
-          if (treasuryDelta < expectedFee) {
-            return {
-              verified: false,
-              error: `Treasury received ${treasuryDelta}, expected >= ${expectedFee}`,
-            };
-          }
-        }
-
-        return { verified: true, txSignature };
+        return { verified: false, error: verdict.reason };
       } catch (err) {
         lastError = err;
         if (attempt < retries - 1) {
-          await new Promise((r) => setTimeout(r, intervalMs));
+          await waitMs(intervalMs);
         }
       }
     }
@@ -418,37 +399,42 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
   }
 
   private async _verifyByReference(
-    connection: Connection,
+    rpc: Rpc<SolanaRpcApi>,
     referenceKey: string,
     recipientAddress: string,
+    treasuryAddress: string,
     expectedNet: number,
     expectedFee: number,
     retries: number,
     intervalMs: number,
   ): Promise<VerifyResult> {
-    const reference = new PublicKey(referenceKey);
     let lastError: unknown;
+    const reference = address(referenceKey);
 
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
-        const signatures = await connection.getSignaturesForAddress(reference, {
-          limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
-        });
-        const validSigs = signatures.filter((s) => !s.err);
+        const signatures = await rpc
+          .getSignaturesForAddress(reference, {
+            limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
+          })
+          .send();
+        const validSigs = signatures.filter((entry) => !entry.err);
 
         if (validSigs.length > 0) {
+          const fetchTransaction = (sig: Signature) =>
+            rpc
+              .getTransaction(sig, {
+                commitment: 'confirmed',
+                encoding: 'json',
+                maxSupportedTransactionVersion: 0,
+              })
+              .send();
+          type TransactionResult = Awaited<ReturnType<typeof fetchTransaction>>;
           const txResults = await Promise.all(
-            validSigs.map((s) =>
-              connection
-                .getTransaction(s.signature, {
-                  maxSupportedTransactionVersion: 0,
-                  commitment: 'confirmed',
-                })
-                .then((tx) => ({ sig: s.signature, tx }))
-                .catch(() => ({
-                  sig: s.signature,
-                  tx: null as Awaited<ReturnType<Connection['getTransaction']>>,
-                })),
+            validSigs.map((entry) =>
+              fetchTransaction(entry.signature)
+                .then((tx) => ({ sig: entry.signature, tx }))
+                .catch(() => ({ sig: entry.signature, tx: null as TransactionResult })),
             ),
           );
 
@@ -456,42 +442,19 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
             if (!tx?.meta || tx.meta.err) {
               continue;
             }
-
-            const accountKeys = tx.transaction.message.getAccountKeys();
-            const balanceCount = tx.meta.preBalances.length;
-            // Map address -> original index to preserve balance array correspondence.
-            const keyToIdx = new Map<string, number>();
-            for (let i = 0; i < Math.min(accountKeys.length, balanceCount); i++) {
-              const key = accountKeys.get(i);
-              if (key) {
-                keyToIdx.set(key.toBase58(), i);
-              }
+            const verdict = checkBalanceDiff({
+              accountKeys: tx.transaction.message.accountKeys as readonly string[],
+              preBalances: tx.meta.preBalances as readonly bigint[],
+              postBalances: tx.meta.postBalances as readonly bigint[],
+              referenceKey,
+              recipientAddress,
+              treasuryAddress,
+              expectedNet,
+              expectedFee,
+            });
+            if (verdict.ok) {
+              return { verified: true, txSignature: sig as string };
             }
-
-            const recipientIdx = keyToIdx.get(recipientAddress);
-            if (recipientIdx === undefined) {
-              continue;
-            }
-
-            const recipientDelta =
-              (tx.meta.postBalances[recipientIdx] ?? 0) - (tx.meta.preBalances[recipientIdx] ?? 0);
-            if (recipientDelta < expectedNet) {
-              continue;
-            }
-
-            if (expectedFee > 0) {
-              const treasuryIdx = keyToIdx.get(PROTOCOL_TREASURY);
-              if (treasuryIdx === undefined) {
-                continue;
-              }
-              const treasuryDelta =
-                (tx.meta.postBalances[treasuryIdx] ?? 0) - (tx.meta.preBalances[treasuryIdx] ?? 0);
-              if (treasuryDelta < expectedFee) {
-                continue;
-              }
-            }
-
-            return { verified: true, txSignature: sig };
           }
         }
       } catch (err) {
@@ -499,7 +462,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       }
 
       if (attempt < retries - 1) {
-        await new Promise((r) => setTimeout(r, intervalMs));
+        await waitMs(intervalMs);
       }
     }
     return {
@@ -509,4 +472,125 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
         : 'No matching transaction found for reference key',
     };
   }
+}
+
+interface BalanceDiffInput {
+  accountKeys: readonly string[];
+  preBalances: readonly bigint[];
+  postBalances: readonly bigint[];
+  referenceKey: string;
+  recipientAddress: string;
+  treasuryAddress: string;
+  expectedNet: number;
+  expectedFee: number;
+}
+
+type BalanceVerdict = { ok: true } | { ok: false; reason: string };
+
+function checkBalanceDiff(input: BalanceDiffInput): BalanceVerdict {
+  const balanceCount = input.preBalances.length;
+  const keyToIdx = new Map<string, number>();
+  for (let i = 0; i < Math.min(input.accountKeys.length, balanceCount); i++) {
+    const key = input.accountKeys[i];
+    if (key) {
+      keyToIdx.set(String(key), i);
+    }
+  }
+
+  if (!keyToIdx.has(input.referenceKey)) {
+    return { ok: false, reason: 'Reference key not found in transaction - possible replay' };
+  }
+  const recipientIdx = keyToIdx.get(input.recipientAddress);
+  if (recipientIdx === undefined) {
+    return { ok: false, reason: 'Recipient not found in transaction' };
+  }
+  const recipientDelta = bigIntDelta(
+    input.postBalances[recipientIdx],
+    input.preBalances[recipientIdx],
+  );
+  if (recipientDelta < BigInt(input.expectedNet)) {
+    return {
+      ok: false,
+      reason: `Recipient received ${recipientDelta.toString()}, expected >= ${input.expectedNet}`,
+    };
+  }
+
+  if (input.expectedFee > 0) {
+    const treasuryIdx = keyToIdx.get(input.treasuryAddress);
+    if (treasuryIdx === undefined) {
+      return { ok: false, reason: 'Treasury not found in transaction' };
+    }
+    const treasuryDelta = bigIntDelta(
+      input.postBalances[treasuryIdx],
+      input.preBalances[treasuryIdx],
+    );
+    if (treasuryDelta < BigInt(input.expectedFee)) {
+      return {
+        ok: false,
+        reason: `Treasury received ${treasuryDelta.toString()}, expected >= ${input.expectedFee}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function bigIntDelta(post: bigint | undefined, pre: bigint | undefined): bigint {
+  const postValue = post === undefined ? 0n : BigInt(post);
+  const preValue = pre === undefined ? 0n : BigInt(pre);
+  return postValue - preValue;
+}
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Build the System program transfer instructions for a payment request.
+ *
+ * Returns the provider-amount transfer (with the payment reference attached
+ * as a read-only, non-signer account) and, if present, the protocol-fee
+ * transfer. Exposed so callers and tests can inspect amounts before signing.
+ *
+ * Caller is responsible for validating `paymentRequest` upstream;
+ * `buildTransaction` already does that before invoking this helper.
+ */
+export function buildPaymentInstructions(
+  paymentRequest: PaymentRequestData,
+  payerSigner: TransactionSigner,
+): readonly unknown[] {
+  const recipient = address(paymentRequest.recipient);
+  const reference = address(paymentRequest.reference);
+  const feeAmount = paymentRequest.fee_amount ?? 0;
+  const providerAmount =
+    paymentRequest.fee_address && feeAmount > 0
+      ? paymentRequest.amount - feeAmount
+      : paymentRequest.amount;
+
+  if (providerAmount <= 0) {
+    throw new Error(
+      `Fee amount (${feeAmount}) exceeds or equals total amount (${paymentRequest.amount}). Cannot create transaction with non-positive provider amount.`,
+    );
+  }
+
+  const providerTransferIx = getTransferSolInstruction({
+    source: payerSigner,
+    destination: recipient,
+    amount: BigInt(providerAmount),
+  });
+  const providerTransferIxWithReference = {
+    ...providerTransferIx,
+    accounts: [...providerTransferIx.accounts, { address: reference, role: AccountRole.READONLY }],
+  };
+
+  const instructions: unknown[] = [providerTransferIxWithReference];
+  if (paymentRequest.fee_address && feeAmount > 0) {
+    instructions.push(
+      getTransferSolInstruction({
+        source: payerSigner,
+        destination: address(paymentRequest.fee_address),
+        amount: BigInt(feeAmount),
+      }),
+    );
+  }
+  return instructions;
 }

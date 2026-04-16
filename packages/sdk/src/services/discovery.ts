@@ -349,8 +349,8 @@ export class DiscoveryService {
       );
     }
     // Base58 charset + length check. Full validation (decode + 32 bytes) happens
-    // at payment time via PublicKey constructor - no @solana/web3.js import here
-    // to keep discovery browser-safe without Solana peer dep.
+    // at payment time via the @solana/kit `address()` helper - no Kit import here
+    // to keep discovery browser-safe without a Solana peer dep at this layer.
     if (
       card.payment.chain === 'solana' &&
       !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(card.payment.address)
