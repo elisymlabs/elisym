@@ -4,6 +4,7 @@ WORKDIR /app
 
 # Install root workspace files
 COPY package.json bun.lock turbo.json ./
+COPY packages/config-client/package.json packages/config-client/package.json
 COPY packages/sdk/package.json packages/sdk/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
 COPY packages/cli/package.json packages/cli/package.json
