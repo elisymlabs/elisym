@@ -5,7 +5,7 @@
     "packages/sdk",
     "packages/mcp",
     "packages/cli",
-    "packages/program-client"
+    "packages/config-client"
   ],
   "type": "module",
   "scripts": {
@@ -23,7 +23,7 @@
     "program:test": "cargo test --package elisym-config --test config -- --test-threads=1",
     "program:test:ts": "vitest run --config programs/elisym-config/vitest.config.ts",
     "program:deploy:devnet": "anchor deploy --provider.cluster devnet",
-    "program:idl:generate": "anchor build && cp target/idl/elisym_config.json packages/program-client/idl.json"
+    "program:idl:generate": "anchor build && cp target/idl/elisym_config.json packages/config-client/idl.json"
   },
   "devDependencies": {
     "cspell": "~9.0.0",

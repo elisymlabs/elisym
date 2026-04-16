@@ -15,7 +15,7 @@ const { fetchConfigMock } = vi.hoisted(() => ({
   fetchConfigMock: vi.fn(),
 }));
 
-vi.mock('@elisym/program-client', () => ({
+vi.mock('@elisym/config-client', () => ({
   deriveConfigAddress: vi.fn(async () => 'ConfigPda1111111111111111111111111111111111' as Address),
   fetchConfig: (...args: unknown[]) => fetchConfigMock(...args),
   CONFIG_SEED: 'config',

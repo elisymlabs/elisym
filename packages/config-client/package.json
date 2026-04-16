@@ -1,5 +1,5 @@
 {
-  "name": "@elisym/program-client",
+  "name": "@elisym/config-client",
   "version": "0.1.0",
   "private": true,
   "files": [

@@ -1,4 +1,4 @@
-import { deriveConfigAddress, fetchConfig } from '@elisym/program-client';
+import { deriveConfigAddress, fetchConfig } from '@elisym/config-client';
 import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
 import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY } from '../constants';
 
