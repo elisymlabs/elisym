@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SolanaPaymentStrategy, LIMITS } from '@elisym/sdk';
 
-/** Mirrors `@solana/web3.js`'s LAMPORTS_PER_SOL as a BigInt for integer math. */
+/** Standard LAMPORTS_PER_SOL as a BigInt for integer math. */
 const LAMPORTS_PER_SOL = 1_000_000_000n;
 /** Minimum reserve left in the wallet when withdrawing "all" to cover the tx fee. */
 const TX_FEE_RESERVE = 5_000n;

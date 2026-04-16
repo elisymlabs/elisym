@@ -1,13 +1,18 @@
-import { toDTag, DEFAULT_KIND_OFFSET, PROTOCOL_FEE_BPS, PROTOCOL_TREASURY } from '@elisym/sdk';
+import {
+  toDTag,
+  DEFAULT_KIND_OFFSET,
+  PROTOCOL_FEE_BPS,
+  PROTOCOL_TREASURY,
+  SolanaPaymentStrategy,
+} from '@elisym/sdk';
 import type { Agent as ProviderAgent, PaymentRequestData, ProtocolConfigInput } from '@elisym/sdk';
 import {
-  Connection,
-  Keypair,
-  PublicKey,
-  SystemProgram,
-  Transaction,
-  sendAndConfirmTransaction,
-} from '@solana/web3.js';
+  createKeyPairSignerFromBytes,
+  createSolanaRpc,
+  createSolanaRpcSubscriptions,
+  getSignatureFromTransaction,
+  sendAndConfirmTransactionFactory,
+} from '@solana/kit';
 import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
@@ -121,49 +126,12 @@ function providerSolanaAddress(provider: ProviderAgent, dTag?: string): string |
   return undefined;
 }
 
-/**
- * Build a @solana/web3.js Transaction from a PaymentRequestData.
- *
- * The SDK's buildTransaction now requires @solana/kit types (TransactionSigner, Rpc).
- * Until the MCP fully migrates to Kit (Phase 4), we replicate the transfer logic
- * here using web3.js primitives: provider transfer with reference key, plus optional
- * fee transfer to the protocol treasury.
- */
-function buildWeb3Transaction(payer: PublicKey, request: PaymentRequestData): Transaction {
-  const feeAmount = request.fee_amount ?? 0;
-  const providerAmount =
-    request.fee_address && feeAmount > 0 ? request.amount - feeAmount : request.amount;
-
-  if (providerAmount <= 0) {
-    throw new Error(
-      `Fee amount (${feeAmount}) exceeds or equals total amount (${request.amount}).`,
-    );
-  }
-
-  const providerIx = SystemProgram.transfer({
-    fromPubkey: payer,
-    toPubkey: new PublicKey(request.recipient),
-    lamports: providerAmount,
-  });
-  // Append the reference key so on-chain verification can find the tx.
-  providerIx.keys.push({
-    pubkey: new PublicKey(request.reference),
-    isSigner: false,
-    isWritable: false,
-  });
-
-  const tx = new Transaction().add(providerIx);
-  if (request.fee_address && feeAmount > 0) {
-    tx.add(
-      SystemProgram.transfer({
-        fromPubkey: payer,
-        toPubkey: new PublicKey(request.fee_address),
-        lamports: feeAmount,
-      }),
-    );
-  }
-  return tx;
+/** Derive WebSocket URL from HTTP RPC URL for subscriptions. */
+function wsUrlFor(httpUrl: string): string {
+  return httpUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 }
+
+const paymentStrategy = new SolanaPaymentStrategy();
 
 /**
  * Execute payment flow: validate fee + expected recipient, build + send Solana tx,
@@ -200,17 +168,25 @@ async function executePaymentFlow(
     throw new Error('Solana payments not configured for this agent.');
   }
 
-  const keypair = Keypair.fromSecretKey(agent.solanaKeypair.secretKey);
-  const connection = new Connection(rpcUrlFor(agent.network));
-  const tx = buildWeb3Transaction(keypair.publicKey, requestData);
-  tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-  tx.feePayer = keypair.publicKey;
+  const signer = await createKeyPairSignerFromBytes(agent.solanaKeypair.secretKey);
+  const httpUrl = rpcUrlFor(agent.network);
+  const rpc = createSolanaRpc(httpUrl);
 
-  // `confirmed` is sufficient for UX and avoids the 13s `finalized` wait.
-  const signature = await sendAndConfirmTransaction(connection, tx, [keypair], {
+  const signedTx = await paymentStrategy.buildTransaction(
+    requestData,
+    signer,
+    rpc,
+    FALLBACK_CONFIG,
+  );
+
+  const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
+  const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
+  await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
     commitment: 'confirmed',
-    preflightCommitment: 'confirmed',
   });
+  const signature = getSignatureFromTransaction(
+    signedTx as Parameters<typeof getSignatureFromTransaction>[0],
+  );
 
   // Nostr confirmation is best-effort. The Solana TX is already on-chain at this point;
   // throwing here would cause the caller to report "payment failed" even though funds

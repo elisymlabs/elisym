@@ -1,5 +1,9 @@
 import { ElisymClient, ElisymIdentity, RELAYS, validateAgentName } from '@elisym/sdk';
-import { Keypair } from '@solana/web3.js';
+import {
+  type KeyPairSigner,
+  createKeyPairSignerFromBytes,
+  generateKeyPairSigner,
+} from '@solana/kit';
 import bs58 from 'bs58';
 import { generateSecretKey, nip19 } from 'nostr-tools';
 import { z } from 'zod';
@@ -7,6 +11,26 @@ import { listAgentNames, loadAgentConfig, saveAgentConfig } from '../config.js';
 import type { AgentInstance, AgentSecurityFlags, SolanaNetwork } from '../context.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, errorResult, textResult } from './types.js';
+
+/**
+ * Extract the 64-byte secret key (32-byte private seed + 32-byte public key)
+ * from an extractable KeyPairSigner. This matches the format used by solana-keygen
+ * and createKeyPairSignerFromBytes.
+ */
+export async function exportKeyPairBytes(signer: KeyPairSigner): Promise<Uint8Array> {
+  const { privateKey, publicKey } = signer.keyPair;
+  const [pkcs8, rawPub] = await Promise.all([
+    crypto.subtle.exportKey('pkcs8', privateKey),
+    crypto.subtle.exportKey('raw', publicKey),
+  ]);
+  // PKCS#8 has a fixed 16-byte Ed25519 header; the raw 32-byte seed follows.
+  const privateBytes = new Uint8Array(pkcs8).slice(16);
+  const publicBytes = new Uint8Array(rawPub);
+  const bytes = new Uint8Array(64);
+  bytes.set(privateBytes, 0);
+  bytes.set(publicBytes, 32);
+  return bytes;
+}
 
 const CreateAgentSchema = z.object({
   name: z.string().min(1).max(64),
@@ -36,7 +60,7 @@ const StopAgentSchema = z.object({
 /**
  * Build an AgentInstance from a name and a decrypted config.
  */
-export function buildAgentInstance(
+export async function buildAgentInstance(
   name: string,
   config: {
     nostrSecretKey: string;
@@ -45,7 +69,7 @@ export function buildAgentInstance(
     network: SolanaNetwork;
     security?: AgentSecurityFlags;
   },
-): AgentInstance {
+): Promise<AgentInstance> {
   // validate the nip19 decode type instead of casting blindly.
   let identity: ElisymIdentity;
   if (config.nostrSecretKey.startsWith('nsec')) {
@@ -62,10 +86,11 @@ export function buildAgentInstance(
   let solanaKeypair: AgentInstance['solanaKeypair'];
   if (config.solanaSecretKey) {
     try {
-      const kp = Keypair.fromSecretKey(bs58.decode(config.solanaSecretKey));
+      const decoded = bs58.decode(config.solanaSecretKey);
+      const signer = await createKeyPairSignerFromBytes(decoded);
       solanaKeypair = {
-        publicKey: kp.publicKey.toBase58(),
-        secretKey: kp.secretKey,
+        publicKey: signer.address,
+        secretKey: decoded,
       };
     } catch {
       console.error(`[mcp:warn] Invalid Solana key for agent "${name}" - payments disabled`);
@@ -137,10 +162,11 @@ export const agentTools: ToolDefinition[] = [
 
       // Generate keys
       const nostrSecretKey = generateSecretKey();
-      const solanaKeypair = Keypair.generate();
+      const solanaSigner = await generateKeyPairSigner(true);
+      const solanaSecretBytes = await exportKeyPairBytes(solanaSigner);
 
       const nostrSecretHex = Buffer.from(nostrSecretKey).toString('hex');
-      const solanaSecretBase58 = bs58.encode(solanaKeypair.secretKey);
+      const solanaSecretBase58 = bs58.encode(solanaSecretBytes);
 
       await saveAgentConfig(input.name, {
         name: input.name,
@@ -148,14 +174,14 @@ export const agentTools: ToolDefinition[] = [
         relays: [...RELAYS],
         nostrSecretKey: nostrSecretHex,
         solanaSecretKey: solanaSecretBase58,
-        solanaAddress: solanaKeypair.publicKey.toBase58(),
+        solanaAddress: solanaSigner.address,
         network: input.network,
         security: { withdrawals_enabled: false, agent_switch_enabled: false },
         passphrase: input.passphrase,
       });
 
       // Build and register agent
-      const instance = buildAgentInstance(input.name, {
+      const instance = await buildAgentInstance(input.name, {
         nostrSecretKey: nostrSecretHex,
         solanaSecretKey: solanaSecretBase58,
         network: input.network,
@@ -166,7 +192,7 @@ export const agentTools: ToolDefinition[] = [
       return textResult(
         `Agent "${input.name}" created.\n` +
           `Nostr: ${instance.identity.npub}\n` +
-          `Solana: ${solanaKeypair.publicKey.toBase58()}\n` +
+          `Solana: ${solanaSigner.address}\n` +
           (input.activate ? 'Activated as current agent.' : ''),
       );
     },
@@ -230,7 +256,7 @@ export const agentTools: ToolDefinition[] = [
       // Load from disk
       try {
         const config = await loadAgentConfig(input.name);
-        const instance = buildAgentInstance(input.name, config);
+        const instance = await buildAgentInstance(input.name, config);
         ctx.register(instance, true);
 
         const npub = instance.identity.npub;

@@ -2,7 +2,7 @@
  * Wallet command - show balance.
  */
 import { formatSol } from '@elisym/sdk';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { address, createSolanaRpc } from '@solana/kit';
 import { loadConfig, listAgents } from '../config.js';
 import { getRpcUrl } from '../helpers.js';
 
@@ -36,12 +36,12 @@ export async function cmdWallet(name: string | undefined): Promise<void> {
 
   const network = solPayment.network ?? 'devnet';
   const rpcUrl = getRpcUrl(network);
-  const connection = new Connection(rpcUrl);
-  const pubkey = new PublicKey(solPayment.address);
-  const balance = await connection.getBalance(pubkey);
+  const rpc = createSolanaRpc(rpcUrl);
+  const walletAddress = address(solPayment.address);
+  const { value: balance } = await rpc.getBalance(walletAddress).send();
 
   console.log(`\n  Agent: ${name}`);
   console.log(`  Network: ${network}`);
   console.log(`  Address: ${solPayment.address}`);
-  console.log(`  Balance: ${formatSol(balance)} (${balance} lamports)\n`);
+  console.log(`  Balance: ${formatSol(Number(balance))} (${balance} lamports)\n`);
 }

@@ -1,14 +1,24 @@
 import { randomBytes } from 'node:crypto';
-import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY } from '@elisym/sdk';
-import type { PaymentRequestData, ProtocolConfigInput } from '@elisym/sdk';
+import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY, SolanaPaymentStrategy } from '@elisym/sdk';
+import type { ProtocolConfigInput } from '@elisym/sdk';
+import { getTransferSolInstruction } from '@solana-program/system';
 import {
-  Connection,
-  Keypair,
-  PublicKey,
-  SystemProgram,
-  Transaction,
-  sendAndConfirmTransaction,
-} from '@solana/web3.js';
+  type Rpc,
+  type SolanaRpcApi,
+  address,
+  appendTransactionMessageInstructions,
+  createKeyPairSignerFromBytes,
+  createSolanaRpc,
+  createSolanaRpcSubscriptions,
+  createTransactionMessage,
+  getSignatureFromTransaction,
+  isAddress,
+  pipe,
+  sendAndConfirmTransactionFactory,
+  setTransactionMessageFeePayerSigner,
+  setTransactionMessageLifetimeUsingBlockhash,
+  signTransactionMessageWithSigners,
+} from '@solana/kit';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
 import { AgentContext, explorerClusterFor, rpcUrlFor } from '../context.js';
@@ -38,7 +48,7 @@ const SendPaymentSchema = z.object({
 });
 
 const WithdrawSchema = z.object({
-  address: z.string().describe('Destination Solana address (base58). Must be a valid PublicKey.'),
+  address: z.string().describe('Destination Solana address (base58). Must be a valid address.'),
   amount_sol: z
     .string()
     .describe('Amount in SOL as a decimal string (e.g. "0.5"), or the literal "all".'),
@@ -48,14 +58,19 @@ const WithdrawSchema = z.object({
     .describe('Confirmation nonce from a previous preview call. Omit to request a preview.'),
 });
 
-/** Build a Keypair from the agent's stored secret key bytes. */
-function agentKeypair(secretKey: Uint8Array): Keypair {
-  return Keypair.fromSecretKey(secretKey);
+/** Build a Kit TransactionSigner from the agent's stored secret key bytes. */
+async function agentSigner(secretKey: Uint8Array) {
+  return createKeyPairSignerFromBytes(secretKey);
 }
 
 /** RPC endpoint for the agent's configured network. */
-function connectionFor(agent: AgentInstance): Connection {
-  return new Connection(rpcUrlFor(agent.network));
+function rpcFor(agent: AgentInstance): Rpc<SolanaRpcApi> {
+  return createSolanaRpc(rpcUrlFor(agent.network));
+}
+
+/** Derive WebSocket URL from HTTP RPC URL for subscriptions. */
+function wsUrlFor(httpUrl: string): string {
+  return httpUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 }
 
 /** Explorer tx URL for the agent's network. */
@@ -63,58 +78,14 @@ function explorerUrl(agent: AgentInstance, signature: string): string {
   return `https://explorer.solana.com/tx/${signature}?cluster=${explorerClusterFor(agent.network)}`;
 }
 
-/** Validate that a string parses as a Solana PublicKey. */
-function assertSolanaAddress(field: string, value: string): PublicKey {
-  try {
-    return new PublicKey(value);
-  } catch {
-    throw new Error(`${field} is not a valid Solana address (base58 PublicKey).`);
+/** Validate that a string parses as a Solana address. */
+function assertSolanaAddress(field: string, value: string): void {
+  if (!isAddress(value)) {
+    throw new Error(`${field} is not a valid Solana address.`);
   }
 }
 
-/**
- * Build a @solana/web3.js Transaction from a PaymentRequestData.
- *
- * The SDK's buildTransaction now requires @solana/kit types (TransactionSigner, Rpc).
- * Until the MCP fully migrates to Kit (Phase 4), we replicate the transfer logic
- * here using web3.js primitives: provider transfer with reference key, plus optional
- * fee transfer to the protocol treasury.
- */
-function buildWeb3Transaction(payer: PublicKey, request: PaymentRequestData): Transaction {
-  const feeAmount = request.fee_amount ?? 0;
-  const providerAmount =
-    request.fee_address && feeAmount > 0 ? request.amount - feeAmount : request.amount;
-
-  if (providerAmount <= 0) {
-    throw new Error(
-      `Fee amount (${feeAmount}) exceeds or equals total amount (${request.amount}).`,
-    );
-  }
-
-  const providerIx = SystemProgram.transfer({
-    fromPubkey: payer,
-    toPubkey: new PublicKey(request.recipient),
-    lamports: providerAmount,
-  });
-  // Append the reference key so on-chain verification can find the tx.
-  providerIx.keys.push({
-    pubkey: new PublicKey(request.reference),
-    isSigner: false,
-    isWritable: false,
-  });
-
-  const tx = new Transaction().add(providerIx);
-  if (request.fee_address && feeAmount > 0) {
-    tx.add(
-      SystemProgram.transfer({
-        fromPubkey: payer,
-        toPubkey: new PublicKey(request.fee_address),
-        lamports: feeAmount,
-      }),
-    );
-  }
-  return tx;
-}
+const paymentStrategy = new SolanaPaymentStrategy();
 
 export const walletTools: ToolDefinition[] = [
   defineTool({
@@ -129,9 +100,10 @@ export const walletTools: ToolDefinition[] = [
         return errorResult('Solana payments not configured for this agent.');
       }
 
-      const connection = connectionFor(agent);
-      const pubkey = new PublicKey(agent.solanaKeypair.publicKey);
-      const balance = await connection.getBalance(pubkey);
+      const rpc = rpcFor(agent);
+      const walletAddress = address(agent.solanaKeypair.publicKey);
+      const { value: balanceLamports } = await rpc.getBalance(walletAddress).send();
+      const balance = Number(balanceLamports);
 
       return textResult(
         `Address: ${agent.solanaKeypair.publicKey}\n` +
@@ -169,9 +141,9 @@ export const walletTools: ToolDefinition[] = [
       }
 
       // single JSON parse with clean error, then validation.
-      let requestData: PaymentRequestData;
+      let requestData: import('@elisym/sdk').PaymentRequestData;
       try {
-        requestData = JSON.parse(input.payment_request) as PaymentRequestData;
+        requestData = JSON.parse(input.payment_request) as import('@elisym/sdk').PaymentRequestData;
       } catch {
         return errorResult('Malformed payment_request: not valid JSON.');
       }
@@ -185,27 +157,36 @@ export const walletTools: ToolDefinition[] = [
         return errorResult(`Payment validation failed: ${validation.message}`);
       }
 
-      const keypair = agentKeypair(agent.solanaKeypair.secretKey);
-      const connection = connectionFor(agent);
+      const signer = await agentSigner(agent.solanaKeypair.secretKey);
+      const rpc = rpcFor(agent);
 
-      const tx = buildWeb3Transaction(keypair.publicKey, requestData);
+      const signedTx = await paymentStrategy.buildTransaction(
+        requestData,
+        signer,
+        rpc,
+        FALLBACK_CONFIG,
+      );
 
-      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-      tx.feePayer = keypair.publicKey;
-
-      // confirm at `confirmed` commitment (~400ms on mainnet vs ~13s for `finalized`).
-      const signature = await sendAndConfirmTransaction(connection, tx, [keypair], {
+      const httpUrl = rpcUrlFor(agent.network);
+      const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
+      const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
+      await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
         commitment: 'confirmed',
-        preflightCommitment: 'confirmed',
       });
-      const balance = await connection.getBalance(keypair.publicKey);
+      const signature = getSignatureFromTransaction(
+        signedTx as Parameters<typeof getSignatureFromTransaction>[0],
+      );
+
+      const { value: balanceLamports } = await rpc
+        .getBalance(address(agent.solanaKeypair.publicKey))
+        .send();
 
       return textResult(
         `Payment sent.\n` +
           `  Signature: ${signature}\n` +
           `  Amount: ${formatSol(BigInt(requestData.amount))}\n` +
           `  Recipient: ${requestData.recipient}\n` +
-          `  Remaining balance: ${formatSol(BigInt(balance))}\n` +
+          `  Remaining balance: ${formatSol(balanceLamports)}\n` +
           `  Explorer: ${explorerUrl(agent, signature)}`,
       );
     },
@@ -257,16 +238,18 @@ export const walletTools: ToolDefinition[] = [
       }
 
       // Validate destination up front.
-      let destination: PublicKey;
       try {
-        destination = assertSolanaAddress('address', input.address);
+        assertSolanaAddress('address', input.address);
       } catch (e) {
         return errorResult(e instanceof Error ? e.message : String(e));
       }
 
-      const keypair = agentKeypair(agent.solanaKeypair.secretKey);
-      const connection = connectionFor(agent);
-      const balance = BigInt(await connection.getBalance(keypair.publicKey));
+      const signer = await agentSigner(agent.solanaKeypair.secretKey);
+      const rpc = rpcFor(agent);
+      const { value: balanceLamports } = await rpc
+        .getBalance(address(agent.solanaKeypair.publicKey))
+        .send();
+      const balance = balanceLamports;
 
       // Resolve amount (with "all" special-cased) before either branch.
       const TX_FEE_RESERVE = 5_000n;
@@ -330,29 +313,42 @@ export const walletTools: ToolDefinition[] = [
         );
       }
 
-      const tx = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: keypair.publicKey,
-          toPubkey: destination,
-          lamports,
-        }),
-      );
-      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-      tx.feePayer = keypair.publicKey;
-
-      // confirm at `confirmed` rather than `finalized`.
-      const signature = await sendAndConfirmTransaction(connection, tx, [keypair], {
-        commitment: 'confirmed',
-        preflightCommitment: 'confirmed',
+      const destination = address(input.address);
+      const transferIx = getTransferSolInstruction({
+        source: signer,
+        destination,
+        amount: lamports,
       });
-      const newBalance = BigInt(await connection.getBalance(keypair.publicKey));
+
+      const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+      const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        (msg) => setTransactionMessageFeePayerSigner(signer, msg),
+        (msg) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, msg),
+        (msg) => appendTransactionMessageInstructions([transferIx], msg),
+      );
+      const signedTx = await signTransactionMessageWithSigners(message);
+
+      const httpUrl = rpcUrlFor(agent.network);
+      const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
+      const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
+      await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
+        commitment: 'confirmed',
+      });
+      const signature = getSignatureFromTransaction(
+        signedTx as Parameters<typeof getSignatureFromTransaction>[0],
+      );
+
+      const { value: newBalanceLamports } = await rpc
+        .getBalance(address(agent.solanaKeypair.publicKey))
+        .send();
 
       return textResult(
         `Withdrawal complete.\n` +
           `  Signature: ${signature}\n` +
           `  Amount: ${formatSol(lamports)}\n` +
           `  Destination: ${input.address}\n` +
-          `  New balance: ${formatSol(newBalance)}\n` +
+          `  New balance: ${formatSol(newBalanceLamports)}\n` +
           `  Explorer: ${explorerUrl(agent, signature)}`,
       );
     },

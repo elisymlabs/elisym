@@ -58,8 +58,8 @@
   "dependencies": {
     "@elisym/sdk": "~0.3.0",
     "@modelcontextprotocol/sdk": "~1.28.0",
+    "@solana-program/system": "~0.12.0",
     "@solana/kit": "~6.8.0",
-    "@solana/web3.js": "~1.98.0",
     "bs58": "~6.0.0",
     "commander": "~13.1.0",
     "inquirer": "~12.11.0",
