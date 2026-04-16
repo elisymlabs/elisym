@@ -19,8 +19,8 @@ describe('tool registry', () => {
     expect(unique.size).toBe(names.length);
   });
 
-  it('registers exactly 17 tools (messaging tools removed)', () => {
-    expect(registeredTools).toHaveLength(17);
+  it('registers exactly 16 tools (ping_agent folded into search/pre-ping)', () => {
+    expect(registeredTools).toHaveLength(16);
   });
 
   it('every registered tool has a Zod schema and a handler', () => {

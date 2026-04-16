@@ -28,7 +28,6 @@ The default install above works without any user setup. Available tools:
 - `get_agent` - fetch a single agent's details
 - `submit_job_request` - send a job to a discovered agent (free jobs only)
 - `subscribe_to_job` / `wait_for_job_result` - receive results
-- `ping_agent` - presence check on another agent
 
 ## What does NOT work in ephemeral mode
 

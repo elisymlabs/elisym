@@ -1,9 +1,16 @@
-import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
 import { MAX_CAPABILITIES, formatSolShort } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
+
+// Agents whose last Nostr activity is older than this almost certainly won't
+// answer a ping - skip them before we spend relay bandwidth on a live probe.
+const LAST_SEEN_ONLINE_WINDOW_SECS = 10 * 60;
+
+// Per-candidate ping timeout. Runs in parallel across matches, so total search
+// cost stays bounded by this value plus the fetchAgents roundtrip.
+const SEARCH_PING_TIMEOUT_MS = 3000;
 
 const STOP_WORDS = new Set([
   'a',
@@ -145,13 +152,11 @@ const SearchAgentsSchema = z.object({
     .optional()
     .describe('Optional secondary scoring for re-ranking. Omit when you have precise tokens.'),
   max_price_lamports: z.number().int().optional(),
-  // rename in description so it's obvious we're using a heuristic freshness signal,
-  // not a live reachability probe.
-  recently_active_only: z
+  include_offline: z
     .boolean()
-    .default(true)
+    .default(false)
     .describe(
-      'If true, only return agents with job activity in the last hour. Not a liveness probe.',
+      'If true, skip the live online check and return agents regardless of reachability. Default: false - only currently-online agents are returned.',
     ),
 });
 
@@ -159,22 +164,14 @@ const ListCapabilitiesSchema = z.object({});
 
 const GetIdentitySchema = z.object({});
 
-const PingAgentSchema = z.object({
-  agent_npub: z.string(),
-  // single source of truth for the default.
-  timeout_secs: z.number().int().min(1).max(600).default(15),
-});
-
 export const discoveryTools: ToolDefinition[] = [
   defineTool({
     name: 'search_agents',
-    // previous description was ~90 tokens and was truncated by some MCP clients.
-    // Keep the operational rules short; schema `.describe()` fields carry the detail.
     description:
-      "Search AI agents. `capabilities` is a hard OR-filter of substring tokens from the user's request (never invent synonyms). `query` is optional re-ranking; omit if not needed.",
+      "Search AI agents currently online on elisym. `capabilities` is a hard OR-filter of substring tokens from the user's request (never invent synonyms). `query` is optional re-ranking; omit if not needed. Offline agents are excluded by default - pass include_offline=true only when debugging.",
     schema: SearchAgentsSchema,
     async handler(ctx, input) {
-      const { capabilities, query, max_price_lamports, recently_active_only } = input;
+      const { capabilities, query, max_price_lamports, include_offline } = input;
       if (capabilities.length > MAX_CAPABILITIES) {
         return errorResult(`Too many capabilities (max ${MAX_CAPABILITIES})`);
       }
@@ -194,13 +191,6 @@ export const discoveryTools: ToolDefinition[] = [
         ),
       );
 
-      // "recently active" means the agent had job activity within the last hour,
-      // not that it is currently reachable.
-      if (recently_active_only) {
-        const activeThreshold = Math.floor(Date.now() / 1000) - 60 * 60;
-        filtered = filtered.filter((a) => a.lastSeen >= activeThreshold);
-      }
-
       // Apply price filter
       if (max_price_lamports !== undefined) {
         filtered = filtered.filter((a) =>
@@ -208,6 +198,31 @@ export const discoveryTools: ToolDefinition[] = [
             (card) => !card.payment?.job_price || card.payment.job_price <= max_price_lamports,
           ),
         );
+      }
+
+      // Online gate: first a cheap lastSeen window, then a parallel live ping across
+      // the survivors. The 30s pong cache in PingService means a follow-up
+      // submit_and_pay_job / buy_capability on any returned agent re-uses this probe
+      // without another relay roundtrip.
+      if (!include_offline) {
+        const freshThreshold = Math.floor(Date.now() / 1000) - LAST_SEEN_ONLINE_WINDOW_SECS;
+        filtered = filtered.filter((a) => a.lastSeen >= freshThreshold);
+
+        if (filtered.length > 0) {
+          const probes = await Promise.allSettled(
+            filtered.map((candidate) =>
+              agent.client.ping.pingAgent(candidate.pubkey, SEARCH_PING_TIMEOUT_MS),
+            ),
+          );
+          const survivors: typeof filtered = [];
+          filtered.forEach((candidate, index) => {
+            const probe = probes[index];
+            if (probe?.status === 'fulfilled' && probe.value.online) {
+              survivors.push(candidate);
+            }
+          });
+          filtered = survivors;
+        }
       }
 
       // Score by query relevance (soft match - at least 1 word must hit)
@@ -248,9 +263,9 @@ export const discoveryTools: ToolDefinition[] = [
 
       if (filtered.length === 0) {
         return textResult(
-          recently_active_only
-            ? 'No recently-active agents found matching those capabilities. Try with recently_active_only=false.'
-            : 'No agents found matching those capabilities.',
+          include_offline
+            ? 'No agents found matching those capabilities.'
+            : 'No online agents found matching those capabilities. Retry shortly or pass include_offline=true to see unreachable matches.',
         );
       }
 
@@ -318,39 +333,6 @@ export const discoveryTools: ToolDefinition[] = [
           null,
           2,
         ),
-      );
-    },
-  }),
-
-  defineTool({
-    name: 'ping_agent',
-    description:
-      "Ping an agent to check if it's online. Sends an encrypted heartbeat and waits for a pong.",
-    schema: PingAgentSchema,
-    async handler(ctx, input) {
-      ctx.toolRateLimiter.check();
-      const { agent_npub, timeout_secs } = input;
-      const agent = ctx.active();
-
-      // verify decoded type is npub.
-      let pubkey: string;
-      try {
-        const decoded = nip19.decode(agent_npub);
-        if (decoded.type !== 'npub') {
-          return errorResult(`Expected npub, got ${decoded.type}`);
-        }
-        pubkey = decoded.data;
-      } catch {
-        return errorResult(`Invalid npub: ${agent_npub}`);
-      }
-
-      const timeoutMs = timeout_secs * 1000;
-      const result = await agent.client.ping.pingAgent(pubkey, timeoutMs);
-
-      return textResult(
-        result.online
-          ? `Agent ${agent_npub} is online.`
-          : `Agent ${agent_npub} did not respond within ${timeout_secs}s.`,
       );
     },
   }),

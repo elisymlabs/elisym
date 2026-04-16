@@ -21,13 +21,16 @@ function findTool(name: string) {
   return tool;
 }
 
-/** Build a stub `AgentInstance` whose client has mockable marketplace/discovery. */
+/** Build a stub `AgentInstance` whose client has mockable marketplace/discovery/ping. */
 function buildStubAgent(opts: {
   fetchAgents: ReturnType<typeof vi.fn>;
   submitJobRequest?: ReturnType<typeof vi.fn>;
   hasSolana?: boolean;
+  /** Provider ping result. Defaults to online=true so the pre-ping guard passes. */
+  pingAgent?: ReturnType<typeof vi.fn>;
 }): AgentInstance {
   const submitJobRequest = opts.submitJobRequest ?? vi.fn();
+  const pingAgent = opts.pingAgent ?? vi.fn(async () => ({ online: true, identity: null }));
   const identity = {
     publicKey: 'd'.repeat(64),
     npub: nip19.npubEncode('d'.repeat(64)),
@@ -39,6 +42,7 @@ function buildStubAgent(opts: {
       submitJobRequest,
       subscribeToJobUpdates: vi.fn(() => () => {}),
     },
+    ping: { pingAgent },
   };
   return {
     client: client as never,
@@ -63,6 +67,27 @@ function ctxWith(agent: AgentInstance): AgentContext {
 const VALID_PROVIDER_NPUB = nip19.npubEncode('a'.repeat(64));
 
 describe('submit_and_pay_job expected-recipient fail-fast', () => {
+  it('refuses to submit when the provider is offline (pre-ping fails)', async () => {
+    const fetchAgents = vi.fn(async () => []);
+    const submitJobRequest = vi.fn();
+    const pingAgent = vi.fn(async () => ({ online: false, identity: null }));
+    const agent = buildStubAgent({ fetchAgents, submitJobRequest, pingAgent });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('submit_and_pay_job');
+    const input = tool.schema.parse({
+      input: 'hello',
+      provider_npub: VALID_PROVIDER_NPUB,
+    });
+    const result = await tool.handler(ctx, input);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/is offline/);
+    // Offline short-circuit: never touch discovery and never publish a job.
+    expect(fetchAgents).not.toHaveBeenCalled();
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
   it('refuses to submit when provider is not in the discovery snapshot', async () => {
     const fetchAgents = vi.fn(async () => []);
     const submitJobRequest = vi.fn();
