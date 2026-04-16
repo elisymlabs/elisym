@@ -19,7 +19,7 @@
     "qa": "turbo run build && turbo run test && turbo run typecheck && bun run lint && oxfmt --check . && bun run spell",
     "clean": "turbo run clean",
     "program:build": "anchor build",
-    "program:test": "anchor test --skip-local-validator",
+    "program:test": "cargo test --package elisym-config --test config -- --test-threads=1",
     "program:test:ts": "vitest run --config programs/elisym-config/vitest.config.ts",
     "program:deploy:devnet": "anchor deploy --provider.cluster devnet",
     "program:idl:generate": "anchor build && cp target/idl/elisym_config.json packages/program-client/idl.json"
