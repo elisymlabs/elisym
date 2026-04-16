@@ -1,11 +1,5 @@
-import {
-  toDTag,
-  DEFAULT_KIND_OFFSET,
-  PROTOCOL_FEE_BPS,
-  PROTOCOL_TREASURY,
-  SolanaPaymentStrategy,
-} from '@elisym/sdk';
-import type { Agent as ProviderAgent, PaymentRequestData, ProtocolConfigInput } from '@elisym/sdk';
+import { toDTag, DEFAULT_KIND_OFFSET, SolanaPaymentStrategy } from '@elisym/sdk';
+import type { Agent as ProviderAgent, PaymentRequestData } from '@elisym/sdk';
 import {
   createKeyPairSignerFromBytes,
   createSolanaRpc,
@@ -16,7 +10,7 @@ import {
 import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
-import { explorerClusterFor, rpcUrlFor } from '../context.js';
+import { explorerClusterFor, fetchProtocolConfig, rpcUrlFor } from '../context.js';
 import {
   sanitizeUntrusted,
   sanitizeField,
@@ -36,11 +30,6 @@ import {
 } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
-
-const FALLBACK_CONFIG: ProtocolConfigInput = {
-  feeBps: PROTOCOL_FEE_BPS,
-  treasury: PROTOCOL_TREASURY,
-};
 
 const CreateJobSchema = z.object({
   input: z.string().describe('The job prompt/input sent to the provider.'),
@@ -152,12 +141,14 @@ async function executePaymentFlow(
     throw new Error('Provider sent a malformed payment_request (not valid JSON).');
   }
 
+  const protocolConfig = await fetchProtocolConfig(agent.network);
+
   // the expected recipient MUST match what the provider advertised in its card.
   // Passing `undefined` here would skip the check and let a compromised provider
   // redirect funds to an attacker address.
   const validation = payment().validatePaymentRequest(
     paymentRequest,
-    FALLBACK_CONFIG,
+    protocolConfig,
     expectedRecipient,
   );
   if (validation !== null) {
@@ -172,12 +163,7 @@ async function executePaymentFlow(
   const httpUrl = rpcUrlFor(agent.network);
   const rpc = createSolanaRpc(httpUrl);
 
-  const signedTx = await paymentStrategy.buildTransaction(
-    requestData,
-    signer,
-    rpc,
-    FALLBACK_CONFIG,
-  );
+  const signedTx = await paymentStrategy.buildTransaction(requestData, signer, rpc, protocolConfig);
 
   const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
   const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });

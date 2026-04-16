@@ -27,6 +27,16 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
       verifyPayment: vi.fn().mockImplementation(() => Promise.resolve(mockVerifyResult)),
     })),
     calculateProtocolFee: actual.calculateProtocolFee,
+    getProtocolConfig: vi.fn().mockResolvedValue({
+      feeBps: 300,
+      treasury: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+      admin: '11111111111111111111111111111111',
+      pendingAdmin: null,
+      paused: false,
+      version: 1,
+      source: 'onchain',
+    }),
+    getProtocolProgramId: vi.fn().mockReturnValue('BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE'),
   };
 });
 

@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY, SolanaPaymentStrategy } from '@elisym/sdk';
-import type { ProtocolConfigInput } from '@elisym/sdk';
+import { SolanaPaymentStrategy } from '@elisym/sdk';
 import { getTransferSolInstruction } from '@solana-program/system';
 import {
   type Rpc,
@@ -21,7 +20,7 @@ import {
 } from '@solana/kit';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
-import { AgentContext, explorerClusterFor, rpcUrlFor } from '../context.js';
+import { AgentContext, explorerClusterFor, fetchProtocolConfig, rpcUrlFor } from '../context.js';
 import {
   checkLen,
   formatSol,
@@ -32,11 +31,6 @@ import {
 } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
-
-const FALLBACK_CONFIG: ProtocolConfigInput = {
-  feeBps: PROTOCOL_FEE_BPS,
-  treasury: PROTOCOL_TREASURY,
-};
 
 const GetBalanceSchema = z.object({});
 
@@ -148,9 +142,11 @@ export const walletTools: ToolDefinition[] = [
         return errorResult('Malformed payment_request: not valid JSON.');
       }
 
+      const protocolConfig = await fetchProtocolConfig(agent.network);
+
       const validation = payment().validatePaymentRequest(
         input.payment_request,
-        FALLBACK_CONFIG,
+        protocolConfig,
         input.expected_solana_recipient,
       );
       if (validation !== null) {
@@ -164,7 +160,7 @@ export const walletTools: ToolDefinition[] = [
         requestData,
         signer,
         rpc,
-        FALLBACK_CONFIG,
+        protocolConfig,
       );
 
       const httpUrl = rpcUrlFor(agent.network);

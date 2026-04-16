@@ -1,11 +1,6 @@
 import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  clearProtocolConfigCache,
-  getProtocolConfig,
-  PROTOCOL_FEE_BPS,
-  PROTOCOL_TREASURY,
-} from '../src/index';
+import { clearProtocolConfigCache, getProtocolConfig } from '../src/index';
 
 const PROGRAM_ID = 'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE' as Address;
 const SAMPLE_ADMIN = '11111111111111111111111111111111' as Address;
@@ -74,14 +69,11 @@ describe('getProtocolConfig', () => {
     expect(fetchConfigMock).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to bundled constants when RPC throws and no cache', async () => {
+  it('throws when RPC fails and no cache exists', async () => {
     fetchConfigMock.mockRejectedValueOnce(new Error('rpc down'));
-    const config = await getProtocolConfig(makeRpc(), PROGRAM_ID);
-    expect(config.source).toBe('fallback');
-    expect(config.feeBps).toBe(PROTOCOL_FEE_BPS);
-    expect(config.treasury).toBe(PROTOCOL_TREASURY);
-    expect(config.admin).toBeNull();
-    expect(config.pendingAdmin).toBeNull();
+    await expect(getProtocolConfig(makeRpc(), PROGRAM_ID)).rejects.toThrow(
+      /Failed to fetch protocol config.*no cached value/,
+    );
   });
 
   it('returns stale cache when RPC fails on refresh', async () => {

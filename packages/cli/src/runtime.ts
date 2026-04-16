@@ -5,9 +5,9 @@
 import {
   SolanaPaymentStrategy,
   calculateProtocolFee,
+  getProtocolConfig,
+  getProtocolProgramId,
   LIMITS,
-  PROTOCOL_FEE_BPS,
-  PROTOCOL_TREASURY,
 } from '@elisym/sdk';
 import type { ProtocolConfigInput } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
@@ -18,10 +18,6 @@ import type { SkillRegistry, SkillContext } from './skill';
 import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 
 const payment = new SolanaPaymentStrategy();
-const FALLBACK_CONFIG: ProtocolConfigInput = {
-  feeBps: PROTOCOL_FEE_BPS,
-  treasury: PROTOCOL_TREASURY,
-};
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const TOTAL_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -91,6 +87,15 @@ export class AgentRuntime {
   ) {
     this.limit = pLimit(config.maxConcurrentJobs);
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
+  }
+
+  /** Fetch on-chain protocol config (fee, treasury). Always fetches fresh to avoid stale treasury. */
+  private async fetchProtocolConfig(): Promise<ProtocolConfigInput> {
+    const cluster = this.config.network === 'mainnet' ? 'mainnet' : 'devnet';
+    const programId = getProtocolProgramId(cluster as 'devnet' | 'mainnet');
+    const rpc = createSolanaRpc(getRpcUrl(this.config.network));
+    const config = await getProtocolConfig(rpc, programId, { forceRefresh: true });
+    return { feeBps: config.feeBps, treasury: config.treasury };
   }
 
   async run(): Promise<void> {
@@ -386,16 +391,18 @@ export class AgentRuntime {
       throw new Error('Solana address not configured');
     }
 
+    const protocolConfig = await this.fetchProtocolConfig();
+
     // Create payment request with protocol fee
     const request = payment.createPaymentRequest(
       this.config.solanaAddress,
       jobPrice,
-      FALLBACK_CONFIG,
+      protocolConfig,
       { expirySecs: this.config.paymentTimeoutSecs },
     );
     const requestJson = JSON.stringify(request);
 
-    const fee = calculateProtocolFee(jobPrice, FALLBACK_CONFIG.feeBps);
+    const fee = calculateProtocolFee(jobPrice, protocolConfig.feeBps);
     const netAmount = jobPrice - fee;
 
     log(`[${job.jobId.slice(0, 8)}] Payment required: ${jobPrice} lamports (fee: ${fee})`);
@@ -432,7 +439,7 @@ export class AgentRuntime {
       });
       try {
         result = await Promise.race([
-          payment.verifyPayment(rpc, request, FALLBACK_CONFIG),
+          payment.verifyPayment(rpc, request, protocolConfig),
           abortPromise,
         ]);
       } finally {
@@ -441,7 +448,7 @@ export class AgentRuntime {
         }
       }
     } else {
-      result = await payment.verifyPayment(rpc, request, FALLBACK_CONFIG);
+      result = await payment.verifyPayment(rpc, request, protocolConfig);
     }
 
     if (result.verified) {
@@ -613,6 +620,7 @@ export class AgentRuntime {
     try {
       const request = JSON.parse(entry.payment_request!);
       const rpc = createSolanaRpc(getRpcUrl(this.config.network));
+      const protocolConfig = await this.fetchProtocolConfig();
 
       let result: { verified: boolean };
       if (signal) {
@@ -631,7 +639,7 @@ export class AgentRuntime {
         });
         try {
           result = await Promise.race([
-            payment.verifyPayment(rpc, request, FALLBACK_CONFIG),
+            payment.verifyPayment(rpc, request, protocolConfig),
             abortPromise,
           ]);
         } finally {
@@ -640,11 +648,11 @@ export class AgentRuntime {
           }
         }
       } else {
-        result = await payment.verifyPayment(rpc, request, FALLBACK_CONFIG);
+        result = await payment.verifyPayment(rpc, request, protocolConfig);
       }
 
       if (result.verified) {
-        const fee = calculateProtocolFee(priceLamports, FALLBACK_CONFIG.feeBps);
+        const fee = calculateProtocolFee(priceLamports, protocolConfig.feeBps);
         const netAmount = priceLamports - fee;
         this.ledger.updatePayment(entry.job_id, netAmount, entry.payment_request);
         log(`[${entry.job_id.slice(0, 8)}] Recovery: payment re-verified (${netAmount} lamports)`);

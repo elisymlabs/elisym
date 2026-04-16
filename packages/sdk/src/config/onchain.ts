@@ -1,6 +1,5 @@
 import { deriveConfigAddress, fetchConfig } from '@elisym/config-client';
 import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
-import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY } from '../constants';
 
 const CACHE_TTL_MS = 60_000;
 
@@ -10,21 +9,19 @@ const CACHE_TTL_MS = 60_000;
  * `source` reflects how this snapshot was obtained:
  *   - `onchain`: fresh fetch via RPC.
  *   - `cache`: served from in-memory cache (still within TTL or stale-while-error).
- *   - `fallback`: RPC failed AND nothing was cached - bundled defaults are used.
  *
- * When `source === 'fallback'`, `admin` and `pendingAdmin` are `null` because
- * the on-chain admin is unknown without a successful RPC fetch. Callers MUST
- * NOT make admin-based decisions in that case.
+ * If RPC fails and no cached value exists, `getProtocolConfig` throws instead of
+ * returning stale hardcoded defaults - callers must handle the error explicitly.
  */
 export interface ProtocolConfig {
   programId: Address;
   feeBps: number;
   treasury: Address;
-  admin: Address | null;
+  admin: Address;
   pendingAdmin: Address | null;
   paused: boolean;
   version: number;
-  source: 'onchain' | 'cache' | 'fallback';
+  source: 'onchain' | 'cache';
 }
 
 interface CacheEntry {
@@ -47,9 +44,8 @@ export interface GetProtocolConfigOptions {
  * Fetch the protocol config from the on-chain `elisym-config` program.
  *
  * Caches per-program-id with a TTL (default 60s). On RPC error, returns the
- * last known good snapshot from cache; if nothing is cached, returns bundled
- * fallback constants and marks `source: 'fallback'` so callers can branch on
- * it (e.g. refuse admin operations, surface a warning).
+ * last known good snapshot from cache. If nothing is cached, throws - callers
+ * must handle the error (e.g. refuse the payment, show a warning).
  */
 export async function getProtocolConfig(
   rpc: Rpc<SolanaRpcApi>,
@@ -79,19 +75,14 @@ export async function getProtocolConfig(
     };
     cache.set(key, { config, expires: Date.now() + ttl });
     return config;
-  } catch {
+  } catch (error) {
     if (cached) {
       return { ...cached.config, source: 'cache' };
     }
-    return {
-      programId,
-      feeBps: PROTOCOL_FEE_BPS,
-      treasury: PROTOCOL_TREASURY,
-      admin: null,
-      pendingAdmin: null,
-      paused: false,
-      version: 1,
-      source: 'fallback',
-    };
+    throw new Error(
+      `Failed to fetch protocol config from on-chain program ${programId} and no cached value exists. ` +
+        `Ensure RPC is reachable and the program is initialized. ` +
+        `Cause: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }

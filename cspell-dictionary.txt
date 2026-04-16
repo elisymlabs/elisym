@@ -10,6 +10,7 @@ blockhash
 bundler
 cashu
 ciphertext
+codama
 cust
 clap
 crossterm
