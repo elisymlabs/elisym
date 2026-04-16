@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { ElisymIdentity, MediaService } from '@elisym/sdk';
 import { encryptSecret, isEncrypted } from '@elisym/sdk/node';
-import { PublicKey } from '@solana/web3.js';
+import { isAddress } from '@solana/kit';
 import { loadConfig, saveConfig, listAgents } from '../config.js';
 
 async function resolveImage(
@@ -131,12 +131,7 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
             if (!v) {
               return true;
             }
-            try {
-              const pk = new PublicKey(v);
-              return pk.toBase58().length > 0;
-            } catch {
-              return 'Invalid Solana address';
-            }
+            return isAddress(v) || 'Invalid Solana address';
           },
         },
         {

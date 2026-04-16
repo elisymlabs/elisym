@@ -1,25 +1,46 @@
+import type { Address, Rpc, SolanaRpcApi, TransactionSigner } from '@solana/kit';
 import type {
   PaymentRequestData,
-  VerifyResult,
-  VerifyOptions,
   PaymentValidationError,
+  VerifyOptions,
+  VerifyResult,
 } from '../types';
+
+/**
+ * Protocol fee + treasury inputs for building a payment request.
+ *
+ * In Phase 2 the SDK no longer reads PROTOCOL_FEE_BPS / PROTOCOL_TREASURY
+ * from constants. Callers supply this config so they can either pass
+ * the bundled fallbacks or, in Phase 3, values fetched from the on-chain
+ * elisym-config program.
+ */
+export interface ProtocolConfigInput {
+  /** Protocol fee in basis points (300 = 3%). Must be a non-negative integer. */
+  feeBps: number;
+  /** Solana address of the protocol treasury. */
+  treasury: Address;
+}
 
 /**
  * Pluggable payment strategy interface.
  * Implement this for each payment chain (Solana, Lightning, Cashu, EVM).
+ *
+ * The interface is intentionally generic about the on-chain transaction type
+ * (`unknown` for build/verify inputs) so future chains can plug in without
+ * pulling Solana types into shared code paths.
  */
 export interface PaymentStrategy {
   readonly chain: string;
 
   /** Calculate protocol fee using basis-point math. */
-  calculateFee(amount: number): number;
+  calculateFee(amount: number, config: ProtocolConfigInput): number;
 
   /** Create a payment request with auto-calculated protocol fee. */
   createPaymentRequest(
     recipientAddress: string,
     amount: number,
-    expirySecs?: number,
+    config: ProtocolConfigInput,
+    options?: { expirySecs?: number },
   ): PaymentRequestData;
 
   /**
@@ -28,23 +49,29 @@ export interface PaymentStrategy {
    */
   validatePaymentRequest(
     requestJson: string,
+    config: ProtocolConfigInput,
     expectedRecipient?: string,
   ): PaymentValidationError | null;
 
   /**
-   * Build an unsigned transaction from a payment request.
-   * Returns chain-specific transaction type. The caller is responsible for signing and sending.
-   * @example For Solana: `const tx = await strategy.buildTransaction(...) as Transaction;`
+   * Build and sign a transaction from a payment request using a TransactionSigner.
+   * Returns a chain-specific signed transaction value. The caller is responsible
+   * for sending it (e.g. via `rpc.sendTransaction(...).send()`).
    */
-  buildTransaction(payerAddress: string, paymentRequest: PaymentRequestData): Promise<unknown>;
+  buildTransaction(
+    paymentRequest: PaymentRequestData,
+    payerSigner: TransactionSigner,
+    rpc: Rpc<SolanaRpcApi>,
+    config: ProtocolConfigInput,
+  ): Promise<unknown>;
 
   /**
    * Verify a payment on-chain.
-   * @param connection Chain-specific connection (e.g. Solana `Connection`).
    */
   verifyPayment(
-    connection: unknown,
+    rpc: Rpc<SolanaRpcApi>,
     paymentRequest: PaymentRequestData,
+    config: ProtocolConfigInput,
     options?: VerifyOptions,
   ): Promise<VerifyResult>;
 }

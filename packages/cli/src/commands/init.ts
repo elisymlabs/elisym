@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { ElisymIdentity, MediaService, RELAYS } from '@elisym/sdk';
 import { encryptSecret } from '@elisym/sdk/node';
-import { PublicKey } from '@solana/web3.js';
+import { isAddress } from '@solana/kit';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { saveConfig, listAgents, validateAgentName, type AgentConfig } from '../config.js';
 
@@ -159,12 +159,7 @@ export async function cmdInit(): Promise<void> {
         if (!v) {
           return true;
         }
-        try {
-          const pk = new PublicKey(v);
-          return pk.toBase58().length > 0;
-        } catch {
-          return 'Invalid Solana address';
-        }
+        return isAddress(v) || 'Invalid Solana address';
       },
     },
   ]);

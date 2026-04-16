@@ -15,7 +15,7 @@ import {
   jobRequestKind,
   type CapabilityCard,
 } from '@elisym/sdk';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { address, createSolanaRpc } from '@solana/kit';
 import { loadConfig, listAgents } from '../config.js';
 import {
   getRpcUrl,
@@ -74,9 +74,10 @@ export async function cmdStart(name: string | undefined): Promise<void> {
   if (solanaAddress) {
     try {
       const rpcUrl = getRpcUrl(walletNetwork);
-      const connection = new Connection(rpcUrl, { disableRetryOnRateLimit: true });
-      const pubkey = new PublicKey(solanaAddress);
-      const balance = await connection.getBalance(pubkey);
+      const rpc = createSolanaRpc(rpcUrl);
+      const walletAddress = address(solanaAddress);
+      const { value: balanceLamports } = await rpc.getBalance(walletAddress).send();
+      const balance = Number(balanceLamports);
 
       console.log('  Wallet');
       console.log(`     Network  ${walletNetwork}`);

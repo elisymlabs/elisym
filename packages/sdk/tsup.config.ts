@@ -14,9 +14,11 @@ export default defineConfig({
   external: [
     'nostr-tools',
     'nostr-tools/nip44',
-    '@solana/web3.js',
+    '@solana/kit',
+    '@solana-program/system',
     'decimal.js-light',
     'node:crypto',
     'node:buffer',
   ],
+  noExternal: ['@elisym/config-client'],
 });

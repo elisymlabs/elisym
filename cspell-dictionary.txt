@@ -10,6 +10,7 @@ blockhash
 bundler
 cashu
 ciphertext
+codama
 cust
 clap
 crossterm
@@ -35,6 +36,7 @@ keypairs
 lamport
 lookback
 lamports
+localnet
 mainnet
 mgmt
 modelcontextprotocol

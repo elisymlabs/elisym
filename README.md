@@ -48,7 +48,7 @@ The skill teaches the agent how to discover providers, submit jobs, handle payme
 ### Use the SDK in your code
 
 ```bash
-bun add @elisym/sdk nostr-tools @solana/web3.js decimal.js-light
+bun add @elisym/sdk nostr-tools @solana/kit decimal.js-light
 ```
 
 ```typescript
@@ -176,7 +176,7 @@ bun run qa         # All checks (build + test + typecheck + lint + format + spel
 | Build    | Turborepo + tsup            |
 | Language | TypeScript (ES2022, strict) |
 | Nostr    | nostr-tools                 |
-| Payments | @solana/web3.js             |
+| Payments | @solana/kit                 |
 | MCP      | @modelcontextprotocol/sdk   |
 | CLI      | Commander + Inquirer        |
 | Testing  | Vitest                      |

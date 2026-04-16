@@ -1,10 +1,16 @@
-import { toDTag, DEFAULT_KIND_OFFSET } from '@elisym/sdk';
+import { toDTag, DEFAULT_KIND_OFFSET, SolanaPaymentStrategy } from '@elisym/sdk';
 import type { Agent as ProviderAgent, PaymentRequestData } from '@elisym/sdk';
-import { Connection, Keypair, Transaction, sendAndConfirmTransaction } from '@solana/web3.js';
+import {
+  createKeyPairSignerFromBytes,
+  createSolanaRpc,
+  createSolanaRpcSubscriptions,
+  getSignatureFromTransaction,
+  sendAndConfirmTransactionFactory,
+} from '@solana/kit';
 import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
-import { explorerClusterFor, rpcUrlFor } from '../context.js';
+import { explorerClusterFor, fetchProtocolConfig, rpcUrlFor } from '../context.js';
 import {
   sanitizeUntrusted,
   sanitizeField,
@@ -109,6 +115,13 @@ function providerSolanaAddress(provider: ProviderAgent, dTag?: string): string |
   return undefined;
 }
 
+/** Derive WebSocket URL from HTTP RPC URL for subscriptions. */
+function wsUrlFor(httpUrl: string): string {
+  return httpUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+}
+
+const paymentStrategy = new SolanaPaymentStrategy();
+
 /**
  * Execute payment flow: validate fee + expected recipient, build + send Solana tx,
  * confirm on Nostr. Shared by submit_and_pay_job and buy_capability.
@@ -128,10 +141,16 @@ async function executePaymentFlow(
     throw new Error('Provider sent a malformed payment_request (not valid JSON).');
   }
 
+  const protocolConfig = await fetchProtocolConfig(agent.network);
+
   // the expected recipient MUST match what the provider advertised in its card.
   // Passing `undefined` here would skip the check and let a compromised provider
   // redirect funds to an attacker address.
-  const validation = payment().validatePaymentRequest(paymentRequest, expectedRecipient);
+  const validation = payment().validatePaymentRequest(
+    paymentRequest,
+    protocolConfig,
+    expectedRecipient,
+  );
   if (validation !== null) {
     throw new Error(`Payment validation failed: ${validation.message}`);
   }
@@ -140,20 +159,20 @@ async function executePaymentFlow(
     throw new Error('Solana payments not configured for this agent.');
   }
 
-  const keypair = Keypair.fromSecretKey(agent.solanaKeypair.secretKey);
-  const connection = new Connection(rpcUrlFor(agent.network));
-  const tx = (await payment().buildTransaction(
-    keypair.publicKey.toBase58(),
-    requestData,
-  )) as Transaction;
-  tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-  tx.feePayer = keypair.publicKey;
+  const signer = await createKeyPairSignerFromBytes(agent.solanaKeypair.secretKey);
+  const httpUrl = rpcUrlFor(agent.network);
+  const rpc = createSolanaRpc(httpUrl);
 
-  // `confirmed` is sufficient for UX and avoids the 13s `finalized` wait.
-  const signature = await sendAndConfirmTransaction(connection, tx, [keypair], {
+  const signedTx = await paymentStrategy.buildTransaction(requestData, signer, rpc, protocolConfig);
+
+  const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
+  const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
+  await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
     commitment: 'confirmed',
-    preflightCommitment: 'confirmed',
   });
+  const signature = getSignatureFromTransaction(
+    signedTx as Parameters<typeof getSignatureFromTransaction>[0],
+  );
 
   // Nostr confirmation is best-effort. The Solana TX is already on-chain at this point;
   // throwing here would cause the caller to report "payment failed" even though funds

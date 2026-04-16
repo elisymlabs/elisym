@@ -10,7 +10,7 @@ import {
   ReadResourceRequestSchema,
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { address, createSolanaRpc } from '@solana/kit';
 import { ZodError } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AgentContext, rpcUrlFor } from './context.js';
@@ -200,8 +200,11 @@ export async function startServer(ctx: AgentContext): Promise<void> {
         throw new Error('Solana payments not configured');
       }
       // RPC URL derives from the agent's configured network.
-      const connection = new Connection(rpcUrlFor(agent.network));
-      const balance = await connection.getBalance(new PublicKey(agent.solanaKeypair.publicKey));
+      const rpc = createSolanaRpc(rpcUrlFor(agent.network));
+      const { value: balanceLamports } = await rpc
+        .getBalance(address(agent.solanaKeypair.publicKey))
+        .send();
+      const balance = Number(balanceLamports);
       return {
         contents: [
           {

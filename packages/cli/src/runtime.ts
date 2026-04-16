@@ -2,8 +2,15 @@
  * AgentRuntime - main job processing loop with concurrency, payment, and recovery.
  * Supports per-capability pricing: each capability can have a different price.
  */
-import { SolanaPaymentStrategy, calculateProtocolFee, LIMITS } from '@elisym/sdk';
-import { Connection } from '@solana/web3.js';
+import {
+  SolanaPaymentStrategy,
+  calculateProtocolFee,
+  getProtocolConfig,
+  getProtocolProgramId,
+  LIMITS,
+} from '@elisym/sdk';
+import type { ProtocolConfigInput } from '@elisym/sdk';
+import { createSolanaRpc } from '@solana/kit';
 import pLimit from 'p-limit';
 import { getRpcUrl } from './helpers.js';
 import { JobLedger } from './ledger.js';
@@ -80,6 +87,15 @@ export class AgentRuntime {
   ) {
     this.limit = pLimit(config.maxConcurrentJobs);
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
+  }
+
+  /** Fetch on-chain protocol config (fee, treasury). Always fetches fresh to avoid stale treasury. */
+  private async fetchProtocolConfig(): Promise<ProtocolConfigInput> {
+    const cluster = this.config.network === 'mainnet' ? 'mainnet' : 'devnet';
+    const programId = getProtocolProgramId(cluster as 'devnet' | 'mainnet');
+    const rpc = createSolanaRpc(getRpcUrl(this.config.network));
+    const config = await getProtocolConfig(rpc, programId, { forceRefresh: true });
+    return { feeBps: config.feeBps, treasury: config.treasury };
   }
 
   async run(): Promise<void> {
@@ -375,15 +391,18 @@ export class AgentRuntime {
       throw new Error('Solana address not configured');
     }
 
+    const protocolConfig = await this.fetchProtocolConfig();
+
     // Create payment request with protocol fee
     const request = payment.createPaymentRequest(
       this.config.solanaAddress,
       jobPrice,
-      this.config.paymentTimeoutSecs,
+      protocolConfig,
+      { expirySecs: this.config.paymentTimeoutSecs },
     );
     const requestJson = JSON.stringify(request);
 
-    const fee = calculateProtocolFee(jobPrice);
+    const fee = calculateProtocolFee(jobPrice, protocolConfig.feeBps);
     const netAmount = jobPrice - fee;
 
     log(`[${job.jobId.slice(0, 8)}] Payment required: ${jobPrice} lamports (fee: ${fee})`);
@@ -400,10 +419,7 @@ export class AgentRuntime {
     });
 
     // Verify payment on-chain (SDK defaults: 15 retries, 2s interval = 30s window)
-    // disableRetryOnRateLimit: prevent @solana/web3.js from doing 5 internal retries per attempt
-    const connection = new Connection(getRpcUrl(this.config.network), {
-      disableRetryOnRateLimit: true,
-    });
+    const rpc = createSolanaRpc(getRpcUrl(this.config.network));
 
     // Wrap with abort signal since SDK doesn't accept one natively
     let result: { verified: boolean };
@@ -422,14 +438,17 @@ export class AgentRuntime {
         signal.addEventListener('abort', abortHandler, { once: true });
       });
       try {
-        result = await Promise.race([payment.verifyPayment(connection, request), abortPromise]);
+        result = await Promise.race([
+          payment.verifyPayment(rpc, request, protocolConfig),
+          abortPromise,
+        ]);
       } finally {
         if (abortHandler) {
           signal.removeEventListener('abort', abortHandler);
         }
       }
     } else {
-      result = await payment.verifyPayment(connection, request);
+      result = await payment.verifyPayment(rpc, request, protocolConfig);
     }
 
     if (result.verified) {
@@ -600,9 +619,8 @@ export class AgentRuntime {
   ): Promise<boolean> {
     try {
       const request = JSON.parse(entry.payment_request!);
-      const connection = new Connection(getRpcUrl(this.config.network), {
-        disableRetryOnRateLimit: true,
-      });
+      const rpc = createSolanaRpc(getRpcUrl(this.config.network));
+      const protocolConfig = await this.fetchProtocolConfig();
 
       let result: { verified: boolean };
       if (signal) {
@@ -620,18 +638,21 @@ export class AgentRuntime {
           signal.addEventListener('abort', abortHandler, { once: true });
         });
         try {
-          result = await Promise.race([payment.verifyPayment(connection, request), abortPromise]);
+          result = await Promise.race([
+            payment.verifyPayment(rpc, request, protocolConfig),
+            abortPromise,
+          ]);
         } finally {
           if (abortHandler) {
             signal.removeEventListener('abort', abortHandler);
           }
         }
       } else {
-        result = await payment.verifyPayment(connection, request);
+        result = await payment.verifyPayment(rpc, request, protocolConfig);
       }
 
       if (result.verified) {
-        const fee = calculateProtocolFee(priceLamports);
+        const fee = calculateProtocolFee(priceLamports, protocolConfig.feeBps);
         const netAmount = priceLamports - fee;
         this.ledger.updatePayment(entry.job_id, netAmount, entry.payment_request);
         log(`[${entry.job_id.slice(0, 8)}] Recovery: payment re-verified (${netAmount} lamports)`);

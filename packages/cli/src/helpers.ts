@@ -78,15 +78,20 @@ export function parseSolToLamports(s: string): number | null {
 
 // --- Price validation ---
 
-export function validateJobPrice(lamports: number, accountFunded: boolean): string | null {
+export function validateJobPrice(
+  lamports: number,
+  accountFunded: boolean,
+  feeBps: number,
+): string | null {
   if (lamports === 0) {
     return null;
   }
-  const fee = calculateProtocolFee(lamports);
+  const fee = calculateProtocolFee(lamports, feeBps);
   const providerNet = lamports - fee;
   if (!accountFunded && providerNet < RENT_EXEMPT_MINIMUM) {
+    const pct = (feeBps / 100).toFixed(2);
     return (
-      `Price too low. After 3% fee, provider receives ${providerNet} lamports, ` +
+      `Price too low. After ${pct}% fee, provider receives ${providerNet} lamports, ` +
       `which is below rent-exempt minimum (${RENT_EXEMPT_MINIMUM}). Increase price or fund wallet first.`
     );
   }

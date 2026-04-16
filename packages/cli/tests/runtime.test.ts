@@ -27,19 +27,23 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
       verifyPayment: vi.fn().mockImplementation(() => Promise.resolve(mockVerifyResult)),
     })),
     calculateProtocolFee: actual.calculateProtocolFee,
+    getProtocolConfig: vi.fn().mockResolvedValue({
+      feeBps: 300,
+      treasury: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+      admin: '11111111111111111111111111111111',
+      pendingAdmin: null,
+      paused: false,
+      version: 1,
+      source: 'onchain',
+    }),
+    getProtocolProgramId: vi.fn().mockReturnValue('BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE'),
   };
 });
 
-vi.mock('@solana/web3.js', () => ({
-  Connection: vi.fn().mockImplementation(() => ({
-    getBalance: vi.fn().mockResolvedValue(1_000_000_000),
-  })),
-  Keypair: {
-    fromSecretKey: vi.fn().mockReturnValue({
-      publicKey: { toBase58: () => 'mock-solana-address' },
-      secretKey: new Uint8Array(64),
-    }),
-  },
+vi.mock('@solana/kit', () => ({
+  createSolanaRpc: vi.fn().mockReturnValue({
+    getTransaction: vi.fn(),
+  }),
 }));
 
 vi.mock('bs58', () => ({

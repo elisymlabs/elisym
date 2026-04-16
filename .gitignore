@@ -38,3 +38,15 @@ packages/app/
 # mcp-publisher local auth tokens (created by `mcp-publisher login`)
 .mcpregistry_github_token
 .mcpregistry_registry_token
+
+# Anchor / Solana
+target/
+.anchor/
+test-ledger/
+**/*.rs.bk
+# NOTE: Cargo.lock IS committed for binary crates. The Anchor program is a binary
+# (cdylib + lib), so its workspace Cargo.lock must be tracked for reproducible builds.
+
+# Keypairs (NEVER commit)
+*-keypair.json
+!programs/**/id-*.json.example

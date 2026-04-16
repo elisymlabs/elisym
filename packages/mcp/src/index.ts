@@ -10,7 +10,7 @@ process.on('warning', (w) => {
 });
 
 import { ElisymClient, ElisymIdentity, RELAYS } from '@elisym/sdk';
-import { Keypair } from '@solana/web3.js';
+import { generateKeyPairSigner } from '@solana/kit';
 import bs58 from 'bs58';
 /**
  * elisym MCP server - entry point.
@@ -27,7 +27,7 @@ import { loadAgentConfig, saveAgentConfig, listAgentNames, updateAgentSecurity }
 import { AgentContext } from './context.js';
 import { runInstall, runUninstall, runUpdate, runList } from './install.js';
 import { startServer } from './server.js';
-import { buildAgentInstance } from './tools/agent.js';
+import { buildAgentInstance, exportKeyPairBytes } from './tools/agent.js';
 import { PACKAGE_VERSION } from './utils.js';
 
 const program = new Command()
@@ -48,7 +48,7 @@ program.action(async () => {
     // Load existing agent from disk
     try {
       const config = await loadAgentConfig(agentName);
-      const instance = buildAgentInstance(agentName, config);
+      const instance = await buildAgentInstance(agentName, config);
       ctx.register(instance);
       console.error(`Loaded agent: ${agentName}`);
     } catch (e: any) {
@@ -82,7 +82,7 @@ program.action(async () => {
       const name = names[0]!;
       try {
         const config = await loadAgentConfig(name);
-        const instance = buildAgentInstance(name, config);
+        const instance = await buildAgentInstance(name, config);
         ctx.register(instance);
         console.error(`Loaded default agent: ${name} (${instance.network})`);
       } catch (e: any) {
@@ -160,15 +160,16 @@ program
 
     const nostrSecretKey = generateSecretKey();
     const nostrPubkey = getPublicKey(nostrSecretKey);
-    const solanaKeypair = Keypair.generate();
+    const solanaSigner = await generateKeyPairSigner(true);
+    const solanaSecretBytes = await exportKeyPairBytes(solanaSigner);
 
     await saveAgentConfig(name!, {
       name: name!,
       description: options.description,
       relays: [...RELAYS],
       nostrSecretKey: Buffer.from(nostrSecretKey).toString('hex'),
-      solanaSecretKey: bs58.encode(solanaKeypair.secretKey),
-      solanaAddress: solanaKeypair.publicKey.toBase58(),
+      solanaSecretKey: bs58.encode(solanaSecretBytes),
+      solanaAddress: solanaSigner.address,
       network: options.network as 'devnet' | 'mainnet',
       security: { withdrawals_enabled: false, agent_switch_enabled: false },
       passphrase: passphrase || undefined,
@@ -177,7 +178,7 @@ program
     const npub = nip19.npubEncode(nostrPubkey);
     console.log(`Agent "${name}" created.`);
     console.log(`  Nostr: ${npub}`);
-    console.log(`  Solana: ${solanaKeypair.publicKey.toBase58()}`);
+    console.log(`  Solana: ${solanaSigner.address}`);
     console.log(`  Network: ${options.network}`);
     console.log(`  Encrypted: ${passphrase ? 'yes' : 'no'}`);
     console.log(`  Config: ~/.elisym/agents/${name}/config.json`);

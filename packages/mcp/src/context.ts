@@ -1,7 +1,9 @@
 /**
  * AgentContext - shared state for all MCP tools.
  */
-import { ElisymClient, ElisymIdentity } from '@elisym/sdk';
+import { ElisymClient, ElisymIdentity, getProtocolConfig, getProtocolProgramId } from '@elisym/sdk';
+import type { ProtocolConfigInput } from '@elisym/sdk';
+import { createSolanaRpc } from '@solana/kit';
 
 /** Supported Solana networks. `testnet` is intentionally excluded. */
 export type SolanaNetwork = 'devnet' | 'mainnet';
@@ -11,6 +13,15 @@ export function rpcUrlFor(network: SolanaNetwork): string {
   return network === 'mainnet'
     ? 'https://api.mainnet-beta.solana.com'
     : 'https://api.devnet.solana.com';
+}
+
+/** Fetch on-chain protocol config (fee, treasury) for a given network. */
+export async function fetchProtocolConfig(network: string): Promise<ProtocolConfigInput> {
+  const cluster = network === 'mainnet' ? 'mainnet' : 'devnet';
+  const programId = getProtocolProgramId(cluster);
+  const rpc = createSolanaRpc(rpcUrlFor(cluster));
+  const config = await getProtocolConfig(rpc, programId, { forceRefresh: true });
+  return { feeBps: config.feeBps, treasury: config.treasury };
 }
 
 /** Map a network to the explorer cluster query-string value. */
