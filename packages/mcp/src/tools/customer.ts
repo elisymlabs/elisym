@@ -31,6 +31,11 @@ import {
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
 
+// Pre-ping budget before submit/buy. Short enough that an offline npub fails
+// fast; long enough to tolerate a brief relay hiccup. The 30s pong cache in
+// PingService makes this near-free for agents the caller just discovered via search.
+const PRE_PING_TIMEOUT_MS = 5000;
+
 const CreateJobSchema = z.object({
   input: z.string().describe('The job prompt/input sent to the provider.'),
   capability: z
@@ -596,10 +601,21 @@ export const customerTools: ToolDefinition[] = [
       const agent = ctx.active();
       const providerPubkey = decodeNpub(input.provider_npub);
 
+      // Pre-ping: refuse to submit to an unreachable provider. The 30s pong cache
+      // in PingService means that if the caller just ran search_agents, this is a
+      // free in-memory lookup. A hard error here avoids wasting a 120-300s timeout
+      // and, for paid jobs, avoids publishing a NIP-90 request that nobody will ever
+      // service.
+      const ping = await agent.client.ping.pingAgent(providerPubkey, PRE_PING_TIMEOUT_MS);
+      if (!ping.online) {
+        return errorResult(
+          `Provider ${input.provider_npub} is offline. ` +
+            `Run search_agents to find currently-online providers.`,
+        );
+      }
+
       // resolve expected Solana recipient from the provider's capability card
-      // BEFORE submitting the job. If the provider is unreachable or unknown, fail fast.
-      // we no longer pre-ping the provider - fetchAgents is the liveness signal
-      // and an extra ping wasted up to 30s on retries.
+      // BEFORE submitting the job. If the provider is unknown on-network, fail fast.
       const providers = await agent.client.discovery.fetchAgents(agent.network);
       const provider = providers.find((a) => a.npub === input.provider_npub);
 
@@ -703,6 +719,16 @@ export const customerTools: ToolDefinition[] = [
       const agent = ctx.active();
       const providerPubkey = decodeNpub(input.provider_npub);
       const dTag = toDTag(input.capability);
+
+      // Pre-ping: refuse to spend money on a provider that isn't currently answering.
+      // Shares the 30s pong cache with search_agents so this is usually free.
+      const ping = await agent.client.ping.pingAgent(providerPubkey, PRE_PING_TIMEOUT_MS);
+      if (!ping.online) {
+        return errorResult(
+          `Provider ${input.provider_npub} is offline. ` +
+            `Run search_agents to find currently-online providers.`,
+        );
+      }
 
       // Look up provider.
       const agents = await agent.client.discovery.fetchAgents(agent.network);

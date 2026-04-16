@@ -4,7 +4,7 @@
  * sliding window rate limiter
  * zodToJsonSchema options / $schema stripped
  * sanitize injection scan budget
- * recently_active_only rename
+ * include_offline (renamed from recently_active_only) schema shape
  */
 import { describe, it, expect } from 'vitest';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -69,14 +69,15 @@ describe('sanitize injection scan is bounded', () => {
   });
 });
 
-describe('search_agents uses recently_active_only', () => {
+describe('search_agents uses include_offline', () => {
   it('search_agents schema field is renamed', () => {
     const searchAgents = registeredTools.find((t) => t.name === 'search_agents');
     expect(searchAgents).toBeDefined();
     const schema = zodToJsonSchema(searchAgents!.schema) as {
       properties: Record<string, unknown>;
     };
-    expect(schema.properties).toHaveProperty('recently_active_only');
+    expect(schema.properties).toHaveProperty('include_offline');
+    expect(schema.properties).not.toHaveProperty('recently_active_only');
     expect(schema.properties).not.toHaveProperty('online_only');
   });
 });
