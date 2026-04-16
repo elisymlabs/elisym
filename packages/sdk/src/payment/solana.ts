@@ -1,5 +1,6 @@
 import { getTransferSolInstruction } from '@solana-program/system';
 import {
+  type Address,
   type Rpc,
   type Signature,
   type SolanaRpcApi,
@@ -15,6 +16,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from '@solana/kit';
+import { getProtocolConfig } from '../config/onchain';
 import { DEFAULTS, LIMITS } from '../constants';
 import type {
   PaymentRequestData,
@@ -593,4 +595,30 @@ export function buildPaymentInstructions(
     );
   }
   return instructions;
+}
+
+/**
+ * Convenience wrapper: fetch the on-chain protocol config first, then build a
+ * payment request using its current fee/treasury values.
+ *
+ * Suitable for callers that want to "do the right thing" without managing the
+ * config cache or the SolanaPaymentStrategy instance themselves. Uses the same
+ * cache as `getProtocolConfig`, so back-to-back calls within the TTL only hit
+ * RPC once.
+ */
+export async function createPaymentRequestWithOnchainConfig(
+  rpc: Rpc<SolanaRpcApi>,
+  programId: Address,
+  recipient: string,
+  amount: number,
+  options?: { expirySecs?: number },
+): Promise<PaymentRequestData> {
+  const config = await getProtocolConfig(rpc, programId);
+  const strategy = new SolanaPaymentStrategy();
+  return strategy.createPaymentRequest(
+    recipient,
+    amount,
+    { feeBps: config.feeBps, treasury: config.treasury },
+    options,
+  );
 }

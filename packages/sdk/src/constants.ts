@@ -42,20 +42,44 @@ export const KIND_PONG = 20201;
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 
 /**
- * Protocol fee in basis points (300 = 3%).
+ * @deprecated Fallback only - use `getProtocolConfig(rpc, programId)` for live values.
  *
- * Bundled fallback for `ProtocolConfigInput.feeBps`. Phase 3 will read this
- * value from the on-chain elisym-config program; until then, callers should
- * pass this constant explicitly.
+ * Protocol fee in basis points (300 = 3%). Bundled as a default for offline use
+ * and for first-call before the on-chain config has been fetched. The on-chain
+ * `elisym-config` program is the source of truth.
  */
 export const PROTOCOL_FEE_BPS = 300;
 /**
- * Solana address of the protocol treasury.
+ * @deprecated Fallback only - use `getProtocolConfig(rpc, programId)` for live values.
  *
- * Bundled fallback for `ProtocolConfigInput.treasury`. Cast to `Address`
- * (Kit branded type) so it can be used directly with the new payment APIs.
+ * Solana address of the protocol treasury. Bundled fallback; the on-chain
+ * `elisym-config` program is the source of truth and may rotate this address.
  */
 export const PROTOCOL_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy' as Address;
+
+/**
+ * Solana program ID for the elisym protocol config (devnet deployment).
+ *
+ * The Anchor program at this address is the source of truth for fee bps,
+ * treasury address, and admin rotation state. Read via `getProtocolConfig`.
+ */
+export const PROTOCOL_PROGRAM_ID_DEVNET = 'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE' as Address;
+
+export type ProtocolCluster = 'devnet' | 'mainnet' | 'localnet';
+
+/**
+ * Resolve the elisym-config program ID for a given Solana cluster.
+ * Mainnet is intentionally unsupported until the program ships there.
+ */
+export function getProtocolProgramId(cluster: ProtocolCluster): Address {
+  switch (cluster) {
+    case 'devnet':
+    case 'localnet':
+      return PROTOCOL_PROGRAM_ID_DEVNET;
+    case 'mainnet':
+      throw new Error('Protocol program is not deployed on mainnet yet');
+  }
+}
 
 /** Default values for timeouts, retries, and batch sizes. */
 export const DEFAULTS = {

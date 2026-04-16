@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import type { PaymentRequestData } from '@elisym/sdk';
+import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY } from '@elisym/sdk';
+import type { PaymentRequestData, ProtocolConfigInput } from '@elisym/sdk';
 import {
   Connection,
   Keypair,
@@ -21,6 +22,11 @@ import {
 } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
+
+const FALLBACK_CONFIG: ProtocolConfigInput = {
+  feeBps: PROTOCOL_FEE_BPS,
+  treasury: PROTOCOL_TREASURY,
+};
 
 const GetBalanceSchema = z.object({});
 
@@ -64,6 +70,50 @@ function assertSolanaAddress(field: string, value: string): PublicKey {
   } catch {
     throw new Error(`${field} is not a valid Solana address (base58 PublicKey).`);
   }
+}
+
+/**
+ * Build a @solana/web3.js Transaction from a PaymentRequestData.
+ *
+ * The SDK's buildTransaction now requires @solana/kit types (TransactionSigner, Rpc).
+ * Until the MCP fully migrates to Kit (Phase 4), we replicate the transfer logic
+ * here using web3.js primitives: provider transfer with reference key, plus optional
+ * fee transfer to the protocol treasury.
+ */
+function buildWeb3Transaction(payer: PublicKey, request: PaymentRequestData): Transaction {
+  const feeAmount = request.fee_amount ?? 0;
+  const providerAmount =
+    request.fee_address && feeAmount > 0 ? request.amount - feeAmount : request.amount;
+
+  if (providerAmount <= 0) {
+    throw new Error(
+      `Fee amount (${feeAmount}) exceeds or equals total amount (${request.amount}).`,
+    );
+  }
+
+  const providerIx = SystemProgram.transfer({
+    fromPubkey: payer,
+    toPubkey: new PublicKey(request.recipient),
+    lamports: providerAmount,
+  });
+  // Append the reference key so on-chain verification can find the tx.
+  providerIx.keys.push({
+    pubkey: new PublicKey(request.reference),
+    isSigner: false,
+    isWritable: false,
+  });
+
+  const tx = new Transaction().add(providerIx);
+  if (request.fee_address && feeAmount > 0) {
+    tx.add(
+      SystemProgram.transfer({
+        fromPubkey: payer,
+        toPubkey: new PublicKey(request.fee_address),
+        lamports: feeAmount,
+      }),
+    );
+  }
+  return tx;
 }
 
 export const walletTools: ToolDefinition[] = [
@@ -128,6 +178,7 @@ export const walletTools: ToolDefinition[] = [
 
       const validation = payment().validatePaymentRequest(
         input.payment_request,
+        FALLBACK_CONFIG,
         input.expected_solana_recipient,
       );
       if (validation !== null) {
@@ -137,10 +188,7 @@ export const walletTools: ToolDefinition[] = [
       const keypair = agentKeypair(agent.solanaKeypair.secretKey);
       const connection = connectionFor(agent);
 
-      const tx = (await payment().buildTransaction(
-        keypair.publicKey.toBase58(),
-        requestData,
-      )) as Transaction;
+      const tx = buildWeb3Transaction(keypair.publicKey, requestData);
 
       tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
       tx.feePayer = keypair.publicKey;

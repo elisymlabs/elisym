@@ -35,6 +35,7 @@ keypairs
 lamport
 lookback
 lamports
+localnet
 mainnet
 mgmt
 modelcontextprotocol

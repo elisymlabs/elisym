@@ -67,6 +67,7 @@
     "clean": "rm -rf dist"
   },
   "devDependencies": {
+    "@elisym/program-client": "workspace:*",
     "@solana-program/system": "~0.12.0",
     "@solana/kit": "~6.8.0",
     "@types/node": "~25.5.0",

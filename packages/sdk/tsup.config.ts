@@ -20,4 +20,5 @@ export default defineConfig({
     'node:crypto',
     'node:buffer',
   ],
+  noExternal: ['@elisym/program-client'],
 });

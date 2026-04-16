@@ -1,6 +1,13 @@
-import { toDTag, DEFAULT_KIND_OFFSET } from '@elisym/sdk';
-import type { Agent as ProviderAgent, PaymentRequestData } from '@elisym/sdk';
-import { Connection, Keypair, Transaction, sendAndConfirmTransaction } from '@solana/web3.js';
+import { toDTag, DEFAULT_KIND_OFFSET, PROTOCOL_FEE_BPS, PROTOCOL_TREASURY } from '@elisym/sdk';
+import type { Agent as ProviderAgent, PaymentRequestData, ProtocolConfigInput } from '@elisym/sdk';
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  sendAndConfirmTransaction,
+} from '@solana/web3.js';
 import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
@@ -24,6 +31,11 @@ import {
 } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
+
+const FALLBACK_CONFIG: ProtocolConfigInput = {
+  feeBps: PROTOCOL_FEE_BPS,
+  treasury: PROTOCOL_TREASURY,
+};
 
 const CreateJobSchema = z.object({
   input: z.string().describe('The job prompt/input sent to the provider.'),
@@ -110,6 +122,50 @@ function providerSolanaAddress(provider: ProviderAgent, dTag?: string): string |
 }
 
 /**
+ * Build a @solana/web3.js Transaction from a PaymentRequestData.
+ *
+ * The SDK's buildTransaction now requires @solana/kit types (TransactionSigner, Rpc).
+ * Until the MCP fully migrates to Kit (Phase 4), we replicate the transfer logic
+ * here using web3.js primitives: provider transfer with reference key, plus optional
+ * fee transfer to the protocol treasury.
+ */
+function buildWeb3Transaction(payer: PublicKey, request: PaymentRequestData): Transaction {
+  const feeAmount = request.fee_amount ?? 0;
+  const providerAmount =
+    request.fee_address && feeAmount > 0 ? request.amount - feeAmount : request.amount;
+
+  if (providerAmount <= 0) {
+    throw new Error(
+      `Fee amount (${feeAmount}) exceeds or equals total amount (${request.amount}).`,
+    );
+  }
+
+  const providerIx = SystemProgram.transfer({
+    fromPubkey: payer,
+    toPubkey: new PublicKey(request.recipient),
+    lamports: providerAmount,
+  });
+  // Append the reference key so on-chain verification can find the tx.
+  providerIx.keys.push({
+    pubkey: new PublicKey(request.reference),
+    isSigner: false,
+    isWritable: false,
+  });
+
+  const tx = new Transaction().add(providerIx);
+  if (request.fee_address && feeAmount > 0) {
+    tx.add(
+      SystemProgram.transfer({
+        fromPubkey: payer,
+        toPubkey: new PublicKey(request.fee_address),
+        lamports: feeAmount,
+      }),
+    );
+  }
+  return tx;
+}
+
+/**
  * Execute payment flow: validate fee + expected recipient, build + send Solana tx,
  * confirm on Nostr. Shared by submit_and_pay_job and buy_capability.
  */
@@ -131,7 +187,11 @@ async function executePaymentFlow(
   // the expected recipient MUST match what the provider advertised in its card.
   // Passing `undefined` here would skip the check and let a compromised provider
   // redirect funds to an attacker address.
-  const validation = payment().validatePaymentRequest(paymentRequest, expectedRecipient);
+  const validation = payment().validatePaymentRequest(
+    paymentRequest,
+    FALLBACK_CONFIG,
+    expectedRecipient,
+  );
   if (validation !== null) {
     throw new Error(`Payment validation failed: ${validation.message}`);
   }
@@ -142,10 +202,7 @@ async function executePaymentFlow(
 
   const keypair = Keypair.fromSecretKey(agent.solanaKeypair.secretKey);
   const connection = new Connection(rpcUrlFor(agent.network));
-  const tx = (await payment().buildTransaction(
-    keypair.publicKey.toBase58(),
-    requestData,
-  )) as Transaction;
+  const tx = buildWeb3Transaction(keypair.publicKey, requestData);
   tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
   tx.feePayer = keypair.publicKey;
 

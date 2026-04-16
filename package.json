@@ -4,7 +4,8 @@
   "workspaces": [
     "packages/sdk",
     "packages/mcp",
-    "packages/cli"
+    "packages/cli",
+    "packages/program-client"
   ],
   "type": "module",
   "scripts": {

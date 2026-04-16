@@ -8,5 +8,5 @@
     "newlinesBetween": false,
     "groups": ["side_effect", "builtin", "external", "internal", "parent", "sibling"]
   },
-  "ignorePatterns": ["dist/", "build/", "bun.lock"]
+  "ignorePatterns": ["dist/", "build/", "bun.lock", "**/generated/"]
 }

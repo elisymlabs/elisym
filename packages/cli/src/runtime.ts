@@ -2,8 +2,15 @@
  * AgentRuntime - main job processing loop with concurrency, payment, and recovery.
  * Supports per-capability pricing: each capability can have a different price.
  */
-import { SolanaPaymentStrategy, calculateProtocolFee, LIMITS } from '@elisym/sdk';
-import { Connection } from '@solana/web3.js';
+import {
+  SolanaPaymentStrategy,
+  calculateProtocolFee,
+  LIMITS,
+  PROTOCOL_FEE_BPS,
+  PROTOCOL_TREASURY,
+} from '@elisym/sdk';
+import type { ProtocolConfigInput } from '@elisym/sdk';
+import { createSolanaRpc } from '@solana/kit';
 import pLimit from 'p-limit';
 import { getRpcUrl } from './helpers.js';
 import { JobLedger } from './ledger.js';
@@ -11,6 +18,10 @@ import type { SkillRegistry, SkillContext } from './skill';
 import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 
 const payment = new SolanaPaymentStrategy();
+const FALLBACK_CONFIG: ProtocolConfigInput = {
+  feeBps: PROTOCOL_FEE_BPS,
+  treasury: PROTOCOL_TREASURY,
+};
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const TOTAL_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -379,11 +390,12 @@ export class AgentRuntime {
     const request = payment.createPaymentRequest(
       this.config.solanaAddress,
       jobPrice,
-      this.config.paymentTimeoutSecs,
+      FALLBACK_CONFIG,
+      { expirySecs: this.config.paymentTimeoutSecs },
     );
     const requestJson = JSON.stringify(request);
 
-    const fee = calculateProtocolFee(jobPrice);
+    const fee = calculateProtocolFee(jobPrice, FALLBACK_CONFIG.feeBps);
     const netAmount = jobPrice - fee;
 
     log(`[${job.jobId.slice(0, 8)}] Payment required: ${jobPrice} lamports (fee: ${fee})`);
@@ -400,10 +412,7 @@ export class AgentRuntime {
     });
 
     // Verify payment on-chain (SDK defaults: 15 retries, 2s interval = 30s window)
-    // disableRetryOnRateLimit: prevent @solana/web3.js from doing 5 internal retries per attempt
-    const connection = new Connection(getRpcUrl(this.config.network), {
-      disableRetryOnRateLimit: true,
-    });
+    const rpc = createSolanaRpc(getRpcUrl(this.config.network));
 
     // Wrap with abort signal since SDK doesn't accept one natively
     let result: { verified: boolean };
@@ -422,14 +431,17 @@ export class AgentRuntime {
         signal.addEventListener('abort', abortHandler, { once: true });
       });
       try {
-        result = await Promise.race([payment.verifyPayment(connection, request), abortPromise]);
+        result = await Promise.race([
+          payment.verifyPayment(rpc, request, FALLBACK_CONFIG),
+          abortPromise,
+        ]);
       } finally {
         if (abortHandler) {
           signal.removeEventListener('abort', abortHandler);
         }
       }
     } else {
-      result = await payment.verifyPayment(connection, request);
+      result = await payment.verifyPayment(rpc, request, FALLBACK_CONFIG);
     }
 
     if (result.verified) {
@@ -600,9 +612,7 @@ export class AgentRuntime {
   ): Promise<boolean> {
     try {
       const request = JSON.parse(entry.payment_request!);
-      const connection = new Connection(getRpcUrl(this.config.network), {
-        disableRetryOnRateLimit: true,
-      });
+      const rpc = createSolanaRpc(getRpcUrl(this.config.network));
 
       let result: { verified: boolean };
       if (signal) {
@@ -620,18 +630,21 @@ export class AgentRuntime {
           signal.addEventListener('abort', abortHandler, { once: true });
         });
         try {
-          result = await Promise.race([payment.verifyPayment(connection, request), abortPromise]);
+          result = await Promise.race([
+            payment.verifyPayment(rpc, request, FALLBACK_CONFIG),
+            abortPromise,
+          ]);
         } finally {
           if (abortHandler) {
             signal.removeEventListener('abort', abortHandler);
           }
         }
       } else {
-        result = await payment.verifyPayment(connection, request);
+        result = await payment.verifyPayment(rpc, request, FALLBACK_CONFIG);
       }
 
       if (result.verified) {
-        const fee = calculateProtocolFee(priceLamports);
+        const fee = calculateProtocolFee(priceLamports, FALLBACK_CONFIG.feeBps);
         const netAmount = priceLamports - fee;
         this.ledger.updatePayment(entry.job_id, netAmount, entry.payment_request);
         log(`[${entry.job_id.slice(0, 8)}] Recovery: payment re-verified (${netAmount} lamports)`);
