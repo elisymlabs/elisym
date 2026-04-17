@@ -1,33 +1,34 @@
 /**
- * Init command - interactive wizard to create a new agent.
+ * Init command - create a new agent.
+ *
+ * Usage:
+ *   elisym init [name]                     Interactive wizard (prompts for all fields).
+ *   elisym init [name] --config <path>     Non-interactive; loads YAML template.
+ *   elisym init [name] --global            Force ~/.elisym/<name>/ layout.
+ *   elisym init [name] --local             Force project .elisym/<name>/ layout.
  */
-import { existsSync, readFileSync } from 'node:fs';
-import { basename } from 'node:path';
-import { ElisymIdentity, MediaService, RELAYS } from '@elisym/sdk';
-import { encryptSecret } from '@elisym/sdk/node';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { validateAgentName, RELAYS } from '@elisym/sdk';
+import {
+  ElisymYamlSchema,
+  createAgentDir,
+  findProjectElisymDir,
+  resolveInHome,
+  resolveInProject,
+  writeSecrets,
+  writeYaml,
+  type AgentSource,
+  type ElisymYaml,
+} from '@elisym/sdk/agent-store';
 import { isAddress } from '@solana/kit';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
-import { saveConfig, listAgents, validateAgentName, type AgentConfig } from '../config.js';
+import YAML from 'yaml';
 
-/** Resolve an image input: if local file exists, upload via MediaService; otherwise treat as URL. */
-async function resolveImage(
-  input: string,
-  identity: ElisymIdentity,
-  media: MediaService,
-): Promise<string> {
-  if (!input) {
-    return '';
-  }
-  if (existsSync(input)) {
-    console.log(`  Uploading ${basename(input)}...`);
-    const data = readFileSync(input);
-    const blob = new Blob([data]);
-    const url = await media.upload(identity, blob, basename(input));
-    console.log(`  Uploaded: ${url}`);
-    return url;
-  }
-  // Not a file - treat as URL
-  return input;
+export interface InitOptions {
+  config?: string;
+  global?: boolean;
+  local?: boolean;
 }
 
 const FALLBACK_MODELS: Record<string, string[]> = {
@@ -81,35 +82,62 @@ export async function fetchModels(provider: string, apiKey: string): Promise<str
   }
 }
 
-export async function cmdInit(): Promise<void> {
+function pickTarget(options: InitOptions, cwd: string): AgentSource {
+  if (options.global) {
+    return 'home';
+  }
+  if (options.local) {
+    return 'project';
+  }
+  return findProjectElisymDir(cwd) ? 'project' : 'home';
+}
+
+export async function cmdInit(nameArg?: string, options: InitOptions = {}): Promise<void> {
   const { default: inquirer } = await import('inquirer');
+  const cwd = process.cwd();
 
   console.log('\n  elisym agent setup\n');
 
-  // Step 1: Agent name
-  const { name } = await inquirer.prompt([
-    {
-      type: 'input',
-      name: 'name',
-      message: 'Agent name:',
-      validate: (v: string) => {
-        try {
-          validateAgentName(v);
-          return true;
-        } catch (e: any) {
-          return e.message;
-        }
-      },
-    },
-  ]);
+  // Step 1: YAML template (optional).
+  let template: ElisymYaml | undefined;
+  if (options.config) {
+    const configPath = resolve(cwd, options.config);
+    const raw = readFileSync(configPath, 'utf-8');
+    template = ElisymYamlSchema.parse(YAML.parse(raw) ?? {});
+    console.log(`  Loaded template from ${configPath}\n`);
+  }
 
-  const existing = listAgents();
-  if (existing.includes(name)) {
+  // Step 2: Agent name (arg > prompt).
+  let name = nameArg;
+  if (!name) {
+    const { inputName } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'inputName',
+        message: 'Agent name:',
+        validate: (value: string) => {
+          try {
+            validateAgentName(value);
+            return true;
+          } catch (e: any) {
+            return e.message;
+          }
+        },
+      },
+    ]);
+    name = inputName;
+  }
+  validateAgentName(name!);
+
+  // Step 3: Shadow / overwrite checks.
+  const target = pickTarget(options, cwd);
+  const sameLocation = target === 'home' ? resolveInHome(name!) : resolveInProject(name!, cwd);
+  if (sameLocation) {
     const { overwrite } = await inquirer.prompt([
       {
         type: 'confirm',
         name: 'overwrite',
-        message: `Agent "${name}" already exists. Overwrite?`,
+        message: `Agent "${name}" already exists at ${sameLocation}. Overwrite secrets?`,
         default: false,
       },
     ]);
@@ -117,111 +145,63 @@ export async function cmdInit(): Promise<void> {
       console.log('Aborted.');
       return;
     }
+  } else if (target === 'project' && resolveInHome(name!)) {
+    const { shadow } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'shadow',
+        message: `A global agent "${name}" exists in ~/.elisym/${name}/. Create a project-local shadow?`,
+        default: true,
+      },
+    ]);
+    if (!shadow) {
+      console.log('Aborted.');
+      return;
+    }
+  } else if (target === 'home' && resolveInProject(name!, cwd)) {
+    const { proceed } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'proceed',
+        message: `A project-local agent "${name}" exists. Create a global agent with the same name?`,
+        default: true,
+      },
+    ]);
+    if (!proceed) {
+      console.log('Aborted.');
+      return;
+    }
   }
 
-  // Step 2: Description
-  const { description } = await inquirer.prompt([
-    {
-      type: 'input',
-      name: 'description',
-      message: 'Description:',
-      default: 'An elisym AI agent',
-    },
-  ]);
+  // Step 4: Build YAML (from template or interactive prompts).
+  const yaml: ElisymYaml = template ?? (await promptYaml(inquirer, name!));
 
-  // Step 2b: Profile images (local path or URL)
-  const { pictureInput } = await inquirer.prompt([
-    {
-      type: 'input',
-      name: 'pictureInput',
-      message: 'Avatar image (URL or local path, optional):',
-      default: '',
-    },
-  ]);
+  // Step 5: LLM API key (from env if available, else prompt if LLM is configured).
+  let llmApiKey: string | undefined;
+  if (yaml.llm) {
+    const envKey =
+      yaml.llm.provider === 'anthropic'
+        ? process.env.ANTHROPIC_API_KEY
+        : process.env.OPENAI_API_KEY;
+    if (envKey) {
+      llmApiKey = envKey;
+      console.log(
+        `  Using ${yaml.llm.provider === 'anthropic' ? 'ANTHROPIC' : 'OPENAI'}_API_KEY from environment.`,
+      );
+    } else {
+      const { apiKey } = await inquirer.prompt([
+        {
+          type: 'password',
+          name: 'apiKey',
+          message: `${yaml.llm.provider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API key:`,
+          mask: '*',
+        },
+      ]);
+      llmApiKey = apiKey || undefined;
+    }
+  }
 
-  const { bannerInput } = await inquirer.prompt([
-    {
-      type: 'input',
-      name: 'bannerInput',
-      message: 'Banner image (URL or local path, optional):',
-      default: '',
-    },
-  ]);
-
-  // Step 3: Solana address
-  const { solanaAddress } = await inquirer.prompt([
-    {
-      type: 'input',
-      name: 'solanaAddress',
-      message: 'Solana address for receiving payments (leave empty to skip):',
-      default: '',
-      validate: (v: string) => {
-        if (!v) {
-          return true;
-        }
-        return isAddress(v) || 'Invalid Solana address';
-      },
-    },
-  ]);
-
-  // Step 4b: Solana network - only devnet is supported until the elisym-config
-  // program ships on mainnet.
-  const { network } = await inquirer.prompt([
-    {
-      type: 'list',
-      name: 'network',
-      message: 'Solana network:',
-      choices: [{ name: 'devnet', value: 'devnet' }],
-      default: 'devnet',
-    },
-  ]);
-
-  // Step 5: LLM provider
-  const { llmProvider } = await inquirer.prompt([
-    {
-      type: 'list',
-      name: 'llmProvider',
-      message: 'LLM provider:',
-      choices: [
-        { name: 'Anthropic (Claude)', value: 'anthropic' },
-        { name: 'OpenAI (GPT)', value: 'openai' },
-      ],
-    },
-  ]);
-
-  // Step 6: API key
-  const { apiKey } = await inquirer.prompt([
-    {
-      type: 'password',
-      name: 'apiKey',
-      message: `${llmProvider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API key:`,
-      mask: '*',
-    },
-  ]);
-
-  // Step 7: Model (fetch from API, fallback to hardcoded)
-  console.log('  Fetching available models...');
-  const models = await fetchModels(llmProvider, apiKey);
-  const { model } = await inquirer.prompt([
-    {
-      type: 'list',
-      name: 'model',
-      message: 'Model:',
-      choices: models,
-    },
-  ]);
-
-  // Step 8: Max tokens
-  const { maxTokens } = await inquirer.prompt([
-    {
-      type: 'number',
-      name: 'maxTokens',
-      message: 'Max tokens:',
-      default: 4096,
-    },
-  ]);
-
-  // Step 9: Passphrase for encrypting secrets
+  // Step 6: Passphrase for encrypting secrets.
   const { passphrase } = await inquirer.prompt([
     {
       type: 'password',
@@ -238,65 +218,150 @@ export async function cmdInit(): Promise<void> {
         name: 'confirmPassphrase',
         message: 'Confirm passphrase:',
         mask: '*',
-        validate: (v: string) => (v === passphrase ? true : 'Passphrases do not match'),
+        validate: (value: string) => value === passphrase || 'Passphrases do not match',
       },
     ]);
     void confirmPassphrase;
   }
 
-  // Generate Nostr identity
-  const nostrSecretKey = generateSecretKey();
-  const nostrPubkey = getPublicKey(nostrSecretKey);
-  const nostrSecretHex = Buffer.from(nostrSecretKey).toString('hex');
-  const identity = ElisymIdentity.fromHex(nostrSecretHex);
+  // Step 7: Generate Nostr identity.
+  const nostrSecretBytes = generateSecretKey();
+  const nostrPubkey = getPublicKey(nostrSecretBytes);
+  const nostrSecretHex = Buffer.from(nostrSecretBytes).toString('hex');
 
-  // Upload local images if needed
-  const media = new MediaService();
-  let picture = '';
-  let banner = '';
-
-  if (pictureInput || bannerInput) {
-    console.log();
-    if (pictureInput) {
-      picture = await resolveImage(pictureInput, identity, media);
-    }
-    if (bannerInput) {
-      banner = await resolveImage(bannerInput, identity, media);
-    }
-  }
-
-  // Helper to optionally encrypt a secret
-  const protect = (secret: string): string =>
-    passphrase ? encryptSecret(secret, passphrase) : secret;
-
-  const config: AgentConfig = {
-    identity: {
-      secret_key: protect(nostrSecretHex),
-      name,
-      description,
-      picture: picture || undefined,
-      banner: banner || undefined,
+  // Step 8: Create agent directory + write files.
+  const created = await createAgentDir({ target, name: name!, cwd });
+  await writeYaml(created.dir, yaml);
+  await writeSecrets(
+    created.dir,
+    {
+      nostr_secret_key: nostrSecretHex,
+      llm_api_key: llmApiKey,
     },
-    relays: [...RELAYS],
-    payments: solanaAddress ? [{ chain: 'solana', network, address: solanaAddress }] : undefined,
-    llm: {
-      provider: llmProvider,
-      api_key: protect(apiKey),
-      model,
-      max_tokens: maxTokens,
-    },
-  };
-
-  saveConfig(config);
+    passphrase || undefined,
+  );
 
   const npub = nip19.npubEncode(nostrPubkey);
-  console.log(`\n  Agent "${name}" created.`);
-  console.log(`  Nostr:  ${npub}`);
-  if (solanaAddress) {
-    console.log(`  Solana: ${solanaAddress}`);
+  console.log(`\n  Agent "${name}" created (${target}).`);
+  console.log(`  Location: ${created.dir}`);
+  console.log(`  Nostr:    ${npub}`);
+  if (yaml.payments[0]?.address) {
+    console.log(`  Solana:   ${yaml.payments[0].address}`);
   }
   if (passphrase) {
     console.log('  Secrets encrypted with your passphrase.');
   }
-  console.log(`  Config: ~/.elisym/agents/${name}/config.json\n`);
+  console.log();
+}
+
+async function promptYaml(inquirer: { prompt: any }, _name: string): Promise<ElisymYaml> {
+  const { description } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'description',
+      message: 'Description:',
+      default: 'An elisym AI agent',
+    },
+  ]);
+
+  const { displayName } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'displayName',
+      message: 'Display name (optional, for UI):',
+      default: '',
+    },
+  ]);
+
+  const { picture } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'picture',
+      message: 'Avatar file (relative to agent dir, e.g. ./avatar.png) or URL:',
+      default: '',
+    },
+  ]);
+
+  const { banner } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'banner',
+      message: 'Banner file (relative to agent dir, e.g. ./header.png) or URL:',
+      default: '',
+    },
+  ]);
+
+  const { solanaAddress } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'solanaAddress',
+      message: 'Solana address for receiving payments (leave empty to skip):',
+      default: '',
+      validate: (value: string) => {
+        if (!value) {
+          return true;
+        }
+        return isAddress(value) || 'Invalid Solana address';
+      },
+    },
+  ]);
+
+  const { llmProvider } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'llmProvider',
+      message: 'LLM provider:',
+      choices: [
+        { name: 'Anthropic (Claude)', value: 'anthropic' },
+        { name: 'OpenAI (GPT)', value: 'openai' },
+      ],
+    },
+  ]);
+
+  const envKey =
+    llmProvider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : process.env.OPENAI_API_KEY;
+  let probeKey = envKey ?? '';
+  if (!probeKey) {
+    const { probe } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'probe',
+        message: `${llmProvider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API key (used to list models):`,
+        mask: '*',
+      },
+    ]);
+    probeKey = probe;
+  }
+
+  console.log('  Fetching available models...');
+  const models = await fetchModels(llmProvider, probeKey);
+  const { model } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'model',
+      message: 'Model:',
+      choices: models,
+    },
+  ]);
+
+  const { maxTokens } = await inquirer.prompt([
+    {
+      type: 'number',
+      name: 'maxTokens',
+      message: 'Max tokens:',
+      default: 4096,
+    },
+  ]);
+
+  const yaml: ElisymYaml = ElisymYamlSchema.parse({
+    display_name: displayName || undefined,
+    description,
+    picture: picture || undefined,
+    banner: banner || undefined,
+    relays: [...RELAYS],
+    payments: solanaAddress ? [{ chain: 'solana', network: 'devnet', address: solanaAddress }] : [],
+    llm: { provider: llmProvider, model, max_tokens: maxTokens },
+    security: {},
+  });
+  return yaml;
 }

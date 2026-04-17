@@ -1,9 +1,10 @@
 /**
  * Start command - run agent in provider mode.
- * Loads all skills, publishes per-capability cards, processes jobs with per-capability pricing.
+ * Loads all skills from agentDir/skills/, publishes per-capability cards,
+ * processes jobs with per-capability pricing, caches uploaded media URLs.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename, isAbsolute, join } from 'node:path';
 import {
   ElisymClient,
   ElisymIdentity,
@@ -15,8 +16,19 @@ import {
   jobRequestKind,
   type CapabilityCard,
 } from '@elisym/sdk';
+import {
+  agentPaths,
+  hashFile,
+  listAgents,
+  loadAgent,
+  lookupCachedUrl,
+  newCacheEntry,
+  readMediaCache,
+  writeMediaCache,
+  type LoadedAgent,
+  type MediaCache,
+} from '@elisym/sdk/agent-store';
 import { address, createSolanaRpc } from '@solana/kit';
-import { loadConfig, listAgents } from '../config.js';
 import {
   getRpcUrl,
   HEARTBEAT_INTERVAL_MS,
@@ -33,43 +45,47 @@ import { NostrTransport } from '../transport/nostr.js';
 import { startWatchdog } from '../watchdog.js';
 
 export async function cmdStart(name: string | undefined): Promise<void> {
+  const cwd = process.cwd();
+
   // -- Step 1: Resolve agent name --
   if (!name) {
-    const agents = listAgents();
+    const agents = await listAgents(cwd);
     if (agents.length === 0) {
       console.log('No agents configured. Run `elisym init` first.');
       process.exit(1);
     }
     const { default: inquirer } = await import('inquirer');
-    const choices = [...agents, { name: '+ Create new agent', value: '__new__' }];
+    const choices = [
+      ...agents.map((agent) => ({
+        name: `${agent.name} (${agent.source}${agent.shadowsGlobal ? ' - shadows global' : ''})`,
+        value: agent.name,
+      })),
+      { name: '+ Create new agent', value: '__new__' },
+    ];
     const { selected } = await inquirer.prompt([
       { type: 'list', name: 'selected', message: 'Select agent to start', choices },
     ]);
     if (selected === '__new__') {
       const { cmdInit } = await import('./init.js');
       await cmdInit();
-
       return;
     }
     name = selected;
   }
 
-  // -- Step 2: Load config (with optional passphrase for encrypted keys) --
-  const config = await loadConfigWithPrompt(name!);
+  // -- Step 2: Load agent (with optional passphrase for encrypted keys) --
+  const loaded = await loadAgentWithPrompt(name!, cwd);
 
-  // -- Step 3: Banner + starting message --
-  console.log(`\n  Starting agent ${name}...\n`);
-
-  // -- Step 4: Resolve Solana address and show balance --
-  let solanaAddress: string | undefined;
-  if (config.payments?.length) {
-    const solPayment = config.payments.find((p) => p.chain === 'solana');
-    if (solPayment) {
-      solanaAddress = solPayment.address;
-    }
+  // -- Step 3: Banner --
+  console.log(`\n  Starting agent ${name} (${loaded.source})...\n`);
+  if (loaded.shadowsGlobal) {
+    console.log(`  ! Using project-local ${name} (shadows global agent in ~/.elisym/${name}/)\n`);
   }
 
-  const walletNetwork = config.payments?.find((p) => p.chain === 'solana')?.network ?? 'devnet';
+  // -- Step 4: Resolve Solana address and show balance --
+  const solPayment = loaded.yaml.payments.find((entry) => entry.chain === 'solana');
+  const solanaAddress = solPayment?.address;
+  const walletNetwork = solPayment?.network ?? 'devnet';
 
   if (solanaAddress) {
     try {
@@ -97,19 +113,26 @@ export async function cmdStart(name: string | undefined): Promise<void> {
   }
 
   // -- Step 5: LLM check --
-  if (!config.llm) {
+  if (!loaded.yaml.llm) {
     console.error('  ! No LLM configured. Run `elisym init` to set up LLM.\n');
+    process.exit(1);
+  }
+  if (!loaded.secrets.llm_api_key) {
+    console.error(
+      `  ! No LLM API key. Set ${loaded.yaml.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} env var or update the agent's secrets.\n`,
+    );
     process.exit(1);
   }
 
   // -- Step 6: Load and register all skills --
-  const skillsDir = join(process.cwd(), 'skills');
+  const paths = agentPaths(loaded.dir);
+  const skillsDir = paths.skills;
   const allSkills = loadSkillsFromDir(skillsDir);
 
   if (allSkills.length === 0) {
     console.error(`  ! No skills found in ${skillsDir}\n`);
     console.error('  Create a skill directory with a SKILL.md to get started.');
-    console.error('  Example: ./skills/my-skill/SKILL.md\n');
+    console.error(`  Example: ${skillsDir}/my-skill/SKILL.md\n`);
     process.exit(1);
   }
 
@@ -121,70 +144,89 @@ export async function cmdStart(name: string | undefined): Promise<void> {
   }
   console.log();
 
-  // Validate that paid skills have a Solana address configured
+  // Validate that paid skills have a Solana address configured.
   const hasPaid = allSkills.some((s) => s.priceLamports > 0);
   if (hasPaid && !solanaAddress) {
     console.error('  ! Paid skills require a Solana address. Run `elisym init` to configure.\n');
     process.exit(1);
   }
 
-  // -- Step 8: Build LLM client --
+  // -- Step 7: Build LLM client --
   const llm = createLlmClient({
-    provider: config.llm!.provider as any,
-    apiKey: config.llm!.api_key,
-    model: config.llm!.model,
-    maxTokens: config.llm!.max_tokens,
+    provider: loaded.yaml.llm.provider as any,
+    apiKey: loaded.secrets.llm_api_key,
+    model: loaded.yaml.llm.model,
+    maxTokens: loaded.yaml.llm.max_tokens,
     logUsage: true,
   });
 
   const skillCtx: SkillContext = {
     llm,
-    agentName: config.identity.name,
-    agentDescription: config.identity.description ?? '',
+    agentName: name!,
+    agentDescription: loaded.yaml.description ?? '',
   };
 
-  // -- Step 9: Connect to relays --
+  // -- Step 8: Connect to relays --
   console.log('  Connecting to relays and publishing capabilities...');
 
-  const identity = ElisymIdentity.fromHex(config.identity.secret_key);
-  const relays = config.relays?.length ? config.relays : [...RELAYS];
+  const identity = ElisymIdentity.fromHex(loaded.secrets.nostr_secret_key);
+  const relays = loaded.yaml.relays.length > 0 ? loaded.yaml.relays : [...RELAYS];
   const client = new ElisymClient({ relays });
 
-  // -- Step 10: Upload skill images (image_file -> image URL in SKILL.md) --
+  // -- Step 9: Resolve media URLs via cache (no SKILL.md mutation) --
   const media = new MediaService();
+  const mediaCache = await readMediaCache(loaded.dir);
+  let mediaCacheDirty = false;
+
+  const pictureUrl = await resolveMediaField(
+    loaded.yaml.picture,
+    loaded.dir,
+    mediaCache,
+    media,
+    identity,
+    (updated) => (mediaCacheDirty = mediaCacheDirty || updated),
+  );
+  const bannerUrl = await resolveMediaField(
+    loaded.yaml.banner,
+    loaded.dir,
+    mediaCache,
+    media,
+    identity,
+    (updated) => (mediaCacheDirty = mediaCacheDirty || updated),
+  );
 
   for (const skill of allSkills) {
     if (skill.image || !skill.imageFile) {
       continue;
     }
-    // Upload local file and write URL back to SKILL.md
-    try {
-      const filePath = join(skillsDir, skill.name, skill.imageFile);
-      console.log(`  Uploading ${basename(filePath)}...`);
-      const data = readFileSync(filePath);
-      const blob = new Blob([data]);
-      const url = await media.upload(identity, blob, basename(filePath));
-      console.log(`  Uploaded: ${url}`);
+    const skillRoot = join(skillsDir, skill.name);
+    const cacheKey = `./skills/${skill.name}/${skill.imageFile}`;
+    const absPath = join(skillRoot, skill.imageFile);
+    const url = await uploadOrReuse(
+      cacheKey,
+      absPath,
+      mediaCache,
+      media,
+      identity,
+      () => (mediaCacheDirty = true),
+    );
+    if (url) {
       skill.image = url;
-
-      // Write URL back to SKILL.md so it's not re-uploaded next time
-      const skillMdPath = join(skillsDir, skill.name, 'SKILL.md');
-      const mdContent = readFileSync(skillMdPath, 'utf-8');
-      const updated = mdContent.replace(/^(image_file:\s*.+)$/m, (m) => `${m}\nimage: ${url}`);
-      writeFileSync(skillMdPath, updated);
-    } catch (e: any) {
-      console.warn(`  ! Failed to upload image for "${skill.name}": ${e.message}`);
     }
   }
 
-  // -- Step 11: Publish kind:0 profile --
+  if (mediaCacheDirty) {
+    await writeMediaCache(loaded.dir, mediaCache);
+  }
+
+  // -- Step 10: Publish kind:0 profile --
   try {
     await client.discovery.publishProfile(
       identity,
-      config.identity.name,
-      config.identity.description ?? '',
-      config.identity.picture,
-      config.identity.banner,
+      name!,
+      loaded.yaml.description ?? '',
+      pictureUrl,
+      bannerUrl,
     );
   } catch (e: any) {
     console.warn(`  ! Failed to publish profile: ${e.message}`);
@@ -231,7 +273,6 @@ export async function cmdStart(name: string | undefined): Promise<void> {
       if (!dTag) {
         continue;
       }
-      // Parse card to get original name
       try {
         const card = JSON.parse(ev.content);
         if (card.name && !skillNames.has(card.name)) {
@@ -268,7 +309,7 @@ export async function cmdStart(name: string | undefined): Promise<void> {
 
   // -- Step 15: Build transport + ledger + runtime --
   const transport = new NostrTransport(client, identity, [DEFAULT_KIND_OFFSET]);
-  const ledger = new JobLedger(name!);
+  const ledger = new JobLedger(paths.jobs);
 
   const runtimeConfig: RuntimeConfig = {
     paymentTimeoutSecs: DEFAULTS.PAYMENT_EXPIRY_SECS,
@@ -314,16 +355,68 @@ export async function cmdStart(name: string | undefined): Promise<void> {
   await runtime.run();
 }
 
+/** Resolve a YAML media field (picture/banner) - URL returned as-is, local path uploaded via cache. */
+async function resolveMediaField(
+  value: string | undefined,
+  agentDir: string,
+  cache: MediaCache,
+  media: MediaService,
+  identity: ElisymIdentity,
+  onCacheUpdate: (updated: boolean) => void,
+): Promise<string | undefined> {
+  if (!value) {
+    return undefined;
+  }
+  if (isRemoteUrl(value)) {
+    return value;
+  }
+  const absPath = isAbsolute(value) ? value : join(agentDir, value);
+  return uploadOrReuse(value, absPath, cache, media, identity, () => onCacheUpdate(true));
+}
+
+/** Look up `cacheKey` in cache; if hit returns URL, else uploads and updates cache. */
+async function uploadOrReuse(
+  cacheKey: string,
+  absPath: string,
+  cache: MediaCache,
+  media: MediaService,
+  identity: ElisymIdentity,
+  onCacheUpdate: () => void,
+): Promise<string | undefined> {
+  try {
+    const cached = await lookupCachedUrl(cache, cacheKey, absPath);
+    if (cached) {
+      return cached;
+    }
+    console.log(`  Uploading ${basename(absPath)}...`);
+    const data = readFileSync(absPath);
+    const blob = new Blob([data]);
+    const url = await media.upload(identity, blob, basename(absPath));
+    const sha256 = await hashFile(absPath);
+    cache[cacheKey] = newCacheEntry(url, sha256);
+    onCacheUpdate();
+    console.log(`  Uploaded: ${url}`);
+    return url;
+  } catch (e: any) {
+    console.warn(`  ! Failed to upload ${basename(absPath)}: ${e.message}`);
+    return undefined;
+  }
+}
+
+function isRemoteUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
 const MAX_PASSPHRASE_ATTEMPTS = 3;
 
-async function loadConfigWithPrompt(name: string) {
+async function loadAgentWithPrompt(name: string, cwd: string): Promise<LoadedAgent> {
   const envPassphrase = process.env.ELISYM_PASSPHRASE;
   try {
-    return loadConfig(name, envPassphrase);
+    return await loadAgent(name, cwd, envPassphrase);
   } catch (e: any) {
-    const isEncryptedConfigError = /encrypted but no passphrase/i.test(e?.message ?? '');
+    const isEncrypted = /encrypted secrets/i.test(e?.message ?? '');
     const isWrongPassphrase = /Decryption failed/i.test(e?.message ?? '');
-    if (!isEncryptedConfigError && !isWrongPassphrase) {
+    if (!isEncrypted && !isWrongPassphrase) {
       throw e;
     }
     if (!process.stdin.isTTY) {
@@ -342,7 +435,7 @@ async function loadConfigWithPrompt(name: string) {
       },
     ]);
     try {
-      return loadConfig(name, passphrase);
+      return await loadAgent(name, cwd, passphrase);
     } catch (e: any) {
       if (!/Decryption failed/i.test(e?.message ?? '')) {
         throw e;

@@ -2,8 +2,7 @@
  * Job recovery ledger - persistent JSON storage for crash recovery.
  */
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { dirname } from 'node:path';
 
 export type LedgerStatus = 'paid' | 'executed' | 'delivered' | 'failed';
 
@@ -34,8 +33,13 @@ export class JobLedger {
   private entries = new Map<string, LedgerEntry>();
   private path: string;
 
-  constructor(agentName: string) {
-    this.path = join(homedir(), '.elisym', 'agents', agentName, 'jobs.json');
+  /**
+   * @param ledgerPath absolute path to the ledger file
+   *   (typically `<agentDir>/.jobs.json`). Caller is responsible for
+   *   resolving the agent directory via `@elisym/sdk/agent-store`.
+   */
+  constructor(ledgerPath: string) {
+    this.path = ledgerPath;
     this.load();
   }
 

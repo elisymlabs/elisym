@@ -1,5 +1,5 @@
-import { mkdirSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
@@ -52,7 +52,6 @@ vi.mock('bs58', () => ({
   },
 }));
 
-let testAgentName: string;
 let agentDir: string;
 let ledger: JobLedger;
 
@@ -131,10 +130,8 @@ const freeConfig: RuntimeConfig = {
 
 beforeEach(() => {
   mockVerifyResult = { verified: true, txSignature: 'tx123' };
-  testAgentName = `test-rt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  agentDir = join(homedir(), '.elisym', 'agents', testAgentName);
-  mkdirSync(agentDir, { recursive: true });
-  ledger = new JobLedger(testAgentName);
+  agentDir = mkdtempSync(join(tmpdir(), 'elisym-runtime-test-'));
+  ledger = new JobLedger(join(agentDir, '.jobs.json'));
 });
 
 afterEach(() => {
@@ -962,7 +959,7 @@ describe('AgentRuntime', () => {
       expect(ledger.getStatus('q-retry-1')).toBe('delivered');
 
       // Third job: still pending, retry NOT incremented
-      const ledger2 = new JobLedger(testAgentName);
+      const ledger2 = new JobLedger(join(agentDir, '.jobs.json'));
       const blocked = ledger2.pendingJobs().find((e) => e.job_id === 'q-retry-2');
       expect(blocked).toBeDefined();
       expect(blocked!.retry_count).toBe(0);

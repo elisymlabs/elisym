@@ -1,22 +1,19 @@
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 
-// JobLedger writes to ~/.elisym/agents/<name>/jobs.json
-// We'll use a unique agent name per test to avoid conflicts
-let testName: string;
-let agentDir: string;
+let tmpDir: string;
+let ledgerPath: string;
 
 beforeEach(() => {
-  testName = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  agentDir = join(homedir(), '.elisym', 'agents', testName);
-  mkdirSync(agentDir, { recursive: true });
+  tmpDir = mkdtempSync(join(tmpdir(), 'elisym-ledger-test-'));
+  ledgerPath = join(tmpDir, '.jobs.json');
 });
 
 afterEach(() => {
-  rmSync(agentDir, { recursive: true, force: true });
+  rmSync(tmpDir, { recursive: true, force: true });
 });
 
 function makeEntry(jobId: string) {
@@ -32,12 +29,12 @@ function makeEntry(jobId: string) {
 
 describe('JobLedger', () => {
   it('starts empty for new agent', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     expect(ledger.pendingJobs()).toEqual([]);
   });
 
   it('records paid job', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job1'));
 
     expect(ledger.getStatus('job1')).toBe('paid');
@@ -45,7 +42,7 @@ describe('JobLedger', () => {
   });
 
   it('transitions through states', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job1'));
     expect(ledger.getStatus('job1')).toBe('paid');
 
@@ -58,7 +55,7 @@ describe('JobLedger', () => {
   });
 
   it('marks failed', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job1'));
     ledger.markFailed('job1');
     expect(ledger.getStatus('job1')).toBe('failed');
@@ -66,7 +63,7 @@ describe('JobLedger', () => {
   });
 
   it('increments retry count', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job1'));
     ledger.incrementRetry('job1');
     ledger.incrementRetry('job1');
@@ -76,23 +73,23 @@ describe('JobLedger', () => {
   });
 
   it('persists across instances', () => {
-    const ledger1 = new JobLedger(testName);
+    const ledger1 = new JobLedger(ledgerPath);
     ledger1.recordPaid(makeEntry('job1'));
     ledger1.markExecuted('job1', 'cached result');
 
     // New instance reads from disk
-    const ledger2 = new JobLedger(testName);
+    const ledger2 = new JobLedger(ledgerPath);
     expect(ledger2.getStatus('job1')).toBe('executed');
     expect(ledger2.pendingJobs()).toHaveLength(1);
   });
 
   it('returns undefined for unknown jobs', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     expect(ledger.getStatus('nonexistent')).toBeUndefined();
   });
 
   it('pending includes paid and executed only', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('j1'));
     ledger.recordPaid(makeEntry('j2'));
     ledger.recordPaid(makeEntry('j3'));
@@ -108,20 +105,20 @@ describe('JobLedger', () => {
   });
 
   it('updates payment info', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job1'));
 
     ledger.updatePayment('job1', 9_700_000, '{"recipient":"addr"}');
 
     // Verify via new instance (persistence)
-    const ledger2 = new JobLedger(testName);
+    const ledger2 = new JobLedger(ledgerPath);
     const pending = ledger2.pendingJobs();
     expect(pending[0]!.net_amount).toBe(9_700_000);
     expect(pending[0]!.payment_request).toBe('{"recipient":"addr"}');
   });
 
   it('stores payment_request without overwriting net_amount', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job1'));
 
     // Early store: only payment_request, net_amount stays undefined
@@ -142,7 +139,7 @@ describe('JobLedger', () => {
   });
 
   it('rejects invalid state transitions', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job1'));
     ledger.markDelivered('job1');
     // delivered -> delivered is invalid, should be no-op (stays paid)
@@ -157,7 +154,8 @@ describe('JobLedger', () => {
     expect(ledger.getStatus('job1')).toBe('executed');
 
     // Test that failed is terminal
-    const ledger2 = new JobLedger(testName);
+    const otherPath = join(tmpDir, '.jobs-2.json');
+    const ledger2 = new JobLedger(otherPath);
     ledger2.recordPaid(makeEntry('job2'));
     ledger2.markFailed('job2');
     expect(ledger2.getStatus('job2')).toBe('failed');
@@ -168,7 +166,7 @@ describe('JobLedger', () => {
   });
 
   it('recordPaid does not overwrite existing entries', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job1'));
     ledger.markExecuted('job1', 'result');
     expect(ledger.getStatus('job1')).toBe('executed');
@@ -184,15 +182,11 @@ describe('JobLedger', () => {
   });
 
   it('markFailed does not throw on flush error', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job1'));
 
     // Replace flush to simulate disk full
-    const originalFlush = ledger.flush.bind(ledger);
-    let flushCalls = 0;
     ledger.flush = () => {
-      flushCalls++;
-      // Let the first flush (from markFailed's transition) throw
       throw new Error('ENOSPC: no space left on device');
     };
 
@@ -202,7 +196,7 @@ describe('JobLedger', () => {
   });
 
   it('gc removes old delivered/failed entries', () => {
-    const ledger = new JobLedger(testName);
+    const ledger = new JobLedger(ledgerPath);
     const oldEntry = {
       ...makeEntry('old'),
       created_at: Math.floor(Date.now() / 1000) - 86400 * 30,
