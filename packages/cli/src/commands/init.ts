@@ -108,36 +108,18 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   }
 
   // Step 2: Agent name (arg > prompt).
-  let name = nameArg;
-  if (!name) {
-    const { inputName } = await inquirer.prompt([
-      {
-        type: 'input',
-        name: 'inputName',
-        message: 'Agent name:',
-        validate: (value: string) => {
-          try {
-            validateAgentName(value);
-            return true;
-          } catch (e: any) {
-            return e.message;
-          }
-        },
-      },
-    ]);
-    name = inputName;
-  }
-  validateAgentName(name!);
+  const agentName = await resolveAgentName(nameArg, inquirer);
 
   // Step 3: Shadow / overwrite checks.
   const target = pickTarget(options, cwd);
-  const sameLocation = target === 'home' ? resolveInHome(name!) : resolveInProject(name!, cwd);
+  const sameLocation =
+    target === 'home' ? resolveInHome(agentName) : resolveInProject(agentName, cwd);
   if (sameLocation) {
     const { overwrite } = await inquirer.prompt([
       {
         type: 'confirm',
         name: 'overwrite',
-        message: `Agent "${name}" already exists at ${sameLocation}. Overwrite secrets?`,
+        message: `Agent "${agentName}" already exists at ${sameLocation}. Overwrite secrets?`,
         default: false,
       },
     ]);
@@ -145,12 +127,12 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
       console.log('Aborted.');
       return;
     }
-  } else if (target === 'project' && resolveInHome(name!)) {
+  } else if (target === 'project' && resolveInHome(agentName)) {
     const { shadow } = await inquirer.prompt([
       {
         type: 'confirm',
         name: 'shadow',
-        message: `A global agent "${name}" exists in ~/.elisym/${name}/. Create a project-local shadow?`,
+        message: `A global agent "${agentName}" exists in ~/.elisym/${agentName}/. Create a project-local shadow?`,
         default: true,
       },
     ]);
@@ -158,12 +140,12 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
       console.log('Aborted.');
       return;
     }
-  } else if (target === 'home' && resolveInProject(name!, cwd)) {
+  } else if (target === 'home' && resolveInProject(agentName, cwd)) {
     const { proceed } = await inquirer.prompt([
       {
         type: 'confirm',
         name: 'proceed',
-        message: `A project-local agent "${name}" exists. Create a global agent with the same name?`,
+        message: `A project-local agent "${agentName}" exists. Create a global agent with the same name?`,
         default: true,
       },
     ]);
@@ -173,10 +155,20 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
     }
   }
 
-  // Step 4: Build YAML (from template or interactive prompts).
-  const yaml: ElisymYaml = template ?? (await promptYaml(inquirer, name!));
+  // Step 4: Build YAML. If a template was loaded, reuse it; otherwise prompt
+  // interactively. promptYaml also returns the API key it collected so we
+  // don't re-prompt in Step 5.
+  let yaml: ElisymYaml;
+  let promptedApiKey: string | undefined;
+  if (template) {
+    yaml = template;
+  } else {
+    const result = await promptYaml(inquirer);
+    yaml = result.yaml;
+    promptedApiKey = result.apiKey;
+  }
 
-  // Step 5: LLM API key (from env if available, else prompt if LLM is configured).
+  // Step 5: LLM API key (from env, then reuse prompt-collected key, else prompt).
   let llmApiKey: string | undefined;
   if (yaml.llm) {
     const envKey =
@@ -188,6 +180,8 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
       console.log(
         `  Using ${yaml.llm.provider === 'anthropic' ? 'ANTHROPIC' : 'OPENAI'}_API_KEY from environment.`,
       );
+    } else if (promptedApiKey) {
+      llmApiKey = promptedApiKey;
     } else {
       const { apiKey } = await inquirer.prompt([
         {
@@ -230,7 +224,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   const nostrSecretHex = Buffer.from(nostrSecretBytes).toString('hex');
 
   // Step 8: Create agent directory + write files.
-  const created = await createAgentDir({ target, name: name!, cwd });
+  const created = await createAgentDir({ target, name: agentName, cwd });
   await writeYaml(created.dir, yaml);
   await writeSecrets(
     created.dir,
@@ -242,7 +236,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   );
 
   const npub = nip19.npubEncode(nostrPubkey);
-  console.log(`\n  Agent "${name}" created (${target}).`);
+  console.log(`\n  Agent "${agentName}" created (${target}).`);
   console.log(`  Location: ${created.dir}`);
   console.log(`  Nostr:    ${npub}`);
   if (yaml.payments[0]?.address) {
@@ -254,7 +248,36 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   console.log();
 }
 
-async function promptYaml(inquirer: { prompt: any }, _name: string): Promise<ElisymYaml> {
+async function resolveAgentName(
+  nameArg: string | undefined,
+  inquirer: { prompt: any },
+): Promise<string> {
+  if (nameArg) {
+    validateAgentName(nameArg);
+    return nameArg;
+  }
+  const { inputName } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'inputName',
+      message: 'Agent name:',
+      validate: (value: string) => {
+        try {
+          validateAgentName(value);
+          return true;
+        } catch (e: any) {
+          return e.message;
+        }
+      },
+    },
+  ]);
+  validateAgentName(inputName);
+  return inputName;
+}
+
+async function promptYaml(inquirer: {
+  prompt: any;
+}): Promise<{ yaml: ElisymYaml; apiKey?: string }> {
   const { description } = await inquirer.prompt([
     {
       type: 'input',
@@ -320,21 +343,21 @@ async function promptYaml(inquirer: { prompt: any }, _name: string): Promise<Eli
 
   const envKey =
     llmProvider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : process.env.OPENAI_API_KEY;
-  let probeKey = envKey ?? '';
-  if (!probeKey) {
-    const { probe } = await inquirer.prompt([
+  let apiKey: string | undefined = envKey;
+  if (!apiKey) {
+    const { promptedKey } = await inquirer.prompt([
       {
         type: 'password',
-        name: 'probe',
-        message: `${llmProvider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API key (used to list models):`,
+        name: 'promptedKey',
+        message: `${llmProvider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API key:`,
         mask: '*',
       },
     ]);
-    probeKey = probe;
+    apiKey = promptedKey || undefined;
   }
 
   console.log('  Fetching available models...');
-  const models = await fetchModels(llmProvider, probeKey);
+  const models = await fetchModels(llmProvider, apiKey ?? '');
   const { model } = await inquirer.prompt([
     {
       type: 'list',
@@ -363,5 +386,7 @@ async function promptYaml(inquirer: { prompt: any }, _name: string): Promise<Eli
     llm: { provider: llmProvider, model, max_tokens: maxTokens },
     security: {},
   });
-  return yaml;
+  // envKey is returned only when the user explicitly typed it (not when
+  // pulled from process.env) - the env-var path is handled in cmdInit Step 5.
+  return { yaml, apiKey: envKey ? undefined : apiKey };
 }

@@ -44,42 +44,24 @@ import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
 import { startWatchdog } from '../watchdog.js';
 
-export async function cmdStart(name: string | undefined): Promise<void> {
+export async function cmdStart(nameArg: string | undefined): Promise<void> {
   const cwd = process.cwd();
 
   // -- Step 1: Resolve agent name --
-  if (!name) {
-    const agents = await listAgents(cwd);
-    if (agents.length === 0) {
-      console.log('No agents configured. Run `elisym init` first.');
-      process.exit(1);
-    }
-    const { default: inquirer } = await import('inquirer');
-    const choices = [
-      ...agents.map((agent) => ({
-        name: `${agent.name} (${agent.source}${agent.shadowsGlobal ? ' - shadows global' : ''})`,
-        value: agent.name,
-      })),
-      { name: '+ Create new agent', value: '__new__' },
-    ];
-    const { selected } = await inquirer.prompt([
-      { type: 'list', name: 'selected', message: 'Select agent to start', choices },
-    ]);
-    if (selected === '__new__') {
-      const { cmdInit } = await import('./init.js');
-      await cmdInit();
-      return;
-    }
-    name = selected;
+  const agentName = await resolveStartAgentName(nameArg, cwd);
+  if (!agentName) {
+    return;
   }
 
   // -- Step 2: Load agent (with optional passphrase for encrypted keys) --
-  const loaded = await loadAgentWithPrompt(name!, cwd);
+  const loaded = await loadAgentWithPrompt(agentName, cwd);
 
   // -- Step 3: Banner --
-  console.log(`\n  Starting agent ${name} (${loaded.source})...\n`);
+  console.log(`\n  Starting agent ${agentName} (${loaded.source})...\n`);
   if (loaded.shadowsGlobal) {
-    console.log(`  ! Using project-local ${name} (shadows global agent in ~/.elisym/${name}/)\n`);
+    console.log(
+      `  ! Using project-local ${agentName} (shadows global agent in ~/.elisym/${agentName}/)\n`,
+    );
   }
 
   // -- Step 4: Resolve Solana address and show balance --
@@ -162,7 +144,7 @@ export async function cmdStart(name: string | undefined): Promise<void> {
 
   const skillCtx: SkillContext = {
     llm,
-    agentName: name!,
+    agentName,
     agentDescription: loaded.yaml.description ?? '',
   };
 
@@ -223,7 +205,7 @@ export async function cmdStart(name: string | undefined): Promise<void> {
   try {
     await client.discovery.publishProfile(
       identity,
-      name!,
+      agentName,
       loaded.yaml.description ?? '',
       pictureUrl,
       bannerUrl,
@@ -408,6 +390,41 @@ function isRemoteUrl(value: string): boolean {
 }
 
 const MAX_PASSPHRASE_ATTEMPTS = 3;
+
+/**
+ * Resolve the agent to start. Returns undefined when the user picked
+ * "+ Create new agent" and the init wizard ran - the caller should exit.
+ */
+async function resolveStartAgentName(
+  nameArg: string | undefined,
+  cwd: string,
+): Promise<string | undefined> {
+  if (nameArg) {
+    return nameArg;
+  }
+  const agents = await listAgents(cwd);
+  if (agents.length === 0) {
+    console.log('No agents configured. Run `elisym init` first.');
+    process.exit(1);
+  }
+  const { default: inquirer } = await import('inquirer');
+  const choices = [
+    ...agents.map((agent) => ({
+      name: `${agent.name} (${agent.source}${agent.shadowsGlobal ? ' - shadows global' : ''})`,
+      value: agent.name,
+    })),
+    { name: '+ Create new agent', value: '__new__' },
+  ];
+  const { selected } = await inquirer.prompt([
+    { type: 'list', name: 'selected', message: 'Select agent to start', choices },
+  ]);
+  if (selected === '__new__') {
+    const { cmdInit } = await import('./init.js');
+    await cmdInit();
+    return undefined;
+  }
+  return selected;
+}
 
 async function loadAgentWithPrompt(name: string, cwd: string): Promise<LoadedAgent> {
   const envPassphrase = process.env.ELISYM_PASSPHRASE;
