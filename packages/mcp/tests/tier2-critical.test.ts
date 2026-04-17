@@ -1,7 +1,6 @@
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig } from '@elisym/sdk/node';
 /**
  * Tier 2 CRITICAL regression tests.
  */
@@ -49,6 +48,7 @@ describe('withdrawal nonce', () => {
       id: 'abc',
       agentName: 'a',
       destination: 'dest',
+      amountRaw: '1',
       lamports: 1_000_000n,
       createdAt: Date.now(),
     });
@@ -64,6 +64,7 @@ describe('withdrawal nonce', () => {
       id: 'old',
       agentName: 'a',
       destination: 'dest',
+      amountRaw: '1',
       lamports: 1n,
       createdAt: Date.now() - AgentContext.NONCE_TTL_MS - 1,
     });
@@ -94,7 +95,6 @@ describe('config security flags', () => {
     await saveAgentConfig('sec-agent', {
       name: 'sec-agent',
       description: 'test',
-      capabilities: [{ name: 'demo', description: 'demo', tags: ['demo'], price: 0 }],
       relays: ['wss://relay.damus.io'],
       nostrSecretKey: '0'.repeat(64),
       network: 'devnet',
@@ -110,7 +110,6 @@ describe('config security flags', () => {
     await saveAgentConfig('default-sec', {
       name: 'default-sec',
       description: 'test',
-      capabilities: [{ name: 'demo', description: 'demo', tags: ['demo'], price: 0 }],
       relays: ['wss://relay.damus.io'],
       nostrSecretKey: '0'.repeat(64),
       network: 'devnet',
@@ -124,10 +123,10 @@ describe('config security flags', () => {
     await saveAgentConfig('merge-sec', {
       name: 'merge-sec',
       description: 'test',
-      capabilities: [{ name: 'demo', description: 'demo', tags: ['demo'], price: 0 }],
       relays: ['wss://relay.damus.io'],
       nostrSecretKey: '0'.repeat(64),
       solanaSecretKey: 'z'.repeat(87),
+      solanaAddress: 'CYWTDfv5keEpddQRkpYCuSGkzPkMRh2UWsw7zrgoC4QP',
       network: 'devnet',
       security: { agent_switch_enabled: true },
     });
@@ -141,43 +140,44 @@ describe('config security flags', () => {
     expect(reloaded.security.agent_switch_enabled).toBe(true);
   });
 
-  it('network from wallet.network is propagated into AgentConfigData', async () => {
+  it('payments[].network propagates into AgentConfigData', async () => {
     await saveAgentConfig('net-agent', {
       name: 'net-agent',
       description: 'test',
-      capabilities: [{ name: 'demo', description: 'demo', tags: ['demo'], price: 0 }],
       relays: ['wss://relay.damus.io'],
       nostrSecretKey: '0'.repeat(64),
       solanaSecretKey: 'z'.repeat(87),
+      solanaAddress: 'CYWTDfv5keEpddQRkpYCuSGkzPkMRh2UWsw7zrgoC4QP',
       network: 'devnet',
     });
     const loaded = await loadAgentConfig('net-agent');
     expect(loaded.network).toBe('devnet');
-    // Also verify the raw config is parseable
-    const raw = await readFile(
-      join(process.env.HOME!, '.elisym', 'agents', 'net-agent', 'config.json'),
-      'utf-8',
-    );
-    const parsed = parseConfig(raw);
-    expect(parsed.wallet?.network).toBe('devnet');
+    expect(loaded.payments?.[0]?.network).toBe('devnet');
   });
 
-  it('rejects loading a legacy mainnet config with a migration hint', async () => {
-    // Manually stage a pre-existing mainnet config on disk. saveAgentConfig now only
-    // accepts SolanaNetwork=devnet, so we write raw JSON to simulate the upgrade path.
+  it('rejects loading a YAML that declares a non-devnet network', async () => {
+    // Simulate a hand-edited or legacy YAML with mainnet - Zod in agent-store
+    // rejects it with a clear error before the MCP adapter gets a chance.
     const { mkdir, writeFile } = await import('node:fs/promises');
-    const dir = join(tmpHome, '.elisym', 'agents', 'legacy-mainnet');
+    const dir = join(tmpHome, '.elisym', 'legacy-mainnet');
     await mkdir(dir, { recursive: true });
     await writeFile(
-      join(dir, 'config.json'),
-      JSON.stringify({
-        identity: { secret_key: '0'.repeat(64), name: 'legacy-mainnet', description: 'old' },
-        relays: ['wss://relay.damus.io'],
-        capabilities: [],
-        wallet: { chain: 'solana', network: 'mainnet', secret_key: 'z'.repeat(87) },
-      }),
+      join(dir, 'elisym.yaml'),
+      [
+        'description: old',
+        'relays: [wss://relay.damus.io]',
+        'payments:',
+        '  - chain: solana',
+        '    network: mainnet',
+        '    address: CYWTDfv5keEpddQRkpYCuSGkzPkMRh2UWsw7zrgoC4QP',
+        '',
+      ].join('\n'),
     );
-    await expect(loadAgentConfig('legacy-mainnet')).rejects.toThrow(/mainnet/i);
+    await writeFile(
+      join(dir, '.secrets.json'),
+      JSON.stringify({ nostr_secret_key: '0'.repeat(64) }),
+    );
+    await expect(loadAgentConfig('legacy-mainnet')).rejects.toThrow();
   });
 });
 
@@ -206,7 +206,6 @@ describe('encryption', () => {
     await saveAgentConfig('enc-agent', {
       name: 'enc-agent',
       description: 'test',
-      capabilities: [{ name: 'demo', description: 'demo', tags: ['demo'], price: 0 }],
       relays: ['wss://relay.damus.io'],
       nostrSecretKey: 'a'.repeat(64),
       network: 'devnet',
@@ -226,7 +225,6 @@ describe('encryption', () => {
     await saveAgentConfig('plain-agent', {
       name: 'plain-agent',
       description: 'test',
-      capabilities: [{ name: 'demo', description: 'demo', tags: ['demo'], price: 0 }],
       relays: ['wss://relay.damus.io'],
       nostrSecretKey: 'b'.repeat(64),
       network: 'devnet',
@@ -240,7 +238,6 @@ describe('encryption', () => {
     await saveAgentConfig('env-enc', {
       name: 'env-enc',
       description: 'test',
-      capabilities: [{ name: 'demo', description: 'demo', tags: ['demo'], price: 0 }],
       relays: ['wss://relay.damus.io'],
       nostrSecretKey: 'c'.repeat(64),
       network: 'devnet',

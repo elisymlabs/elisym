@@ -189,7 +189,7 @@ program
     console.log(`  Solana: ${solanaSigner.address}`);
     console.log(`  Network: ${options.network}`);
     console.log(`  Encrypted: ${passphrase ? 'yes' : 'no'}`);
-    console.log(`  Config: ~/.elisym/agents/${name}/config.json`);
+    console.log(`  Config: ~/.elisym/${name}/elisym.yaml`);
     if (passphrase) {
       console.log(`  Note: set ELISYM_PASSPHRASE before launching the MCP server.`);
     }

@@ -115,7 +115,7 @@ export const agentTools: ToolDefinition[] = [
     name: 'create_agent',
     description:
       'Create a new agent identity. Generates Nostr keypair and Solana wallet, ' +
-      'saves config to ~/.elisym/agents/<name>/. When activate=true (default), the ' +
+      'saves config to ~/.elisym/<name>/. When activate=true (default), the ' +
       'current active agent must have `security.agent_switch_enabled` set to true, ' +
       'otherwise the new agent is created but NOT activated (pass activate=false or ' +
       'run `elisym-mcp enable-agent-switch <current-agent>`).',
