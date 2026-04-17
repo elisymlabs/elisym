@@ -157,6 +157,14 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     const expectedFee = calculateProtocolFee(data.amount, config.feeBps);
     const treasury = config.treasury;
 
+    // feeBps=0 is a legal on-chain state (set_fee_bps only enforces <= MAX_FEE_BPS).
+    // createPaymentRequest still populates fee_address=treasury and fee_amount=0 in
+    // that case, which does not match either of the hasFee branches below. Mirror the
+    // `expectedFee > 0` guard in verifyPayment so both code paths agree.
+    if (expectedFee === 0) {
+      return null;
+    }
+
     const { fee_address, fee_amount } = data;
     const hasFeeAddress = typeof fee_address === 'string' && fee_address.length > 0;
     const hasFeeAmount = typeof fee_amount === 'number' && fee_amount > 0;

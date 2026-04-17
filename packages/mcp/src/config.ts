@@ -41,11 +41,23 @@ export interface AgentConfigData {
 }
 
 /**
- * Narrow a user-supplied string to a SolanaNetwork. Defaults to `devnet` for unknown
- * values so a freshly-migrated config does not silently broadcast to mainnet.
+ * Narrow a user-supplied string to a SolanaNetwork. Only `devnet` is supported
+ * at the moment; mainnet configs written by older versions throw a migration
+ * error so the user can reissue the agent explicitly instead of silently being
+ * downgraded.
  */
-function coerceNetwork(raw: string | undefined): SolanaNetwork {
-  return raw === 'mainnet' ? 'mainnet' : 'devnet';
+function coerceNetwork(raw: string | undefined, agentName: string): SolanaNetwork {
+  if (raw === undefined || raw === 'devnet') {
+    return 'devnet';
+  }
+  if (raw === 'mainnet') {
+    throw new Error(
+      `Agent "${agentName}" is configured for mainnet, which is not supported until the ` +
+        `elisym-config program is deployed there. Re-create the agent with --network devnet: ` +
+        `rm -rf ~/.elisym/agents/${agentName} && elisym-mcp init ${agentName} --network devnet`,
+    );
+  }
+  throw new Error(`Agent "${agentName}" has unsupported network "${raw}". Expected "devnet".`);
 }
 
 /**
@@ -83,7 +95,7 @@ export async function loadAgentConfig(name: string, passphrase?: string): Promis
     );
   }
 
-  const network = coerceNetwork(config.wallet?.network ?? config.payments?.[0]?.network);
+  const network = coerceNetwork(config.wallet?.network ?? config.payments?.[0]?.network, name);
 
   return {
     nostrSecretKey: config.identity.secret_key,

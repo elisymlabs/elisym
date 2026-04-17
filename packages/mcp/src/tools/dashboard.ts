@@ -7,7 +7,7 @@ import { defineTool, textResult } from './types.js';
 const GetDashboardSchema = z.object({
   top_n: z.number().int().min(1).max(100).default(10),
   chain: z.enum(['solana']).default('solana'),
-  network: z.enum(['devnet', 'mainnet']).optional(),
+  network: z.enum(['devnet']).optional(),
   timeout_secs: z.number().int().min(1).max(60).default(15),
 });
 

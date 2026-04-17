@@ -267,12 +267,43 @@ export function makePaymentFeedbackHandler(opts: {
       );
       return;
     }
-    // Confirmation gate: if no max_price_lamports was set, reject with the price
-    // so the caller can confirm and retry with a limit.
-    if (opts.maxPriceLamports === undefined && amount !== undefined && amount > 0) {
+    // Source of truth for the amount we might sign is the JSON payload, not the
+    // feedback tag. Parse once and gate all subsequent checks on `signedAmount`
+    // so a malicious provider cannot advertise a low tag amount while embedding
+    // a large transfer in the signed request.
+    let parsedRequest: { amount?: unknown };
+    try {
+      parsedRequest = JSON.parse(paymentRequest) as { amount?: unknown };
+    } catch {
+      opts.rejectPayment(new Error('Provider sent a malformed payment_request (not valid JSON).'));
+      return;
+    }
+    const signedAmount =
+      typeof parsedRequest.amount === 'number' &&
+      Number.isInteger(parsedRequest.amount) &&
+      parsedRequest.amount > 0
+        ? parsedRequest.amount
+        : undefined;
+    if (
+      amount !== undefined &&
+      amount > 0 &&
+      signedAmount !== undefined &&
+      amount !== signedAmount
+    ) {
       opts.rejectPayment(
         new Error(
-          `Payment of ${formatSol(BigInt(amount))} required but no max_price_lamports set. ` +
+          `Payment request mismatch: feedback tag amount=${amount} differs from ` +
+            `signed amount=${signedAmount}. Refusing to proceed.`,
+        ),
+      );
+      return;
+    }
+    // Confirmation gate: if no max_price_lamports was set, reject with the price
+    // so the caller can confirm and retry with a limit.
+    if (opts.maxPriceLamports === undefined && signedAmount !== undefined) {
+      opts.rejectPayment(
+        new Error(
+          `Payment of ${formatSol(BigInt(signedAmount))} required but no max_price_lamports set. ` +
             `Retry with max_price_lamports to approve.`,
         ),
       );
@@ -280,12 +311,12 @@ export function makePaymentFeedbackHandler(opts: {
     }
     if (
       opts.maxPriceLamports !== undefined &&
-      amount !== undefined &&
-      amount > opts.maxPriceLamports
+      signedAmount !== undefined &&
+      signedAmount > opts.maxPriceLamports
     ) {
       opts.rejectPayment(
         new Error(
-          `Price ${formatSol(BigInt(amount))} exceeds max ${formatSol(BigInt(opts.maxPriceLamports))}`,
+          `Price ${formatSol(BigInt(signedAmount))} exceeds max ${formatSol(BigInt(opts.maxPriceLamports))}`,
         ),
       );
       return;
@@ -293,7 +324,7 @@ export function makePaymentFeedbackHandler(opts: {
     if (!opts.agent.solanaKeypair) {
       opts.resolveNoWallet(
         `Payment required but no Solana wallet configured.\n` +
-          `Amount: ${amount ? formatSol(BigInt(amount)) : 'unknown'}\n` +
+          `Amount: ${signedAmount !== undefined ? formatSol(BigInt(signedAmount)) : 'unknown'}\n` +
           `Payment request: ${paymentRequest}`,
       );
       return;

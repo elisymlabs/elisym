@@ -5,28 +5,29 @@ import { ElisymClient, ElisymIdentity, getProtocolConfig, getProtocolProgramId }
 import type { ProtocolConfigInput } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 
-/** Supported Solana networks. `testnet` is intentionally excluded. */
-export type SolanaNetwork = 'devnet' | 'mainnet';
+/**
+ * Supported Solana networks. Currently devnet only - mainnet will be re-added
+ * once the elisym-config program is deployed and audited. `testnet` is not
+ * supported.
+ */
+export type SolanaNetwork = 'devnet';
 
 /** Map a network to its RPC endpoint. */
-export function rpcUrlFor(network: SolanaNetwork): string {
-  return network === 'mainnet'
-    ? 'https://api.mainnet-beta.solana.com'
-    : 'https://api.devnet.solana.com';
+export function rpcUrlFor(_network: SolanaNetwork): string {
+  return 'https://api.devnet.solana.com';
 }
 
 /** Fetch on-chain protocol config (fee, treasury) for a given network. */
-export async function fetchProtocolConfig(network: string): Promise<ProtocolConfigInput> {
-  const cluster = network === 'mainnet' ? 'mainnet' : 'devnet';
-  const programId = getProtocolProgramId(cluster);
-  const rpc = createSolanaRpc(rpcUrlFor(cluster));
+export async function fetchProtocolConfig(_network: SolanaNetwork): Promise<ProtocolConfigInput> {
+  const programId = getProtocolProgramId('devnet');
+  const rpc = createSolanaRpc(rpcUrlFor('devnet'));
   const config = await getProtocolConfig(rpc, programId, { forceRefresh: true });
   return { feeBps: config.feeBps, treasury: config.treasury };
 }
 
 /** Map a network to the explorer cluster query-string value. */
-export function explorerClusterFor(network: SolanaNetwork): string {
-  return network === 'mainnet' ? 'mainnet-beta' : 'devnet';
+export function explorerClusterFor(_network: SolanaNetwork): string {
+  return 'devnet';
 }
 
 /**

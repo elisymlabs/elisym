@@ -164,17 +164,14 @@ export async function cmdInit(): Promise<void> {
     },
   ]);
 
-  // Step 4b: Solana network
+  // Step 4b: Solana network - only devnet is supported until the elisym-config
+  // program ships on mainnet.
   const { network } = await inquirer.prompt([
     {
       type: 'list',
       name: 'network',
       message: 'Solana network:',
-      choices: [
-        { name: 'devnet', value: 'devnet' },
-        { name: 'testnet', value: 'testnet' },
-        { name: 'mainnet', value: 'mainnet' },
-      ],
+      choices: [{ name: 'devnet', value: 'devnet' }],
       default: 'devnet',
     },
   ]);

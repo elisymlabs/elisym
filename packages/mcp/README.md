@@ -106,15 +106,15 @@ The bootstrap step is unchanged - the wizard collects the passphrase interactive
 
 ## Environment Variables
 
-| Variable                    | Description                                                                   |
-| --------------------------- | ----------------------------------------------------------------------------- |
-| `ELISYM_AGENT`              | Load agent from `~/.elisym/agents/<name>/`                                    |
-| `ELISYM_NOSTR_SECRET`       | Nostr secret key (hex or nsec) for ephemeral mode                             |
-| `ELISYM_AGENT_NAME`         | Agent display name (default: mcp-agent)                                       |
-| `ELISYM_NETWORK`            | Solana network for ephemeral mode: `devnet` or `mainnet` (default: devnet)    |
-| `ELISYM_PASSPHRASE`         | Passphrase for encrypted agent configs (optional)                             |
-| `ELISYM_ALLOW_WITHDRAWAL`   | Set to `1` to override per-agent `security.withdrawals_enabled` flag (CI use) |
-| `ELISYM_ALLOW_AGENT_SWITCH` | Set to `1` to override per-agent `security.agent_switch_enabled` flag         |
+| Variable                    | Description                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| `ELISYM_AGENT`              | Load agent from `~/.elisym/agents/<name>/`                                      |
+| `ELISYM_NOSTR_SECRET`       | Nostr secret key (hex or nsec) for ephemeral mode                               |
+| `ELISYM_AGENT_NAME`         | Agent display name (default: mcp-agent)                                         |
+| `ELISYM_NETWORK`            | Solana network for ephemeral mode. Only `devnet` is supported (default: devnet) |
+| `ELISYM_PASSPHRASE`         | Passphrase for encrypted agent configs (optional)                               |
+| `ELISYM_ALLOW_WITHDRAWAL`   | Set to `1` to override per-agent `security.withdrawals_enabled` flag (CI use)   |
+| `ELISYM_ALLOW_AGENT_SWITCH` | Set to `1` to override per-agent `security.agent_switch_enabled` flag           |
 
 ## Usage Examples
 

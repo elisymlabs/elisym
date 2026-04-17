@@ -138,7 +138,7 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
           type: 'list',
           name: 'network',
           message: 'Network:',
-          choices: ['devnet', 'testnet', 'mainnet'],
+          choices: ['devnet'],
           default: currentNetwork,
         },
       ]);

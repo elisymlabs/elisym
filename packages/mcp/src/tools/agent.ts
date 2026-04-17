@@ -39,7 +39,10 @@ const CreateAgentSchema = z.object({
   // customer-mode in 0.1.x and never publishes a NIP-89 capability card,
   // so an advertised capability list would be misleading. Provider-mode
   // (0.2.0) will reintroduce this field.
-  network: z.enum(['devnet', 'mainnet']).default('devnet'),
+  // Only devnet is supported until the elisym-config program ships on mainnet.
+  // Mainnet was previously advertised here but every paid flow then crashed at
+  // payment time - rejecting at schema level surfaces the error up front.
+  network: z.enum(['devnet']).default('devnet'),
   passphrase: z
     .string()
     .optional()
