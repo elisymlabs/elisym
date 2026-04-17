@@ -4,4 +4,3 @@
  * Do NOT import this in browser code.
  */
 export { encryptSecret, decryptSecret, isEncrypted } from './primitives/encryption';
-export { parseConfig } from './primitives/config-node';

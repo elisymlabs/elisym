@@ -35,7 +35,7 @@ export type { GetProtocolConfigOptions, ProtocolConfig } from './config/onchain'
 export { ElisymIdentity } from './primitives/identity';
 export { nip44Encrypt, nip44Decrypt } from './primitives/crypto';
 export { formatSol, timeAgo, truncateKey } from './primitives/format';
-export { validateAgentName, serializeConfig } from './primitives/config';
+export { validateAgentName } from './primitives/config';
 export { BoundedSet } from './primitives/bounded-set';
 
 // --- Constants ---
@@ -88,11 +88,4 @@ export type {
   // Client
   ElisymClientConfig,
   SubCloser,
-  // Agent Config (on-disk)
-  Identity,
-  Capability,
-  PaymentAddress,
-  WalletConfig,
-  LlmConfig,
-  AgentConfig,
 } from './types';
