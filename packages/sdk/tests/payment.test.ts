@@ -8,7 +8,14 @@ import {
   getAddressDecoder,
 } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
-import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY, calculateProtocolFee, buildPaymentInstructions, SolanaPaymentStrategy, ProtocolConfigInput } from '../src';
+import {
+  PROTOCOL_FEE_BPS,
+  PROTOCOL_TREASURY,
+  calculateProtocolFee,
+  buildPaymentInstructions,
+  SolanaPaymentStrategy,
+  ProtocolConfigInput,
+} from '../src';
 
 const RANDOM_ADDRESS_BYTES = 32;
 const ADDRESS_DECODER = getAddressDecoder();
