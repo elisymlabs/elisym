@@ -5,7 +5,7 @@ startCommand:
     properties:
       agentName:
         type: string
-        description: "Name of an elisym agent identity (pre-created via 'npx @elisym/mcp init'). Reads config from ~/.elisym/agents/<name>/config.json"
+        description: "Name of an elisym agent identity (pre-created via 'npx @elisym/mcp init'). Reads config from ~/.elisym/<name>/elisym.yaml"
       passphrase:
         type: string
         description: 'Passphrase to decrypt encrypted agent configs (optional, required only if config was encrypted at init)'

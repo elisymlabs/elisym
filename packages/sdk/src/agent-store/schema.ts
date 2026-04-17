@@ -58,7 +58,7 @@ export type LlmEntry = z.infer<typeof LlmSchema>;
 export type SecurityFlags = z.infer<typeof SecurityFlagsSchema>;
 
 /**
- * secrets.json schema. Private - в gitignore.
+ * secrets.json schema. Private - .gitignore.
  * Values may be plaintext or `encrypted:v1:...` blobs (AES-256-GCM + scrypt).
  */
 export const SecretsSchema = z

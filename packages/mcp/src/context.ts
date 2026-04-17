@@ -61,7 +61,7 @@ class RateLimiter {
   }
 }
 
-/** Per-agent security flags. Stored in config.json `security` block. */
+/** Per-agent security flags. Stored in elisym.yaml `security` block. */
 export interface AgentSecurityFlags {
   withdrawals_enabled?: boolean;
   agent_switch_enabled?: boolean;

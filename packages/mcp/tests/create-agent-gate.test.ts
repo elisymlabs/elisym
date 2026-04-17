@@ -4,7 +4,7 @@
  * injection could force a pivot to a freshly generated wallet without any gate.
  *
  * These tests use a tmp $HOME so config files don't collide with the developer's
- * real ~/.elisym/agents directory.
+ * real ~/.elisym directory.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

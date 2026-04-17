@@ -21,7 +21,7 @@
       "environmentVariables": [
         {
           "name": "ELISYM_AGENT",
-          "description": "Name of an elisym agent identity (reads config from ~/.elisym/agents/<name>/config.json)",
+          "description": "Name of an elisym agent identity (reads config from ~/.elisym/<name>/elisym.yaml)",
           "isRequired": false,
           "isSecret": false
         },
