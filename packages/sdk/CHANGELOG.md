@@ -1,6 +1,39 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.5.0
+
+### Breaking changes
+
+- Removed `parseConfig` (from `@elisym/sdk/node`) and `serializeConfig`. Agent
+  config I/O now goes through the new `@elisym/sdk/agent-store` subpath, which
+  reads/writes `elisym.yaml` (public) + `.secrets.json` (private) in the
+  `.elisym/<name>/` layout.
+- Removed the `AgentConfig`, `Identity`, `Capability`, `PaymentAddress`,
+  `WalletConfig`, and `LlmConfig` interfaces. Use `ElisymYaml` / `Secrets` from
+  `@elisym/sdk/agent-store` instead.
+
+### Added
+
+- New `@elisym/sdk/agent-store` subpath (Node.js only):
+  - Zod schemas: `ElisymYamlSchema`, `SecretsSchema`, `MediaCacheSchema`.
+  - Path helpers: `findProjectElisymDir` (walk-up to first `.git` or `$HOME`),
+    `homeElisymDir`, `agentPaths`.
+  - Resolver: `resolveAgent` (project-local beats home-global; tracks
+    `shadowsGlobal`), `resolveInProject`, `resolveInHome`.
+  - Loader: `loadAgent` (parses YAML + secrets, decrypts, falls back to
+    `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env when `llm_api_key` is absent).
+  - Writer: `createAgentDir` (auto-generates `.gitignore` for project-local),
+    `writeYaml`, `writeSecrets` (atomic, 0o600 for secrets).
+  - Listing: `listAgents` (union of project + home, dedup with project
+    precedence).
+  - Media cache: `readMediaCache`, `writeMediaCache`, `hashFile`,
+    `lookupCachedUrl`, `newCacheEntry` (sha256-keyed, prevents re-uploads).
+
+### Dependencies
+
+- Added `yaml@~2.8.3` and `zod@~3.25.0` as regular dependencies.
+
+## 0.4.0
 
 ### Breaking changes
 
