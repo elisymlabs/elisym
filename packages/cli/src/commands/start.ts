@@ -3,6 +3,7 @@
  * Loads all skills from agentDir/skills/, publishes per-capability cards,
  * processes jobs with per-capability pricing, caches uploaded media URLs.
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import {
@@ -18,7 +19,6 @@ import {
 } from '@elisym/sdk';
 import {
   agentPaths,
-  hashFile,
   listAgents,
   loadAgent,
   lookupCachedUrl,
@@ -391,9 +391,9 @@ async function uploadOrReuse(
     }
     console.log(`  Uploading ${basename(absPath)}...`);
     const data = readFileSync(absPath);
+    const sha256 = createHash('sha256').update(data).digest('hex');
     const blob = new Blob([data]);
     const url = await media.upload(identity, blob, basename(absPath));
-    const sha256 = await hashFile(absPath);
     cache[cacheKey] = newCacheEntry(url, sha256);
     onCacheUpdate();
     console.log(`  Uploaded: ${url}`);
