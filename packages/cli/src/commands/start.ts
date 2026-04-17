@@ -4,7 +4,7 @@
  * processes jobs with per-capability pricing, caches uploaded media URLs.
  */
 import { readFileSync } from 'node:fs';
-import { basename, isAbsolute, join } from 'node:path';
+import { basename, join, relative, resolve, sep } from 'node:path';
 import {
   ElisymClient,
   ElisymIdentity,
@@ -352,8 +352,27 @@ async function resolveMediaField(
   if (isRemoteUrl(value)) {
     return value;
   }
-  const absPath = isAbsolute(value) ? value : join(agentDir, value);
+  const absPath = resolveInsideAgentDir(value, agentDir);
+  if (!absPath) {
+    console.warn(`  ! Skipping media field "${value}": path must stay inside the agent directory.`);
+    return undefined;
+  }
   return uploadOrReuse(value, absPath, cache, media, identity, () => onCacheUpdate(true));
+}
+
+/**
+ * Resolve a YAML-supplied path against `agentDir` and reject anything that
+ * escapes the agent directory (`..` segments, absolute paths outside it).
+ * Returns null on rejection so callers can warn and skip the field.
+ */
+function resolveInsideAgentDir(value: string, agentDir: string): string | null {
+  const agentRoot = resolve(agentDir);
+  const candidate = resolve(agentRoot, value);
+  const rel = relative(agentRoot, candidate);
+  if (rel === '' || rel.startsWith('..') || rel.includes(`..${sep}`)) {
+    return null;
+  }
+  return candidate;
 }
 
 /** Look up `cacheKey` in cache; if hit returns URL, else uploads and updates cache. */
