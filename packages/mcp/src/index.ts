@@ -30,6 +30,21 @@ import { startServer } from './server.js';
 import { buildAgentInstance, exportKeyPairBytes } from './tools/agent.js';
 import { PACKAGE_VERSION } from './utils.js';
 
+/**
+ * Wrap an action handler so any thrown Error surfaces as a single clean line
+ * with exit 1 instead of an unhandled-rejection stack trace.
+ */
+function safe<T extends unknown[]>(fn: (...args: T) => Promise<void>) {
+  return async (...args: T): Promise<void> => {
+    try {
+      await fn(...args);
+    } catch (e) {
+      console.error(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+  };
+}
+
 const program = new Command()
   .name('elisym-mcp')
   .description('MCP server for the elisym agent network')
@@ -37,75 +52,77 @@ const program = new Command()
   .version(PACKAGE_VERSION);
 
 // Default action: start MCP server
-program.action(async () => {
-  const ctx = new AgentContext();
+program.action(
+  safe(async () => {
+    const ctx = new AgentContext();
 
-  // Resolve agent identity
-  const agentName = process.env.ELISYM_AGENT;
-  const nostrSecret = process.env.ELISYM_NOSTR_SECRET;
+    // Resolve agent identity
+    const agentName = process.env.ELISYM_AGENT;
+    const nostrSecret = process.env.ELISYM_NOSTR_SECRET;
 
-  if (agentName) {
-    // Load existing agent from disk
-    try {
-      const config = await loadAgentConfig(agentName);
-      const instance = await buildAgentInstance(agentName, config);
-      ctx.register(instance);
-      console.error(`Loaded agent: ${agentName}`);
-    } catch (e: any) {
-      console.error(`Failed to load agent "${agentName}": ${e.message}`);
-      process.exit(1);
-    }
-  } else if (nostrSecret) {
-    // Ephemeral mode with provided key.
-    let identity;
-    if (nostrSecret.startsWith('nsec')) {
-      const decoded = nip19.decode(nostrSecret);
-      if (decoded.type !== 'nsec') {
-        console.error(`ELISYM_NOSTR_SECRET: expected nsec, got ${decoded.type}`);
-        process.exit(1);
-      }
-      identity = ElisymIdentity.fromSecretKey(decoded.data);
-    } else {
-      identity = ElisymIdentity.fromHex(nostrSecret);
-    }
-    const client = new ElisymClient({ relays: RELAYS });
-    const name = process.env.ELISYM_AGENT_NAME ?? 'mcp-agent';
-    if (process.env.ELISYM_NETWORK && process.env.ELISYM_NETWORK !== 'devnet') {
-      console.error(
-        `ELISYM_NETWORK="${process.env.ELISYM_NETWORK}" is not supported. ` +
-          `Only "devnet" is available until the on-chain protocol program ships on mainnet.`,
-      );
-      process.exit(1);
-    }
-
-    ctx.register({ client, identity, name, network: 'devnet', security: {} });
-    console.error(`Ephemeral agent: ${name} (devnet)`);
-  } else {
-    // default agent selection is deterministic (alphabetical sort) so the
-    // "first" agent doesn't depend on filesystem ordering.
-    const names = (await listAgentNames()).slice().sort();
-    if (names.length > 0) {
-      const name = names[0]!;
+    if (agentName) {
+      // Load existing agent from disk
       try {
-        const config = await loadAgentConfig(name);
-        const instance = await buildAgentInstance(name, config);
+        const config = await loadAgentConfig(agentName);
+        const instance = await buildAgentInstance(agentName, config);
         ctx.register(instance);
-        console.error(`Loaded default agent: ${name} (${instance.network})`);
+        console.error(`Loaded agent: ${agentName}`);
       } catch (e: any) {
-        console.error(`Failed to load agent "${name}": ${e.message}`);
+        console.error(`Failed to load agent "${agentName}": ${e.message}`);
         process.exit(1);
       }
-    } else {
-      // Auto-create ephemeral agent
-      const identity = ElisymIdentity.generate();
+    } else if (nostrSecret) {
+      // Ephemeral mode with provided key.
+      let identity;
+      if (nostrSecret.startsWith('nsec')) {
+        const decoded = nip19.decode(nostrSecret);
+        if (decoded.type !== 'nsec') {
+          console.error(`ELISYM_NOSTR_SECRET: expected nsec, got ${decoded.type}`);
+          process.exit(1);
+        }
+        identity = ElisymIdentity.fromSecretKey(decoded.data);
+      } else {
+        identity = ElisymIdentity.fromHex(nostrSecret);
+      }
       const client = new ElisymClient({ relays: RELAYS });
-      ctx.register({ client, identity, name: 'mcp-agent', network: 'devnet', security: {} });
-      console.error('Created ephemeral agent (no persistent identity, devnet).');
-    }
-  }
+      const name = process.env.ELISYM_AGENT_NAME ?? 'mcp-agent';
+      if (process.env.ELISYM_NETWORK && process.env.ELISYM_NETWORK !== 'devnet') {
+        console.error(
+          `ELISYM_NETWORK="${process.env.ELISYM_NETWORK}" is not supported. ` +
+            `Only "devnet" is available until the on-chain protocol program ships on mainnet.`,
+        );
+        process.exit(1);
+      }
 
-  await startServer(ctx);
-});
+      ctx.register({ client, identity, name, network: 'devnet', security: {} });
+      console.error(`Ephemeral agent: ${name} (devnet)`);
+    } else {
+      // default agent selection is deterministic (alphabetical sort) so the
+      // "first" agent doesn't depend on filesystem ordering.
+      const names = (await listAgentNames()).slice().sort();
+      if (names.length > 0) {
+        const name = names[0]!;
+        try {
+          const config = await loadAgentConfig(name);
+          const instance = await buildAgentInstance(name, config);
+          ctx.register(instance);
+          console.error(`Loaded default agent: ${name} (${instance.network})`);
+        } catch (e: any) {
+          console.error(`Failed to load agent "${name}": ${e.message}`);
+          process.exit(1);
+        }
+      } else {
+        // Auto-create ephemeral agent
+        const identity = ElisymIdentity.generate();
+        const client = new ElisymClient({ relays: RELAYS });
+        ctx.register({ client, identity, name: 'mcp-agent', network: 'devnet', security: {} });
+        console.error('Created ephemeral agent (no persistent identity, devnet).');
+      }
+    }
+
+    await startServer(ctx);
+  }),
+);
 
 // Init subcommand
 program
@@ -117,87 +134,89 @@ program
   // provider-mode (0.2.0) will reintroduce this prompt.
   .option('-n, --network <network>', 'Solana network (devnet only)', 'devnet')
   .option('--install', 'Also install into MCP clients')
-  .action(async (name: string | undefined, options) => {
-    const { default: inquirer } = await import('inquirer');
-    if (!name) {
-      // Interactive mode
-      const answers = await inquirer.prompt([
+  .action(
+    safe(async (name: string | undefined, options) => {
+      const { default: inquirer } = await import('inquirer');
+      if (!name) {
+        // Interactive mode
+        const answers = await inquirer.prompt([
+          {
+            type: 'input',
+            name: 'name',
+            message: 'Agent name:',
+            validate: (v: string) => /^[a-zA-Z0-9_-]+$/.test(v) || 'Alphanumeric, _, - only',
+          },
+          {
+            type: 'input',
+            name: 'description',
+            message: 'Description:',
+            default: 'Elisym MCP agent',
+          },
+          {
+            type: 'list',
+            name: 'network',
+            message: 'Solana network:',
+            // Only devnet is supported until the elisym-config program ships on mainnet.
+            choices: ['devnet'],
+            default: 'devnet',
+          },
+        ]);
+        name = answers.name;
+        options.description = answers.description;
+        options.network = answers.network;
+      }
+
+      if (options.network !== 'devnet') {
+        console.error(
+          `Network must be "devnet", got "${options.network}". ` +
+            `Mainnet is not supported until the on-chain protocol program is deployed.`,
+        );
+        process.exit(1);
+      }
+
+      // optionally encrypt secret keys with a passphrase. Empty passphrase = no encryption.
+      const { passphrase } = await inquirer.prompt([
         {
-          type: 'input',
-          name: 'name',
-          message: 'Agent name:',
-          validate: (v: string) => /^[a-zA-Z0-9_-]+$/.test(v) || 'Alphanumeric, _, - only',
-        },
-        {
-          type: 'input',
-          name: 'description',
-          message: 'Description:',
-          default: 'Elisym MCP agent',
-        },
-        {
-          type: 'list',
-          name: 'network',
-          message: 'Solana network:',
-          // Only devnet is supported until the elisym-config program ships on mainnet.
-          choices: ['devnet'],
-          default: 'devnet',
+          type: 'password',
+          name: 'passphrase',
+          message: 'Passphrase to encrypt secret keys (leave blank for none):',
+          mask: '*',
         },
       ]);
-      name = answers.name;
-      options.description = answers.description;
-      options.network = answers.network;
-    }
 
-    if (options.network !== 'devnet') {
-      console.error(
-        `Network must be "devnet", got "${options.network}". ` +
-          `Mainnet is not supported until the on-chain protocol program is deployed.`,
-      );
-      process.exit(1);
-    }
+      const nostrSecretKey = generateSecretKey();
+      const nostrPubkey = getPublicKey(nostrSecretKey);
+      const solanaSigner = await generateKeyPairSigner(true);
+      const solanaSecretBytes = await exportKeyPairBytes(solanaSigner);
 
-    // optionally encrypt secret keys with a passphrase. Empty passphrase = no encryption.
-    const { passphrase } = await inquirer.prompt([
-      {
-        type: 'password',
-        name: 'passphrase',
-        message: 'Passphrase to encrypt secret keys (leave blank for none):',
-        mask: '*',
-      },
-    ]);
+      await saveAgentConfig(name!, {
+        name: name!,
+        description: options.description,
+        relays: [...RELAYS],
+        nostrSecretKey: Buffer.from(nostrSecretKey).toString('hex'),
+        solanaSecretKey: bs58.encode(solanaSecretBytes),
+        solanaAddress: solanaSigner.address,
+        network: 'devnet',
+        security: { withdrawals_enabled: false, agent_switch_enabled: false },
+        passphrase: passphrase || undefined,
+      });
 
-    const nostrSecretKey = generateSecretKey();
-    const nostrPubkey = getPublicKey(nostrSecretKey);
-    const solanaSigner = await generateKeyPairSigner(true);
-    const solanaSecretBytes = await exportKeyPairBytes(solanaSigner);
+      const npub = nip19.npubEncode(nostrPubkey);
+      console.log(`Agent "${name}" created.`);
+      console.log(`  Nostr: ${npub}`);
+      console.log(`  Solana: ${solanaSigner.address}`);
+      console.log(`  Network: ${options.network}`);
+      console.log(`  Encrypted: ${passphrase ? 'yes' : 'no'}`);
+      console.log(`  Config: ~/.elisym/${name}/elisym.yaml`);
+      if (passphrase) {
+        console.log(`  Note: set ELISYM_PASSPHRASE before launching the MCP server.`);
+      }
 
-    await saveAgentConfig(name!, {
-      name: name!,
-      description: options.description,
-      relays: [...RELAYS],
-      nostrSecretKey: Buffer.from(nostrSecretKey).toString('hex'),
-      solanaSecretKey: bs58.encode(solanaSecretBytes),
-      solanaAddress: solanaSigner.address,
-      network: 'devnet',
-      security: { withdrawals_enabled: false, agent_switch_enabled: false },
-      passphrase: passphrase || undefined,
-    });
-
-    const npub = nip19.npubEncode(nostrPubkey);
-    console.log(`Agent "${name}" created.`);
-    console.log(`  Nostr: ${npub}`);
-    console.log(`  Solana: ${solanaSigner.address}`);
-    console.log(`  Network: ${options.network}`);
-    console.log(`  Encrypted: ${passphrase ? 'yes' : 'no'}`);
-    console.log(`  Config: ~/.elisym/${name}/elisym.yaml`);
-    if (passphrase) {
-      console.log(`  Note: set ELISYM_PASSPHRASE before launching the MCP server.`);
-    }
-
-    if (options.install) {
-      await runInstall({ agent: name });
-    }
-  });
+      if (options.install) {
+        await runInstall({ agent: name });
+      }
+    }),
+  );
 
 // Install subcommand
 program
@@ -206,13 +225,15 @@ program
   .option('--client <name>', 'Specific client (claude-desktop, claude-code, cursor, windsurf)')
   .option('--agent <name>', 'Bind to specific agent')
   .option('--list', 'List detected clients')
-  .action(async (options) => {
-    if (options.list) {
-      await runList();
-    } else {
-      await runInstall({ client: options.client, agent: options.agent });
-    }
-  });
+  .action(
+    safe(async (options) => {
+      if (options.list) {
+        await runList();
+      } else {
+        await runInstall({ client: options.client, agent: options.agent });
+      }
+    }),
+  );
 
 // Update subcommand: refresh the version pin (and optionally agent binding) in
 // all client configs that already have elisym installed. Existing agent + env
@@ -222,18 +243,22 @@ program
   .description('Refresh the elisym MCP entry in installed client configs')
   .option('--client <name>', 'Specific client (claude-desktop, claude-code, cursor, windsurf)')
   .option('--agent <name>', 'Override the agent binding')
-  .action(async (options) => {
-    await runUpdate({ client: options.client, agent: options.agent });
-  });
+  .action(
+    safe(async (options) => {
+      await runUpdate({ client: options.client, agent: options.agent });
+    }),
+  );
 
 // Uninstall subcommand
 program
   .command('uninstall')
   .description('Remove elisym from MCP client configs')
   .option('--client <name>', 'Specific client')
-  .action(async (options) => {
-    await runUninstall({ client: options.client });
-  });
+  .action(
+    safe(async (options) => {
+      await runUninstall({ client: options.client });
+    }),
+  );
 
 /**
  * toggle `security.withdrawals_enabled` for an agent with human confirmation.
@@ -269,21 +294,21 @@ async function toggleFlag(
 program
   .command('enable-withdrawals <agent>')
   .description('Enable SOL withdrawals for a specific agent (interactive confirmation)')
-  .action((agent: string) => toggleFlag(agent, 'withdrawals_enabled', true));
+  .action(safe((agent: string) => toggleFlag(agent, 'withdrawals_enabled', true)));
 
 program
   .command('disable-withdrawals <agent>')
   .description('Disable SOL withdrawals for a specific agent')
-  .action((agent: string) => toggleFlag(agent, 'withdrawals_enabled', false));
+  .action(safe((agent: string) => toggleFlag(agent, 'withdrawals_enabled', false)));
 
 program
   .command('enable-agent-switch <agent>')
   .description('Allow the MCP server to switch away from this agent at runtime')
-  .action((agent: string) => toggleFlag(agent, 'agent_switch_enabled', true));
+  .action(safe((agent: string) => toggleFlag(agent, 'agent_switch_enabled', true)));
 
 program
   .command('disable-agent-switch <agent>')
   .description('Forbid the MCP server from switching away from this agent at runtime')
-  .action((agent: string) => toggleFlag(agent, 'agent_switch_enabled', false));
+  .action(safe((agent: string) => toggleFlag(agent, 'agent_switch_enabled', false)));
 
 program.parse();
