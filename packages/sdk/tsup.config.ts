@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     node: 'src/node.ts',
+    'agent-store': 'src/agent-store/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,
@@ -17,8 +18,14 @@ export default defineConfig({
     '@solana/kit',
     '@solana-program/system',
     'decimal.js-light',
+    'yaml',
+    'zod',
     'node:crypto',
     'node:buffer',
+    'node:fs',
+    'node:fs/promises',
+    'node:os',
+    'node:path',
   ],
   noExternal: ['@elisym/config-client'],
 });

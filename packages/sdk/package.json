@@ -53,6 +53,16 @@
         "types": "./dist/node.d.cts",
         "default": "./dist/node.cjs"
       }
+    },
+    "./agent-store": {
+      "import": {
+        "types": "./dist/agent-store.d.ts",
+        "default": "./dist/agent-store.js"
+      },
+      "require": {
+        "types": "./dist/agent-store.d.cts",
+        "default": "./dist/agent-store.cjs"
+      }
     }
   },
   "scripts": {
@@ -65,6 +75,10 @@
     "format:check": "oxfmt --check src/ tests/",
     "qa": "tsup && vitest run && tsc --noEmit && oxlint src/ && oxfmt --check src/ tests/",
     "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "yaml": "~2.8.3",
+    "zod": "~3.25.0"
   },
   "devDependencies": {
     "@elisym/config-client": "workspace:*",
