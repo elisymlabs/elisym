@@ -91,8 +91,15 @@ export class AgentRuntime {
 
   /** Fetch on-chain protocol config (fee, treasury). Always fetches fresh to avoid stale treasury. */
   private async fetchProtocolConfig(): Promise<ProtocolConfigInput> {
-    const cluster = this.config.network === 'mainnet' ? 'mainnet' : 'devnet';
-    const programId = getProtocolProgramId(cluster as 'devnet' | 'mainnet');
+    // Only devnet is supported until the elisym-config program ships on mainnet;
+    // agent configs pinned to other networks must be re-initialized explicitly.
+    if (this.config.network !== 'devnet') {
+      throw new Error(
+        `Network "${this.config.network}" is not supported. Only "devnet" is available ` +
+          `until the on-chain protocol program is deployed on mainnet.`,
+      );
+    }
+    const programId = getProtocolProgramId('devnet');
     const rpc = createSolanaRpc(getRpcUrl(this.config.network));
     const config = await getProtocolConfig(rpc, programId, { forceRefresh: true });
     return { feeBps: config.feeBps, treasury: config.treasury };

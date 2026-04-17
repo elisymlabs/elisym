@@ -17,19 +17,13 @@ export const WATCHDOG_SELF_PING_TIMEOUT_MS = 15_000;
 
 // --- Solana RPC ---
 
-export function getRpcUrl(network: string): string {
+export function getRpcUrl(_network: string): string {
   const envUrl = process.env.SOLANA_RPC_URL;
   if (envUrl) {
     return envUrl;
   }
-  switch (network) {
-    case 'mainnet':
-      return 'https://api.mainnet-beta.solana.com';
-    case 'testnet':
-      return 'https://api.testnet.solana.com';
-    default:
-      return 'https://api.devnet.solana.com';
-  }
+  // Only devnet is supported until the elisym-config program ships on mainnet.
+  return 'https://api.devnet.solana.com';
 }
 
 // --- SOL formatting (number only, no " SOL" suffix - use SDK's formatSol for display) ---

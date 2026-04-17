@@ -33,14 +33,12 @@ describe('tool registry', () => {
 });
 
 describe('network mapping', () => {
-  it('rpcUrlFor returns correct RPC per network', () => {
+  it('rpcUrlFor returns the devnet RPC', () => {
     expect(rpcUrlFor('devnet')).toBe('https://api.devnet.solana.com');
-    expect(rpcUrlFor('mainnet')).toBe('https://api.mainnet-beta.solana.com');
   });
 
   it('explorer cluster query param matches network', () => {
     expect(explorerClusterFor('devnet')).toBe('devnet');
-    expect(explorerClusterFor('mainnet')).toBe('mainnet-beta');
   });
 });
 
@@ -130,7 +128,7 @@ describe('config security flags', () => {
       relays: ['wss://relay.damus.io'],
       nostrSecretKey: '0'.repeat(64),
       solanaSecretKey: 'z'.repeat(87),
-      network: 'mainnet',
+      network: 'devnet',
       security: { agent_switch_enabled: true },
     });
     const merged = await updateAgentSecurity('merge-sec', { withdrawals_enabled: true });
@@ -138,7 +136,7 @@ describe('config security flags', () => {
     expect(merged.agent_switch_enabled).toBe(true);
 
     const reloaded = await loadAgentConfig('merge-sec');
-    expect(reloaded.network).toBe('mainnet');
+    expect(reloaded.network).toBe('devnet');
     expect(reloaded.security.withdrawals_enabled).toBe(true);
     expect(reloaded.security.agent_switch_enabled).toBe(true);
   });
@@ -151,17 +149,35 @@ describe('config security flags', () => {
       relays: ['wss://relay.damus.io'],
       nostrSecretKey: '0'.repeat(64),
       solanaSecretKey: 'z'.repeat(87),
-      network: 'mainnet',
+      network: 'devnet',
     });
     const loaded = await loadAgentConfig('net-agent');
-    expect(loaded.network).toBe('mainnet');
+    expect(loaded.network).toBe('devnet');
     // Also verify the raw config is parseable
     const raw = await readFile(
       join(process.env.HOME!, '.elisym', 'agents', 'net-agent', 'config.json'),
       'utf-8',
     );
     const parsed = parseConfig(raw);
-    expect(parsed.wallet?.network).toBe('mainnet');
+    expect(parsed.wallet?.network).toBe('devnet');
+  });
+
+  it('rejects loading a legacy mainnet config with a migration hint', async () => {
+    // Manually stage a pre-existing mainnet config on disk. saveAgentConfig now only
+    // accepts SolanaNetwork=devnet, so we write raw JSON to simulate the upgrade path.
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const dir = join(tmpHome, '.elisym', 'agents', 'legacy-mainnet');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, 'config.json'),
+      JSON.stringify({
+        identity: { secret_key: '0'.repeat(64), name: 'legacy-mainnet', description: 'old' },
+        relays: ['wss://relay.damus.io'],
+        capabilities: [],
+        wallet: { chain: 'solana', network: 'mainnet', secret_key: 'z'.repeat(87) },
+      }),
+    );
+    await expect(loadAgentConfig('legacy-mainnet')).rejects.toThrow(/mainnet/i);
   });
 });
 

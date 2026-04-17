@@ -88,18 +88,7 @@ export async function cmdStart(name: string | undefined): Promise<void> {
       console.log(`     Balance  ${formatSol(balance)} (${balance} lamports)`);
 
       if (balance === 0) {
-        if (walletNetwork === 'mainnet') {
-          console.log(
-            '  ! Warning: wallet is empty. First incoming payment needs rent-exempt SOL (~0.00089 SOL).',
-          );
-        } else {
-          console.log('  ! Wallet is empty. Get devnet SOL: https://faucet.solana.com');
-        }
-      }
-      if (walletNetwork === 'mainnet' && !process.env.SOLANA_RPC_URL) {
-        console.log(
-          '  ! Warning: using public Solana RPC for mainnet. Set SOLANA_RPC_URL for reliable operation.',
-        );
+        console.log('  ! Wallet is empty. Get devnet SOL: https://faucet.solana.com');
       }
       console.log();
     } catch (e: any) {

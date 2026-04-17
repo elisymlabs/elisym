@@ -8,10 +8,7 @@ import {
   getAddressDecoder,
 } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
-import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY } from '../src/constants';
-import { calculateProtocolFee } from '../src/payment/fee';
-import { buildPaymentInstructions, SolanaPaymentStrategy } from '../src/payment/solana';
-import type { ProtocolConfigInput } from '../src/payment/strategy';
+import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY, calculateProtocolFee, buildPaymentInstructions, SolanaPaymentStrategy, ProtocolConfigInput } from '../src';
 
 const RANDOM_ADDRESS_BYTES = 32;
 const ADDRESS_DECODER = getAddressDecoder();
@@ -144,6 +141,20 @@ describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
 
   it('accepts without expected recipient', () => {
     const result = payment.validatePaymentRequest(JSON.stringify(validRequest), CONFIG);
+    expect(result).toBeNull();
+  });
+
+  it('accepts fee_amount=0 when feeBps=0 (legal on-chain state)', () => {
+    // Regression: set_fee_bps enforces <= MAX_FEE_BPS but not > 0. When an admin
+    // sets feeBps=0, createPaymentRequest emits fee_address=treasury, fee_amount=0.
+    // validatePaymentRequest must accept the same request it just produced.
+    const zeroFeeConfig = { feeBps: 0, treasury: PROTOCOL_TREASURY };
+    const zeroFeeRequest = { ...validRequest, fee_amount: 0 };
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(zeroFeeRequest),
+      zeroFeeConfig,
+      recipientAddr,
+    );
     expect(result).toBeNull();
   });
 });

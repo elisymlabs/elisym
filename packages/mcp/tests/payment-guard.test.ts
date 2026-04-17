@@ -188,6 +188,43 @@ describe('makePaymentFeedbackHandler', () => {
     expect(rejectPayment.mock.calls[0]?.[0].message).toMatch(/no max_price_lamports set/);
   });
 
+  it('enforces max_price_lamports against the signed JSON amount, not the tag amount', () => {
+    // Wallet-drain regression: a malicious provider publishes a low tag amount
+    // (passes the cap) while the signed JSON carries a large transfer.
+    const executor = vi.fn(async () => 'sig-should-not-happen');
+    const { handler, rejectPayment } = buildHandler({
+      executor,
+      maxPriceLamports: 10_000,
+    });
+
+    handler('payment-required', 100, '{"recipient":"x","amount":1000000000}');
+    expect(executor).not.toHaveBeenCalled();
+    expect(rejectPayment).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects when feedback tag amount disagrees with the signed JSON amount', () => {
+    const executor = vi.fn(async () => 'sig-should-not-happen');
+    const { handler, rejectPayment } = buildHandler({
+      executor,
+      maxPriceLamports: 10_000_000_000,
+    });
+
+    handler('payment-required', 100, '{"recipient":"x","amount":1000000000}');
+    expect(executor).not.toHaveBeenCalled();
+    expect(rejectPayment).toHaveBeenCalledTimes(1);
+    expect(rejectPayment.mock.calls[0]?.[0].message).toMatch(/mismatch/);
+  });
+
+  it('rejects when payment_request is not valid JSON', () => {
+    const executor = vi.fn(async () => 'sig-should-not-happen');
+    const { handler, rejectPayment } = buildHandler({ executor, maxPriceLamports: 10_000 });
+
+    handler('payment-required', 1000, 'not-json');
+    expect(executor).not.toHaveBeenCalled();
+    expect(rejectPayment).toHaveBeenCalledTimes(1);
+    expect(rejectPayment.mock.calls[0]?.[0].message).toMatch(/malformed/);
+  });
+
   it('ignores feedback events whose status is not payment-required', () => {
     const executor = vi.fn(async () => 'sig');
     const { handler } = buildHandler({ executor, maxPriceLamports: 10000 });

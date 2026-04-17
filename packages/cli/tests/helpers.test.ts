@@ -8,20 +8,28 @@ import {
 } from '../src/helpers.js';
 
 describe('getRpcUrl', () => {
-  it('returns mainnet URL', () => {
-    expect(getRpcUrl('mainnet')).toBe('https://api.mainnet-beta.solana.com');
-  });
-
-  it('returns testnet URL', () => {
-    expect(getRpcUrl('testnet')).toBe('https://api.testnet.solana.com');
-  });
-
   it('returns devnet URL for devnet', () => {
     expect(getRpcUrl('devnet')).toBe('https://api.devnet.solana.com');
   });
 
-  it('returns devnet URL for unknown network', () => {
+  it('returns devnet URL regardless of input (only devnet is supported)', () => {
+    expect(getRpcUrl('mainnet')).toBe('https://api.devnet.solana.com');
+    expect(getRpcUrl('testnet')).toBe('https://api.devnet.solana.com');
     expect(getRpcUrl('unknown')).toBe('https://api.devnet.solana.com');
+  });
+
+  it('honours SOLANA_RPC_URL override', () => {
+    const prev = process.env.SOLANA_RPC_URL;
+    process.env.SOLANA_RPC_URL = 'https://custom.rpc';
+    try {
+      expect(getRpcUrl('devnet')).toBe('https://custom.rpc');
+    } finally {
+      if (prev === undefined) {
+        delete process.env.SOLANA_RPC_URL;
+      } else {
+        process.env.SOLANA_RPC_URL = prev;
+      }
+    }
   });
 });
 

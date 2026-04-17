@@ -70,10 +70,16 @@ program.action(async () => {
     }
     const client = new ElisymClient({ relays: RELAYS });
     const name = process.env.ELISYM_AGENT_NAME ?? 'mcp-agent';
-    const network = process.env.ELISYM_NETWORK === 'mainnet' ? 'mainnet' : 'devnet';
+    if (process.env.ELISYM_NETWORK && process.env.ELISYM_NETWORK !== 'devnet') {
+      console.error(
+        `ELISYM_NETWORK="${process.env.ELISYM_NETWORK}" is not supported. ` +
+          `Only "devnet" is available until the on-chain protocol program ships on mainnet.`,
+      );
+      process.exit(1);
+    }
 
-    ctx.register({ client, identity, name, network, security: {} });
-    console.error(`Ephemeral agent: ${name} (${network})`);
+    ctx.register({ client, identity, name, network: 'devnet', security: {} });
+    console.error(`Ephemeral agent: ${name} (devnet)`);
   } else {
     // default agent selection is deterministic (alphabetical sort) so the
     // "first" agent doesn't depend on filesystem ordering.
@@ -109,7 +115,7 @@ program
   // capabilities are intentionally not exposed here: the MCP server runs in
   // customer-mode in 0.1.x, so an advertised capability list would be misleading.
   // provider-mode (0.2.0) will reintroduce this prompt.
-  .option('-n, --network <network>', 'Solana network (devnet|mainnet)', 'devnet')
+  .option('-n, --network <network>', 'Solana network (devnet only)', 'devnet')
   .option('--install', 'Also install into MCP clients')
   .action(async (name: string | undefined, options) => {
     const { default: inquirer } = await import('inquirer');
@@ -132,8 +138,8 @@ program
           type: 'list',
           name: 'network',
           message: 'Solana network:',
-          // testnet removed - only devnet and mainnet are supported.
-          choices: ['devnet', 'mainnet'],
+          // Only devnet is supported until the elisym-config program ships on mainnet.
+          choices: ['devnet'],
           default: 'devnet',
         },
       ]);
@@ -142,9 +148,11 @@ program
       options.network = answers.network;
     }
 
-    // enforce the two-network contract even when invoked non-interactively.
-    if (options.network !== 'devnet' && options.network !== 'mainnet') {
-      console.error(`Network must be "devnet" or "mainnet", got "${options.network}".`);
+    if (options.network !== 'devnet') {
+      console.error(
+        `Network must be "devnet", got "${options.network}". ` +
+          `Mainnet is not supported until the on-chain protocol program is deployed.`,
+      );
       process.exit(1);
     }
 
@@ -170,7 +178,7 @@ program
       nostrSecretKey: Buffer.from(nostrSecretKey).toString('hex'),
       solanaSecretKey: bs58.encode(solanaSecretBytes),
       solanaAddress: solanaSigner.address,
-      network: options.network as 'devnet' | 'mainnet',
+      network: 'devnet',
       security: { withdrawals_enabled: false, agent_switch_enabled: false },
       passphrase: passphrase || undefined,
     });

@@ -39,7 +39,7 @@
         },
         {
           "name": "ELISYM_NETWORK",
-          "description": "Network for ephemeral mode: 'devnet' or 'mainnet' (default: devnet)",
+          "description": "Network for ephemeral mode. Only 'devnet' is supported (default: devnet)",
           "isRequired": false,
           "isSecret": false
         },
