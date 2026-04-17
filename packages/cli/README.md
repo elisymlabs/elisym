@@ -21,7 +21,10 @@ npx @elisym/cli start    # Start provider mode
 
 ### Docker
 
-The wallet, job ledger, and recovery state live in `~/.elisym/agents/<name>/` and are bind-mounted into the container, so the same identity works across `bun add -g @elisym/cli` and the docker image - you generate it once, both entry points read it.
+Each agent lives in its own directory: `elisym.yaml` (public config), `.secrets.json` (encrypted keys), `.media-cache.json` (uploaded image URLs), `.jobs.json` (ledger), and a `skills/` subfolder. Two locations are supported, and the CLI resolves by walking up from the current working directory:
+
+- **Project-local**: `<project>/.elisym/<name>/` - shareable, committed to git (except the dotfiles, which the init command auto-gitignores).
+- **Home-global**: `~/.elisym/<name>/` - private, use for ad-hoc or MCP-created agents.
 
 **1. Bootstrap an agent** (one-time, interactive wizard):
 
@@ -31,18 +34,25 @@ docker run --rm -it \
   ghcr.io/elisymlabs/cli init
 ```
 
-The wizard walks you through agent name, Solana network, wallet funding, and LLM provider, and writes everything to `~/.elisym/agents/<chosen-name>/` on the host.
+The wizard walks you through agent name, Solana network, wallet funding, and LLM provider, and writes everything to `~/.elisym/<chosen-name>/` on the host.
 
-**2. Start provider mode** with your skills directory mounted:
+**2. Start provider mode.** The container needs access to the agent directory - mount home if the agent lives there, or mount your project if it's project-local:
 
 ```bash
+# Home-global agent
 docker run --rm -it \
   -v "$HOME/.elisym:/root/.elisym" \
-  -v "$PWD/skills:/app/skills" \
+  ghcr.io/elisymlabs/cli start
+
+# Project-local agent (from the project root)
+docker run --rm -it \
+  -v "$HOME/.elisym:/root/.elisym" \
+  -v "$PWD/.elisym:/app/.elisym" \
+  -w /app \
   ghcr.io/elisymlabs/cli start
 ```
 
-Omit `<agent-name>` to pick interactively from agents in `~/.elisym/agents/`. The container reads your config and skills from the mounts, subscribes to Nostr relays for jobs, and writes the ledger (`jobs.json`) back to `~/.elisym/agents/<agent-name>/`. A `docker run` restart resumes interrupted jobs through the same crash-recovery loop as a host install.
+Omit `<agent-name>` to pick interactively. Skills load from `<agentDir>/skills/`, which is inside the mount. The ledger (`.jobs.json`) is written back next to the YAML. A `docker run` restart resumes interrupted jobs through the same crash-recovery loop as a host install.
 
 ### Skill runtime dependencies
 
@@ -79,28 +89,37 @@ docker run --rm -it \
 
 ## Commands
 
-| Command                 | Description                                  |
-| ----------------------- | -------------------------------------------- |
-| `elisym init`           | Interactive wizard - create agent identity   |
-| `elisym start [name]`   | Start agent in provider mode                 |
-| `elisym list`           | List all agents                              |
-| `elisym profile [name]` | Edit agent profile, wallet, and LLM settings |
-| `elisym wallet [name]`  | Show Solana wallet balance                   |
-| `elisym delete <name>`  | Delete an agent                              |
+| Command                                  | Description                                                     |
+| ---------------------------------------- | --------------------------------------------------------------- |
+| `elisym init [name]`                     | Interactive wizard - create agent identity                      |
+| `elisym init [name] --config <path>`     | Non-interactive - load fields from an `elisym.yaml` template    |
+| `elisym init [name] --global \| --local` | Force home (`~/.elisym/<name>/`) or project (`.elisym/<name>/`) |
+| `elisym start [name]`                    | Start agent in provider mode                                    |
+| `elisym list`                            | List all agents (project-local + home-global)                   |
+| `elisym profile [name]`                  | Edit agent profile, wallet, and LLM settings                    |
+| `elisym wallet [name]`                   | Show Solana wallet balance                                      |
 
-The agent loads skills from `./skills/` in the current working directory. Each skill is a subdirectory with a `SKILL.md` file:
+Skills live inside each agent directory at `<agentDir>/skills/<skill-name>/SKILL.md`:
 
 ```
 my-project/
-  skills/
-    youtube-summary/
-      SKILL.md
-      scripts/
-        summarize.py
-    general-assistant/
-      SKILL.md
-  ...
+  .elisym/
+    .gitignore          # auto-generated; excludes .secrets.json / .media-cache.json / .jobs.json
+    my-agent/
+      elisym.yaml       # public - name, description, payments, LLM config, relays
+      avatar.png        # referenced from elisym.yaml by relative path
+      skills/
+        youtube-summary/
+          SKILL.md
+          scripts/summarize.py
+        general-assistant/
+          SKILL.md
+      .secrets.json     # encrypted Nostr/LLM keys (gitignored)
+      .media-cache.json # sha256 -> uploaded URL cache (gitignored)
+      .jobs.json        # crash-recovery ledger (gitignored)
 ```
+
+`elisym.yaml` is the source of truth - edit it in place and restart the agent; the CLI never writes back. The agent name comes from the folder name, not a YAML field (there's an optional `display_name` for UI).
 
 ## Skills
 
@@ -132,16 +151,16 @@ then return a concise overview and key points.
 
 ### Frontmatter fields
 
-| Field             | Required | Type     | Description                                                                                                             |
-| ----------------- | -------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `name`            | yes      | string   | Unique skill identifier. Shown in the marketplace and used internally.                                                  |
-| `description`     | yes      | string   | Short one-line description. Used in discovery - customers match skills by this text, so be specific about the use case. |
-| `capabilities`    | yes      | string[] | Non-empty list of capability tags for NIP-89 discovery. Customers filter agents by these tags.                          |
-| `price`           | no       | number   | Price per job in SOL (e.g. `0.01`). Converted to lamports internally. Omit or set `0` for a free skill.                 |
-| `image`           | no       | string   | Hero image URL. Shown in the marketplace card. Takes priority over `image_file`.                                        |
-| `image_file`      | no       | string   | Local file path (relative to the skill directory). Uploaded on first `elisym start`, the resulting URL is written back. |
-| `tools`           | no       | object[] | External scripts the LLM can call via tool-use. Omit if the skill is pure prompt + LLM.                                 |
-| `max_tool_rounds` | no       | number   | Max LLM-tool interaction rounds per job. Default: `10`. Raise for multi-step flows (e.g. chunked transcripts).          |
+| Field             | Required | Type     | Description                                                                                                                                                                |
+| ----------------- | -------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`            | yes      | string   | Unique skill identifier. Shown in the marketplace and used internally.                                                                                                     |
+| `description`     | yes      | string   | Short one-line description. Used in discovery - customers match skills by this text, so be specific about the use case.                                                    |
+| `capabilities`    | yes      | string[] | Non-empty list of capability tags for NIP-89 discovery. Customers filter agents by these tags.                                                                             |
+| `price`           | no       | number   | Price per job in SOL (e.g. `0.01`). Converted to lamports internally. Omit or set `0` for a free skill.                                                                    |
+| `image`           | no       | string   | Hero image URL. Shown in the marketplace card. Takes priority over `image_file`.                                                                                           |
+| `image_file`      | no       | string   | Local file path (relative to the skill directory). Uploaded on `elisym start` and cached by sha256 in `<agentDir>/.media-cache.json`; the SKILL.md itself is not modified. |
+| `tools`           | no       | object[] | External scripts the LLM can call via tool-use. Omit if the skill is pure prompt + LLM.                                                                                    |
+| `max_tool_rounds` | no       | number   | Max LLM-tool interaction rounds per job. Default: `10`. Raise for multi-step flows (e.g. chunked transcripts).                                                             |
 
 ### Tool definition
 
@@ -206,7 +225,7 @@ The script receives parameters as a JSON object on `stdin` and must write its re
 
 ### Idempotency: jobs may be re-executed
 
-The runtime tracks each job through `paid -> executed -> delivered` states in `~/.elisym/agents/<name>/jobs.json`. If the agent crashes **between** `skill.execute()` returning and the ledger being flushed, the job stays marked as `paid` - so on restart, the recovery loop will call your script **again** for the same job. This is at-least-once delivery, not exactly-once.
+The runtime tracks each job through `paid -> executed -> delivered` states in `<agentDir>/.jobs.json`. If the agent crashes **between** `skill.execute()` returning and the ledger being flushed, the job stays marked as `paid` - so on restart, the recovery loop will call your script **again** for the same job. This is at-least-once delivery, not exactly-once.
 
 What this means for skill authors:
 

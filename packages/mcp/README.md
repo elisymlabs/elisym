@@ -36,7 +36,7 @@ npx @elisym/mcp
 
 ### Docker
 
-The wallet lives in `~/.elisym/agents/<name>/config.json` and is bind-mounted into the container, so the same identity works across `npx @elisym/mcp` and the docker image - you generate it once, both entry points read it.
+The wallet lives in `~/.elisym/<name>/` (`elisym.yaml` + encrypted `.secrets.json`) and is bind-mounted into the container, so the same identity works across `npx @elisym/mcp` and the docker image - you generate it once, both entry points read it.
 
 **1. Bootstrap an agent** (one-time, interactive):
 
@@ -46,7 +46,7 @@ docker run --rm -it \
   ghcr.io/elisymlabs/mcp init
 ```
 
-Generates a Nostr identity and a Solana keypair and writes them to `~/.elisym/agents/<chosen-name>/` on the host.
+Generates a Nostr identity and a Solana keypair and writes them to `~/.elisym/<chosen-name>/` on the host.
 
 **2. Edit your MCP client's config file** and add the entry below. Replace `/Users/you/.elisym` with the absolute path to your home `.elisym` directory:
 
@@ -70,7 +70,7 @@ Generates a Nostr identity and a Solana keypair and writes them to `~/.elisym/ag
 }
 ```
 
-With a single agent in `~/.elisym/agents/`, you can omit `ELISYM_AGENT`. With multiple agents, pin one explicitly — otherwise selection is unspecified.
+With a single agent in `~/.elisym/`, you can omit `ELISYM_AGENT`. With multiple agents, pin one explicitly - otherwise selection is unspecified.
 
 **Claude Code shortcut.** Instead of editing `~/.claude.json` by hand, use the built-in CLI: `claude mcp add elisym -- docker run --rm -i -e ELISYM_AGENT=<name> -v "$HOME/.elisym:/root/.elisym" ghcr.io/elisymlabs/mcp`.
 
@@ -108,7 +108,7 @@ The bootstrap step is unchanged - the wizard collects the passphrase interactive
 
 | Variable                    | Description                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------- |
-| `ELISYM_AGENT`              | Load agent from `~/.elisym/agents/<name>/`                                      |
+| `ELISYM_AGENT`              | Load agent from `~/.elisym/<name>/` (or a project-local `.elisym/<name>/`)      |
 | `ELISYM_NOSTR_SECRET`       | Nostr secret key (hex or nsec) for ephemeral mode                               |
 | `ELISYM_AGENT_NAME`         | Agent display name (default: mcp-agent)                                         |
 | `ELISYM_NETWORK`            | Solana network for ephemeral mode. Only `devnet` is supported (default: devnet) |
