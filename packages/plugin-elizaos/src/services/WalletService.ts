@@ -2,7 +2,14 @@ import { Service, type IAgentRuntime } from '@elizaos/core';
 import type { KeyPairSigner, Rpc, SolanaRpcApi } from '@solana/kit';
 import { SERVICE_TYPES } from '../constants';
 import { logger } from '../lib/logger';
-import { createRpc, getBalanceLamports, resolveRpcUrl, signerFromBase58 } from '../lib/solana';
+import { loadPersistedSolanaSecret, persistSolanaSecret } from '../lib/secretsMemory';
+import {
+  createRpc,
+  generateSolanaSecretBase58,
+  getBalanceLamports,
+  resolveRpcUrl,
+  signerFromBase58,
+} from '../lib/solana';
 import {
   createSpendingBucket,
   assertCanSpend,
@@ -40,11 +47,35 @@ export class WalletService extends Service {
     });
     this.rpcUrlRef = resolveRpcUrl(config.network, config.solanaRpcUrl);
     this.rpcRef = createRpc(this.rpcUrlRef);
-    this.signerRef = await signerFromBase58(config.solanaPrivateKeyBase58);
-    logger.info(
-      { network: config.network, address: this.signerRef.address },
-      'WalletService ready',
-    );
+
+    const { base58, source } = await this.resolveSecret(config.solanaPrivateKeyBase58);
+    this.signerRef = await signerFromBase58(base58);
+    if (source === 'generated') {
+      logger.warn(
+        { network: config.network, address: this.signerRef.address },
+        'generated new elisym Solana wallet and persisted it to agent memory; fund this address with SOL before hiring paid providers, and back up the key if you need cross-machine access',
+      );
+    } else {
+      logger.info(
+        { network: config.network, address: this.signerRef.address, source },
+        'WalletService ready',
+      );
+    }
+  }
+
+  private async resolveSecret(
+    fromConfig: string | undefined,
+  ): Promise<{ base58: string; source: 'config' | 'persisted' | 'generated' }> {
+    if (fromConfig) {
+      return { base58: fromConfig, source: 'config' };
+    }
+    const persisted = await loadPersistedSolanaSecret(this.runtime);
+    if (persisted) {
+      return { base58: persisted, source: 'persisted' };
+    }
+    const fresh = await generateSolanaSecretBase58();
+    await persistSolanaSecret(this.runtime, fresh);
+    return { base58: fresh, source: 'generated' };
   }
 
   override async stop(): Promise<void> {

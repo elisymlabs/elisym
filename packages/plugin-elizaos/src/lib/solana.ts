@@ -2,6 +2,7 @@ import {
   address,
   createKeyPairSignerFromBytes,
   createSolanaRpc,
+  generateKeyPairSigner,
   type KeyPairSigner,
   type Rpc,
   type SolanaRpcApi,
@@ -31,6 +32,22 @@ export async function signerFromBase58(base58: string): Promise<KeyPairSigner> {
     throw new Error('Solana secret key must decode to 64 bytes');
   }
   return createKeyPairSignerFromBytes(bytes);
+}
+
+export async function generateSolanaSecretBase58(): Promise<string> {
+  const signer = await generateKeyPairSigner(true);
+  const { privateKey, publicKey } = signer.keyPair;
+  const [pkcs8, rawPub] = await Promise.all([
+    crypto.subtle.exportKey('pkcs8', privateKey),
+    crypto.subtle.exportKey('raw', publicKey),
+  ]);
+  // PKCS#8 has a fixed 16-byte Ed25519 header; the raw 32-byte seed follows.
+  const privateBytes = new Uint8Array(pkcs8).slice(16);
+  const publicBytes = new Uint8Array(rawPub);
+  const bytes = new Uint8Array(64);
+  bytes.set(privateBytes, 0);
+  bytes.set(publicBytes, 32);
+  return bs58.encode(bytes);
 }
 
 export async function getBalanceLamports(

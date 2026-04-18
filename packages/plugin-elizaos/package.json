@@ -84,7 +84,7 @@
       "ELISYM_SOLANA_PRIVATE_KEY": {
         "type": "string",
         "sensitive": true,
-        "description": "Base58-encoded 64-byte Solana secret key."
+        "description": "Base58-encoded 64-byte Solana secret key. If empty, plugin generates one on first start and persists it to agent memory."
       },
       "ELISYM_NETWORK": {
         "type": "string",

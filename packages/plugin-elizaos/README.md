@@ -96,24 +96,24 @@ On start, the plugin publishes a NIP-89 capability card and subscribes to incomi
 
 All settings are read from `runtime.getSetting(key)`, falling back to `process.env`. Secrets go under `settings.secrets` in the character file so ElizaOS masks them.
 
-| Variable                            | Default                       | Notes                                                                                                                                         |
-| ----------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ELISYM_NOSTR_PRIVATE_KEY`          | generated on first run        | Hex (64 chars) or nsec. If omitted, the plugin generates an identity and persists the hex secret into agent memory (`elisym_identity` table). |
-| `ELISYM_SOLANA_PRIVATE_KEY`         | required                      | Base58 of the 64-byte Solana secret key.                                                                                                      |
-| `ELISYM_NETWORK`                    | `devnet`                      | `devnet` or `mainnet`. Mainnet is blocked until the on-chain elisym-config program is deployed there.                                         |
-| `ELISYM_RELAYS`                     | SDK defaults                  | Comma-separated Nostr relay URLs.                                                                                                             |
-| `ELISYM_SOLANA_RPC_URL`             | public cluster                | Override if you use Helius, Triton, or another paid RPC.                                                                                      |
-| `ELISYM_MODE`                       | `customer`                    | `customer`, `provider`, or `both`.                                                                                                            |
-| `ELISYM_MAX_SPEND_PER_JOB_SOL`      | `0.01`                        | Hard cap for a single job. Requests exceeding the cap are rejected before any Solana transaction is built.                                    |
-| `ELISYM_MAX_SPEND_PER_HOUR_SOL`     | `0.1`                         | Rolling 1-hour cap. Enforced via `bigint` lamports arithmetic (no floats).                                                                    |
-| `ELISYM_REQUIRE_APPROVAL_ABOVE_SOL` | `0.005`                       | Jobs above this amount surface an approval hook (Phase 5 UX still console-only).                                                              |
-| `ELISYM_PROVIDER_CAPABILITIES`      | (required when mode=provider) | Comma-separated list. Each capability is published as a `t` tag on the NIP-89 card.                                                           |
-| `ELISYM_PROVIDER_PRICE_SOL`         | (required when mode=provider) | Price per job, charged as-is; the 3% protocol fee is added by the SDK on top.                                                                 |
-| `ELISYM_PROVIDER_ACTION_MAP`        | none                          | JSON like `{"summarization":"SUMMARIZE_TEXT"}`. Unmapped capabilities fall through to `runtime.useModel(ModelType.TEXT_SMALL, ...)`.          |
+| Variable                            | Default                       | Notes                                                                                                                                                                                                                                  |
+| ----------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ELISYM_NOSTR_PRIVATE_KEY`          | generated on first run        | Hex (64 chars) or nsec. If omitted, the plugin generates an identity and persists the hex secret into agent memory (`elisym_identity` table).                                                                                          |
+| `ELISYM_SOLANA_PRIVATE_KEY`         | generated on first run        | Base58 of the 64-byte Solana secret key. If omitted, the plugin generates a fresh key on first start and persists it into agent memory (`elisym_wallet` table). The address is logged at WARN level - fund it before hiring providers. |
+| `ELISYM_NETWORK`                    | `devnet`                      | `devnet` or `mainnet`. Mainnet is blocked until the on-chain elisym-config program is deployed there.                                                                                                                                  |
+| `ELISYM_RELAYS`                     | SDK defaults                  | Comma-separated Nostr relay URLs.                                                                                                                                                                                                      |
+| `ELISYM_SOLANA_RPC_URL`             | public cluster                | Override if you use Helius, Triton, or another paid RPC.                                                                                                                                                                               |
+| `ELISYM_MODE`                       | `customer`                    | `customer`, `provider`, or `both`.                                                                                                                                                                                                     |
+| `ELISYM_MAX_SPEND_PER_JOB_SOL`      | `0.01`                        | Hard cap for a single job. Requests exceeding the cap are rejected before any Solana transaction is built.                                                                                                                             |
+| `ELISYM_MAX_SPEND_PER_HOUR_SOL`     | `0.1`                         | Rolling 1-hour cap. Enforced via `bigint` lamports arithmetic (no floats).                                                                                                                                                             |
+| `ELISYM_REQUIRE_APPROVAL_ABOVE_SOL` | `0.005`                       | Jobs above this amount surface an approval hook (Phase 5 UX still console-only).                                                                                                                                                       |
+| `ELISYM_PROVIDER_CAPABILITIES`      | (required when mode=provider) | Comma-separated list. Each capability is published as a `t` tag on the NIP-89 card.                                                                                                                                                    |
+| `ELISYM_PROVIDER_PRICE_SOL`         | (required when mode=provider) | Price per job, charged as-is; the 3% protocol fee is added by the SDK on top.                                                                                                                                                          |
+| `ELISYM_PROVIDER_ACTION_MAP`        | none                          | JSON like `{"summarization":"SUMMARIZE_TEXT"}`. Unmapped capabilities fall through to `runtime.useModel(ModelType.TEXT_SMALL, ...)`.                                                                                                   |
 
 ## Security
 
-- **Hot wallet exposure.** The plugin holds a Solana secret key in config. Use a dedicated wallet funded only with a small balance (for example, 10× the hourly cap), and top it up from cold storage. A future version may integrate KMS or hardware signers.
+- **Hot wallet exposure.** The plugin holds a Solana secret key - either supplied via `ELISYM_SOLANA_PRIVATE_KEY` or auto-generated and persisted in ElizaOS agent memory (`elisym_wallet` table). Use a dedicated wallet funded only with a small balance (for example, 10× the hourly cap), and top it up from cold storage. If you rely on auto-generation, the key lives only in the ElizaOS database - lose it and the balance is gone. A future version may integrate KMS or hardware signers.
 - **Spending guard.** Every hire is checked against per-job and rolling-hour caps before the transaction is built. The cap is enforced again after parsing the provider-signed `amount` so a provider cannot widen the transfer silently.
 - **Recipient check.** Before signing, the payment request is validated against the provider's advertised address from its capability card - a compromised provider cannot redirect funds to a new address mid-flow.
 - **Size limits.** Incoming jobs over 64 KiB are rejected with an error-feedback event.
@@ -134,4 +134,4 @@ All settings are read from `runtime.getSetting(key)`, falling back to `process.e
 
 ## License
 
-MIT © elisym labs.
+MIT

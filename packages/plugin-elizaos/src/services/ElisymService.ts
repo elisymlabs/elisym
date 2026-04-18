@@ -1,8 +1,9 @@
 import { ElisymClient, ElisymIdentity, SolanaPaymentStrategy } from '@elisym/sdk';
 import { Service, type IAgentRuntime } from '@elizaos/core';
 import { SERVICE_TYPES } from '../constants';
-import { identityFromHex } from '../lib/identity';
+import { identityFromHex, identityToHex } from '../lib/identity';
 import { logger } from '../lib/logger';
+import { loadPersistedNostrSecret, persistNostrSecret } from '../lib/secretsMemory';
 import { getState } from '../state';
 
 export class ElisymService extends Service {
@@ -29,7 +30,7 @@ export class ElisymService extends Service {
       payment: new SolanaPaymentStrategy(),
     });
 
-    this.identity = this.loadOrCreateIdentity(config.nostrPrivateKeyHex);
+    this.identity = await this.resolveIdentity(config.nostrPrivateKeyHex);
     state.identity = this.identity;
 
     logger.info(
@@ -38,14 +39,20 @@ export class ElisymService extends Service {
     );
   }
 
-  private loadOrCreateIdentity(hexFromConfig?: string): ElisymIdentity {
+  private async resolveIdentity(hexFromConfig?: string): Promise<ElisymIdentity> {
     if (hexFromConfig) {
       return identityFromHex(hexFromConfig);
     }
+    const persisted = await loadPersistedNostrSecret(this.runtime);
+    if (persisted) {
+      logger.info('loaded persisted elisym identity from agent memory');
+      return identityFromHex(persisted);
+    }
     const fresh = ElisymIdentity.generate();
+    await persistNostrSecret(this.runtime, identityToHex(fresh));
     logger.warn(
-      { pubkey: fresh.publicKey },
-      'generated ephemeral elisym identity; set ELISYM_NOSTR_PRIVATE_KEY to keep the same pubkey across restarts',
+      { pubkey: fresh.publicKey, npub: fresh.npub },
+      'generated new elisym identity and persisted it to agent memory; set ELISYM_NOSTR_PRIVATE_KEY to override',
     );
     return fresh;
   }

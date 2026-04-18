@@ -17,7 +17,7 @@ export const ElisymConfigSchema = z
       .string()
       .regex(HEX_64, 'Nostr private key must be 32-byte hex')
       .optional(),
-    solanaPrivateKeyBase58: z.string().min(1, 'Solana private key is required'),
+    solanaPrivateKeyBase58: z.string().min(1).optional(),
     network: networkSchema,
     relays: z.array(z.string().url()).optional(),
     solanaRpcUrl: z.string().url().optional(),
@@ -148,10 +148,9 @@ export function validateConfig(
   const nostrPrivateKeyHex = nostrRaw ? normalizeNostrKey(nostrRaw) : undefined;
 
   const solanaPrivateKeyBase58 = read('ELISYM_SOLANA_PRIVATE_KEY');
-  if (!solanaPrivateKeyBase58) {
-    throw new Error('ELISYM_SOLANA_PRIVATE_KEY is required');
+  if (solanaPrivateKeyBase58) {
+    validateSolanaKey(solanaPrivateKeyBase58);
   }
-  validateSolanaKey(solanaPrivateKeyBase58);
 
   const network = read('ELISYM_NETWORK', 'devnet');
   const mode = read('ELISYM_MODE', 'customer');
