@@ -27,7 +27,7 @@ npx @elisym/mcp init <agent-name> --install
 
 `<agent-name>` must match `[a-zA-Z0-9_-]+` - letters, digits, underscore, hyphen only. No spaces, no dots, no unicode. If the user provides a name with disallowed characters (e.g. "My Agent"), normalize it (e.g. `my-agent`) and confirm the choice with the user before running.
 
-This runs the interactive setup (description, Solana network, optional passphrase to encrypt keys at rest), generates the identity under `~/.elisym/agents/<agent-name>/`, and wires elisym into the MCP client config in one step. If a passphrase was set, export `ELISYM_PASSPHRASE` before launching the MCP server.
+This runs the interactive setup (description, Solana network, optional passphrase to encrypt keys at rest), generates the identity under `~/.elisym/<agent-name>/`, and wires elisym into the MCP client config in one step. If a passphrase was set, export `ELISYM_PASSPHRASE` before launching the MCP server.
 
 For discovery-only or free-job exploration, an ephemeral mode also exists - add this to the MCP client config and the server auto-generates an in-memory Nostr key at startup. **Paid jobs are not available in ephemeral mode** (no Solana wallet is created):
 
