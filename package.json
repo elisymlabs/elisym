@@ -5,7 +5,8 @@
     "packages/sdk",
     "packages/mcp",
     "packages/cli",
-    "packages/config-client"
+    "packages/config-client",
+    "packages/plugin-elizaos"
   ],
   "type": "module",
   "scripts": {
@@ -13,10 +14,10 @@
     "dev": "turbo run dev",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
-    "lint": "oxlint packages/sdk/src/ packages/mcp/src/ packages/cli/src/",
+    "lint": "oxlint packages/sdk/src/ packages/mcp/src/ packages/cli/src/ packages/plugin-elizaos/src/",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "spell": "cspell --no-progress \"packages/sdk/src/**\" \"packages/mcp/src/**\" \"packages/cli/src/**\" \"*.md\" \"packages/*/README.md\"",
+    "spell": "cspell --no-progress \"packages/sdk/src/**\" \"packages/mcp/src/**\" \"packages/cli/src/**\" \"packages/plugin-elizaos/src/**\" \"*.md\" \"packages/*/README.md\"",
     "qa": "turbo run build && turbo run test && turbo run typecheck && bun run lint && oxfmt --check . && bun run spell",
     "clean": "turbo run clean",
     "program:build": "anchor build",
