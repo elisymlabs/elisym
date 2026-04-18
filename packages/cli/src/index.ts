@@ -4,7 +4,7 @@ import { listAgents, loadAgent } from '@elisym/sdk/agent-store';
  * elisym CLI - agent runner for the elisym network.
  *
  * Commands:
- *   elisym init [name] [--config <path>] [--global | --local]  Create a new agent
+ *   elisym init [name] [--config <path>] [--local]             Create a new agent
  *   elisym start [name]                                         Start agent in provider mode
  *   elisym list                                                 List all agents
  *   elisym profile [name]                                       Edit agent profile
@@ -44,8 +44,7 @@ program
   .command('init [name]')
   .description('Create a new agent')
   .option('-c, --config <path>', 'Load fields from an elisym.yaml template (non-interactive)')
-  .option('--global', 'Create in ~/.elisym/<name>/ (overrides project-local default)')
-  .option('--local', 'Create in project .elisym/<name>/ (forces project layout)')
+  .option('--local', 'Create in project <project>/.elisym/<name>/ (default: ~/.elisym/<name>/)')
   .action(
     safe(async (name: string | undefined, options: InitOptions) => {
       await cmdInit(name, options);

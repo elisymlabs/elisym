@@ -2,10 +2,9 @@
  * Init command - create a new agent.
  *
  * Usage:
- *   elisym init [name]                     Interactive wizard (prompts for all fields).
+ *   elisym init [name]                     Interactive wizard; creates in ~/.elisym/<name>/.
  *   elisym init [name] --config <path>     Non-interactive; loads YAML template.
- *   elisym init [name] --global            Force ~/.elisym/<name>/ layout.
- *   elisym init [name] --local             Force project .elisym/<name>/ layout.
+ *   elisym init [name] --local             Create in project <project>/.elisym/<name>/.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -13,7 +12,6 @@ import { validateAgentName, RELAYS } from '@elisym/sdk';
 import {
   ElisymYamlSchema,
   createAgentDir,
-  findProjectElisymDir,
   resolveInHome,
   resolveInProject,
   writeSecrets,
@@ -27,7 +25,6 @@ import YAML from 'yaml';
 
 export interface InitOptions {
   config?: string;
-  global?: boolean;
   local?: boolean;
 }
 
@@ -82,14 +79,8 @@ export async function fetchModels(provider: string, apiKey: string): Promise<str
   }
 }
 
-function pickTarget(options: InitOptions, cwd: string): AgentSource {
-  if (options.global) {
-    return 'home';
-  }
-  if (options.local) {
-    return 'project';
-  }
-  return findProjectElisymDir(cwd) ? 'project' : 'home';
+function pickTarget(options: InitOptions): AgentSource {
+  return options.local ? 'project' : 'home';
 }
 
 export async function cmdInit(nameArg?: string, options: InitOptions = {}): Promise<void> {
@@ -111,7 +102,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   const agentName = await resolveAgentName(nameArg, inquirer);
 
   // Step 3: Shadow / overwrite checks.
-  const target = pickTarget(options, cwd);
+  const target = pickTarget(options);
   const sameLocation =
     target === 'home' ? resolveInHome(agentName) : resolveInProject(agentName, cwd);
   if (sameLocation) {
