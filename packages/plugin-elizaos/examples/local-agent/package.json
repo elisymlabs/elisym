@@ -15,7 +15,7 @@
     "@elizaos/cli": "~1.7.2",
     "@elizaos/plugin-anthropic": "~1.5.12",
     "@elizaos/plugin-bootstrap": "~1.7.2",
-    "@elizaos/plugin-sql": "~1.0.20"
+    "@elizaos/plugin-sql": "~1.7.2"
   },
   "engines": {
     "node": ">=20"
