@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "true",
     "start:customer": "elizaos start --character ./customer.character.json",
     "start:provider": "elizaos start --character ./provider.character.json",
     "start:both": "elizaos start --character ./both.character.json",
