@@ -13,7 +13,10 @@ import { SERVICE_TYPES, SHUTDOWN_DRAIN_TIMEOUT_MS } from './constants';
 import { validateConfig } from './environment';
 import { jobCompletionEvaluator } from './evaluators';
 import { logger } from './lib/logger';
+import { registerDefaultMetrics } from './lib/metrics';
 import { elisymContextProvider, walletProvider, activeJobsProvider } from './providers';
+import { healthRoute } from './routes/health';
+import { metricsRoute } from './routes/metrics';
 import { ElisymService } from './services/ElisymService';
 import { ProviderService } from './services/ProviderService';
 import { RecoveryService } from './services/RecoveryService';
@@ -102,9 +105,11 @@ export const elisymPlugin: Plugin = {
   ],
   providers: [elisymContextProvider, walletProvider, activeJobsProvider],
   evaluators: [jobCompletionEvaluator],
+  routes: [healthRoute, metricsRoute],
   init: async (config: Record<string, string>, runtime: IAgentRuntime): Promise<void> => {
     const parsed = validateConfig(config, runtime);
     initState(runtime, parsed);
+    registerDefaultMetrics();
     registerShutdownHook(runtime);
     logger.info({ mode: parsed.mode, network: parsed.network }, 'elisym plugin initialized');
   },

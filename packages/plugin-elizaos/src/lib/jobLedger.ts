@@ -1,6 +1,7 @@
 import type { IAgentRuntime, Memory } from '@elizaos/core';
 import { JOB_LEDGER_RETENTION_MS, JOB_LEDGER_VERSION, JOBS_MEMORY_TABLE } from '../constants';
 import { logger } from './logger';
+import { incrementCounter, METRIC_JOBS_TOTAL } from './metrics';
 
 export type JobSide = 'provider' | 'customer';
 
@@ -120,6 +121,7 @@ export async function recordTransition(
       JOBS_MEMORY_TABLE,
       false,
     );
+    incrementCounter(METRIC_JOBS_TOTAL, { side: finalized.side, state: finalized.state });
   } catch (error) {
     logger.error({ err: error, entry: finalized }, 'jobLedger.recordTransition failed');
   }
