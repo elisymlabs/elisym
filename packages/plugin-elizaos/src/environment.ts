@@ -11,6 +11,20 @@ const networkSchema = z.enum(['devnet', 'mainnet']);
 
 const MAX_SAFE_LAMPORTS = BigInt(Number.MAX_SAFE_INTEGER);
 
+export const ProviderProductSchema = z.object({
+  name: z.string().min(1).max(120),
+  description: z.string().min(1).max(2000),
+  capabilities: z.array(z.string().min(1)).min(1),
+  priceLamports: z
+    .bigint()
+    .positive()
+    .refine((value) => value <= MAX_SAFE_LAMPORTS, {
+      message: `price in lamports must be <= ${MAX_SAFE_LAMPORTS}`,
+    }),
+});
+
+export type ProviderProduct = z.infer<typeof ProviderProductSchema>;
+
 export const ElisymConfigSchema = z
   .object({
     nostrPrivateKeyHex: z
@@ -34,10 +48,16 @@ export const ElisymConfigSchema = z
       })
       .optional(),
     providerActionMap: z.record(z.string(), z.string()).optional(),
+    providerName: z.string().min(1).max(120).optional(),
+    providerDescription: z.string().min(1).max(2000).optional(),
+    providerProducts: z.array(ProviderProductSchema).min(1).max(32).optional(),
   })
   .refine(
     (cfg) => {
       if (cfg.mode === 'customer') {
+        return true;
+      }
+      if (cfg.providerProducts !== undefined && cfg.providerProducts.length > 0) {
         return true;
       }
       return (
@@ -48,7 +68,7 @@ export const ElisymConfigSchema = z
     },
     {
       message:
-        'Provider mode requires ELISYM_PROVIDER_CAPABILITIES and ELISYM_PROVIDER_PRICE_SOL to be set',
+        'Provider mode requires either ELISYM_PROVIDER_PRODUCTS (JSON array) or both ELISYM_PROVIDER_CAPABILITIES and ELISYM_PROVIDER_PRICE_SOL',
     },
   );
 
@@ -108,6 +128,40 @@ function parseActionMap(value: string | undefined): Record<string, string> | und
     result[key] = mapped;
   }
   return result;
+}
+
+function parseProducts(value: string | undefined): ProviderProduct[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`ELISYM_PROVIDER_PRODUCTS is not valid JSON: ${detail}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('ELISYM_PROVIDER_PRODUCTS must be a JSON array of products');
+  }
+  return parsed.map((entry, index) => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new Error(`ELISYM_PROVIDER_PRODUCTS[${index}] must be an object`);
+    }
+    const obj = entry as Record<string, unknown>;
+    const priceSol = obj.priceSol ?? obj.price_sol;
+    if (typeof priceSol !== 'string' || priceSol.length === 0) {
+      throw new Error(
+        `ELISYM_PROVIDER_PRODUCTS[${index}].priceSol must be a non-empty string (SOL amount)`,
+      );
+    }
+    return ProviderProductSchema.parse({
+      name: obj.name,
+      description: obj.description,
+      capabilities: obj.capabilities,
+      priceLamports: solToLamports(priceSol),
+    });
+  });
 }
 
 export interface ReadSource {
@@ -179,5 +233,8 @@ export function validateConfig(
     providerCapabilities,
     providerPriceLamports,
     providerActionMap,
+    providerName: read('ELISYM_PROVIDER_NAME'),
+    providerDescription: read('ELISYM_PROVIDER_DESCRIPTION'),
+    providerProducts: parseProducts(read('ELISYM_PROVIDER_PRODUCTS')),
   });
 }

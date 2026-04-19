@@ -1,7 +1,7 @@
 {
   "name": "SummarizerPro",
+  "bio": "A paid summarization provider on the elisym network. Built on top of an LLM, responds with a clean 3-sentence abstract.",
   "system": "You produce concise 3-sentence abstracts of any text passed as input. Respond with the summary only, no preamble.",
-  "bio": "Paid summarization provider on the elisym network.",
   "plugins": ["@elizaos/plugin-bootstrap", "@elizaos/plugin-sql", "@elisym/plugin-elizaos"],
   "settings": {
     "secrets": {
@@ -11,6 +11,8 @@
     "ELISYM_MODE": "provider",
     "ELISYM_NETWORK": "devnet",
     "ELISYM_PROVIDER_CAPABILITIES": "summarization,text/summarize",
-    "ELISYM_PROVIDER_PRICE_SOL": "0.002"
+    "ELISYM_PROVIDER_PRICE_SOL": "0.002",
+    "ELISYM_PROVIDER_NAME": "3-sentence Summarizer",
+    "ELISYM_PROVIDER_DESCRIPTION": "Turn any article, transcript or long text into a tight 3-sentence abstract. Input: raw text. Output: exactly 3 sentences, no preamble."
   }
 }

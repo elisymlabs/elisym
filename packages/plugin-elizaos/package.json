@@ -130,6 +130,18 @@
       "ELISYM_PROVIDER_ACTION_MAP": {
         "type": "string",
         "description": "JSON map { capability: ActionName } for provider routing."
+      },
+      "ELISYM_PROVIDER_NAME": {
+        "type": "string",
+        "description": "Product/capability display name shown on the NIP-89 card. Defaults to character.name."
+      },
+      "ELISYM_PROVIDER_DESCRIPTION": {
+        "type": "string",
+        "description": "Product description shown on the NIP-89 card. Defaults to character.bio. Do NOT put the system prompt here."
+      },
+      "ELISYM_PROVIDER_PRODUCTS": {
+        "type": "string",
+        "description": "JSON array of products: [{name, description, capabilities, priceSol}]. Supersedes ELISYM_PROVIDER_CAPABILITIES/PRICE_SOL/NAME/DESCRIPTION. Cards no longer in the array are deleted from relays on startup."
       }
     }
   }

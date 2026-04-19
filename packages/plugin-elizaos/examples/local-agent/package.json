@@ -1,0 +1,23 @@
+{
+  "name": "elisym-local-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start:customer": "elizaos start --character ./customer.character.json",
+    "start:provider": "elizaos start --character ./provider.character.json",
+    "start:both": "elizaos start --character ./both.character.json",
+    "db:inspect": "bun run scripts/db-inspect.ts",
+    "db:clear": "bun run scripts/db-clear.ts"
+  },
+  "dependencies": {
+    "@elisym/plugin-elizaos": "link:../..",
+    "@elizaos/cli": "~1.0.20",
+    "@elizaos/plugin-anthropic": "~1.0.6",
+    "@elizaos/plugin-bootstrap": "~1.0.20",
+    "@elizaos/plugin-sql": "~1.0.20"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

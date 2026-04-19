@@ -1,4 +1,4 @@
-import { ElisymClient, ElisymIdentity, SolanaPaymentStrategy } from '@elisym/sdk';
+import { ElisymClient, ElisymIdentity, SolanaPaymentStrategy, type SubCloser } from '@elisym/sdk';
 import { Service, type IAgentRuntime } from '@elizaos/core';
 import { SERVICE_TYPES } from '../constants';
 import { identityFromHex, identityToHex } from '../lib/identity';
@@ -14,6 +14,7 @@ export class ElisymService extends Service {
 
   private client?: ElisymClient;
   private identity?: ElisymIdentity;
+  private pingSub?: SubCloser;
 
   static override async start(runtime: IAgentRuntime): Promise<ElisymService> {
     const service = new ElisymService(runtime);
@@ -32,6 +33,14 @@ export class ElisymService extends Service {
 
     this.identity = await this.resolveIdentity(config.nostrPrivateKeyHex);
     state.identity = this.identity;
+
+    const client = this.client;
+    const identity = this.identity;
+    this.pingSub = client.ping.subscribeToPings(identity, (senderPubkey, nonce) => {
+      client.ping
+        .sendPong(identity, senderPubkey, nonce)
+        .catch((error) => logger.debug({ err: error }, 'pong send failed'));
+    });
 
     logger.info(
       { pubkey: this.identity.publicKey, network: config.network, mode: config.mode },
@@ -58,6 +67,11 @@ export class ElisymService extends Service {
   }
 
   override async stop(): Promise<void> {
+    try {
+      this.pingSub?.close('elisym stopping');
+    } catch (error) {
+      logger.warn({ err: error }, 'ping subscription close failed');
+    }
     try {
       this.client?.close();
     } catch (error) {

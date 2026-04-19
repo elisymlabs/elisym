@@ -1,11 +1,24 @@
-import { KIND_JOB_REQUEST, type SubCloser } from '@elisym/sdk';
+import { KIND_APP_HANDLER, KIND_JOB_REQUEST, type SubCloser } from '@elisym/sdk';
 import { Service, type IAgentRuntime } from '@elizaos/core';
-import type { Event } from 'nostr-tools';
-import { SERVICE_TYPES } from '../constants';
+import type { Event, Filter } from 'nostr-tools';
+import { HEARTBEAT_INTERVAL_MS, SERVICE_TYPES } from '../constants';
+import type { ElisymConfig, ProviderProduct } from '../environment';
 import { handleIncomingJob } from '../handlers/incomingJobHandler';
 import { logger } from '../lib/logger';
 import { getState } from '../state';
 import type { ElisymService } from './ElisymService';
+
+interface ProductCard {
+  name: string;
+  description: string;
+  capabilities: string[];
+  payment: {
+    chain: 'solana';
+    network: ElisymConfig['network'];
+    address: string;
+    job_price: number;
+  };
+}
 
 export class ProviderService extends Service {
   static override serviceType = SERVICE_TYPES.PROVIDER;
@@ -14,7 +27,8 @@ export class ProviderService extends Service {
     'Accepts incoming elisym jobs and routes them to ElizaOS actions';
 
   private sub?: SubCloser;
-  private published = false;
+  private publishedCards: ProductCard[] = [];
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
 
   static override async start(runtime: IAgentRuntime): Promise<ProviderService> {
     const service = new ProviderService(runtime);
@@ -27,9 +41,6 @@ export class ProviderService extends Service {
     if (config.mode === 'customer') {
       logger.debug('ProviderService inactive (mode=customer)');
       return;
-    }
-    if (!config.providerCapabilities?.length || !config.providerPriceLamports) {
-      throw new Error('Provider mode requires providerCapabilities and providerPriceLamports');
     }
 
     const elisym = this.runtime.getService<ElisymService>(SERVICE_TYPES.ELISYM);
@@ -48,29 +59,36 @@ export class ProviderService extends Service {
     }
 
     const character = this.runtime.character;
-    const name = character?.name ?? 'elizaos-agent';
-    const description = (character?.system ?? '').slice(0, 500) || 'ElizaOS agent on elisym';
+    const agentName = character?.name ?? 'elizaos-agent';
+    const agentAbout = flattenBio(character?.bio) ?? 'ElizaOS agent on elisym';
 
-    await client.discovery.publishCapability(
-      identity,
-      {
-        name,
-        description,
-        capabilities: [...config.providerCapabilities],
-        payment: {
-          chain: 'solana',
-          network: config.network,
-          address,
-          job_price: Number(config.providerPriceLamports),
-        },
-      },
-      [KIND_JOB_REQUEST],
-    );
-    this.published = true;
-    logger.info(
-      { capabilities: config.providerCapabilities, pricingLamports: config.providerPriceLamports },
-      'provider capability card published',
-    );
+    try {
+      await client.discovery.publishProfile(identity, agentName, agentAbout);
+    } catch (error) {
+      logger.warn({ err: error }, 'kind:0 profile publish failed (non-fatal)');
+    }
+
+    const products = resolveProducts(config, { agentName, agentAbout });
+    const cards = products.map((product) => buildCard(product, address, config.network));
+
+    for (const card of cards) {
+      try {
+        await client.discovery.publishCapability(identity, card, [KIND_JOB_REQUEST]);
+        this.publishedCards.push(card);
+        logger.info(
+          {
+            name: card.name,
+            capabilities: card.capabilities,
+            priceLamports: card.payment.job_price,
+          },
+          'provider capability card published',
+        );
+      } catch (error) {
+        logger.warn({ err: error, name: card.name }, 'publishCapability failed');
+      }
+    }
+
+    await this.removeStaleCards(client, identity, new Set(cards.map((c) => c.name)));
 
     this.sub = client.marketplace.subscribeToJobRequests(
       identity,
@@ -83,24 +101,133 @@ export class ProviderService extends Service {
         );
       },
     );
+
+    this.heartbeatTimer = setInterval(() => {
+      for (const card of this.publishedCards) {
+        client.discovery.publishCapability(identity, card, [KIND_JOB_REQUEST]).catch((error) => {
+          logger.debug({ err: error, name: card.name }, 'heartbeat republish failed (non-fatal)');
+        });
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private async removeStaleCards(
+    client: ReturnType<ElisymService['getClient']>,
+    identity: ReturnType<ElisymService['getIdentity']>,
+    keepNames: Set<string>,
+  ): Promise<void> {
+    try {
+      const filter: Filter = {
+        kinds: [KIND_APP_HANDLER],
+        authors: [identity.publicKey],
+        '#t': ['elisym'],
+      };
+      const events = await client.pool.querySync(filter);
+      for (const event of events) {
+        let cardName: string | undefined;
+        try {
+          const parsed = JSON.parse(event.content) as { name?: unknown };
+          if (typeof parsed.name === 'string') {
+            cardName = parsed.name;
+          }
+        } catch {
+          continue;
+        }
+        if (!cardName || keepNames.has(cardName)) {
+          continue;
+        }
+        try {
+          await client.discovery.deleteCapability(identity, cardName);
+          logger.info({ name: cardName }, 'removed stale capability card');
+        } catch (error) {
+          logger.warn({ err: error, name: cardName }, 'stale card removal failed');
+        }
+      }
+    } catch (error) {
+      logger.debug({ err: error }, 'stale-card query failed (non-fatal)');
+    }
   }
 
   override async stop(): Promise<void> {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
     try {
       this.sub?.close('provider stopping');
     } catch (error) {
       logger.warn({ err: error }, 'provider subscription close failed');
     }
-    if (this.published) {
-      try {
-        const elisym = this.runtime.getService<ElisymService>(SERVICE_TYPES.ELISYM);
-        const name = this.runtime.character?.name;
-        if (elisym && name) {
-          await elisym.getClient().discovery.deleteCapability(elisym.getIdentity(), name);
+    if (this.publishedCards.length > 0) {
+      const elisym = this.runtime.getService<ElisymService>(SERVICE_TYPES.ELISYM);
+      if (elisym) {
+        const client = elisym.getClient();
+        const identity = elisym.getIdentity();
+        for (const card of this.publishedCards) {
+          try {
+            await client.discovery.deleteCapability(identity, card.name);
+          } catch (error) {
+            logger.warn({ err: error, name: card.name }, 'capability card retraction failed');
+          }
         }
-      } catch (error) {
-        logger.warn({ err: error }, 'capability card retraction failed');
       }
+      this.publishedCards = [];
     }
   }
+}
+
+function resolveProducts(
+  config: ElisymConfig,
+  fallback: { agentName: string; agentAbout: string },
+): ProviderProduct[] {
+  if (config.providerProducts && config.providerProducts.length > 0) {
+    return config.providerProducts;
+  }
+  if (
+    config.providerCapabilities &&
+    config.providerCapabilities.length > 0 &&
+    config.providerPriceLamports !== undefined
+  ) {
+    return [
+      {
+        name: config.providerName ?? fallback.agentName,
+        description: config.providerDescription ?? fallback.agentAbout,
+        capabilities: [...config.providerCapabilities],
+        priceLamports: config.providerPriceLamports,
+      },
+    ];
+  }
+  throw new Error('Provider mode requires at least one product');
+}
+
+function buildCard(
+  product: ProviderProduct,
+  address: string,
+  network: ElisymConfig['network'],
+): ProductCard {
+  return {
+    name: product.name,
+    description: product.description,
+    capabilities: [...product.capabilities],
+    payment: {
+      chain: 'solana',
+      network,
+      address,
+      job_price: Number(product.priceLamports),
+    },
+  };
+}
+
+function flattenBio(bio: unknown): string | undefined {
+  if (typeof bio === 'string') {
+    return bio.trim() || undefined;
+  }
+  if (Array.isArray(bio)) {
+    const joined = bio
+      .filter((line) => typeof line === 'string')
+      .join(' ')
+      .trim();
+    return joined.length > 0 ? joined : undefined;
+  }
+  return undefined;
 }
