@@ -191,6 +191,10 @@ export class ScriptSkill implements Skill {
       });
 
       child.on('close', (code) => {
+        // Flush any bytes the decoder buffered because a multi-byte UTF-8
+        // codepoint straddled the final chunk boundary.
+        stdout += stdoutDecoder.end();
+        stderr += stderrDecoder.end();
         if (code === 0) {
           resolve(stdout.trim());
           return;

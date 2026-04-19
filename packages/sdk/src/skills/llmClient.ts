@@ -90,6 +90,9 @@ async function fetchWithRetry(
     const delay = retryAfter
       ? Math.min(parseInt(retryAfter, 10) * 1000 || 1000 * 2 ** attempt, 30_000)
       : Math.min(1000 * 2 ** attempt, 8000);
+    // Release the unread body so the fetch connection/stream resources do
+    // not linger across the retry sleep.
+    await response.body?.cancel().catch(() => undefined);
     await sleepWithSignal(delay, signal);
   }
 }

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { vi } from 'vitest';
 import { JobLedger } from '../../src/ledger.js';
 import { AgentRuntime, type RuntimeConfig } from '../../src/runtime.js';
-import type { SkillRegistry, Skill } from '../../src/skill';
+import type { SkillRegistry, Skill, SkillContext } from '../../src/skill';
 import { makeFakeTransport, type FakeTransport } from './fakeTransport.js';
 
 export const tick = (ms = 30): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -67,7 +67,7 @@ export function createCrashHarness(options: CrashHarnessOptions = {}): CrashHarn
   const runtime = new AgentRuntime(
     transport.transport,
     registry,
-    { llm: null as unknown as Skill['execute'], agentName: 'test', agentDescription: '' },
+    { llm: null as unknown as SkillContext['llm'], agentName: 'test', agentDescription: '' },
     { ...freeConfig(), ...options.config },
     ledger,
     { onLog: vi.fn() },
