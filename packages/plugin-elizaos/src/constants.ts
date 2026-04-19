@@ -50,3 +50,6 @@ export const RATE_LIMIT_MAX_PER_WINDOW = 20;
 export const MAX_TRACKED_CUSTOMERS = 1000;
 
 export const DISCOVERY_TTL_MS = 5 * 60 * 1000;
+
+export const ACTIVE_JOBS_TTL_MS = 60 * 60 * 1000;
+export const MAX_ACTIVE_JOBS = 200;

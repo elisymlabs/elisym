@@ -1,6 +1,11 @@
 import type { Action, ActionResult, IAgentRuntime, Memory, State } from '@elizaos/core';
 import { nip19 } from 'nostr-tools';
-import { DEFAULT_JOB_TIMEOUT_MS, FEE_RESERVE_LAMPORTS, SERVICE_TYPES } from '../constants';
+import {
+  DEFAULT_JOB_TIMEOUT_MS,
+  FEE_RESERVE_LAMPORTS,
+  MAX_ACTIVE_JOBS,
+  SERVICE_TYPES,
+} from '../constants';
 import { executePaymentFlow } from '../handlers/customerJobFlow';
 import { recordTransition, type JobLedgerEntry } from '../lib/jobLedger';
 import { logger } from '../lib/logger';
@@ -204,6 +209,25 @@ export const hireAgentAction: Action = {
       lastUpdate: jobCreatedAt,
       releaseReservation: () => reservation.release(),
     };
+    if (state.activeJobs.size >= MAX_ACTIVE_JOBS) {
+      let oldestId: string | undefined;
+      let oldestUpdate = Number.POSITIVE_INFINITY;
+      for (const [id, candidate] of state.activeJobs) {
+        if (candidate.lastUpdate < oldestUpdate) {
+          oldestUpdate = candidate.lastUpdate;
+          oldestId = id;
+        }
+      }
+      if (oldestId !== undefined) {
+        const evicted = state.activeJobs.get(oldestId);
+        evicted?.cleanup?.();
+        state.activeJobs.delete(oldestId);
+        logger.info(
+          { jobEventId: oldestId, ageMs: Date.now() - oldestUpdate },
+          'evicted oldest activeJob to make room for new submission',
+        );
+      }
+    }
     state.activeJobs.set(jobEventId, job);
 
     const paymentState = { inFlight: false, paid: false };

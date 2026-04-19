@@ -1,4 +1,5 @@
 import type { Evaluator, IAgentRuntime } from '@elizaos/core';
+import { ACTIVE_JOBS_TTL_MS } from '../constants';
 import { logger } from '../lib/logger';
 import { formatLamportsAsSol } from '../lib/pricing';
 import { getState, hasState } from '../state';
@@ -12,8 +13,13 @@ export const jobCompletionEvaluator: Evaluator = {
     if (!hasState(runtime)) {
       return false;
     }
-    for (const job of getState(runtime).activeJobs.values()) {
+    const { activeJobs } = getState(runtime);
+    const now = Date.now();
+    for (const job of activeJobs.values()) {
       if (job.status === 'success' || job.status === 'error') {
+        return true;
+      }
+      if (now - job.lastUpdate > ACTIVE_JOBS_TTL_MS) {
         return true;
       }
     }
@@ -24,8 +30,12 @@ export const jobCompletionEvaluator: Evaluator = {
       return;
     }
     const { activeJobs } = getState(runtime);
+    const now = Date.now();
     for (const [id, job] of activeJobs) {
-      if (job.status === 'success' || job.status === 'error' || job.status === 'cancelled') {
+      const isTerminal =
+        job.status === 'success' || job.status === 'error' || job.status === 'cancelled';
+      const isStuck = now - job.lastUpdate > ACTIVE_JOBS_TTL_MS;
+      if (isTerminal) {
         logger.info(
           {
             jobId: id,
@@ -34,6 +44,19 @@ export const jobCompletionEvaluator: Evaluator = {
             tx: job.txSignature,
           },
           'elisym job finalized',
+        );
+        job.cleanup?.();
+        activeJobs.delete(id);
+        continue;
+      }
+      if (isStuck) {
+        logger.warn(
+          {
+            jobId: id,
+            status: job.status,
+            ageMs: now - job.lastUpdate,
+          },
+          'evicting stuck activeJob (TTL exceeded)',
         );
         job.cleanup?.();
         activeJobs.delete(id);
