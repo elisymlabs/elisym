@@ -6,7 +6,8 @@
     "packages/mcp",
     "packages/cli",
     "packages/config-client",
-    "packages/plugin-elizaos"
+    "packages/plugin-elizaos",
+    "packages/plugin-elizaos/examples/local-agent"
   ],
   "type": "module",
   "scripts": {
