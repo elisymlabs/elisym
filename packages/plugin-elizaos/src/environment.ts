@@ -171,6 +171,53 @@ function isPlaceholderValue(value: string): boolean {
 }
 
 let unsecuredRuntimeWarned = false;
+let legacyProviderEnvWarned = false;
+
+const LEGACY_PROVIDER_ENV_KEYS = [
+  'ELISYM_PROVIDER_CAPABILITIES',
+  'ELISYM_PROVIDER_PRICE_SOL',
+  'ELISYM_PROVIDER_NAME',
+  'ELISYM_PROVIDER_DESCRIPTION',
+] as const;
+
+interface LegacyProviderInput {
+  capabilities: string[] | undefined;
+  priceLamports: bigint | undefined;
+  name: string | undefined;
+  description: string | undefined;
+  hasProducts: boolean;
+}
+
+export function checkLegacyProviderEnv(input: LegacyProviderInput): void {
+  const usedLegacy = LEGACY_PROVIDER_ENV_KEYS.filter((key) => {
+    if (key === 'ELISYM_PROVIDER_CAPABILITIES') {
+      return input.capabilities !== undefined;
+    }
+    if (key === 'ELISYM_PROVIDER_PRICE_SOL') {
+      return input.priceLamports !== undefined;
+    }
+    if (key === 'ELISYM_PROVIDER_NAME') {
+      return input.name !== undefined;
+    }
+    return input.description !== undefined;
+  });
+  if (usedLegacy.length === 0) {
+    return;
+  }
+  if (input.hasProducts) {
+    throw new Error(
+      `ELISYM_PROVIDER_PRODUCTS conflicts with the legacy single-product vars (${usedLegacy.join(', ')}). ` +
+        'Pick one configuration shape; the legacy vars are removed in 0.4.0.',
+    );
+  }
+  if (!legacyProviderEnvWarned) {
+    logger.warn(
+      { usedLegacy },
+      'using deprecated single-product provider vars; migrate to ELISYM_PROVIDER_PRODUCTS before 0.4.0',
+    );
+    legacyProviderEnvWarned = true;
+  }
+}
 
 interface ServerHardeningInput {
   network: string | undefined;
@@ -308,6 +355,17 @@ export function validateConfig(
   const providerPriceRaw = read('ELISYM_PROVIDER_PRICE_SOL');
   const providerPriceLamports = providerPriceRaw ? solToLamports(providerPriceRaw) : undefined;
   const providerActionMap = parseActionMap(read('ELISYM_PROVIDER_ACTION_MAP'));
+  const providerName = read('ELISYM_PROVIDER_NAME');
+  const providerDescription = read('ELISYM_PROVIDER_DESCRIPTION');
+  const providerProducts = parseProducts(read('ELISYM_PROVIDER_PRODUCTS'));
+
+  checkLegacyProviderEnv({
+    capabilities: providerCapabilities,
+    priceLamports: providerPriceLamports,
+    name: providerName,
+    description: providerDescription,
+    hasProducts: providerProducts !== undefined,
+  });
 
   enforceServerHardening({
     network,
@@ -332,8 +390,8 @@ export function validateConfig(
     providerCapabilities,
     providerPriceLamports,
     providerActionMap,
-    providerName: read('ELISYM_PROVIDER_NAME'),
-    providerDescription: read('ELISYM_PROVIDER_DESCRIPTION'),
-    providerProducts: parseProducts(read('ELISYM_PROVIDER_PRODUCTS')),
+    providerName,
+    providerDescription,
+    providerProducts,
   });
 }

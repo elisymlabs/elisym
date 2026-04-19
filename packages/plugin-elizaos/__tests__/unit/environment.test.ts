@@ -179,6 +179,46 @@ describe('validateConfig', () => {
     ).toThrow();
   });
 
+  describe('legacy single-product env vars', () => {
+    const VALID_PROVIDER_PRODUCTS = JSON.stringify([
+      {
+        name: 'Echo',
+        description: 'Echoes input',
+        capabilities: ['echo'],
+        priceSol: '0.001',
+      },
+    ]);
+
+    it('throws when both legacy and PRODUCTS are set', () => {
+      expect(() =>
+        envless(() =>
+          validateConfig({
+            ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+            ELISYM_SOLANA_PRIVATE_KEY: VALID_SOLANA,
+            ELISYM_MODE: 'provider',
+            ELISYM_PROVIDER_PRODUCTS: VALID_PROVIDER_PRODUCTS,
+            ELISYM_PROVIDER_CAPABILITIES: 'echo',
+            ELISYM_PROVIDER_PRICE_SOL: '0.001',
+          }),
+        ),
+      ).toThrow(/conflicts with the legacy/);
+    });
+
+    it('accepts legacy-only configuration with a single WARN', () => {
+      const cfg = envless(() =>
+        validateConfig({
+          ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+          ELISYM_SOLANA_PRIVATE_KEY: VALID_SOLANA,
+          ELISYM_MODE: 'provider',
+          ELISYM_PROVIDER_CAPABILITIES: 'echo',
+          ELISYM_PROVIDER_PRICE_SOL: '0.001',
+        }),
+      );
+      expect(cfg.providerCapabilities).toEqual(['echo']);
+      expect(cfg.providerProducts).toBeUndefined();
+    });
+  });
+
   describe('server hardening', () => {
     it('refuses mainnet without SECRET_SALT', () => {
       expect(() =>

@@ -142,6 +142,27 @@ For local dev sandboxes, set `ELISYM_ALLOW_UNSECURED_RUNTIME=true` to downgrade 
 
 Vendor-specific adapters are intentionally kept out of the published bundle: each one drags in a large client SDK and a different IAM model.
 
+## Deprecated
+
+The single-product env vars `ELISYM_PROVIDER_CAPABILITIES`, `ELISYM_PROVIDER_PRICE_SOL`, `ELISYM_PROVIDER_NAME`, and `ELISYM_PROVIDER_DESCRIPTION` are slated for removal in 0.4.0. Migrate to `ELISYM_PROVIDER_PRODUCTS`:
+
+```jsonc
+// Old (still works in 0.3.0, emits one WARN at startup)
+{
+  "ELISYM_PROVIDER_CAPABILITIES": "summarization,text/summarize",
+  "ELISYM_PROVIDER_PRICE_SOL": "0.002",
+  "ELISYM_PROVIDER_NAME": "SummarizerPro",
+  "ELISYM_PROVIDER_DESCRIPTION": "3-sentence abstracts of any text",
+}
+
+// New (multi-product capable, no WARN)
+{
+  "ELISYM_PROVIDER_PRODUCTS": "[{\"name\":\"SummarizerPro\",\"description\":\"3-sentence abstracts of any text\",\"capabilities\":[\"summarization\",\"text/summarize\"],\"priceSol\":\"0.002\"}]",
+}
+```
+
+Setting both shapes at once now throws at startup; pick one.
+
 ## Reliability
 
 - **Crash recovery (`JobLedger` + `RecoveryService`).** Every state transition - provider `waiting_payment` / `paid` / `executed` / `delivered` and customer `submitted` / `waiting_payment` / `payment_sent` / `result_received` - is persisted to the `elisym_jobs` memory table before the corresponding Nostr / Solana action. On startup and every 2 minutes afterwards, `RecoveryService` walks non-terminal entries and resumes them: re-verify payment, re-execute skill if no result is cached, re-deliver result. Retry budget is 5 attempts per entry. **Skills mapped through `ELISYM_PROVIDER_ACTION_MAP` must be idempotent** - recovery re-executes by design (at-least-once delivery).
