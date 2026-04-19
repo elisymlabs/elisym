@@ -4,7 +4,19 @@ export const SERVICE_TYPES = {
   ELISYM: 'elisym',
   WALLET: 'elisym-wallet',
   PROVIDER: 'elisym-provider',
+  RECOVERY: 'elisym-recovery',
 } as const;
+
+export const JOBS_MEMORY_TABLE = 'elisym_jobs';
+export const SPEND_MEMORY_TABLE = 'elisym_spend';
+
+export const JOB_LEDGER_VERSION = 1;
+export const JOB_LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const RECOVERY_INTERVAL_MS = 2 * 60 * 1000;
+export const RECOVERY_MAX_RETRIES = 5;
+export const RECOVERY_CONCURRENCY = 4;
+export const MAX_CONCURRENT_INCOMING_JOBS = 10;
+export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 
 export const DEFAULT_JOB_TIMEOUT_MS = 180_000;
 
