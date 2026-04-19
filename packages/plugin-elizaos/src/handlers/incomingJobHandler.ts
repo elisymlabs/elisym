@@ -9,6 +9,7 @@ import { ModelType } from '@elizaos/core';
 import type { Event } from 'nostr-tools';
 import { MAX_INCOMING_JOB_BYTES, SERVICE_TYPES } from '../constants';
 import { logger } from '../lib/logger';
+import { findProductByCapability, resolveProducts } from '../lib/providerProducts';
 import type { WalletService } from '../services/WalletService';
 import { getState } from '../state';
 import { fetchProtocolConfig, paymentStrategyInstance } from './customerJobFlow';
@@ -93,7 +94,8 @@ export interface HandleIncomingJobInput {
 export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<void> {
   const { runtime, client, identity, event } = input;
   const { config } = getState(runtime);
-  if (!config.providerPriceLamports || !config.providerCapabilities) {
+  const products = resolveProducts(config, runtime.character);
+  if (products.length === 0) {
     logger.warn('incoming job received but provider config incomplete; ignoring');
     return;
   }
@@ -107,7 +109,8 @@ export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<
 
   const capabilityTag = event.tags.find((tag) => tag[0] === 't' && tag[1] && tag[1] !== 'elisym');
   const capability = capabilityTag?.[1] ?? 'generic';
-  if (!config.providerCapabilities.includes(capability)) {
+  const product = findProductByCapability(products, capability);
+  if (!product) {
     logger.warn({ capability }, 'incoming job capability not advertised; rejecting');
     await client.marketplace.submitErrorFeedback(
       identity,
@@ -129,7 +132,7 @@ export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<
 
   try {
     const protocolConfig = await fetchProtocolConfig(wallet.rpc, config.network);
-    const amount = Number(config.providerPriceLamports);
+    const amount = Number(product.priceLamports);
     const paymentData = paymentStrategyInstance().createPaymentRequest(
       wallet.address,
       amount,

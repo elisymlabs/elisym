@@ -5,6 +5,7 @@ import { HEARTBEAT_INTERVAL_MS, SERVICE_TYPES } from '../constants';
 import type { ElisymConfig, ProviderProduct } from '../environment';
 import { handleIncomingJob } from '../handlers/incomingJobHandler';
 import { logger } from '../lib/logger';
+import { resolveAgentMeta, resolveProducts } from '../lib/providerProducts';
 import { getState } from '../state';
 import type { ElisymService } from './ElisymService';
 
@@ -60,17 +61,18 @@ export class ProviderService extends Service {
     const identity = elisym.getIdentity();
     const address = walletService.address;
 
-    const character = this.runtime.character;
-    const agentName = character?.name ?? 'elizaos-agent';
-    const agentAbout = flattenBio(character?.bio) ?? 'ElizaOS agent on elisym';
+    const meta = resolveAgentMeta(this.runtime.character);
 
     try {
-      await client.discovery.publishProfile(identity, agentName, agentAbout);
+      await client.discovery.publishProfile(identity, meta.name, meta.about);
     } catch (error) {
       logger.warn({ err: error }, 'kind:0 profile publish failed (non-fatal)');
     }
 
-    const products = resolveProducts(config, { agentName, agentAbout });
+    const products = resolveProducts(config, this.runtime.character);
+    if (products.length === 0) {
+      throw new Error('Provider mode requires at least one product');
+    }
     const cards = products.map((product) => buildCard(product, address, config.network));
 
     for (const card of cards) {
@@ -178,30 +180,6 @@ export class ProviderService extends Service {
   }
 }
 
-function resolveProducts(
-  config: ElisymConfig,
-  fallback: { agentName: string; agentAbout: string },
-): ProviderProduct[] {
-  if (config.providerProducts && config.providerProducts.length > 0) {
-    return config.providerProducts;
-  }
-  if (
-    config.providerCapabilities &&
-    config.providerCapabilities.length > 0 &&
-    config.providerPriceLamports !== undefined
-  ) {
-    return [
-      {
-        name: config.providerName ?? fallback.agentName,
-        description: config.providerDescription ?? fallback.agentAbout,
-        capabilities: [...config.providerCapabilities],
-        priceLamports: config.providerPriceLamports,
-      },
-    ];
-  }
-  throw new Error('Provider mode requires at least one product');
-}
-
 function buildCard(
   product: ProviderProduct,
   address: string,
@@ -218,18 +196,4 @@ function buildCard(
       job_price: Number(product.priceLamports),
     },
   };
-}
-
-function flattenBio(bio: unknown): string | undefined {
-  if (typeof bio === 'string') {
-    return bio.trim() || undefined;
-  }
-  if (Array.isArray(bio)) {
-    const joined = bio
-      .filter((line) => typeof line === 'string')
-      .join(' ')
-      .trim();
-    return joined.length > 0 ? joined : undefined;
-  }
-  return undefined;
 }
