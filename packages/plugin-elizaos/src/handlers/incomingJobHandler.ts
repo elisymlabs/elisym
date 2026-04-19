@@ -8,6 +8,7 @@ import type { IAgentRuntime } from '@elizaos/core';
 import { ModelType } from '@elizaos/core';
 import type { Event } from 'nostr-tools';
 import { MAX_INCOMING_JOB_BYTES, SERVICE_TYPES } from '../constants';
+import { findByJobId, recordTransition, type JobLedgerEntry } from '../lib/jobLedger';
 import { logger } from '../lib/logger';
 import { findProductByCapability, resolveProducts } from '../lib/providerProducts';
 import type { WalletService } from '../services/WalletService';
@@ -91,12 +92,48 @@ export interface HandleIncomingJobInput {
   event: Event;
 }
 
+function baseLedger(
+  event: Event,
+  capability: string,
+  priceLamports: bigint,
+): Pick<
+  JobLedgerEntry,
+  'jobEventId' | 'side' | 'capability' | 'priceLamports' | 'customerPubkey' | 'jobCreatedAt'
+> {
+  return {
+    jobEventId: event.id,
+    side: 'provider',
+    capability,
+    priceLamports: priceLamports.toString(),
+    customerPubkey: event.pubkey,
+    jobCreatedAt: event.created_at * 1000,
+  };
+}
+
+// Guard against double-entry: if the ledger already knows this job, the
+// subscription is replaying (nostr reconnect) or a parallel dispatch raced
+// us. Return true if we should skip because the job is already terminal.
+async function isAlreadyTerminal(runtime: IAgentRuntime, jobEventId: string): Promise<boolean> {
+  const existing = await findByJobId(runtime, jobEventId);
+  if (!existing) {
+    return false;
+  }
+  return (
+    existing.state === 'delivered' || existing.state === 'failed' || existing.state === 'cancelled'
+  );
+}
+
 export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<void> {
   const { runtime, client, identity, event } = input;
   const { config } = getState(runtime);
   const products = resolveProducts(config, runtime.character);
   if (products.length === 0) {
     logger.warn('incoming job received but provider config incomplete; ignoring');
+    return;
+  }
+
+  if (await isAlreadyTerminal(runtime, event.id)) {
+    logger.debug({ jobId: event.id }, 'incoming job already in terminal state; skipping');
     return;
   }
 
@@ -130,6 +167,9 @@ export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<
     return;
   }
 
+  const ledgerBase = baseLedger(event, capability, product.priceLamports);
+  const rawEventJson = JSON.stringify(event);
+
   try {
     const protocolConfig = await fetchProtocolConfig(wallet.rpc, config.network);
     const amount = Number(product.priceLamports);
@@ -139,6 +179,13 @@ export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<
       protocolConfig,
     );
     const paymentRequestJson = JSON.stringify(paymentData);
+
+    await recordTransition(runtime, {
+      ...ledgerBase,
+      state: 'waiting_payment',
+      rawEventJson,
+      paymentRequestJson,
+    });
 
     await client.marketplace.submitPaymentRequiredFeedback(
       identity,
@@ -150,17 +197,52 @@ export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<
     const txSignature = await waitForPayment(wallet, protocolConfig, paymentData, 120_000);
     logger.info({ jobId: event.id, tx: txSignature }, 'payment received, processing job');
 
+    await recordTransition(runtime, {
+      ...ledgerBase,
+      state: 'paid',
+      rawEventJson,
+      paymentRequestJson,
+      txSignature,
+    });
+
     await client.marketplace.submitProcessingFeedback(identity, event);
 
     const result = await routeCapability(runtime, capability, event.content);
+
+    await recordTransition(runtime, {
+      ...ledgerBase,
+      state: 'executed',
+      rawEventJson,
+      paymentRequestJson,
+      txSignature,
+      resultContent: result.content,
+    });
+
     await client.marketplace.submitJobResultWithRetry(identity, event, result.content, amount);
     logger.info({ jobId: event.id, capability }, 'elisym job completed');
+
+    await recordTransition(runtime, {
+      ...ledgerBase,
+      state: 'delivered',
+      rawEventJson,
+      paymentRequestJson,
+      txSignature,
+      resultContent: result.content,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const name = error instanceof Error ? error.name : undefined;
     const stack = error instanceof Error ? error.stack : undefined;
     const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
     logger.error({ err: message, name, stack, cause, jobId: event.id }, 'incoming job failed');
+
+    await recordTransition(runtime, {
+      ...ledgerBase,
+      state: 'failed',
+      rawEventJson,
+      error: message,
+    });
+
     try {
       await client.marketplace.submitErrorFeedback(identity, event, message);
     } catch (feedbackError) {
