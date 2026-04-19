@@ -14,6 +14,7 @@ import { address, createSolanaRpc } from '@solana/kit';
 import { ZodError } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AgentContext, rpcUrlFor } from './context.js';
+import { logger } from './logger.js';
 import { agentTools } from './tools/agent.js';
 import { customerTools } from './tools/customer.js';
 import { dashboardTools } from './tools/dashboard.js';
@@ -61,8 +62,12 @@ export const registeredTools: readonly ToolDefinition[] = allTools;
  * summary so we don't leak internal paths / stack traces into the model context.
  */
 export function safeError(context: string, e: unknown): CallToolResult {
-  // Log full details to stderr for the operator.
-  console.error(`[mcp:error][${context}]`, e);
+  // Log full details to stderr for the operator. Routed through pino
+  // so SDK redact paths catch any secret / user-input fields embedded
+  // in the error object before it hits stderr.
+  const message = e instanceof Error ? e.message : String(e);
+  const stack = e instanceof Error ? e.stack : undefined;
+  logger.error({ event: 'tool_error', context, err: message, stack }, 'tool call failed');
 
   let msg: string;
   if (e instanceof ZodError) {
@@ -236,12 +241,16 @@ export async function startServer(ctx: AgentContext): Promise<void> {
       return;
     }
     shuttingDown = true;
-    console.error(`[mcp] shutting down (${reason})`);
+    logger.info({ event: 'shutdown', reason }, 'shutting down');
     for (const agent of ctx.registry.values()) {
       try {
         agent.client.close();
       } catch (e) {
-        console.error(`[mcp:close] ${agent.name}:`, e);
+        const message = e instanceof Error ? e.message : String(e);
+        logger.warn(
+          { event: 'close_failed', agent: agent.name, err: message },
+          'agent client close failed',
+        );
       }
       // scrub secret key bytes before dropping.
       if (agent.solanaKeypair) {
@@ -255,10 +264,14 @@ export async function startServer(ctx: AgentContext): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT', 0));
   process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
   process.on('unhandledRejection', (r) => {
-    console.error('[mcp:unhandledRejection]', r);
+    const message = r instanceof Error ? r.message : String(r);
+    logger.error({ event: 'unhandled_rejection', err: message }, 'unhandled rejection');
   });
   process.on('uncaughtException', (e) => {
-    console.error('[mcp:uncaughtException]', e);
+    logger.error(
+      { event: 'uncaught_exception', err: e.message, stack: e.stack },
+      'uncaught exception',
+    );
     void shutdown('uncaughtException', 1);
   });
 

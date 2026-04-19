@@ -9,6 +9,7 @@ import { generateSecretKey, nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import { listAgentNames, loadAgentConfig, saveAgentConfig } from '../config.js';
 import type { AgentInstance, AgentSecurityFlags, SolanaNetwork } from '../context.js';
+import { logger } from '../logger.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, errorResult, textResult } from './types.js';
 
@@ -96,7 +97,10 @@ export async function buildAgentInstance(
         secretKey: decoded,
       };
     } catch {
-      console.error(`[mcp:warn] Invalid Solana key for agent "${name}" - payments disabled`);
+      logger.warn(
+        { event: 'invalid_solana_key', agent: name },
+        'invalid Solana key - payments disabled',
+      );
     }
   }
 
@@ -145,8 +149,9 @@ export const agentTools: ToolDefinition[] = [
       if (input.activate) {
         const envOverride = process.env.ELISYM_ALLOW_AGENT_SWITCH === '1';
         if (envOverride) {
-          console.error(
-            '[mcp:security] ELISYM_ALLOW_AGENT_SWITCH override active - agent switch gate bypassed',
+          logger.warn(
+            { event: 'agent_switch_gate_bypassed', context: 'create_agent' },
+            'ELISYM_ALLOW_AGENT_SWITCH override active - agent switch gate bypassed',
           );
         }
         try {
@@ -215,8 +220,9 @@ export const agentTools: ToolDefinition[] = [
       // injected instruction from silently hopping to a different wallet.
       const envOverride = process.env.ELISYM_ALLOW_AGENT_SWITCH === '1';
       if (envOverride) {
-        console.error(
-          '[mcp:security] ELISYM_ALLOW_AGENT_SWITCH override active - agent switch gate bypassed',
+        logger.warn(
+          { event: 'agent_switch_gate_bypassed', context: 'switch_agent' },
+          'ELISYM_ALLOW_AGENT_SWITCH override active - agent switch gate bypassed',
         );
       }
       try {

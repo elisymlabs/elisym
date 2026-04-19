@@ -64,6 +64,7 @@
     "commander": "~13.1.0",
     "inquirer": "~12.11.0",
     "nostr-tools": "~2.23.0",
+    "pino": "~9.5.0",
     "zod": "~3.25.0",
     "zod-to-json-schema": "~3.25.0"
   },

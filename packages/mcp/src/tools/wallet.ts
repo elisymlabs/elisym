@@ -21,6 +21,7 @@ import {
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
 import { AgentContext, explorerClusterFor, fetchProtocolConfig, rpcUrlFor } from '../context.js';
+import { logger } from '../logger.js';
 import {
   checkLen,
   formatSol,
@@ -222,8 +223,9 @@ export const walletTools: ToolDefinition[] = [
       // gate on per-agent flag or env var override.
       const envOverride = process.env.ELISYM_ALLOW_WITHDRAWAL === '1';
       if (envOverride) {
-        console.error(
-          '[mcp:security] ELISYM_ALLOW_WITHDRAWAL override active - withdrawal gate bypassed',
+        logger.warn(
+          { event: 'withdrawal_gate_bypassed', agent: agent.name },
+          'ELISYM_ALLOW_WITHDRAWAL override active - withdrawal gate bypassed',
         );
       }
       if (!envOverride && !agent.security.withdrawals_enabled) {
