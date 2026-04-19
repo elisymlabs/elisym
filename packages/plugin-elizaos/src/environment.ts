@@ -2,6 +2,7 @@ import type { IAgentRuntime } from '@elizaos/core';
 import bs58 from 'bs58';
 import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
+import { logger } from './lib/logger';
 import { solToLamports } from './lib/pricing';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
@@ -145,6 +146,78 @@ function parseActionMap(value: string | undefined): Record<string, string> | und
   return result;
 }
 
+/* cspell:disable */
+const SECRET_SALT_PLACEHOLDERS = new Set([
+  'changeme',
+  'change-me',
+  'change_me',
+  'replaceme',
+  'replace-me',
+  'replace_me',
+  'placeholder',
+  'example',
+  'default',
+  'test',
+  'dev',
+  'development',
+  '0',
+  '0000000000000000',
+]);
+/* cspell:enable */
+
+function isPlaceholderValue(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized.length === 0 || SECRET_SALT_PLACEHOLDERS.has(normalized);
+}
+
+let unsecuredRuntimeWarned = false;
+
+interface ServerHardeningInput {
+  network: string | undefined;
+  mode: string | undefined;
+  hasProviderSecret: boolean;
+  secretSalt: string | undefined;
+  authToken: string | undefined;
+  allowUnsecured: string | undefined;
+}
+
+export function enforceServerHardening(input: ServerHardeningInput): void {
+  const isMainnet = input.network === 'mainnet';
+  const isProvider = input.mode === 'provider' || input.mode === 'both';
+  const requiresHardening = isMainnet || (isProvider && input.hasProviderSecret);
+  if (!requiresHardening) {
+    return;
+  }
+  const missing: string[] = [];
+  if (!input.secretSalt || isPlaceholderValue(input.secretSalt)) {
+    missing.push('SECRET_SALT');
+  }
+  if (!input.authToken || isPlaceholderValue(input.authToken)) {
+    missing.push('ELIZA_SERVER_AUTH_TOKEN');
+  }
+  if (missing.length === 0) {
+    return;
+  }
+  const allowUnsecured = (input.allowUnsecured ?? '').trim().toLowerCase() === 'true';
+  if (allowUnsecured) {
+    if (!unsecuredRuntimeWarned) {
+      logger.warn(
+        { missing, network: input.network, mode: input.mode },
+        'ELISYM_ALLOW_UNSECURED_RUNTIME=true is set; running without ' +
+          missing.join(' / ') +
+          '. Encryption-at-rest and HTTP authentication are effectively disabled - dev only.',
+      );
+      unsecuredRuntimeWarned = true;
+    }
+    return;
+  }
+  throw new Error(
+    `Refusing to start: ${missing.join(' / ')} must be set to a non-default value when ` +
+      'running on mainnet or as a provider with a configured secret key. ' +
+      'Set the env var(s), or pass ELISYM_ALLOW_UNSECURED_RUNTIME=true for local dev.',
+  );
+}
+
 function parseProducts(value: string | undefined): ProviderProduct[] | undefined {
   if (!value) {
     return undefined;
@@ -235,6 +308,15 @@ export function validateConfig(
   const providerPriceRaw = read('ELISYM_PROVIDER_PRICE_SOL');
   const providerPriceLamports = providerPriceRaw ? solToLamports(providerPriceRaw) : undefined;
   const providerActionMap = parseActionMap(read('ELISYM_PROVIDER_ACTION_MAP'));
+
+  enforceServerHardening({
+    network,
+    mode,
+    hasProviderSecret: solanaPrivateKeyBase58 !== undefined,
+    secretSalt: reader.getSetting('SECRET_SALT'),
+    authToken: reader.getSetting('ELIZA_SERVER_AUTH_TOKEN'),
+    allowUnsecured: reader.getSetting('ELISYM_ALLOW_UNSECURED_RUNTIME'),
+  });
 
   return ElisymConfigSchema.parse({
     nostrPrivateKeyHex,

@@ -123,6 +123,15 @@ All settings are read from `runtime.getSetting(key)`, falling back to `process.e
 - **Size limits.** Incoming jobs over 64 KiB are rejected with an error-feedback event.
 - **Secrets are never logged.** `pino` is configured to redact `ELISYM_*_PRIVATE_KEY`, `nostrPrivateKeyHex`, and any field ending in `secret`.
 
+### Required server hardening
+
+When `ELISYM_NETWORK=mainnet`, **or** when running as a provider (`ELISYM_MODE=provider|both`) with an `ELISYM_SOLANA_PRIVATE_KEY` configured, the plugin refuses to start unless both of the following ElizaOS-server env vars are set to non-default values:
+
+- `SECRET_SALT` - input to ElizaOS's encryption-at-rest KDF. Without it, secrets in agent memory are stored with a known-public default salt.
+- `ELIZA_SERVER_AUTH_TOKEN` - bearer token for the HTTP server. Without it, the agent's REST API accepts anonymous requests.
+
+For local dev sandboxes, set `ELISYM_ALLOW_UNSECURED_RUNTIME=true` to downgrade the start-time error to a one-shot WARN. Never set this in production.
+
 ### External signers
 
 `ELISYM_SIGNER_KIND` selects how the plugin obtains the Solana signer used to authorize payments:

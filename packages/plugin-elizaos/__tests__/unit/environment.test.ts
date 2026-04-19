@@ -5,7 +5,9 @@ import { validateConfig } from '../../src/environment';
 const VALID_HEX = 'a'.repeat(64);
 const VALID_SOLANA = bs58.encode(new Uint8Array(64));
 
-function envless<T>(fn: () => T): T {
+const NON_ELISYM_ENV_KEYS = ['SECRET_SALT', 'ELIZA_SERVER_AUTH_TOKEN'] as const;
+
+function envless<T>(fn: () => T, overrides?: Record<string, string | undefined>): T {
   const snapshot: Record<string, string | undefined> = {};
   for (const key of Object.keys(process.env)) {
     if (key.startsWith('ELISYM_')) {
@@ -13,14 +15,36 @@ function envless<T>(fn: () => T): T {
       delete process.env[key];
     }
   }
+  for (const key of NON_ELISYM_ENV_KEYS) {
+    snapshot[key] = process.env[key];
+    delete process.env[key];
+  }
+  if (overrides) {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+  if (
+    process.env.ELISYM_ALLOW_UNSECURED_RUNTIME === undefined &&
+    !Object.prototype.hasOwnProperty.call(overrides ?? {}, 'ELISYM_ALLOW_UNSECURED_RUNTIME')
+  ) {
+    process.env.ELISYM_ALLOW_UNSECURED_RUNTIME = 'true';
+  }
   try {
     return fn();
   } finally {
     for (const [key, value] of Object.entries(snapshot)) {
       if (value !== undefined) {
         process.env[key] = value;
+      } else {
+        delete process.env[key];
       }
     }
+    delete process.env.ELISYM_ALLOW_UNSECURED_RUNTIME;
   }
 }
 
@@ -153,5 +177,109 @@ describe('validateConfig', () => {
         }),
       ),
     ).toThrow();
+  });
+
+  describe('server hardening', () => {
+    it('refuses mainnet without SECRET_SALT', () => {
+      expect(() =>
+        envless(
+          () =>
+            validateConfig({
+              ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+              ELISYM_NETWORK: 'mainnet',
+            }),
+          {
+            ELIZA_SERVER_AUTH_TOKEN: 'production-token',
+            ELISYM_ALLOW_UNSECURED_RUNTIME: undefined,
+          },
+        ),
+      ).toThrow(/SECRET_SALT/);
+    });
+
+    it('refuses mainnet without auth token', () => {
+      expect(() =>
+        envless(
+          () =>
+            validateConfig({
+              ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+              ELISYM_NETWORK: 'mainnet',
+            }),
+          { SECRET_SALT: 'a-real-secret-value', ELISYM_ALLOW_UNSECURED_RUNTIME: undefined },
+        ),
+      ).toThrow(/ELIZA_SERVER_AUTH_TOKEN/);
+    });
+
+    it('rejects placeholder SECRET_SALT values', () => {
+      expect(() =>
+        envless(
+          () =>
+            validateConfig({
+              ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+              ELISYM_NETWORK: 'mainnet',
+            }),
+          {
+            SECRET_SALT: 'changeme',
+            ELIZA_SERVER_AUTH_TOKEN: 'real-token',
+            ELISYM_ALLOW_UNSECURED_RUNTIME: undefined,
+          },
+        ),
+      ).toThrow(/SECRET_SALT/);
+    });
+
+    it('passes mainnet when both SECRET_SALT and auth token are set', () => {
+      const cfg = envless(
+        () =>
+          validateConfig({
+            ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+            ELISYM_NETWORK: 'mainnet',
+          }),
+        {
+          SECRET_SALT: 'a-real-secret-value',
+          ELIZA_SERVER_AUTH_TOKEN: 'real-token',
+          ELISYM_ALLOW_UNSECURED_RUNTIME: undefined,
+        },
+      );
+      expect(cfg.network).toBe('mainnet');
+    });
+
+    it('refuses provider-with-key on devnet without SECRET_SALT', () => {
+      expect(() =>
+        envless(
+          () =>
+            validateConfig({
+              ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+              ELISYM_SOLANA_PRIVATE_KEY: VALID_SOLANA,
+              ELISYM_MODE: 'provider',
+              ELISYM_PROVIDER_CAPABILITIES: 'summarization',
+              ELISYM_PROVIDER_PRICE_SOL: '0.001',
+            }),
+          { ELIZA_SERVER_AUTH_TOKEN: 'real-token', ELISYM_ALLOW_UNSECURED_RUNTIME: undefined },
+        ),
+      ).toThrow(/SECRET_SALT/);
+    });
+
+    it('downgrades the error to a WARN when ELISYM_ALLOW_UNSECURED_RUNTIME=true', () => {
+      const cfg = envless(
+        () =>
+          validateConfig({
+            ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+            ELISYM_NETWORK: 'mainnet',
+          }),
+        { ELISYM_ALLOW_UNSECURED_RUNTIME: 'true' },
+      );
+      expect(cfg.network).toBe('mainnet');
+    });
+
+    it('does not require hardening for plain customer agents on devnet', () => {
+      const cfg = envless(
+        () =>
+          validateConfig({
+            ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+            ELISYM_SOLANA_PRIVATE_KEY: VALID_SOLANA,
+          }),
+        {},
+      );
+      expect(cfg.mode).toBe('customer');
+    });
   });
 });
