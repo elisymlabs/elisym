@@ -29,6 +29,7 @@ import {
   type MediaCache,
 } from '@elisym/sdk/agent-store';
 import { address, createSolanaRpc } from '@solana/kit';
+import { probeRelays } from '../diagnostics.js';
 import {
   getRpcUrl,
   HEARTBEAT_INTERVAL_MS,
@@ -176,6 +177,22 @@ export async function cmdStart(
   const identity = ElisymIdentity.fromHex(loaded.secrets.nostr_secret_key);
   const relays = loaded.yaml.relays.length > 0 ? loaded.yaml.relays : [...RELAYS];
   const client = new ElisymClient({ relays });
+
+  // Opt-in DNS + TCP connectivity probe for WSL / Windows / corporate
+  // firewall troubleshooting. Runs once before publish so the operator
+  // sees the result in the startup banner.
+  if (process.env.ELISYM_NET_DIAG === '1') {
+    console.log('  [net-diag] Probing relay DNS + TCP connectivity...');
+    const results = await probeRelays(relays, logger);
+    for (const result of results) {
+      const ipSummary = result.ips.length > 0 ? result.ips.join(',') : '-';
+      if (result.tcpOpenMs !== undefined) {
+        console.log(`  [net-diag] ${result.url} -> ${ipSummary} TCP open in ${result.tcpOpenMs}ms`);
+      } else {
+        console.log(`  [net-diag] ${result.url} -> ${ipSummary} FAILED: ${result.error ?? '?'}`);
+      }
+    }
+  }
 
   // -- Step 9: Resolve media URLs via cache (no SKILL.md mutation) --
   const media = new MediaService();
