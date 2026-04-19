@@ -4,7 +4,6 @@ import {
   type Rpc,
   type Signature,
   type SolanaRpcApi,
-  type TransactionSigner,
   AccountRole,
   address,
   appendTransactionMessageInstructions,
@@ -12,6 +11,8 @@ import {
   getAddressDecoder,
   isAddress,
   pipe,
+  setTransactionMessageComputeUnitLimit,
+  setTransactionMessageComputeUnitPrice,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
@@ -25,7 +26,17 @@ import type {
   VerifyResult,
 } from '../types';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
-import type { PaymentStrategy, ProtocolConfigInput } from './strategy';
+import { estimatePriorityFeeMicroLamports } from './priorityFee';
+import { parsePaymentRequest } from './schema';
+import type {
+  BuildTransactionOptions,
+  PaymentStrategy,
+  ProtocolConfigInput,
+  Signer,
+} from './strategy';
+
+const DEFAULT_COMPUTE_UNIT_LIMIT = 200_000;
+const DEFAULT_PRIORITY_FEE_PERCENTILE = 75;
 
 const REFERENCE_BYTE_LENGTH = 32;
 
@@ -103,32 +114,32 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     requestJson: string,
     config: ProtocolConfigInput,
     expectedRecipient?: string,
+    options?: { maxAmountLamports?: bigint },
   ): PaymentValidationError | null {
     assertConfig(config);
-    let data: PaymentRequestData;
-    try {
-      data = JSON.parse(requestJson);
-    } catch (e) {
-      return { code: 'invalid_json', message: `Invalid payment request JSON: ${e}` };
+    const parsed = parsePaymentRequest(requestJson, {
+      maxAmountLamports: options?.maxAmountLamports,
+    });
+    if (!parsed.ok) {
+      if (parsed.error.code === 'invalid_json') {
+        return { code: 'invalid_json', message: parsed.error.message };
+      }
+      if (parsed.error.code === 'amount_exceeds_max') {
+        return { code: 'invalid_amount', message: parsed.error.message };
+      }
+      // Schema-level rejections collapse into invalid_amount/recipient/etc
+      // but the precise field is preserved in the message.
+      return { code: 'invalid_amount', message: parsed.error.message };
     }
+    const data: PaymentRequestData = parsed.data;
 
-    if (typeof data.amount !== 'number' || !Number.isInteger(data.amount) || data.amount <= 0) {
-      return {
-        code: 'invalid_amount',
-        message: `Invalid amount in payment request: ${data.amount}`,
-      };
-    }
-    if (typeof data.recipient !== 'string' || !data.recipient) {
-      return { code: 'missing_recipient', message: 'Missing recipient in payment request' };
-    }
+    // Defense in depth: the Zod schema only enforces base58 + length, not
+    // the canonical 32-byte ed25519 check that `isAddress` performs.
     if (!isValidSolanaAddress(data.recipient)) {
       return {
         code: 'invalid_recipient_address',
         message: `Invalid Solana address for recipient: ${data.recipient}`,
       };
-    }
-    if (typeof data.reference !== 'string' || !data.reference) {
-      return { code: 'missing_reference', message: 'Missing reference in payment request' };
     }
     if (!isValidSolanaAddress(data.reference)) {
       return {
@@ -217,9 +228,10 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
    */
   async buildTransaction(
     paymentRequest: PaymentRequestData,
-    payerSigner: TransactionSigner,
+    payerSigner: Signer,
     rpc: Rpc<SolanaRpcApi>,
     config: ProtocolConfigInput,
+    options?: BuildTransactionOptions,
   ): Promise<Readonly<unknown>> {
     assertConfig(config);
     assertLamports(paymentRequest.amount, 'payment amount');
@@ -246,16 +258,30 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       );
     }
 
-    const instructions = buildPaymentInstructions(paymentRequest, payerSigner);
+    const computeUnitLimit = options?.computeUnitLimit ?? DEFAULT_COMPUTE_UNIT_LIMIT;
+    if (!Number.isInteger(computeUnitLimit) || computeUnitLimit <= 0) {
+      throw new Error(`Invalid computeUnitLimit: ${computeUnitLimit}. Must be a positive integer.`);
+    }
+    // Build payment instructions first - this is synchronous and surfaces
+    // shape errors (e.g. fee >= amount) before any RPC round-trip.
+    const paymentInstructions = buildPaymentInstructions(paymentRequest, payerSigner);
+
+    const priorityFeeMicroLamports =
+      options?.priorityFeeMicroLamports ??
+      (await estimatePriorityFeeMicroLamports(rpc, {
+        percentile: options?.priorityFeePercentile ?? DEFAULT_PRIORITY_FEE_PERCENTILE,
+      }));
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
     const message = pipe(
       createTransactionMessage({ version: 0 }),
       (m) => setTransactionMessageFeePayerSigner(payerSigner, m),
       (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
+      (m) => setTransactionMessageComputeUnitLimit(computeUnitLimit, m),
+      (m) => setTransactionMessageComputeUnitPrice(priorityFeeMicroLamports, m),
       (m) =>
         appendTransactionMessageInstructions(
-          instructions as Parameters<typeof appendTransactionMessageInstructions>[0],
+          paymentInstructions as Parameters<typeof appendTransactionMessageInstructions>[0],
           m,
         ),
     );
@@ -566,7 +592,7 @@ function waitMs(ms: number): Promise<void> {
  */
 export function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
-  payerSigner: TransactionSigner,
+  payerSigner: Signer,
 ): readonly unknown[] {
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);

@@ -25,10 +25,12 @@ ecash
 effectful
 elisym
 elisymlabs
+elizaos
 eose
 confusables
 exfil
 exfiltration
+helius
 homoglyphs
 idiv
 keypair
@@ -52,6 +54,7 @@ openclaw
 oxfmt
 oxlint
 permissionless
+pino
 pubkey
 purplepag
 pubkeys
@@ -65,6 +68,7 @@ smol
 solana
 solflare
 solscan
+ssrf
 stderr
 stdin
 stdout
@@ -79,6 +83,7 @@ tsup
 turborepo
 undecryptable
 untargeted
+microlamports
 untrusted
 vitest
 vite
@@ -88,3 +93,4 @@ whois
 wouter
 zeroize
 zeroized
+zod

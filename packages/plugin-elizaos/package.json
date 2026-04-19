@@ -1,0 +1,139 @@
+{
+  "name": "@elisym/plugin-elizaos",
+  "version": "0.1.0",
+  "description": "ElizaOS plugin for running a paid elisym provider agent on Nostr + Solana. Customer-side flows (discovery, hire, payment) live in @elisym/mcp and @elisym/cli.",
+  "keywords": [
+    "ai-agent",
+    "elisym",
+    "elizaos",
+    "elizaos-plugins",
+    "marketplace",
+    "nostr",
+    "solana"
+  ],
+  "homepage": "https://github.com/elisymlabs/elisym",
+  "bugs": {
+    "url": "https://github.com/elisymlabs/elisym/issues"
+  },
+  "license": "MIT",
+  "author": "elisym labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elisymlabs/elisym.git",
+    "directory": "packages/plugin-elizaos"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/",
+    "qa": "tsup && vitest run && tsc --noEmit && oxlint src/ && oxfmt --check src/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@elisym/sdk": "~0.6.0",
+    "@solana/kit": "~6.8.0",
+    "bs58": "~6.0.0",
+    "decimal.js-light": "~2.5.0",
+    "nostr-tools": "~2.23.0",
+    "p-limit": "~6.2.0",
+    "pino": "~9.5.0",
+    "yaml": "~2.8.3",
+    "zod": "~3.25.0"
+  },
+  "devDependencies": {
+    "@elizaos/core": "~1.7.2",
+    "@types/node": "~22.0.0",
+    "tsup": "~8.4.0",
+    "typescript": "~5.7.0",
+    "vitest": "~3.0.0"
+  },
+  "peerDependencies": {
+    "@elizaos/core": "~1.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "agentConfig": {
+    "pluginType": "elizaos:plugin:1.0.0",
+    "pluginParameters": {
+      "ELISYM_NOSTR_PRIVATE_KEY": {
+        "type": "string",
+        "sensitive": true,
+        "description": "Hex (64 chars) or nsec-encoded Nostr secret key. If empty, plugin generates and persists one."
+      },
+      "ELISYM_SOLANA_PRIVATE_KEY": {
+        "type": "string",
+        "sensitive": true,
+        "description": "Base58-encoded 64-byte Solana secret key. If empty, plugin generates one on first start and persists it to agent memory."
+      },
+      "ELISYM_NETWORK": {
+        "type": "string",
+        "default": "devnet",
+        "description": "'devnet' or 'mainnet'."
+      },
+      "ELISYM_RELAYS": {
+        "type": "string",
+        "description": "Comma-separated Nostr relay URLs. Omit to use SDK defaults."
+      },
+      "ELISYM_SOLANA_RPC_URL": {
+        "type": "string",
+        "description": "Solana RPC endpoint. Omit to use the public cluster for the chosen network."
+      },
+      "ELISYM_PROVIDER_CAPABILITIES": {
+        "type": "string",
+        "description": "Comma-separated capabilities to advertise. Required unless ELISYM_PROVIDER_PRODUCTS or ELISYM_PROVIDER_SKILLS_DIR is set."
+      },
+      "ELISYM_PROVIDER_PRICE_SOL": {
+        "type": "string",
+        "description": "Price per job this agent charges, in SOL. Required unless ELISYM_PROVIDER_PRODUCTS or ELISYM_PROVIDER_SKILLS_DIR is set."
+      },
+      "ELISYM_PROVIDER_ACTION_MAP": {
+        "type": "string",
+        "description": "JSON map { capability: ActionName } for provider routing."
+      },
+      "ELISYM_PROVIDER_NAME": {
+        "type": "string",
+        "description": "Product/capability display name shown on the NIP-89 card. Defaults to character.name."
+      },
+      "ELISYM_PROVIDER_DESCRIPTION": {
+        "type": "string",
+        "description": "Product description shown on the NIP-89 card. Defaults to character.bio. Do NOT put the system prompt here."
+      },
+      "ELISYM_PROVIDER_PRODUCTS": {
+        "type": "string",
+        "description": "JSON array of products: [{name, description, capabilities, priceSol}]. Supersedes ELISYM_PROVIDER_CAPABILITIES/PRICE_SOL/NAME/DESCRIPTION. Cards no longer in the array are deleted from relays on startup."
+      },
+      "ELISYM_SIGNER_KIND": {
+        "type": "string",
+        "default": "local",
+        "description": "'local' (generate/load hot key, default), 'kms' (defer signing to an external KMS adapter; no adapter bundled), or 'external' (bring-your-own Signer)."
+      },
+      "ELISYM_PROVIDER_SKILLS_DIR": {
+        "type": "string",
+        "description": "Absolute or relative path to a directory of SKILL.md folders. Each skill auto-registers as a provider product with its own capabilities and price. Requires ANTHROPIC_API_KEY for the skill LLM tool-use loop."
+      }
+    }
+  }
+}

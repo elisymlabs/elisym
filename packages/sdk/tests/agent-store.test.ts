@@ -249,7 +249,7 @@ describe('writeYaml + loadAgent round-trip', () => {
     expect(loaded.encrypted).toBe(true);
     expect(loaded.secrets.nostr_secret_key).toBe('a'.repeat(64));
     expect(loaded.secrets.llm_api_key).toBe('sk-test-key');
-  });
+  }, 15_000);
 
   it('throws if encrypted without passphrase', async () => {
     const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });

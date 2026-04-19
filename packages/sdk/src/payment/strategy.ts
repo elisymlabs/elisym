@@ -7,6 +7,19 @@ import type {
 } from '../types';
 
 /**
+ * Pluggable signer used by `PaymentStrategy.buildTransaction`.
+ *
+ * Aliased to Solana Kit's `TransactionSigner` so callers can pass a hot
+ * `KeyPairSigner`, an external KMS-backed signer, a hardware-wallet adapter,
+ * or any other implementation that conforms to the Solana Kit signer contract
+ * (TransactionPartialSigner / TransactionSendingSigner / TransactionModifyingSigner).
+ *
+ * Exposing the alias here lets downstream packages depend on `@elisym/sdk`'s
+ * abstraction instead of importing Kit directly when wiring custom signers.
+ */
+export type Signer = TransactionSigner;
+
+/**
  * Protocol fee + treasury inputs for building a payment request.
  *
  * In Phase 2 the SDK no longer reads PROTOCOL_FEE_BPS / PROTOCOL_TREASURY
@@ -51,18 +64,26 @@ export interface PaymentStrategy {
     requestJson: string,
     config: ProtocolConfigInput,
     expectedRecipient?: string,
+    options?: { maxAmountLamports?: bigint },
   ): PaymentValidationError | null;
 
   /**
-   * Build and sign a transaction from a payment request using a TransactionSigner.
-   * Returns a chain-specific signed transaction value. The caller is responsible
-   * for sending it (e.g. via `rpc.sendTransaction(...).send()`).
+   * Build and sign a transaction from a payment request using a `Signer`.
+   *
+   * The `Signer` parameter is intentionally the abstract interface, not a
+   * concrete `KeyPairSigner`, so callers can plug in external signers
+   * (KMS, hardware wallet, ElizaOS approval Action) without holding the
+   * raw secret key in process memory.
+   *
+   * Returns a chain-specific signed transaction value. The caller is
+   * responsible for sending it (e.g. via `rpc.sendTransaction(...).send()`).
    */
   buildTransaction(
     paymentRequest: PaymentRequestData,
-    payerSigner: TransactionSigner,
+    payerSigner: Signer,
     rpc: Rpc<SolanaRpcApi>,
     config: ProtocolConfigInput,
+    options?: BuildTransactionOptions,
   ): Promise<unknown>;
 
   /**
@@ -74,4 +95,33 @@ export interface PaymentStrategy {
     config: ProtocolConfigInput,
     options?: VerifyOptions,
   ): Promise<VerifyResult>;
+}
+
+/**
+ * Optional knobs for `PaymentStrategy.buildTransaction`.
+ *
+ * Defaults are chosen for typical Solana mainnet conditions; override these
+ * when the caller knows peak fees are elevated, when running against a
+ * private cluster with no priority-fee samples, or when bundling multiple
+ * payment instructions.
+ */
+export interface BuildTransactionOptions {
+  /**
+   * Compute-unit limit attached to the transaction. Defaults to 200 000 -
+   * comfortable headroom for two SystemProgram transfers + a few extra ops.
+   */
+  computeUnitLimit?: number;
+  /**
+   * Per-CU priority-fee override in microLamports. When omitted, the
+   * strategy queries `getRecentPrioritizationFees`, sorts by percentile, and
+   * uses that value (cached for 10s). Pass an explicit value to skip the
+   * RPC call or override the percentile heuristic during traffic spikes.
+   */
+  priorityFeeMicroLamports?: bigint;
+  /**
+   * Percentile of the recent priority-fee distribution to charge when
+   * `priorityFeeMicroLamports` is not supplied. 50 = median, 75 = upper
+   * quartile (default), 90 = aggressive.
+   */
+  priorityFeePercentile?: number;
 }
