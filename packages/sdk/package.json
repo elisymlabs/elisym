@@ -73,6 +73,16 @@
         "types": "./dist/runtime.d.cts",
         "default": "./dist/runtime.cjs"
       }
+    },
+    "./skills": {
+      "import": {
+        "types": "./dist/skills.d.ts",
+        "default": "./dist/skills.js"
+      },
+      "require": {
+        "types": "./dist/skills.d.cts",
+        "default": "./dist/skills.cjs"
+      }
     }
   },
   "scripts": {

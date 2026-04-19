@@ -6,6 +6,7 @@ export default defineConfig({
     node: 'src/node.ts',
     'agent-store': 'src/agent-store/index.ts',
     runtime: 'src/runtime/index.ts',
+    skills: 'src/skills/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,
