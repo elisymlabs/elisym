@@ -214,4 +214,54 @@ describe('JobLedger', () => {
     expect(ledger.getStatus('old')).toBeUndefined();
     expect(ledger.getStatus('recent')).toBe('delivered');
   });
+
+  it('pruneOldEntries drops only terminal entries past retention', () => {
+    const ledger = new JobLedger(ledgerPath);
+    const nowSecs = Math.floor(Date.now() / 1000);
+
+    // 31 days old, delivered - past retention, should drop.
+    ledger.recordPaid({ ...makeEntry('old-delivered'), created_at: nowSecs - 86400 * 31 });
+    ledger.markExecuted('old-delivered', 'result');
+    ledger.markDelivered('old-delivered');
+
+    // 31 days old, failed - past retention, should drop.
+    ledger.recordPaid({ ...makeEntry('old-failed'), created_at: nowSecs - 86400 * 31 });
+    ledger.markFailed('old-failed');
+
+    // 31 days old, still 'paid' - stuck non-terminal, must be retained.
+    ledger.recordPaid({ ...makeEntry('old-stuck'), created_at: nowSecs - 86400 * 31 });
+
+    // Fresh delivered entry, must be retained.
+    ledger.recordPaid({ ...makeEntry('fresh'), created_at: nowSecs });
+    ledger.markExecuted('fresh', 'result');
+    ledger.markDelivered('fresh');
+
+    const deleted = ledger.pruneOldEntries(30 * 24 * 60 * 60 * 1000);
+    expect(deleted).toBe(2);
+    expect(ledger.getStatus('old-delivered')).toBeUndefined();
+    expect(ledger.getStatus('old-failed')).toBeUndefined();
+    expect(ledger.getStatus('old-stuck')).toBe('paid');
+    expect(ledger.getStatus('fresh')).toBe('delivered');
+  });
+
+  it('pruneOldEntries retains an entry exactly at the retention boundary', () => {
+    const ledger = new JobLedger(ledgerPath);
+    const retentionSecs = 30 * 24 * 60 * 60;
+    const boundary = Math.floor(Date.now() / 1000) - retentionSecs;
+
+    // created_at exactly at cutoff - the condition is `< cutoff`, so boundary is kept.
+    ledger.recordPaid({ ...makeEntry('boundary-keep'), created_at: boundary });
+    ledger.markExecuted('boundary-keep', 'r');
+    ledger.markDelivered('boundary-keep');
+
+    // one second older - strictly before cutoff, should drop.
+    ledger.recordPaid({ ...makeEntry('boundary-drop'), created_at: boundary - 1 });
+    ledger.markExecuted('boundary-drop', 'r');
+    ledger.markDelivered('boundary-drop');
+
+    const deleted = ledger.pruneOldEntries(retentionSecs * 1000);
+    expect(deleted).toBe(1);
+    expect(ledger.getStatus('boundary-keep')).toBe('delivered');
+    expect(ledger.getStatus('boundary-drop')).toBeUndefined();
+  });
 });

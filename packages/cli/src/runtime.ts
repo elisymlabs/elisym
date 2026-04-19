@@ -20,6 +20,7 @@ import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 
 const payment = new SolanaPaymentStrategy();
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, mirrors plugin
 const TOTAL_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export interface RuntimeConfig {
@@ -119,8 +120,8 @@ export class AgentRuntime {
   async run(): Promise<void> {
     const log = this.callbacks.onLog ?? console.log;
 
-    // GC old ledger entries
-    this.ledger.gc();
+    // Prune terminal ledger entries past the 30-day retention window.
+    this.ledger.pruneOldEntries(LEDGER_RETENTION_MS);
 
     // Recover pending jobs from previous sessions
     await this.recoverPendingJobs();
@@ -134,7 +135,7 @@ export class AgentRuntime {
     // Periodic ledger GC, rate limit cleanup, and subscription health check
     this.gcInterval = setInterval(() => {
       try {
-        this.ledger.gc();
+        this.ledger.pruneOldEntries(LEDGER_RETENTION_MS);
       } catch (e: any) {
         log(`GC error: ${e.message}`);
       }
