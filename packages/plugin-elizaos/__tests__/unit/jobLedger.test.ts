@@ -147,18 +147,33 @@ describe('jobLedger', () => {
     const runtime = makeRuntime();
     const ancient = Date.now() - 60 * 24 * 60 * 60 * 1000; // 60 days ago
     const recent = Date.now() - 5 * 60 * 1000;
-    await recordTransition(
-      runtime,
-      baseEntry({ jobEventId: 'old-terminal', state: 'delivered', transitionAt: ancient }),
-    );
-    await recordTransition(
-      runtime,
-      baseEntry({ jobEventId: 'recent-terminal', state: 'delivered', transitionAt: recent }),
-    );
-    await recordTransition(
-      runtime,
-      baseEntry({ jobEventId: 'old-stuck', state: 'paid', transitionAt: ancient }),
-    );
+    const writeRow = async (
+      jobEventId: string,
+      state: JobLedgerEntry['state'],
+      createdAt: number,
+    ) => {
+      const entry: JobLedgerEntry = baseEntry({ jobEventId, state, transitionAt: createdAt });
+      await runtime.createMemory(
+        {
+          entityId: runtime.agentId,
+          agentId: runtime.agentId,
+          roomId: runtime.agentId,
+          content: {
+            text: '[job-ledger]',
+            source: 'elisym-ledger',
+            elisym_ledger: true,
+            entry,
+          },
+          createdAt,
+        },
+        JOBS_MEMORY_TABLE,
+        false,
+      );
+    };
+    await writeRow('old-terminal', 'delivered', ancient);
+    await writeRow('recent-terminal', 'delivered', recent);
+    await writeRow('old-stuck', 'paid', ancient);
+
     const deleted = await pruneOldEntries(runtime);
     expect(deleted).toBe(1);
     const remaining = await loadLatest(runtime);

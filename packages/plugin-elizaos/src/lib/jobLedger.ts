@@ -79,15 +79,28 @@ function extractEntry(memory: Memory): JobLedgerEntry | undefined {
   return undefined;
 }
 
+// Ordering uses memory.createdAt (the DB row timestamp) so that two
+// ledger entries written in quick succession can still be ordered
+// reliably even if their embedded entry.transitionAt happens to tie.
+// Tests can also inject historical entries by writing memories with
+// explicit createdAt values, without having to go through recordTransition.
+function memoryTimestamp(memory: Memory): number {
+  return memory.createdAt ?? 0;
+}
+
+// Callers spread an existing JobLedgerEntry to carry forward fields;
+// transitionAt and version MUST be stamped fresh by this function, so the
+// entry type strips them off to prevent accidental carry-over (which
+// would make the new row indistinguishable-or-older than the prior one,
+// breaking loadLatest's "latest by transitionAt" rule).
 export async function recordTransition(
   runtime: IAgentRuntime,
-  entry: Omit<JobLedgerEntry, 'transitionAt' | 'version'> &
-    Partial<Pick<JobLedgerEntry, 'transitionAt' | 'version'>>,
+  entry: Omit<JobLedgerEntry, 'transitionAt' | 'version'>,
 ): Promise<void> {
   const finalized: JobLedgerEntry = {
+    ...entry,
     transitionAt: Date.now(),
     version: JOB_LEDGER_VERSION,
-    ...entry,
   };
   const content: LedgerContent = {
     text: `[job-ledger] ${finalized.side} ${finalized.state} ${finalized.jobEventId.slice(0, 8)}`,
@@ -129,6 +142,7 @@ export async function loadLatest(
     logger.warn({ err: error }, 'jobLedger.loadLatest: getMemories failed');
     return latest;
   }
+  const latestTs = new Map<string, number>();
   for (const memory of memories) {
     const entry = extractEntry(memory);
     if (!entry) {
@@ -137,9 +151,11 @@ export async function loadLatest(
     if (side && entry.side !== side) {
       continue;
     }
-    const existing = latest.get(entry.jobEventId);
-    if (!existing || entry.transitionAt > existing.transitionAt) {
+    const ts = memoryTimestamp(memory);
+    const existingTs = latestTs.get(entry.jobEventId) ?? -Infinity;
+    if (ts >= existingTs) {
       latest.set(entry.jobEventId, entry);
+      latestTs.set(entry.jobEventId, ts);
     }
   }
   return latest;
@@ -186,19 +202,22 @@ export async function pruneOldEntries(runtime: IAgentRuntime): Promise<number> {
     return 0;
   }
   const latest = new Map<string, JobLedgerEntry>();
+  const latestTs = new Map<string, number>();
   for (const memory of memories) {
     const entry = extractEntry(memory);
     if (!entry) {
       continue;
     }
-    const existing = latest.get(entry.jobEventId);
-    if (!existing || entry.transitionAt > existing.transitionAt) {
+    const ts = memoryTimestamp(memory);
+    const existingTs = latestTs.get(entry.jobEventId) ?? -Infinity;
+    if (ts >= existingTs) {
       latest.set(entry.jobEventId, entry);
+      latestTs.set(entry.jobEventId, ts);
     }
   }
   const deletableIds = new Set<string>();
   for (const [jobEventId, entry] of latest) {
-    if (TERMINAL_STATES.has(entry.state) && entry.transitionAt < cutoff) {
+    if (TERMINAL_STATES.has(entry.state) && (latestTs.get(jobEventId) ?? 0) < cutoff) {
       deletableIds.add(jobEventId);
     }
   }

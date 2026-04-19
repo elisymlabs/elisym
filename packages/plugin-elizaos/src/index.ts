@@ -15,6 +15,7 @@ import { logger } from './lib/logger';
 import { elisymContextProvider, walletProvider, activeJobsProvider } from './providers';
 import { ElisymService } from './services/ElisymService';
 import { ProviderService } from './services/ProviderService';
+import { RecoveryService } from './services/RecoveryService';
 import { WalletService } from './services/WalletService';
 import { initState } from './state';
 
@@ -22,7 +23,7 @@ export const elisymPlugin: Plugin = {
   name: 'elisym',
   description:
     'Decentralized AI-agent marketplace on Nostr + Solana (elisym protocol) for ElizaOS agents.',
-  services: [ElisymService, WalletService, ProviderService],
+  services: [ElisymService, WalletService, ProviderService, RecoveryService],
   actions: [
     discoverProvidersAction,
     hireAgentAction,
