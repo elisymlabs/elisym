@@ -1,6 +1,6 @@
 {
   "name": "@elisym/cli",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "CLI agent runner for elisym - provider mode, skills, crash recovery",
   "keywords": [
     "ai-agents",
@@ -44,7 +44,7 @@
     "prepublishOnly": "bun run build && node scripts/preflight-publish.mjs"
   },
   "dependencies": {
-    "@elisym/sdk": "~0.5.0",
+    "@elisym/sdk": "~0.7.0",
     "@solana/kit": "~6.8.0",
     "bs58": "~6.0.0",
     "chalk": "~5.6.0",
@@ -54,6 +54,8 @@
     "nostr-tools": "~2.23.0",
     "ora": "~8.2.0",
     "p-limit": "~6.2.0",
+    "pino": "~9.5.0",
+    "pino-pretty": "~11.3.0",
     "yaml": "~2.8.3"
   },
   "devDependencies": {
