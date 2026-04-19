@@ -11,9 +11,16 @@ import { MAX_INCOMING_JOB_BYTES, SERVICE_TYPES } from '../constants';
 import { findByJobId, recordTransition, type JobLedgerEntry } from '../lib/jobLedger';
 import { logger } from '../lib/logger';
 import { findProductByCapability, resolveProducts } from '../lib/providerProducts';
+import { RateLimiter } from '../lib/rateLimiter';
 import type { WalletService } from '../services/WalletService';
 import { getState } from '../state';
 import { fetchProtocolConfig, paymentStrategyInstance } from './customerJobFlow';
+
+const incomingRateLimiter = new RateLimiter();
+
+export function _incomingRateLimiterForTest(): RateLimiter {
+  return incomingRateLimiter;
+}
 
 interface RouteResult {
   content: string;
@@ -139,6 +146,21 @@ export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<
 
   if (await isAlreadyTerminal(runtime, event.id)) {
     logger.debug({ jobId: event.id }, 'incoming job already in terminal state; skipping');
+    return;
+  }
+
+  const decision = incomingRateLimiter.check(event.pubkey);
+  if (!decision.allowed) {
+    const resetSeconds = Math.max(1, Math.ceil((decision.resetAt - Date.now()) / 1000));
+    logger.warn(
+      { customer: event.pubkey, count: decision.count, resetSeconds },
+      'incoming job rate-limited; rejecting',
+    );
+    await client.marketplace.submitErrorFeedback(
+      identity,
+      event,
+      `Rate limit exceeded, retry in ${resetSeconds}s`,
+    );
     return;
   }
 

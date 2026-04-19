@@ -44,3 +44,7 @@ export const WALLET_MEMORY_TABLE = 'elisym_wallet';
 export const PRIORITY_FEE_PERCENTILE = 75;
 export const COMPUTE_UNIT_LIMIT = 200_000;
 export const PRIORITY_FEE_CACHE_MS = 10_000;
+
+export const RATE_LIMIT_WINDOW_MS = 60_000;
+export const RATE_LIMIT_MAX_PER_WINDOW = 20;
+export const MAX_TRACKED_CUSTOMERS = 1000;
