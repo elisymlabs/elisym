@@ -123,9 +123,9 @@ export async function persistSpend(
       false,
     );
   } catch (error) {
-    // Swallow but log: losing one persist call means the hourly cap is
-    // slightly underreported after a crash - still safer than failing the
-    // whole job flow because the ledger write blipped.
+    // Swallow but log: losing one persist call means the hourly cap
+    // reports a slightly lower total after a crash - still safer than
+    // failing the whole job flow because the ledger write blipped.
     logger.warn({ err: error, lamports: lamports.toString() }, 'persistSpend failed');
   }
 }
