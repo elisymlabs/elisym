@@ -1,4 +1,6 @@
-import { HOUR_MS } from '../constants';
+import type { IAgentRuntime, Memory } from '@elizaos/core';
+import { HOUR_MS, SPEND_MEMORY_TABLE } from '../constants';
+import { logger } from './logger';
 
 export class SpendingLimitError extends Error {
   constructor(message: string) {
@@ -31,13 +33,101 @@ export interface SpendingReservation {
   confirm: () => void;
 }
 
-export function createSpendingBucket(options: SpendingBucketOptions): SpendingBucket {
+export function createSpendingBucket(
+  options: SpendingBucketOptions,
+  initialEvents: BucketEvent[] = [],
+): SpendingBucket {
   return {
-    events: [],
+    events: [...initialEvents],
     perJobCap: options.maxSpendPerJobLamports,
     perHourCap: options.maxSpendPerHourLamports,
     approvalThreshold: options.requireApprovalAboveLamports,
   };
+}
+
+interface PersistedSpendContent extends Record<string, unknown> {
+  text: string;
+  source: string;
+  elisym_spend: true;
+  lamports: string;
+  ts: number;
+}
+
+function isSpendContent(value: unknown): value is PersistedSpendContent {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const v = value as Record<string, unknown>;
+  return v.elisym_spend === true && typeof v.lamports === 'string' && typeof v.ts === 'number';
+}
+
+export async function loadSpendingHistory(
+  runtime: IAgentRuntime,
+  now: number = Date.now(),
+): Promise<BucketEvent[]> {
+  let memories: Memory[];
+  try {
+    memories = await runtime.getMemories({
+      tableName: SPEND_MEMORY_TABLE,
+      agentId: runtime.agentId,
+      roomId: runtime.agentId,
+      count: 2000,
+    });
+  } catch (error) {
+    logger.warn({ err: error }, 'loadSpendingHistory: getMemories failed');
+    return [];
+  }
+  const cutoff = now - HOUR_MS;
+  const events: BucketEvent[] = [];
+  for (const memory of memories) {
+    if (!isSpendContent(memory.content)) {
+      continue;
+    }
+    if (memory.content.ts < cutoff) {
+      continue;
+    }
+    try {
+      events.push({
+        ts: memory.content.ts,
+        lamports: BigInt(memory.content.lamports),
+        pending: false,
+      });
+    } catch {
+      // malformed row - skip
+    }
+  }
+  return events;
+}
+
+export async function persistSpend(
+  runtime: IAgentRuntime,
+  lamports: bigint,
+  ts: number = Date.now(),
+): Promise<void> {
+  try {
+    await runtime.createMemory(
+      {
+        entityId: runtime.agentId,
+        agentId: runtime.agentId,
+        roomId: runtime.agentId,
+        content: {
+          text: `[spend] ${lamports.toString()} lamports`,
+          source: 'elisym-spend',
+          elisym_spend: true,
+          lamports: lamports.toString(),
+          ts,
+        },
+        createdAt: ts,
+      },
+      SPEND_MEMORY_TABLE,
+      false,
+    );
+  } catch (error) {
+    // Swallow but log: losing one persist call means the hourly cap is
+    // slightly underreported after a crash - still safer than failing the
+    // whole job flow because the ledger write blipped.
+    logger.warn({ err: error, lamports: lamports.toString() }, 'persistSpend failed');
+  }
 }
 
 function pruneBucket(bucket: SpendingBucket, now: number): void {

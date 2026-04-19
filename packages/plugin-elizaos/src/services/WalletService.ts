@@ -13,6 +13,8 @@ import {
 import {
   createSpendingBucket,
   assertCanSpend,
+  loadSpendingHistory,
+  persistSpend,
   recordSpend,
   requiresApproval,
   reserveSpend,
@@ -40,11 +42,22 @@ export class WalletService extends Service {
 
   private async initialize(): Promise<void> {
     const { config } = getState(this.runtime);
-    this.bucket = createSpendingBucket({
-      maxSpendPerJobLamports: config.maxSpendPerJobLamports,
-      maxSpendPerHourLamports: config.maxSpendPerHourLamports,
-      requireApprovalAboveLamports: config.requireApprovalAboveLamports,
-    });
+    const history = await loadSpendingHistory(this.runtime);
+    this.bucket = createSpendingBucket(
+      {
+        maxSpendPerJobLamports: config.maxSpendPerJobLamports,
+        maxSpendPerHourLamports: config.maxSpendPerHourLamports,
+        requireApprovalAboveLamports: config.requireApprovalAboveLamports,
+      },
+      history,
+    );
+    if (history.length > 0) {
+      const hourTotal = history.reduce((sum, event) => sum + event.lamports, 0n);
+      logger.info(
+        { hourLamports: hourTotal.toString(), entryCount: history.length },
+        'restored spending history from agent memory',
+      );
+    }
     this.rpcUrlRef = resolveRpcUrl(config.network, config.solanaRpcUrl);
     this.rpcRef = createRpc(this.rpcUrlRef);
 
@@ -124,7 +137,14 @@ export class WalletService extends Service {
   }
 
   recordSpend(lamports: bigint): void {
-    recordSpend(this.requireBucket(), lamports);
+    const ts = Date.now();
+    recordSpend(this.requireBucket(), lamports, ts);
+    // Fire-and-forget persist so the caller's hot path (payment
+    // confirmation) is never blocked on DB write. A logged failure
+    // means the spend won't load after restart - effectively widening
+    // the hourly cap. We accept that over failing an already-sent
+    // on-chain transaction; the error surfaces in the WARN log.
+    persistSpend(this.runtime, lamports, ts).catch(() => {});
   }
 
   hourlyTotal(): bigint {
