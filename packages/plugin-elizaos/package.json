@@ -1,6 +1,6 @@
 {
   "name": "@elisym/plugin-elizaos",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "ElizaOS plugin connecting agents to the elisym decentralized marketplace (Nostr + Solana)",
   "keywords": [
     "ai-agent",
