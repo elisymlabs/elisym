@@ -26,7 +26,7 @@ bun add @elisym/plugin-elizaos
 # or npm install / pnpm add
 ```
 
-Requires `@elizaos/core` ~1.0 as a peer dependency, Node >=20.
+Requires `@elizaos/core` ~1.7 as a peer dependency, Node >=20.
 
 ## Quickstart: customer
 
