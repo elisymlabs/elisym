@@ -363,6 +363,10 @@ export async function cmdStart(
     solanaAddress,
   };
 
+  // Custom SOLANA_RPC_URL values (Helius, Alchemy, QuickNode) routinely
+  // embed API keys in the query string. Strip query + auth before logging
+  // so `--verbose` never publishes a third-party RPC credential.
+  const rpcUrlForLog = stripRpcSecrets(process.env.SOLANA_RPC_URL ?? getRpcUrl(walletNetwork));
   logger.debug(
     {
       event: 'config_resolved',
@@ -371,7 +375,7 @@ export async function cmdStart(
       network: walletNetwork,
       relays,
       solanaAddress,
-      rpcUrl: process.env.SOLANA_RPC_URL ?? getRpcUrl(walletNetwork),
+      rpcUrl: rpcUrlForLog,
     },
     'config resolved',
   );
@@ -420,6 +424,25 @@ export async function cmdStart(
   // -- Step 16: Run --
   console.log('  * Running. Press Ctrl+C to stop.\n');
   await runtime.run();
+}
+
+/**
+ * Return a log-safe representation of an RPC URL. Strips any userinfo
+ * and query string so credentials embedded by third-party RPC
+ * providers (Helius/Alchemy/QuickNode style `?api-key=...`) never land
+ * in verbose stderr output.
+ */
+export function stripRpcSecrets(raw: string): string {
+  try {
+    const parsed = new URL(raw);
+    parsed.username = '';
+    parsed.password = '';
+    const marker = parsed.search.length > 0 ? '?***' : '';
+    parsed.search = '';
+    return `${parsed.toString()}${marker}`;
+  } catch {
+    return '[unparseable RPC URL]';
+  }
 }
 
 /** Resolve a YAML media field (picture/banner) - URL returned as-is, local path uploaded via cache. */
