@@ -18,6 +18,11 @@ export const DEFAULT_FETCH_MAX_BYTES = 4 * 1024 * 1024;
 
 export const HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000;
 
+export const WATCHDOG_PROBE_INTERVAL_MS = 5 * 60 * 1000;
+export const WATCHDOG_PROBE_TIMEOUT_MS = 10_000;
+export const WATCHDOG_SELF_PING_INTERVAL_MS = 10 * 60 * 1000;
+export const WATCHDOG_SELF_PING_TIMEOUT_MS = 15_000;
+
 export const DEFAULT_DEVNET_RPC = 'https://api.devnet.solana.com';
 export const DEFAULT_MAINNET_RPC = 'https://api.mainnet-beta.solana.com';
 

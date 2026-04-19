@@ -1,6 +1,12 @@
 import { ElisymClient, ElisymIdentity, SolanaPaymentStrategy, type SubCloser } from '@elisym/sdk';
 import { Service, type IAgentRuntime } from '@elizaos/core';
-import { SERVICE_TYPES } from '../constants';
+import {
+  SERVICE_TYPES,
+  WATCHDOG_PROBE_INTERVAL_MS,
+  WATCHDOG_PROBE_TIMEOUT_MS,
+  WATCHDOG_SELF_PING_INTERVAL_MS,
+  WATCHDOG_SELF_PING_TIMEOUT_MS,
+} from '../constants';
 import { identityFromHex, identityToHex } from '../lib/identity';
 import { logger } from '../lib/logger';
 import { loadPersistedNostrSecret, persistNostrSecret } from '../lib/secretsMemory';
@@ -15,6 +21,10 @@ export class ElisymService extends Service {
   private client?: ElisymClient;
   private identity?: ElisymIdentity;
   private pingSub?: SubCloser;
+  private probeTimer?: ReturnType<typeof setInterval>;
+  private selfPingTimer?: ReturnType<typeof setInterval>;
+  private watchdogStopped = false;
+  private watchdogBusy = false;
 
   static override async start(runtime: IAgentRuntime): Promise<ElisymService> {
     const service = new ElisymService(runtime);
@@ -34,6 +44,19 @@ export class ElisymService extends Service {
     this.identity = await this.resolveIdentity(config.nostrPrivateKeyHex);
     state.identity = this.identity;
 
+    this.subscribeToPings();
+    this.startWatchdog();
+
+    logger.info(
+      { pubkey: this.identity.publicKey, network: config.network, mode: config.mode },
+      'ElisymService ready',
+    );
+  }
+
+  private subscribeToPings(): void {
+    if (!this.client || !this.identity) {
+      return;
+    }
     const client = this.client;
     const identity = this.identity;
     this.pingSub = client.ping.subscribeToPings(identity, (senderPubkey, nonce) => {
@@ -41,11 +64,65 @@ export class ElisymService extends Service {
         .sendPong(identity, senderPubkey, nonce)
         .catch((error) => logger.debug({ err: error }, 'pong send failed'));
     });
+  }
 
-    logger.info(
-      { pubkey: this.identity.publicKey, network: config.network, mode: config.mode },
-      'ElisymService ready',
-    );
+  // Works around a nostr-tools bug: a single WS error flips
+  // `skipReconnection=true` and silently kills long-lived subscriptions. Same
+  // dual-check pattern as @elisym/cli watchdog - probe relays cheaply, and
+  // self-ping to detect subscriptions that are dead even though queries work.
+  // MUST stay synchronous; any `await` between teardown and rebuild opens a
+  // window where stop() could mark us stopped and we'd leak subscriptions.
+  private resetPoolAndResubscribe(): void {
+    if (!this.client || !this.identity) {
+      return;
+    }
+    this.client.pool.reset();
+    this.subscribeToPings();
+  }
+
+  private startWatchdog(): void {
+    this.probeTimer = setInterval(async () => {
+      if (this.watchdogStopped || this.watchdogBusy || !this.client) {
+        return;
+      }
+      this.watchdogBusy = true;
+      try {
+        const ok = await this.client.pool.probe(WATCHDOG_PROBE_TIMEOUT_MS);
+        if (this.watchdogStopped || ok) {
+          return;
+        }
+        logger.warn('watchdog probe failed, resetting pool and re-subscribing');
+        this.resetPoolAndResubscribe();
+      } catch (error) {
+        logger.warn({ err: error }, 'watchdog probe errored');
+      } finally {
+        this.watchdogBusy = false;
+      }
+    }, WATCHDOG_PROBE_INTERVAL_MS);
+
+    // selfPingIntervalMs MUST stay > PING_CACHE_TTL_MS (30s in SDK) or the
+    // cached "online: true" masks a dead subscription.
+    this.selfPingTimer = setInterval(async () => {
+      if (this.watchdogStopped || this.watchdogBusy || !this.client || !this.identity) {
+        return;
+      }
+      this.watchdogBusy = true;
+      try {
+        const result = await this.client.ping.pingAgent(
+          this.identity.publicKey,
+          WATCHDOG_SELF_PING_TIMEOUT_MS,
+        );
+        if (this.watchdogStopped || result.online) {
+          return;
+        }
+        logger.warn('watchdog self-ping failed, resetting pool and re-subscribing');
+        this.resetPoolAndResubscribe();
+      } catch (error) {
+        logger.warn({ err: error }, 'watchdog self-ping errored');
+      } finally {
+        this.watchdogBusy = false;
+      }
+    }, WATCHDOG_SELF_PING_INTERVAL_MS);
   }
 
   private async resolveIdentity(hexFromConfig?: string): Promise<ElisymIdentity> {
@@ -67,6 +144,15 @@ export class ElisymService extends Service {
   }
 
   override async stop(): Promise<void> {
+    this.watchdogStopped = true;
+    if (this.probeTimer) {
+      clearInterval(this.probeTimer);
+      this.probeTimer = undefined;
+    }
+    if (this.selfPingTimer) {
+      clearInterval(this.selfPingTimer);
+      this.selfPingTimer = undefined;
+    }
     try {
       this.pingSub?.close('elisym stopping');
     } catch (error) {
