@@ -25,6 +25,16 @@ export const SECRET_REDACT_PATHS: string[] = [
   '*.secret',
   'ELISYM_NOSTR_PRIVATE_KEY',
   'ELISYM_SOLANA_PRIVATE_KEY',
+  // Canonical on-disk `.secrets.json` field names. Logging the whole
+  // `secrets` object, or any single field directly, must not leak.
+  'llm_api_key',
+  'nostr_secret_key',
+  'solana_secret_key',
+  '*.llm_api_key',
+  '*.nostr_secret_key',
+  '*.solana_secret_key',
+  'secrets',
+  '*.secrets',
 ];
 
 /**
@@ -41,6 +51,13 @@ export const INPUT_REDACT_PATHS: string[] = [
   '*.prompt',
   'event.content',
   '*.event.content',
+  // JobLedger entries carry the raw Nostr event JSON (which embeds
+  // `event.content`) and the full LLM `resultContent` - both are
+  // customer-confidential and must never land in a structured log.
+  'rawEventJson',
+  'resultContent',
+  '*.rawEventJson',
+  '*.resultContent',
 ];
 
 /**
@@ -59,10 +76,18 @@ export const DEFAULT_REDACT_PATHS: string[] = [...SECRET_REDACT_PATHS, ...INPUT_
  * preserve that. Pino types vary across versions, so we accept unknown
  * and narrow.
  */
+const INPUT_REDACT_LEAVES = new Set([
+  'content',
+  'input',
+  'prompt',
+  'rawEventJson',
+  'resultContent',
+]);
+
 export function makeCensor(): (value: unknown, path: string[]) => string {
   return (_value, path) => {
     const last = path[path.length - 1];
-    if (last === 'content' || last === 'input' || last === 'prompt') {
+    if (last !== undefined && INPUT_REDACT_LEAVES.has(last)) {
       return '[INPUT REDACTED]';
     }
     return '[REDACTED]';

@@ -17,6 +17,14 @@ describe('log redact constants', () => {
       '*.secret',
       'ELISYM_NOSTR_PRIVATE_KEY',
       'ELISYM_SOLANA_PRIVATE_KEY',
+      'llm_api_key',
+      'nostr_secret_key',
+      'solana_secret_key',
+      '*.llm_api_key',
+      '*.nostr_secret_key',
+      '*.solana_secret_key',
+      'secrets',
+      '*.secrets',
     ]);
   });
 
@@ -30,6 +38,10 @@ describe('log redact constants', () => {
       '*.prompt',
       'event.content',
       '*.event.content',
+      'rawEventJson',
+      'resultContent',
+      '*.rawEventJson',
+      '*.resultContent',
     ]);
   });
 
@@ -59,5 +71,21 @@ describe('makeCensor', () => {
   it('falls back to [REDACTED] when path is empty', () => {
     const censor = makeCensor();
     expect(censor('anything', [])).toBe('[REDACTED]');
+  });
+
+  it('returns [REDACTED] for on-disk secret field names', () => {
+    const censor = makeCensor();
+    expect(censor('leak', ['llm_api_key'])).toBe('[REDACTED]');
+    expect(censor('leak', ['nostr_secret_key'])).toBe('[REDACTED]');
+    expect(censor('leak', ['solana_secret_key'])).toBe('[REDACTED]');
+    expect(censor('{leak-object}', ['secrets'])).toBe('[REDACTED]');
+  });
+
+  it('returns [INPUT REDACTED] for ledger entry user-input fields', () => {
+    const censor = makeCensor();
+    expect(censor('raw json', ['rawEventJson'])).toBe('[INPUT REDACTED]');
+    expect(censor('llm output', ['resultContent'])).toBe('[INPUT REDACTED]');
+    expect(censor('nested', ['entry', 'rawEventJson'])).toBe('[INPUT REDACTED]');
+    expect(censor('nested', ['entry', 'resultContent'])).toBe('[INPUT REDACTED]');
   });
 });
