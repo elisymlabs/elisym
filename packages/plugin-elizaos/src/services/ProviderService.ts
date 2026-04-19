@@ -1,7 +1,8 @@
 import { KIND_APP_HANDLER, KIND_JOB_REQUEST, type SubCloser } from '@elisym/sdk';
 import { Service, type IAgentRuntime, type ServiceTypeName } from '@elizaos/core';
 import type { Event, Filter } from 'nostr-tools';
-import { HEARTBEAT_INTERVAL_MS, SERVICE_TYPES } from '../constants';
+import pLimit from 'p-limit';
+import { HEARTBEAT_INTERVAL_MS, MAX_CONCURRENT_INCOMING_JOBS, SERVICE_TYPES } from '../constants';
 import type { ElisymConfig, ProviderProduct } from '../environment';
 import { handleIncomingJob } from '../handlers/incomingJobHandler';
 import { logger } from '../lib/logger';
@@ -94,14 +95,34 @@ export class ProviderService extends Service {
 
     await this.removeStaleCards(client, identity, new Set(cards.map((c) => c.name)));
 
+    // Bound concurrent in-flight jobs so a traffic spike or abusive
+    // customer cannot exhaust LLM quota / RPC rate / memory. Once the
+    // limiter is saturated, new events queue inside p-limit; we reject
+    // with an error feedback when the queue itself overflows.
+    const limit = pLimit(MAX_CONCURRENT_INCOMING_JOBS);
+    const MAX_QUEUE = MAX_CONCURRENT_INCOMING_JOBS * 4;
     this.sub = client.marketplace.subscribeToJobRequests(
       identity,
       [KIND_JOB_REQUEST],
       (event: Event) => {
-        handleIncomingJob({ runtime: this.runtime, client, identity, event }).catch(
-          (error: unknown) => {
-            logger.error({ err: error, jobId: event.id }, 'incoming job handler crashed');
-          },
+        if (limit.activeCount + limit.pendingCount >= MAX_QUEUE) {
+          logger.warn(
+            { jobId: event.id, queued: limit.pendingCount, active: limit.activeCount },
+            'incoming job queue full; rejecting with error feedback',
+          );
+          client.marketplace
+            .submitErrorFeedback(identity, event, 'Provider is currently overloaded, retry later')
+            .catch((error) =>
+              logger.debug({ err: error }, 'overload error feedback publish failed'),
+            );
+          return;
+        }
+        limit(() =>
+          handleIncomingJob({ runtime: this.runtime, client, identity, event }).catch(
+            (error: unknown) => {
+              logger.error({ err: error, jobId: event.id }, 'incoming job handler crashed');
+            },
+          ),
         );
       },
     );
