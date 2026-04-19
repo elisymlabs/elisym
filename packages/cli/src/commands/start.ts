@@ -38,6 +38,7 @@ import {
 } from '../helpers.js';
 import { JobLedger } from '../ledger.js';
 import { createLlmClient } from '../llm';
+import { createLogger } from '../logging.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SkillRegistry, type SkillContext } from '../skill';
 import { loadSkillsFromDir } from '../skill/loader.js';
@@ -302,28 +303,43 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
     solanaAddress,
   };
 
-  const logWithIndent = (msg: string): void => console.log(`  ${msg}`);
+  const { logger, logWithIndent } = createLogger({
+    verbose: process.env.ELISYM_DEBUG === '1',
+    tty: Boolean(process.stdout.isTTY),
+  });
+
+  // Tee: banner-style indent line on stdout (existing UX) + structured
+  // stderr pino entry with shared redact paths (defence against future
+  // slips where a diagnostic string might embed user input).
+  const diagLog = (msg: string): void => {
+    logWithIndent(msg);
+    logger.info({ event: 'runtime_diag' }, msg);
+  };
 
   const watchdog = startWatchdog({
     client,
     identity,
     transport,
     onPing,
-    log: logWithIndent,
+    log: diagLog,
   });
 
   const runtime = new AgentRuntime(transport, registry, skillCtx, runtimeConfig, ledger, {
     onJobReceived: (job) => {
       const cap = job.tags.find((t) => t !== 'elisym') ?? 'unknown';
-      console.log(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}`);
+      // Never log job.input here - capability tag is the only descriptor needed.
+      process.stdout.write(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}\n`);
+      logger.info({ event: 'job_received', jobId: job.jobId, capability: cap });
     },
     onJobCompleted: (jobId) => {
-      console.log(`  [job] ${jobId.slice(0, 16)} | delivered`);
+      process.stdout.write(`  [job] ${jobId.slice(0, 16)} | delivered\n`);
+      logger.info({ event: 'job_delivered', jobId });
     },
     onJobError: (jobId, error) => {
-      console.error(`  [job] ${jobId.slice(0, 16)} | error: ${error}`);
+      process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${error}\n`);
+      logger.error({ event: 'job_error', jobId, error });
     },
-    onLog: logWithIndent,
+    onLog: diagLog,
     onStop: () => {
       watchdog.stop();
       if (heartbeatTimer) {
