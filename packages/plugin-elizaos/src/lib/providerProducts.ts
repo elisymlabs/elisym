@@ -1,3 +1,4 @@
+import { toDTag } from '@elisym/sdk';
 import type { Character } from '@elizaos/core';
 import type { ElisymConfig, ProviderProduct } from '../environment';
 
@@ -51,9 +52,14 @@ export function resolveProducts(
   return [];
 }
 
+// The elisym web UI hires a product by its `d`-tag (toDTag(card.name)),
+// while `elisym-cli` and MCP hire by entries in the `capabilities` array.
+// Accept either so both clients route to the same product.
 export function findProductByCapability(
   products: ProviderProduct[],
   capability: string,
 ): ProviderProduct | undefined {
-  return products.find((product) => product.capabilities.includes(capability));
+  return products.find(
+    (product) => product.capabilities.includes(capability) || toDTag(product.name) === capability,
+  );
 }
