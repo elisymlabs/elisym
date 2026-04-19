@@ -33,7 +33,7 @@ export const healthRoute: Route = {
     const payload: HealthPayload = {
       status: state.shuttingDown ? 'degraded' : 'ok',
       agent: {
-        npub: elisym?.getIdentity?.()?.publicKey,
+        npub: elisym?.getIdentity?.()?.npub,
         address: wallet?.address,
         network: state.config.network,
       },

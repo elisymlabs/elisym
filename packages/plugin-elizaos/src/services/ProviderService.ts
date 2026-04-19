@@ -1,6 +1,13 @@
-import { KIND_APP_HANDLER, KIND_JOB_REQUEST, type SubCloser } from '@elisym/sdk';
+import {
+  KIND_APP_HANDLER,
+  KIND_JOB_REQUEST,
+  type ElisymClient,
+  type ElisymIdentity,
+  type SubCloser,
+} from '@elisym/sdk';
 import { Service, type IAgentRuntime, type ServiceTypeName } from '@elizaos/core';
 import type { Event, Filter } from 'nostr-tools';
+import type { LimitFunction } from 'p-limit';
 import pLimit from 'p-limit';
 import { HEARTBEAT_INTERVAL_MS, MAX_CONCURRENT_INCOMING_JOBS, SERVICE_TYPES } from '../constants';
 import type { ElisymConfig, ProviderProduct } from '../environment';
@@ -37,6 +44,7 @@ export class ProviderService extends Service {
   private sub?: SubCloser;
   private publishedCards: ProductCard[] = [];
   private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private unregisterResetListener?: () => void;
 
   static override async start(runtime: IAgentRuntime): Promise<ProviderService> {
     const service = new ProviderService(runtime);
@@ -132,6 +140,30 @@ export class ProviderService extends Service {
     // limiter is saturated, new events queue inside p-limit; we reject
     // with an error feedback when the queue itself overflows.
     const limit = pLimit(MAX_CONCURRENT_INCOMING_JOBS);
+    this.openJobSubscription(client, identity, limit);
+
+    // NostrPool.reset() (fired by the watchdog on relay failure) closes every
+    // tracked subscription. Re-open the job-request sub on the new pool, or
+    // the provider silently stops accepting jobs while heartbeats keep flowing.
+    this.unregisterResetListener = client.pool.onReset(() => {
+      logger.info('pool reset observed; re-subscribing to job requests');
+      this.openJobSubscription(client, identity, limit);
+    });
+
+    this.heartbeatTimer = setInterval(() => {
+      for (const card of this.publishedCards) {
+        client.discovery.publishCapability(identity, card, [KIND_JOB_REQUEST]).catch((error) => {
+          logger.debug({ err: error, name: card.name }, 'heartbeat republish failed (non-fatal)');
+        });
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private openJobSubscription(
+    client: ElisymClient,
+    identity: ElisymIdentity,
+    limit: LimitFunction,
+  ): void {
     const MAX_QUEUE = MAX_CONCURRENT_INCOMING_JOBS * 4;
     this.sub = client.marketplace.subscribeToJobRequests(
       identity,
@@ -158,14 +190,6 @@ export class ProviderService extends Service {
         );
       },
     );
-
-    this.heartbeatTimer = setInterval(() => {
-      for (const card of this.publishedCards) {
-        client.discovery.publishCapability(identity, card, [KIND_JOB_REQUEST]).catch((error) => {
-          logger.debug({ err: error, name: card.name }, 'heartbeat republish failed (non-fatal)');
-        });
-      }
-    }, HEARTBEAT_INTERVAL_MS);
   }
 
   private async removeStaleCards(
@@ -209,6 +233,10 @@ export class ProviderService extends Service {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
+    }
+    if (this.unregisterResetListener) {
+      this.unregisterResetListener();
+      this.unregisterResetListener = undefined;
     }
     try {
       const pluginState = getState(this.runtime);
