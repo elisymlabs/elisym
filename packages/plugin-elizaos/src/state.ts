@@ -5,11 +5,7 @@ import type { ElisymState } from './types';
 const states = new WeakMap<IAgentRuntime, ElisymState>();
 
 export function initState(runtime: IAgentRuntime, config: ElisymConfig): ElisymState {
-  const state: ElisymState = {
-    config,
-    activeJobs: new Map(),
-    lastDiscovery: null,
-  };
+  const state: ElisymState = { config };
   states.set(runtime, state);
   return state;
 }

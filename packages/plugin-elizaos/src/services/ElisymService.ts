@@ -48,7 +48,7 @@ export class ElisymService extends Service {
     this.startWatchdog();
 
     logger.info(
-      { pubkey: this.identity.publicKey, network: config.network, mode: config.mode },
+      { pubkey: this.identity.publicKey, network: config.network },
       'ElisymService ready',
     );
   }

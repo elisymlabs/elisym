@@ -46,10 +46,6 @@ export class ProviderService extends Service {
 
   private async initialize(): Promise<void> {
     const { config } = getState(this.runtime);
-    if (config.mode === 'customer') {
-      logger.debug('ProviderService inactive (mode=customer)');
-      return;
-    }
 
     // ElizaOS 1.7 registers plugin services in parallel, so a sync
     // getService() here races with ElisymService/WalletService init.

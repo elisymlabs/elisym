@@ -9,10 +9,7 @@ import { getState, initState } from '../../src/state';
 function stubConfig(): ElisymConfig {
   return {
     network: 'devnet',
-    mode: 'both',
-    maxSpendPerJobLamports: 10_000_000n,
-    maxSpendPerHourLamports: 100_000_000n,
-    requireApprovalAboveLamports: 5_000_000n,
+    signerKind: 'local',
   } as unknown as ElisymConfig;
 }
 
@@ -148,126 +145,6 @@ describe('RecoveryService', () => {
     expect(submitted).toEqual(['job-p|cached result']);
     const latest = await loadLatest(runtime, 'provider');
     expect(latest.get('job-p')?.state).toBe('delivered');
-  });
-
-  it('customer payment_sent picks up result from relay and marks received', async () => {
-    const runtime = makeRuntime();
-    const queried: string[][] = [];
-    const mockClient = {
-      marketplace: {
-        async queryJobResults(_identity: unknown, requestIds: string[]) {
-          queried.push(requestIds);
-          return new Map([
-            [requestIds[0]!, { content: 'the answer', senderPubkey: 'p', decryptionFailed: false }],
-          ]);
-        },
-      },
-    };
-    const entry: JobLedgerEntry = {
-      jobEventId: 'job-c',
-      side: 'customer',
-      state: 'payment_sent',
-      capability: 'summarization',
-      priceLamports: '1000000',
-      providerPubkey: 'provider-pk',
-      txSignature: 'cust-sig',
-      transitionAt: Date.now() - 1000,
-      jobCreatedAt: Date.now() - 30_000,
-      version: 1,
-    };
-    await recordTransition(runtime, entry);
-
-    const RecoveryService = await loadService();
-    const service = new (RecoveryService as unknown as new (rt: IAgentRuntime) => {
-      recoverCustomerJob: (e: JobLedgerEntry) => Promise<void>;
-      elisym?: unknown;
-    })(runtime);
-    service.elisym = {
-      getClient: () => mockClient,
-      getIdentity: () => ({ secretKey: new Uint8Array(32), publicKey: 'p' }),
-    } as unknown;
-
-    await service.recoverCustomerJob(entry);
-
-    expect(queried).toEqual([['job-c']]);
-    const latest = await loadLatest(runtime, 'customer');
-    const current = latest.get('job-c');
-    expect(current?.state).toBe('result_received');
-    expect(current?.resultContent).toBe('the answer');
-  });
-
-  it('customer submitted job past timeout → failed', async () => {
-    const runtime = makeRuntime();
-    const entry: JobLedgerEntry = {
-      jobEventId: 'job-stale',
-      side: 'customer',
-      state: 'submitted',
-      capability: 'summarization',
-      priceLamports: '1000000',
-      providerPubkey: 'p',
-      transitionAt: Date.now() - 10 * 60 * 1000,
-      jobCreatedAt: Date.now() - 10 * 60 * 1000,
-      version: 1,
-    };
-    await recordTransition(runtime, entry);
-
-    const RecoveryService = await loadService();
-    const service = new (RecoveryService as unknown as new (rt: IAgentRuntime) => {
-      recoverCustomerJob: (e: JobLedgerEntry) => Promise<void>;
-      elisym?: unknown;
-    })(runtime);
-    service.elisym = {
-      getClient: () => ({
-        marketplace: {
-          async queryJobResults() {
-            return new Map();
-          },
-        },
-      }),
-      getIdentity: () => ({ secretKey: new Uint8Array(32), publicKey: 'p' }),
-    } as unknown;
-
-    await service.recoverCustomerJob(entry);
-
-    const latest = await loadLatest(runtime, 'customer');
-    expect(latest.get('job-stale')?.state).toBe('failed');
-  });
-
-  it('customer payment_sent without result yet leaves the entry non-terminal', async () => {
-    const runtime = makeRuntime();
-    const entry: JobLedgerEntry = {
-      jobEventId: 'job-wait',
-      side: 'customer',
-      state: 'payment_sent',
-      capability: 'summarization',
-      priceLamports: '1000000',
-      providerPubkey: 'p',
-      transitionAt: Date.now() - 1000,
-      jobCreatedAt: Date.now() - 2 * 60 * 1000,
-      version: 1,
-    };
-    await recordTransition(runtime, entry);
-
-    const RecoveryService = await loadService();
-    const service = new (RecoveryService as unknown as new (rt: IAgentRuntime) => {
-      recoverCustomerJob: (e: JobLedgerEntry) => Promise<void>;
-      elisym?: unknown;
-    })(runtime);
-    service.elisym = {
-      getClient: () => ({
-        marketplace: {
-          async queryJobResults() {
-            return new Map();
-          },
-        },
-      }),
-      getIdentity: () => ({ secretKey: new Uint8Array(32), publicKey: 'p' }),
-    } as unknown;
-
-    await service.recoverCustomerJob(entry);
-
-    const latest = await loadLatest(runtime, 'customer');
-    expect(latest.get('job-wait')?.state).toBe('payment_sent');
   });
 
   it('provider executed entry with no cached result marks failed on re-execute error', async () => {

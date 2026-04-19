@@ -7,7 +7,7 @@ import { getState, hasState } from '../state';
 export const checkWalletAction: Action = {
   name: 'ELISYM_CHECK_WALLET',
   similes: ['WALLET_BALANCE', 'SHOW_WALLET'],
-  description: "Show this agent's Solana address, SOL balance, and current spending bucket usage.",
+  description: "Show the provider agent's Solana address, network, and current SOL balance.",
   validate: async (runtime: IAgentRuntime): Promise<boolean> => hasState(runtime),
   handler: async (runtime, _message, _state, _options, callback): Promise<ActionResult> => {
     const { config } = getState(runtime);
@@ -16,12 +16,10 @@ export const checkWalletAction: Action = {
       throw new Error('WalletService is not running');
     }
     const balance = await wallet.getBalance();
-    const spent = wallet.hourlyTotal();
     const text = [
       `Address: ${wallet.address}`,
       `Network: ${config.network}`,
       `Balance: ${formatLamportsAsSol(balance)} SOL`,
-      `Spent (last hour): ${formatLamportsAsSol(spent)} of ${formatLamportsAsSol(config.maxSpendPerHourLamports)} SOL`,
     ].join('\n');
     await callback?.({ text, source: 'elisym' });
     return {

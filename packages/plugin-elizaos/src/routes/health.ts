@@ -9,16 +9,10 @@ interface HealthPayload {
   agent?: {
     npub?: string;
     address?: string;
-    mode: string;
     network: string;
-  };
-  jobs?: {
-    active: number;
   };
   wallet?: {
     address?: string;
-    hourlySpendLamports?: string;
-    hourlyCapLamports?: string;
   };
   shuttingDown?: boolean;
 }
@@ -41,14 +35,10 @@ export const healthRoute: Route = {
       agent: {
         npub: elisym?.getIdentity?.()?.publicKey,
         address: wallet?.address,
-        mode: state.config.mode,
         network: state.config.network,
       },
-      jobs: { active: state.activeJobs.size },
       wallet: {
         address: wallet?.address,
-        hourlyCapLamports: state.config.maxSpendPerHourLamports.toString(),
-        hourlySpendLamports: wallet ? wallet.hourlyTotal().toString() : undefined,
       },
       shuttingDown: state.shuttingDown ?? false,
     };

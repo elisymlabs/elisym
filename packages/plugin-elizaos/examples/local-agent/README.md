@@ -2,11 +2,12 @@
 
 Runs a real ElizaOS v1 agent that loads `@elisym/plugin-elizaos` straight from this monorepo via `file:../..`. No publishing required.
 
-Three character files are provided:
+The plugin is **provider-only** - the ElizaOS agent advertises paid capabilities on elisym, accepts NIP-90 job requests, and gets paid in SOL. For the _customer_ side (discovering providers, hiring them, paying) use [`@elisym/mcp`](../../../mcp/) from Claude Desktop/Cursor, or [`@elisym/cli`](../../../cli/).
 
-- `customer.character.json` - hires providers
-- `provider.character.json` - advertises `summarization`
-- `both.character.json` - does both (mode=both)
+Two character files are provided:
+
+- `provider.character.json` - simple LLM-backed provider (summarization + keyword extraction via `useModel`)
+- `provider-youtube.character.json` - skill-backed provider that runs `yt-dlp` and returns YouTube summaries/keypoints
 
 ---
 
@@ -33,50 +34,12 @@ The `link:` dep is a real symlink into `packages/plugin-elizaos`, so the rebuilt
 
 ---
 
-## 2. Flow A - explicit keys (regression)
+## 2. Start a provider
 
-Generate a throwaway devnet keypair or use an existing one:
-
-```bash
-# Nostr hex (32 bytes)
-openssl rand -hex 32
-# Solana base58 (64-byte secret) - e.g. via solana-keygen + bs58 conversion,
-# or any existing Phantom devnet wallet export
-```
-
-Edit `customer.character.json` - paste the keys into `settings.secrets`:
-
-```json
-"secrets": {
-  "ELISYM_NOSTR_PRIVATE_KEY": "<64 hex chars or nsec1...>",
-  "ELISYM_SOLANA_PRIVATE_KEY": "<base58 64-byte secret>"
-}
-```
-
-Run:
+### Option A - simple LLM-backed provider
 
 ```bash
-LOG_LEVEL=debug bun run start:customer
-```
-
-Expected logs on first start **and** every subsequent start:
-
-```
-info ... ElisymService ready            pubkey=<your pubkey>
-info ... WalletService ready            source=config  address=<your address>
-```
-
-If you see `source=persisted` or `source=generated` here, the config values are not being read - double-check the character JSON.
-
----
-
-## 3. Flow B - auto-generate + persist (the new path)
-
-Reset the character: clear both secrets back to empty strings.
-
-```bash
-bun run db:clear      # wipe any previous elisym_* memory entries
-LOG_LEVEL=debug bun run start:customer
+LOG_LEVEL=debug bun run start:provider
 ```
 
 First-start expected logs:
@@ -84,81 +47,51 @@ First-start expected logs:
 ```
 warn ... generated new elisym identity and persisted it to agent memory   pubkey=...  npub=npub1...
 warn ... generated new elisym Solana wallet and persisted it to agent memory   address=<Solana addr>
+info ... ElisymService ready            pubkey=<pubkey>  network=devnet
+info ... WalletService ready            source=persisted  address=<your address>
+info ... provider capability card published    name=3-sentence Summarizer  capabilities=["summarization","text/summarize"]  priceLamports=2000000
+info ... provider capability card published    name=Keyword Extractor      capabilities=["keywords","text/keywords"]        priceLamports=1000000
 ```
 
-Verify the secrets landed in the agent DB:
-
-```bash
-bun run db:inspect
-# expected two rows:
-#   elisym_identity | <64 hex chars>
-#   elisym_wallet   | <long base58>
-```
-
-Kill the agent (Ctrl-C) and start it again without touching the character:
-
-```bash
-bun run start:customer
-```
-
-Second-start expected logs:
-
-```
-info ... loaded persisted elisym identity from agent memory
-info ... WalletService ready   source=persisted   address=<same addr as first run>
-```
-
-The `npub` and Solana `address` must match run-1 exactly. That proves persist+reuse.
-
-### Sanity: clear DB, restart
-
-```bash
-bun run db:clear
-bun run start:customer
-```
-
-Agent should log WARN again, with **different** pubkey/address. No crash, no missing-key error.
-
----
-
-## 4. Fund the auto-generated wallet
-
-Copy the Solana `address` from the WARN log, then:
+Copy the Solana `address` from the WARN log and fund it on devnet:
 
 ```bash
 solana airdrop 1 <address> --url devnet
 ```
 
-`ELISYM_CHECK_WALLET` action inside the chat should then report a non-zero balance.
+The provider now waits for incoming NIP-90 jobs with capability tags `summarization` / `text/summarize` / `keywords` / `text/keywords`.
+
+### Option B - skill-backed YouTube provider
+
+See section 4 for the full skill story. Short version:
+
+```bash
+pip install yt-dlp youtube-transcript-api
+
+LOG_LEVEL=debug bun run start:provider-youtube
+```
 
 ---
 
-## 5. End-to-end hire (optional - needs a live provider)
+## 3. Testing the provider end-to-end
 
-In shell 1:
+The elizaos-plugin is the _server side_. To test, send a job request from a **customer** runtime:
 
-```bash
-bun run start:provider        # advertises summarization
-```
+- **CLI**: `elisym-cli hire <provider-npub> --capability summarization --input "..." --network devnet`
+- **MCP**: inside Claude Desktop, call `search_agents` + `submit_and_pay_job` via the `@elisym/mcp` server
+- **Web**: use the [`@elisym/app`](../../../app/) dashboard
 
-In shell 2 (different terminal, same folder):
-
-```bash
-bun run start:customer
-```
-
-Chat with the customer agent:
+Watch the provider terminal - you should see:
 
 ```
-> find me an elisym summarization agent
-> hire the first one to summarize this article about bees: ...
+info ... incoming job received ...
+info ... payment received, processing job ...
+info ... elisym job completed ...
 ```
-
-Watch both terminals - customer should publish NIP-90 request, provider logs `incoming job received`, customer signs the SOL transfer, provider logs `payment received, processing job`, then result comes back encrypted.
 
 ---
 
-## 6. Flow C - provider with skills (SKILL.md + scripts)
+## 4. Flow C - provider with skills (SKILL.md + scripts)
 
 Skills let a provider agent run external scripts during a job, driven by an LLM tool-use loop. `./skills/` ships two working skills that share the same `yt-dlp`-based transcript script but differ in price, capabilities, and system prompt:
 

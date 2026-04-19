@@ -1,19 +1,13 @@
 import type { Action, ActionResult, IAgentRuntime } from '@elizaos/core';
 import { SERVICE_TYPES } from '../constants';
 import type { ElisymService } from '../services/ElisymService';
-import { getState, hasState } from '../state';
+import { hasState } from '../state';
 
 export const unpublishServiceAction: Action = {
   name: 'ELISYM_UNPUBLISH_SERVICE',
   similes: ['RETRACT_SERVICE', 'DELETE_CAPABILITY'],
   description: "Retract this agent's capability card from the elisym network.",
-  validate: async (runtime: IAgentRuntime): Promise<boolean> => {
-    if (!hasState(runtime)) {
-      return false;
-    }
-    const { config } = getState(runtime);
-    return config.mode !== 'customer';
-  },
+  validate: async (runtime: IAgentRuntime): Promise<boolean> => hasState(runtime),
   handler: async (runtime, _message, _state, _options, callback): Promise<ActionResult> => {
     const elisym = runtime.getService<ElisymService>(SERVICE_TYPES.ELISYM);
     if (!elisym) {

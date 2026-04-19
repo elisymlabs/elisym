@@ -5,10 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "true",
-    "start:customer": "elizaos start --character ./customer.character.json",
     "start:provider": "elizaos start --character ./provider.character.json",
     "start:provider-youtube": "elizaos start --character ./provider-youtube.character.json",
-    "start:both": "elizaos start --character ./both.character.json",
     "db:inspect": "bun run scripts/db-inspect.ts",
     "db:clear": "bun run scripts/db-clear.ts"
   },

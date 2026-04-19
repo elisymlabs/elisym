@@ -55,15 +55,14 @@ describe('integration: /plugins/elisym/health', () => {
     expect((captured.body as { status: string }).status).toBe('uninitialized');
   });
 
-  it('returns ok with mode/network when state is initialised', async () => {
+  it('returns ok with network when state is initialised', async () => {
     const runtime = makeStubRuntime();
-    bootState(runtime, { mode: 'customer', network: 'devnet' });
+    bootState(runtime, { network: 'devnet' });
     const { res, captured } = makeRes();
     await healthRoute.handler!({}, res, runtime);
     expect(captured.status).toBe(200);
-    const body = captured.body as { status: string; agent: { mode: string; network: string } };
+    const body = captured.body as { status: string; agent: { network: string } };
     expect(body.status).toBe('ok');
-    expect(body.agent.mode).toBe('customer');
     expect(body.agent.network).toBe('devnet');
   });
 

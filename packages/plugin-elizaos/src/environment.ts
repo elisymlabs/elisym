@@ -8,7 +8,6 @@ import { solToLamports } from './lib/pricing';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
-const modeSchema = z.enum(['customer', 'provider', 'both']);
 const networkSchema = z.enum(['devnet', 'mainnet']);
 const signerKindSchema = z.enum(['local', 'kms', 'external']);
 
@@ -39,10 +38,6 @@ export const ElisymConfigSchema = z
     network: networkSchema,
     relays: z.array(z.string().url()).optional(),
     solanaRpcUrl: z.string().url().optional(),
-    mode: modeSchema,
-    maxSpendPerJobLamports: z.bigint().positive(),
-    maxSpendPerHourLamports: z.bigint().positive(),
-    requireApprovalAboveLamports: z.bigint().nonnegative(),
     providerCapabilities: z.array(z.string().min(1)).optional(),
     providerPriceLamports: z
       .bigint()
@@ -59,9 +54,6 @@ export const ElisymConfigSchema = z
   })
   .refine(
     (cfg) => {
-      if (cfg.mode === 'customer') {
-        return true;
-      }
       if (cfg.providerProducts !== undefined && cfg.providerProducts.length > 0) {
         return true;
       }
@@ -76,7 +68,7 @@ export const ElisymConfigSchema = z
     },
     {
       message:
-        'Provider mode requires one of: ELISYM_PROVIDER_PRODUCTS (JSON array), ELISYM_PROVIDER_SKILLS_DIR, or both ELISYM_PROVIDER_CAPABILITIES and ELISYM_PROVIDER_PRICE_SOL',
+        'Provider requires one of: ELISYM_PROVIDER_PRODUCTS (JSON array), ELISYM_PROVIDER_SKILLS_DIR, or both ELISYM_PROVIDER_CAPABILITIES and ELISYM_PROVIDER_PRICE_SOL',
     },
   )
   .refine(
@@ -176,16 +168,15 @@ function isPlaceholderValue(value: string): boolean {
 }
 
 let unsecuredRuntimeWarned = false;
-let legacyProviderEnvWarned = false;
 
-const LEGACY_PROVIDER_ENV_KEYS = [
+const SINGLE_PRODUCT_ENV_KEYS = [
   'ELISYM_PROVIDER_CAPABILITIES',
   'ELISYM_PROVIDER_PRICE_SOL',
   'ELISYM_PROVIDER_NAME',
   'ELISYM_PROVIDER_DESCRIPTION',
 ] as const;
 
-interface LegacyProviderInput {
+interface SingleProductConflictInput {
   capabilities: string[] | undefined;
   priceLamports: bigint | undefined;
   name: string | undefined;
@@ -193,8 +184,15 @@ interface LegacyProviderInput {
   hasProducts: boolean;
 }
 
-export function checkLegacyProviderEnv(input: LegacyProviderInput): void {
-  const usedLegacy = LEGACY_PROVIDER_ENV_KEYS.filter((key) => {
+// Guard against a configuration that sets BOTH ELISYM_PROVIDER_PRODUCTS (JSON
+// array) AND the single-product env vars at once. The two shapes are both
+// first-class (capabilities+price is a valid provider config), but expressing
+// the same product in both places at once is ambiguous - pick one.
+export function checkProviderProductConflict(input: SingleProductConflictInput): void {
+  if (!input.hasProducts) {
+    return;
+  }
+  const conflicting = SINGLE_PRODUCT_ENV_KEYS.filter((key) => {
     if (key === 'ELISYM_PROVIDER_CAPABILITIES') {
       return input.capabilities !== undefined;
     }
@@ -206,27 +204,17 @@ export function checkLegacyProviderEnv(input: LegacyProviderInput): void {
     }
     return input.description !== undefined;
   });
-  if (usedLegacy.length === 0) {
+  if (conflicting.length === 0) {
     return;
   }
-  if (input.hasProducts) {
-    throw new Error(
-      `ELISYM_PROVIDER_PRODUCTS conflicts with the legacy single-product vars (${usedLegacy.join(', ')}). ` +
-        'Pick one configuration shape; the legacy vars are removed in 0.4.0.',
-    );
-  }
-  if (!legacyProviderEnvWarned) {
-    logger.warn(
-      { usedLegacy },
-      'using deprecated single-product provider vars; migrate to ELISYM_PROVIDER_PRODUCTS before 0.4.0',
-    );
-    legacyProviderEnvWarned = true;
-  }
+  throw new Error(
+    `ELISYM_PROVIDER_PRODUCTS conflicts with the single-product vars (${conflicting.join(', ')}). ` +
+      'Pick one shape: either the PRODUCTS JSON array, or the separate CAPABILITIES/PRICE/NAME/DESCRIPTION vars.',
+  );
 }
 
 interface ServerHardeningInput {
   network: string | undefined;
-  mode: string | undefined;
   hasProviderSecret: boolean;
   secretSalt: string | undefined;
   authToken: string | undefined;
@@ -235,8 +223,7 @@ interface ServerHardeningInput {
 
 export function enforceServerHardening(input: ServerHardeningInput): void {
   const isMainnet = input.network === 'mainnet';
-  const isProvider = input.mode === 'provider' || input.mode === 'both';
-  const requiresHardening = isMainnet || (isProvider && input.hasProviderSecret);
+  const requiresHardening = isMainnet || input.hasProviderSecret;
   if (!requiresHardening) {
     return;
   }
@@ -254,7 +241,7 @@ export function enforceServerHardening(input: ServerHardeningInput): void {
   if (allowUnsecured) {
     if (!unsecuredRuntimeWarned) {
       logger.warn(
-        { missing, network: input.network, mode: input.mode },
+        { missing, network: input.network },
         'ELISYM_ALLOW_UNSECURED_RUNTIME=true is set; running without ' +
           missing.join(' / ') +
           '. Encryption-at-rest and HTTP authentication are effectively disabled - dev only.',
@@ -265,7 +252,7 @@ export function enforceServerHardening(input: ServerHardeningInput): void {
   }
   throw new Error(
     `Refusing to start: ${missing.join(' / ')} must be set to a non-default value when ` +
-      'running on mainnet or as a provider with a configured secret key. ' +
+      'running on mainnet or with a configured provider secret key. ' +
       'Set the env var(s), or pass ELISYM_ALLOW_UNSECURED_RUNTIME=true for local dev.',
   );
 }
@@ -347,14 +334,7 @@ export function validateConfig(
   }
 
   const network = read('ELISYM_NETWORK', 'devnet');
-  const mode = read('ELISYM_MODE', 'customer');
   const signerKind = read('ELISYM_SIGNER_KIND', 'local');
-
-  const maxPerJob = solToLamports(read('ELISYM_MAX_SPEND_PER_JOB_SOL', '0.01') ?? '0.01');
-  const maxPerHour = solToLamports(read('ELISYM_MAX_SPEND_PER_HOUR_SOL', '0.1') ?? '0.1');
-  const approvalAbove = solToLamports(
-    read('ELISYM_REQUIRE_APPROVAL_ABOVE_SOL', '0.005') ?? '0.005',
-  );
 
   const providerCapabilities = parseList(read('ELISYM_PROVIDER_CAPABILITIES'));
   const providerPriceRaw = read('ELISYM_PROVIDER_PRICE_SOL');
@@ -366,7 +346,7 @@ export function validateConfig(
   const providerSkillsDirRaw = read('ELISYM_PROVIDER_SKILLS_DIR');
   const providerSkillsDir = providerSkillsDirRaw ? resolve(providerSkillsDirRaw) : undefined;
 
-  checkLegacyProviderEnv({
+  checkProviderProductConflict({
     capabilities: providerCapabilities,
     priceLamports: providerPriceLamports,
     name: providerName,
@@ -376,7 +356,6 @@ export function validateConfig(
 
   enforceServerHardening({
     network,
-    mode,
     hasProviderSecret: solanaPrivateKeyBase58 !== undefined,
     secretSalt: reader.getSetting('SECRET_SALT'),
     authToken: reader.getSetting('ELIZA_SERVER_AUTH_TOKEN'),
@@ -390,10 +369,6 @@ export function validateConfig(
     network,
     relays: parseList(read('ELISYM_RELAYS')),
     solanaRpcUrl: read('ELISYM_SOLANA_RPC_URL'),
-    mode,
-    maxSpendPerJobLamports: maxPerJob,
-    maxSpendPerHourLamports: maxPerHour,
-    requireApprovalAboveLamports: approvalAbove,
     providerCapabilities,
     providerPriceLamports,
     providerActionMap,

@@ -1,7 +1,7 @@
 {
   "name": "@elisym/plugin-elizaos",
-  "version": "0.4.0",
-  "description": "ElizaOS plugin connecting agents to the elisym decentralized marketplace (Nostr + Solana)",
+  "version": "0.1.0",
+  "description": "ElizaOS plugin for running a paid elisym provider agent on Nostr + Solana. Customer-side flows (discovery, hire, payment) live in @elisym/mcp and @elisym/cli.",
   "keywords": [
     "ai-agent",
     "elisym",
@@ -101,33 +101,13 @@
         "type": "string",
         "description": "Solana RPC endpoint. Omit to use the public cluster for the chosen network."
       },
-      "ELISYM_MODE": {
-        "type": "string",
-        "default": "customer",
-        "description": "'customer', 'provider', or 'both'."
-      },
-      "ELISYM_MAX_SPEND_PER_JOB_SOL": {
-        "type": "string",
-        "default": "0.01",
-        "description": "Hard cap per single job in SOL."
-      },
-      "ELISYM_MAX_SPEND_PER_HOUR_SOL": {
-        "type": "string",
-        "default": "0.1",
-        "description": "Rolling 1-hour cap in SOL."
-      },
-      "ELISYM_REQUIRE_APPROVAL_ABOVE_SOL": {
-        "type": "string",
-        "default": "0.005",
-        "description": "Ask human approval for jobs above this amount in SOL."
-      },
       "ELISYM_PROVIDER_CAPABILITIES": {
         "type": "string",
-        "description": "Comma-separated capabilities to advertise. Required when MODE=provider|both."
+        "description": "Comma-separated capabilities to advertise. Required unless ELISYM_PROVIDER_PRODUCTS or ELISYM_PROVIDER_SKILLS_DIR is set."
       },
       "ELISYM_PROVIDER_PRICE_SOL": {
         "type": "string",
-        "description": "Price per job this agent charges, in SOL. Required when MODE=provider|both."
+        "description": "Price per job this agent charges, in SOL. Required unless ELISYM_PROVIDER_PRODUCTS or ELISYM_PROVIDER_SKILLS_DIR is set."
       },
       "ELISYM_PROVIDER_ACTION_MAP": {
         "type": "string",

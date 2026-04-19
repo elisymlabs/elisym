@@ -1,19 +1,13 @@
 import type { Action, ActionResult, IAgentRuntime } from '@elizaos/core';
 import { pruneOldEntries } from '../lib/jobLedger';
-import { getState, hasState } from '../state';
+import { hasState } from '../state';
 
 export const cleanupJobsAction: Action = {
   name: 'ELISYM_CLEANUP_JOBS',
   similes: ['PRUNE_JOBS', 'CLEANUP_LEDGER'],
   description:
-    'Force-run the elisym job-ledger pruner. Removes terminal entries past JOB_LEDGER_RETENTION_MS. Restricted to provider/both modes.',
-  validate: async (runtime: IAgentRuntime): Promise<boolean> => {
-    if (!hasState(runtime)) {
-      return false;
-    }
-    const { config } = getState(runtime);
-    return config.mode !== 'customer';
-  },
+    'Force-run the elisym job-ledger pruner. Removes terminal entries past JOB_LEDGER_RETENTION_MS.',
+  validate: async (runtime: IAgentRuntime): Promise<boolean> => hasState(runtime),
   handler: async (runtime, _message, _state, _options, callback): Promise<ActionResult> => {
     const deleted = await pruneOldEntries(runtime);
     const noun = deleted === 1 ? 'entry' : 'entries';

@@ -5,26 +5,13 @@ import { SERVICE_TYPES } from '../constants';
 import { logger } from '../lib/logger';
 import { createSigner, type SignerHandle, type SignerKind } from '../lib/signers';
 import { createRpc, getBalanceLamports, resolveRpcUrl } from '../lib/solana';
-import {
-  createSpendingBucket,
-  assertCanSpend,
-  loadSpendingHistory,
-  persistSpend,
-  recordSpend,
-  requiresApproval,
-  reserveSpend,
-  hourlyTotal,
-  type SpendingBucket,
-  type SpendingReservation,
-} from '../lib/spendingGuard';
 import { getState } from '../state';
 
 export class WalletService extends Service {
   static override serviceType = SERVICE_TYPES.WALLET;
 
-  override capabilityDescription = 'Solana wallet and spending guard for elisym jobs';
+  override capabilityDescription = 'Solana wallet for the elisym provider agent';
 
-  private bucket?: SpendingBucket;
   private signerRef?: Signer;
   private signerKindRef?: SignerKind;
   private rpcRef?: Rpc<SolanaRpcApi>;
@@ -38,22 +25,6 @@ export class WalletService extends Service {
 
   private async initialize(): Promise<void> {
     const { config } = getState(this.runtime);
-    const history = await loadSpendingHistory(this.runtime);
-    this.bucket = createSpendingBucket(
-      {
-        maxSpendPerJobLamports: config.maxSpendPerJobLamports,
-        maxSpendPerHourLamports: config.maxSpendPerHourLamports,
-        requireApprovalAboveLamports: config.requireApprovalAboveLamports,
-      },
-      history,
-    );
-    if (history.length > 0) {
-      const hourTotal = history.reduce((sum, event) => sum + event.lamports, 0n);
-      logger.info(
-        { hourLamports: hourTotal.toString(), entryCount: history.length },
-        'restored spending history from agent memory',
-      );
-    }
     this.rpcUrlRef = resolveRpcUrl(config.network, config.solanaRpcUrl);
     this.rpcRef = createRpc(this.rpcUrlRef);
 
@@ -63,7 +34,7 @@ export class WalletService extends Service {
     if (handle.source === 'generated') {
       logger.warn(
         { network: config.network, address: handle.signer.address, kind: handle.kind },
-        'generated new elisym Solana wallet and persisted it to agent memory; fund this address with SOL before hiring paid providers, and back up the key if you need cross-machine access',
+        'generated new elisym Solana wallet and persisted it to agent memory; fund this address with SOL before advertising paid capabilities, and back up the key if you need cross-machine access',
       );
     } else {
       logger.info(
@@ -123,39 +94,5 @@ export class WalletService extends Service {
 
   async getBalance(): Promise<bigint> {
     return getBalanceLamports(this.rpc, this.signer);
-  }
-
-  guard(lamports: bigint): void {
-    assertCanSpend(this.requireBucket(), lamports);
-  }
-
-  reserve(lamports: bigint): SpendingReservation {
-    return reserveSpend(this.requireBucket(), lamports);
-  }
-
-  requiresApproval(lamports: bigint): boolean {
-    return requiresApproval(this.requireBucket(), lamports);
-  }
-
-  recordSpend(lamports: bigint): void {
-    const ts = Date.now();
-    recordSpend(this.requireBucket(), lamports, ts);
-    // Fire-and-forget persist so the caller's hot path (payment
-    // confirmation) is never blocked on DB write. A logged failure
-    // means the spend won't load after restart - effectively widening
-    // the hourly cap. We accept that over failing an already-sent
-    // on-chain transaction; the error surfaces in the WARN log.
-    persistSpend(this.runtime, lamports, ts).catch(() => {});
-  }
-
-  hourlyTotal(): bigint {
-    return hourlyTotal(this.requireBucket());
-  }
-
-  private requireBucket(): SpendingBucket {
-    if (!this.bucket) {
-      throw new Error('WalletService not initialized');
-    }
-    return this.bucket;
   }
 }

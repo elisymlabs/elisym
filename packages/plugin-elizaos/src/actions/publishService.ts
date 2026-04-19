@@ -14,11 +14,7 @@ export const publishServiceAction: Action = {
       return false;
     }
     const { config } = getState(runtime);
-    return (
-      config.mode !== 'customer' &&
-      !!config.providerCapabilities?.length &&
-      !!config.providerPriceLamports
-    );
+    return !!config.providerCapabilities?.length && !!config.providerPriceLamports;
   },
   handler: async (runtime, _message, _state, _options, callback): Promise<ActionResult> => {
     const { config } = getState(runtime);

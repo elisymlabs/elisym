@@ -7,7 +7,7 @@ import { getState, hasState } from '../state';
 
 export const walletProvider: Provider = {
   name: 'ELISYM_WALLET',
-  description: 'Current SOL balance and spending bucket usage.',
+  description: 'Current provider Solana address and SOL balance.',
   position: 50,
   dynamic: true,
   get: async (runtime) => {
@@ -21,13 +21,11 @@ export const walletProvider: Provider = {
     }
     try {
       const balance = await wallet.getBalance();
-      const spent = wallet.hourlyTotal();
-      const text = `Wallet ${wallet.address.slice(0, 8)}... holds ${formatLamportsAsSol(balance)} SOL (${config.network}). Spent last hour: ${formatLamportsAsSol(spent)} of ${formatLamportsAsSol(config.maxSpendPerHourLamports)} SOL.`;
+      const text = `Wallet ${wallet.address.slice(0, 8)}... holds ${formatLamportsAsSol(balance)} SOL (${config.network}).`;
       return {
         text,
         values: {
           balanceLamports: balance.toString(),
-          hourlyLamports: spent.toString(),
           address: wallet.address,
         },
         data: {},

@@ -1,21 +1,15 @@
 import type { Plugin, IAgentRuntime, Service } from '@elizaos/core';
 import {
-  discoverProvidersAction,
-  hireAgentAction,
   checkWalletAction,
   publishServiceAction,
   unpublishServiceAction,
-  listActiveJobsAction,
-  cancelJobAction,
-  pingAgentAction,
   cleanupJobsAction,
 } from './actions';
 import { SERVICE_TYPES, SHUTDOWN_DRAIN_TIMEOUT_MS } from './constants';
 import { validateConfig } from './environment';
-import { jobCompletionEvaluator } from './evaluators';
 import { logger } from './lib/logger';
 import { registerDefaultMetrics } from './lib/metrics';
-import { elisymContextProvider, walletProvider, activeJobsProvider } from './providers';
+import { elisymContextProvider, walletProvider } from './providers';
 import { healthRoute } from './routes/health';
 import { metricsRoute } from './routes/metrics';
 import { ElisymService } from './services/ElisymService';
@@ -92,28 +86,17 @@ function registerShutdownHook(runtime: IAgentRuntime): void {
 export const elisymPlugin: Plugin = {
   name: 'elisym',
   description:
-    'Decentralized AI-agent marketplace on Nostr + Solana (elisym protocol) for ElizaOS agents.',
+    'ElizaOS plugin for running a paid elisym provider agent (Nostr + Solana). Customer-side flows (discovery, hire, payment) are intentionally omitted - use @elisym/mcp or @elisym/cli for those.',
   services: [ElisymService, WalletService, ProviderService, RecoveryService],
-  actions: [
-    discoverProvidersAction,
-    hireAgentAction,
-    checkWalletAction,
-    publishServiceAction,
-    unpublishServiceAction,
-    listActiveJobsAction,
-    cancelJobAction,
-    pingAgentAction,
-    cleanupJobsAction,
-  ],
-  providers: [elisymContextProvider, walletProvider, activeJobsProvider],
-  evaluators: [jobCompletionEvaluator],
+  actions: [checkWalletAction, publishServiceAction, unpublishServiceAction, cleanupJobsAction],
+  providers: [elisymContextProvider, walletProvider],
   routes: [healthRoute, metricsRoute],
   init: async (config: Record<string, string>, runtime: IAgentRuntime): Promise<void> => {
     const parsed = validateConfig(config, runtime);
     initState(runtime, parsed);
     registerDefaultMetrics();
     registerShutdownHook(runtime);
-    logger.info({ mode: parsed.mode, network: parsed.network }, 'elisym plugin initialized');
+    logger.info({ network: parsed.network }, 'elisym plugin initialized');
   },
 };
 

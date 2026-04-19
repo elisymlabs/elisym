@@ -62,11 +62,7 @@ export function makeStubRuntime(mocks: RuntimeMocks = {}): StubRuntime {
 export function bootState(runtime: IAgentRuntime, overrides: Partial<ElisymConfig> = {}): void {
   const stub: ElisymConfig = {
     network: 'devnet',
-    mode: 'both',
     signerKind: 'local',
-    maxSpendPerJobLamports: 10_000_000n,
-    maxSpendPerHourLamports: 100_000_000n,
-    requireApprovalAboveLamports: 5_000_000n,
     ...overrides,
   } as unknown as ElisymConfig;
   initState(runtime, stub);

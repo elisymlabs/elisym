@@ -15,7 +15,6 @@
     },
     "ANTHROPIC_SMALL_MODEL": "claude-haiku-4-5-20251001",
     "ANTHROPIC_LARGE_MODEL": "claude-haiku-4-5-20251001",
-    "ELISYM_MODE": "provider",
     "ELISYM_NETWORK": "devnet",
     "ELISYM_PROVIDER_SKILLS_DIR": "./skills"
   }

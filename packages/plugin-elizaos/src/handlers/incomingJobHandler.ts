@@ -10,11 +10,11 @@ import type { Event } from 'nostr-tools';
 import { MAX_INCOMING_JOB_BYTES, SERVICE_TYPES } from '../constants';
 import { findByJobId, recordTransition, type JobLedgerEntry } from '../lib/jobLedger';
 import { logger } from '../lib/logger';
+import { fetchProtocolConfig, paymentStrategyInstance } from '../lib/paymentStrategy';
 import { findProductByCapability, resolveProducts } from '../lib/providerProducts';
 import { RateLimiter } from '../lib/rateLimiter';
 import type { WalletService } from '../services/WalletService';
 import { getState } from '../state';
-import { fetchProtocolConfig, paymentStrategyInstance } from './customerJobFlow';
 
 const incomingRateLimiter = new RateLimiter();
 const SHUTDOWN_POLL_INTERVAL_MS = 500;

@@ -1,9 +1,4 @@
-import {
-  DEFAULT_KIND_OFFSET,
-  type ElisymClient,
-  type ElisymIdentity,
-  type PaymentRequestData,
-} from '@elisym/sdk';
+import type { ElisymClient, ElisymIdentity, PaymentRequestData } from '@elisym/sdk';
 import { Service, type IAgentRuntime, type ServiceTypeName } from '@elizaos/core';
 import type { Event } from 'nostr-tools';
 import {
@@ -12,7 +7,6 @@ import {
   RECOVERY_MAX_RETRIES,
   SERVICE_TYPES,
 } from '../constants';
-import { fetchProtocolConfig, paymentStrategyInstance } from '../handlers/customerJobFlow';
 import {
   pendingJobs,
   pruneOldEntries,
@@ -20,6 +14,7 @@ import {
   type JobLedgerEntry,
 } from '../lib/jobLedger';
 import { logger } from '../lib/logger';
+import { fetchProtocolConfig, paymentStrategyInstance } from '../lib/paymentStrategy';
 import { getState } from '../state';
 import type { ElisymService } from './ElisymService';
 import type { WalletService } from './WalletService';
@@ -73,18 +68,11 @@ export class RecoveryService extends Service {
     try {
       await pruneOldEntries(this.runtime);
       const providerPending = await pendingJobs(this.runtime, 'provider');
-      const customerPending = await pendingJobs(this.runtime, 'customer');
-
-      if (providerPending.length === 0 && customerPending.length === 0) {
+      if (providerPending.length === 0) {
         return;
       }
-      logger.info(
-        { provider: providerPending.length, customer: customerPending.length },
-        'recovery sweep: resuming pending jobs',
-      );
-
+      logger.info({ provider: providerPending.length }, 'recovery sweep: resuming pending jobs');
       await this.runBatch(providerPending, (entry) => this.recoverProviderJob(entry));
-      await this.runBatch(customerPending, (entry) => this.recoverCustomerJob(entry));
     } finally {
       this.running = false;
     }
@@ -363,58 +351,6 @@ export class RecoveryService extends Service {
         retryCount: (entry.retryCount ?? 0) + 1,
       });
       return undefined;
-    }
-  }
-
-  private async recoverCustomerJob(entry: JobLedgerEntry): Promise<void> {
-    if (!this.checkRetryBudget(entry)) {
-      await this.markFailed(entry, 'Recovery retry budget exhausted');
-      return;
-    }
-    if (!this.elisym) {
-      return;
-    }
-    // Customer-side recovery only chases the terminal result. States before
-    // payment_sent get a retry budget tick and are left for the subscription
-    // to resolve; beyond ~3 minutes without progress we give up.
-    if (entry.state === 'submitted' || entry.state === 'waiting_payment') {
-      const ageMs = Date.now() - entry.jobCreatedAt;
-      if (ageMs > 3 * 60 * 1000) {
-        await this.markFailed(entry, 'Customer job timed out before payment');
-      }
-      return;
-    }
-    if (entry.state !== 'payment_sent') {
-      return;
-    }
-    try {
-      const client = this.elisym.getClient();
-      const identity = this.elisym.getIdentity();
-      const results = await client.marketplace.queryJobResults(
-        identity,
-        [entry.jobEventId],
-        [DEFAULT_KIND_OFFSET],
-        entry.providerPubkey,
-      );
-      const record = results.get(entry.jobEventId);
-      if (!record || record.decryptionFailed || !record.content) {
-        const ageMs = Date.now() - entry.jobCreatedAt;
-        if (ageMs > 10 * 60 * 1000) {
-          await this.markFailed(entry, 'Result not observed on relays after 10 minutes');
-        }
-        return;
-      }
-      logger.info(
-        { jobEventId: entry.jobEventId },
-        'recovery: customer payment_sent -> result_received',
-      );
-      await recordTransition(this.runtime, {
-        ...entry,
-        state: 'result_received',
-        resultContent: record.content,
-      });
-    } catch (error) {
-      logger.debug({ err: error, jobEventId: entry.jobEventId }, 'customer recovery query errored');
     }
   }
 }
