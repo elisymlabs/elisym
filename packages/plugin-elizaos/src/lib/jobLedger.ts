@@ -141,7 +141,19 @@ export function createElizaMemoryAdapter(runtime: IAgentRuntime): JobLedgerAdapt
         );
         incrementCounter(METRIC_JOBS_TOTAL, { side: finalized.side, state: finalized.state });
       } catch (error) {
-        logger.error({ err: error, entry: finalized }, 'jobLedger.write failed');
+        // Never spread the full `finalized` entry into the log - it carries
+        // rawEventJson (customer input) and resultContent (LLM output).
+        // The canonical redact paths catch those by name, but we narrow
+        // here so an accidental redact-paths regression cannot expose them.
+        logger.error(
+          {
+            err: error instanceof Error ? error.message : String(error),
+            jobEventId: finalized.jobEventId,
+            side: finalized.side,
+            state: finalized.state,
+          },
+          'jobLedger.write failed',
+        );
       }
     },
     async loadLatest(side?: JobSide): Promise<Map<string, JobLedgerEntry>> {
