@@ -1,5 +1,5 @@
 import { KIND_APP_HANDLER, KIND_JOB_REQUEST, type SubCloser } from '@elisym/sdk';
-import { Service, type IAgentRuntime } from '@elizaos/core';
+import { Service, type IAgentRuntime, type ServiceTypeName } from '@elizaos/core';
 import type { Event, Filter } from 'nostr-tools';
 import { HEARTBEAT_INTERVAL_MS, SERVICE_TYPES } from '../constants';
 import type { ElisymConfig, ProviderProduct } from '../environment';
@@ -7,6 +7,11 @@ import { handleIncomingJob } from '../handlers/incomingJobHandler';
 import { logger } from '../lib/logger';
 import { getState } from '../state';
 import type { ElisymService } from './ElisymService';
+
+async function awaitService<T>(runtime: IAgentRuntime, type: string): Promise<T> {
+  const instance = await runtime.getServiceLoadPromise(type as ServiceTypeName);
+  return instance as T;
+}
 
 interface ProductCard {
   name: string;
@@ -43,20 +48,17 @@ export class ProviderService extends Service {
       return;
     }
 
-    const elisym = this.runtime.getService<ElisymService>(SERVICE_TYPES.ELISYM);
-    if (!elisym) {
-      throw new Error('ElisymService must start before ProviderService');
-    }
+    // ElizaOS 1.7 registers plugin services in parallel, so a sync
+    // getService() here races with ElisymService/WalletService init.
+    // Await their load promises instead of throwing on a null lookup.
+    const [elisym, walletService] = await Promise.all([
+      awaitService<ElisymService>(this.runtime, SERVICE_TYPES.ELISYM),
+      awaitService<{ address: string }>(this.runtime, SERVICE_TYPES.WALLET),
+    ]);
+
     const client = elisym.getClient();
     const identity = elisym.getIdentity();
-
-    const walletService = this.runtime.getService(SERVICE_TYPES.WALLET) as {
-      address: string;
-    } | null;
-    const address = walletService?.address;
-    if (!address) {
-      throw new Error('WalletService must start before ProviderService');
-    }
+    const address = walletService.address;
 
     const character = this.runtime.character;
     const agentName = character?.name ?? 'elizaos-agent';
