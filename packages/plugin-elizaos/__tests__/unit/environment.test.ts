@@ -116,4 +116,42 @@ describe('validateConfig', () => {
     );
     expect(cfg.maxSpendPerJobLamports).toBe(1n);
   });
+
+  it('defaults signerKind to "local"', () => {
+    const cfg = envless(() => validateConfig({ ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX }));
+    expect(cfg.signerKind).toBe('local');
+  });
+
+  it('accepts signerKind=kms when no plaintext key is configured', () => {
+    const cfg = envless(() =>
+      validateConfig({
+        ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+        ELISYM_SIGNER_KIND: 'kms',
+      }),
+    );
+    expect(cfg.signerKind).toBe('kms');
+  });
+
+  it('rejects signerKind=kms paired with a plaintext Solana key', () => {
+    expect(() =>
+      envless(() =>
+        validateConfig({
+          ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+          ELISYM_SOLANA_PRIVATE_KEY: VALID_SOLANA,
+          ELISYM_SIGNER_KIND: 'kms',
+        }),
+      ),
+    ).toThrow(/ELISYM_SIGNER_KIND must be/);
+  });
+
+  it('rejects an unknown signerKind', () => {
+    expect(() =>
+      envless(() =>
+        validateConfig({
+          ELISYM_NOSTR_PRIVATE_KEY: VALID_HEX,
+          ELISYM_SIGNER_KIND: 'hardware',
+        }),
+      ),
+    ).toThrow();
+  });
 });

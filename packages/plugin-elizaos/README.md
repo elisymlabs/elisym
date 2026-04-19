@@ -113,14 +113,25 @@ All settings are read from `runtime.getSetting(key)`, falling back to `process.e
 | `ELISYM_PROVIDER_NAME`              | `character.name`              | Product/capability display name shown on the NIP-89 card. Leave unset to reuse the character name.                                                                                                                                           |
 | `ELISYM_PROVIDER_DESCRIPTION`       | `character.bio`               | Product description shown under the card. Describe what buyers get - do NOT put the system prompt here. The agent's own bio/about comes from `character.bio` and is published as the NIP-01 kind:0 profile.                                  |
 | `ELISYM_PROVIDER_PRODUCTS`          | none                          | JSON array `[{name, description, capabilities, priceSol}]` for multi-product providers. When set, supersedes the single-product vars above. Cards authored by this agent that are no longer in the array are removed from relays on startup. |
+| `ELISYM_SIGNER_KIND`                | `local`                       | `local` (default, generates or loads a hot key in agent memory), `kms` (defer signing to an external KMS adapter; requires `ELISYM_KMS_PROVIDER` + `ELISYM_KMS_KEY_ID`; no adapter is bundled), or `external` (bring-your-own `Signer`).     |
 
 ## Security
 
-- **Hot wallet exposure.** The plugin holds a Solana secret key - either supplied via `ELISYM_SOLANA_PRIVATE_KEY` or auto-generated and persisted in ElizaOS agent memory (`elisym_wallet` table). Use a dedicated wallet funded only with a small balance (for example, 10× the hourly cap), and top it up from cold storage. If you rely on auto-generation, the key lives only in the ElizaOS database - lose it and the balance is gone. A future version may integrate KMS or hardware signers.
+- **Hot wallet exposure.** With `ELISYM_SIGNER_KIND=local` (default) the plugin holds a Solana secret key - either supplied via `ELISYM_SOLANA_PRIVATE_KEY` or auto-generated and persisted in ElizaOS agent memory (`elisym_wallet` table). Use a dedicated wallet funded only with a small balance (for example, 10× the hourly cap), and top it up from cold storage. If you rely on auto-generation, the key lives only in the ElizaOS database - lose it and the balance is gone. To remove plaintext-key exposure entirely, set `ELISYM_SIGNER_KIND=kms` (or `external`) and wire your own `Signer` adapter; see [External signers](#external-signers).
 - **Spending guard.** Every hire is checked against per-job and rolling-hour caps before the transaction is built. The cap is enforced again after parsing the provider-signed `amount` so a provider cannot widen the transfer silently.
 - **Recipient check.** Before signing, the payment request is validated against the provider's advertised address from its capability card - a compromised provider cannot redirect funds to a new address mid-flow.
 - **Size limits.** Incoming jobs over 64 KiB are rejected with an error-feedback event.
 - **Secrets are never logged.** `pino` is configured to redact `ELISYM_*_PRIVATE_KEY`, `nostrPrivateKeyHex`, and any field ending in `secret`.
+
+### External signers
+
+`ELISYM_SIGNER_KIND` selects how the plugin obtains the Solana signer used to authorize payments:
+
+- `local` (default) - generate or load the secret key in process memory. Lowest friction; highest exposure.
+- `kms` - defer signing to an external KMS adapter (AWS KMS, Turnkey, GCP KMS, etc.). The plugin refuses to load a plaintext key when this kind is set; you must also export `ELISYM_KMS_PROVIDER` and `ELISYM_KMS_KEY_ID`. No concrete adapter ships in the box - implement a `Signer` (`@elisym/sdk` re-exports the alias) that satisfies the `@solana/kit` `TransactionPartialSigner` contract and wire it into `createSigner` in `src/lib/signers/`.
+- `external` - bring your own adapter (hardware wallet, Ledger, an ElizaOS Action that prompts a human). Same shape as `kms`, but with no required env.
+
+Vendor-specific adapters are intentionally kept out of the published bundle: each one drags in a large client SDK and a different IAM model.
 
 ## Reliability
 

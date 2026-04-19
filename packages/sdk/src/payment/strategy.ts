@@ -7,6 +7,19 @@ import type {
 } from '../types';
 
 /**
+ * Pluggable signer used by `PaymentStrategy.buildTransaction`.
+ *
+ * Aliased to Solana Kit's `TransactionSigner` so callers can pass a hot
+ * `KeyPairSigner`, an external KMS-backed signer, a hardware-wallet adapter,
+ * or any other implementation that conforms to the Solana Kit signer contract
+ * (TransactionPartialSigner / TransactionSendingSigner / TransactionModifyingSigner).
+ *
+ * Exposing the alias here lets downstream packages depend on `@elisym/sdk`'s
+ * abstraction instead of importing Kit directly when wiring custom signers.
+ */
+export type Signer = TransactionSigner;
+
+/**
  * Protocol fee + treasury inputs for building a payment request.
  *
  * In Phase 2 the SDK no longer reads PROTOCOL_FEE_BPS / PROTOCOL_TREASURY
@@ -54,13 +67,19 @@ export interface PaymentStrategy {
   ): PaymentValidationError | null;
 
   /**
-   * Build and sign a transaction from a payment request using a TransactionSigner.
-   * Returns a chain-specific signed transaction value. The caller is responsible
-   * for sending it (e.g. via `rpc.sendTransaction(...).send()`).
+   * Build and sign a transaction from a payment request using a `Signer`.
+   *
+   * The `Signer` parameter is intentionally the abstract interface, not a
+   * concrete `KeyPairSigner`, so callers can plug in external signers
+   * (KMS, hardware wallet, ElizaOS approval Action) without holding the
+   * raw secret key in process memory.
+   *
+   * Returns a chain-specific signed transaction value. The caller is
+   * responsible for sending it (e.g. via `rpc.sendTransaction(...).send()`).
    */
   buildTransaction(
     paymentRequest: PaymentRequestData,
-    payerSigner: TransactionSigner,
+    payerSigner: Signer,
     rpc: Rpc<SolanaRpcApi>,
     config: ProtocolConfigInput,
   ): Promise<unknown>;

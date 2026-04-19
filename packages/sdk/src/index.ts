@@ -25,7 +25,7 @@ export {
   SolanaPaymentStrategy,
 } from './payment/solana';
 export { calculateProtocolFee, validateExpiry, assertExpiry, assertLamports } from './payment/fee';
-export type { PaymentStrategy, ProtocolConfigInput } from './payment/strategy';
+export type { PaymentStrategy, ProtocolConfigInput, Signer } from './payment/strategy';
 
 // --- On-chain protocol config ---
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';

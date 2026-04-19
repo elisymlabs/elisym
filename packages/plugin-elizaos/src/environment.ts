@@ -8,6 +8,7 @@ const HEX_64 = /^[0-9a-f]{64}$/i;
 
 const modeSchema = z.enum(['customer', 'provider', 'both']);
 const networkSchema = z.enum(['devnet', 'mainnet']);
+const signerKindSchema = z.enum(['local', 'kms', 'external']);
 
 const MAX_SAFE_LAMPORTS = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -32,6 +33,7 @@ export const ElisymConfigSchema = z
       .regex(HEX_64, 'Nostr private key must be 32-byte hex')
       .optional(),
     solanaPrivateKeyBase58: z.string().min(1).optional(),
+    signerKind: signerKindSchema,
     network: networkSchema,
     relays: z.array(z.string().url()).optional(),
     solanaRpcUrl: z.string().url().optional(),
@@ -69,6 +71,19 @@ export const ElisymConfigSchema = z
     {
       message:
         'Provider mode requires either ELISYM_PROVIDER_PRODUCTS (JSON array) or both ELISYM_PROVIDER_CAPABILITIES and ELISYM_PROVIDER_PRICE_SOL',
+    },
+  )
+  .refine(
+    (cfg) => {
+      if (cfg.signerKind === 'local') {
+        return true;
+      }
+      return cfg.solanaPrivateKeyBase58 === undefined;
+    },
+    {
+      message:
+        'ELISYM_SIGNER_KIND must be "local" when ELISYM_SOLANA_PRIVATE_KEY is set; ' +
+        'remove the key from config to use an external signer.',
     },
   );
 
@@ -208,6 +223,7 @@ export function validateConfig(
 
   const network = read('ELISYM_NETWORK', 'devnet');
   const mode = read('ELISYM_MODE', 'customer');
+  const signerKind = read('ELISYM_SIGNER_KIND', 'local');
 
   const maxPerJob = solToLamports(read('ELISYM_MAX_SPEND_PER_JOB_SOL', '0.01') ?? '0.01');
   const maxPerHour = solToLamports(read('ELISYM_MAX_SPEND_PER_HOUR_SOL', '0.1') ?? '0.1');
@@ -223,6 +239,7 @@ export function validateConfig(
   return ElisymConfigSchema.parse({
     nostrPrivateKeyHex,
     solanaPrivateKeyBase58,
+    signerKind,
     network,
     relays: parseList(read('ELISYM_RELAYS')),
     solanaRpcUrl: read('ELISYM_SOLANA_RPC_URL'),

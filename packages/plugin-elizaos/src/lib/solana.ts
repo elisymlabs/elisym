@@ -1,3 +1,4 @@
+import type { Signer } from '@elisym/sdk';
 import {
   address,
   createKeyPairSignerFromBytes,
@@ -50,10 +51,7 @@ export async function generateSolanaSecretBase58(): Promise<string> {
   return bs58.encode(bytes);
 }
 
-export async function getBalanceLamports(
-  rpc: Rpc<SolanaRpcApi>,
-  signer: KeyPairSigner,
-): Promise<bigint> {
+export async function getBalanceLamports(rpc: Rpc<SolanaRpcApi>, signer: Signer): Promise<bigint> {
   const { value } = await rpc.getBalance(address(signer.address)).send();
   return BigInt(value);
 }

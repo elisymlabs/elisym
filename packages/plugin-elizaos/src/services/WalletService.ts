@@ -1,15 +1,10 @@
+import type { Signer } from '@elisym/sdk';
 import { Service, type IAgentRuntime } from '@elizaos/core';
-import type { KeyPairSigner, Rpc, SolanaRpcApi } from '@solana/kit';
+import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import { SERVICE_TYPES } from '../constants';
 import { logger } from '../lib/logger';
-import { loadPersistedSolanaSecret, persistSolanaSecret } from '../lib/secretsMemory';
-import {
-  createRpc,
-  generateSolanaSecretBase58,
-  getBalanceLamports,
-  resolveRpcUrl,
-  signerFromBase58,
-} from '../lib/solana';
+import { createSigner, type SignerHandle, type SignerKind } from '../lib/signers';
+import { createRpc, getBalanceLamports, resolveRpcUrl } from '../lib/solana';
 import {
   createSpendingBucket,
   assertCanSpend,
@@ -30,7 +25,8 @@ export class WalletService extends Service {
   override capabilityDescription = 'Solana wallet and spending guard for elisym jobs';
 
   private bucket?: SpendingBucket;
-  private signerRef?: KeyPairSigner;
+  private signerRef?: Signer;
+  private signerKindRef?: SignerKind;
   private rpcRef?: Rpc<SolanaRpcApi>;
   private rpcUrlRef?: string;
 
@@ -61,45 +57,50 @@ export class WalletService extends Service {
     this.rpcUrlRef = resolveRpcUrl(config.network, config.solanaRpcUrl);
     this.rpcRef = createRpc(this.rpcUrlRef);
 
-    const { base58, source } = await this.resolveSecret(config.solanaPrivateKeyBase58);
-    this.signerRef = await signerFromBase58(base58);
-    if (source === 'generated') {
+    const handle = await this.resolveSigner(config.signerKind, config.solanaPrivateKeyBase58);
+    this.signerRef = handle.signer;
+    this.signerKindRef = handle.kind;
+    if (handle.source === 'generated') {
       logger.warn(
-        { network: config.network, address: this.signerRef.address },
+        { network: config.network, address: handle.signer.address, kind: handle.kind },
         'generated new elisym Solana wallet and persisted it to agent memory; fund this address with SOL before hiring paid providers, and back up the key if you need cross-machine access',
       );
     } else {
       logger.info(
-        { network: config.network, address: this.signerRef.address, source },
+        {
+          network: config.network,
+          address: handle.signer.address,
+          source: handle.source,
+          kind: handle.kind,
+        },
         'WalletService ready',
       );
     }
   }
 
-  private async resolveSecret(
+  private async resolveSigner(
+    kind: SignerKind,
     fromConfig: string | undefined,
-  ): Promise<{ base58: string; source: 'config' | 'persisted' | 'generated' }> {
-    if (fromConfig) {
-      return { base58: fromConfig, source: 'config' };
-    }
-    const persisted = await loadPersistedSolanaSecret(this.runtime);
-    if (persisted) {
-      return { base58: persisted, source: 'persisted' };
-    }
-    const fresh = await generateSolanaSecretBase58();
-    await persistSolanaSecret(this.runtime, fresh);
-    return { base58: fresh, source: 'generated' };
+  ): Promise<SignerHandle> {
+    return createSigner(kind, { runtime: this.runtime, fromConfig });
   }
 
   override async stop(): Promise<void> {
     // @solana/kit RPC clients are stateless HTTP handles; nothing to close.
   }
 
-  get signer(): KeyPairSigner {
+  get signer(): Signer {
     if (!this.signerRef) {
       throw new Error('WalletService not initialized');
     }
     return this.signerRef;
+  }
+
+  get signerKind(): SignerKind {
+    if (!this.signerKindRef) {
+      throw new Error('WalletService not initialized');
+    }
+    return this.signerKindRef;
   }
 
   get rpc(): Rpc<SolanaRpcApi> {

@@ -4,7 +4,6 @@ import {
   type Rpc,
   type Signature,
   type SolanaRpcApi,
-  type TransactionSigner,
   AccountRole,
   address,
   appendTransactionMessageInstructions,
@@ -25,7 +24,7 @@ import type {
   VerifyResult,
 } from '../types';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
-import type { PaymentStrategy, ProtocolConfigInput } from './strategy';
+import type { PaymentStrategy, ProtocolConfigInput, Signer } from './strategy';
 
 const REFERENCE_BYTE_LENGTH = 32;
 
@@ -217,7 +216,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
    */
   async buildTransaction(
     paymentRequest: PaymentRequestData,
-    payerSigner: TransactionSigner,
+    payerSigner: Signer,
     rpc: Rpc<SolanaRpcApi>,
     config: ProtocolConfigInput,
   ): Promise<Readonly<unknown>> {
@@ -566,7 +565,7 @@ function waitMs(ms: number): Promise<void> {
  */
 export function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
-  payerSigner: TransactionSigner,
+  payerSigner: Signer,
 ): readonly unknown[] {
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);
