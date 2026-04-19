@@ -11,6 +11,7 @@ import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
 import { explorerClusterFor, fetchProtocolConfig, rpcUrlFor } from '../context.js';
+import { logger } from '../logger.js';
 import {
   sanitizeUntrusted,
   sanitizeField,
@@ -190,7 +191,11 @@ async function executePaymentFlow(
       signature,
     );
   } catch (e) {
-    console.error('[mcp] On-chain payment confirmed but Nostr confirmation failed:', e);
+    const message = e instanceof Error ? e.message : String(e);
+    logger.error(
+      { event: 'nostr_confirmation_failed', jobId, providerPubkey, err: message },
+      'on-chain payment confirmed but Nostr confirmation failed',
+    );
   }
 
   return signature;
@@ -261,9 +266,13 @@ export function makePaymentFeedbackHandler(opts: {
     }
     if (paying || paid) {
       // Duplicate/echoed payment-required - never double-pay, never retry automatically.
-      console.error(
-        `[mcp] ignoring duplicate payment-required for job ${opts.jobId} ` +
-          `(state=${paying ? 'in-flight' : 'paid'})`,
+      logger.info(
+        {
+          event: 'duplicate_payment_required',
+          jobId: opts.jobId,
+          state: paying ? 'in-flight' : 'paid',
+        },
+        'ignoring duplicate payment-required',
       );
       return;
     }
@@ -557,7 +566,11 @@ export const customerTools: ToolDefinition[] = [
             ]),
           );
         } catch (e) {
-          console.error('[mcp:list_my_jobs] queryJobResults failed:', e);
+          const message = e instanceof Error ? e.message : String(e);
+          logger.error(
+            { event: 'list_my_jobs_query_failed', err: message },
+            'queryJobResults failed',
+          );
           // Fall through - we'll show raw ciphertext as last resort.
         }
       }

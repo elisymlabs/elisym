@@ -5,11 +5,12 @@
 import {
   SolanaPaymentStrategy,
   calculateProtocolFee,
+  createSlidingWindowLimiter,
   getProtocolConfig,
   getProtocolProgramId,
   LIMITS,
 } from '@elisym/sdk';
-import type { ProtocolConfigInput } from '@elisym/sdk';
+import type { ProtocolConfigInput, SlidingWindowLimiter } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 import pLimit from 'p-limit';
 import { getRpcUrl } from './helpers.js';
@@ -19,6 +20,7 @@ import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 
 const payment = new SolanaPaymentStrategy();
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, mirrors plugin
 const TOTAL_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export interface RuntimeConfig {
@@ -61,6 +63,8 @@ function resolveJobPrice(tags: string[], skills: SkillRegistry): number {
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_JOBS_PER_CUSTOMER = 20;
 const GLOBAL_MAX_JOBS_PER_WINDOW = 200;
+const MAX_TRACKED_CUSTOMERS = 1000;
+const GLOBAL_LIMITER_KEY = '__global__';
 
 export class AgentRuntime {
   private limit: ReturnType<typeof pLimit>;
@@ -72,10 +76,18 @@ export class AgentRuntime {
   private recoveryInterval: ReturnType<typeof setInterval> | null = null;
   private gcInterval: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
-  /** Per-customer sliding window rate limiter: pubkey -> timestamps. */
-  private customerJobs = new Map<string, number[]>();
-  /** Global sliding window rate limiter (Sybil protection). */
-  private globalJobs: number[] = [];
+  /** Per-customer sliding-window rate limiter (keyed on customer pubkey). */
+  private customerLimiter: SlidingWindowLimiter = createSlidingWindowLimiter({
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    maxPerWindow: MAX_JOBS_PER_CUSTOMER,
+    maxKeys: MAX_TRACKED_CUSTOMERS,
+  });
+  /** Global sliding-window rate limiter (Sybil protection). */
+  private globalLimiter: SlidingWindowLimiter = createSlidingWindowLimiter({
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    maxPerWindow: GLOBAL_MAX_JOBS_PER_WINDOW,
+    maxKeys: 1,
+  });
 
   constructor(
     private transport: NostrTransport,
@@ -108,8 +120,8 @@ export class AgentRuntime {
   async run(): Promise<void> {
     const log = this.callbacks.onLog ?? console.log;
 
-    // GC old ledger entries
-    this.ledger.gc();
+    // Prune terminal ledger entries past the 30-day retention window.
+    this.ledger.pruneOldEntries(LEDGER_RETENTION_MS);
 
     // Recover pending jobs from previous sessions
     await this.recoverPendingJobs();
@@ -123,7 +135,7 @@ export class AgentRuntime {
     // Periodic ledger GC, rate limit cleanup, and subscription health check
     this.gcInterval = setInterval(() => {
       try {
-        this.ledger.gc();
+        this.ledger.pruneOldEntries(LEDGER_RETENTION_MS);
       } catch (e: any) {
         log(`GC error: ${e.message}`);
       }
@@ -153,24 +165,27 @@ export class AgentRuntime {
         return;
       }
 
-      // Global rate limiting (Sybil protection)
-      if (this.isGlobalRateLimited()) {
-        this.transport
-          .sendFeedback(job, { type: 'error', message: 'Server busy, try again later' })
-          .catch(() => {});
-        return;
-      }
-
-      // Per-customer rate limiting
-      if (this.isCustomerRateLimited(job.customerId)) {
+      // Per-customer check first so a rate-limited customer does not
+      // bump the global counter - otherwise a single abusive customer
+      // could starve every other caller up to the global cap.
+      if (!this.customerLimiter.peek(job.customerId).allowed) {
         this.transport
           .sendFeedback(job, { type: 'error', message: 'Rate limited, try again later' })
           .catch(() => {});
         return;
       }
 
-      // Record acceptance only after all checks pass
-      this.recordJobAccepted(job.customerId);
+      // Global rate limiting (Sybil protection).
+      if (!this.globalLimiter.peek(GLOBAL_LIMITER_KEY).allowed) {
+        this.transport
+          .sendFeedback(job, { type: 'error', message: 'Server busy, try again later' })
+          .catch(() => {});
+        return;
+      }
+
+      // Both checks passed - record the hit against both limiters.
+      this.customerLimiter.check(job.customerId);
+      this.globalLimiter.check(GLOBAL_LIMITER_KEY);
 
       this.callbacks.onJobReceived?.(job);
       this.inFlight.add(job.jobId);
@@ -205,43 +220,10 @@ export class AgentRuntime {
     });
   }
 
-  /** Returns true if global job throughput has been exceeded (Sybil protection). Pure check - no side effects. */
-  private isGlobalRateLimited(): boolean {
-    const now = Date.now();
-    this.globalJobs = this.globalJobs.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-    return this.globalJobs.length >= GLOBAL_MAX_JOBS_PER_WINDOW;
-  }
-
-  /** Returns true if customer has exceeded the per-window job limit. Pure check - no side effects. */
-  private isCustomerRateLimited(customerId: string): boolean {
-    const now = Date.now();
-    const timestamps = this.customerJobs.get(customerId) ?? [];
-    const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-    this.customerJobs.set(customerId, recent);
-    return recent.length >= MAX_JOBS_PER_CUSTOMER;
-  }
-
-  /** Record a job acceptance for rate limiting. Called only after all checks pass. */
-  private recordJobAccepted(customerId: string): void {
-    const now = Date.now();
-    this.globalJobs.push(now);
-    const timestamps = this.customerJobs.get(customerId) ?? [];
-    timestamps.push(now);
-    this.customerJobs.set(customerId, timestamps);
-  }
-
-  /** Clean up expired rate limit entries. */
+  /** Drop expired hits from both sliding-window limiters. */
   private cleanupRateLimits(): void {
-    const now = Date.now();
-    this.globalJobs = this.globalJobs.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-    for (const [key, timestamps] of this.customerJobs) {
-      const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-      if (recent.length === 0) {
-        this.customerJobs.delete(key);
-      } else {
-        this.customerJobs.set(key, recent);
-      }
-    }
+    this.customerLimiter.prune();
+    this.globalLimiter.prune();
   }
 
   stop(): void {

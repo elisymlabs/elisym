@@ -1,4 +1,4 @@
-import type { Skill } from './types';
+import type { Skill } from '@elisym/sdk/skills';
 
 export * from './types';
 export { loadSkillsFromDir } from './loader';

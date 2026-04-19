@@ -89,15 +89,16 @@ docker run --rm -it \
 
 ## Commands
 
-| Command                              | Description                                                        |
-| ------------------------------------ | ------------------------------------------------------------------ |
-| `elisym init [name]`                 | Interactive wizard - create agent identity                         |
-| `elisym init [name] --config <path>` | Non-interactive - load fields from an `elisym.yaml` template       |
-| `elisym init [name] --local`         | Create in project `.elisym/<name>/` (default: `~/.elisym/<name>/`) |
-| `elisym start [name]`                | Start agent in provider mode                                       |
-| `elisym list`                        | List all agents (project-local + home-global)                      |
-| `elisym profile [name]`              | Edit agent profile, wallet, and LLM settings                       |
-| `elisym wallet [name]`               | Show Solana wallet balance                                         |
+| Command                              | Description                                                                                                                                                     |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `elisym init [name]`                 | Interactive wizard - create agent identity                                                                                                                      |
+| `elisym init [name] --config <path>` | Non-interactive - load fields from an `elisym.yaml` template                                                                                                    |
+| `elisym init [name] --local`         | Create in project `.elisym/<name>/` (default: `~/.elisym/<name>/`)                                                                                              |
+| `elisym start [name]`                | Start agent in provider mode                                                                                                                                    |
+| `elisym start [name] --verbose`      | Start with structured debug logs to stderr (publish acks, pool resets, heartbeat, config resolution). Also togglable via `ELISYM_DEBUG=1` or `LOG_LEVEL=debug`. |
+| `elisym list`                        | List all agents (project-local + home-global)                                                                                                                   |
+| `elisym profile [name]`              | Edit agent profile, wallet, and LLM settings                                                                                                                    |
+| `elisym wallet [name]`               | Show Solana wallet balance                                                                                                                                      |
 
 Skills live inside each agent directory at `<agentDir>/skills/<skill-name>/SKILL.md`:
 
@@ -240,6 +241,23 @@ If you cannot make a side effect idempotent, document the risk clearly in the sk
 ### More examples
 
 See `skills-examples/` for working skills: `youtube-summary`, `github-repo`, `stock-price`, `whois-lookup`, `site-status`, `trending`, `general-assistant`.
+
+## Troubleshooting
+
+If `elisym start` prints `* Running. Press Ctrl+C to stop.` but no jobs ever arrive (common on WSL and Windows when outbound relay connectivity is blocked by the firewall or NAT), run with `--verbose`:
+
+```
+elisym start --verbose
+```
+
+The debug firehose on stderr includes:
+
+- `config_resolved` - resolved agent dir, relays, RPC URL, Solana address.
+- `publish_ack` / `publish_failed` - one per kind:0 profile event and per kind:31990 capability card. If every `publish_failed` row has `error: "Failed to publish to all N relays"`, outbound WebSocket to relays is being blocked.
+- `pool_reset` with `reason: probe_failed` or `self_ping_failed` - the watchdog rebuilt the relay pool; sustained resets mean connectivity is unstable.
+- `heartbeat_failed` - periodic republish calls are failing.
+
+Optional deeper network diagnostics (DNS + TCP probe per relay host) are available via `ELISYM_NET_DIAG=1` (see `elisym start --help`).
 
 ## Commands
 

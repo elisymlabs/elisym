@@ -50,6 +50,18 @@ export { nip44Encrypt, nip44Decrypt } from './primitives/crypto';
 export { formatSol, timeAgo, truncateKey } from './primitives/format';
 export { validateAgentName } from './primitives/config';
 export { BoundedSet } from './primitives/bounded-set';
+export { createSlidingWindowLimiter } from './primitives/rateLimiter';
+export type {
+  RateLimitDecision,
+  SlidingWindowLimiter,
+  SlidingWindowLimiterOptions,
+} from './primitives/rateLimiter';
+export {
+  DEFAULT_REDACT_PATHS,
+  INPUT_REDACT_PATHS,
+  SECRET_REDACT_PATHS,
+  makeCensor,
+} from './primitives/logRedact';
 
 // --- Constants ---
 export {

@@ -58,7 +58,18 @@ program
   .action(safe(cmdProfile));
 
 // Start
-program.command('start [name]').description('Start agent in provider mode').action(safe(cmdStart));
+program
+  .command('start [name]')
+  .description('Start agent in provider mode')
+  .option(
+    '-v, --verbose',
+    'Enable debug logging (relay lifecycle, publish acks, subscription EOSE). Also togglable via ELISYM_DEBUG=1 or LOG_LEVEL=debug.',
+  )
+  .action(
+    safe(async (name: string | undefined, options: { verbose?: boolean }) => {
+      await cmdStart(name, options);
+    }),
+  );
 
 // List
 program

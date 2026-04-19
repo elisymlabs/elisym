@@ -1,7 +1,10 @@
 accum
+acks
 agentskills
 antipattern
 auxe
+behaviour
+defence
 doesn
 freetext
 frontmatter
@@ -79,9 +82,11 @@ tailwindcss
 tanstack
 testnet
 tokio
+togglable
 tsup
 turborepo
 undecryptable
+unparseable
 untargeted
 microlamports
 untrusted

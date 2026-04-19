@@ -152,15 +152,32 @@ export class JobLedger {
 
   /** Remove old delivered/failed entries (default: 7 days). */
   gc(maxAgeSecs = 7 * 24 * 60 * 60): void {
-    const cutoff = Math.floor(Date.now() / 1000) - maxAgeSecs;
+    this.pruneOldEntries(maxAgeSecs * 1000);
+  }
+
+  /**
+   * Drop terminal entries (`delivered` / `failed`) whose `created_at`
+   * predates `now - retentionMs`. Stuck non-terminal entries are never
+   * pruned - recovery keeps retrying them until the retry budget runs
+   * out, then they become terminal and are eligible on the next sweep.
+   *
+   * Returns the number of entries deleted, for observability.
+   */
+  pruneOldEntries(retentionMs: number): number {
+    const cutoff = Math.floor(Date.now() / 1000) - Math.floor(retentionMs / 1000);
+    let deleted = 0;
     for (const [id, entry] of this.entries) {
       if (
         (entry.status === 'delivered' || entry.status === 'failed') &&
         entry.created_at < cutoff
       ) {
         this.entries.delete(id);
+        deleted += 1;
       }
     }
-    this.flush();
+    if (deleted > 0) {
+      this.flush();
+    }
+    return deleted;
   }
 }

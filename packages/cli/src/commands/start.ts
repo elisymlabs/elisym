@@ -29,6 +29,7 @@ import {
   type MediaCache,
 } from '@elisym/sdk/agent-store';
 import { address, createSolanaRpc } from '@solana/kit';
+import { probeRelays } from '../diagnostics.js';
 import {
   getRpcUrl,
   HEARTBEAT_INTERVAL_MS,
@@ -38,13 +39,21 @@ import {
 } from '../helpers.js';
 import { JobLedger } from '../ledger.js';
 import { createLlmClient } from '../llm';
+import { createLogger } from '../logging.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SkillRegistry, type SkillContext } from '../skill';
 import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
 import { startWatchdog } from '../watchdog.js';
 
-export async function cmdStart(nameArg: string | undefined): Promise<void> {
+export interface StartOptions {
+  verbose?: boolean;
+}
+
+export async function cmdStart(
+  nameArg: string | undefined,
+  options: StartOptions = {},
+): Promise<void> {
   const cwd = process.cwd();
 
   // -- Step 1: Resolve agent name --
@@ -56,12 +65,26 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
   // -- Step 2: Load agent (with optional passphrase for encrypted keys) --
   const loaded = await loadAgentWithPrompt(agentName, cwd);
 
+  // -- Step 2b: Set up structured logger early so publish / config
+  //   debug events fire before connectivity is established.
+  const verbose =
+    options.verbose === true ||
+    process.env.ELISYM_DEBUG === '1' ||
+    process.env.LOG_LEVEL === 'debug';
+  const { logger, logWithIndent } = createLogger({
+    verbose,
+    tty: Boolean(process.stdout.isTTY),
+  });
+
   // -- Step 3: Banner --
   console.log(`\n  Starting agent ${agentName} (${loaded.source})...\n`);
   if (loaded.shadowsGlobal) {
     console.log(
       `  ! Using project-local ${agentName} (shadows global agent in ~/.elisym/${agentName}/)\n`,
     );
+  }
+  if (verbose) {
+    console.log('  [debug] Verbose logging enabled. Structured diagnostics -> stderr.');
   }
 
   // -- Step 4: Resolve Solana address and show balance --
@@ -155,6 +178,22 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
   const relays = loaded.yaml.relays.length > 0 ? loaded.yaml.relays : [...RELAYS];
   const client = new ElisymClient({ relays });
 
+  // Opt-in DNS + TCP connectivity probe for WSL / Windows / corporate
+  // firewall troubleshooting. Runs once before publish so the operator
+  // sees the result in the startup banner.
+  if (process.env.ELISYM_NET_DIAG === '1') {
+    console.log('  [net-diag] Probing relay DNS + TCP connectivity...');
+    const results = await probeRelays(relays, logger);
+    for (const result of results) {
+      const ipSummary = result.ips.length > 0 ? result.ips.join(',') : '-';
+      if (result.tcpOpenMs !== undefined) {
+        console.log(`  [net-diag] ${result.url} -> ${ipSummary} TCP open in ${result.tcpOpenMs}ms`);
+      } else {
+        console.log(`  [net-diag] ${result.url} -> ${ipSummary} FAILED: ${result.error ?? '?'}`);
+      }
+    }
+  }
+
   // -- Step 9: Resolve media URLs via cache (no SKILL.md mutation) --
   const media = new MediaService();
   const mediaCache = await readMediaCache(loaded.dir);
@@ -202,6 +241,7 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
   }
 
   // -- Step 10: Publish kind:0 profile --
+  let profilePublished = false;
   try {
     await client.discovery.publishProfile(
       identity,
@@ -210,8 +250,11 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
       pictureUrl,
       bannerUrl,
     );
+    profilePublished = true;
+    logger.debug({ event: 'publish_ack', kind: 0 }, 'profile published');
   } catch (e: any) {
     console.warn(`  ! Failed to publish profile: ${e.message}`);
+    logger.warn({ event: 'publish_failed', kind: 0, error: e.message }, 'profile publish failed');
   }
 
   // -- Step 11: Publish per-skill capability cards (kind:31990) --
@@ -234,11 +277,21 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
     };
   }
 
+  let cardsPublished = 0;
   for (const skill of allSkills) {
     try {
       await client.discovery.publishCapability(identity, buildCard(skill), kinds);
+      cardsPublished += 1;
+      logger.debug(
+        { event: 'publish_ack', kind: 31990, skill: skill.name },
+        'capability card published',
+      );
     } catch (e: any) {
       console.warn(`  ! Failed to publish "${skill.name}": ${e.message}`);
+      logger.warn(
+        { event: 'publish_failed', kind: 31990, skill: skill.name, error: e.message },
+        'capability publish failed',
+      );
     }
   }
 
@@ -270,6 +323,12 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
   }
 
   console.log('  Connected.\n');
+  if (verbose) {
+    console.log(
+      `  [debug] Published: profile=${profilePublished ? 'ok' : 'FAILED'} + ${cardsPublished}/${allSkills.length} capability cards (kind:31990)`,
+    );
+    console.log(`  [debug] Relays: ${relays.length} configured (${relays.join(', ')})`);
+  }
 
   // -- Step 13: Prepare ping responder (watchdog owns the subscription) --
   const onPing = (senderPubkey: string, nonce: string): void => {
@@ -283,8 +342,10 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
     heartbeatTimer = setInterval(async () => {
       try {
         await client.discovery.publishCapability(identity, heartbeatCard, kinds);
-      } catch {
-        /* heartbeat failure is non-fatal */
+        logger.debug({ event: 'heartbeat_ack', skill: heartbeatCard.name }, 'heartbeat ok');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn({ event: 'heartbeat_failed', error: message }, 'heartbeat publish failed');
       }
     }, HEARTBEAT_INTERVAL_MS);
   }
@@ -302,28 +363,56 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
     solanaAddress,
   };
 
-  const logWithIndent = (msg: string): void => console.log(`  ${msg}`);
+  // Custom SOLANA_RPC_URL values (Helius, Alchemy, QuickNode) routinely
+  // embed API keys in the query string. Strip query + auth before logging
+  // so `--verbose` never publishes a third-party RPC credential.
+  const rpcUrlForLog = stripRpcSecrets(process.env.SOLANA_RPC_URL ?? getRpcUrl(walletNetwork));
+  logger.debug(
+    {
+      event: 'config_resolved',
+      agent: agentName,
+      source: loaded.source,
+      network: walletNetwork,
+      relays,
+      solanaAddress,
+      rpcUrl: rpcUrlForLog,
+    },
+    'config resolved',
+  );
+
+  // Tee: banner-style indent line on stdout (existing UX) + structured
+  // stderr pino entry with shared redact paths (defence against future
+  // slips where a diagnostic string might embed user input).
+  const diagLog = (msg: string): void => {
+    logWithIndent(msg);
+    logger.info({ event: 'runtime_diag' }, msg);
+  };
 
   const watchdog = startWatchdog({
     client,
     identity,
     transport,
     onPing,
-    log: logWithIndent,
+    log: diagLog,
+    logger,
   });
 
   const runtime = new AgentRuntime(transport, registry, skillCtx, runtimeConfig, ledger, {
     onJobReceived: (job) => {
       const cap = job.tags.find((t) => t !== 'elisym') ?? 'unknown';
-      console.log(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}`);
+      // Never log job.input here - capability tag is the only descriptor needed.
+      process.stdout.write(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}\n`);
+      logger.info({ event: 'job_received', jobId: job.jobId, capability: cap });
     },
     onJobCompleted: (jobId) => {
-      console.log(`  [job] ${jobId.slice(0, 16)} | delivered`);
+      process.stdout.write(`  [job] ${jobId.slice(0, 16)} | delivered\n`);
+      logger.info({ event: 'job_delivered', jobId });
     },
     onJobError: (jobId, error) => {
-      console.error(`  [job] ${jobId.slice(0, 16)} | error: ${error}`);
+      process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${error}\n`);
+      logger.error({ event: 'job_error', jobId, error });
     },
-    onLog: logWithIndent,
+    onLog: diagLog,
     onStop: () => {
       watchdog.stop();
       if (heartbeatTimer) {
@@ -335,6 +424,25 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
   // -- Step 16: Run --
   console.log('  * Running. Press Ctrl+C to stop.\n');
   await runtime.run();
+}
+
+/**
+ * Return a log-safe representation of an RPC URL. Strips any userinfo
+ * and query string so credentials embedded by third-party RPC
+ * providers (Helius/Alchemy/QuickNode style `?api-key=...`) never land
+ * in verbose stderr output.
+ */
+export function stripRpcSecrets(raw: string): string {
+  try {
+    const parsed = new URL(raw);
+    parsed.username = '';
+    parsed.password = '';
+    const marker = parsed.search.length > 0 ? '?***' : '';
+    parsed.search = '';
+    return `${parsed.toString()}${marker}`;
+  } catch {
+    return '[unparseable RPC URL]';
+  }
 }
 
 /** Resolve a YAML media field (picture/banner) - URL returned as-is, local path uploaded via cache. */

@@ -1,18 +1,20 @@
 import type { ElisymClient, ElisymIdentity, PaymentRequestData } from '@elisym/sdk';
+import {
+  createRecoveryLoop,
+  type JobLedgerAdapter,
+  type JobLedgerEntry,
+  type RecoveryLoop,
+} from '@elisym/sdk/runtime';
 import { Service, type IAgentRuntime, type ServiceTypeName } from '@elizaos/core';
 import type { Event } from 'nostr-tools';
 import {
+  JOB_LEDGER_RETENTION_MS,
   RECOVERY_CONCURRENCY,
   RECOVERY_INTERVAL_MS,
   RECOVERY_MAX_RETRIES,
   SERVICE_TYPES,
 } from '../constants';
-import {
-  pendingJobs,
-  pruneOldEntries,
-  recordTransition,
-  type JobLedgerEntry,
-} from '../lib/jobLedger';
+import { createElizaMemoryAdapter, recordTransition } from '../lib/jobLedger';
 import { logger } from '../lib/logger';
 import { fetchProtocolConfig, paymentStrategyInstance } from '../lib/paymentStrategy';
 import { getState } from '../state';
@@ -30,8 +32,8 @@ export class RecoveryService extends Service {
   override capabilityDescription =
     'Resumes elisym jobs interrupted by a crash by replaying the JobLedger';
 
-  private sweepTimer?: ReturnType<typeof setInterval>;
-  private running = false;
+  private loop?: RecoveryLoop;
+  private adapter?: JobLedgerAdapter;
   private elisym?: ElisymService;
   private wallet?: WalletService;
 
@@ -44,65 +46,46 @@ export class RecoveryService extends Service {
   private async initialize(): Promise<void> {
     this.elisym = await awaitService<ElisymService>(this.runtime, SERVICE_TYPES.ELISYM);
     this.wallet = await awaitService<WalletService>(this.runtime, SERVICE_TYPES.WALLET);
+    this.adapter = createElizaMemoryAdapter(this.runtime);
 
-    // Kick off an initial sweep. Do not await - let it run in background so
-    // plugin init returns quickly.
-    this.sweepOnce().catch((error) => logger.warn({ err: error }, 'initial recovery sweep failed'));
-    this.sweepTimer = setInterval(() => {
-      this.sweepOnce().catch((error) => logger.warn({ err: error }, 'recovery sweep failed'));
-    }, RECOVERY_INTERVAL_MS);
+    this.loop = createRecoveryLoop({
+      adapter: this.adapter,
+      intervalMs: RECOVERY_INTERVAL_MS,
+      retentionMs: JOB_LEDGER_RETENTION_MS,
+      concurrency: RECOVERY_CONCURRENCY,
+      logger,
+      onProviderPending: (entry) => this.recoverProviderJob(entry),
+    });
+    this.loop.start();
   }
 
   override async stop(): Promise<void> {
-    if (this.sweepTimer) {
-      clearInterval(this.sweepTimer);
-      this.sweepTimer = undefined;
-    }
+    this.loop?.stop();
+    this.loop = undefined;
   }
 
-  private async sweepOnce(): Promise<void> {
-    if (this.running) {
+  /**
+   * Run a single sweep on demand. Used by integration tests to drive the
+   * recovery pipeline without waiting for the periodic timer. Builds a
+   * one-shot loop when `initialize()` has not been called (as in unit-
+   * test harnesses that new-up the service and inject stubs) so the
+   * configured concurrency ceiling still applies.
+   */
+  async sweepOnce(): Promise<void> {
+    if (this.loop) {
+      await this.loop.sweepOnce();
       return;
     }
-    this.running = true;
-    try {
-      await pruneOldEntries(this.runtime);
-      const providerPending = await pendingJobs(this.runtime, 'provider');
-      if (providerPending.length === 0) {
-        return;
-      }
-      logger.info({ provider: providerPending.length }, 'recovery sweep: resuming pending jobs');
-      await this.runBatch(providerPending, (entry) => this.recoverProviderJob(entry));
-    } finally {
-      this.running = false;
-    }
-  }
-
-  private async runBatch(
-    entries: JobLedgerEntry[],
-    handler: (entry: JobLedgerEntry) => Promise<void>,
-  ): Promise<void> {
-    let index = 0;
-    const workers = Array.from({ length: Math.min(RECOVERY_CONCURRENCY, entries.length) }, () =>
-      (async () => {
-        while (index < entries.length) {
-          const currentIndex = index++;
-          const entry = entries[currentIndex];
-          if (!entry) {
-            continue;
-          }
-          try {
-            await handler(entry);
-          } catch (error) {
-            logger.warn(
-              { err: error, jobEventId: entry.jobEventId, side: entry.side, state: entry.state },
-              'recovery handler threw',
-            );
-          }
-        }
-      })(),
-    );
-    await Promise.all(workers);
+    const adapter = this.adapter ?? createElizaMemoryAdapter(this.runtime);
+    const oneShot = createRecoveryLoop({
+      adapter,
+      intervalMs: RECOVERY_INTERVAL_MS,
+      retentionMs: JOB_LEDGER_RETENTION_MS,
+      concurrency: RECOVERY_CONCURRENCY,
+      logger,
+      onProviderPending: (entry) => this.recoverProviderJob(entry),
+    });
+    await oneShot.sweepOnce();
   }
 
   private async markFailed(entry: JobLedgerEntry, reason: string): Promise<void> {
@@ -121,7 +104,7 @@ export class RecoveryService extends Service {
     return true;
   }
 
-  private async recoverProviderJob(entry: JobLedgerEntry): Promise<void> {
+  async recoverProviderJob(entry: JobLedgerEntry): Promise<void> {
     if (!this.checkRetryBudget(entry)) {
       await this.markFailed(entry, 'Recovery retry budget exhausted');
       return;
