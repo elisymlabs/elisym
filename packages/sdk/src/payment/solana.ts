@@ -27,6 +27,7 @@ import type {
 } from '../types';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
+import { parsePaymentRequest } from './schema';
 import type {
   BuildTransactionOptions,
   PaymentStrategy,
@@ -113,32 +114,32 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     requestJson: string,
     config: ProtocolConfigInput,
     expectedRecipient?: string,
+    options?: { maxAmountLamports?: bigint },
   ): PaymentValidationError | null {
     assertConfig(config);
-    let data: PaymentRequestData;
-    try {
-      data = JSON.parse(requestJson);
-    } catch (e) {
-      return { code: 'invalid_json', message: `Invalid payment request JSON: ${e}` };
+    const parsed = parsePaymentRequest(requestJson, {
+      maxAmountLamports: options?.maxAmountLamports,
+    });
+    if (!parsed.ok) {
+      if (parsed.error.code === 'invalid_json') {
+        return { code: 'invalid_json', message: parsed.error.message };
+      }
+      if (parsed.error.code === 'amount_exceeds_max') {
+        return { code: 'invalid_amount', message: parsed.error.message };
+      }
+      // Schema-level rejections collapse into invalid_amount/recipient/etc
+      // but the precise field is preserved in the message.
+      return { code: 'invalid_amount', message: parsed.error.message };
     }
+    const data: PaymentRequestData = parsed.data;
 
-    if (typeof data.amount !== 'number' || !Number.isInteger(data.amount) || data.amount <= 0) {
-      return {
-        code: 'invalid_amount',
-        message: `Invalid amount in payment request: ${data.amount}`,
-      };
-    }
-    if (typeof data.recipient !== 'string' || !data.recipient) {
-      return { code: 'missing_recipient', message: 'Missing recipient in payment request' };
-    }
+    // Defense in depth: the Zod schema only enforces base58 + length, not
+    // the canonical 32-byte ed25519 check that `isAddress` performs.
     if (!isValidSolanaAddress(data.recipient)) {
       return {
         code: 'invalid_recipient_address',
         message: `Invalid Solana address for recipient: ${data.recipient}`,
       };
-    }
-    if (typeof data.reference !== 'string' || !data.reference) {
-      return { code: 'missing_reference', message: 'Missing reference in payment request' };
     }
     if (!isValidSolanaAddress(data.reference)) {
       return {

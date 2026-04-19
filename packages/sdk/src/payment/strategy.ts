@@ -64,6 +64,7 @@ export interface PaymentStrategy {
     requestJson: string,
     config: ProtocolConfigInput,
     expectedRecipient?: string,
+    options?: { maxAmountLamports?: bigint },
   ): PaymentValidationError | null;
 
   /**

@@ -87,6 +87,7 @@ export async function executePaymentFlow(
     input.paymentRequestJson,
     protocolConfig,
     input.expectedRecipient,
+    { maxAmountLamports: input.maxPriceLamports },
   );
   if (validation !== null) {
     throw new Error(`Payment validation failed: ${validation.message}`);

@@ -37,6 +37,8 @@ export {
   pickPercentileFee,
 } from './payment/priorityFee';
 export type { EstimatePriorityFeeOptions } from './payment/priorityFee';
+export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
+export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
 
 // --- On-chain protocol config ---
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
