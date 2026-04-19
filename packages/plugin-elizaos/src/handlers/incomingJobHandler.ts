@@ -125,7 +125,12 @@ async function isAlreadyTerminal(runtime: IAgentRuntime, jobEventId: string): Pr
 
 export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<void> {
   const { runtime, client, identity, event } = input;
-  const { config } = getState(runtime);
+  const state = getState(runtime);
+  if (state.shuttingDown) {
+    logger.debug({ jobId: event.id }, 'incoming job dropped: shutdown in progress');
+    return;
+  }
+  const { config } = state;
   const products = resolveProducts(config, runtime.character);
   if (products.length === 0) {
     logger.warn('incoming job received but provider config incomplete; ignoring');

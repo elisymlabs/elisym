@@ -51,6 +51,7 @@ export interface ElisymState {
     ts: number;
   } | null;
   identity?: ElisymIdentity;
+  shuttingDown?: boolean;
 }
 
 export type { ElisymConfig };
