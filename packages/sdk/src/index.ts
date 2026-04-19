@@ -56,6 +56,12 @@ export type {
   SlidingWindowLimiter,
   SlidingWindowLimiterOptions,
 } from './primitives/rateLimiter';
+export {
+  DEFAULT_REDACT_PATHS,
+  INPUT_REDACT_PATHS,
+  SECRET_REDACT_PATHS,
+  makeCensor,
+} from './primitives/logRedact';
 
 // --- Constants ---
 export {
