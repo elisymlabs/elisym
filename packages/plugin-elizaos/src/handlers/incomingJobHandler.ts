@@ -157,7 +157,10 @@ export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<
     logger.info({ jobId: event.id, capability }, 'elisym job completed');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.error({ err: message, jobId: event.id }, 'incoming job failed');
+    const name = error instanceof Error ? error.name : undefined;
+    const stack = error instanceof Error ? error.stack : undefined;
+    const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+    logger.error({ err: message, name, stack, cause, jobId: event.id }, 'incoming job failed');
     try {
       await client.marketplace.submitErrorFeedback(identity, event, message);
     } catch (feedbackError) {

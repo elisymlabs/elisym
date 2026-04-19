@@ -13,6 +13,8 @@
       "ELISYM_NOSTR_PRIVATE_KEY": "",
       "ELISYM_SOLANA_PRIVATE_KEY": ""
     },
+    "ANTHROPIC_SMALL_MODEL": "claude-haiku-4-5-20251001",
+    "ANTHROPIC_LARGE_MODEL": "claude-haiku-4-5-20251001",
     "ELISYM_MODE": "customer",
     "ELISYM_NETWORK": "devnet",
     "ELISYM_MAX_SPEND_PER_JOB_SOL": "0.01",

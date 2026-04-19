@@ -13,6 +13,8 @@
       "ELISYM_NOSTR_PRIVATE_KEY": "",
       "ELISYM_SOLANA_PRIVATE_KEY": ""
     },
+    "ANTHROPIC_SMALL_MODEL": "claude-haiku-4-5-20251001",
+    "ANTHROPIC_LARGE_MODEL": "claude-haiku-4-5-20251001",
     "ELISYM_MODE": "both",
     "ELISYM_NETWORK": "devnet",
     "ELISYM_PROVIDER_PRODUCTS": "[{\"name\":\"3-sentence Summarizer\",\"description\":\"Turn any article, transcript or long text into a tight 3-sentence abstract.\",\"capabilities\":[\"summarization\",\"text/summarize\"],\"priceSol\":\"0.002\"},{\"name\":\"Keyword Extractor\",\"description\":\"Returns 5 comma-separated keywords that describe the input text.\",\"capabilities\":[\"keywords\",\"text/keywords\"],\"priceSol\":\"0.001\"}]",
