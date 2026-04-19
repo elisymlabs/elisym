@@ -1,6 +1,7 @@
 import { KIND_JOB_REQUEST } from '@elisym/sdk';
 import type { Action, ActionResult, IAgentRuntime } from '@elizaos/core';
 import { SERVICE_TYPES } from '../constants';
+import { resolveAgentMeta } from '../lib/providerProducts';
 import type { ElisymService } from '../services/ElisymService';
 import type { WalletService } from '../services/WalletService';
 import { getState, hasState } from '../state';
@@ -26,9 +27,9 @@ export const publishServiceAction: Action = {
     if (!config.providerCapabilities || !config.providerPriceLamports) {
       throw new Error('Provider mode misconfigured');
     }
-    const character = runtime.character;
-    const name = character?.name ?? 'elizaos-agent';
-    const description = (character?.system ?? '').slice(0, 500) || 'ElizaOS agent on elisym';
+    const meta = resolveAgentMeta(runtime.character);
+    const name = config.providerName ?? meta.name;
+    const description = config.providerDescription ?? meta.about;
     const eventId = await elisym.getClient().discovery.publishCapability(
       elisym.getIdentity(),
       {
