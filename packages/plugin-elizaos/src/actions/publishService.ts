@@ -1,5 +1,5 @@
 import { KIND_JOB_REQUEST } from '@elisym/sdk';
-import type { Action, IAgentRuntime } from '@elizaos/core';
+import type { Action, ActionResult, IAgentRuntime } from '@elizaos/core';
 import { SERVICE_TYPES } from '../constants';
 import type { ElisymService } from '../services/ElisymService';
 import type { WalletService } from '../services/WalletService';
@@ -20,7 +20,7 @@ export const publishServiceAction: Action = {
       !!config.providerPriceLamports
     );
   },
-  handler: async (runtime, _message, _state, _options, callback): Promise<unknown> => {
+  handler: async (runtime, _message, _state, _options, callback): Promise<ActionResult> => {
     const { config } = getState(runtime);
     const elisym = runtime.getService<ElisymService>(SERVICE_TYPES.ELISYM);
     const wallet = runtime.getService<WalletService>(SERVICE_TYPES.WALLET);
@@ -52,7 +52,7 @@ export const publishServiceAction: Action = {
       text: `Published capability card (event ${eventId.slice(0, 8)}).`,
       source: 'elisym',
     });
-    return { eventId };
+    return { success: true, data: { eventId } };
   },
   examples: [
     [

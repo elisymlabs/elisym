@@ -1,4 +1,4 @@
-import type { Action, IAgentRuntime } from '@elizaos/core';
+import type { Action, ActionResult, IAgentRuntime } from '@elizaos/core';
 import { getState, hasState } from '../state';
 
 function resolveJobId(
@@ -34,17 +34,17 @@ export const cancelJobAction: Action = {
     }
     return false;
   },
-  handler: async (runtime, _message, _state, options, callback): Promise<unknown> => {
+  handler: async (runtime, _message, _state, options, callback): Promise<ActionResult> => {
     const jobId = resolveJobId(runtime, options);
     if (!jobId) {
       await callback?.({ text: 'No cancellable job found.', source: 'elisym' });
-      return { cancelled: false };
+      return { success: false, data: { cancelled: false } };
     }
     const { activeJobs } = getState(runtime);
     const job = activeJobs.get(jobId);
     if (!job) {
       await callback?.({ text: `Job ${jobId.slice(0, 8)} not found.`, source: 'elisym' });
-      return { cancelled: false };
+      return { success: false, data: { cancelled: false } };
     }
     const wasPaid = job.status === 'paid' || job.txSignature !== undefined;
     job.status = 'cancelled';
@@ -58,7 +58,7 @@ export const cancelJobAction: Action = {
       text: `Cancelled job ${jobId.slice(0, 8)}.${note}`,
       source: 'elisym',
     });
-    return { cancelled: true, jobId, refundable: false };
+    return { success: true, data: { cancelled: true, jobId, refundable: false } };
   },
   examples: [
     [

@@ -19,9 +19,9 @@ export const jobCompletionEvaluator: Evaluator = {
     }
     return false;
   },
-  handler: async (runtime): Promise<unknown> => {
+  handler: async (runtime): Promise<void> => {
     if (!hasState(runtime)) {
-      return null;
+      return;
     }
     const { activeJobs } = getState(runtime);
     for (const [id, job] of activeJobs) {
@@ -39,7 +39,6 @@ export const jobCompletionEvaluator: Evaluator = {
         activeJobs.delete(id);
       }
     }
-    return null;
   },
   examples: [],
 };

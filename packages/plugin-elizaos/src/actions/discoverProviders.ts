@@ -1,5 +1,5 @@
 import type { Agent } from '@elisym/sdk';
-import type { Action, IAgentRuntime, Memory, State } from '@elizaos/core';
+import type { Action, ActionResult, IAgentRuntime, Memory, State } from '@elizaos/core';
 import { SERVICE_TYPES } from '../constants';
 import { logger } from '../lib/logger';
 import { formatLamportsAsSol } from '../lib/pricing';
@@ -65,7 +65,7 @@ export const discoverProvidersAction: Action = {
     _state: State | undefined,
     options: { [key: string]: unknown } | undefined,
     callback,
-  ): Promise<unknown> => {
+  ): Promise<ActionResult> => {
     const state = getState(runtime);
     const { config } = state;
 
@@ -112,7 +112,7 @@ export const discoverProvidersAction: Action = {
 
     logger.info({ count: top.length, capability }, 'elisym discover completed');
     await callback?.({ text, source: 'elisym' });
-    return { text, providers: top.map((agent) => agent.npub) };
+    return { success: true, text, data: { providers: top.map((agent) => agent.npub) } };
   },
   examples: [
     [

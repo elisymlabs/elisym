@@ -1,4 +1,4 @@
-import type { Action, IAgentRuntime, Memory, State } from '@elizaos/core';
+import type { Action, ActionResult, IAgentRuntime, Memory, State } from '@elizaos/core';
 import { nip19 } from 'nostr-tools';
 import { DEFAULT_JOB_TIMEOUT_MS, FEE_RESERVE_LAMPORTS, SERVICE_TYPES } from '../constants';
 import { executePaymentFlow } from '../handlers/customerJobFlow';
@@ -103,7 +103,7 @@ export const hireAgentAction: Action = {
     _state: State | undefined,
     options: { [key: string]: unknown } | undefined,
     callback,
-  ): Promise<unknown> => {
+  ): Promise<ActionResult> => {
     const state = getState(runtime);
     const { config } = state;
 
@@ -267,7 +267,7 @@ export const hireAgentAction: Action = {
 
     const summary = `Submitted elisym job ${jobEventId.slice(0, 8)} to ${target.pubkey.slice(0, 8)} (${target.capability}, ${formatLamportsAsSol(target.priceLamports)} SOL). Waiting for result...`;
     await callback?.({ text: summary, source: 'elisym' });
-    return { jobEventId, providerPubkey: target.pubkey };
+    return { success: true, data: { jobEventId, providerPubkey: target.pubkey } };
   },
   examples: [
     [

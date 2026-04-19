@@ -1,4 +1,4 @@
-import type { Action, IAgentRuntime } from '@elizaos/core';
+import type { Action, ActionResult, IAgentRuntime } from '@elizaos/core';
 import { nip19 } from 'nostr-tools';
 import { SERVICE_TYPES } from '../constants';
 import type { ElisymService } from '../services/ElisymService';
@@ -22,7 +22,7 @@ export const pingAgentAction: Action = {
   similes: ['CHECK_AGENT_ONLINE'],
   description: 'Check whether a specific elisym provider is currently online.',
   validate: async (runtime: IAgentRuntime): Promise<boolean> => hasState(runtime),
-  handler: async (runtime, _message, _state, options, callback): Promise<unknown> => {
+  handler: async (runtime, _message, _state, options, callback): Promise<ActionResult> => {
     const pubkeyRaw = typeof options?.pubkey === 'string' ? options.pubkey : undefined;
     const npub = typeof options?.npub === 'string' ? options.npub : undefined;
     let pubkey = pubkeyRaw ?? npub;
@@ -46,7 +46,7 @@ export const pingAgentAction: Action = {
       ? `Provider ${decoded.slice(0, 8)} is online.`
       : `Provider ${decoded.slice(0, 8)} is offline or unreachable.`;
     await callback?.({ text, source: 'elisym' });
-    return { online: result.online, pubkey: decoded };
+    return { success: true, data: { online: result.online, pubkey: decoded } };
   },
   examples: [
     [

@@ -1,4 +1,4 @@
-import type { Action, IAgentRuntime } from '@elizaos/core';
+import type { Action, ActionResult, IAgentRuntime } from '@elizaos/core';
 import { formatLamportsAsSol } from '../lib/pricing';
 import { getState, hasState } from '../state';
 
@@ -7,11 +7,11 @@ export const listActiveJobsAction: Action = {
   similes: ['SHOW_JOBS', 'MY_JOBS'],
   description: 'List currently active and recent elisym jobs.',
   validate: async (runtime: IAgentRuntime): Promise<boolean> => hasState(runtime),
-  handler: async (runtime, _message, _state, _options, callback): Promise<unknown> => {
+  handler: async (runtime, _message, _state, _options, callback): Promise<ActionResult> => {
     const { activeJobs } = getState(runtime);
     if (activeJobs.size === 0) {
       await callback?.({ text: 'No active elisym jobs.', source: 'elisym' });
-      return { count: 0 };
+      return { success: true, data: { count: 0 } };
     }
     const lines = Array.from(activeJobs.values()).map((job) => {
       const ageSec = Math.round((Date.now() - job.createdAt) / 1000);
@@ -19,7 +19,7 @@ export const listActiveJobsAction: Action = {
     });
     const text = ['Elisym jobs:', ...lines].join('\n');
     await callback?.({ text, source: 'elisym' });
-    return { count: activeJobs.size };
+    return { success: true, data: { count: activeJobs.size } };
   },
   examples: [
     [

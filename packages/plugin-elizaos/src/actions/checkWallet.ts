@@ -1,4 +1,4 @@
-import type { Action, IAgentRuntime } from '@elizaos/core';
+import type { Action, ActionResult, IAgentRuntime } from '@elizaos/core';
 import { SERVICE_TYPES } from '../constants';
 import { formatLamportsAsSol } from '../lib/pricing';
 import type { WalletService } from '../services/WalletService';
@@ -9,7 +9,7 @@ export const checkWalletAction: Action = {
   similes: ['WALLET_BALANCE', 'SHOW_WALLET'],
   description: "Show this agent's Solana address, SOL balance, and current spending bucket usage.",
   validate: async (runtime: IAgentRuntime): Promise<boolean> => hasState(runtime),
-  handler: async (runtime, _message, _state, _options, callback): Promise<unknown> => {
+  handler: async (runtime, _message, _state, _options, callback): Promise<ActionResult> => {
     const { config } = getState(runtime);
     const wallet = runtime.getService<WalletService>(SERVICE_TYPES.WALLET);
     if (!wallet) {
@@ -24,7 +24,10 @@ export const checkWalletAction: Action = {
       `Spent (last hour): ${formatLamportsAsSol(spent)} of ${formatLamportsAsSol(config.maxSpendPerHourLamports)} SOL`,
     ].join('\n');
     await callback?.({ text, source: 'elisym' });
-    return { address: wallet.address, balanceLamports: balance.toString() };
+    return {
+      success: true,
+      data: { address: wallet.address, balanceLamports: balance.toString() },
+    };
   },
   examples: [
     [

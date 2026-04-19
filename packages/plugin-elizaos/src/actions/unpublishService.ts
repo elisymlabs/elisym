@@ -1,4 +1,4 @@
-import type { Action, IAgentRuntime } from '@elizaos/core';
+import type { Action, ActionResult, IAgentRuntime } from '@elizaos/core';
 import { SERVICE_TYPES } from '../constants';
 import type { ElisymService } from '../services/ElisymService';
 import { getState, hasState } from '../state';
@@ -14,7 +14,7 @@ export const unpublishServiceAction: Action = {
     const { config } = getState(runtime);
     return config.mode !== 'customer';
   },
-  handler: async (runtime, _message, _state, _options, callback): Promise<unknown> => {
+  handler: async (runtime, _message, _state, _options, callback): Promise<ActionResult> => {
     const elisym = runtime.getService<ElisymService>(SERVICE_TYPES.ELISYM);
     if (!elisym) {
       throw new Error('ElisymService is not running');
@@ -28,7 +28,7 @@ export const unpublishServiceAction: Action = {
       text: `Retracted capability card "${name}" (tombstone ${eventId.slice(0, 8)}).`,
       source: 'elisym',
     });
-    return { eventId };
+    return { success: true, data: { eventId } };
   },
   examples: [
     [
