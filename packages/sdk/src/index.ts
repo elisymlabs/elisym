@@ -25,7 +25,18 @@ export {
   SolanaPaymentStrategy,
 } from './payment/solana';
 export { calculateProtocolFee, validateExpiry, assertExpiry, assertLamports } from './payment/fee';
-export type { PaymentStrategy, ProtocolConfigInput, Signer } from './payment/strategy';
+export type {
+  BuildTransactionOptions,
+  PaymentStrategy,
+  ProtocolConfigInput,
+  Signer,
+} from './payment/strategy';
+export {
+  estimatePriorityFeeMicroLamports,
+  clearPriorityFeeCache,
+  pickPercentileFee,
+} from './payment/priorityFee';
+export type { EstimatePriorityFeeOptions } from './payment/priorityFee';
 
 // --- On-chain protocol config ---
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';

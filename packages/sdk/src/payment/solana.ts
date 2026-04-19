@@ -11,6 +11,8 @@ import {
   getAddressDecoder,
   isAddress,
   pipe,
+  setTransactionMessageComputeUnitLimit,
+  setTransactionMessageComputeUnitPrice,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
@@ -24,7 +26,16 @@ import type {
   VerifyResult,
 } from '../types';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
-import type { PaymentStrategy, ProtocolConfigInput, Signer } from './strategy';
+import { estimatePriorityFeeMicroLamports } from './priorityFee';
+import type {
+  BuildTransactionOptions,
+  PaymentStrategy,
+  ProtocolConfigInput,
+  Signer,
+} from './strategy';
+
+const DEFAULT_COMPUTE_UNIT_LIMIT = 200_000;
+const DEFAULT_PRIORITY_FEE_PERCENTILE = 75;
 
 const REFERENCE_BYTE_LENGTH = 32;
 
@@ -219,6 +230,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     payerSigner: Signer,
     rpc: Rpc<SolanaRpcApi>,
     config: ProtocolConfigInput,
+    options?: BuildTransactionOptions,
   ): Promise<Readonly<unknown>> {
     assertConfig(config);
     assertLamports(paymentRequest.amount, 'payment amount');
@@ -245,16 +257,30 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       );
     }
 
-    const instructions = buildPaymentInstructions(paymentRequest, payerSigner);
+    const computeUnitLimit = options?.computeUnitLimit ?? DEFAULT_COMPUTE_UNIT_LIMIT;
+    if (!Number.isInteger(computeUnitLimit) || computeUnitLimit <= 0) {
+      throw new Error(`Invalid computeUnitLimit: ${computeUnitLimit}. Must be a positive integer.`);
+    }
+    // Build payment instructions first - this is synchronous and surfaces
+    // shape errors (e.g. fee >= amount) before any RPC round-trip.
+    const paymentInstructions = buildPaymentInstructions(paymentRequest, payerSigner);
+
+    const priorityFeeMicroLamports =
+      options?.priorityFeeMicroLamports ??
+      (await estimatePriorityFeeMicroLamports(rpc, {
+        percentile: options?.priorityFeePercentile ?? DEFAULT_PRIORITY_FEE_PERCENTILE,
+      }));
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
     const message = pipe(
       createTransactionMessage({ version: 0 }),
       (m) => setTransactionMessageFeePayerSigner(payerSigner, m),
       (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
+      (m) => setTransactionMessageComputeUnitLimit(computeUnitLimit, m),
+      (m) => setTransactionMessageComputeUnitPrice(priorityFeeMicroLamports, m),
       (m) =>
         appendTransactionMessageInstructions(
-          instructions as Parameters<typeof appendTransactionMessageInstructions>[0],
+          paymentInstructions as Parameters<typeof appendTransactionMessageInstructions>[0],
           m,
         ),
     );

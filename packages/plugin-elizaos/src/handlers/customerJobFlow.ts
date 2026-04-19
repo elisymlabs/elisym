@@ -16,6 +16,7 @@ import {
   sendAndConfirmTransactionFactory,
 } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
+import { COMPUTE_UNIT_LIMIT, PRIORITY_FEE_PERCENTILE } from '../constants';
 import { logger } from '../lib/logger';
 import { deriveWsUrl } from '../lib/solana';
 import type { SpendingReservation } from '../lib/spendingGuard';
@@ -96,6 +97,10 @@ export async function executePaymentFlow(
     input.wallet.signer,
     input.wallet.rpc,
     protocolConfig,
+    {
+      computeUnitLimit: COMPUTE_UNIT_LIMIT,
+      priorityFeePercentile: PRIORITY_FEE_PERCENTILE,
+    },
   );
 
   const rpcSubscriptions = createSolanaRpcSubscriptions(deriveWsUrl(input.wallet.rpcUrl));

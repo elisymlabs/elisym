@@ -83,6 +83,7 @@ tsup
 turborepo
 undecryptable
 untargeted
+microlamports
 untrusted
 vitest
 vite

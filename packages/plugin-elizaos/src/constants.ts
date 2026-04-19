@@ -40,3 +40,7 @@ export const DEFAULT_MAINNET_RPC = 'https://api.mainnet-beta.solana.com';
 
 export const IDENTITY_MEMORY_TABLE = 'elisym_identity';
 export const WALLET_MEMORY_TABLE = 'elisym_wallet';
+
+export const PRIORITY_FEE_PERCENTILE = 75;
+export const COMPUTE_UNIT_LIMIT = 200_000;
+export const PRIORITY_FEE_CACHE_MS = 10_000;

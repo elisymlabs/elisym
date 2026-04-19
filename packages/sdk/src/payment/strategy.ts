@@ -82,6 +82,7 @@ export interface PaymentStrategy {
     payerSigner: Signer,
     rpc: Rpc<SolanaRpcApi>,
     config: ProtocolConfigInput,
+    options?: BuildTransactionOptions,
   ): Promise<unknown>;
 
   /**
@@ -93,4 +94,33 @@ export interface PaymentStrategy {
     config: ProtocolConfigInput,
     options?: VerifyOptions,
   ): Promise<VerifyResult>;
+}
+
+/**
+ * Optional knobs for `PaymentStrategy.buildTransaction`.
+ *
+ * Defaults are chosen for typical Solana mainnet conditions; override these
+ * when the caller knows peak fees are elevated, when running against a
+ * private cluster with no priority-fee samples, or when bundling multiple
+ * payment instructions.
+ */
+export interface BuildTransactionOptions {
+  /**
+   * Compute-unit limit attached to the transaction. Defaults to 200 000 -
+   * comfortable headroom for two SystemProgram transfers + a few extra ops.
+   */
+  computeUnitLimit?: number;
+  /**
+   * Per-CU priority-fee override in microLamports. When omitted, the
+   * strategy queries `getRecentPrioritizationFees`, sorts by percentile, and
+   * uses that value (cached for 10s). Pass an explicit value to skip the
+   * RPC call or override the percentile heuristic during traffic spikes.
+   */
+  priorityFeeMicroLamports?: bigint;
+  /**
+   * Percentile of the recent priority-fee distribution to charge when
+   * `priorityFeeMicroLamports` is not supplied. 50 = median, 75 = upper
+   * quartile (default), 90 = aggressive.
+   */
+  priorityFeePercentile?: number;
 }
