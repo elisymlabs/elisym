@@ -137,6 +137,26 @@ describe('createSlidingWindowLimiter', () => {
     expect(limiter.size()).toBe(0);
   });
 
+  it('peek does not record a hit and never denies until check is called', () => {
+    const limiter = createSlidingWindowLimiter({
+      windowMs: 60_000,
+      maxPerWindow: 2,
+      maxKeys: 100,
+    });
+    const first = limiter.peek('erin', 1_000);
+    expect(first.allowed).toBe(true);
+    expect(first.count).toBe(0);
+
+    limiter.check('erin', 2_000);
+    limiter.check('erin', 3_000);
+    const afterFill = limiter.peek('erin', 4_000);
+    expect(afterFill.allowed).toBe(false);
+    expect(afterFill.count).toBe(2);
+
+    // Peek reported denial but did not push; a fresh peek sees the same count.
+    expect(limiter.peek('erin', 4_500).count).toBe(2);
+  });
+
   it('rejects non-positive options', () => {
     expect(() => createSlidingWindowLimiter({ windowMs: 0, maxPerWindow: 1, maxKeys: 1 })).toThrow(
       RangeError,

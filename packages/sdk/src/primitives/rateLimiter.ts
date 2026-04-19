@@ -30,6 +30,12 @@ export interface RateLimitDecision {
 export interface SlidingWindowLimiter {
   /** Record a hit against `key`; return whether it was allowed. */
   check(key: string, now?: number): RateLimitDecision;
+  /**
+   * Inspect the current state for `key` without recording a hit. Useful
+   * when a single request must clear multiple limiters and callers want
+   * to avoid double-counting against one limiter after another denies.
+   */
+  peek(key: string, now?: number): RateLimitDecision;
   /** Drop entries whose windows have fully elapsed. Bounded memory hygiene. */
   prune(now?: number): void;
   /** Current number of tracked keys. */
@@ -72,6 +78,19 @@ export function createSlidingWindowLimiter(
   }
 
   return {
+    peek(key, now = Date.now()): RateLimitDecision {
+      const entry = entries.get(key);
+      if (!entry) {
+        return { allowed: true, resetAt: now + windowMs, count: 0 };
+      }
+      const cutoff = now - windowMs;
+      const fresh = entry.hits.filter((timestamp) => timestamp > cutoff);
+      return {
+        allowed: fresh.length < maxPerWindow,
+        resetAt: (fresh[0] ?? now) + windowMs,
+        count: fresh.length,
+      };
+    },
     check(key, now = Date.now()): RateLimitDecision {
       const entry = entries.get(key) ?? { hits: [] };
       const cutoff = now - windowMs;
