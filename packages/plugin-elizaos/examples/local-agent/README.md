@@ -160,7 +160,14 @@ Watch both terminals - customer should publish NIP-90 request, provider logs `in
 
 ## 6. Flow C - provider with skills (SKILL.md + scripts)
 
-Skills let a provider agent run external scripts during a job, driven by an LLM tool-use loop. `./skills/youtube-summary/` is a working example that fetches a transcript via `yt-dlp` and summarizes it.
+Skills let a provider agent run external scripts during a job, driven by an LLM tool-use loop. `./skills/` ships two working skills that share the same `yt-dlp`-based transcript script but differ in price, capabilities, and system prompt:
+
+| Skill               | Capabilities                           | Price SOL | What it returns                                   |
+| ------------------- | -------------------------------------- | --------- | ------------------------------------------------- |
+| `youtube-summary`   | `youtube-summary`, `video-analysis`    | 0.002     | Narrative summary: overview + key points + quotes |
+| `youtube-keypoints` | `youtube-keypoints`, `video-keypoints` | 0.0015    | 5-7 bullet-list key points, no overview           |
+
+Both skills reuse `./skills/youtube-summary/scripts/summarize.py`; `youtube-keypoints/SKILL.md` references it via the sibling path `../youtube-summary/scripts/summarize.py`, so the yt-dlp transcript cache (`.cache/`) and optional `cookies.txt` are shared.
 
 ```bash
 # One-time: tools the skill scripts shell out to
@@ -172,11 +179,12 @@ LOG_LEVEL=debug bun run start:provider-youtube
 Expected startup logs:
 
 ```
-info ... loaded skills from directory    dir=.../skills  count=1  skills=["youtube-summary"]
-info ... provider capability card published    name=youtube-summary  capabilities=["youtube-summary","video-analysis"]  priceLamports=...
+info ... loaded skills from directory    dir=.../skills  count=2  skills=["youtube-summary","youtube-keypoints"]
+info ... provider capability card published    name=youtube-summary    capabilities=["youtube-summary","video-analysis"]    priceLamports=2000000
+info ... provider capability card published    name=youtube-keypoints  capabilities=["youtube-keypoints","video-keypoints"] priceLamports=1500000
 ```
 
-Incoming jobs with capability tag `youtube-summary` (or `video-analysis`) go through the skill's tool-use loop: the LLM calls `fetch_transcript`, optionally pages through chunks via `read_chunk`, then returns the summary. All other capabilities fall back to the default `useModel` path.
+The plugin publishes one NIP-89 card per skill from the same agent pubkey - customers see two distinct products from the same provider. Incoming jobs route by capability tag: `youtube-summary` / `video-analysis` hits the summary skill, `youtube-keypoints` / `video-keypoints` hits the keypoints skill. All other capabilities fall back to the default `useModel` path.
 
 Notes:
 
@@ -184,6 +192,7 @@ Notes:
 - Skills need `ANTHROPIC_API_KEY` in the character settings (or env). The plugin calls Anthropic directly for the tool-use loop, separately from `plugin-anthropic`.
 - Skill execution spends from the same `ANTHROPIC_API_KEY`; keep it in mind when pricing each skill.
 - Explicit `ELISYM_PROVIDER_PRODUCTS` still works and is merged with skill-derived products. On a name collision, the explicit entry wins and a warning is logged.
+- To add a third skill: make a new `./skills/<name>/SKILL.md` and restart the agent. No code or build changes needed.
 
 ---
 
