@@ -2,6 +2,7 @@ import type { Action, ActionResult, IAgentRuntime, Memory, State } from '@elizao
 import { nip19 } from 'nostr-tools';
 import { DEFAULT_JOB_TIMEOUT_MS, FEE_RESERVE_LAMPORTS, SERVICE_TYPES } from '../constants';
 import { executePaymentFlow } from '../handlers/customerJobFlow';
+import { recordTransition, type JobLedgerEntry } from '../lib/jobLedger';
 import { logger } from '../lib/logger';
 import { formatLamportsAsSol } from '../lib/pricing';
 import type { ElisymService } from '../services/ElisymService';
@@ -159,14 +160,36 @@ export const hireAgentAction: Action = {
       throw error;
     }
 
+    const jobCreatedAt = Date.now();
+    const ledgerBase: Pick<
+      JobLedgerEntry,
+      | 'jobEventId'
+      | 'side'
+      | 'capability'
+      | 'priceLamports'
+      | 'providerPubkey'
+      | 'jobCreatedAt'
+      | 'input'
+    > = {
+      jobEventId,
+      side: 'customer',
+      capability: target.capability,
+      priceLamports: target.priceLamports.toString(),
+      providerPubkey: target.pubkey,
+      jobCreatedAt,
+      input,
+    };
+
+    await recordTransition(runtime, { ...ledgerBase, state: 'submitted' });
+
     const job: ActiveJob = {
       id: jobEventId,
       status: 'pending',
       providerPubkey: target.pubkey,
       lamports: target.priceLamports,
       capability: target.capability,
-      createdAt: Date.now(),
-      lastUpdate: Date.now(),
+      createdAt: jobCreatedAt,
+      lastUpdate: jobCreatedAt,
       releaseReservation: () => reservation.release(),
     };
     state.activeJobs.set(jobEventId, job);
@@ -180,7 +203,7 @@ export const hireAgentAction: Action = {
       customerSecretKey: identity.secretKey,
       timeoutMs: DEFAULT_JOB_TIMEOUT_MS,
       callbacks: {
-        onFeedback: (status: string, _amount?: number, paymentRequest?: string) => {
+        onFeedback: async (status: string, _amount?: number, paymentRequest?: string) => {
           job.lastUpdate = Date.now();
           if (status !== 'payment-required' || !paymentRequest) {
             return;
@@ -191,6 +214,11 @@ export const hireAgentAction: Action = {
           }
           paymentState.inFlight = true;
           job.status = 'paying';
+          await recordTransition(runtime, {
+            ...ledgerBase,
+            state: 'waiting_payment',
+            paymentRequestJson: paymentRequest,
+          });
           executePaymentFlow({
             client,
             identity,
@@ -203,7 +231,7 @@ export const hireAgentAction: Action = {
             maxPriceLamports: target.priceLamports,
             reservation,
           })
-            .then((result) => {
+            .then(async (result) => {
               paymentState.inFlight = false;
               paymentState.paid = true;
               job.txSignature = result.txSignature;
@@ -215,8 +243,14 @@ export const hireAgentAction: Action = {
                 { jobEventId, tx: result.txSignature, paid: result.paidLamports.toString() },
                 'elisym payment confirmed',
               );
+              await recordTransition(runtime, {
+                ...ledgerBase,
+                state: 'payment_sent',
+                paymentRequestJson: paymentRequest,
+                txSignature: result.txSignature,
+              });
             })
-            .catch((error: unknown) => {
+            .catch(async (error: unknown) => {
               paymentState.inFlight = false;
               reservation.release();
               const msg = error instanceof Error ? error.message : String(error);
@@ -226,13 +260,25 @@ export const hireAgentAction: Action = {
                 job.errorMessage = msg;
               }
               logger.error({ jobEventId, err: msg }, 'payment flow failed');
+              await recordTransition(runtime, {
+                ...ledgerBase,
+                state: 'failed',
+                paymentRequestJson: paymentRequest,
+                error: msg,
+              });
             });
         },
-        onResult: (content: string) => {
+        onResult: async (content: string) => {
           job.status = 'success';
           job.resultContent = content;
           job.lastUpdate = Date.now();
           logger.info({ jobEventId }, 'elisym job result received');
+          await recordTransition(runtime, {
+            ...ledgerBase,
+            state: 'result_received',
+            txSignature: job.txSignature,
+            resultContent: content,
+          });
           runtime
             .createMemory(
               {
@@ -249,7 +295,7 @@ export const hireAgentAction: Action = {
               logger.warn({ err: error, jobEventId }, 'failed to persist elisym result'),
             );
         },
-        onError: (errorMessage: string) => {
+        onError: async (errorMessage: string) => {
           if (job.status === 'success' || job.status === 'cancelled') {
             return;
           }
@@ -260,6 +306,12 @@ export const hireAgentAction: Action = {
           job.errorMessage = errorMessage;
           job.lastUpdate = Date.now();
           logger.warn({ jobEventId, err: errorMessage }, 'elisym job subscription ended');
+          await recordTransition(runtime, {
+            ...ledgerBase,
+            state: 'failed',
+            error: errorMessage,
+            txSignature: job.txSignature,
+          });
         },
       },
     });
