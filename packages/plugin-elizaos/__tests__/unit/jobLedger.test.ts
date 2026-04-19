@@ -1,6 +1,6 @@
 import type { IAgentRuntime, Memory, UUID } from '@elizaos/core';
 import { describe, it, expect } from 'vitest';
-import { JOBS_MEMORY_TABLE } from '../../src/constants';
+import { JOB_LEDGER_RETENTION_MS, JOBS_MEMORY_TABLE } from '../../src/constants';
 import {
   findByJobId,
   loadLatest,
@@ -181,6 +181,38 @@ describe('jobLedger', () => {
     expect(remaining.has('recent-terminal')).toBe(true);
     // Stuck non-terminal jobs are never auto-pruned.
     expect(remaining.has('old-stuck')).toBe(true);
+  });
+
+  it('pruneOldEntries keeps a terminal row exactly at the retention boundary', async () => {
+    const runtime = makeRuntime();
+    // Land the row at exactly cutoff - 1 (older than cutoff -> deleted)
+    // and another at exactly cutoff (NOT older than -> kept).
+    const cutoff = Date.now() - JOB_LEDGER_RETENTION_MS;
+    const writeRow = async (jobEventId: string, createdAt: number) => {
+      const entry: JobLedgerEntry = baseEntry({
+        jobEventId,
+        state: 'delivered',
+        transitionAt: createdAt,
+      });
+      await runtime.createMemory(
+        {
+          entityId: runtime.agentId,
+          agentId: runtime.agentId,
+          roomId: runtime.agentId,
+          content: { text: '[job-ledger]', source: 'elisym-ledger', elisym_ledger: true, entry },
+          createdAt,
+        },
+        JOBS_MEMORY_TABLE,
+        false,
+      );
+    };
+    await writeRow('boundary-keep', cutoff);
+    await writeRow('boundary-drop', cutoff - 1);
+    const deleted = await pruneOldEntries(runtime);
+    expect(deleted).toBe(1);
+    const remaining = await loadLatest(runtime);
+    expect(remaining.has('boundary-keep')).toBe(true);
+    expect(remaining.has('boundary-drop')).toBe(false);
   });
 
   it('loadLatest skips non-ledger memory rows in the same table', async () => {

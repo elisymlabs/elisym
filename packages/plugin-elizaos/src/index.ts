@@ -8,6 +8,7 @@ import {
   listActiveJobsAction,
   cancelJobAction,
   pingAgentAction,
+  cleanupJobsAction,
 } from './actions';
 import { SERVICE_TYPES, SHUTDOWN_DRAIN_TIMEOUT_MS } from './constants';
 import { validateConfig } from './environment';
@@ -102,6 +103,7 @@ export const elisymPlugin: Plugin = {
     listActiveJobsAction,
     cancelJobAction,
     pingAgentAction,
+    cleanupJobsAction,
   ],
   providers: [elisymContextProvider, walletProvider, activeJobsProvider],
   evaluators: [jobCompletionEvaluator],

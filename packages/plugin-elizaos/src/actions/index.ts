@@ -6,3 +6,4 @@ export { unpublishServiceAction } from './unpublishService';
 export { listActiveJobsAction } from './listActiveJobs';
 export { cancelJobAction } from './cancelJob';
 export { pingAgentAction } from './pingAgent';
+export { cleanupJobsAction } from './cleanupJobs';
