@@ -1,6 +1,8 @@
 import { toDTag } from '@elisym/sdk';
 import type { Character } from '@elizaos/core';
 import type { ElisymConfig, ProviderProduct } from '../environment';
+import type { Skill } from '../skills';
+import { logger } from './logger';
 
 function flattenBio(bio: unknown): string | undefined {
   if (typeof bio === 'string') {
@@ -27,12 +29,44 @@ export function resolveAgentMeta(character: Character | undefined): AgentMeta {
   return { name, about };
 }
 
+export function deriveProductsFromSkills(skills: readonly Skill[]): ProviderProduct[] {
+  return skills.map((skill) => ({
+    name: skill.name,
+    description: skill.description,
+    capabilities: [...skill.capabilities],
+    priceLamports: skill.priceLamports,
+  }));
+}
+
+function mergeProducts(explicit: ProviderProduct[], derived: ProviderProduct[]): ProviderProduct[] {
+  if (derived.length === 0) {
+    return explicit;
+  }
+  const byName = new Map<string, ProviderProduct>();
+  for (const product of explicit) {
+    byName.set(product.name, product);
+  }
+  for (const product of derived) {
+    if (byName.has(product.name)) {
+      logger.warn(
+        { name: product.name },
+        'skill-derived product name collides with explicit ELISYM_PROVIDER_PRODUCTS entry; explicit wins',
+      );
+      continue;
+    }
+    byName.set(product.name, product);
+  }
+  return [...byName.values()];
+}
+
 export function resolveProducts(
   config: ElisymConfig,
   character: Character | undefined,
+  skills: readonly Skill[] = [],
 ): ProviderProduct[] {
+  const derived = deriveProductsFromSkills(skills);
   if (config.providerProducts && config.providerProducts.length > 0) {
-    return config.providerProducts;
+    return mergeProducts(config.providerProducts, derived);
   }
   if (
     config.providerCapabilities &&
@@ -40,16 +74,15 @@ export function resolveProducts(
     config.providerPriceLamports !== undefined
   ) {
     const meta = resolveAgentMeta(character);
-    return [
-      {
-        name: config.providerName ?? meta.name,
-        description: config.providerDescription ?? meta.about,
-        capabilities: [...config.providerCapabilities],
-        priceLamports: config.providerPriceLamports,
-      },
-    ];
+    const legacy: ProviderProduct = {
+      name: config.providerName ?? meta.name,
+      description: config.providerDescription ?? meta.about,
+      capabilities: [...config.providerCapabilities],
+      priceLamports: config.providerPriceLamports,
+    };
+    return mergeProducts([legacy], derived);
   }
-  return [];
+  return derived;
 }
 
 // The elisym web UI hires a product by its `d`-tag (toDTag(card.name)),

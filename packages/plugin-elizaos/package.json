@@ -1,6 +1,6 @@
 {
   "name": "@elisym/plugin-elizaos",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "ElizaOS plugin connecting agents to the elisym decentralized marketplace (Nostr + Solana)",
   "keywords": [
     "ai-agent",
@@ -59,6 +59,7 @@
     "nostr-tools": "~2.23.0",
     "p-limit": "~6.2.0",
     "pino": "~9.5.0",
+    "yaml": "~2.8.3",
     "zod": "~3.25.0"
   },
   "devDependencies": {
@@ -148,6 +149,10 @@
         "type": "string",
         "default": "local",
         "description": "'local' (generate/load hot key, default), 'kms' (defer signing to an external KMS adapter; no adapter bundled), or 'external' (bring-your-own Signer)."
+      },
+      "ELISYM_PROVIDER_SKILLS_DIR": {
+        "type": "string",
+        "description": "Absolute or relative path to a directory of SKILL.md folders. Each skill auto-registers as a provider product with its own capabilities and price. Requires ANTHROPIC_API_KEY for the skill LLM tool-use loop."
       }
     }
   }

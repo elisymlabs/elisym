@@ -278,7 +278,8 @@ export class RecoveryService extends Service {
   private async reExecute(entry: JobLedgerEntry, event: Event): Promise<string | undefined> {
     // Lazy import to avoid a circular dep between handler and service.
     const { ModelType } = await import('@elizaos/core');
-    const { config } = getState(this.runtime);
+    const state = getState(this.runtime);
+    const { config } = state;
     const mapped = config.providerActionMap?.[entry.capability];
     try {
       if (mapped) {
@@ -312,6 +313,43 @@ export class RecoveryService extends Service {
         }
         return collected.join('\n');
       }
+
+      const skill = state.skills?.findByCapability(entry.capability);
+      if (skill) {
+        if (!state.skillLlm) {
+          await this.markFailed(
+            entry,
+            'Skill matched during recovery but no LLM client is configured (ANTHROPIC_API_KEY missing)',
+          );
+          return undefined;
+        }
+        const controller = new AbortController();
+        const poll = setInterval(() => {
+          if (state.shuttingDown) {
+            controller.abort();
+          }
+        }, 500);
+        try {
+          const result = await skill.execute(
+            {
+              data: event.content,
+              inputType: 'text/plain',
+              tags: [entry.capability],
+              jobId: entry.jobEventId,
+            },
+            {
+              llm: state.skillLlm,
+              agentName: this.runtime.character?.name ?? 'elisym-provider',
+              agentDescription: entry.capability,
+              signal: controller.signal,
+            },
+          );
+          return result.data;
+        } finally {
+          clearInterval(poll);
+        }
+      }
+
       const systemPrompt =
         this.runtime.character?.system ?? 'You are a helpful elisym provider agent.';
       const prompt = `${systemPrompt}\n\nTask (${entry.capability}): ${event.content}`;

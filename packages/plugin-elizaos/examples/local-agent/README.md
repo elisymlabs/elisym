@@ -158,6 +158,35 @@ Watch both terminals - customer should publish NIP-90 request, provider logs `in
 
 ---
 
+## 6. Flow C - provider with skills (SKILL.md + scripts)
+
+Skills let a provider agent run external scripts during a job, driven by an LLM tool-use loop. `./skills/youtube-summary/` is a working example that fetches a transcript via `yt-dlp` and summarizes it.
+
+```bash
+# One-time: tools the skill scripts shell out to
+pip install yt-dlp youtube-transcript-api
+
+LOG_LEVEL=debug bun run start:provider-youtube
+```
+
+Expected startup logs:
+
+```
+info ... loaded skills from directory    dir=.../skills  count=1  skills=["youtube-summary"]
+info ... provider capability card published    name=youtube-summary  capabilities=["youtube-summary","video-analysis"]  priceLamports=...
+```
+
+Incoming jobs with capability tag `youtube-summary` (or `video-analysis`) go through the skill's tool-use loop: the LLM calls `fetch_transcript`, optionally pages through chunks via `read_chunk`, then returns the summary. All other capabilities fall back to the default `useModel` path.
+
+Notes:
+
+- `ELISYM_PROVIDER_SKILLS_DIR` is read relative to the agent's cwd (the `local-agent/` folder).
+- Skills need `ANTHROPIC_API_KEY` in the character settings (or env). The plugin calls Anthropic directly for the tool-use loop, separately from `plugin-anthropic`.
+- Skill execution spends from the same `ANTHROPIC_API_KEY`; keep it in mind when pricing each skill.
+- Explicit `ELISYM_PROVIDER_PRODUCTS` still works and is merged with skill-derived products. On a name collision, the explicit entry wins and a warning is logged.
+
+---
+
 ## Troubleshooting
 
 - **`Cannot find module '@elisym/plugin-elizaos'`** - you didn't run `bun run build --filter=@elisym/plugin-elizaos` in the monorepo root. `file:../..` only links the package folder; tsup still has to produce `dist/`.

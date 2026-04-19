@@ -2,7 +2,9 @@ import type { IAgentRuntime, Memory, UUID } from '@elizaos/core';
 import { describe, expect, it } from 'vitest';
 import type { ElisymConfig } from '../../src/environment';
 import { loadLatest, recordTransition, type JobLedgerEntry } from '../../src/lib/jobLedger';
-import { initState } from '../../src/state';
+import { SkillRegistry } from '../../src/skills';
+import type { LlmClient, Skill } from '../../src/skills';
+import { getState, initState } from '../../src/state';
 
 function stubConfig(): ElisymConfig {
   return {
@@ -306,5 +308,99 @@ describe('RecoveryService', () => {
     expect(current?.error).toContain('simulated LLM outage');
     expect(current?.state).toBe('paid');
     expect(current?.retryCount ?? 0).toBe(1);
+  });
+
+  it('re-execute routes to a skill when capability matches the SkillRegistry', async () => {
+    const runtime = makeRuntime();
+    initState(runtime, stubConfig());
+    const fakeSkill: Skill = {
+      name: 'summary',
+      description: 'summary',
+      capabilities: ['summarization'],
+      priceLamports: 1_000_000n,
+      async execute(input) {
+        return { data: `skill-summary-of:${input.data.length}` };
+      },
+    };
+    const registry = new SkillRegistry();
+    registry.register(fakeSkill);
+    const state = getState(runtime);
+    state.skills = registry;
+    state.skillLlm = {} as unknown as LlmClient;
+
+    const entry = providerEntry({ state: 'paid', resultContent: undefined });
+    await recordTransition(runtime, entry);
+
+    const submitted: string[] = [];
+    const RecoveryService = await loadService();
+    const service = new (RecoveryService as unknown as new (rt: IAgentRuntime) => {
+      recoverProviderJob: (e: JobLedgerEntry) => Promise<void>;
+      elisym?: unknown;
+      wallet?: unknown;
+    })(runtime);
+    service.elisym = {
+      getClient: () => ({
+        marketplace: {
+          async submitJobResultWithRetry(_id: unknown, event: { id: string }, content: string) {
+            submitted.push(`${event.id}|${content}`);
+            return 'result-event-id';
+          },
+        },
+      }),
+      getIdentity: () => ({ secretKey: new Uint8Array(32), publicKey: 'p' }),
+    } as unknown;
+    service.wallet = {} as unknown;
+
+    await service.recoverProviderJob(entry);
+
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toContain('skill-summary-of:');
+    const latest = await loadLatest(runtime, 'provider');
+    expect(latest.get('job-p')?.state).toBe('delivered');
+  });
+
+  it('re-execute fails the job when a skill matches but skillLlm is not configured', async () => {
+    const runtime = makeRuntime();
+    initState(runtime, stubConfig());
+    const fakeSkill: Skill = {
+      name: 'summary',
+      description: 'summary',
+      capabilities: ['summarization'],
+      priceLamports: 1_000_000n,
+      async execute() {
+        throw new Error('should not reach skill.execute');
+      },
+    };
+    const registry = new SkillRegistry();
+    registry.register(fakeSkill);
+    getState(runtime).skills = registry;
+
+    const entry = providerEntry({ state: 'paid', resultContent: undefined });
+    await recordTransition(runtime, entry);
+
+    const RecoveryService = await loadService();
+    const service = new (RecoveryService as unknown as new (rt: IAgentRuntime) => {
+      recoverProviderJob: (e: JobLedgerEntry) => Promise<void>;
+      elisym?: unknown;
+      wallet?: unknown;
+    })(runtime);
+    service.elisym = {
+      getClient: () => ({
+        marketplace: {
+          async submitJobResultWithRetry() {
+            throw new Error('should not reach submit');
+          },
+        },
+      }),
+      getIdentity: () => ({ secretKey: new Uint8Array(32), publicKey: 'p' }),
+    } as unknown;
+    service.wallet = {} as unknown;
+
+    await service.recoverProviderJob(entry);
+
+    const latest = await loadLatest(runtime, 'provider');
+    const current = latest.get('job-p');
+    expect(current?.state).toBe('failed');
+    expect(current?.error).toContain('ANTHROPIC_API_KEY');
   });
 });

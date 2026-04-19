@@ -7,6 +7,7 @@ import type { ElisymConfig, ProviderProduct } from '../environment';
 import { handleIncomingJob } from '../handlers/incomingJobHandler';
 import { logger } from '../lib/logger';
 import { resolveAgentMeta, resolveProducts } from '../lib/providerProducts';
+import { SkillRegistry, createAnthropicClient, loadSkillsFromDir } from '../skills';
 import { getState } from '../state';
 import type { ElisymService } from './ElisymService';
 
@@ -70,7 +71,42 @@ export class ProviderService extends Service {
       logger.warn({ err: error }, 'kind:0 profile publish failed (non-fatal)');
     }
 
-    const products = resolveProducts(config, this.runtime.character);
+    const pluginState = getState(this.runtime);
+    if (config.providerSkillsDir) {
+      const loaded = loadSkillsFromDir(config.providerSkillsDir);
+      if (loaded.length > 0) {
+        const registry = new SkillRegistry();
+        for (const skill of loaded) {
+          registry.register(skill);
+        }
+        pluginState.skills = registry;
+        logger.info(
+          {
+            dir: config.providerSkillsDir,
+            count: loaded.length,
+            skills: loaded.map((skill) => skill.name),
+          },
+          'loaded skills from directory',
+        );
+        const anthropicKey = this.runtime.getSetting?.('ANTHROPIC_API_KEY');
+        if (typeof anthropicKey === 'string' && anthropicKey.length > 0) {
+          const modelSetting = this.runtime.getSetting?.('ANTHROPIC_LARGE_MODEL');
+          pluginState.skillLlm = createAnthropicClient({
+            apiKey: anthropicKey,
+            model: typeof modelSetting === 'string' ? modelSetting : undefined,
+          });
+        } else {
+          logger.warn(
+            'skills loaded but ANTHROPIC_API_KEY is not set; skill routing will fail when a job arrives',
+          );
+        }
+      } else {
+        logger.warn({ dir: config.providerSkillsDir }, 'skills directory had no loadable skills');
+      }
+    }
+
+    const skillList = pluginState.skills?.all() ?? [];
+    const products = resolveProducts(config, this.runtime.character, skillList);
     if (products.length === 0) {
       throw new Error('Provider mode requires at least one product');
     }
@@ -177,6 +213,13 @@ export class ProviderService extends Service {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
+    }
+    try {
+      const pluginState = getState(this.runtime);
+      pluginState.skills = undefined;
+      pluginState.skillLlm = undefined;
+    } catch {
+      // state not initialized - nothing to clear
     }
     try {
       this.sub?.close('provider stopping');

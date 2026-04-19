@@ -1,5 +1,6 @@
 import type { ElisymIdentity } from '@elisym/sdk';
 import type { ElisymConfig } from './environment';
+import type { LlmClient, SkillRegistry } from './skills';
 
 export type ElisymMode = 'customer' | 'provider' | 'both';
 export type ElisymNetwork = 'devnet' | 'mainnet';
@@ -53,6 +54,8 @@ export interface ElisymState {
   } | null;
   identity?: ElisymIdentity;
   shuttingDown?: boolean;
+  skills?: SkillRegistry;
+  skillLlm?: LlmClient;
 }
 
 export type { ElisymConfig };

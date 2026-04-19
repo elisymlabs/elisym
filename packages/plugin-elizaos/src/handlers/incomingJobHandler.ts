@@ -17,6 +17,7 @@ import { getState } from '../state';
 import { fetchProtocolConfig, paymentStrategyInstance } from './customerJobFlow';
 
 const incomingRateLimiter = new RateLimiter();
+const SHUTDOWN_POLL_INTERVAL_MS = 500;
 
 export function _incomingRateLimiterForTest(): RateLimiter {
   return incomingRateLimiter;
@@ -26,12 +27,33 @@ interface RouteResult {
   content: string;
 }
 
+interface ShutdownAbort {
+  signal: AbortSignal;
+  dispose(): void;
+}
+
+function createShutdownAbort(state: { shuttingDown?: boolean }): ShutdownAbort {
+  const controller = new AbortController();
+  const timer = setInterval(() => {
+    if (state.shuttingDown) {
+      controller.abort();
+    }
+  }, SHUTDOWN_POLL_INTERVAL_MS);
+  return {
+    signal: controller.signal,
+    dispose: () => clearInterval(timer),
+  };
+}
+
 async function routeCapability(
   runtime: IAgentRuntime,
   capability: string,
   input: string,
+  jobEventId: string,
+  signal?: AbortSignal,
 ): Promise<RouteResult> {
-  const { config } = getState(runtime);
+  const state = getState(runtime);
+  const { config } = state;
   const mapped = config.providerActionMap?.[capability];
   if (mapped) {
     const action = runtime.actions.find((candidate) => candidate.name === mapped);
@@ -62,6 +84,25 @@ async function routeCapability(
       throw new Error(`Action "${mapped}" produced no text output`);
     }
     return { content: collected.join('\n') };
+  }
+
+  const skill = state.skills?.findByCapability(capability);
+  if (skill) {
+    if (!state.skillLlm) {
+      throw new Error(
+        'Skill matched but no LLM client is configured. Set ANTHROPIC_API_KEY in agent settings.',
+      );
+    }
+    const result = await skill.execute(
+      { data: input, inputType: 'text/plain', tags: [capability], jobId: jobEventId },
+      {
+        llm: state.skillLlm,
+        agentName: runtime.character?.name ?? 'elisym-provider',
+        agentDescription: capability,
+        signal,
+      },
+    );
+    return { content: result.data };
   }
 
   const systemPrompt = runtime.character?.system ?? 'You are a helpful elisym provider agent.';
@@ -138,7 +179,7 @@ export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<
     return;
   }
   const { config } = state;
-  const products = resolveProducts(config, runtime.character);
+  const products = resolveProducts(config, runtime.character, state.skills?.all() ?? []);
   if (products.length === 0) {
     logger.warn('incoming job received but provider config incomplete; ignoring');
     return;
@@ -234,7 +275,13 @@ export async function handleIncomingJob(input: HandleIncomingJobInput): Promise<
 
     await client.marketplace.submitProcessingFeedback(identity, event);
 
-    const result = await routeCapability(runtime, capability, event.content);
+    const abort = createShutdownAbort(state);
+    let result: RouteResult;
+    try {
+      result = await routeCapability(runtime, capability, event.content, event.id, abort.signal);
+    } finally {
+      abort.dispose();
+    }
 
     await recordTransition(runtime, {
       ...ledgerBase,

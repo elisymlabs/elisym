@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import type { IAgentRuntime } from '@elizaos/core';
 import bs58 from 'bs58';
 import { nip19 } from 'nostr-tools';
@@ -54,6 +55,7 @@ export const ElisymConfigSchema = z
     providerName: z.string().min(1).max(120).optional(),
     providerDescription: z.string().min(1).max(2000).optional(),
     providerProducts: z.array(ProviderProductSchema).min(1).max(32).optional(),
+    providerSkillsDir: z.string().min(1).optional(),
   })
   .refine(
     (cfg) => {
@@ -61,6 +63,9 @@ export const ElisymConfigSchema = z
         return true;
       }
       if (cfg.providerProducts !== undefined && cfg.providerProducts.length > 0) {
+        return true;
+      }
+      if (cfg.providerSkillsDir !== undefined) {
         return true;
       }
       return (
@@ -71,7 +76,7 @@ export const ElisymConfigSchema = z
     },
     {
       message:
-        'Provider mode requires either ELISYM_PROVIDER_PRODUCTS (JSON array) or both ELISYM_PROVIDER_CAPABILITIES and ELISYM_PROVIDER_PRICE_SOL',
+        'Provider mode requires one of: ELISYM_PROVIDER_PRODUCTS (JSON array), ELISYM_PROVIDER_SKILLS_DIR, or both ELISYM_PROVIDER_CAPABILITIES and ELISYM_PROVIDER_PRICE_SOL',
     },
   )
   .refine(
@@ -358,6 +363,8 @@ export function validateConfig(
   const providerName = read('ELISYM_PROVIDER_NAME');
   const providerDescription = read('ELISYM_PROVIDER_DESCRIPTION');
   const providerProducts = parseProducts(read('ELISYM_PROVIDER_PRODUCTS'));
+  const providerSkillsDirRaw = read('ELISYM_PROVIDER_SKILLS_DIR');
+  const providerSkillsDir = providerSkillsDirRaw ? resolve(providerSkillsDirRaw) : undefined;
 
   checkLegacyProviderEnv({
     capabilities: providerCapabilities,
@@ -393,5 +400,6 @@ export function validateConfig(
     providerName,
     providerDescription,
     providerProducts,
+    providerSkillsDir,
   });
 }

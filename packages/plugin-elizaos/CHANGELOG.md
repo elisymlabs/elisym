@@ -3,6 +3,25 @@
 All notable changes to `@elisym/plugin-elizaos` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - Unreleased
+
+### Added
+
+- **Generic skill runner (`ELISYM_PROVIDER_SKILLS_DIR`).** The plugin now loads `SKILL.md`-based skills at startup in the same format used by `@elisym/cli`. Each skill auto-registers as a provider product (name, description, capabilities, price in lamports) and merges with any explicit `ELISYM_PROVIDER_PRODUCTS` (explicit wins on name collision).
+- **LLM tool-use loop.** Skills with a `tools[]` frontmatter shell out to external scripts through `child_process.spawn` (no `shell: true`, 60 s timeout, 1 MB stdout cap, cwd = skill directory) driven by an Anthropic (or OpenAI) tool-use loop. Abort is tied to the plugin's `shuttingDown` flag so graceful shutdown drains in-flight skills.
+- **Routing precedence.** Incoming-job handler priority is now `ELISYM_PROVIDER_ACTION_MAP` → matching skill → default `runtime.useModel`. `RecoveryService.reExecute` mirrors the same priority so post-crash replay hits the skill path.
+- **Example.** `examples/local-agent/skills/youtube-summary/` ships the CLI skill verbatim, with a `provider-youtube.character.json` and `start:provider-youtube` script demonstrating end-to-end skill routing.
+
+### Dependencies
+
+- Added `yaml@~2.8.3` as a runtime dependency (SKILL.md frontmatter parser).
+
+### Notes
+
+- Skill execution calls Anthropic directly, billed to `ANTHROPIC_API_KEY`, independently of `@elizaos/plugin-anthropic`.
+- Free skills (`price: 0`) are rejected at load time; the protocol contract requires a positive `priceLamports`.
+- Scripts are spawned without a shell, so Windows `.sh` shebang interpretation is not supported. Target platform is Linux/macOS.
+
 ## [0.3.0] - Unreleased
 
 ### Security
