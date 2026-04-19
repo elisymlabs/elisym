@@ -13,6 +13,7 @@
  *   the live subscription is already dead.
  */
 import type { ElisymClient, ElisymIdentity, SubCloser } from '@elisym/sdk';
+import type { Logger } from 'pino';
 import {
   WATCHDOG_PROBE_INTERVAL_MS,
   WATCHDOG_PROBE_TIMEOUT_MS,
@@ -27,6 +28,8 @@ export interface WatchdogDeps {
   transport: NostrTransport;
   onPing: (senderPubkey: string, nonce: string) => void;
   log: (message: string) => void;
+  /** Optional structured logger for pool-reset and probe events. */
+  logger?: Logger;
   probeIntervalMs?: number;
   probeTimeoutMs?: number;
   selfPingIntervalMs?: number;
@@ -44,6 +47,7 @@ export function startWatchdog(deps: WatchdogDeps): Watchdog {
     transport,
     onPing,
     log,
+    logger,
     probeIntervalMs = WATCHDOG_PROBE_INTERVAL_MS,
     probeTimeoutMs = WATCHDOG_PROBE_TIMEOUT_MS,
     selfPingIntervalMs = WATCHDOG_SELF_PING_INTERVAL_MS,
@@ -80,10 +84,12 @@ export function startWatchdog(deps: WatchdogDeps): Watchdog {
         return;
       }
       log('[watchdog] relay probe failed, resetting pool and re-subscribing');
+      logger?.info({ event: 'pool_reset', reason: 'probe_failed' }, 'pool reset');
       resetPoolAndResubscribe();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       log(`[watchdog] probe/reset error: ${errorMessage}`);
+      logger?.warn({ event: 'probe_error', error: errorMessage }, 'watchdog probe/reset error');
     } finally {
       busy = false;
     }
@@ -105,10 +111,15 @@ export function startWatchdog(deps: WatchdogDeps): Watchdog {
         return;
       }
       log('[watchdog] self-ping failed, resetting pool and re-subscribing');
+      logger?.info({ event: 'pool_reset', reason: 'self_ping_failed' }, 'pool reset');
       resetPoolAndResubscribe();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       log(`[watchdog] self-ping/reset error: ${errorMessage}`);
+      logger?.warn(
+        { event: 'self_ping_error', error: errorMessage },
+        'watchdog self-ping/reset error',
+      );
     } finally {
       busy = false;
     }

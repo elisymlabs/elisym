@@ -45,7 +45,14 @@ import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
 import { startWatchdog } from '../watchdog.js';
 
-export async function cmdStart(nameArg: string | undefined): Promise<void> {
+export interface StartOptions {
+  verbose?: boolean;
+}
+
+export async function cmdStart(
+  nameArg: string | undefined,
+  options: StartOptions = {},
+): Promise<void> {
   const cwd = process.cwd();
 
   // -- Step 1: Resolve agent name --
@@ -57,12 +64,26 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
   // -- Step 2: Load agent (with optional passphrase for encrypted keys) --
   const loaded = await loadAgentWithPrompt(agentName, cwd);
 
+  // -- Step 2b: Set up structured logger early so publish / config
+  //   debug events fire before connectivity is established.
+  const verbose =
+    options.verbose === true ||
+    process.env.ELISYM_DEBUG === '1' ||
+    process.env.LOG_LEVEL === 'debug';
+  const { logger, logWithIndent } = createLogger({
+    verbose,
+    tty: Boolean(process.stdout.isTTY),
+  });
+
   // -- Step 3: Banner --
   console.log(`\n  Starting agent ${agentName} (${loaded.source})...\n`);
   if (loaded.shadowsGlobal) {
     console.log(
       `  ! Using project-local ${agentName} (shadows global agent in ~/.elisym/${agentName}/)\n`,
     );
+  }
+  if (verbose) {
+    console.log('  [debug] Verbose logging enabled. Structured diagnostics -> stderr.');
   }
 
   // -- Step 4: Resolve Solana address and show balance --
@@ -203,6 +224,7 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
   }
 
   // -- Step 10: Publish kind:0 profile --
+  let profilePublished = false;
   try {
     await client.discovery.publishProfile(
       identity,
@@ -211,8 +233,11 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
       pictureUrl,
       bannerUrl,
     );
+    profilePublished = true;
+    logger.debug({ event: 'publish_ack', kind: 0 }, 'profile published');
   } catch (e: any) {
     console.warn(`  ! Failed to publish profile: ${e.message}`);
+    logger.warn({ event: 'publish_failed', kind: 0, error: e.message }, 'profile publish failed');
   }
 
   // -- Step 11: Publish per-skill capability cards (kind:31990) --
@@ -235,11 +260,21 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
     };
   }
 
+  let cardsPublished = 0;
   for (const skill of allSkills) {
     try {
       await client.discovery.publishCapability(identity, buildCard(skill), kinds);
+      cardsPublished += 1;
+      logger.debug(
+        { event: 'publish_ack', kind: 31990, skill: skill.name },
+        'capability card published',
+      );
     } catch (e: any) {
       console.warn(`  ! Failed to publish "${skill.name}": ${e.message}`);
+      logger.warn(
+        { event: 'publish_failed', kind: 31990, skill: skill.name, error: e.message },
+        'capability publish failed',
+      );
     }
   }
 
@@ -271,6 +306,12 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
   }
 
   console.log('  Connected.\n');
+  if (verbose) {
+    console.log(
+      `  [debug] Published: profile=${profilePublished ? 'ok' : 'FAILED'} + ${cardsPublished}/${allSkills.length} capability cards (kind:31990)`,
+    );
+    console.log(`  [debug] Relays: ${relays.length} configured (${relays.join(', ')})`);
+  }
 
   // -- Step 13: Prepare ping responder (watchdog owns the subscription) --
   const onPing = (senderPubkey: string, nonce: string): void => {
@@ -284,8 +325,10 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
     heartbeatTimer = setInterval(async () => {
       try {
         await client.discovery.publishCapability(identity, heartbeatCard, kinds);
-      } catch {
-        /* heartbeat failure is non-fatal */
+        logger.debug({ event: 'heartbeat_ack', skill: heartbeatCard.name }, 'heartbeat ok');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn({ event: 'heartbeat_failed', error: message }, 'heartbeat publish failed');
       }
     }, HEARTBEAT_INTERVAL_MS);
   }
@@ -303,10 +346,18 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
     solanaAddress,
   };
 
-  const { logger, logWithIndent } = createLogger({
-    verbose: process.env.ELISYM_DEBUG === '1',
-    tty: Boolean(process.stdout.isTTY),
-  });
+  logger.debug(
+    {
+      event: 'config_resolved',
+      agent: agentName,
+      source: loaded.source,
+      network: walletNetwork,
+      relays,
+      solanaAddress,
+      rpcUrl: process.env.SOLANA_RPC_URL ?? getRpcUrl(walletNetwork),
+    },
+    'config resolved',
+  );
 
   // Tee: banner-style indent line on stdout (existing UX) + structured
   // stderr pino entry with shared redact paths (defence against future
@@ -322,6 +373,7 @@ export async function cmdStart(nameArg: string | undefined): Promise<void> {
     transport,
     onPing,
     log: diagLog,
+    logger,
   });
 
   const runtime = new AgentRuntime(transport, registry, skillCtx, runtimeConfig, ledger, {
