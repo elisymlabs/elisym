@@ -1,8 +1,15 @@
 import {
+  createSlidingWindowLimiter,
+  type RateLimitDecision,
+  type SlidingWindowLimiter,
+} from '@elisym/sdk';
+import {
   MAX_TRACKED_CUSTOMERS,
   RATE_LIMIT_MAX_PER_WINDOW,
   RATE_LIMIT_WINDOW_MS,
 } from '../constants';
+
+export type { RateLimitDecision };
 
 export interface RateLimiterOptions {
   windowMs?: number;
@@ -10,86 +17,31 @@ export interface RateLimiterOptions {
   maxTrackedKeys?: number;
 }
 
-export interface RateLimitDecision {
-  allowed: boolean;
-  /** Wall-clock timestamp (ms) when the limit window will reset for this key. */
-  resetAt: number;
-  /** Number of hits inside the current window after this call (or attempted hit if denied). */
-  count: number;
-}
-
-interface Entry {
-  /** Sliding-window timestamps in ms. Sorted ascending. */
-  hits: number[];
-}
-
 /**
- * Bounded sliding-window rate limiter keyed by customer pubkey.
- *
- * Each key gets at most `maxPerWindow` requests inside a rolling
- * `windowMs`. Stale timestamps are GC'd lazily on every `check`. When the
- * tracked-key set grows past `maxTrackedKeys`, the least-recently-used
- * key is evicted to bound memory under attack.
- *
- * Thread-safety: not required - the plugin is single-threaded, all calls
- * happen on the JS event loop.
+ * Thin wrapper around the SDK sliding-window limiter that keeps the
+ * historical constructor shape used across the plugin (defaults sourced
+ * from plugin constants, `maxTrackedKeys` naming).
  */
 export class RateLimiter {
-  private readonly windowMs: number;
-  private readonly maxPerWindow: number;
-  private readonly maxTrackedKeys: number;
-  // LRU is implemented via Map's insertion-order: every check refreshes
-  // the entry by deleting and re-setting it, moving it to the tail.
-  private readonly entries = new Map<string, Entry>();
+  private readonly inner: SlidingWindowLimiter;
 
   constructor(options: RateLimiterOptions = {}) {
-    this.windowMs = options.windowMs ?? RATE_LIMIT_WINDOW_MS;
-    this.maxPerWindow = options.maxPerWindow ?? RATE_LIMIT_MAX_PER_WINDOW;
-    this.maxTrackedKeys = options.maxTrackedKeys ?? MAX_TRACKED_CUSTOMERS;
+    this.inner = createSlidingWindowLimiter({
+      windowMs: options.windowMs ?? RATE_LIMIT_WINDOW_MS,
+      maxPerWindow: options.maxPerWindow ?? RATE_LIMIT_MAX_PER_WINDOW,
+      maxKeys: options.maxTrackedKeys ?? MAX_TRACKED_CUSTOMERS,
+    });
   }
 
-  check(key: string, now = Date.now()): RateLimitDecision {
-    const entry = this.entries.get(key) ?? { hits: [] };
-    const cutoff = now - this.windowMs;
-    const fresh = entry.hits.filter((ts) => ts > cutoff);
-
-    if (fresh.length >= this.maxPerWindow) {
-      // Refresh LRU order even on denial so an attacker hammering the
-      // same key cannot push other tracked keys out via eviction.
-      this.entries.delete(key);
-      this.entries.set(key, { hits: fresh });
-      return {
-        allowed: false,
-        resetAt: (fresh[0] ?? now) + this.windowMs,
-        count: fresh.length,
-      };
-    }
-    fresh.push(now);
-    this.entries.delete(key);
-    this.entries.set(key, { hits: fresh });
-    this.evictIfNeeded();
-    return {
-      allowed: true,
-      resetAt: (fresh[0] ?? now) + this.windowMs,
-      count: fresh.length,
-    };
-  }
-
-  private evictIfNeeded(): void {
-    while (this.entries.size > this.maxTrackedKeys) {
-      const oldestKey = this.entries.keys().next().value as string | undefined;
-      if (oldestKey === undefined) {
-        return;
-      }
-      this.entries.delete(oldestKey);
-    }
+  check(key: string, now?: number): RateLimitDecision {
+    return this.inner.check(key, now);
   }
 
   size(): number {
-    return this.entries.size;
+    return this.inner.size();
   }
 
   reset(): void {
-    this.entries.clear();
+    this.inner.reset();
   }
 }

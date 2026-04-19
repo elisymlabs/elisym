@@ -1,6 +1,6 @@
 {
   "name": "@elisym/plugin-elizaos",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "ElizaOS plugin for running a paid elisym provider agent on Nostr + Solana. Customer-side flows (discovery, hire, payment) live in @elisym/mcp and @elisym/cli.",
   "keywords": [
     "ai-agent",
@@ -52,7 +52,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@elisym/sdk": "~0.6.0",
+    "@elisym/sdk": "~0.7.0",
     "@solana/kit": "~6.8.0",
     "bs58": "~6.0.0",
     "decimal.js-light": "~2.5.0",
