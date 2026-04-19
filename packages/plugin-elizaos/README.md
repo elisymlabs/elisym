@@ -122,10 +122,17 @@ All settings are read from `runtime.getSetting(key)`, falling back to `process.e
 - **Size limits.** Incoming jobs over 64 KiB are rejected with an error-feedback event.
 - **Secrets are never logged.** `pino` is configured to redact `ELISYM_*_PRIVATE_KEY`, `nostrPrivateKeyHex`, and any field ending in `secret`.
 
+## Reliability
+
+- **Crash recovery (`JobLedger` + `RecoveryService`).** Every state transition - provider `waiting_payment` / `paid` / `executed` / `delivered` and customer `submitted` / `waiting_payment` / `payment_sent` / `result_received` - is persisted to the `elisym_jobs` memory table before the corresponding Nostr / Solana action. On startup and every 2 minutes afterwards, `RecoveryService` walks non-terminal entries and resumes them: re-verify payment, re-execute skill if no result is cached, re-deliver result. Retry budget is 5 attempts per entry. **Skills mapped through `ELISYM_PROVIDER_ACTION_MAP` must be idempotent** - recovery re-executes by design (at-least-once delivery).
+- **Concurrency ceiling.** Incoming jobs flow through `p-limit(10)` with a queue depth of 40. Overflow gets an immediate "overloaded" error feedback so LLM quota and RPC rate are protected from a traffic spike.
+- **Persisted spending cap.** `ELISYM_MAX_SPEND_PER_HOUR_SOL` is backed by the `elisym_spend` memory table. A crash loop no longer resets the hourly budget.
+- **Graceful shutdown.** Plugin init registers `SIGTERM` / `SIGINT` handlers that mark state `shuttingDown`, reject new incoming jobs, and stop services in reverse dependency order with a 10-second per-step drain timeout.
+
 ## Internals
 
 - Payment orchestration: `src/handlers/customerJobFlow.ts` mirrors the MCP server's `executePaymentFlow` - fetch `getProtocolConfig` (on-chain program, 60 s cache), validate the payment request, build + sign + `sendAndConfirmTransactionFactory`, then publish `submitPaymentConfirmation`.
-- Provider flow: `src/handlers/incomingJobHandler.ts` submits `submitPaymentRequiredFeedback`, polls `verifyPayment` by reference with a 2-minute deadline, then routes to the configured Action or the agent's model.
+- Provider flow: `src/handlers/incomingJobHandler.ts` submits `submitPaymentRequiredFeedback`, polls `verifyPayment` by reference with a 2-minute deadline, then routes to the configured Action or the agent's model. Each transition is mirrored in `JobLedger`.
 - Identity persistence: `ElisymIdentity` hex is stored via `runtime.createMemory(..., 'elisym_identity')` so the agent keeps the same npub across restarts unless `ELISYM_NOSTR_PRIVATE_KEY` is explicitly set.
 
 ## Troubleshooting
