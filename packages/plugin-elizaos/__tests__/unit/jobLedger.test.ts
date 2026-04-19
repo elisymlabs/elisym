@@ -1,6 +1,6 @@
-import type {IAgentRuntime, Memory, UUID} from '@elizaos/core';
-import {afterEach, describe, expect, it, vi} from 'vitest';
-import {JOB_LEDGER_RETENTION_MS, JOBS_MEMORY_TABLE} from '../../src/constants';
+import type { IAgentRuntime, Memory, UUID } from '@elizaos/core';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { JOB_LEDGER_RETENTION_MS, JOBS_MEMORY_TABLE } from '../../src/constants';
 import {
   findByJobId,
   type JobLedgerEntry,
@@ -29,8 +29,9 @@ function makeRuntime(): IAgentRuntime & {
     async createMemory(memory: Memory, tableName: string) {
       const id = `mem-${nextId++}` as UUID;
       const list = store.get(tableName) ?? [];
-      list.push({...memory, id});
+      list.push({ ...memory, id });
       store.set(tableName, list);
+
       return id;
     },
     async deleteMemory(memoryId: string) {
