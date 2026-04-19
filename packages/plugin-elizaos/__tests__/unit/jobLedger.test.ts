@@ -1,13 +1,13 @@
-import type { IAgentRuntime, Memory, UUID } from '@elizaos/core';
-import { describe, it, expect } from 'vitest';
-import { JOB_LEDGER_RETENTION_MS, JOBS_MEMORY_TABLE } from '../../src/constants';
+import type {IAgentRuntime, Memory, UUID} from '@elizaos/core';
+import {afterEach, describe, expect, it, vi} from 'vitest';
+import {JOB_LEDGER_RETENTION_MS, JOBS_MEMORY_TABLE} from '../../src/constants';
 import {
   findByJobId,
+  type JobLedgerEntry,
   loadLatest,
   pendingJobs,
   pruneOldEntries,
   recordTransition,
-  type JobLedgerEntry,
 } from '../../src/lib/jobLedger';
 
 function makeRuntime(): IAgentRuntime & {
@@ -18,7 +18,8 @@ function makeRuntime(): IAgentRuntime & {
   const store = new Map<string, Memory[]>();
   let nextId = 1;
   const agentId = '00000000-0000-0000-0000-000000000042' as UUID;
-  const runtime = {
+
+  return {
     agentId,
     _store: store,
     _nextId: nextId,
@@ -28,7 +29,7 @@ function makeRuntime(): IAgentRuntime & {
     async createMemory(memory: Memory, tableName: string) {
       const id = `mem-${nextId++}` as UUID;
       const list = store.get(tableName) ?? [];
-      list.push({ ...memory, id });
+      list.push({...memory, id});
       store.set(tableName, list);
       return id;
     },
@@ -46,7 +47,6 @@ function makeRuntime(): IAgentRuntime & {
     _nextId: number;
     deleteMemory: (id: string) => Promise<void>;
   };
-  return runtime;
 }
 
 function baseEntry(overrides: Partial<JobLedgerEntry> = {}): JobLedgerEntry {
@@ -64,6 +64,10 @@ function baseEntry(overrides: Partial<JobLedgerEntry> = {}): JobLedgerEntry {
 }
 
 describe('jobLedger', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('recordTransition round-trips through memory', async () => {
     const runtime = makeRuntime();
     await recordTransition(runtime, baseEntry());
@@ -185,6 +189,12 @@ describe('jobLedger', () => {
 
   it('pruneOldEntries keeps a terminal row exactly at the retention boundary', async () => {
     const runtime = makeRuntime();
+    // Freeze time so the cutoff computed during setup equals the cutoff
+    // computed inside pruneOldEntries; otherwise async overhead lets
+    // Date.now() advance on slower machines and the boundary row (which
+    // is meant to be kept) falls strictly below the later cutoff.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     // Land the row at exactly cutoff - 1 (older than cutoff -> deleted)
     // and another at exactly cutoff (NOT older than -> kept).
     const cutoff = Date.now() - JOB_LEDGER_RETENTION_MS;
