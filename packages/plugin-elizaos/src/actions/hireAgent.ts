@@ -70,7 +70,13 @@ function resolveTarget(
     };
   }
 
-  const first = state.lastDiscovery?.candidates[0];
+  const discovery = state.lastDiscovery;
+  if (discovery && Date.now() > discovery.expiresAt) {
+    throw new Error(
+      'Last discovery is stale. Run ELISYM_DISCOVER_PROVIDERS again to refresh provider candidates.',
+    );
+  }
+  const first = discovery?.candidates[0];
   if (!first?.priceLamports || !first?.address) {
     throw new Error(
       'No provider selected. Run ELISYM_DISCOVER_PROVIDERS first or supply providerPubkey/priceLamports/address in options.',
@@ -96,7 +102,13 @@ export const hireAgentAction: Action = {
     if (config.mode === 'provider') {
       return false;
     }
-    return lastDiscovery !== null && lastDiscovery.candidates.length > 0;
+    if (lastDiscovery === null || lastDiscovery.candidates.length === 0) {
+      return false;
+    }
+    if (Date.now() > lastDiscovery.expiresAt) {
+      return false;
+    }
+    return true;
   },
   handler: async (
     runtime: IAgentRuntime,

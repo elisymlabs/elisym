@@ -49,6 +49,7 @@ export interface ElisymState {
       address?: string;
     }>;
     ts: number;
+    expiresAt: number;
   } | null;
   identity?: ElisymIdentity;
   shuttingDown?: boolean;

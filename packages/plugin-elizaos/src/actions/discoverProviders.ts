@@ -1,6 +1,6 @@
 import type { Agent } from '@elisym/sdk';
 import type { Action, ActionResult, IAgentRuntime, Memory, State } from '@elizaos/core';
-import { SERVICE_TYPES } from '../constants';
+import { DISCOVERY_TTL_MS, SERVICE_TYPES } from '../constants';
 import { logger } from '../lib/logger';
 import { formatLamportsAsSol } from '../lib/pricing';
 import type { ElisymService } from '../services/ElisymService';
@@ -90,6 +90,7 @@ export const discoverProvidersAction: Action = {
     });
     const top = agents.slice(0, 5);
 
+    const now = Date.now();
     state.lastDiscovery = {
       query: capability ?? '(any capability)',
       candidates: top.map((agent) => {
@@ -102,7 +103,8 @@ export const discoverProvidersAction: Action = {
           address: card?.payment?.address,
         };
       }),
-      ts: Date.now(),
+      ts: now,
+      expiresAt: now + DISCOVERY_TTL_MS,
     };
 
     const text =
