@@ -8,6 +8,8 @@ COPY packages/config-client/package.json packages/config-client/package.json
 COPY packages/sdk/package.json packages/sdk/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
 COPY packages/cli/package.json packages/cli/package.json
+COPY packages/plugin-elizaos/package.json packages/plugin-elizaos/package.json
+COPY packages/plugin-elizaos/examples/local-agent/package.json packages/plugin-elizaos/examples/local-agent/package.json
 
 # Install production dependencies
 RUN bun install --frozen-lockfile --production
