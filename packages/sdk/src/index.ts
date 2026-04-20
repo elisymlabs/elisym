@@ -39,10 +39,29 @@ export {
 export type { EstimatePriorityFeeOptions } from './payment/priorityFee';
 export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
+export {
+  NATIVE_SOL,
+  KNOWN_ASSETS,
+  assetKey,
+  assetByKey,
+  resolveKnownAsset,
+  parseAssetAmount,
+  formatAssetAmount,
+} from './payment/assets';
+export type { Asset, Chain } from './payment/assets';
 
 // --- On-chain protocol config ---
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
 export type { GetProtocolConfigOptions, ProtocolConfig } from './config/onchain';
+
+// --- Global config (~/.elisym/config.yaml) ---
+export {
+  GlobalConfigSchema,
+  SessionSpendLimitEntrySchema,
+  loadGlobalConfig,
+  writeGlobalConfig,
+} from './config/global';
+export type { GlobalConfig, SessionSpendLimitEntry } from './config/global';
 
 // --- Primitives ---
 export { ElisymIdentity } from './primitives/identity';

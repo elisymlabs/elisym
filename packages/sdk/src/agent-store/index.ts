@@ -42,6 +42,7 @@ export {
   GITIGNORE_FILENAME,
   SKILLS_DIRNAME,
   homeElisymDir,
+  globalConfigPath,
   findProjectElisymDir,
   agentPaths,
 } from './paths';

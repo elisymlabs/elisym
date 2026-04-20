@@ -9,7 +9,21 @@ process.on('warning', (w) => {
   console.warn(w);
 });
 
-import { ElisymClient, ElisymIdentity, RELAYS } from '@elisym/sdk';
+import {
+  ElisymClient,
+  ElisymIdentity,
+  KNOWN_ASSETS,
+  RELAYS,
+  assetByKey,
+  assetKey,
+  formatAssetAmount,
+  loadGlobalConfig,
+  parseAssetAmount,
+  resolveKnownAsset,
+  writeGlobalConfig,
+  type SessionSpendLimitEntry,
+} from '@elisym/sdk';
+import { globalConfigPath } from '@elisym/sdk/agent-store';
 import { generateKeyPairSigner } from '@solana/kit';
 import bs58 from 'bs58';
 /**
@@ -27,6 +41,7 @@ import { loadAgentConfig, saveAgentConfig, listAgentNames, updateAgentSecurity }
 import { AgentContext } from './context.js';
 import { runInstall, runUninstall, runUpdate, runList } from './install.js';
 import { startServer } from './server.js';
+import { buildEffectiveLimits, DEFAULT_SESSION_LIMITS } from './session-limits.js';
 import { buildAgentInstance, exportKeyPairBytes } from './tools/agent.js';
 import { PACKAGE_VERSION } from './utils.js';
 
@@ -310,5 +325,163 @@ program
   .command('disable-agent-switch <agent>')
   .description('Forbid the MCP server from switching away from this agent at runtime')
   .action(safe((agent: string) => toggleFlag(agent, 'agent_switch_enabled', false)));
+
+/**
+ * Format the list of known assets for error messages.
+ */
+function knownAssetsSummary(): string {
+  return KNOWN_ASSETS.map((asset) =>
+    asset.mint ? `${asset.chain}/${asset.token}/${asset.mint}` : `${asset.chain}/${asset.token}`,
+  ).join(', ');
+}
+
+/** Resolve an `Asset` from CLI options, throwing if unknown. */
+function resolveAssetOrThrow(chain: string, token: string, mint: string | undefined) {
+  const asset = resolveKnownAsset(chain, token, mint);
+  if (!asset) {
+    const display = mint ? `${chain}/${token}/${mint}` : `${chain}/${token}`;
+    throw new Error(`Unknown asset: ${display}. Known assets: ${knownAssetsSummary()}.`);
+  }
+  return asset;
+}
+
+async function setSessionLimit(
+  amount: string,
+  chain: string,
+  token: string,
+  mint: string | undefined,
+): Promise<void> {
+  const asset = resolveAssetOrThrow(chain, token, mint);
+  // Validate the amount format strictly — uses the same BigInt integer math
+  // that enforcement applies at runtime.
+  parseAssetAmount(asset, amount);
+  const parsedAmount = Number(amount);
+  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+    throw new Error(`amount "${amount}" must be a positive decimal`);
+  }
+
+  const path = globalConfigPath();
+  const cfg = await loadGlobalConfig(path);
+  const entries: SessionSpendLimitEntry[] = cfg.session_spend_limits
+    ? [...cfg.session_spend_limits]
+    : [];
+  const targetKey = assetKey(asset);
+  const idx = entries.findIndex(
+    (entry) => assetKey({ chain: entry.chain, token: entry.token, mint: entry.mint }) === targetKey,
+  );
+  const newEntry: SessionSpendLimitEntry = {
+    chain: asset.chain,
+    token: asset.token,
+    mint: asset.mint,
+    amount: parsedAmount,
+  };
+  if (idx >= 0) {
+    entries[idx] = newEntry;
+  } else {
+    entries.push(newEntry);
+  }
+  await writeGlobalConfig(path, { session_spend_limits: entries });
+  console.log(
+    `Session spend limit set to ${amount} ${asset.symbol} (process-wide). ` +
+      `Restart the MCP server to apply.`,
+  );
+}
+
+async function clearSessionLimit(
+  chain: string,
+  token: string,
+  mint: string | undefined,
+  all: boolean,
+): Promise<void> {
+  const path = globalConfigPath();
+  const cfg = await loadGlobalConfig(path);
+  if (all) {
+    await writeGlobalConfig(path, {});
+    console.log(
+      'All session spend limit overrides removed. Defaults will apply on next MCP restart.',
+    );
+    return;
+  }
+  const asset = resolveAssetOrThrow(chain, token, mint);
+  const targetKey = assetKey(asset);
+  const prior = cfg.session_spend_limits ?? [];
+  const next = prior.filter(
+    (entry) => assetKey({ chain: entry.chain, token: entry.token, mint: entry.mint }) !== targetKey,
+  );
+  if (next.length === prior.length) {
+    console.log(
+      `No override found for ${asset.symbol}. Default will continue to apply on next MCP restart.`,
+    );
+    return;
+  }
+  const newCfg = next.length > 0 ? { session_spend_limits: next } : {};
+  await writeGlobalConfig(path, newCfg);
+  console.log(`Removed override for ${asset.symbol}. Default will apply on next MCP restart.`);
+}
+
+async function listSessionLimits(): Promise<void> {
+  const defaults = new Map<string, string>();
+  for (const entry of DEFAULT_SESSION_LIMITS) {
+    defaults.set(assetKey(entry.asset), entry.humanAmount);
+  }
+  const path = globalConfigPath();
+  const cfg = await loadGlobalConfig(path);
+  const overrides = new Map<string, SessionSpendLimitEntry>();
+  for (const entry of cfg.session_spend_limits ?? []) {
+    overrides.set(assetKey({ chain: entry.chain, token: entry.token, mint: entry.mint }), entry);
+  }
+  const effective = await buildEffectiveLimits();
+  console.log('Effective session spend limits (process-wide):');
+  if (effective.size === 0) {
+    console.log('  (no caps configured)');
+    return;
+  }
+  for (const [key, raw] of effective) {
+    const asset = assetByKey(key);
+    let origin: string;
+    if (overrides.has(key)) {
+      origin = `overridden in ${path}`;
+    } else if (defaults.has(key)) {
+      origin = 'default';
+    } else {
+      origin = 'custom';
+    }
+    if (asset) {
+      console.log(`  ${asset.symbol}: ${formatAssetAmount(asset, raw)} (${origin})`);
+    } else {
+      console.log(`  ${key}: ${raw} raw (${origin})`);
+    }
+  }
+}
+
+program
+  .command('set-session-limit <amount>')
+  .description('Override the process-wide session spend cap for a payment asset')
+  .option('--chain <chain>', 'Blockchain', 'solana')
+  .option('--token <token>', 'Token id (lowercase)', 'sol')
+  .option('--mint <mint>', 'SPL mint / ERC-20 contract (optional)')
+  .action(
+    safe(async (amount: string, options) => {
+      await setSessionLimit(amount, options.chain, options.token, options.mint);
+    }),
+  );
+
+program
+  .command('clear-session-limit')
+  .description('Remove a session spend cap override (defaults will apply)')
+  .option('--chain <chain>', 'Blockchain', 'solana')
+  .option('--token <token>', 'Token id (lowercase)', 'sol')
+  .option('--mint <mint>', 'SPL mint / ERC-20 contract (optional)')
+  .option('--all', 'Remove every override; revert all assets to defaults')
+  .action(
+    safe(async (options) => {
+      await clearSessionLimit(options.chain, options.token, options.mint, Boolean(options.all));
+    }),
+  );
+
+program
+  .command('session-limits')
+  .description('Show effective session spend limits (defaults + overrides)')
+  .action(safe(() => listSessionLimits()));
 
 program.parse();

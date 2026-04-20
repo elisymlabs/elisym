@@ -9,8 +9,16 @@ import {
 } from '@solana/kit';
 import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
-import type { AgentInstance } from '../context.js';
-import { explorerClusterFor, fetchProtocolConfig, rpcUrlFor } from '../context.js';
+import type { AgentContext, AgentInstance } from '../context.js';
+import {
+  explorerClusterFor,
+  fetchProtocolConfig,
+  releaseSpend,
+  reserveSpend,
+  resolveAssetFromPaymentRequest,
+  rpcUrlFor,
+  takeSpendWarnings,
+} from '../context.js';
 import { logger } from '../logger.js';
 import {
   sanitizeUntrusted,
@@ -234,6 +242,7 @@ export interface PaymentFeedbackHandler {
 }
 
 export function makePaymentFeedbackHandler(opts: {
+  ctx: AgentContext;
   agent: AgentInstance;
   jobId: string;
   providerPubkey: string;
@@ -242,7 +251,12 @@ export function makePaymentFeedbackHandler(opts: {
   resolveNoWallet: (msg: string) => void;
   resolveResult: (msg: string) => void;
   rejectPayment: (e: Error) => void;
-  onPaid: (signature: string) => void;
+  /**
+   * Fires after on-chain confirmation. `warnings` contains any newly-crossed
+   * 50% / 80% session-spend-cap warnings to surface back to the user; each
+   * threshold fires at most once per process.
+   */
+  onPaid: (signature: string, warnings: string[]) => void;
   /** Override for tests. Defaults to the real `executePaymentFlow`. */
   executor?: PaymentExecutor;
 }): PaymentFeedbackHandler {
@@ -338,16 +352,42 @@ export function makePaymentFeedbackHandler(opts: {
       );
       return;
     }
+    // Session-wide spend cap: reserve the amount atomically before broadcasting.
+    // `signedAmount` already includes the protocol fee, so the counter reflects
+    // total wallet outflow. Reserving (check + increment in one step) closes the
+    // race where two concurrent handlers both pass a read-only check against a
+    // stale counter.
+    const asset = resolveAssetFromPaymentRequest(parsedRequest as PaymentRequestData);
+    let reservedAmount: bigint | undefined;
+    if (signedAmount !== undefined) {
+      try {
+        reserveSpend(opts.ctx, asset, BigInt(signedAmount));
+        reservedAmount = BigInt(signedAmount);
+      } catch (e) {
+        opts.rejectPayment(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+    }
     paying = true;
     exec(opts.agent, paymentRequest, opts.jobId, opts.providerPubkey, opts.expectedRecipient)
       .then((sig) => {
         paid = true;
         paying = false;
-        opts.onPaid(sig);
+        // Warnings must be computed AFTER the reservation is committed
+        // on-chain - otherwise a rolled-back reservation would consume the
+        // one-shot budget for a spend that never happened.
+        const warnings = takeSpendWarnings(opts.ctx, asset);
+        opts.onPaid(sig, warnings);
         flushResult();
       })
       .catch((e: unknown) => {
         paying = false;
+        // Only release if the tx never committed. If the `.then` body threw
+        // (e.g. inside `onPaid`) AFTER `paid = true`, the funds are already
+        // on-chain and the reservation must stand.
+        if (reservedAmount !== undefined && !paid) {
+          releaseSpend(opts.ctx, asset, reservedAmount);
+        }
         const msg = e instanceof Error ? e.message : String(e);
         opts.rejectPayment(new Error(`Payment failed: ${msg}`));
       });
@@ -694,12 +734,14 @@ export const customerTools: ToolDefinition[] = [
 
       // include jobId in every outcome so the caller can recover.
       let paymentSig: string | undefined;
+      let paymentWarnings: string[] = [];
       try {
         const result = await awaitJobResult<string>(
           agent,
           {} as never,
           ({ resolve, reject }) => {
             const payHandler = makePaymentFeedbackHandler({
+              ctx,
               agent,
               jobId,
               providerPubkey,
@@ -708,8 +750,12 @@ export const customerTools: ToolDefinition[] = [
               resolveNoWallet: resolve,
               resolveResult: resolve,
               rejectPayment: reject,
-              onPaid: (sig) => {
+              onPaid: (sig, warnings) => {
                 paymentSig = sig;
+                paymentWarnings = warnings;
+                for (const line of warnings) {
+                  logger.warn({ event: 'session_spend_threshold', agent: agent.name }, line);
+                }
               },
             });
             return {
@@ -734,13 +780,15 @@ export const customerTools: ToolDefinition[] = [
           timeout + 5_000,
         );
 
-        return textResult(`event_id=${jobId}\n${result}`);
+        const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
+        return textResult(`${warningBlock}event_id=${jobId}\n${result}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         const paid = paymentSig
           ? ` Payment already sent (sig=${paymentSig}) - use get_job_result with event_id="${jobId}" to retrieve once ready.`
           : '';
-        return errorResult(`Job ${jobId} failed: ${msg}.${paid}`);
+        const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
+        return errorResult(`${warningBlock}Job ${jobId} failed: ${msg}.${paid}`);
       }
     },
   }),
@@ -839,12 +887,14 @@ export const customerTools: ToolDefinition[] = [
       });
 
       let paymentSig: string | undefined;
+      let paymentWarnings: string[] = [];
       try {
         const result = await awaitJobResult<string>(
           agent,
           {} as never,
           ({ resolve, reject }) => {
             const payHandler = makePaymentFeedbackHandler({
+              ctx,
               agent,
               jobId,
               providerPubkey,
@@ -853,8 +903,12 @@ export const customerTools: ToolDefinition[] = [
               resolveNoWallet: resolve,
               resolveResult: resolve,
               rejectPayment: reject,
-              onPaid: (sig) => {
+              onPaid: (sig, warnings) => {
                 paymentSig = sig;
+                paymentWarnings = warnings;
+                for (const line of warnings) {
+                  logger.warn({ event: 'session_spend_threshold', agent: agent.name }, line);
+                }
               },
             });
             return {
@@ -881,13 +935,15 @@ export const customerTools: ToolDefinition[] = [
           timeout + 5_000,
         );
 
-        return textResult(`event_id=${jobId}\n${result}`);
+        const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
+        return textResult(`${warningBlock}event_id=${jobId}\n${result}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         const paid = paymentSig
           ? ` Payment already sent (sig=${paymentSig}) - use get_job_result with event_id="${jobId}" to retrieve once ready.`
           : '';
-        return errorResult(`Capability purchase failed: ${msg}.${paid}`);
+        const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
+        return errorResult(`${warningBlock}Capability purchase failed: ${msg}.${paid}`);
       }
     },
   }),
