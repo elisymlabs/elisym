@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createLlmClient } from '../src/llm/index.js';
+import { createLlmClient, verifyLlmApiKey } from '../src/llm/index.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -432,6 +432,135 @@ describe('abort signal', () => {
   });
 });
 
+describe('verifyLlmApiKey', () => {
+  it('returns ok for Anthropic 200', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: null,
+      text: () => Promise.resolve('{"data":[]}'),
+    });
+
+    const result = await verifyLlmApiKey('anthropic', 'sk-ant-good');
+
+    expect(result.ok).toBe(true);
+    const call = (globalThis.fetch as any).mock.calls[0];
+    expect(call[0]).toBe('https://api.anthropic.com/v1/models?limit=1');
+    expect(call[1].method).toBe('GET');
+    expect(call[1].headers['x-api-key']).toBe('sk-ant-good');
+    expect(call[1].headers['anthropic-version']).toBe('2023-06-01');
+  });
+
+  it('returns ok for OpenAI 200', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: null,
+      text: () => Promise.resolve('{"data":[]}'),
+    });
+
+    const result = await verifyLlmApiKey('openai', 'sk-openai-good');
+
+    expect(result.ok).toBe(true);
+    const call = (globalThis.fetch as any).mock.calls[0];
+    expect(call[0]).toBe('https://api.openai.com/v1/models');
+    expect(call[1].headers.Authorization).toBe('Bearer sk-openai-good');
+  });
+
+  it('marks Anthropic 401 as invalid', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: () => Promise.resolve('{"error":{"type":"authentication_error"}}'),
+    });
+
+    const result = await verifyLlmApiKey('anthropic', 'sk-ant-bad');
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('invalid');
+      if (result.reason === 'invalid') {
+        expect(result.status).toBe(401);
+        expect(result.body).toContain('authentication_error');
+      }
+    }
+  });
+
+  it('marks OpenAI 401 as invalid', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: () => Promise.resolve('{"error":{"code":"invalid_api_key"}}'),
+    });
+
+    const result = await verifyLlmApiKey('openai', 'sk-openai-bad');
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('invalid');
+    }
+  });
+
+  it('marks 403 as invalid', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: () => Promise.resolve('forbidden'),
+    });
+
+    const result = await verifyLlmApiKey('anthropic', 'sk-ant-forbidden');
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('invalid');
+    }
+  });
+
+  it('marks 5xx as unavailable', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: () => Promise.resolve('service unavailable'),
+    });
+
+    const result = await verifyLlmApiKey('openai', 'sk-whatever');
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('unavailable');
+    }
+  });
+
+  it('marks 429 rate limit as unavailable (not hard-fail)', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: () => Promise.resolve('rate limited'),
+    });
+
+    const result = await verifyLlmApiKey('anthropic', 'sk-ant-ratelimited');
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('unavailable');
+    }
+  });
+
+  it('marks network error as unavailable', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed: ENOTFOUND'));
+
+    const result = await verifyLlmApiKey('anthropic', 'sk-ant-offline');
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('unavailable');
+      if (result.reason === 'unavailable') {
+        expect(result.error).toContain('fetch failed');
+      }
+    }
+  });
+});
+
 describe('reasoning model detection', () => {
   it('uses developer role for o1 model', async () => {
     const client = createLlmClient({
@@ -495,5 +624,69 @@ describe('reasoning model detection', () => {
 
     const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
     expect(body.messages[0].role).toBe('developer');
+  });
+
+  it('treats gpt-5 as reasoning (developer role + max_completion_tokens)', async () => {
+    const client = createLlmClient({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-5',
+      maxTokens: 1024,
+    });
+
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'input');
+
+    const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
+    expect(body.messages[0].role).toBe('developer');
+    expect(body.max_completion_tokens).toBe(1024);
+    expect(body.max_tokens).toBeUndefined();
+  });
+
+  it('treats gpt-5.4 as reasoning', async () => {
+    const client = createLlmClient({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-5.4',
+      maxTokens: 1024,
+    });
+
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'input');
+
+    const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
+    expect(body.messages[0].role).toBe('developer');
+    expect(body.max_completion_tokens).toBe(1024);
+  });
+
+  it('treats gpt-5-mini as reasoning', async () => {
+    const client = createLlmClient({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-5-mini',
+      maxTokens: 1024,
+    });
+
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'input');
+
+    const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
+    expect(body.messages[0].role).toBe('developer');
+  });
+
+  it('does not match gpt-50 or gpt-5x (boundary check)', async () => {
+    const client = createLlmClient({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-50',
+      maxTokens: 1024,
+    });
+
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'input');
+
+    const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
+    expect(body.messages[0].role).toBe('system');
+    expect(body.max_tokens).toBe(1024);
   });
 });

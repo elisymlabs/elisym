@@ -100,11 +100,61 @@ async function fetchWithRetry(
   }
 }
 
+/**
+ * OpenAI reasoning / GPT-5 family detector. These models require
+ * `max_completion_tokens` instead of `max_tokens` and `developer` role
+ * instead of `system`. Matches o-series (o1/o3/o4/...) and gpt-5 family
+ * (gpt-5, gpt-5.4, gpt-5-mini, ...).
+ */
+function isReasoningModel(model: string): boolean {
+  return /^o\d/.test(model) || /^gpt-5(\b|[-.])/.test(model);
+}
+
 export function createLlmClient(config: LlmConfig): LlmClient {
   if (config.provider === 'anthropic') {
     return new AnthropicClient(config);
   }
   return new OpenAIClient(config);
+}
+
+export type LlmKeyVerification =
+  | { ok: true }
+  | { ok: false; reason: 'invalid'; status: number; body: string }
+  | { ok: false; reason: 'unavailable'; error: string };
+
+/**
+ * Verify that an LLM API key is accepted by the provider before the agent
+ * publishes capabilities. Uses `GET /v1/models` - free, authenticated, and
+ * returns 401/403 when the key is invalid.
+ */
+export async function verifyLlmApiKey(
+  provider: LlmProvider,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<LlmKeyVerification> {
+  const url =
+    provider === 'anthropic'
+      ? 'https://api.anthropic.com/v1/models?limit=1'
+      : 'https://api.openai.com/v1/models';
+  const headers: Record<string, string> =
+    provider === 'anthropic'
+      ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+      : { Authorization: `Bearer ${apiKey}` };
+
+  try {
+    const res = await fetchWithTimeout(url, { method: 'GET', headers }, signal);
+    if (res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      return { ok: true };
+    }
+    const body = (await res.text().catch(() => '')).slice(0, 500);
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, reason: 'invalid', status: res.status, body };
+    }
+    return { ok: false, reason: 'unavailable', error: `HTTP ${res.status}: ${body.slice(0, 200)}` };
+  } catch (e: any) {
+    return { ok: false, reason: 'unavailable', error: e?.message ?? String(e) };
+  }
 }
 
 class AnthropicClient implements LlmClient {
@@ -248,7 +298,7 @@ class OpenAIClient implements LlmClient {
   }
 
   async complete(systemPrompt: string, userInput: string, signal?: AbortSignal): Promise<string> {
-    const isReasoning = /^o\d/.test(this.config.model);
+    const isReasoning = isReasoningModel(this.config.model);
     const res = await fetchWithRetry(
       'https://api.openai.com/v1/chat/completions',
       {
@@ -301,7 +351,7 @@ class OpenAIClient implements LlmClient {
       },
     }));
 
-    const isReasoning = /^o\d/.test(this.config.model);
+    const isReasoning = isReasoningModel(this.config.model);
     const res = await fetchWithRetry(
       'https://api.openai.com/v1/chat/completions',
       {
