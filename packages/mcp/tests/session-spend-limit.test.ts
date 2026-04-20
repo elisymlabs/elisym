@@ -7,13 +7,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assetKey, NATIVE_SOL } from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AgentContext, assertCanSpend, recordSpend, remainingForAsset } from '../src/context.js';
+import {
+  AgentContext,
+  assertCanSpend,
+  recordSpend,
+  remainingForAsset,
+  takeSpendWarnings,
+} from '../src/context.js';
 import { buildEffectiveLimits, defaultSpendLimitsMap } from '../src/session-limits.js';
 
 describe('defaultSpendLimitsMap', () => {
-  it('contains 0.1 SOL as the default cap', () => {
+  it('contains 0.5 SOL as the default cap', () => {
     const map = defaultSpendLimitsMap();
-    expect(map.get(assetKey(NATIVE_SOL))).toBe(100_000_000n);
+    expect(map.get(assetKey(NATIVE_SOL))).toBe(500_000_000n);
   });
 });
 
@@ -47,6 +53,73 @@ describe('assertCanSpend / recordSpend / remainingForAsset', () => {
   });
 });
 
+describe('takeSpendWarnings', () => {
+  function freshCtx(limit: bigint): AgentContext {
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits.set(assetKey(NATIVE_SOL), limit);
+    return ctx;
+  }
+
+  it('returns no warnings when no cap is configured', () => {
+    const ctx = new AgentContext();
+    recordSpend(ctx, NATIVE_SOL, 1_000n);
+    expect(takeSpendWarnings(ctx, NATIVE_SOL)).toEqual([]);
+  });
+
+  it('returns no warnings below 50%', () => {
+    const ctx = freshCtx(1_000n);
+    recordSpend(ctx, NATIVE_SOL, 499n);
+    expect(takeSpendWarnings(ctx, NATIVE_SOL)).toEqual([]);
+  });
+
+  it('fires at exactly 50% of cap', () => {
+    const ctx = freshCtx(1_000n);
+    recordSpend(ctx, NATIVE_SOL, 500n);
+    const lines = takeSpendWarnings(ctx, NATIVE_SOL);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/50%/);
+  });
+
+  it('fires both 50% and 80% when a single spend jumps past both', () => {
+    const ctx = freshCtx(1_000n);
+    recordSpend(ctx, NATIVE_SOL, 850n);
+    const lines = takeSpendWarnings(ctx, NATIVE_SOL);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/50%/);
+    expect(lines[1]).toMatch(/80%/);
+  });
+
+  it('is one-shot per threshold across successive spends', () => {
+    const ctx = freshCtx(1_000n);
+    // First crossing at 50%.
+    recordSpend(ctx, NATIVE_SOL, 500n);
+    const first = takeSpendWarnings(ctx, NATIVE_SOL);
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatch(/50%/);
+
+    // Another call still in the 50-80 band - no new warning.
+    recordSpend(ctx, NATIVE_SOL, 200n);
+    expect(takeSpendWarnings(ctx, NATIVE_SOL)).toEqual([]);
+
+    // Crossing 80% fires exactly once.
+    recordSpend(ctx, NATIVE_SOL, 150n);
+    const third = takeSpendWarnings(ctx, NATIVE_SOL);
+    expect(third).toHaveLength(1);
+    expect(third[0]).toMatch(/80%/);
+
+    // Any further call produces no new warnings.
+    recordSpend(ctx, NATIVE_SOL, 10n);
+    expect(takeSpendWarnings(ctx, NATIVE_SOL)).toEqual([]);
+  });
+
+  it('does not double-fire if called twice after the same spend', () => {
+    const ctx = freshCtx(1_000n);
+    recordSpend(ctx, NATIVE_SOL, 800n);
+    expect(takeSpendWarnings(ctx, NATIVE_SOL)).toHaveLength(2);
+    expect(takeSpendWarnings(ctx, NATIVE_SOL)).toEqual([]);
+  });
+});
+
 describe('buildEffectiveLimits', () => {
   let tmpHome: string;
   let origHome: string | undefined;
@@ -72,7 +145,7 @@ describe('buildEffectiveLimits', () => {
 
   it('uses defaults when no config.yaml exists', async () => {
     const map = await buildEffectiveLimits();
-    expect(map.get(assetKey(NATIVE_SOL))).toBe(100_000_000n);
+    expect(map.get(assetKey(NATIVE_SOL))).toBe(500_000_000n);
   });
 
   it('overrides defaults from yaml', async () => {

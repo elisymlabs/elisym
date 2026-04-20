@@ -159,12 +159,14 @@ npx @elisym/mcp disable-agent-switch <agent>
 
 The MCP process enforces a shared cap on total amount spent per asset by `submit_and_pay_job`, `buy_capability`, and `send_payment`. `withdraw` is NOT counted (uses its own gate).
 
-Defaults (hardcoded): `0.1 SOL`. When SPL-token support lands, `10 USDC` will be added.
+Defaults (hardcoded): `0.5 SOL`. When SPL-token support lands, `50 USDC` will be added.
+
+Soft warnings fire once per process when committed spend first crosses 50% and 80% of the cap for an asset; the warning is appended to the tool result and logged at `warn` level. Crossing the cap is still a hard reject (the tool call fails).
 
 Overrides live in `~/.elisym/config.yaml` and are applied at MCP start (restart required):
 
 ```bash
-npx @elisym/mcp set-session-limit 0.5                             # raise SOL cap to 0.5 per session
+npx @elisym/mcp set-session-limit 1                               # raise SOL cap to 1 per session
 npx @elisym/mcp set-session-limit 100 --token usdc --mint <mint>  # once USDC is supported
 npx @elisym/mcp clear-session-limit                               # revert SOL to default
 npx @elisym/mcp clear-session-limit --all                         # revert all assets to defaults
@@ -177,7 +179,7 @@ Manual YAML form:
 session_spend_limits:
   - chain: solana
     token: sol
-    amount: 0.5
+    amount: 1
 ```
 
 The counter is in-memory and shared across every agent in the process, so `switch_agent` cannot bypass the cap. The counter resets on MCP restart. There is no MCP tool to raise the cap - changes require a restart by design.

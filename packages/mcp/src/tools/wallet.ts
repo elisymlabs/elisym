@@ -29,6 +29,7 @@ import {
   reserveSpend,
   resolveAssetFromPaymentRequest,
   rpcUrlFor,
+  takeSpendWarnings,
 } from '../context.js';
 import { logger } from '../logger.js';
 import {
@@ -236,8 +237,15 @@ export const walletTools: ToolDefinition[] = [
         .getBalance(address(agent.solanaKeypair.publicKey))
         .send();
 
+      // One-shot 50% / 80% warnings fire only after successful on-chain commit.
+      const warnings = takeSpendWarnings(ctx, sendAsset);
+      for (const line of warnings) {
+        logger.warn({ event: 'session_spend_threshold', agent: agent.name }, line);
+      }
+      const warningBlock = warnings.length > 0 ? `${warnings.join('\n')}\n` : '';
+
       return textResult(
-        `Payment sent.\n` +
+        `${warningBlock}Payment sent.\n` +
           `  Signature: ${signature}\n` +
           `  Amount: ${formatSol(BigInt(requestData.amount))}\n` +
           `  Recipient: ${requestData.recipient}\n` +

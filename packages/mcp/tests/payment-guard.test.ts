@@ -35,7 +35,7 @@ function buildHandler(overrides: {
   resolveNoWallet?: (msg: string) => void;
   resolveResult?: (msg: string) => void;
   rejectPayment?: (e: Error) => void;
-  onPaid?: (sig: string) => void;
+  onPaid?: (sig: string, warnings: string[]) => void;
   ctx?: AgentContext;
 }) {
   const executor =
@@ -106,7 +106,7 @@ describe('makePaymentFeedbackHandler', () => {
     await Promise.resolve();
 
     expect(onPaid).toHaveBeenCalledTimes(1);
-    expect(onPaid).toHaveBeenCalledWith('sig-1');
+    expect(onPaid).toHaveBeenCalledWith('sig-1', expect.any(Array));
     expect(rejectPayment).not.toHaveBeenCalled();
 
     // Post-paid duplicates are also ignored.
@@ -122,7 +122,7 @@ describe('makePaymentFeedbackHandler', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(executor).toHaveBeenCalledTimes(1);
-    expect(onPaid).toHaveBeenCalledWith('sig-1');
+    expect(onPaid).toHaveBeenCalledWith('sig-1', expect.any(Array));
 
     // Now a late duplicate arrives.
     handler('payment-required', 1000, '{"recipient":"x","amount":1000}');
@@ -180,7 +180,7 @@ describe('makePaymentFeedbackHandler', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(executor).toHaveBeenCalledTimes(2);
-    expect(onPaid).toHaveBeenCalledWith('sig-ok');
+    expect(onPaid).toHaveBeenCalledWith('sig-ok', expect.any(Array));
   });
 
   it('rejects payment when max_price_lamports is not set (confirmation gate)', () => {
@@ -288,6 +288,47 @@ describe('makePaymentFeedbackHandler', () => {
     await Promise.resolve();
 
     expect(ctx.sessionSpent.get(assetKey(NATIVE_SOL)) ?? 0n).toBe(0n);
+  });
+
+  it('passes 50% / 80% warnings to onPaid when thresholds are crossed', async () => {
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits.set(assetKey(NATIVE_SOL), 1_000n);
+
+    const executor = vi.fn(async () => 'sig-cross');
+    const onPaid = vi.fn();
+    const { handler } = buildHandler({ executor, maxPriceLamports: 10_000, ctx, onPaid });
+
+    // Spend 850 of 1000 in one go - crosses both 50% and 80%.
+    handler('payment-required', 850, '{"recipient":"x","amount":850}');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onPaid).toHaveBeenCalledTimes(1);
+    const warnings = onPaid.mock.calls[0]?.[1] as string[];
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/50%/);
+    expect(warnings[1]).toMatch(/80%/);
+  });
+
+  it('does not emit warnings when a failed payment releases the reservation', async () => {
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits.set(assetKey(NATIVE_SOL), 1_000n);
+
+    const executor = vi.fn(async () => {
+      throw new Error('relay down');
+    });
+    const onPaid = vi.fn();
+    const { handler } = buildHandler({ executor, maxPriceLamports: 10_000, ctx, onPaid });
+
+    // Would cross 80% if committed, but the payment fails and releases.
+    handler('payment-required', 850, '{"recipient":"x","amount":850}');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onPaid).not.toHaveBeenCalled();
+    // The warning set must remain empty so a later successful spend at the
+    // same level still triggers the one-shot warnings.
+    expect(ctx.sessionSpendWarnings.get(assetKey(NATIVE_SOL)) ?? new Set()).toEqual(new Set());
   });
 
   it('session spend counter is shared across agents in the same context', async () => {

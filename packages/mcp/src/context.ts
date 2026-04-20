@@ -126,6 +126,13 @@ export class AgentContext {
    */
   sessionSpendLimits = new Map<string, bigint>();
 
+  /**
+   * Per-asset set of spend-percentage thresholds that have already fired a
+   * warning this process. Used to make 50% / 80% warnings one-shot so the
+   * caller does not see the same warning on every payment after crossing.
+   */
+  sessionSpendWarnings = new Map<string, Set<number>>();
+
   /** pending withdraw previews, keyed by nonce id. TTL enforced on lookup. */
   private withdrawalNonces = new Map<string, WithdrawalNonce>();
 
@@ -268,4 +275,46 @@ export function releaseSpend(ctx: AgentContext, asset: Asset, amount: bigint): v
 /** Reverse-lookup from an `AssetKey` to the `Asset` (for display). */
 export function lookupAssetByKey(key: string): Asset | undefined {
   return assetByKey(key);
+}
+
+/**
+ * Percent-of-cap thresholds that emit a soft warning the first time the
+ * committed session spend crosses them. Ordered ascending. Each threshold
+ * fires at most once per process lifetime, per asset.
+ */
+export const SPEND_WARN_THRESHOLDS: readonly number[] = [50, 80];
+
+/**
+ * Compute one-shot warning lines for any threshold newly crossed by the
+ * current committed spend. Mutates `ctx.sessionSpendWarnings` so the same
+ * threshold will not fire twice for the same asset in this process.
+ *
+ * Call AFTER the payment has committed on-chain (not after `reserveSpend`),
+ * so a rolled-back reservation does not consume the warning budget.
+ */
+export function takeSpendWarnings(ctx: AgentContext, asset: Asset): string[] {
+  const key = assetKey(asset);
+  const limit = ctx.sessionSpendLimits.get(key);
+  if (limit === undefined || limit === 0n) {
+    return [];
+  }
+  const spent = ctx.sessionSpent.get(key) ?? 0n;
+  const fired = ctx.sessionSpendWarnings.get(key) ?? new Set<number>();
+  const lines: string[] = [];
+  for (const threshold of SPEND_WARN_THRESHOLDS) {
+    if (fired.has(threshold)) {
+      continue;
+    }
+    // Integer compare to avoid float rounding at the boundary.
+    if (spent * 100n >= limit * BigInt(threshold)) {
+      fired.add(threshold);
+      lines.push(
+        `Warning: session spend reached ${threshold}% of the ${asset.symbol} cap ` +
+          `(${formatAssetAmount(asset, spent)} of ${formatAssetAmount(asset, limit)}). ` +
+          `Process-wide, shared across all agents; restart the MCP server to reset.`,
+      );
+    }
+  }
+  ctx.sessionSpendWarnings.set(key, fired);
+  return lines;
 }

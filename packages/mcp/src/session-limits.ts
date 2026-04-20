@@ -29,9 +29,9 @@ export interface DefaultLimit {
  * together.
  */
 export const DEFAULT_SESSION_LIMITS: readonly DefaultLimit[] = [
-  { asset: NATIVE_SOL, humanAmount: '0.1' },
+  { asset: NATIVE_SOL, humanAmount: '0.5' },
   // When USDC support lands (@elisym/sdk `USDC_SOLANA_DEVNET` + payment
-  // strategy), add: { asset: USDC_SOLANA_DEVNET, humanAmount: '10' }.
+  // strategy), add: { asset: USDC_SOLANA_DEVNET, humanAmount: '50' }.
 ];
 
 /** Materialize DEFAULT_SESSION_LIMITS into a Map<AssetKey, rawBigint>. */
