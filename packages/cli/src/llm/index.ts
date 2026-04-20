@@ -100,6 +100,16 @@ async function fetchWithRetry(
   }
 }
 
+/**
+ * OpenAI reasoning / GPT-5 family detector. These models require
+ * `max_completion_tokens` instead of `max_tokens` and `developer` role
+ * instead of `system`. Matches o-series (o1/o3/o4/...) and gpt-5 family
+ * (gpt-5, gpt-5.4, gpt-5-mini, ...).
+ */
+function isReasoningModel(model: string): boolean {
+  return /^o\d/.test(model) || /^gpt-5(\b|[-.])/.test(model);
+}
+
 export function createLlmClient(config: LlmConfig): LlmClient {
   if (config.provider === 'anthropic') {
     return new AnthropicClient(config);
@@ -288,7 +298,7 @@ class OpenAIClient implements LlmClient {
   }
 
   async complete(systemPrompt: string, userInput: string, signal?: AbortSignal): Promise<string> {
-    const isReasoning = /^o\d/.test(this.config.model);
+    const isReasoning = isReasoningModel(this.config.model);
     const res = await fetchWithRetry(
       'https://api.openai.com/v1/chat/completions',
       {
@@ -341,7 +351,7 @@ class OpenAIClient implements LlmClient {
       },
     }));
 
-    const isReasoning = /^o\d/.test(this.config.model);
+    const isReasoning = isReasoningModel(this.config.model);
     const res = await fetchWithRetry(
       'https://api.openai.com/v1/chat/completions',
       {

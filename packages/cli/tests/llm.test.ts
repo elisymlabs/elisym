@@ -625,4 +625,68 @@ describe('reasoning model detection', () => {
     const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
     expect(body.messages[0].role).toBe('developer');
   });
+
+  it('treats gpt-5 as reasoning (developer role + max_completion_tokens)', async () => {
+    const client = createLlmClient({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-5',
+      maxTokens: 1024,
+    });
+
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'input');
+
+    const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
+    expect(body.messages[0].role).toBe('developer');
+    expect(body.max_completion_tokens).toBe(1024);
+    expect(body.max_tokens).toBeUndefined();
+  });
+
+  it('treats gpt-5.4 as reasoning', async () => {
+    const client = createLlmClient({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-5.4',
+      maxTokens: 1024,
+    });
+
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'input');
+
+    const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
+    expect(body.messages[0].role).toBe('developer');
+    expect(body.max_completion_tokens).toBe(1024);
+  });
+
+  it('treats gpt-5-mini as reasoning', async () => {
+    const client = createLlmClient({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-5-mini',
+      maxTokens: 1024,
+    });
+
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'input');
+
+    const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
+    expect(body.messages[0].role).toBe('developer');
+  });
+
+  it('does not match gpt-50 or gpt-5x (boundary check)', async () => {
+    const client = createLlmClient({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-50',
+      maxTokens: 1024,
+    });
+
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'input');
+
+    const body = JSON.parse((globalThis.fetch as any).mock.calls[0][1].body);
+    expect(body.messages[0].role).toBe('system');
+    expect(body.max_tokens).toBe(1024);
+  });
 });
