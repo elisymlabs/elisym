@@ -107,6 +107,46 @@ export function createLlmClient(config: LlmConfig): LlmClient {
   return new OpenAIClient(config);
 }
 
+export type LlmKeyVerification =
+  | { ok: true }
+  | { ok: false; reason: 'invalid'; status: number; body: string }
+  | { ok: false; reason: 'unavailable'; error: string };
+
+/**
+ * Verify that an LLM API key is accepted by the provider before the agent
+ * publishes capabilities. Uses `GET /v1/models` - free, authenticated, and
+ * returns 401/403 when the key is invalid.
+ */
+export async function verifyLlmApiKey(
+  provider: LlmProvider,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<LlmKeyVerification> {
+  const url =
+    provider === 'anthropic'
+      ? 'https://api.anthropic.com/v1/models?limit=1'
+      : 'https://api.openai.com/v1/models';
+  const headers: Record<string, string> =
+    provider === 'anthropic'
+      ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+      : { Authorization: `Bearer ${apiKey}` };
+
+  try {
+    const res = await fetchWithTimeout(url, { method: 'GET', headers }, signal);
+    if (res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      return { ok: true };
+    }
+    const body = (await res.text().catch(() => '')).slice(0, 500);
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, reason: 'invalid', status: res.status, body };
+    }
+    return { ok: false, reason: 'unavailable', error: `HTTP ${res.status}: ${body.slice(0, 200)}` };
+  } catch (e: any) {
+    return { ok: false, reason: 'unavailable', error: e?.message ?? String(e) };
+  }
+}
+
 class AnthropicClient implements LlmClient {
   private totalIn = 0;
   private totalOut = 0;

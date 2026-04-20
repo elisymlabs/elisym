@@ -38,7 +38,7 @@ import {
   RECOVERY_INTERVAL_SECS,
 } from '../helpers.js';
 import { JobLedger } from '../ledger.js';
-import { createLlmClient } from '../llm';
+import { createLlmClient, verifyLlmApiKey, type LlmProvider } from '../llm';
 import { createLogger } from '../logging.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SkillRegistry, type SkillContext } from '../skill';
@@ -127,6 +127,28 @@ export async function cmdStart(
       `  ! No LLM API key. Set ${loaded.yaml.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} env var or update the agent's secrets.\n`,
     );
     process.exit(1);
+  }
+
+  // -- Step 5b: Verify LLM API key is accepted by the provider --
+  // A valid key is required before we publish capabilities to Nostr -
+  // otherwise the agent advertises itself as available while every job
+  // would fail at first LLM call with a 401.
+  const llmProvider = loaded.yaml.llm.provider as LlmProvider;
+  const keyEnvVar = llmProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+  process.stdout.write(`  Verifying ${llmProvider} API key... `);
+  const verification = await verifyLlmApiKey(llmProvider, loaded.secrets.llm_api_key);
+  if (verification.ok) {
+    console.log('ok');
+  } else if (verification.reason === 'invalid') {
+    console.log('INVALID');
+    console.error(`  ! ${llmProvider} rejected the API key (HTTP ${verification.status}).`);
+    console.error(`    Update it via \`elisym profile\` or set ${keyEnvVar} to a valid key.\n`);
+    process.exit(1);
+  } else {
+    console.log('unavailable');
+    console.warn(
+      `  ! Could not verify ${llmProvider} API key (${verification.error}). Continuing - jobs will fail if the key is invalid.\n`,
+    );
   }
 
   // -- Step 6: Load and register all skills --
