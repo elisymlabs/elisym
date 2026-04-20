@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { SolanaPaymentStrategy } from '@elisym/sdk';
+import { formatAssetAmount, NATIVE_SOL, SolanaPaymentStrategy, type Asset } from '@elisym/sdk';
 import { getTransferSolInstruction } from '@solana-program/system';
 import {
   type Rpc,
@@ -20,7 +20,16 @@ import {
 } from '@solana/kit';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
-import { AgentContext, explorerClusterFor, fetchProtocolConfig, rpcUrlFor } from '../context.js';
+import {
+  AgentContext,
+  explorerClusterFor,
+  fetchProtocolConfig,
+  lookupAssetByKey,
+  releaseSpend,
+  reserveSpend,
+  resolveAssetFromPaymentRequest,
+  rpcUrlFor,
+} from '../context.js';
 import { logger } from '../logger.js';
 import {
   checkLen,
@@ -82,6 +91,31 @@ function assertSolanaAddress(field: string, value: string): void {
 
 const paymentStrategy = new SolanaPaymentStrategy();
 
+/**
+ * One line per asset for the per-session spend block in `get_balance`.
+ * Skips assets with no activity and no cap to keep the output quiet.
+ */
+function formatSessionSpendLines(ctx: AgentContext): string[] {
+  const keys = new Set<string>([...ctx.sessionSpent.keys(), ...ctx.sessionSpendLimits.keys()]);
+  const lines: string[] = [];
+  for (const key of keys) {
+    const asset: Asset = lookupAssetByKey(key) ?? NATIVE_SOL;
+    const spent = ctx.sessionSpent.get(key) ?? 0n;
+    const limit = ctx.sessionSpendLimits.get(key);
+    if (limit !== undefined) {
+      const remaining = limit > spent ? limit - spent : 0n;
+      lines.push(
+        `Session (${asset.symbol}, shared): ${formatAssetAmount(asset, spent)} spent / ${formatAssetAmount(asset, limit)} cap (${formatAssetAmount(asset, remaining)} remaining)`,
+      );
+    } else if (spent > 0n) {
+      lines.push(
+        `Session (${asset.symbol}, shared): ${formatAssetAmount(asset, spent)} spent (no cap)`,
+      );
+    }
+  }
+  return lines;
+}
+
 export const walletTools: ToolDefinition[] = [
   defineTool({
     name: 'get_balance',
@@ -100,10 +134,14 @@ export const walletTools: ToolDefinition[] = [
       const { value: balanceLamports } = await rpc.getBalance(walletAddress).send();
       const balance = Number(balanceLamports);
 
+      const sessionLines = formatSessionSpendLines(ctx);
+      const sessionBlock = sessionLines.length > 0 ? `\n${sessionLines.join('\n')}` : '';
+
       return textResult(
         `Address: ${agent.solanaKeypair.publicKey}\n` +
           `Network: ${agent.network}\n` +
-          `Balance: ${formatSol(BigInt(balance))} (${balance} lamports)`,
+          `Balance: ${formatSol(BigInt(balance))} (${balance} lamports)` +
+          sessionBlock,
       );
     },
   }),
@@ -154,25 +192,45 @@ export const walletTools: ToolDefinition[] = [
         return errorResult(`Payment validation failed: ${validation.message}`);
       }
 
-      const signer = await agentSigner(agent.solanaKeypair.secretKey);
+      // Session-wide spend cap - reserve atomically before signing so two
+      // concurrent send_payment calls cannot both pass a stale read-only check.
+      // Released on any failure below; committed implicitly on success.
+      const sendAsset = resolveAssetFromPaymentRequest(requestData);
+      const sendAmount = BigInt(requestData.amount);
+      try {
+        reserveSpend(ctx, sendAsset, sendAmount);
+      } catch (e) {
+        return errorResult(e instanceof Error ? e.message : String(e));
+      }
+
+      // Release the reservation on any failure before the tx is confirmed.
+      // After `sendAndConfirm` resolves the funds have moved on-chain and the
+      // reservation must stand even if the subsequent balance fetch fails.
       const rpc = rpcFor(agent);
+      let signature: string;
+      try {
+        const signer = await agentSigner(agent.solanaKeypair.secretKey);
 
-      const signedTx = await paymentStrategy.buildTransaction(
-        requestData,
-        signer,
-        rpc,
-        protocolConfig,
-      );
+        const signedTx = await paymentStrategy.buildTransaction(
+          requestData,
+          signer,
+          rpc,
+          protocolConfig,
+        );
 
-      const httpUrl = rpcUrlFor(agent.network);
-      const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
-      const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
-      await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
-        commitment: 'confirmed',
-      });
-      const signature = getSignatureFromTransaction(
-        signedTx as Parameters<typeof getSignatureFromTransaction>[0],
-      );
+        const httpUrl = rpcUrlFor(agent.network);
+        const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
+        const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
+        await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
+          commitment: 'confirmed',
+        });
+        signature = getSignatureFromTransaction(
+          signedTx as Parameters<typeof getSignatureFromTransaction>[0],
+        );
+      } catch (e) {
+        releaseSpend(ctx, sendAsset, sendAmount);
+        throw e;
+      }
 
       const { value: balanceLamports } = await rpc
         .getBalance(address(agent.solanaKeypair.publicKey))

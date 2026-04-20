@@ -9,8 +9,15 @@ import {
 } from '@solana/kit';
 import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
-import type { AgentInstance } from '../context.js';
-import { explorerClusterFor, fetchProtocolConfig, rpcUrlFor } from '../context.js';
+import type { AgentContext, AgentInstance } from '../context.js';
+import {
+  explorerClusterFor,
+  fetchProtocolConfig,
+  releaseSpend,
+  reserveSpend,
+  resolveAssetFromPaymentRequest,
+  rpcUrlFor,
+} from '../context.js';
 import { logger } from '../logger.js';
 import {
   sanitizeUntrusted,
@@ -234,6 +241,7 @@ export interface PaymentFeedbackHandler {
 }
 
 export function makePaymentFeedbackHandler(opts: {
+  ctx: AgentContext;
   agent: AgentInstance;
   jobId: string;
   providerPubkey: string;
@@ -338,6 +346,22 @@ export function makePaymentFeedbackHandler(opts: {
       );
       return;
     }
+    // Session-wide spend cap: reserve the amount atomically before broadcasting.
+    // `signedAmount` already includes the protocol fee, so the counter reflects
+    // total wallet outflow. Reserving (check + increment in one step) closes the
+    // race where two concurrent handlers both pass a read-only check against a
+    // stale counter.
+    const asset = resolveAssetFromPaymentRequest(parsedRequest as PaymentRequestData);
+    let reservedAmount: bigint | undefined;
+    if (signedAmount !== undefined) {
+      try {
+        reserveSpend(opts.ctx, asset, BigInt(signedAmount));
+        reservedAmount = BigInt(signedAmount);
+      } catch (e) {
+        opts.rejectPayment(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+    }
     paying = true;
     exec(opts.agent, paymentRequest, opts.jobId, opts.providerPubkey, opts.expectedRecipient)
       .then((sig) => {
@@ -348,6 +372,12 @@ export function makePaymentFeedbackHandler(opts: {
       })
       .catch((e: unknown) => {
         paying = false;
+        // Only release if the tx never committed. If the `.then` body threw
+        // (e.g. inside `onPaid`) AFTER `paid = true`, the funds are already
+        // on-chain and the reservation must stand.
+        if (reservedAmount !== undefined && !paid) {
+          releaseSpend(opts.ctx, asset, reservedAmount);
+        }
         const msg = e instanceof Error ? e.message : String(e);
         opts.rejectPayment(new Error(`Payment failed: ${msg}`));
       });
@@ -700,6 +730,7 @@ export const customerTools: ToolDefinition[] = [
           {} as never,
           ({ resolve, reject }) => {
             const payHandler = makePaymentFeedbackHandler({
+              ctx,
               agent,
               jobId,
               providerPubkey,
@@ -845,6 +876,7 @@ export const customerTools: ToolDefinition[] = [
           {} as never,
           ({ resolve, reject }) => {
             const payHandler = makePaymentFeedbackHandler({
+              ctx,
               agent,
               jobId,
               providerPubkey,

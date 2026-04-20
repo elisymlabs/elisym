@@ -1,8 +1,17 @@
 /**
  * AgentContext - shared state for all MCP tools.
  */
-import { ElisymClient, ElisymIdentity, getProtocolConfig, getProtocolProgramId } from '@elisym/sdk';
-import type { ProtocolConfigInput } from '@elisym/sdk';
+import {
+  assetByKey,
+  assetKey,
+  ElisymClient,
+  ElisymIdentity,
+  formatAssetAmount,
+  getProtocolConfig,
+  getProtocolProgramId,
+  NATIVE_SOL,
+} from '@elisym/sdk';
+import type { Asset, PaymentRequestData, ProtocolConfigInput } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 
 /**
@@ -101,6 +110,22 @@ export class AgentContext {
   /** Stricter rate limiter for withdrawals (3 calls per 60s). */
   withdrawRateLimiter = new RateLimiter(3, 60);
 
+  /**
+   * Process-wide spend counter per asset. Shared across every agent in
+   * `registry` so `switch_agent` can never reset the tally. Empty at startup;
+   * incremented by `reserveSpend` before a payment is broadcast and decremented
+   * by `releaseSpend` if that payment fails, so the counter reflects committed
+   * plus in-flight outflow.
+   */
+  sessionSpent = new Map<string, bigint>();
+
+  /**
+   * Process-wide spend caps per asset, materialized at startup from hardcoded
+   * defaults and `~/.elisym/config.yaml` overrides. An absent entry means
+   * "no cap for this asset" (spend is allowed unconditionally).
+   */
+  sessionSpendLimits = new Map<string, bigint>();
+
   /** pending withdraw previews, keyed by nonce id. TTL enforced on lookup. */
   private withdrawalNonces = new Map<string, WithdrawalNonce>();
 
@@ -156,4 +181,91 @@ export class AgentContext {
     }
     return nonce;
   }
+}
+
+/**
+ * Resolve which `Asset` a `PaymentRequestData` debits. Today every payment
+ * request in the wild is native Solana SOL — the field shape does not yet
+ * distinguish an SPL transfer. Once the SDK extends `PaymentRequestData` with
+ * a currency / mint field, route through `resolveKnownAsset` here.
+ */
+export function resolveAssetFromPaymentRequest(_request: PaymentRequestData): Asset {
+  return NATIVE_SOL;
+}
+
+/**
+ * Remaining subunits that may still be spent for the given asset.
+ * Returns `null` when no cap is configured — callers treat that as unlimited.
+ */
+export function remainingForAsset(ctx: AgentContext, asset: Asset): bigint | null {
+  const key = assetKey(asset);
+  const limit = ctx.sessionSpendLimits.get(key);
+  if (limit === undefined) {
+    return null;
+  }
+  const spent = ctx.sessionSpent.get(key) ?? 0n;
+  return limit > spent ? limit - spent : 0n;
+}
+
+/**
+ * Throw a user-facing error if spending `amount` of `asset` would push the
+ * process-wide counter past its cap. No-op when the asset has no cap.
+ */
+export function assertCanSpend(ctx: AgentContext, asset: Asset, amount: bigint): void {
+  const key = assetKey(asset);
+  const limit = ctx.sessionSpendLimits.get(key);
+  if (limit === undefined) {
+    return;
+  }
+  const spent = ctx.sessionSpent.get(key) ?? 0n;
+  if (spent + amount > limit) {
+    const remaining = limit > spent ? limit - spent : 0n;
+    throw new Error(
+      `Session spend limit reached for ${asset.symbol}: ` +
+        `attempted ${formatAssetAmount(asset, amount)}, ` +
+        `already spent ${formatAssetAmount(asset, spent)} of ${formatAssetAmount(asset, limit)} ` +
+        `(remaining ${formatAssetAmount(asset, remaining)}). ` +
+        'This is a process-wide cap shared across all agents. Restart the MCP server ' +
+        'to reset the counter, or raise the limit in ~/.elisym/config.yaml.',
+    );
+  }
+}
+
+/**
+ * Add `amount` to the per-asset counter. Prefer `reserveSpend` for payment
+ * flows - it bundles the check and the increment so two concurrent tool calls
+ * cannot both pass the cap against a stale counter. Exported for tests that
+ * seed state directly.
+ */
+export function recordSpend(ctx: AgentContext, asset: Asset, amount: bigint): void {
+  const key = assetKey(asset);
+  const prior = ctx.sessionSpent.get(key) ?? 0n;
+  ctx.sessionSpent.set(key, prior + amount);
+}
+
+/**
+ * Atomic check-then-increment. Throws identically to `assertCanSpend` if the
+ * cap would be exceeded; otherwise reserves the amount immediately so a
+ * concurrent caller sees the updated counter. Must be paired with
+ * `releaseSpend` on the failure path so a crashed tx returns the reservation.
+ */
+export function reserveSpend(ctx: AgentContext, asset: Asset, amount: bigint): void {
+  assertCanSpend(ctx, asset, amount);
+  recordSpend(ctx, asset, amount);
+}
+
+/**
+ * Undo a prior `reserveSpend` / `recordSpend`. Saturates at zero so a buggy
+ * over-release cannot drive the counter negative.
+ */
+export function releaseSpend(ctx: AgentContext, asset: Asset, amount: bigint): void {
+  const key = assetKey(asset);
+  const prior = ctx.sessionSpent.get(key) ?? 0n;
+  const next = prior > amount ? prior - amount : 0n;
+  ctx.sessionSpent.set(key, next);
+}
+
+/** Reverse-lookup from an `AssetKey` to the `Asset` (for display). */
+export function lookupAssetByKey(key: string): Asset | undefined {
+  return assetByKey(key);
 }

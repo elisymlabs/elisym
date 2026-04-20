@@ -1,3 +1,4 @@
+import { assetKey, NATIVE_SOL } from '@elisym/sdk';
 /**
  * regression tests for the single-shot payment guard.
  *
@@ -11,7 +12,7 @@
  * times the payment would be broadcast. They never touch Solana or Nostr.
  */
 import { describe, it, expect, vi } from 'vitest';
-import type { AgentInstance } from '../src/context.js';
+import { AgentContext, type AgentInstance } from '../src/context.js';
 import { makePaymentFeedbackHandler } from '../src/tools/customer.js';
 
 function stubAgent(hasSolana = true): AgentInstance {
@@ -35,6 +36,7 @@ function buildHandler(overrides: {
   resolveResult?: (msg: string) => void;
   rejectPayment?: (e: Error) => void;
   onPaid?: (sig: string) => void;
+  ctx?: AgentContext;
 }) {
   const executor =
     overrides.executor ?? vi.fn(async () => 'mock-signature-' + Math.random().toString(36));
@@ -42,7 +44,9 @@ function buildHandler(overrides: {
   const resolveResult = overrides.resolveResult ?? vi.fn();
   const rejectPayment = overrides.rejectPayment ?? vi.fn();
   const onPaid = overrides.onPaid ?? vi.fn();
+  const ctx = overrides.ctx ?? new AgentContext();
   const { onFeedback: handler, onResultReceived } = makePaymentFeedbackHandler({
+    ctx,
     agent: stubAgent(overrides.hasSolana ?? true),
     jobId: 'job-abc',
     providerPubkey: 'a'.repeat(64),
@@ -62,6 +66,7 @@ function buildHandler(overrides: {
     resolveResult,
     rejectPayment,
     onPaid,
+    ctx,
   };
 }
 
@@ -235,5 +240,83 @@ describe('makePaymentFeedbackHandler', () => {
     // payment-required without paymentRequest is also ignored.
     handler('payment-required', 1000, undefined);
     expect(executor).not.toHaveBeenCalled();
+  });
+
+  it('rejects payment when session spend limit would be exceeded', () => {
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits.set(assetKey(NATIVE_SOL), 1_000n);
+    ctx.sessionSpent.set(assetKey(NATIVE_SOL), 900n);
+
+    const executor = vi.fn(async () => 'sig-should-not-happen');
+    const { handler, rejectPayment } = buildHandler({
+      executor,
+      maxPriceLamports: 10_000,
+      ctx,
+    });
+
+    handler('payment-required', 500, '{"recipient":"x","amount":500}');
+    expect(executor).not.toHaveBeenCalled();
+    expect(rejectPayment).toHaveBeenCalledTimes(1);
+    expect(rejectPayment.mock.calls[0]?.[0].message).toMatch(/Session spend limit reached/);
+  });
+
+  it('increments session spend counter only after successful payment', async () => {
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits.set(assetKey(NATIVE_SOL), 1_000n);
+
+    const executor = vi.fn(async () => 'sig-ok');
+    const { handler } = buildHandler({ executor, maxPriceLamports: 10_000, ctx });
+
+    handler('payment-required', 400, '{"recipient":"x","amount":400}');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(ctx.sessionSpent.get(assetKey(NATIVE_SOL))).toBe(400n);
+  });
+
+  it('does not increment counter when payment executor fails', async () => {
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits.set(assetKey(NATIVE_SOL), 1_000n);
+
+    const executor = vi.fn(async () => {
+      throw new Error('relay down');
+    });
+    const { handler } = buildHandler({ executor, maxPriceLamports: 10_000, ctx });
+
+    handler('payment-required', 400, '{"recipient":"x","amount":400}');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(ctx.sessionSpent.get(assetKey(NATIVE_SOL)) ?? 0n).toBe(0n);
+  });
+
+  it('session spend counter is shared across agents in the same context', async () => {
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits.set(assetKey(NATIVE_SOL), 1_000n);
+
+    // Agent A spends 600.
+    const execA = vi.fn(async () => 'sig-a');
+    const { handler: handlerA } = buildHandler({
+      executor: execA,
+      maxPriceLamports: 10_000,
+      ctx,
+    });
+    handlerA('payment-required', 600, '{"recipient":"x","amount":600}');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(ctx.sessionSpent.get(assetKey(NATIVE_SOL))).toBe(600n);
+
+    // Agent B tries to spend 500 - would push shared counter to 1100, over the 1000 cap.
+    const execB = vi.fn(async () => 'sig-b-should-not-happen');
+    const { handler: handlerB, rejectPayment: rejectB } = buildHandler({
+      executor: execB,
+      maxPriceLamports: 10_000,
+      ctx,
+    });
+    handlerB('payment-required', 500, '{"recipient":"y","amount":500}');
+    expect(execB).not.toHaveBeenCalled();
+    expect(rejectB).toHaveBeenCalledTimes(1);
+    expect(rejectB.mock.calls[0]?.[0].message).toMatch(/Session spend limit reached/);
   });
 });

@@ -29,6 +29,11 @@ export function homeElisymDir(): string {
   return join(homedir(), ELISYM_DIRNAME);
 }
 
+/** ~/.elisym/config.yaml — global (not per-agent) config file. */
+export function globalConfigPath(): string {
+  return join(homeElisymDir(), 'config.yaml');
+}
+
 /**
  * Walk up from `startDir` looking for `.elisym/` directory.
  * Stops at (a) the first `.git` directory/file, (b) `$HOME`, (c) filesystem root,
