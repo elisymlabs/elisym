@@ -150,10 +150,10 @@ describe('buildEffectiveLimits', () => {
 
   it('overrides defaults from yaml', async () => {
     writeGlobalYaml(
-      'session_spend_limits:\n' + '  - chain: solana\n' + '    token: sol\n' + '    amount: 0.5\n',
+      'session_spend_limits:\n' + '  - chain: solana\n' + '    token: sol\n' + '    amount: 1.5\n',
     );
     const map = await buildEffectiveLimits();
-    expect(map.get(assetKey(NATIVE_SOL))).toBe(500_000_000n);
+    expect(map.get(assetKey(NATIVE_SOL))).toBe(1_500_000_000n);
   });
 
   it('throws on unknown asset in yaml', async () => {

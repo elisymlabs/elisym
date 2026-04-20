@@ -14,6 +14,7 @@ import {
   ElisymIdentity,
   KNOWN_ASSETS,
   RELAYS,
+  assetByKey,
   assetKey,
   formatAssetAmount,
   loadGlobalConfig,
@@ -436,7 +437,7 @@ async function listSessionLimits(): Promise<void> {
     return;
   }
   for (const [key, raw] of effective) {
-    const asset = KNOWN_ASSETS.find((a) => assetKey(a) === key);
+    const asset = assetByKey(key);
     let origin: string;
     if (overrides.has(key)) {
       origin = `overridden in ${path}`;
