@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { NATIVE_SOL } from '@elisym/sdk';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { AgentRuntime, type RuntimeConfig } from '../src/runtime.js';
@@ -79,12 +80,13 @@ function makeJob(id: string): IncomingJob {
   };
 }
 
-function makeFakeSkill(name: string, result: string, priceLamports = 0): Skill {
+function makeFakeSkill(name: string, result: string, priceSubunits = 0): Skill {
   return {
     name,
     description: `Fake ${name} skill`,
     capabilities: ['text-gen'],
-    priceLamports,
+    priceSubunits,
+    asset: NATIVE_SOL,
     execute: vi.fn().mockResolvedValue({ data: result }),
   };
 }
@@ -465,7 +467,8 @@ describe('AgentRuntime', () => {
         name: 'fail-skill',
         description: 'Fails',
         capabilities: ['text-gen'],
-        priceLamports: 0,
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
         execute: vi.fn().mockRejectedValue(new Error('Anthropic API error: 429 rate limited')),
       };
       const registry = makeFakeRegistry(failingSkill);
@@ -498,7 +501,8 @@ describe('AgentRuntime', () => {
         name: 'fail-skill',
         description: 'Fails',
         capabilities: ['text-gen'],
-        priceLamports: 0,
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
         execute: vi.fn().mockRejectedValue(new Error('No skill matched')),
       };
       const registry = makeFakeRegistry(failingSkill);
@@ -674,7 +678,8 @@ describe('AgentRuntime', () => {
         name: 'slow',
         description: 'Slow',
         capabilities: ['text-gen'],
-        priceLamports: 0,
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
         execute: vi
           .fn()
           .mockImplementation(
@@ -728,7 +733,8 @@ describe('AgentRuntime', () => {
         name: 'hang',
         description: 'Hangs',
         capabilities: ['text-gen'],
-        priceLamports: 0,
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
         execute: vi.fn().mockImplementation(
           (_input: any, ctx: any) =>
             new Promise((_resolve, reject) => {

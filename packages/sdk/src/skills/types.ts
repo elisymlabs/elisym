@@ -60,7 +60,10 @@ export interface Skill {
   name: string;
   description: string;
   capabilities: string[];
-  priceLamports: bigint;
+  /** Price in subunits of `asset` (lamports for SOL, 1e-6 USDC for USDC). */
+  priceSubunits: bigint;
+  /** Asset the price is denominated in (NATIVE_SOL or USDC_SOLANA_DEVNET, etc.). */
+  asset: import('../payment/assets').Asset;
   image?: string;
   imageFile?: string;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;

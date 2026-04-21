@@ -5,7 +5,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assetKey, NATIVE_SOL } from '@elisym/sdk';
+import { assetKey, NATIVE_SOL, USDC_SOLANA_DEVNET } from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AgentContext,
@@ -20,6 +20,12 @@ describe('defaultSpendLimitsMap', () => {
   it('contains 0.5 SOL as the default cap', () => {
     const map = defaultSpendLimitsMap();
     expect(map.get(assetKey(NATIVE_SOL))).toBe(500_000_000n);
+  });
+
+  it('contains 50 USDC as the default cap', () => {
+    const map = defaultSpendLimitsMap();
+    // 50 USDC * 10^6 subunits = 50_000_000
+    expect(map.get(assetKey(USDC_SOLANA_DEVNET))).toBe(50_000_000n);
   });
 });
 

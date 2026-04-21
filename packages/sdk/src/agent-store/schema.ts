@@ -14,11 +14,16 @@ export const AgentNameSchema = z
   .max(LIMITS.MAX_AGENT_NAME_LENGTH)
   .regex(AGENT_NAME_PATTERN, 'alphanumeric, underscore, or hyphen only');
 
+const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
+
 export const PaymentSchema = z.object({
   chain: z.literal('solana'),
   network: z.enum(['devnet']),
   address: z.string().min(1),
+  /** Lowercase token id ('sol', 'usdc'). Absent => native SOL. */
   token: z.string().optional(),
+  /** SPL mint (base58). Required when `token` is an SPL token. */
+  mint: z.string().regex(BASE58_RE, 'must be base58').optional(),
 });
 
 export const LlmSchema = z.object({

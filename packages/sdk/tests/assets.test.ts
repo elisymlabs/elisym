@@ -35,14 +35,16 @@ describe('resolveKnownAsset / assetByKey', () => {
   });
 
   it('returns undefined for unknown combinations', () => {
-    expect(resolveKnownAsset('solana', 'usdc')).toBeUndefined();
+    expect(resolveKnownAsset('solana', 'btc')).toBeUndefined();
     expect(resolveKnownAsset('ethereum', 'eth')).toBeUndefined();
     expect(assetByKey('nope:nope')).toBeUndefined();
   });
 
-  it('KNOWN_ASSETS currently exposes only native SOL', () => {
-    expect(KNOWN_ASSETS).toHaveLength(1);
+  it('KNOWN_ASSETS exposes SOL and USDC (devnet)', () => {
+    expect(KNOWN_ASSETS).toHaveLength(2);
     expect(KNOWN_ASSETS[0]).toBe(NATIVE_SOL);
+    expect(KNOWN_ASSETS[1]?.token).toBe('usdc');
+    expect(KNOWN_ASSETS[1]?.mint).toBe('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
   });
 });
 

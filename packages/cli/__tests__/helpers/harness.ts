@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { NATIVE_SOL } from '@elisym/sdk';
 import { vi } from 'vitest';
 import { JobLedger } from '../../src/ledger.js';
 import { AgentRuntime, type RuntimeConfig } from '../../src/runtime.js';
@@ -24,7 +25,8 @@ export function makeFakeSkill(result: string): Skill {
     name: 'integration-skill',
     description: 'integration skill',
     capabilities: ['text-gen'],
-    priceLamports: 0,
+    priceSubunits: 0,
+    asset: NATIVE_SOL,
     execute: vi.fn().mockResolvedValue({ data: result }),
   };
 }

@@ -9,7 +9,7 @@ import {
   formatAssetAmount,
   getProtocolConfig,
   getProtocolProgramId,
-  NATIVE_SOL,
+  resolveAssetFromPaymentRequest as sdkResolveAssetFromPaymentRequest,
 } from '@elisym/sdk';
 import type { Asset, PaymentRequestData, ProtocolConfigInput } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
@@ -92,7 +92,12 @@ export interface WithdrawalNonce {
   destination: string;
   /** Raw amount string as provided by the user (e.g. "0.5" or "all"). */
   amountRaw: string;
-  /** Lamports computed at preview time - used for display only, not for match verification. */
+  /** Asset to withdraw. Defaults to 'sol' for back-compat with pre-USDC nonces. */
+  token?: 'sol' | 'usdc';
+  /**
+   * Resolved subunits at preview time - used for display only, not for match
+   * verification. For SOL this is lamports; for USDC this is 1e-6 USDC.
+   */
   lamports: bigint;
   createdAt: number;
 }
@@ -191,13 +196,16 @@ export class AgentContext {
 }
 
 /**
- * Resolve which `Asset` a `PaymentRequestData` debits. Today every payment
- * request in the wild is native Solana SOL — the field shape does not yet
- * distinguish an SPL transfer. Once the SDK extends `PaymentRequestData` with
- * a currency / mint field, route through `resolveKnownAsset` here.
+ * Resolve which `Asset` a `PaymentRequestData` debits.
+ *
+ * Thin delegate to the SDK helper: reads `request.asset` (new multi-asset
+ * wire field) and maps it to a known `Asset`. Absent `asset` => `NATIVE_SOL`
+ * (back-compat with payment requests published before multi-asset support).
+ * Unknown asset keys throw; session-spend call sites treat that as a hard
+ * failure rather than silently counting the spend against SOL.
  */
-export function resolveAssetFromPaymentRequest(_request: PaymentRequestData): Asset {
-  return NATIVE_SOL;
+export function resolveAssetFromPaymentRequest(request: PaymentRequestData): Asset {
+  return sdkResolveAssetFromPaymentRequest(request);
 }
 
 /**

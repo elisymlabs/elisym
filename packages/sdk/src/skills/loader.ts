@@ -2,6 +2,13 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { LAMPORTS_PER_SOL } from '../constants';
+import {
+  type Asset,
+  NATIVE_SOL,
+  USDC_SOLANA_DEVNET,
+  parseAssetAmount,
+  resolveKnownAsset,
+} from '../payment/assets';
 import { ScriptSkill, type SkillToolDef } from './scriptSkill';
 import type { Skill } from './types';
 
@@ -12,6 +19,10 @@ export interface SkillFrontmatter {
   description?: unknown;
   capabilities?: unknown;
   price?: unknown;
+  /** Lowercase token id ('sol', 'usdc'). Defaults to 'sol' for back-compat. */
+  token?: unknown;
+  /** SPL mint (base58). Optional - resolved from known assets when omitted. */
+  mint?: unknown;
   image?: unknown;
   image_file?: unknown;
   tools?: unknown;
@@ -22,7 +33,9 @@ export interface ParsedSkill {
   name: string;
   description: string;
   capabilities: string[];
-  priceLamports: bigint;
+  /** Price in subunits of `asset`. */
+  priceSubunits: bigint;
+  asset: Asset;
   systemPrompt: string;
   tools: SkillToolDef[];
   maxToolRounds: number;
@@ -51,6 +64,49 @@ function solToLamports(sol: string | number): bigint {
     throw new Error(`Invalid SOL amount: ${sol}`);
   }
   return BigInt(Math.round(asNumber * LAMPORTS_PER_SOL));
+}
+
+/**
+ * Resolve the asset a SKILL.md declares.
+ *
+ * - `token` absent or `'sol'` => native SOL (NATIVE_SOL).
+ * - `token: 'usdc'` (+ optional `mint`) => resolved via `resolveKnownAsset`;
+ *   falls back to `USDC_SOLANA_DEVNET` when `mint` is omitted so operators
+ *   don't need to memorize the devnet mint address.
+ * - Any unknown `token` throws.
+ */
+function resolveSkillAsset(skillName: string, token: unknown, mint: unknown): Asset {
+  if (token === undefined || token === null) {
+    return NATIVE_SOL;
+  }
+  if (typeof token !== 'string' || token.length === 0) {
+    throw new Error(`SKILL.md "${skillName}": "token" must be a non-empty string`);
+  }
+  let mintString: string | undefined;
+  if (mint === undefined || mint === null) {
+    mintString = undefined;
+  } else if (typeof mint === 'string') {
+    mintString = mint;
+  } else {
+    throw new Error(`SKILL.md "${skillName}": "mint" must be a base58 string`);
+  }
+
+  const normalized = token.toLowerCase();
+  if (normalized === 'sol') {
+    return NATIVE_SOL;
+  }
+  if (normalized === 'usdc' && mintString === undefined) {
+    return USDC_SOLANA_DEVNET;
+  }
+  const resolved = resolveKnownAsset('solana', normalized, mintString);
+  if (!resolved) {
+    const display = mintString ? `solana:${normalized}:${mintString}` : `solana:${normalized}`;
+    throw new Error(
+      `SKILL.md "${skillName}": unknown asset ${display}. ` +
+        `Known assets: sol, usdc (devnet mint 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU).`,
+    );
+  }
+  return resolved;
 }
 
 export function parseSkillMd(content: string): {
@@ -166,23 +222,42 @@ export function validateSkillFrontmatter(
     capabilities.push(capability);
   }
 
-  let priceLamports: bigint;
+  const asset = resolveSkillAsset(frontmatter.name, frontmatter.token, frontmatter.mint);
+
+  let priceSubunits: bigint;
   if (frontmatter.price === undefined || frontmatter.price === null) {
     if (!options.allowFreeSkills) {
       throw new Error(
-        `SKILL.md "${frontmatter.name}": "price" is required (SOL; e.g. 0.002). Free skills are not supported on the protocol yet.`,
+        `SKILL.md "${frontmatter.name}": "price" is required (${asset.symbol}; e.g. ${
+          asset === NATIVE_SOL ? '0.002' : '0.05'
+        }). Free skills are not supported on the protocol yet.`,
       );
     }
-    priceLamports = 0n;
+    priceSubunits = 0n;
   } else {
     const priceRaw = frontmatter.price;
     if (typeof priceRaw !== 'number' && typeof priceRaw !== 'string') {
       throw new Error(`SKILL.md "${frontmatter.name}": "price" must be a number or numeric string`);
     }
-    priceLamports = solToLamports(priceRaw);
-    if (priceLamports <= 0n && !options.allowFreeSkills) {
+    const priceString = typeof priceRaw === 'number' ? String(priceRaw) : priceRaw;
+    if (asset === NATIVE_SOL) {
+      // Preserve historical rounding behaviour: number * LAMPORTS_PER_SOL +
+      // Math.round. `parseAssetAmount` would reject non-positive inputs before
+      // we could check `allowFreeSkills`, so we keep the legacy path for SOL
+      // and introduce the strict parser only for new token types.
+      priceSubunits = solToLamports(priceRaw);
+    } else {
+      try {
+        priceSubunits = parseAssetAmount(asset, priceString);
+      } catch (error) {
+        throw new Error(
+          `SKILL.md "${frontmatter.name}": ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (priceSubunits <= 0n && !options.allowFreeSkills) {
       throw new Error(
-        `SKILL.md "${frontmatter.name}": price must be > 0 SOL (got ${priceRaw}); free skills are not yet supported`,
+        `SKILL.md "${frontmatter.name}": price must be > 0 ${asset.symbol} (got ${priceRaw}); free skills are not yet supported`,
       );
     }
   }
@@ -218,7 +293,8 @@ export function validateSkillFrontmatter(
     name: frontmatter.name,
     description: frontmatter.description,
     capabilities,
-    priceLamports,
+    priceSubunits,
+    asset,
     systemPrompt,
     tools,
     maxToolRounds,
@@ -264,7 +340,8 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions 
           name: parsed.name,
           description: parsed.description,
           capabilities: parsed.capabilities,
-          priceLamports: parsed.priceLamports,
+          priceSubunits: parsed.priceSubunits,
+          asset: parsed.asset,
           skillDir: entryPath,
           systemPrompt: parsed.systemPrompt,
           tools: parsed.tools,

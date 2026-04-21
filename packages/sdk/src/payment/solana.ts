@@ -1,5 +1,12 @@
 import { getTransferSolInstruction } from '@solana-program/system';
 import {
+  ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
+  TOKEN_PROGRAM_ADDRESS,
+  findAssociatedTokenPda,
+  getCreateAssociatedTokenIdempotentInstruction,
+  getTransferCheckedInstruction,
+} from '@solana-program/token';
+import {
   type Address,
   type Rpc,
   type Signature,
@@ -20,11 +27,13 @@ import {
 import { getProtocolConfig } from '../config/onchain';
 import { DEFAULTS, LIMITS } from '../constants';
 import type {
+  PaymentAssetRef,
   PaymentRequestData,
   PaymentValidationError,
   VerifyOptions,
   VerifyResult,
 } from '../types';
+import { type Asset, NATIVE_SOL, resolveAssetFromPaymentRequest } from './assets';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
 import { parsePaymentRequest } from './schema';
@@ -83,7 +92,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     recipientAddress: string,
     amount: number,
     config: ProtocolConfigInput,
-    options?: { expirySecs?: number },
+    options?: { expirySecs?: number; asset?: Asset },
   ): PaymentRequestData {
     assertConfig(config);
     if (!isValidSolanaAddress(recipientAddress)) {
@@ -98,6 +107,15 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
 
     const feeAmount = calculateProtocolFee(amount, config.feeBps);
     const reference = generateReference();
+    const assetRef: PaymentAssetRef | undefined =
+      options?.asset && options.asset !== NATIVE_SOL
+        ? {
+            chain: options.asset.chain,
+            token: options.asset.token,
+            mint: options.asset.mint,
+            decimals: options.asset.decimals,
+          }
+        : undefined;
 
     return {
       recipient: recipientAddress,
@@ -107,6 +125,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       fee_amount: feeAmount,
       created_at: Math.floor(Date.now() / 1000),
       expiry_secs: expirySecs,
+      ...(assetRef ? { asset: assetRef } : {}),
     };
   }
 
@@ -132,6 +151,20 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       return { code: 'invalid_amount', message: parsed.error.message };
     }
     const data: PaymentRequestData = parsed.data;
+
+    // Reject payment requests that reference an asset the SDK doesn't know
+    // about - the customer cannot safely build a transaction without knowing
+    // the wire format (System transfer vs SPL TransferChecked).
+    if (data.asset) {
+      try {
+        resolveAssetFromPaymentRequest(data);
+      } catch (error) {
+        return {
+          code: 'invalid_asset',
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
 
     // Defense in depth: the Zod schema only enforces base58 + length, not
     // the canonical 32-byte ed25519 check that `isAddress` performs.
@@ -262,9 +295,10 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     if (!Number.isInteger(computeUnitLimit) || computeUnitLimit <= 0) {
       throw new Error(`Invalid computeUnitLimit: ${computeUnitLimit}. Must be a positive integer.`);
     }
-    // Build payment instructions first - this is synchronous and surfaces
-    // shape errors (e.g. fee >= amount) before any RPC round-trip.
-    const paymentInstructions = buildPaymentInstructions(paymentRequest, payerSigner);
+    // Build payment instructions first - this surfaces shape errors (e.g. fee
+    // >= amount) and, for SPL assets, derives the ATAs, before any RPC
+    // round-trip that depends on them.
+    const paymentInstructions = await buildPaymentInstructions(paymentRequest, payerSigner);
 
     const priorityFeeMicroLamports =
       options?.priorityFeeMicroLamports ??
@@ -348,6 +382,17 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       };
     }
 
+    let asset: Asset;
+    try {
+      asset = resolveAssetFromPaymentRequest(paymentRequest);
+    } catch (error) {
+      return {
+        verified: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const mint = asset.mint;
+
     if (options?.txSignature) {
       return this._verifyBySignature(
         rpc,
@@ -357,6 +402,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
         treasury,
         expectedNet,
         feeAmount,
+        mint,
         options?.retries ?? DEFAULTS.VERIFY_RETRIES,
         options?.intervalMs ?? DEFAULTS.VERIFY_INTERVAL_MS,
       );
@@ -369,6 +415,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       treasury,
       expectedNet,
       feeAmount,
+      mint,
       options?.retries ?? DEFAULTS.VERIFY_BY_REF_RETRIES,
       options?.intervalMs ?? DEFAULTS.VERIFY_BY_REF_INTERVAL_MS,
     );
@@ -382,6 +429,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     treasuryAddress: string,
     expectedNet: number,
     expectedFee: number,
+    mint: string | undefined,
     retries: number,
     intervalMs: number,
   ): Promise<VerifyResult> {
@@ -407,15 +455,18 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
           };
         }
 
-        const verdict = checkBalanceDiff({
+        const verdict = checkTxDiff({
           accountKeys: tx.transaction.message.accountKeys as readonly string[],
           preBalances: tx.meta.preBalances as readonly bigint[],
           postBalances: tx.meta.postBalances as readonly bigint[],
+          preTokenBalances: tx.meta.preTokenBalances as readonly TokenBalanceEntry[] | undefined,
+          postTokenBalances: tx.meta.postTokenBalances as readonly TokenBalanceEntry[] | undefined,
           referenceKey,
           recipientAddress,
           treasuryAddress,
           expectedNet,
           expectedFee,
+          mint,
         });
         if (verdict.ok) {
           return { verified: true, txSignature: txSignature as string };
@@ -441,6 +492,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     treasuryAddress: string,
     expectedNet: number,
     expectedFee: number,
+    mint: string | undefined,
     retries: number,
     intervalMs: number,
   ): Promise<VerifyResult> {
@@ -478,15 +530,22 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
             if (!tx?.meta || tx.meta.err) {
               continue;
             }
-            const verdict = checkBalanceDiff({
+            const verdict = checkTxDiff({
               accountKeys: tx.transaction.message.accountKeys as readonly string[],
               preBalances: tx.meta.preBalances as readonly bigint[],
               postBalances: tx.meta.postBalances as readonly bigint[],
+              preTokenBalances: tx.meta.preTokenBalances as
+                | readonly TokenBalanceEntry[]
+                | undefined,
+              postTokenBalances: tx.meta.postTokenBalances as
+                | readonly TokenBalanceEntry[]
+                | undefined,
               referenceKey,
               recipientAddress,
               treasuryAddress,
               expectedNet,
               expectedFee,
+              mint,
             });
             if (verdict.ok) {
               return { verified: true, txSignature: sig as string };
@@ -510,20 +569,31 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
   }
 }
 
-interface BalanceDiffInput {
+interface TokenBalanceEntry {
+  accountIndex: number;
+  mint: string;
+  owner?: string;
+  uiTokenAmount: { amount: string };
+}
+
+interface TxDiffInput {
   accountKeys: readonly string[];
   preBalances: readonly bigint[];
   postBalances: readonly bigint[];
+  preTokenBalances?: readonly TokenBalanceEntry[];
+  postTokenBalances?: readonly TokenBalanceEntry[];
   referenceKey: string;
   recipientAddress: string;
   treasuryAddress: string;
   expectedNet: number;
   expectedFee: number;
+  /** SPL mint for token transfers. `undefined` => native SOL path. */
+  mint?: string;
 }
 
 type BalanceVerdict = { ok: true } | { ok: false; reason: string };
 
-function checkBalanceDiff(input: BalanceDiffInput): BalanceVerdict {
+function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   const balanceCount = input.preBalances.length;
   const keyToIdx = new Map<string, number>();
   for (let i = 0; i < Math.min(input.accountKeys.length, balanceCount); i++) {
@@ -536,6 +606,11 @@ function checkBalanceDiff(input: BalanceDiffInput): BalanceVerdict {
   if (!keyToIdx.has(input.referenceKey)) {
     return { ok: false, reason: 'Reference key not found in transaction - possible replay' };
   }
+
+  if (input.mint) {
+    return checkTokenBalanceDiff(input);
+  }
+
   const recipientIdx = keyToIdx.get(input.recipientAddress);
   if (recipientIdx === undefined) {
     return { ok: false, reason: 'Recipient not found in transaction' };
@@ -570,6 +645,53 @@ function checkBalanceDiff(input: BalanceDiffInput): BalanceVerdict {
   return { ok: true };
 }
 
+function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
+  const mint = input.mint;
+  if (!mint) {
+    return { ok: false, reason: 'Expected mint for SPL verification, got none' };
+  }
+  const pre = input.preTokenBalances ?? [];
+  const post = input.postTokenBalances ?? [];
+
+  const tokenDelta = (ownerAddress: string): bigint => {
+    // Pre-entry may be absent when the ATA is created inside the same tx
+    // (first-ever payment to this recipient). Missing => 0.
+    const preEntry = pre.find((entry) => entry.owner === ownerAddress && entry.mint === mint);
+    const postEntry = post.find((entry) => entry.owner === ownerAddress && entry.mint === mint);
+    if (!postEntry) {
+      return -1n;
+    }
+    const preAmount = preEntry ? BigInt(preEntry.uiTokenAmount.amount) : 0n;
+    const postAmount = BigInt(postEntry.uiTokenAmount.amount);
+    return postAmount - preAmount;
+  };
+
+  const recipientDelta = tokenDelta(input.recipientAddress);
+  if (recipientDelta === -1n) {
+    return { ok: false, reason: 'Recipient token account not found in transaction' };
+  }
+  if (recipientDelta < BigInt(input.expectedNet)) {
+    return {
+      ok: false,
+      reason: `Recipient received ${recipientDelta.toString()} tokens, expected >= ${input.expectedNet}`,
+    };
+  }
+
+  if (input.expectedFee > 0) {
+    const treasuryDelta = tokenDelta(input.treasuryAddress);
+    if (treasuryDelta === -1n) {
+      return { ok: false, reason: 'Treasury token account not found in transaction' };
+    }
+    if (treasuryDelta < BigInt(input.expectedFee)) {
+      return {
+        ok: false,
+        reason: `Treasury received ${treasuryDelta.toString()} tokens, expected >= ${input.expectedFee}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 function bigIntDelta(post: bigint | undefined, pre: bigint | undefined): bigint {
   const postValue = post === undefined ? 0n : BigInt(post);
   const preValue = pre === undefined ? 0n : BigInt(pre);
@@ -581,19 +703,29 @@ function waitMs(ms: number): Promise<void> {
 }
 
 /**
- * Build the System program transfer instructions for a payment request.
+ * Build the transfer instructions for a payment request.
  *
- * Returns the provider-amount transfer (with the payment reference attached
- * as a read-only, non-signer account) and, if present, the protocol-fee
- * transfer. Exposed so callers and tests can inspect amounts before signing.
+ * For native SOL (no `paymentRequest.asset` or asset=NATIVE_SOL), emits System
+ * program `TransferSol` instructions with the payment reference attached as a
+ * read-only, non-signer account so providers can detect the payment via
+ * `getSignaturesForAddress(reference)`.
+ *
+ * For SPL assets (USDC on Solana), emits:
+ *   1. `CreateAssociatedTokenIdempotent` for the recipient ATA (funded by payer);
+ *   2. `CreateAssociatedTokenIdempotent` for the treasury ATA if a protocol fee applies;
+ *   3. `TransferChecked` from payer ATA to recipient ATA, with `reference` as an
+ *      extra read-only account (canonical Solana Pay pattern);
+ *   4. `TransferChecked` from payer ATA to treasury ATA if a fee applies.
+ *
+ * Async because SPL ATAs are PDAs and `findAssociatedTokenPda` is async.
  *
  * Caller is responsible for validating `paymentRequest` upstream;
  * `buildTransaction` already does that before invoking this helper.
  */
-export function buildPaymentInstructions(
+export async function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
   payerSigner: Signer,
-): readonly unknown[] {
+): Promise<readonly unknown[]> {
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);
   const feeAmount = paymentRequest.fee_amount ?? 0;
@@ -608,26 +740,110 @@ export function buildPaymentInstructions(
     );
   }
 
-  const providerTransferIx = getTransferSolInstruction({
-    source: payerSigner,
-    destination: recipient,
+  // Native SOL path - unchanged from the pre-USDC behaviour.
+  const asset = resolveAssetFromPaymentRequest(paymentRequest);
+  if (!asset.mint) {
+    const providerTransferIx = getTransferSolInstruction({
+      source: payerSigner,
+      destination: recipient,
+      amount: BigInt(providerAmount),
+    });
+    const providerTransferIxWithReference = {
+      ...providerTransferIx,
+      accounts: [
+        ...providerTransferIx.accounts,
+        { address: reference, role: AccountRole.READONLY },
+      ],
+    };
+
+    const instructions: unknown[] = [providerTransferIxWithReference];
+    if (paymentRequest.fee_address && feeAmount > 0) {
+      instructions.push(
+        getTransferSolInstruction({
+          source: payerSigner,
+          destination: address(paymentRequest.fee_address),
+          amount: BigInt(feeAmount),
+        }),
+      );
+    }
+    return instructions;
+  }
+
+  // SPL path.
+  const mint = address(asset.mint);
+  const payerAddress = payerSigner.address;
+  const [payerAta] = await findAssociatedTokenPda({
+    owner: payerAddress,
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    mint,
+  });
+  const [recipientAta] = await findAssociatedTokenPda({
+    owner: recipient,
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    mint,
+  });
+
+  const instructions: unknown[] = [];
+  instructions.push(
+    getCreateAssociatedTokenIdempotentInstruction(
+      {
+        payer: payerSigner,
+        ata: recipientAta,
+        owner: recipient,
+        mint,
+      },
+      { programAddress: ASSOCIATED_TOKEN_PROGRAM_ADDRESS },
+    ),
+  );
+
+  let treasuryAta: Address | undefined;
+  if (paymentRequest.fee_address && feeAmount > 0) {
+    const treasuryOwner = address(paymentRequest.fee_address);
+    [treasuryAta] = await findAssociatedTokenPda({
+      owner: treasuryOwner,
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      mint,
+    });
+    instructions.push(
+      getCreateAssociatedTokenIdempotentInstruction(
+        {
+          payer: payerSigner,
+          ata: treasuryAta,
+          owner: treasuryOwner,
+          mint,
+        },
+        { programAddress: ASSOCIATED_TOKEN_PROGRAM_ADDRESS },
+      ),
+    );
+  }
+
+  const providerTransferIx = getTransferCheckedInstruction({
+    source: payerAta,
+    mint,
+    destination: recipientAta,
+    authority: payerSigner,
     amount: BigInt(providerAmount),
+    decimals: asset.decimals,
   });
   const providerTransferIxWithReference = {
     ...providerTransferIx,
     accounts: [...providerTransferIx.accounts, { address: reference, role: AccountRole.READONLY }],
   };
+  instructions.push(providerTransferIxWithReference);
 
-  const instructions: unknown[] = [providerTransferIxWithReference];
-  if (paymentRequest.fee_address && feeAmount > 0) {
+  if (treasuryAta && paymentRequest.fee_address && feeAmount > 0) {
     instructions.push(
-      getTransferSolInstruction({
-        source: payerSigner,
-        destination: address(paymentRequest.fee_address),
+      getTransferCheckedInstruction({
+        source: payerAta,
+        mint,
+        destination: treasuryAta,
+        authority: payerSigner,
         amount: BigInt(feeAmount),
+        decimals: asset.decimals,
       }),
     );
   }
+
   return instructions;
 }
 

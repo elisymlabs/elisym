@@ -1,3 +1,4 @@
+import { NATIVE_SOL } from '@elisym/sdk';
 import { describe, it, expect } from 'vitest';
 import { SkillRegistry } from '../src/skill/index.js';
 import type { Skill, SkillInput, SkillOutput, SkillContext } from '../src/skill/index.js';
@@ -7,7 +8,8 @@ function makeSkill(name: string, capabilities: string[]): Skill {
     name,
     description: `${name} skill`,
     capabilities,
-    priceLamports: 0,
+    priceSubunits: 0,
+    asset: NATIVE_SOL,
     async execute(_input: SkillInput, _ctx: SkillContext): Promise<SkillOutput> {
       return { data: `result from ${name}` };
     },

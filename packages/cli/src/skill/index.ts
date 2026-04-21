@@ -2,6 +2,8 @@
  * Skill interface and registry.
  */
 
+import type { Asset } from '@elisym/sdk';
+
 export interface SkillInput {
   data: string;
   inputType: string;
@@ -66,8 +68,16 @@ export interface Skill {
   name: string;
   description: string;
   capabilities: string[];
-  /** Price in lamports (0 = free). Converted from SOL in SKILL.md. */
-  priceLamports: number;
+  /**
+   * Price in subunits of `asset` (0 = free). For SOL: lamports (1e-9 SOL).
+   * For USDC: 1e-6 USDC. Converted from SKILL.md's human-readable `price`.
+   *
+   * Number (not bigint) for ergonomics - realistic agent prices fit well
+   * below `Number.MAX_SAFE_INTEGER` subunits.
+   */
+  priceSubunits: number;
+  /** Asset the price is denominated in (NATIVE_SOL or USDC_SOLANA_DEVNET, etc.). */
+  asset: Asset;
   /** Hero image URL. */
   image?: string;
   /** Local file path for hero image (uploaded on first start). */

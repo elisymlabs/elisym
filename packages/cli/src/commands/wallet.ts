@@ -1,10 +1,42 @@
 /**
- * Wallet command - show balance.
+ * Wallet command - show SOL and USDC balance.
  */
-import { formatSol } from '@elisym/sdk';
+import { USDC_SOLANA_DEVNET, formatAssetAmount, formatSol } from '@elisym/sdk';
 import { loadAgent, listAgents } from '@elisym/sdk/agent-store';
-import { address, createSolanaRpc } from '@solana/kit';
+import { type Rpc, type SolanaRpcApi, address, createSolanaRpc } from '@solana/kit';
 import { getRpcUrl } from '../helpers.js';
+
+async function fetchUsdcBalance(
+  rpc: Rpc<SolanaRpcApi>,
+  owner: ReturnType<typeof address>,
+): Promise<bigint> {
+  const mint = USDC_SOLANA_DEVNET.mint;
+  if (!mint) {
+    return 0n;
+  }
+  try {
+    const response = await rpc
+      .getTokenAccountsByOwner(
+        owner,
+        { mint: address(mint) },
+        { encoding: 'jsonParsed', commitment: 'confirmed' },
+      )
+      .send();
+    let total = 0n;
+    for (const entry of response.value) {
+      const parsed = entry.account.data as
+        | { parsed?: { info?: { tokenAmount?: { amount?: string } } } }
+        | undefined;
+      const raw = parsed?.parsed?.info?.tokenAmount?.amount;
+      if (typeof raw === 'string') {
+        total += BigInt(raw);
+      }
+    }
+    return total;
+  } catch {
+    return 0n;
+  }
+}
 
 export async function cmdWallet(name: string | undefined): Promise<void> {
   const cwd = process.cwd();
@@ -43,9 +75,11 @@ export async function cmdWallet(name: string | undefined): Promise<void> {
   const rpc = createSolanaRpc(rpcUrl);
   const walletAddress = address(solPayment.address);
   const { value: balance } = await rpc.getBalance(walletAddress).send();
+  const usdcBalance = await fetchUsdcBalance(rpc, walletAddress);
 
   console.log(`\n  Agent: ${name}`);
   console.log(`  Network: ${solPayment.network}`);
   console.log(`  Address: ${solPayment.address}`);
-  console.log(`  Balance: ${formatSol(Number(balance))} (${balance} lamports)\n`);
+  console.log(`  SOL balance: ${formatSol(Number(balance))} (${balance} lamports)`);
+  console.log(`  USDC balance: ${formatAssetAmount(USDC_SOLANA_DEVNET, usdcBalance)}\n`);
 }

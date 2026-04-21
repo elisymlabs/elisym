@@ -37,14 +37,18 @@ export {
   pickPercentileFee,
 } from './payment/priorityFee';
 export type { EstimatePriorityFeeOptions } from './payment/priorityFee';
+export { estimateSolFeeLamports, formatFeeBreakdown } from './payment/feeEstimate';
+export type { SolFeeEstimate, EstimateSolFeeOptions } from './payment/feeEstimate';
 export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
 export {
   NATIVE_SOL,
+  USDC_SOLANA_DEVNET,
   KNOWN_ASSETS,
   assetKey,
   assetByKey,
   resolveKnownAsset,
+  resolveAssetFromPaymentRequest,
   parseAssetAmount,
   formatAssetAmount,
 } from './payment/assets';
@@ -123,6 +127,7 @@ export type {
   PingResult,
   // Payment
   PaymentRequestData,
+  PaymentAssetRef,
   VerifyResult,
   VerifyOptions,
   PaymentValidationCode,
