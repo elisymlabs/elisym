@@ -97,15 +97,23 @@ export class SkillRegistry {
   }
 
   route(tags: string[]): Skill | null {
-    // Try to match by capability tags
-    for (const skill of this.skills) {
-      for (const tag of tags) {
-        if (skill.capabilities.some((cap) => cap === tag)) {
-          return skill;
-        }
-      }
+    // Exact match by skill name first - this is the canonical tag the SDK's
+    // `toDTag(skill.name)` attaches to outgoing job requests.
+    for (const tag of tags) {
+      const byName = this.skills.find((skill) => skill.name === tag);
+      if (byName) return byName;
     }
-    // Fall back to default
+    // Then declared capability tags (secondary matching).
+    for (const tag of tags) {
+      const byCap = this.skills.find((skill) => skill.capabilities.includes(tag));
+      if (byCap) return byCap;
+    }
+    // Default fallback only for genuinely untargeted jobs (no specific tag
+    // beyond the 'elisym' protocol marker). A job that *does* carry a
+    // specific capability tag must not silently degrade to a free default -
+    // that was a payment-bypass vector.
+    const hasSpecificTag = tags.some((tag) => tag && tag !== 'elisym');
+    if (hasSpecificTag) return null;
     return this.defaultIndex !== null ? this.skills[this.defaultIndex]! : null;
   }
 

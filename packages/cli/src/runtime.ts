@@ -211,20 +211,22 @@ export class AgentRuntime {
 
     log('Agent runtime started. Listening for jobs...');
 
-    // Wait for shutdown signal
+    // Wait for shutdown signal. SIGINT and SIGTERM share an idempotent
+    // handler so we don't log "Shutting down..." twice when both arrive
+    // (shells sometimes deliver SIGINT+SIGTERM to the whole process group).
     await new Promise<void>((resolve) => {
       this.abortController.signal.addEventListener('abort', () => resolve(), { once: true });
 
-      process.on('SIGINT', () => {
+      let shuttingDown = false;
+      const onSignal = (): void => {
+        if (shuttingDown) return;
+        shuttingDown = true;
         log('Shutting down...');
         this.stop();
         setTimeout(() => process.exit(0), 3000).unref();
-      });
-      process.on('SIGTERM', () => {
-        log('Shutting down...');
-        this.stop();
-        setTimeout(() => process.exit(0), 3000).unref();
-      });
+      };
+      process.on('SIGINT', onSignal);
+      process.on('SIGTERM', onSignal);
     });
   }
 
