@@ -6,6 +6,7 @@ import {
   formatFeeBreakdown,
   NATIVE_SOL,
   SolanaPaymentStrategy,
+  parseAssetAmount,
   resolveAssetFromPaymentRequest as sdkResolveAssetFromPaymentRequest,
   type Asset,
 } from '@elisym/sdk';
@@ -595,7 +596,6 @@ async function handleUsdcWithdraw(
     if (amountRaw.trim().toLowerCase() === 'all') {
       subunits = usdcBalance;
     } else {
-      const { parseAssetAmount } = await import('@elisym/sdk');
       subunits = parseAssetAmount(asset, amountRaw);
     }
   } catch (e) {
