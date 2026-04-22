@@ -66,7 +66,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
       },
       'prompt body',
     );
-    expect(parsed.priceLamports).toBe(2_000_000n);
+    expect(parsed.priceSubunits).toBe(2_000_000n);
     expect(parsed.maxToolRounds).toBe(DEFAULT_MAX_TOOL_ROUNDS);
     expect(parsed.tools).toHaveLength(1);
   });
@@ -92,7 +92,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
       'prompt',
       { allowFreeSkills: true },
     );
-    expect(parsed.priceLamports).toBe(0n);
+    expect(parsed.priceSubunits).toBe(0n);
   });
 
   it('allows missing price when allowFreeSkills is set', () => {
@@ -101,7 +101,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
       'prompt',
       { allowFreeSkills: true },
     );
-    expect(parsed.priceLamports).toBe(0n);
+    expect(parsed.priceSubunits).toBe(0n);
   });
 
   it('rejects unicode-only prompt without crashing', () => {
@@ -205,7 +205,7 @@ You are a summarizer.
     const skills = loadSkillsFromDir(tmpDir);
     expect(skills).toHaveLength(1);
     expect(skills[0]?.name).toBe('summary-skill');
-    expect(skills[0]?.priceLamports).toBe(1_000_000n);
+    expect(skills[0]?.priceSubunits).toBe(1_000_000n);
   });
 
   it('returns an empty array when the directory is missing', () => {
@@ -262,11 +262,51 @@ body
     );
     const skills = loadSkillsFromDir(tmpDir, { allowFreeSkills: true });
     expect(skills).toHaveLength(1);
-    expect(skills[0]?.priceLamports).toBe(0n);
+    expect(skills[0]?.priceSubunits).toBe(0n);
   });
 
   it('ignores entries that are not directories', () => {
     writeFileSync(join(tmpDir, 'not-a-skill.txt'), 'hello', 'utf-8');
+    expect(loadSkillsFromDir(tmpDir)).toEqual([]);
+  });
+
+  it('loads a USDC-priced skill with `token: usdc`', () => {
+    writeSkill(
+      'usdc-summary',
+      `---
+name: usdc-summary
+description: Summarize text for USDC
+capabilities: [summarize]
+price: 0.05
+token: usdc
+---
+
+body
+`,
+    );
+    const skills = loadSkillsFromDir(tmpDir);
+    expect(skills).toHaveLength(1);
+    const skill = skills[0]!;
+    expect(skill.priceSubunits).toBe(50_000n);
+    expect(skill.asset.token).toBe('usdc');
+    expect(skill.asset.symbol).toBe('USDC');
+    expect(skill.asset.decimals).toBe(6);
+  });
+
+  it('rejects a skill with an unknown token', () => {
+    writeSkill(
+      'badtoken',
+      `---
+name: badtoken
+description: bad
+capabilities: [bad]
+price: 0.1
+token: doge
+---
+
+body
+`,
+    );
     expect(loadSkillsFromDir(tmpDir)).toEqual([]);
   });
 });

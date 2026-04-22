@@ -29,6 +29,13 @@ const solanaAddressSchema = z
   .regex(BASE58_RE, 'must be base58')
   .regex(SOLANA_ADDRESS_LENGTH_RE, 'must be 32-44 base58 chars');
 
+const paymentAssetRefSchema = z.object({
+  chain: z.string().min(1),
+  token: z.string().min(1),
+  mint: solanaAddressSchema.optional(),
+  decimals: z.number().int().min(0).max(18),
+});
+
 /**
  * Wire-shape for a NIP-90 payment_request blob, as parsed via JSON.parse.
  *
@@ -50,6 +57,7 @@ export const PaymentRequestSchema = z.object({
     .int()
     .positive()
     .max(MAX_EXPIRY_SECS_SCHEMA, `expiry_secs must be <= ${MAX_EXPIRY_SECS_SCHEMA}`),
+  asset: paymentAssetRefSchema.optional(),
 });
 
 export type ParsedPaymentRequest = z.infer<typeof PaymentRequestSchema>;

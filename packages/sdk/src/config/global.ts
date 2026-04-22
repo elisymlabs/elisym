@@ -1,37 +1,22 @@
 /**
  * Global (not per-agent) config stored at `~/.elisym/config.yaml`.
  *
- * Currently holds only session-spend-limit overrides; other top-level fields
- * may be added later. The loader tolerates a missing file (returns `{}`), but
- * fails fast on malformed YAML or schema violations.
+ * Node.js/Bun only - reads and writes the filesystem. Browser code must not
+ * import this module; import the schemas from `./global-schema` instead, or
+ * the loader/writer from `@elisym/sdk/node`.
  */
 
 import { readFile } from 'node:fs/promises';
 import YAML from 'yaml';
-import { z } from 'zod';
 import { writeFileAtomic } from '../agent-store/writer';
+import { GlobalConfigSchema, type GlobalConfig } from './global-schema';
 
-export const SessionSpendLimitEntrySchema = z
-  .object({
-    chain: z.enum(['solana']),
-    token: z
-      .string()
-      .min(1)
-      .max(16)
-      .regex(/^[a-z0-9]+$/, 'token must be lowercase alphanumeric'),
-    mint: z.string().min(1).max(64).optional(),
-    amount: z.number().positive().finite(),
-  })
-  .strict();
-
-export const GlobalConfigSchema = z
-  .object({
-    session_spend_limits: z.array(SessionSpendLimitEntrySchema).max(16).optional(),
-  })
-  .strict();
-
-export type SessionSpendLimitEntry = z.infer<typeof SessionSpendLimitEntrySchema>;
-export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
+export {
+  GlobalConfigSchema,
+  SessionSpendLimitEntrySchema,
+  type GlobalConfig,
+  type SessionSpendLimitEntry,
+} from './global-schema';
 
 function isEnoent(e: unknown): boolean {
   return (

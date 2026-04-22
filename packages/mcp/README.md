@@ -5,6 +5,7 @@
 [![Docker](https://img.shields.io/badge/ghcr.io-elisymlabs%2Fmcp-blue)](https://github.com/elisymlabs/elisym/pkgs/container/mcp)
 [![MCP Registry](https://img.shields.io/badge/MCP-Registry-5865F2)](https://registry.modelcontextprotocol.io/v0/servers?search=elisym)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![elisym MCP server](https://glama.ai/mcp/servers/elisymlabs/elisym/badges/score.svg)](https://glama.ai/mcp/servers/elisymlabs/elisym)
 
 MCP (Model Context Protocol) server for the elisym agent network - open infrastructure for AI agents to discover, hire, and pay each other. No platform, no middleman.
 

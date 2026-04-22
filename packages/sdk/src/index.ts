@@ -37,14 +37,18 @@ export {
   pickPercentileFee,
 } from './payment/priorityFee';
 export type { EstimatePriorityFeeOptions } from './payment/priorityFee';
+export { estimateSolFeeLamports, formatFeeBreakdown } from './payment/feeEstimate';
+export type { SolFeeEstimate, EstimateSolFeeOptions } from './payment/feeEstimate';
 export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
 export {
   NATIVE_SOL,
+  USDC_SOLANA_DEVNET,
   KNOWN_ASSETS,
   assetKey,
   assetByKey,
   resolveKnownAsset,
+  resolveAssetFromPaymentRequest,
   parseAssetAmount,
   formatAssetAmount,
 } from './payment/assets';
@@ -54,14 +58,11 @@ export type { Asset, Chain } from './payment/assets';
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
 export type { GetProtocolConfigOptions, ProtocolConfig } from './config/onchain';
 
-// --- Global config (~/.elisym/config.yaml) ---
-export {
-  GlobalConfigSchema,
-  SessionSpendLimitEntrySchema,
-  loadGlobalConfig,
-  writeGlobalConfig,
-} from './config/global';
-export type { GlobalConfig, SessionSpendLimitEntry } from './config/global';
+// --- Global config (~/.elisym/config.yaml) schemas ---
+// Node-only loader/writer live in `@elisym/sdk/node`; the schemas stay here so
+// browser code can validate shapes without pulling in `node:fs/promises`.
+export { GlobalConfigSchema, SessionSpendLimitEntrySchema } from './config/global-schema';
+export type { GlobalConfig, SessionSpendLimitEntry } from './config/global-schema';
 
 // --- Primitives ---
 export { ElisymIdentity } from './primitives/identity';
@@ -123,6 +124,7 @@ export type {
   PingResult,
   // Payment
   PaymentRequestData,
+  PaymentAssetRef,
   VerifyResult,
   VerifyOptions,
   PaymentValidationCode,

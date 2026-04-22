@@ -10,6 +10,7 @@ import {
   ElisymClient,
   ElisymIdentity,
   MediaService,
+  formatAssetAmount,
   formatSol,
   RELAYS,
   DEFAULTS,
@@ -166,13 +167,16 @@ export async function cmdStart(
   const registry = new SkillRegistry();
   for (const skill of allSkills) {
     registry.register(skill);
-    const price = skill.priceLamports > 0 ? formatSol(skill.priceLamports) : 'free';
+    const price =
+      skill.priceSubunits > 0
+        ? formatAssetAmount(skill.asset, BigInt(skill.priceSubunits))
+        : 'free';
     console.log(`  * Skill: ${skill.name} [${skill.capabilities.join(', ')}] - ${price}`);
   }
   console.log();
 
   // Validate that paid skills have a Solana address configured.
-  const hasPaid = allSkills.some((s) => s.priceLamports > 0);
+  const hasPaid = allSkills.some((s) => s.priceSubunits > 0);
   if (hasPaid && !solanaAddress) {
     console.error('  ! Paid skills require a Solana address. Run `elisym init` to configure.\n');
     process.exit(1);
@@ -293,7 +297,11 @@ export async function cmdStart(
             chain: 'solana',
             network: walletNetwork,
             address: solanaAddress,
-            job_price: skill.priceLamports,
+            job_price: skill.priceSubunits,
+            token: skill.asset.token,
+            ...(skill.asset.mint ? { mint: skill.asset.mint } : {}),
+            decimals: skill.asset.decimals,
+            symbol: skill.asset.symbol,
           }
         : undefined,
     };

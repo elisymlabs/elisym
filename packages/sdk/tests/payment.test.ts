@@ -11,10 +11,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   PROTOCOL_FEE_BPS,
   PROTOCOL_TREASURY,
+  USDC_SOLANA_DEVNET,
   calculateProtocolFee,
   buildPaymentInstructions,
   SolanaPaymentStrategy,
   ProtocolConfigInput,
+  parsePaymentRequest,
 } from '../src';
 
 const RANDOM_ADDRESS_BYTES = 32;
@@ -224,9 +226,9 @@ describe('buildPaymentInstructions', () => {
     return { address: addressValue };
   }
 
-  it('produces 2 instructions when fee is present', () => {
+  it('produces 2 instructions when fee is present', async () => {
     const signer = makeSigner(makeAddress());
-    const instructions = buildPaymentInstructions(
+    const instructions = await buildPaymentInstructions(
       {
         recipient: makeAddress(),
         amount: 100_000_000,
@@ -241,9 +243,9 @@ describe('buildPaymentInstructions', () => {
     expect(instructions.length).toBe(2);
   });
 
-  it('produces 1 instruction when fee is absent', () => {
+  it('produces 1 instruction when fee is absent', async () => {
     const signer = makeSigner(makeAddress());
-    const instructions = buildPaymentInstructions(
+    const instructions = await buildPaymentInstructions(
       {
         recipient: makeAddress(),
         amount: 100_000_000,
@@ -256,7 +258,7 @@ describe('buildPaymentInstructions', () => {
     expect(instructions.length).toBe(1);
   });
 
-  it('fee + providerAmount === totalAmount for various amounts', () => {
+  it('fee + providerAmount === totalAmount for various amounts', async () => {
     interface TransferIxLike {
       data: Uint8Array;
     }
@@ -266,7 +268,7 @@ describe('buildPaymentInstructions', () => {
     const amounts = [10, 33, 100, 333, 999, 1337, 50_000, 140_000_000, 1_000_000_000];
     for (const amount of amounts) {
       const fee = calculateProtocolFee(amount, PROTOCOL_FEE_BPS);
-      const instructions = buildPaymentInstructions(
+      const instructions = await buildPaymentInstructions(
         {
           recipient: makeAddress(),
           amount,
@@ -285,13 +287,13 @@ describe('buildPaymentInstructions', () => {
     }
   });
 
-  it('attaches reference as read-only non-signer account on provider transfer', () => {
+  it('attaches reference as read-only non-signer account on provider transfer', async () => {
     interface IxLike {
       accounts: ReadonlyArray<{ address: string; role: number }>;
     }
     const reference = makeAddress();
     const signer = makeSigner(makeAddress());
-    const instructions = buildPaymentInstructions(
+    const instructions = await buildPaymentInstructions(
       {
         recipient: makeAddress(),
         amount: 100_000_000,
@@ -739,5 +741,118 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.verified).toBe(false);
       expect(result.error).toContain('exceeds or equals');
     });
+  });
+});
+
+describe('USDC (SPL) payment flow', () => {
+  it('parsePaymentRequest accepts an asset field', () => {
+    const req = {
+      recipient: validAddress,
+      amount: 50_000_000,
+      reference: makeAddress(),
+      fee_address: PROTOCOL_TREASURY,
+      fee_amount: calculateProtocolFee(50_000_000, PROTOCOL_FEE_BPS),
+      created_at: Math.floor(Date.now() / 1000),
+      expiry_secs: 600,
+      asset: {
+        chain: 'solana',
+        token: 'usdc',
+        mint: USDC_SOLANA_DEVNET.mint,
+        decimals: 6,
+      },
+    };
+    const result = parsePaymentRequest(JSON.stringify(req));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.asset?.token).toBe('usdc');
+    }
+  });
+
+  it('parsePaymentRequest without asset stays backwards-compatible (defaults to SOL)', () => {
+    const req = {
+      recipient: validAddress,
+      amount: 100_000_000,
+      reference: makeAddress(),
+      created_at: Math.floor(Date.now() / 1000),
+      expiry_secs: 600,
+    };
+    const result = parsePaymentRequest(JSON.stringify(req));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.asset).toBeUndefined();
+    }
+  });
+
+  it('validatePaymentRequest rejects unknown asset with invalid_asset code', () => {
+    const req = {
+      recipient: validAddress,
+      amount: 50_000_000,
+      reference: makeAddress(),
+      fee_address: PROTOCOL_TREASURY,
+      fee_amount: calculateProtocolFee(50_000_000, PROTOCOL_FEE_BPS),
+      created_at: Math.floor(Date.now() / 1000),
+      expiry_secs: 600,
+      asset: {
+        chain: 'solana',
+        token: 'doge',
+        mint: makeAddress(),
+        decimals: 8,
+      },
+    };
+    const err = payment.validatePaymentRequest(JSON.stringify(req), CONFIG, validAddress);
+    expect(err).not.toBeNull();
+    expect(err?.code).toBe('invalid_asset');
+  });
+
+  it('createPaymentRequest embeds asset when provided', () => {
+    const req = payment.createPaymentRequest(validAddress, 50_000_000, CONFIG, {
+      asset: USDC_SOLANA_DEVNET,
+    });
+    expect(req.asset?.token).toBe('usdc');
+    expect(req.asset?.mint).toBe(USDC_SOLANA_DEVNET.mint);
+    expect(req.asset?.decimals).toBe(6);
+  });
+
+  it('createPaymentRequest omits asset when native SOL is selected', () => {
+    const req = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG);
+    expect(req.asset).toBeUndefined();
+  });
+
+  it('buildPaymentInstructions emits ATA create + TransferChecked for SPL', async () => {
+    const signer = {
+      address: makeAddress(),
+    };
+    const recipient = makeAddress();
+    const reference = makeAddress();
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient,
+        amount: 50_000_000,
+        reference,
+        fee_address: PROTOCOL_TREASURY,
+        fee_amount: calculateProtocolFee(50_000_000, PROTOCOL_FEE_BPS),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'usdc',
+          mint: USDC_SOLANA_DEVNET.mint,
+          decimals: 6,
+        },
+      },
+      signer as never,
+    );
+    // Expect: 2x ATA create (recipient + treasury) + 2x TransferChecked (provider + fee)
+    expect(instructions.length).toBe(4);
+
+    interface IxLike {
+      accounts: ReadonlyArray<{ address: string; role: number }>;
+    }
+    // TransferChecked with reference is ix[2] (after the two ATA creates).
+    const providerIx = instructions[2] as IxLike;
+    const lastAccount = providerIx.accounts[providerIx.accounts.length - 1]!;
+    expect(lastAccount.address).toBe(reference);
+    // AccountRole.READONLY === 0
+    expect(lastAccount.role).toBe(0);
   });
 });

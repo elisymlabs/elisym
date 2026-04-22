@@ -3,8 +3,8 @@
  * `@elisym/sdk/skills` (one source of truth across plugin + CLI) and
  * constructs CLI's `ScriptSkill` wrapper, which in turn delegates
  * execution to the SDK runner. CLI keeps its own Skill interface
- * (`priceLamports: number`) so existing runtime.ts call sites stay
- * byte-for-byte compatible.
+ * (`priceSubunits: number` + `asset`) so existing runtime.ts call sites
+ * stay byte-for-byte compatible while supporting USDC alongside SOL.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -44,7 +44,8 @@ export function loadSkillsFromDir(skillsDir: string): Skill[] {
           parsed.name,
           parsed.description,
           parsed.capabilities,
-          Number(parsed.priceLamports),
+          Number(parsed.priceSubunits),
+          parsed.asset,
           parsed.image,
           parsed.imageFile,
           entryPath,

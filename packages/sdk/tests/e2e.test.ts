@@ -298,7 +298,7 @@ describe('E2E: Targeted job flow', () => {
     // --- Customer step 6: build payment instructions (signing happens wallet-side) ---
     const parsedPayReq = JSON.parse(feedbackResult.payReqJson);
     const customerSigner = makeMockSigner(CUSTOMER_WALLET);
-    const instructions = buildPaymentInstructions(parsedPayReq, customerSigner as never);
+    const instructions = await buildPaymentInstructions(parsedPayReq, customerSigner as never);
     expect(instructions.length).toBe(2);
     const fee = calculateProtocolFee(JOB_PRICE, PROTOCOL_FEE_BPS);
     const netAmount = JOB_PRICE - fee;
@@ -429,7 +429,10 @@ describe('E2E: Broadcast job flow', () => {
     // Customer builds payment instructions (signing happens wallet-side)
     const parsedPayReq = JSON.parse(feedback.payReqJson);
     const customerSigner = makeMockSigner(CUSTOMER_WALLET);
-    const broadcastInstructions = buildPaymentInstructions(parsedPayReq, customerSigner as never);
+    const broadcastInstructions = await buildPaymentInstructions(
+      parsedPayReq,
+      customerSigner as never,
+    );
     expect(broadcastInstructions.length).toBe(2);
 
     // Customer sends payment-completed

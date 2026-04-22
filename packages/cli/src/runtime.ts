@@ -3,14 +3,16 @@
  * Supports per-capability pricing: each capability can have a different price.
  */
 import {
+  NATIVE_SOL,
   SolanaPaymentStrategy,
   calculateProtocolFee,
   createSlidingWindowLimiter,
+  formatAssetAmount,
   getProtocolConfig,
   getProtocolProgramId,
   LIMITS,
 } from '@elisym/sdk';
-import type { ProtocolConfigInput, SlidingWindowLimiter } from '@elisym/sdk';
+import type { Asset, ProtocolConfigInput, SlidingWindowLimiter } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 import pLimit from 'p-limit';
 import { getRpcUrl } from './helpers.js';
@@ -57,7 +59,13 @@ export interface RuntimeCallbacks {
 /** Resolve the price for a job by matching its tags against registered skills. */
 function resolveJobPrice(tags: string[], skills: SkillRegistry): number {
   const skill = skills.route(tags);
-  return skill?.priceLamports ?? 0;
+  return skill?.priceSubunits ?? 0;
+}
+
+/** Resolve the payment asset the matched skill is denominated in. Defaults to SOL. */
+function resolveJobAsset(tags: string[], skills: SkillRegistry): Asset {
+  const skill = skills.route(tags);
+  return skill?.asset ?? NATIVE_SOL;
 }
 
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
@@ -203,20 +211,24 @@ export class AgentRuntime {
 
     log('Agent runtime started. Listening for jobs...');
 
-    // Wait for shutdown signal
+    // Wait for shutdown signal. SIGINT and SIGTERM share an idempotent
+    // handler so we don't log "Shutting down..." twice when both arrive
+    // (shells sometimes deliver SIGINT+SIGTERM to the whole process group).
     await new Promise<void>((resolve) => {
       this.abortController.signal.addEventListener('abort', () => resolve(), { once: true });
 
-      process.on('SIGINT', () => {
+      let shuttingDown = false;
+      const onSignal = (): void => {
+        if (shuttingDown) {
+          return;
+        }
+        shuttingDown = true;
         log('Shutting down...');
         this.stop();
         setTimeout(() => process.exit(0), 3000).unref();
-      });
-      process.on('SIGTERM', () => {
-        log('Shutting down...');
-        this.stop();
-        setTimeout(() => process.exit(0), 3000).unref();
-      });
+      };
+      process.on('SIGINT', onSignal);
+      process.on('SIGTERM', onSignal);
     });
   }
 
@@ -302,6 +314,7 @@ export class AgentRuntime {
 
     // ── Step 1: Resolve per-capability price and collect payment ──
     const jobPrice = resolveJobPrice(job.tags, this.skills);
+    const jobAsset = resolveJobAsset(job.tags, this.skills);
     let netAmount: number | undefined;
     let paymentRequest: string | undefined;
 
@@ -319,12 +332,17 @@ export class AgentRuntime {
     });
 
     if (jobPrice > 0) {
-      const result = await this.collectPayment(job, jobPrice, signal);
+      const result = await this.collectPayment(job, jobPrice, jobAsset, signal);
       netAmount = result.netAmount;
       paymentRequest = result.paymentRequest;
       // Update ledger with payment info
       this.ledger.updatePayment(job.jobId, netAmount, paymentRequest);
-      log(`[${job.jobId.slice(0, 8)}] Payment confirmed: ${netAmount} lamports`);
+      log(
+        `[${job.jobId.slice(0, 8)}] Payment confirmed: ${formatAssetAmount(
+          jobAsset,
+          BigInt(netAmount),
+        )}`,
+      );
       this.callbacks.onPaymentReceived?.(job.jobId, netAmount);
     }
 
@@ -372,6 +390,7 @@ export class AgentRuntime {
   private async collectPayment(
     job: IncomingJob,
     jobPrice: number,
+    jobAsset: Asset,
     signal?: AbortSignal,
   ): Promise<{ netAmount: number; paymentRequest: string }> {
     const log = this.callbacks.onLog ?? console.log;
@@ -387,14 +406,17 @@ export class AgentRuntime {
       this.config.solanaAddress,
       jobPrice,
       protocolConfig,
-      { expirySecs: this.config.paymentTimeoutSecs },
+      { expirySecs: this.config.paymentTimeoutSecs, asset: jobAsset },
     );
     const requestJson = JSON.stringify(request);
 
     const fee = calculateProtocolFee(jobPrice, protocolConfig.feeBps);
     const netAmount = jobPrice - fee;
 
-    log(`[${job.jobId.slice(0, 8)}] Payment required: ${jobPrice} lamports (fee: ${fee})`);
+    log(
+      `[${job.jobId.slice(0, 8)}] Payment required: ${formatAssetAmount(jobAsset, BigInt(jobPrice))} ` +
+        `(fee: ${formatAssetAmount(jobAsset, BigInt(fee))})`,
+    );
 
     // Store payment request reference early for crash recovery
     this.ledger.updatePayment(job.jobId, undefined, requestJson);
@@ -552,11 +574,11 @@ export class AgentRuntime {
         }
 
         // Re-verify payment if reference was stored but confirmation lost to crash
-        if (skill.priceLamports > 0 && !entry.net_amount) {
+        if (skill.priceSubunits > 0 && !entry.net_amount) {
           if (entry.payment_request) {
             const verified = await this.reVerifyPayment(
               entry,
-              skill.priceLamports,
+              skill.priceSubunits,
               log,
               recoveryAbort.signal,
             );
@@ -602,7 +624,7 @@ export class AgentRuntime {
    */
   private async reVerifyPayment(
     entry: ReturnType<JobLedger['pendingJobs']>[number],
-    priceLamports: number,
+    priceSubunits: number,
     log: (msg: string) => void,
     signal?: AbortSignal,
   ): Promise<boolean> {
@@ -641,10 +663,10 @@ export class AgentRuntime {
       }
 
       if (result.verified) {
-        const fee = calculateProtocolFee(priceLamports, protocolConfig.feeBps);
-        const netAmount = priceLamports - fee;
+        const fee = calculateProtocolFee(priceSubunits, protocolConfig.feeBps);
+        const netAmount = priceSubunits - fee;
         this.ledger.updatePayment(entry.job_id, netAmount, entry.payment_request);
-        log(`[${entry.job_id.slice(0, 8)}] Recovery: payment re-verified (${netAmount} lamports)`);
+        log(`[${entry.job_id.slice(0, 8)}] Recovery: payment re-verified (${netAmount} subunits)`);
         return true;
       }
       log(`[${entry.job_id.slice(0, 8)}] Recovery: payment not found on-chain, marking failed`);

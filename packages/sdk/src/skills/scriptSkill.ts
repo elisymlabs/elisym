@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
+import type { Asset } from '../payment/assets';
 import type {
   CompletionResult,
   LlmClient,
@@ -30,7 +31,8 @@ export interface ScriptSkillParams {
   name: string;
   description: string;
   capabilities: string[];
-  priceLamports: bigint;
+  priceSubunits: bigint;
+  asset: Asset;
   skillDir: string;
   systemPrompt: string;
   tools: SkillToolDef[];
@@ -51,7 +53,8 @@ export class ScriptSkill implements Skill {
   name: string;
   description: string;
   capabilities: string[];
-  priceLamports: bigint;
+  priceSubunits: bigint;
+  asset: Asset;
   image?: string;
   imageFile?: string;
   private skillDir: string;
@@ -64,7 +67,8 @@ export class ScriptSkill implements Skill {
     this.name = params.name;
     this.description = params.description;
     this.capabilities = params.capabilities;
-    this.priceLamports = params.priceLamports;
+    this.priceSubunits = params.priceSubunits;
+    this.asset = params.asset;
     this.image = params.image;
     this.imageFile = params.imageFile;
     this.skillDir = params.skillDir;

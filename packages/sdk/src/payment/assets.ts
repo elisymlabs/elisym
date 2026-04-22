@@ -30,16 +30,15 @@ export const NATIVE_SOL: Asset = {
   symbol: 'SOL',
 };
 
-// When SPL-token support lands in the payment strategy, uncomment and add to KNOWN_ASSETS.
-// export const USDC_SOLANA_DEVNET: Asset = {
-//   chain: 'solana',
-//   token: 'usdc',
-//   mint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
-//   decimals: 6,
-//   symbol: 'USDC',
-// };
+export const USDC_SOLANA_DEVNET: Asset = {
+  chain: 'solana',
+  token: 'usdc',
+  mint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+  decimals: 6,
+  symbol: 'USDC',
+};
 
-export const KNOWN_ASSETS: readonly Asset[] = [NATIVE_SOL];
+export const KNOWN_ASSETS: readonly Asset[] = [NATIVE_SOL, USDC_SOLANA_DEVNET];
 
 /** Stable Map key for `Asset`. Same shape regardless of Asset identity. */
 export function assetKey(a: Pick<Asset, 'chain' | 'token' | 'mint'>): string {
@@ -55,6 +54,32 @@ export function resolveKnownAsset(chain: string, token: string, mint?: string): 
 /** Reverse lookup: given an assetKey string, return the known asset or undefined. */
 export function assetByKey(key: string): Asset | undefined {
   return KNOWN_ASSETS.find((asset) => assetKey(asset) === key);
+}
+
+/**
+ * Resolve the asset a payment request targets. Returns `NATIVE_SOL` when the
+ * request has no `asset` field (back-compat with payment requests published
+ * before multi-asset support). Throws when `asset` is present but refers to an
+ * asset that isn't in `KNOWN_ASSETS` - callers that want to tolerate unknown
+ * assets should check `resolveKnownAsset` directly instead.
+ */
+export function resolveAssetFromPaymentRequest(request: {
+  asset?: { chain: string; token: string; mint?: string };
+}): Asset {
+  if (!request.asset) {
+    return NATIVE_SOL;
+  }
+  const found = resolveKnownAsset(request.asset.chain, request.asset.token, request.asset.mint);
+  if (!found) {
+    const display = request.asset.mint
+      ? `${request.asset.chain}:${request.asset.token}:${request.asset.mint}`
+      : `${request.asset.chain}:${request.asset.token}`;
+    throw new Error(
+      `Unknown asset in payment request: ${display}. ` +
+        `Known assets: ${KNOWN_ASSETS.map(assetKey).join(', ')}`,
+    );
+  }
+  return found;
 }
 
 const DECIMAL_RE = /^(\d+\.\d*|\d*\.\d+|\d+)$/;

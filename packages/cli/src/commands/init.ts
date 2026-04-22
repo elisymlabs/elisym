@@ -320,6 +320,14 @@ async function promptYaml(inquirer: {
     },
   ]);
 
+  if (solanaAddress) {
+    console.log(
+      '  The wallet receives every asset on Solana (SOL directly, USDC and other\n' +
+        '  SPL tokens via their ATA). Each skill declares its own price and token\n' +
+        '  in SKILL.md. Fund with SOL via `solana airdrop` or USDC via https://faucet.circle.com.',
+    );
+  }
+
   const { llmProvider } = await inquirer.prompt([
     {
       type: 'list',

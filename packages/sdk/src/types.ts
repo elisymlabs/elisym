@@ -23,8 +23,21 @@ export interface PaymentInfo {
   chain: string;
   network: string;
   address: string;
-  /** Price in lamports (must be non-negative integer). */
+  /**
+   * Price in subunits of the payment asset (non-negative integer).
+   *
+   * Subunit = smallest indivisible unit: 1 lamport for SOL, 1 "cent" (1e-6 USDC)
+   * for USDC. When `token` is omitted, subunits are lamports (back-compat).
+   */
   job_price?: number;
+  /** Lowercase token id (e.g. 'sol', 'usdc'). Absent => native SOL. */
+  token?: string;
+  /** SPL mint / ERC-20 contract. Undefined for native coin. */
+  mint?: string;
+  /** Subunits per whole (9 for SOL, 6 for USDC). */
+  decimals?: number;
+  /** Display symbol (e.g. 'SOL', 'USDC'). */
+  symbol?: string;
 }
 
 /** Agent discovered from the network. */
@@ -116,9 +129,27 @@ export interface PingResult {
 
 // --- Payment ---
 
+/**
+ * Wire-shape reference to an asset inside a payment request.
+ *
+ * Same shape as `Asset` minus the display-only `symbol` field. Absent = native
+ * SOL (back-compat for payment requests published before multi-asset support).
+ */
+export interface PaymentAssetRef {
+  chain: string;
+  token: string;
+  mint?: string;
+  decimals: number;
+}
+
 export interface PaymentRequestData {
   recipient: string;
-  /** Total amount in lamports (must be positive integer). */
+  /**
+   * Total amount in subunits of the payment asset (must be positive integer).
+   *
+   * - For native SOL (asset absent / `token: 'sol'`): lamports (1e-9 SOL).
+   * - For SPL USDC: 1e-6 USDC.
+   */
   amount: number;
   reference: string;
   description?: string;
@@ -128,6 +159,8 @@ export interface PaymentRequestData {
   created_at: number;
   /** Expiry duration in seconds. */
   expiry_secs: number;
+  /** Optional asset identifier. Absent => native SOL (back-compat). */
+  asset?: PaymentAssetRef;
 }
 
 export interface VerifyResult {
@@ -155,7 +188,8 @@ export type PaymentValidationCode =
   | 'fee_address_mismatch'
   | 'fee_amount_mismatch'
   | 'missing_fee'
-  | 'invalid_fee_params';
+  | 'invalid_fee_params'
+  | 'invalid_asset';
 
 export interface PaymentValidationError {
   code: PaymentValidationCode;

@@ -18,8 +18,8 @@ describe('tool registry', () => {
     expect(unique.size).toBe(names.length);
   });
 
-  it('registers exactly 16 tools (ping_agent folded into search/pre-ping)', () => {
-    expect(registeredTools).toHaveLength(16);
+  it('registers exactly 17 tools (ping_agent folded into search/pre-ping; estimate_payment_cost added with USDC)', () => {
+    expect(registeredTools).toHaveLength(17);
   });
 
   it('every registered tool has a Zod schema and a handler', () => {

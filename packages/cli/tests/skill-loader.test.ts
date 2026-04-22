@@ -33,7 +33,7 @@ You are a text summarizer. Provide concise summaries.`,
       expect(skills[0]!.name).toBe('summarizer');
       expect(skills[0]!.description).toBe('Summarize text');
       expect(skills[0]!.capabilities).toEqual(['summarization', 'text-analysis']);
-      expect(skills[0]!.priceLamports).toBe(0); // default free
+      expect(skills[0]!.priceSubunits).toBe(0); // default free
     } finally {
       rmSync(tmp, { recursive: true });
     }
@@ -142,7 +142,7 @@ Premium service.`,
 
       const skills = loadSkillsFromDir(tmp);
       expect(skills).toHaveLength(1);
-      expect(skills[0]!.priceLamports).toBe(10_000_000); // 0.01 SOL
+      expect(skills[0]!.priceSubunits).toBe(10_000_000); // 0.01 SOL
       expect(skills[0]!.image).toBe('https://example.com/hero.png');
     } finally {
       rmSync(tmp, { recursive: true });

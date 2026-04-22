@@ -41,7 +41,21 @@ export interface JobLedgerEntry {
   side: JobSide;
   state: JobState;
   capability: string;
+  /**
+   * Price in subunits of the payment asset, stored as a decimal string
+   * (bigint-safe on disk).
+   *
+   * Kept named `priceLamports` for persistence back-compat: old ledger files
+   * use this name and interpret the value as lamports (SOL subunits). When
+   * `assetKey` is set (new USDC flows), interpret the same string as subunits
+   * of that asset (e.g. 1 USDC = 1_000_000).
+   */
   priceLamports: string;
+  /**
+   * Optional asset key (`solana:sol` / `solana:usdc:<mint>`). Absent =>
+   * native SOL (back-compat with pre-USDC ledger entries).
+   */
+  assetKey?: string;
   rawEventJson?: string;
   customerPubkey?: string;
   providerPubkey?: string;
