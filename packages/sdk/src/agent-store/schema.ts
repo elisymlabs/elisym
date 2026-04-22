@@ -14,16 +14,16 @@ export const AgentNameSchema = z
   .max(LIMITS.MAX_AGENT_NAME_LENGTH)
   .regex(AGENT_NAME_PATTERN, 'alphanumeric, underscore, or hyphen only');
 
-const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
-
+/**
+ * Agent wallet entry. One entry per (chain, network) - the address receives
+ * every asset on that chain (SOL directly, SPL tokens via their ATA derived
+ * from (address, mint)). Per-asset pricing lives in each skill's `SKILL.md`;
+ * the canonical mint registry lives in `KNOWN_ASSETS` (payment/assets.ts).
+ */
 export const PaymentSchema = z.object({
   chain: z.literal('solana'),
   network: z.enum(['devnet']),
   address: z.string().min(1),
-  /** Lowercase token id ('sol', 'usdc'). Absent => native SOL. */
-  token: z.string().optional(),
-  /** SPL mint (base58). Required when `token` is an SPL token. */
-  mint: z.string().regex(BASE58_RE, 'must be base58').optional(),
 });
 
 export const LlmSchema = z.object({

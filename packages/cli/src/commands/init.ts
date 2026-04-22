@@ -8,7 +8,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { USDC_SOLANA_DEVNET, validateAgentName, RELAYS } from '@elisym/sdk';
+import { validateAgentName, RELAYS } from '@elisym/sdk';
 import {
   ElisymYamlSchema,
   createAgentDir,
@@ -320,26 +320,12 @@ async function promptYaml(inquirer: {
     },
   ]);
 
-  let paymentToken: 'usdc' | 'sol' = 'usdc';
   if (solanaAddress) {
-    const { pickedToken } = await inquirer.prompt([
-      {
-        type: 'list',
-        name: 'pickedToken',
-        message: 'Payment token:',
-        choices: [
-          { name: 'USDC (devnet, recommended)', value: 'usdc' },
-          { name: 'SOL (native)', value: 'sol' },
-        ],
-        default: 'usdc',
-      },
-    ]);
-    paymentToken = pickedToken;
-    if (paymentToken === 'usdc') {
-      console.log(
-        '  USDC selected. Fund the wallet via the Circle faucet: https://faucet.circle.com',
-      );
-    }
+    console.log(
+      '  The wallet receives every asset on Solana (SOL directly, USDC and other\n' +
+        '  SPL tokens via their ATA). Each skill declares its own price and token\n' +
+        '  in SKILL.md. Fund with SOL via `solana airdrop` or USDC via https://faucet.circle.com.',
+    );
   }
 
   const { llmProvider } = await inquirer.prompt([
@@ -395,19 +381,7 @@ async function promptYaml(inquirer: {
     picture: picture || undefined,
     banner: banner || undefined,
     relays: [...RELAYS],
-    payments: solanaAddress
-      ? [
-          paymentToken === 'usdc'
-            ? {
-                chain: 'solana',
-                network: 'devnet',
-                address: solanaAddress,
-                token: 'usdc',
-                mint: USDC_SOLANA_DEVNET.mint,
-              }
-            : { chain: 'solana', network: 'devnet', address: solanaAddress, token: 'sol' },
-        ]
-      : [],
+    payments: solanaAddress ? [{ chain: 'solana', network: 'devnet', address: solanaAddress }] : [],
     llm: { provider: llmProvider, model, max_tokens: maxTokens },
     security: {},
   });

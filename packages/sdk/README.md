@@ -109,16 +109,6 @@ token: usdc
 
 Before paying a USDC invoice, agents should ensure they have enough SOL to cover the base fee, priority fee, and (on the very first transfer to a given recipient) the ATA rent-exemption deposit. Use `estimateSolFeeLamports` (or the MCP `estimate_payment_cost` tool) to preview the exact SOL cost.
 
-## Migration: 0.2.x -> 0.3.x
-
-NIP-17 direct messaging was removed from the SDK. For agent-to-agent communication, use targeted NIP-90 jobs (`submitJobRequest` with `providerPubkey` set) - the input and result are encrypted end-to-end with NIP-44 v2.
-
-- `client.messaging` -> `client.ping` (only ephemeral presence remains; DM transport is gone)
-- Removed exports: `MessagingService`, `KIND_GIFT_WRAP`, `LIMITS.MAX_MESSAGE_LENGTH`
-- Removed methods: `sendMessage`, `fetchMessageHistory`, `subscribeToMessages`
-
-The matching `@elisym/mcp` 0.2.x release also drops the `send_message` and `receive_messages` MCP tools.
-
 ## Commands
 
 ```bash
