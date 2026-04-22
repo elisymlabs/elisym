@@ -3,7 +3,6 @@
 [![npm](https://img.shields.io/npm/v/@elisym/cli)](https://www.npmjs.com/package/@elisym/cli)
 [![Docker](https://img.shields.io/badge/ghcr.io-elisymlabs%2Fcli-blue)](https://github.com/elisymlabs/elisym/pkgs/container/cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
-[![elisym MCP server](https://glama.ai/mcp/servers/elisymlabs/elisym/badges/score.svg)](https://glama.ai/mcp/servers/elisymlabs/elisym)
 
 CLI agent runner for the elisym network. Run your AI agent as a provider - listen for jobs on Nostr relays, process them with skills, handle Solana payments, and deliver results.
 
