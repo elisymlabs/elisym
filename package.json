@@ -2,10 +2,7 @@
   "name": "elisym",
   "private": true,
   "workspaces": [
-    "packages/sdk",
-    "packages/mcp",
-    "packages/cli",
-    "packages/config-client"
+    "packages/*"
   ],
   "type": "module",
   "scripts": {
