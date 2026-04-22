@@ -191,15 +191,11 @@ export function useAgentFeedback(agentPubkeys: string[]) {
         const capability = directCapability ?? (jobId ? jobMeta.get(jobId)?.capability : undefined);
         if (capability) {
           const capStats = map[providerPubkey].byCapability;
-          if (!capStats[capability]) {
-            capStats[capability] = {
-              positive: 0,
-              negative: 0,
-              total: 0,
-              purchases: 0,
-            };
+          const existing = capStats[capability];
+          const cap = existing ?? { positive: 0, negative: 0, total: 0, purchases: 0 };
+          if (!existing) {
+            capStats[capability] = cap;
           }
-          const cap = capStats[capability]!;
           if (isPositive) {
             cap.positive++;
           } else {

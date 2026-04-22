@@ -260,6 +260,11 @@ export function useBuyCapability({
               if (status !== 'payment-required' || !paymentRequestJson) {
                 return;
               }
+              if (!publicKey) {
+                toast.error('Wallet disconnected - reconnect and retry', { id: toastId });
+                setBuying(false);
+                return;
+              }
 
               try {
                 // Fetch on-chain protocol config (fee + treasury) so the
@@ -284,10 +289,10 @@ export function useBuyCapability({
                 // requires a Solana Kit Signer, which wallet-adapter does not
                 // expose - the wallet signs itself via sendTransaction. So we
                 // build an unsigned web3.js Transaction with matching shape.
-                const tx = buildPaymentTransaction(paymentRequest, publicKey!);
+                const tx = buildPaymentTransaction(paymentRequest, publicKey);
                 const { blockhash } = await connection.getLatestBlockhash();
                 tx.recentBlockhash = blockhash;
-                tx.feePayer = publicKey!;
+                tx.feePayer = publicKey;
 
                 toast.loading('Approve the transaction in your wallet...', { id: toastId });
 

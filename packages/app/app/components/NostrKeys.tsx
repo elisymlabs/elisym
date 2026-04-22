@@ -49,15 +49,15 @@ export function NostrKeys() {
       client.pool
         .querySync({ kinds: [0], authors: [pubkey] } as Filter)
         .then((events) => {
-          if (events.length > 0) {
-            try {
-              const profile = JSON.parse(events[0]!.content);
-              const name = profile.name || profile.display_name || profile.displayName;
-              if (name && name !== entry.name) {
-                renameIdentity(entry.id, name);
-              }
-            } catch {}
-          }
+          const [firstEvent] = events;
+          if (!firstEvent) return;
+          try {
+            const profile = JSON.parse(firstEvent.content);
+            const name = profile.name || profile.display_name || profile.displayName;
+            if (name && name !== entry.name) {
+              renameIdentity(entry.id, name);
+            }
+          } catch {}
         })
         .catch(() => {});
     }

@@ -16,13 +16,15 @@ export function useAgentBanner(pubkey: string): string | undefined {
     client.pool
       .querySync({ kinds: [0], authors: [pubkey], limit: 1 })
       .then((events) => {
-        if (cancelled || events.length === 0) return;
+        if (cancelled) return;
+        const [firstEvent] = events;
+        if (!firstEvent) return;
         try {
-          const content = JSON.parse(events[0]!.content) as Record<string, unknown>;
+          const content = JSON.parse(firstEvent.content) as Record<string, unknown>;
           const url = typeof content.banner === 'string' ? content.banner : undefined;
           if (url) setBanner(url);
         } catch {
-          // malformed content — ignore
+          // malformed content - ignore
         }
       })
       .catch(() => {});

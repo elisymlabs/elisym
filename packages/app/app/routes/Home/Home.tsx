@@ -149,12 +149,12 @@ export default function Home() {
                 className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-5"
                 style={{ opacity: gridOpacity, transition: 'opacity 0.18s ease' }}
               >
-                {paged.map((agent) => (
+                {paged.map((agent, index) => (
                   <AgentCard
                     key={agent.pubkey}
                     agent={agent}
                     isVerified={VERIFIED_PUBKEYS.has(agent.pubkey)}
-                    index={paged.indexOf(agent)}
+                    index={index}
                   />
                 ))}
               </div>
