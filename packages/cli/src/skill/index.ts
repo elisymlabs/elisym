@@ -101,19 +101,25 @@ export class SkillRegistry {
     // `toDTag(skill.name)` attaches to outgoing job requests.
     for (const tag of tags) {
       const byName = this.skills.find((skill) => skill.name === tag);
-      if (byName) return byName;
+      if (byName) {
+        return byName;
+      }
     }
     // Then declared capability tags (secondary matching).
     for (const tag of tags) {
       const byCap = this.skills.find((skill) => skill.capabilities.includes(tag));
-      if (byCap) return byCap;
+      if (byCap) {
+        return byCap;
+      }
     }
     // Default fallback only for genuinely untargeted jobs (no specific tag
     // beyond the 'elisym' protocol marker). A job that *does* carry a
     // specific capability tag must not silently degrade to a free default -
     // that was a payment-bypass vector.
     const hasSpecificTag = tags.some((tag) => tag && tag !== 'elisym');
-    if (hasSpecificTag) return null;
+    if (hasSpecificTag) {
+      return null;
+    }
     return this.defaultIndex !== null ? this.skills[this.defaultIndex]! : null;
   }
 

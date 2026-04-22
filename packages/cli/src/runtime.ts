@@ -219,7 +219,9 @@ export class AgentRuntime {
 
       let shuttingDown = false;
       const onSignal = (): void => {
-        if (shuttingDown) return;
+        if (shuttingDown) {
+          return;
+        }
         shuttingDown = true;
         log('Shutting down...');
         this.stop();
