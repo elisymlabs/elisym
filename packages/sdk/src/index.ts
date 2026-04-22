@@ -58,14 +58,11 @@ export type { Asset, Chain } from './payment/assets';
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
 export type { GetProtocolConfigOptions, ProtocolConfig } from './config/onchain';
 
-// --- Global config (~/.elisym/config.yaml) ---
-export {
-  GlobalConfigSchema,
-  SessionSpendLimitEntrySchema,
-  loadGlobalConfig,
-  writeGlobalConfig,
-} from './config/global';
-export type { GlobalConfig, SessionSpendLimitEntry } from './config/global';
+// --- Global config (~/.elisym/config.yaml) schemas ---
+// Node-only loader/writer live in `@elisym/sdk/node`; the schemas stay here so
+// browser code can validate shapes without pulling in `node:fs/promises`.
+export { GlobalConfigSchema, SessionSpendLimitEntrySchema } from './config/global-schema';
+export type { GlobalConfig, SessionSpendLimitEntry } from './config/global-schema';
 
 // --- Primitives ---
 export { ElisymIdentity } from './primitives/identity';

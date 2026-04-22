@@ -17,13 +17,12 @@ import {
   assetByKey,
   assetKey,
   formatAssetAmount,
-  loadGlobalConfig,
   parseAssetAmount,
   resolveKnownAsset,
-  writeGlobalConfig,
   type SessionSpendLimitEntry,
 } from '@elisym/sdk';
 import { globalConfigPath } from '@elisym/sdk/agent-store';
+import { loadGlobalConfig, writeGlobalConfig } from '@elisym/sdk/node';
 import { generateKeyPairSigner } from '@solana/kit';
 import bs58 from 'bs58';
 /**

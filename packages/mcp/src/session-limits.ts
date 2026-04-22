@@ -8,7 +8,6 @@
 
 import {
   assetKey,
-  loadGlobalConfig,
   NATIVE_SOL,
   USDC_SOLANA_DEVNET,
   parseAssetAmount,
@@ -16,6 +15,7 @@ import {
   type Asset,
 } from '@elisym/sdk';
 import { globalConfigPath } from '@elisym/sdk/agent-store';
+import { loadGlobalConfig } from '@elisym/sdk/node';
 
 export interface DefaultLimit {
   asset: Asset;

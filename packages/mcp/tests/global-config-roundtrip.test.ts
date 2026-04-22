@@ -5,8 +5,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadGlobalConfig, writeGlobalConfig } from '@elisym/sdk';
 import { globalConfigPath } from '@elisym/sdk/agent-store';
+import { loadGlobalConfig, writeGlobalConfig } from '@elisym/sdk/node';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 describe('global config roundtrip', () => {
