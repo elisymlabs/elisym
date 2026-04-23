@@ -35,7 +35,7 @@ export function useAgents() {
     refetchInterval: 1000 * 60,
   });
 
-  // React Query v5 dropped onError — drop the SimplePool from an effect
+  // React Query v5 dropped onError - drop the SimplePool from an effect
   // instead. Stuck relay sockets are the most common cause of empty results
   // on devnet, so reconnect once when we finally give up.
   const resetOnceRef = useRef(false);

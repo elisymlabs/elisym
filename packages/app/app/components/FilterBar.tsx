@@ -3,6 +3,7 @@ import { useUI } from '~/contexts/UIContext';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
 import { useAgents } from '~/hooks/useAgents';
 import { track } from '~/lib/analytics';
+import { cn } from '~/lib/cn';
 
 export const KNOWN_CATEGORIES = ['ui-ux', 'summary', 'tools', 'code', 'data'];
 
@@ -16,66 +17,59 @@ const FILTERS = [
   { key: 'other', label: 'Other' },
 ];
 
-interface FilterBarProps {
+interface Props {
   searchQuery: string;
-  onSearchChange: (q: string) => void;
+  onSearchChange: (query: string) => void;
 }
 
-export function FilterBar({ searchQuery, onSearchChange }: FilterBarProps) {
+export function FilterBar({ searchQuery, onSearchChange }: Props) {
   const [state, dispatch] = useUI();
   const { data: agents } = useAgents();
-  const agentPubkeys = useMemo(() => (agents ?? []).map((a) => a.pubkey), [agents]);
+  const agentPubkeys = useMemo(() => (agents ?? []).map((agent) => agent.pubkey), [agents]);
   useAgentFeedback(agentPubkeys);
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="flex items-center mb-10 gap-4">
-      {/* Left: tabs */}
-      <div className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1">
-        {FILTERS.map((f) => (
+    <div className="mb-40 flex items-center gap-16">
+      <div className="no-scrollbar flex flex-1 items-center gap-4 overflow-x-auto">
+        {FILTERS.map((filter) => (
           <button
-            key={f.key}
+            key={filter.key}
             onClick={() => {
-              track('filter', { category: f.key });
-              dispatch({ type: 'SET_FILTER', filter: f.key });
+              track('filter', { category: filter.key });
+              dispatch({ type: 'SET_FILTER', filter: filter.key });
             }}
-            className={`py-2 px-4 rounded-full text-sm font-semibold cursor-pointer transition-colors border-none shrink-0 whitespace-nowrap ${
-              state.currentFilter === f.key
-                ? 'bg-[#efefef] text-text'
-                : 'bg-transparent text-text-2 hover:text-text'
-            }`}
+            className={cn(
+              'shrink-0 cursor-pointer rounded-full border-none px-16 py-8 text-sm font-semibold whitespace-nowrap transition-colors',
+              state.currentFilter === filter.key
+                ? 'bg-surface-2 text-text'
+                : 'bg-transparent text-text-2 hover:text-text',
+            )}
           >
-            {f.label}
+            {filter.label}
           </button>
         ))}
       </div>
 
-      {/* Right: search */}
       <div
         onClick={() => inputRef.current?.focus()}
-        className="flex items-center shrink-0"
-        style={{
-          height: '46px',
-          width: '340px',
-          borderRadius: '23px',
-          background: '#f0f0f0',
-          border: focused ? '1.5px solid #d0d0d8' : '1.5px solid transparent',
-          boxShadow: focused ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
-          transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
-          cursor: focused ? 'text' : 'pointer',
-          padding: '0 18px 0 14px',
-          gap: '6px',
-        }}
+        className={cn(
+          'flex h-46 w-340 shrink-0 items-center gap-6 rounded-full border-[1.5px] bg-surface-2 pr-18 pl-14 transition-[border-color,box-shadow] duration-150',
+          focused
+            ? 'cursor-text border-[#d0d0d8] shadow-[0_0_0_3px_rgba(0,0,0,0.06)]'
+            : 'cursor-pointer border-transparent',
+        )}
       >
         <svg
+          aria-hidden
           width="15"
           height="15"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
           strokeWidth="1.8"
-          style={{ color: '#888', flexShrink: 0 }}
+          className="shrink-0 text-text-2"
         >
           <circle cx="10.5" cy="10.5" r="7.5" />
           <path d="M16.5 16.5 21 21" strokeLinecap="round" />
@@ -84,25 +78,23 @@ export function FilterBar({ searchQuery, onSearchChange }: FilterBarProps) {
           ref={inputRef}
           type="text"
           value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
+          onChange={(event) => onSearchChange(event.target.value)}
           placeholder="Search agent by name or skill..."
-          className="flex-1 outline-none bg-transparent text-[13px]"
-          style={{
-            minWidth: 0,
-            color: '#111',
-            caretColor: '#111',
-            cursor: focused ? 'text' : 'pointer',
-          }}
+          className={cn(
+            'min-w-0 flex-1 bg-transparent text-[13px] text-text caret-text outline-none',
+            focused ? 'cursor-text' : 'cursor-pointer',
+          )}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
         />
         {searchQuery && (
           <button
             onClick={() => onSearchChange('')}
-            className="bg-transparent border-none cursor-pointer p-0 flex items-center"
-            style={{ color: '#aaa' }}
+            aria-label="Clear search"
+            className="flex cursor-pointer items-center border-none bg-transparent p-0 text-text-2/70"
           >
             <svg
+              aria-hidden
               width="16"
               height="16"
               fill="none"

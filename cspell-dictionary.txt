@@ -89,7 +89,9 @@ undecryptable
 unparseable
 untargeted
 microlamports
+refetches
 untrusted
+umami
 vitest
 vite
 websocket

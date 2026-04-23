@@ -8,5 +8,19 @@
     "newlinesBetween": false,
     "groups": ["side_effect", "builtin", "external", "internal", "parent", "sibling"]
   },
+  "sortTailwindcss": {
+    "functions": ["cn", "clsx", "cva"]
+  },
+  "overrides": [
+    {
+      "files": ["packages/app/**"],
+      "options": {
+        "sortTailwindcss": {
+          "stylesheet": "packages/app/app/app.css",
+          "functions": ["cn", "clsx", "cva"]
+        }
+      }
+    }
+  ],
   "ignorePatterns": ["dist/", "build/", "bun.lock", "**/generated/"]
 }

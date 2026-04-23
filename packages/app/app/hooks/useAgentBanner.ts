@@ -10,19 +10,27 @@ export function useAgentBanner(pubkey: string): string | undefined {
   const [banner, setBanner] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey) {
+      return;
+    }
     let cancelled = false;
 
     client.pool
       .querySync({ kinds: [0], authors: [pubkey], limit: 1 })
       .then((events) => {
-        if (cancelled) return;
+        if (cancelled) {
+          return;
+        }
         const [firstEvent] = events;
-        if (!firstEvent) return;
+        if (!firstEvent) {
+          return;
+        }
         try {
           const content = JSON.parse(firstEvent.content) as Record<string, unknown>;
           const url = typeof content.banner === 'string' ? content.banner : undefined;
-          if (url) setBanner(url);
+          if (url) {
+            setBanner(url);
+          }
         } catch {
           // malformed content - ignore
         }

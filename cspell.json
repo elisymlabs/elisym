@@ -18,11 +18,7 @@
     "**/*.json",
     "**/*.css",
     "**/skills-examples/**",
-    "**/landing/src/components/**",
-    "**/app/app/components/**",
-    "**/app/app/hooks/**",
-    "**/app/app/workers/**",
-    "**/app/app/lib/**"
+    "**/landing/src/components/**"
   ],
   "language": "en",
   "version": "0.2"

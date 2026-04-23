@@ -1,11 +1,11 @@
 import { truncateKey, timeAgo, KIND_JOB_REQUEST } from '@elisym/sdk';
 import Decimal from 'decimal.js-light';
-import type { Filter } from 'nostr-tools';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
 import { track } from '~/lib/analytics';
+import { cn } from '~/lib/cn';
 import { cacheGet, cacheSet } from '~/lib/localCache';
 
 interface Order {
@@ -16,6 +16,140 @@ interface Order {
   result?: string;
   amount?: number;
   createdAt: number;
+}
+
+const KIND_FEEDBACK = 7000;
+const REFETCH_INTERVAL_MS = 1000 * 60;
+const STALE_TIME_MS = 1000 * 30;
+
+function ResyncButton({ syncing, onClick }: { syncing: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={syncing}
+      className="inline-flex cursor-pointer items-center gap-6 rounded-lg border border-border bg-surface px-12 py-4 text-[11px] font-medium text-text-2 transition-colors hover:border-accent hover:text-text disabled:opacity-50"
+    >
+      {syncing ? (
+        <>
+          <svg aria-hidden className="size-12 animate-spin" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" opacity="0.3" />
+            <path
+              d="M12 2a10 10 0 0 1 10 10"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+          Syncing...
+        </>
+      ) : (
+        <>
+          <svg
+            aria-hidden
+            className="size-12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <path d="M1 4v6h6" />
+            <path d="M23 20v-6h-6" />
+            <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+          </svg>
+          Resync
+        </>
+      )}
+    </button>
+  );
+}
+
+interface OrderRowProps {
+  order: Order;
+  expanded: boolean;
+  onToggle: () => void;
+  rated: boolean;
+  onRate: (order: Order, positive: boolean) => void;
+}
+
+function OrderRow({ order, expanded, onToggle, rated, onRate }: OrderRowProps) {
+  let feedbackBlock: ReactNode = null;
+  if (rated) {
+    feedbackBlock = <p className="mt-8 text-[11px] text-text-2">Thanks for your feedback</p>;
+  } else if (order.providerPubkey) {
+    feedbackBlock = (
+      <div className="mt-8 flex gap-8">
+        <button
+          onClick={() => onRate(order, true)}
+          className="cursor-pointer rounded-lg border border-border bg-surface px-12 py-4 text-xs text-text-2 transition-colors hover:border-green hover:text-green"
+        >
+          👍 Good
+        </button>
+        <button
+          onClick={() => onRate(order, false)}
+          className="cursor-pointer rounded-lg border border-border bg-surface px-12 py-4 text-xs text-text-2 transition-colors hover:border-error hover:text-error"
+        >
+          👎 Bad
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="shrink-0 overflow-hidden rounded-xl border border-border bg-surface-2">
+      <button
+        onClick={onToggle}
+        className="flex w-full cursor-pointer items-center justify-between border-none bg-transparent p-16 text-left"
+      >
+        <div className="flex min-w-0 items-center gap-12">
+          <span
+            className={cn(
+              'size-8 shrink-0 rounded-full',
+              order.status === 'completed' ? 'bg-green' : 'animate-pulse bg-yellow-400',
+            )}
+          />
+          <span className="truncate text-sm font-medium">{order.capability}</span>
+          {order.providerPubkey && (
+            <span className="shrink-0 font-mono text-[11px] text-text-2">
+              {truncateKey(order.providerPubkey, 6)}
+            </span>
+          )}
+        </div>
+        <div className="ml-12 flex shrink-0 items-center gap-12">
+          {order.amount !== null && order.amount !== undefined && (
+            <span className="text-xs font-semibold text-green">
+              {new Decimal(order.amount).div(1e9).toFixed(2)} SOL
+            </span>
+          )}
+          <span className="text-[11px] text-text-2">{timeAgo(order.createdAt)}</span>
+          <svg
+            aria-hidden
+            className={cn('size-16 text-text-2 transition-transform', expanded && 'rotate-180')}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border px-16 pb-16">
+          {order.result ? (
+            <div>
+              <div className="mt-12 rounded-lg border border-border bg-surface p-12 text-xs leading-relaxed break-words whitespace-pre-wrap text-text">
+                {order.result}
+              </div>
+              {feedbackBlock}
+            </div>
+          ) : (
+            <p className="mt-12 text-xs text-text-2">Waiting for provider response...</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function OrderHistory() {
@@ -29,46 +163,45 @@ export function OrderHistory() {
   const { data: orders, refetch } = useLocalQuery<Order[]>({
     queryKey: ['order-history', pubkey],
     queryFn: async () => {
-      // Fetch job requests authored by this pubkey
+      const identity = idCtx.identity;
+      if (!identity) {
+        return [];
+      }
+
       const requests = await client.pool.querySync({
         kinds: [KIND_JOB_REQUEST],
         authors: [pubkey],
         '#t': ['elisym'],
-      } as Filter);
+      });
 
       if (requests.length === 0) {
         return [];
       }
 
-      const requestIds = requests.map((r) => r.id);
+      const requestIds = requests.map((request) => request.id);
 
-      // Fetch feedback (kind:7000) to find which jobs were paid
       const feedbacks = await client.pool.queryBatchedByTag(
-        { kinds: [7000] } as Filter,
+        { kinds: [KIND_FEEDBACK] },
         'e',
         requestIds,
       );
 
-      // Collect request IDs that have payment-completed feedback
       const paidRequestIds = new Set<string>();
-      for (const fb of feedbacks) {
-        const statusTag = fb.tags.find((t) => t[0] === 'status');
+      for (const feedback of feedbacks) {
+        const statusTag = feedback.tags.find((tag) => tag[0] === 'status');
         if (statusTag?.[1] !== 'payment-completed') {
           continue;
         }
-        const eTag = fb.tags.find((t) => t[0] === 'e');
+        const eTag = feedback.tags.find((tag) => tag[0] === 'e');
         if (eTag?.[1]) {
           paidRequestIds.add(eTag[1]);
         }
       }
 
-      // Query and decrypt results via SDK
-      const identity = idCtx.identity!;
       const resultByRequest = await client.marketplace.queryJobResults(identity, requestIds);
 
-      // Keep requests that were paid OR have a result (free)
       const completedRequests = requests.filter(
-        (r) => paidRequestIds.has(r.id) || resultByRequest.has(r.id),
+        (request) => paidRequestIds.has(request.id) || resultByRequest.has(request.id),
       );
       if (completedRequests.length === 0) {
         return [];
@@ -76,59 +209,60 @@ export function OrderHistory() {
 
       return completedRequests
         .sort((a, b) => b.created_at - a.created_at)
-        .map((req) => {
-          const capTag = req.tags.find((t) => t[0] === 't' && t[1] !== 'elisym');
-          const pTag = req.tags.find((t) => t[0] === 'p');
-          const res = resultByRequest.get(req.id);
+        .map((request) => {
+          const capTag = request.tags.find((tag) => tag[0] === 't' && tag[1] !== 'elisym');
+          const pTag = request.tags.find((tag) => tag[0] === 'p');
+          const res = resultByRequest.get(request.id);
 
           return {
-            jobEventId: req.id,
+            jobEventId: request.id,
             capability: capTag?.[1] ?? 'unknown',
             providerPubkey: pTag?.[1],
             status: res ? ('completed' as const) : ('pending' as const),
             result: res?.content,
             amount: res?.amount,
-            createdAt: req.created_at,
+            createdAt: request.created_at,
           };
         });
     },
     enabled: !!pubkey,
-    staleTime: 1000 * 30,
-    refetchInterval: 1000 * 60,
+    staleTime: STALE_TIME_MS,
+    refetchInterval: REFETCH_INTERVAL_MS,
   });
 
-  // Load rated status from IndexedDB
   useEffect(() => {
     if (!orders) {
       return;
     }
-    const completed = orders.filter((o) => o.status === 'completed' && o.result);
+    const completed = orders.filter((order) => order.status === 'completed' && order.result);
     Promise.all(
-      completed.map(async (o) => {
-        const isRated = await cacheGet<boolean>(`rated:${o.jobEventId}`);
-        return isRated ? o.jobEventId : null;
+      completed.map(async (order) => {
+        const isRated = await cacheGet<boolean>(`rated:${order.jobEventId}`);
+        return isRated ? order.jobEventId : null;
       }),
     ).then((ids) => {
-      const set = new Set(ids.filter(Boolean) as string[]);
-      if (set.size > 0) {
-        setRatedJobs(set);
+      const ratedSet = new Set(ids.filter((id): id is string => id !== null));
+      if (ratedSet.size > 0) {
+        setRatedJobs(ratedSet);
       }
     });
   }, [orders]);
 
   const rateOrder = useCallback(
-    async (jobEventId: string, providerPubkey: string, positive: boolean, capability: string) => {
-      setRatedJobs((prev) => new Set(prev).add(jobEventId));
+    async (order: Order, positive: boolean) => {
+      if (!order.providerPubkey || !idCtx.identity) {
+        return;
+      }
+      setRatedJobs((prev) => new Set(prev).add(order.jobEventId));
       try {
-        const identity = idCtx.identity;
         await client.marketplace.submitFeedback(
-          identity,
-          jobEventId,
-          providerPubkey,
+          idCtx.identity,
+          order.jobEventId,
+          order.providerPubkey,
           positive,
-          capability,
+          order.capability,
         );
-        await cacheSet(`rated:${jobEventId}`, true);
+        await cacheSet(`rated:${order.jobEventId}`, true);
         track('rate-result', { rating: positive ? 'good' : 'bad' });
       } catch {
         // silent fail
@@ -146,213 +280,38 @@ export function OrderHistory() {
     }
   }
 
-  if (!orders || orders.length === 0) {
-    return (
-      <div className="bg-surface border border-border rounded-2xl p-8">
-        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-          <h3 className="text-base font-semibold">Order History</h3>
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-text-2 max-sm:hidden">Updates every 60s</span>
-            <button
-              onClick={handleResync}
-              disabled={syncing}
-              className="inline-flex items-center gap-1.5 py-1 px-3 rounded-lg border border-border bg-surface text-[11px] font-medium text-text-2 cursor-pointer hover:border-accent hover:text-text disabled:opacity-50 transition-colors"
-            >
-              {syncing ? (
-                <>
-                  <svg className="size-3 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      opacity="0.3"
-                    />
-                    <path
-                      d="M12 2a10 10 0 0 1 10 10"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                  Syncing...
-                </>
-              ) : (
-                <>
-                  <svg
-                    className="size-3"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path d="M1 4v6h6" />
-                    <path d="M23 20v-6h-6" />
-                    <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
-                  </svg>
-                  Resync
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-        <p className="text-sm text-text-2 text-center py-4">No orders yet.</p>
-      </div>
-    );
-  }
+  const isEmpty = !orders || orders.length === 0;
 
   return (
-    <div className="bg-surface border border-border rounded-2xl p-8">
-      <div className="flex items-center justify-between mb-4">
+    <div className="rounded-2xl border border-border bg-surface p-32">
+      <div className="mb-16 flex flex-wrap items-center justify-between gap-12">
         <h3 className="text-base font-semibold">Order History</h3>
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-text-2">Updates every 60s</span>
-          <button
-            onClick={handleResync}
-            disabled={syncing}
-            className="inline-flex items-center gap-1.5 py-1 px-3 rounded-lg border border-border bg-surface text-[11px] font-medium text-text-2 cursor-pointer hover:border-accent hover:text-text disabled:opacity-50 transition-colors"
-          >
-            {syncing ? (
-              <>
-                <svg className="size-3 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    opacity="0.3"
-                  />
-                  <path
-                    d="M12 2a10 10 0 0 1 10 10"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                  />
-                </svg>
-                Syncing...
-              </>
-            ) : (
-              <>
-                <svg
-                  className="size-3"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M1 4v6h6" />
-                  <path d="M23 20v-6h-6" />
-                  <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
-                </svg>
-                Resync
-              </>
-            )}
-          </button>
+        <div className="flex items-center gap-8">
+          <span className={cn('text-[11px] text-text-2', isEmpty && 'max-sm:hidden')}>
+            Updates every 60s
+          </span>
+          <ResyncButton syncing={syncing} onClick={() => void handleResync()} />
         </div>
       </div>
 
-      <div className="flex flex-col gap-2 max-h-[240px] overflow-y-auto min-h-0">
-        {orders.map((order) => (
-          <div
-            key={order.jobEventId}
-            className="border border-border rounded-xl bg-surface-2 overflow-hidden shrink-0"
-          >
-            <button
-              onClick={() =>
+      {isEmpty ? (
+        <p className="py-16 text-center text-sm text-text-2">No orders yet.</p>
+      ) : (
+        <div className="flex max-h-[240px] min-h-0 flex-col gap-8 overflow-y-auto">
+          {orders.map((order) => (
+            <OrderRow
+              key={order.jobEventId}
+              order={order}
+              expanded={expandedId === order.jobEventId}
+              onToggle={() =>
                 setExpandedId(expandedId === order.jobEventId ? null : order.jobEventId)
               }
-              className="w-full flex items-center justify-between p-4 bg-transparent border-none cursor-pointer text-left"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <span
-                  className={`size-2 rounded-full shrink-0 ${
-                    order.status === 'completed' ? 'bg-[#1d9e75]' : 'bg-yellow-400 animate-pulse'
-                  }`}
-                />
-                <span className="text-sm font-medium truncate">{order.capability}</span>
-                {order.providerPubkey && (
-                  <span className="text-[11px] text-text-2 font-mono shrink-0">
-                    {truncateKey(order.providerPubkey, 6)}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-3 shrink-0 ml-3">
-                {order.amount !== null && order.amount !== undefined && (
-                  <span className="text-xs font-semibold text-green">
-                    {new Decimal(order.amount).div(1e9).toFixed(2)} SOL
-                  </span>
-                )}
-                <span className="text-[11px] text-text-2">{timeAgo(order.createdAt)}</span>
-                <svg
-                  className={`size-4 text-text-2 transition-transform ${expandedId === order.jobEventId ? 'rotate-180' : ''}`}
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </div>
-            </button>
-
-            {expandedId === order.jobEventId && (
-              <div className="px-4 pb-4 border-t border-border">
-                {order.result ? (
-                  <div>
-                    <div className="mt-3 p-3 bg-surface rounded-lg border border-border text-xs text-text leading-relaxed whitespace-pre-wrap break-words">
-                      {order.result}
-                    </div>
-                    {(() => {
-                      if (ratedJobs.has(order.jobEventId)) {
-                        return (
-                          <p className="text-[11px] text-text-2 mt-2">Thanks for your feedback</p>
-                        );
-                      }
-                      if (order.providerPubkey) {
-                        return (
-                          <div className="flex gap-2 mt-2">
-                            <button
-                              onClick={() =>
-                                rateOrder(
-                                  order.jobEventId,
-                                  order.providerPubkey!,
-                                  true,
-                                  order.capability,
-                                )
-                              }
-                              className="py-1 px-3 rounded-lg border border-border bg-surface text-xs text-text-2 cursor-pointer hover:border-green hover:text-green transition-colors"
-                            >
-                              👍 Good
-                            </button>
-                            <button
-                              onClick={() =>
-                                rateOrder(
-                                  order.jobEventId,
-                                  order.providerPubkey!,
-                                  false,
-                                  order.capability,
-                                )
-                              }
-                              className="py-1 px-3 rounded-lg border border-border bg-surface text-xs text-text-2 cursor-pointer hover:border-error hover:text-error transition-colors"
-                            >
-                              👎 Bad
-                            </button>
-                          </div>
-                        );
-                      }
-                      return null;
-                    })()}
-                  </div>
-                ) : (
-                  <p className="mt-3 text-xs text-text-2">Waiting for provider response...</p>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+              rated={ratedJobs.has(order.jobEventId)}
+              onRate={(target, positive) => void rateOrder(target, positive)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

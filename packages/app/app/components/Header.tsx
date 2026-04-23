@@ -3,7 +3,10 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import { Link, useLocation } from 'wouter';
 import { track } from '~/lib/analytics';
+import { cn } from '~/lib/cn';
 import { MarbleAvatar } from './MarbleAvatar';
+
+const AVATAR_SIZE = 26;
 
 export function Header() {
   const { publicKey } = useWallet();
@@ -20,34 +23,27 @@ export function Header() {
     setVisible(true);
   }
 
+  const pillBase =
+    'inline-flex items-center rounded-12 px-16 py-8 text-[13px] font-medium no-underline transition-colors';
+  const pillVariant = dark
+    ? 'bg-white/8 border border-white/8 text-white hover:bg-white/12'
+    : 'bg-transparent border border-black/15 text-surface-dark hover:bg-black/5';
+
   return (
     <header className="relative z-10">
-      <div className="px-4 sm:px-6 lg:px-8">
-        <nav className="flex items-center justify-between" style={{ padding: '18px 0' }}>
+      <div className="px-16 sm:px-24 lg:px-32">
+        <nav className="flex items-center justify-between py-18">
           <Link to="/">
-            <img
-              src={dark ? '/logo.png' : '/logo-black.png'}
-              alt="elisym"
-              style={{ height: '24px' }}
-            />
+            <img src={dark ? '/logo.png' : '/logo-black.png'} alt="elisym" className="h-24" />
           </Link>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-8">
             <a
               href="https://github.com/elisymlabs/elisym-client/blob/main/GUIDE.md"
               target="_blank"
               rel="noopener noreferrer"
               onClick={() => track('cta-run-agent')}
-              className="no-underline"
-              style={{
-                fontSize: '13px',
-                fontWeight: 500,
-                padding: '8px 16px',
-                borderRadius: '12px',
-                background: dark ? 'rgba(255,255,255,0.08)' : 'transparent',
-                border: dark ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(0,0,0,0.15)',
-                color: dark ? 'white' : '#101012',
-              }}
+              className={cn(pillBase, pillVariant)}
             >
               Run AI Agent
             </a>
@@ -55,27 +51,21 @@ export function Header() {
             {display ? (
               <Link
                 to="/profile"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '5px 12px 5px 5px',
-                  borderRadius: '12px',
-                  textDecoration: 'none',
-                  border: dark ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(0,0,0,0.15)',
-                  background: dark ? 'rgba(255,255,255,0.08)' : 'transparent',
-                }}
+                className={cn(
+                  'flex items-center gap-8 rounded-12 border py-5 pr-12 pl-5 no-underline transition-colors',
+                  dark
+                    ? 'border-white/8 bg-white/8 hover:bg-white/12'
+                    : 'border-black/15 bg-transparent hover:bg-black/5',
+                )}
               >
-                <div style={{ width: 26, height: 26, borderRadius: '50%', overflow: 'hidden' }}>
-                  <MarbleAvatar name={display} size={26} />
+                <div className="size-26 overflow-hidden rounded-full">
+                  <MarbleAvatar name={display} size={AVATAR_SIZE} />
                 </div>
                 <span
-                  style={{
-                    fontFamily: 'monospace',
-                    fontSize: '12px',
-                    fontWeight: 500,
-                    color: dark ? 'white' : '#101012',
-                  }}
+                  className={cn(
+                    'font-mono text-xs font-medium',
+                    dark ? 'text-white' : 'text-surface-dark',
+                  )}
                 >
                   {display}
                 </span>
@@ -83,16 +73,12 @@ export function Header() {
             ) : (
               <button
                 onClick={() => void handleSignIn()}
-                className="cursor-pointer"
-                style={{
-                  fontSize: '13px',
-                  fontWeight: 500,
-                  padding: '8px 16px',
-                  borderRadius: '12px',
-                  background: dark ? '#ffffff' : '#101012',
-                  color: dark ? '#101012' : 'white',
-                  border: '1px solid transparent',
-                }}
+                className={cn(
+                  'cursor-pointer rounded-12 border border-transparent px-16 py-8 text-[13px] font-medium transition-colors',
+                  dark
+                    ? 'bg-white text-surface-dark hover:bg-white/90'
+                    : 'bg-surface-dark text-white hover:bg-accent-hover',
+                )}
               >
                 Connect Wallet
               </button>

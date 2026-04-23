@@ -213,7 +213,7 @@ export function useAgentFeedback(agentPubkeys: string[]) {
         );
       }
 
-      // Never decrease — merge with high water mark
+      // Never decrease - merge with high water mark
       highWater.current = mergeMax(highWater.current, map);
       return highWater.current;
     },

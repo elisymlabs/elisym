@@ -1,5 +1,5 @@
 /**
- * KeyVault — encrypts Nostr secret keys at rest using Web Crypto API.
+ * KeyVault - encrypts Nostr secret keys at rest using Web Crypto API.
  *
  * Storage layout:
  *   localStorage  "elisym:vault"     → JSON { iv: base64, data: base64 }
@@ -134,7 +134,7 @@ export async function loadIdentities(): Promise<StoredIdentity[]> {
     const json = await decrypt(key, blob);
     return JSON.parse(json) as StoredIdentity[];
   } catch {
-    // CryptoKey lost (IndexedDB cleared) or corrupt data — cannot recover
+    // CryptoKey lost (IndexedDB cleared) or corrupt data - cannot recover
     localStorage.removeItem(VAULT_KEY);
     return [];
   }

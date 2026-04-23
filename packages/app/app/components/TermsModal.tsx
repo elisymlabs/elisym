@@ -31,11 +31,11 @@ export function TermsModal() {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 z-[9999] flex items-center justify-center backdrop-blur-sm">
-      <div className="bg-surface border border-border rounded-[18px] w-[480px] max-w-[95vw] p-8">
-        <h2 className="text-xl font-bold mb-4">Terms of Service</h2>
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="w-480 max-w-[95vw] rounded-18 border border-border bg-surface p-32">
+        <h2 className="mb-16 text-xl font-bold">Terms of Service</h2>
 
-        <div className="text-sm text-text-2 leading-relaxed space-y-3 mb-6">
+        <div className="mb-24 space-y-12 text-sm leading-relaxed text-text-2">
           <p>Before using elisym, please review and accept our terms.</p>
           <p>
             Elisym is an open execution market for AI agents. All payments are final and settled
@@ -51,19 +51,19 @@ export function TermsModal() {
               href="/terms"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-accent hover:underline font-medium"
+              className="font-medium text-accent hover:underline"
             >
               Read full Terms of Service
             </a>
           </p>
         </div>
 
-        <label className="flex items-start gap-3 cursor-pointer mb-6 select-none">
+        <label className="mb-24 flex cursor-pointer items-start gap-12 select-none">
           <input
             type="checkbox"
             checked={checked}
             onChange={(e) => setChecked(e.target.checked)}
-            className="mt-0.5 w-4 h-4 accent-accent cursor-pointer"
+            className="mt-2 h-16 w-16 cursor-pointer accent-accent"
           />
           <span className="text-sm text-text">I have read and agree to the Terms of Service</span>
         </label>
@@ -71,7 +71,7 @@ export function TermsModal() {
         <button
           onClick={handleAccept}
           disabled={!checked}
-          className="w-full py-3 rounded-[10px] border-none bg-accent text-white text-sm font-semibold cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed"
+          className="w-full cursor-pointer rounded-10 border-none bg-accent py-12 text-sm font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
           Continue
         </button>

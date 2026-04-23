@@ -22,7 +22,7 @@ export interface StoredIdentity {
 
 function toHex(sk: Uint8Array): string {
   return Array.from(sk)
-    .map((b) => b.toString(16).padStart(2, '0'))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
 }
 
@@ -32,6 +32,25 @@ function readActiveId(): string | null {
 
 function writeActiveId(id: string) {
   localStorage.setItem(ACTIVE_KEY, id);
+}
+
+function firstOrThrow<T>(items: T[], context: string): T {
+  const first = items[0];
+  if (!first) {
+    throw new Error(`Unexpected empty list: ${context}`);
+  }
+  return first;
+}
+
+function freshEntry(name: string): { entry: StoredIdentity; identity: ElisymIdentity } {
+  const identity = ElisymIdentity.generate();
+  const entry: StoredIdentity = {
+    id: crypto.randomUUID(),
+    hex: toHex(identity.secretKey),
+    name,
+    createdAt: Date.now(),
+  };
+  return { entry, identity };
 }
 
 interface IdentityState {
@@ -56,75 +75,71 @@ interface IdentityContextValue {
 
 const IdentityContext = createContext<IdentityContextValue | null>(null);
 
+async function loadInitialState(): Promise<IdentityState> {
+  let list = await loadIdentities();
+  let activeId = readActiveId();
+
+  if (list.length === 0) {
+    const { entry } = freshEntry('Key 1');
+    list = [entry];
+    activeId = entry.id;
+    await saveIdentities(list);
+    writeActiveId(activeId);
+  }
+
+  if (!activeId || !list.find((entry) => entry.id === activeId)) {
+    activeId = firstOrThrow(list, 'activeId resolution').id;
+    writeActiveId(activeId);
+  }
+
+  const active = list.find((entry) => entry.id === activeId);
+  if (!active) {
+    throw new Error('Active identity not found after selection');
+  }
+
+  try {
+    return {
+      allIdentities: list,
+      activeId,
+      identity: ElisymIdentity.fromHex(active.hex),
+    };
+  } catch {
+    // Corrupted key - remove it and fall back (or regenerate if it was the last one).
+    list = list.filter((entry) => entry.id !== active.id);
+    if (list.length === 0) {
+      const { entry, identity } = freshEntry('Key 1');
+      list = [entry];
+      activeId = entry.id;
+      await saveIdentities(list);
+      writeActiveId(activeId);
+      return { allIdentities: list, activeId, identity };
+    }
+    const fallback = firstOrThrow(list, 'fallback after corrupted key');
+    activeId = fallback.id;
+    await saveIdentities(list);
+    writeActiveId(activeId);
+    return {
+      allIdentities: list,
+      activeId,
+      identity: ElisymIdentity.fromHex(fallback.hex),
+    };
+  }
+}
+
 export function IdentityProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<IdentityState | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Async init: load encrypted identities
   useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
-
-    (async () => {
-      let list = await loadIdentities();
-      let activeId = readActiveId();
-
-      if (list.length === 0) {
-        const fresh = ElisymIdentity.generate();
-        const hex = toHex(fresh.secretKey);
-        const entry: StoredIdentity = {
-          id: crypto.randomUUID(),
-          hex,
-          name: 'Key 1',
-          createdAt: Date.now(),
-        };
-        list = [entry];
-        activeId = entry.id;
-        await saveIdentities(list);
-        writeActiveId(activeId);
-      }
-
-      if (!activeId || !list.find((e) => e.id === activeId)) {
-        activeId = list[0]!.id;
-        writeActiveId(activeId);
-      }
-
-      const active = list.find((e) => e.id === activeId)!;
-      let identity: ElisymIdentity;
-      try {
-        identity = ElisymIdentity.fromHex(active.hex);
-      } catch {
-        // Corrupted key - remove it and generate a fresh one
-        list = list.filter((e) => e.id !== active.id);
-        if (list.length === 0) {
-          const fresh = ElisymIdentity.generate();
-          const hex = toHex(fresh.secretKey);
-          const entry: StoredIdentity = {
-            id: crypto.randomUUID(),
-            hex,
-            name: 'Key 1',
-            createdAt: Date.now(),
-          };
-          list = [entry];
-          identity = fresh;
-        } else {
-          identity = ElisymIdentity.fromHex(list[0]!.hex);
-        }
-        activeId = list[0]!.id;
-        await saveIdentities(list);
-        writeActiveId(activeId);
-      }
-      setState({
-        allIdentities: list,
-        activeId,
-        identity,
-      });
+    loadInitialState().then((initial) => {
+      setState(initial);
       setLoading(false);
-    })();
+    });
   }, []);
 
-  // All hooks must be called unconditionally (React rules of hooks)
   const nsecEncode = useCallback(
     () => (state ? nip19.nsecEncode(state.identity.secretKey) : ''),
     [state],
@@ -135,18 +150,11 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       if (!prev) {
         return prev;
       }
-      const fresh = ElisymIdentity.generate();
-      const hex = toHex(fresh.secretKey);
-      const entry: StoredIdentity = {
-        id: crypto.randomUUID(),
-        hex,
-        name: `Key ${prev.allIdentities.length + 1}`,
-        createdAt: Date.now(),
-      };
+      const { entry, identity } = freshEntry(`Key ${prev.allIdentities.length + 1}`);
       const newList = [...prev.allIdentities, entry];
       writeActiveId(entry.id);
       void saveIdentities(newList);
-      return { allIdentities: newList, activeId: entry.id, identity: fresh };
+      return { allIdentities: newList, activeId: entry.id, identity };
     });
   }, []);
 
@@ -155,7 +163,7 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       if (!prev) {
         return prev;
       }
-      const entry = prev.allIdentities.find((e) => e.id === id);
+      const entry = prev.allIdentities.find((candidate) => candidate.id === id);
       if (!entry) {
         return prev;
       }
@@ -176,19 +184,23 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       if (prev.allIdentities.length <= 1) {
         return prev;
       }
-      const newList = prev.allIdentities.filter((e) => e.id !== id);
+      const newList = prev.allIdentities.filter((entry) => entry.id !== id);
       void saveIdentities(newList);
 
       let newActiveId = prev.activeId;
       if (prev.activeId === id) {
-        newActiveId = newList[0]!.id;
+        newActiveId = firstOrThrow(newList, 'removeIdentity: new active').id;
         writeActiveId(newActiveId);
       }
 
+      const active = newList.find((entry) => entry.id === newActiveId);
+      if (!active) {
+        return prev;
+      }
       return {
         allIdentities: newList,
         activeId: newActiveId,
-        identity: ElisymIdentity.fromHex(newList.find((e) => e.id === newActiveId)!.hex),
+        identity: ElisymIdentity.fromHex(active.hex),
       };
     });
   }, []);
@@ -198,7 +210,9 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       if (!prev) {
         return prev;
       }
-      const newList = prev.allIdentities.map((e) => (e.id === id ? { ...e, name } : e));
+      const newList = prev.allIdentities.map((entry) =>
+        entry.id === id ? { ...entry, name } : entry,
+      );
       void saveIdentities(newList);
       return { ...prev, allIdentities: newList };
     });

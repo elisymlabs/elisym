@@ -22,6 +22,8 @@ export function PageHeaderProvider({ children }: { children: ReactNode }) {
 
 export function usePageHeader(): PageHeaderCtx {
   const ctx = useContext(Ctx);
-  if (!ctx) throw new Error('usePageHeader must be used within PageHeaderProvider');
+  if (!ctx) {
+    throw new Error('usePageHeader must be used within PageHeaderProvider');
+  }
   return ctx;
 }

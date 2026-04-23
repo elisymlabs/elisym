@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { formatCardPrice } from '~/lib/formatPrice';
 import type { FeedbackMap, CapabilityStatsMap } from './useAgentFeedback';
 
-/** Approximate "time ago" — rounds to coarse units with "~" prefix */
+/** Approximate "time ago" - rounds to coarse units with "~" prefix */
 function approxTimeAgo(unix: number): string {
   const seconds = Math.max(0, Math.floor(Date.now() / 1000 - unix));
   if (seconds < 60) {

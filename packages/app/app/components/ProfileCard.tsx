@@ -1,6 +1,5 @@
 import { truncateKey } from '@elisym/sdk';
-import type { Filter } from 'nostr-tools';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
 import { getCachedImage, cacheImage } from '~/lib/localCache';
@@ -12,13 +11,15 @@ interface NostrProfile {
   picture?: string;
 }
 
-interface ProfileCardProps {
+interface Props {
   npub: string;
   pubkey: string;
   keyName?: string;
 }
 
-export function ProfileCard({ npub, pubkey, keyName }: ProfileCardProps) {
+const MAX_ABOUT_LENGTH = 280;
+
+export function ProfileCard({ npub, pubkey, keyName }: Props) {
   const { client } = useElisymClient();
 
   const { data: profile, isLoading } = useLocalQuery<NostrProfile | null>({
@@ -27,12 +28,12 @@ export function ProfileCard({ npub, pubkey, keyName }: ProfileCardProps) {
       const events = await client.pool.querySync({
         kinds: [0],
         authors: [pubkey],
-      } as Filter);
+      });
       const sorted = events.sort((a, b) => b.created_at - a.created_at);
       const latest = sorted[0];
       if (latest) {
         try {
-          return JSON.parse(latest.content);
+          return JSON.parse(latest.content) as NostrProfile;
         } catch {
           // malformed
         }
@@ -76,7 +77,6 @@ export function ProfileCard({ npub, pubkey, keyName }: ProfileCardProps) {
         setImgLoaded(true);
         return;
       }
-      // Not cached — preload from network, then cache the blob
       const img = new Image();
       img.src = pictureUrl;
       const onLoad = () => {
@@ -121,34 +121,37 @@ export function ProfileCard({ npub, pubkey, keyName }: ProfileCardProps) {
   const npubDisplay = truncateKey(npub);
   const showImg = imgSrc && imgLoaded;
 
+  let avatar: ReactNode;
+  if (isLoading) {
+    avatar = <div className="h-80 w-80 animate-pulse rounded-full bg-border" />;
+  } else if (showImg) {
+    avatar = <img src={imgSrc} alt={displayName} className="h-full w-full object-cover" />;
+  } else {
+    avatar = <MarbleAvatar name={pubkey} size={80} />;
+  }
+
   return (
-    <div className="bg-surface border border-border rounded-2xl p-8">
-      <div className="flex items-center gap-5 max-sm:flex-col max-sm:text-center relative">
-        <div className="w-20 h-20 rounded-full overflow-hidden shrink-0 flex items-center justify-center">
-          {(() => {
-            if (isLoading) {
-              return <div className="w-20 h-20 rounded-full bg-border animate-pulse" />;
-            }
-            if (showImg) {
-              return <img src={imgSrc} alt={displayName} className="w-full h-full object-cover" />;
-            }
-            return <MarbleAvatar name={pubkey} size={80} />;
-          })()}
+    <div className="rounded-2xl border border-border bg-surface p-32">
+      <div className="relative flex items-center gap-20 max-sm:flex-col max-sm:text-center">
+        <div className="flex h-80 w-80 shrink-0 items-center justify-center overflow-hidden rounded-full">
+          {avatar}
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-12">
             {isLoading ? (
-              <div className="h-7 w-40 bg-border rounded animate-pulse mb-1" />
+              <div className="mb-4 h-28 w-160 animate-pulse rounded bg-border" />
             ) : (
-              <h1 className="text-2xl font-bold mb-1 line-clamp-1 break-all min-w-0">
+              <h1 className="mb-4 line-clamp-1 min-w-0 text-2xl font-bold break-all">
                 {displayName}
               </h1>
             )}
           </div>
-          <div className="font-mono text-[13px] text-text-2 mb-1">{npubDisplay}</div>
+          <div className="mb-4 font-mono text-[13px] text-text-2">{npubDisplay}</div>
           {!isLoading && profile?.about && (
-            <div className="text-sm text-text-2 leading-relaxed mt-2">
-              {profile.about.length > 280 ? profile.about.slice(0, 280) + '...' : profile.about}
+            <div className="mt-8 text-sm leading-relaxed text-text-2">
+              {profile.about.length > MAX_ABOUT_LENGTH
+                ? `${profile.about.slice(0, MAX_ABOUT_LENGTH)}...`
+                : profile.about}
             </div>
           )}
         </div>

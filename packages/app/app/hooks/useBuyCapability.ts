@@ -150,7 +150,9 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promis
     try {
       return await fn();
     } catch (err) {
-      if (attempt === maxRetries - 1) throw err;
+      if (attempt === maxRetries - 1) {
+        throw err;
+      }
       await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
     }
   }
@@ -198,7 +200,9 @@ export function useBuyCapability({
 
   // Warn user before closing tab during active payment
   useEffect(() => {
-    if (!buying) return;
+    if (!buying) {
+      return;
+    }
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
     };

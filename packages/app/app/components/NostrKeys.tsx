@@ -1,9 +1,11 @@
 import { getPublicKey, nip19 } from 'nostr-tools';
-import type { Filter } from 'nostr-tools';
 import { useState, useCallback, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity, type StoredIdentity } from '~/hooks/useIdentity';
+import { cn } from '~/lib/cn';
+
+const COPY_FEEDBACK_MS = 1200;
 
 function hexToPublicKey(hex: string): string {
   const bytes = new Uint8Array(hex.length / 2);
@@ -11,6 +13,16 @@ function hexToPublicKey(hex: string): string {
     bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
   }
   return getPublicKey(bytes);
+}
+
+function truncateNpub(hex: string): string {
+  try {
+    const pub = hexToPublicKey(hex);
+    const encoded = nip19.npubEncode(pub);
+    return `${encoded.slice(0, 12)}…${encoded.slice(-6)}`;
+  } catch {
+    return `${hex.slice(0, 8)}…`;
+  }
 }
 
 export function NostrKeys() {
@@ -32,7 +44,6 @@ export function NostrKeys() {
   const [deleteTarget, setDeleteTarget] = useState<StoredIdentity | null>(null);
   const [deleteInput, setDeleteInput] = useState('');
 
-  // Fetch kind:0 names for all identities
   useEffect(() => {
     if (!client?.pool) {
       return;
@@ -47,19 +58,29 @@ export function NostrKeys() {
       }
 
       client.pool
-        .querySync({ kinds: [0], authors: [pubkey] } as Filter)
+        .querySync({ kinds: [0], authors: [pubkey] })
         .then((events) => {
           const [firstEvent] = events;
-          if (!firstEvent) return;
+          if (!firstEvent) {
+            return;
+          }
           try {
-            const profile = JSON.parse(firstEvent.content);
+            const profile = JSON.parse(firstEvent.content) as {
+              name?: string;
+              display_name?: string;
+              displayName?: string;
+            };
             const name = profile.name || profile.display_name || profile.displayName;
             if (name && name !== entry.name) {
               renameIdentity(entry.id, name);
             }
-          } catch {}
+          } catch {
+            // malformed profile, ignore
+          }
         })
-        .catch(() => {});
+        .catch(() => {
+          // relay error, ignore
+        });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- renameIdentity/allIdentities excluded to avoid infinite loops (renameIdentity updates allIdentities)
   }, [client?.pool, allIdentities.length]);
@@ -70,7 +91,7 @@ export function NostrKeys() {
       await navigator.clipboard.writeText(val);
       toast.success('Copied!');
       setCopyFeedback(type);
-      setTimeout(() => setCopyFeedback(null), 1200);
+      setTimeout(() => setCopyFeedback(null), COPY_FEEDBACK_MS);
     },
     [npub, nsecEncode],
   );
@@ -89,20 +110,22 @@ export function NostrKeys() {
     setDeleteInput('');
   }
 
-  function truncateNpub(hex: string): string {
-    try {
-      const pub = hexToPublicKey(hex);
-      const encoded = nip19.npubEncode(pub);
-      return encoded.slice(0, 12) + '…' + encoded.slice(-6);
-    } catch {
-      return hex.slice(0, 8) + '…';
+  function resolveNsecValue(): string {
+    if (copyFeedback === 'nsec') {
+      return 'Copied!';
     }
+    if (nsecVisible) {
+      return nsecEncode();
+    }
+    return '••••••••••••••••••••••••••';
   }
+  const nsecValue = resolveNsecValue();
 
   return (
-    <div className="bg-surface border border-border rounded-2xl p-8">
-      <div className="text-base font-semibold mb-5 flex items-center gap-2.5">
+    <div className="rounded-2xl border border-border bg-surface p-32">
+      <div className="mb-20 flex items-center gap-10 text-base font-semibold">
         <svg
+          aria-hidden
           width="18"
           height="18"
           fill="none"
@@ -115,54 +138,53 @@ export function NostrKeys() {
         Nostr Keys
       </div>
 
-      {/* Identity list */}
-      <div className="mb-4 flex flex-col gap-1.5">
+      <div className="mb-16 flex flex-col gap-6">
         {allIdentities.map((entry) => (
           <div
             key={entry.id}
             onClick={() => switchIdentity(entry.id)}
-            className={`flex items-center gap-3 p-3 px-4 rounded-xl cursor-pointer transition-all border ${
+            className={cn(
+              'flex cursor-pointer items-center gap-12 rounded-xl border p-12 px-16 transition-all',
               entry.id === activeId
-                ? 'bg-accent/10 border-accent/30'
-                : 'bg-surface-2 border-border hover:bg-border/50'
-            }`}
+                ? 'border-accent/30 bg-accent/10'
+                : 'border-border bg-surface-2 hover:bg-border/50',
+            )}
           >
-            {/* Avatar placeholder */}
             <div
-              className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
-                entry.id === activeId ? 'bg-accent text-white' : 'bg-border text-text-2'
-              }`}
+              className={cn(
+                'flex h-32 w-32 shrink-0 items-center justify-center rounded-full text-xs font-bold',
+                entry.id === activeId ? 'bg-accent text-white' : 'bg-border text-text-2',
+              )}
             >
               {entry.name.charAt(0).toUpperCase()}
             </div>
 
-            {/* Name + truncated npub */}
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-text truncate">{entry.name}</div>
-              <div className="text-[11px] font-mono text-text-2 truncate">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-text">{entry.name}</div>
+              <div className="truncate font-mono text-[11px] text-text-2">
                 {truncateNpub(entry.hex)}
               </div>
             </div>
 
-            {/* Active badge */}
             {entry.id === activeId && (
-              <span className="text-[10px] font-semibold text-accent uppercase tracking-wider shrink-0">
+              <span className="shrink-0 text-[10px] font-semibold tracking-wider text-accent uppercase">
                 Active
               </span>
             )}
 
-            {/* Delete button (hidden if only 1 identity) */}
             {allIdentities.length > 1 && (
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
+                onClick={(event) => {
+                  event.stopPropagation();
                   setDeleteTarget(entry);
                   setDeleteInput('');
                 }}
-                className="bg-transparent border-none text-text-2 cursor-pointer p-1 rounded-md transition-all hover:text-red-400 hover:bg-red-400/10 flex items-center shrink-0"
+                aria-label={`Delete identity ${entry.name}`}
+                className="flex shrink-0 cursor-pointer items-center rounded-md border-none bg-transparent p-4 text-text-2 transition-all hover:bg-red-400/10 hover:text-red-400"
                 title="Delete identity"
               >
                 <svg
+                  aria-hidden
                   width="14"
                   height="14"
                   fill="none"
@@ -178,25 +200,24 @@ export function NostrKeys() {
         ))}
       </div>
 
-      {/* Delete confirmation popup */}
       {deleteTarget && (
-        <div className="mb-4 p-4 bg-surface-2 border border-red-400/30 rounded-xl">
-          <div className="text-sm text-text mb-2">
+        <div className="mb-16 rounded-xl border border-red-400/30 bg-surface-2 p-16">
+          <div className="mb-8 text-sm text-text">
             Type <strong className="text-red-400">{deleteTarget.name}</strong> to confirm deletion
           </div>
           <input
             type="text"
             value={deleteInput}
-            onChange={(e) => setDeleteInput(e.target.value)}
+            onChange={(event) => setDeleteInput(event.target.value)}
             placeholder={deleteTarget.name}
-            className="w-full p-2 px-3 bg-surface border border-border rounded-lg text-sm text-text font-mono mb-3 outline-none focus:border-accent/50"
+            className="mb-12 w-full rounded-lg border border-border bg-surface p-8 px-12 font-mono text-sm text-text outline-none focus:border-accent/50"
             autoFocus
           />
-          <div className="flex gap-2">
+          <div className="flex gap-8">
             <button
               onClick={handleDelete}
               disabled={deleteInput !== deleteTarget.name}
-              className="px-3 py-1.5 text-xs font-semibold rounded-lg transition-all bg-red-500 text-white hover:bg-red-600 disabled:opacity-30 disabled:cursor-not-allowed"
+              className="rounded-lg bg-red-500 px-12 py-6 text-xs font-semibold text-white transition-all hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-30"
             >
               Delete
             </button>
@@ -205,7 +226,7 @@ export function NostrKeys() {
                 setDeleteTarget(null);
                 setDeleteInput('');
               }}
-              className="px-3 py-1.5 text-xs font-semibold rounded-lg transition-all bg-border text-text-2 hover:text-text"
+              className="rounded-lg bg-border px-12 py-6 text-xs font-semibold text-text-2 transition-all hover:text-text"
             >
               Cancel
             </button>
@@ -213,20 +234,21 @@ export function NostrKeys() {
         </div>
       )}
 
-      {/* npub */}
-      <div className="flex items-center gap-3 p-3.5 px-4 bg-surface-2 rounded-[10px] mb-2.5 border border-border">
-        <span className="text-xs font-semibold text-text-2 uppercase tracking-wider w-12 shrink-0">
+      <div className="mb-10 flex items-center gap-12 rounded-10 border border-border bg-surface-2 p-14 px-16">
+        <span className="w-48 shrink-0 text-xs font-semibold tracking-wider text-text-2 uppercase">
           npub
         </span>
-        <span className="flex-1 font-mono text-[12.5px] text-text overflow-hidden text-ellipsis whitespace-nowrap">
+        <span className="flex-1 overflow-hidden font-mono text-[12.5px] text-ellipsis whitespace-nowrap text-text">
           {copyFeedback === 'npub' ? 'Copied!' : npub}
         </span>
         <button
           onClick={() => void copyToClipboard('npub')}
-          className="bg-transparent border-none text-text-2 cursor-pointer p-1 px-1.5 rounded-md transition-all hover:text-text hover:bg-border flex items-center"
+          aria-label="Copy npub"
+          className="flex cursor-pointer items-center rounded-md border-none bg-transparent p-4 px-6 text-text-2 transition-all hover:bg-border hover:text-text"
           title="Copy"
         >
           <svg
+            aria-hidden
             width="14"
             height="14"
             fill="none"
@@ -240,30 +262,27 @@ export function NostrKeys() {
         </button>
       </div>
 
-      {/* nsec */}
-      <div className="flex items-center gap-3 p-3.5 px-4 bg-surface-2 rounded-[10px] mb-2.5 border border-border">
-        <span className="text-xs font-semibold text-text-2 uppercase tracking-wider w-12 shrink-0">
+      <div className="mb-10 flex items-center gap-12 rounded-10 border border-border bg-surface-2 p-14 px-16">
+        <span className="w-48 shrink-0 text-xs font-semibold tracking-wider text-text-2 uppercase">
           nsec
         </span>
         <span
-          className={`flex-1 font-mono text-[12.5px] overflow-hidden text-ellipsis whitespace-nowrap ${
-            nsecVisible ? 'text-text' : 'text-text-2'
-          }`}
+          className={cn(
+            'flex-1 overflow-hidden font-mono text-[12.5px] text-ellipsis whitespace-nowrap',
+            nsecVisible ? 'text-text' : 'text-text-2',
+          )}
         >
-          {(() => {
-            if (copyFeedback === 'nsec') {
-              return 'Copied!';
-            }
-            return nsecVisible ? nsecEncode() : '••••••••••••••••••••••••••';
-          })()}
+          {nsecValue}
         </span>
-        <div className="flex gap-1 shrink-0">
+        <div className="flex shrink-0 gap-4">
           <button
-            onClick={() => setNsecVisible((v) => !v)}
-            className="bg-transparent border-none text-text-2 cursor-pointer p-1 px-1.5 rounded-md transition-all hover:text-text hover:bg-border flex items-center"
+            onClick={() => setNsecVisible((visible) => !visible)}
+            aria-label={nsecVisible ? 'Hide nsec' : 'Show nsec'}
+            className="flex cursor-pointer items-center rounded-md border-none bg-transparent p-4 px-6 text-text-2 transition-all hover:bg-border hover:text-text"
             title="Show/Hide"
           >
             <svg
+              aria-hidden
               width="14"
               height="14"
               fill="none"
@@ -277,10 +296,12 @@ export function NostrKeys() {
           </button>
           <button
             onClick={() => void copyToClipboard('nsec')}
-            className="bg-transparent border-none text-text-2 cursor-pointer p-1 px-1.5 rounded-md transition-all hover:text-text hover:bg-border flex items-center"
+            aria-label="Copy nsec"
+            className="flex cursor-pointer items-center rounded-md border-none bg-transparent p-4 px-6 text-text-2 transition-all hover:bg-border hover:text-text"
             title="Copy"
           >
             <svg
+              aria-hidden
               width="14"
               height="14"
               fill="none"
@@ -295,21 +316,22 @@ export function NostrKeys() {
         </div>
       </div>
 
-      <button onClick={handleGenerate} className="btn btn-outline mt-3.5">
+      <button onClick={handleGenerate} className="mt-14 btn btn-outline">
         <svg
+          aria-hidden
           width="14"
           height="14"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
           strokeWidth="2"
-          className="inline align-[-2px] mr-1.5"
+          className="mr-6 inline align-[-2px]"
         >
           <path d="M12 5v14M5 12h14" />
         </svg>
         Generate new keypair
       </button>
-      <div className="text-xs text-text-2 mt-3 leading-relaxed">
+      <div className="mt-12 text-xs leading-relaxed text-text-2">
         Your Nostr keys are used for agent discovery and task coordination via NIP-89/NIP-90 relays.
         Keep your nsec private.
       </div>

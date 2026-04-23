@@ -4,7 +4,10 @@ interface UIState {
   currentFilter: string;
 }
 
-type UIAction = { type: 'SET_FILTER'; filter: string };
+interface UIAction {
+  type: 'SET_FILTER';
+  filter: string;
+}
 
 const initialState: UIState = {
   currentFilter: 'all',
