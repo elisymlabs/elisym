@@ -5,6 +5,8 @@
  *   elisym init [name]                     Interactive wizard; creates in ~/.elisym/<name>/.
  *   elisym init [name] --config <path>     Non-interactive; loads YAML template.
  *   elisym init [name] --local             Create in project <project>/.elisym/<name>/.
+ *   elisym init [name] --passphrase <p>    Skip passphrase prompt ("" = no encryption).
+ *   elisym init [name] --yes               Skip overwrite/shadow confirm prompts.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -26,6 +28,8 @@ import YAML from 'yaml';
 export interface InitOptions {
   config?: string;
   local?: boolean;
+  passphrase?: string;
+  yes?: boolean;
 }
 
 const FALLBACK_MODELS: Record<string, string[]> = {
@@ -101,11 +105,18 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   // Step 2: Agent name (arg > prompt).
   const agentName = await resolveAgentName(nameArg, inquirer);
 
-  // Step 3: Shadow / overwrite checks.
+  // Step 3: Shadow / overwrite checks. With --yes, overwrite fails closed
+  // (never silently clobber secrets) while shadow / sibling-location prompts
+  // take their recommended default.
   const target = pickTarget(options);
   const sameLocation =
     target === 'home' ? resolveInHome(agentName) : resolveInProject(agentName, cwd);
   if (sameLocation) {
+    if (options.yes) {
+      throw new Error(
+        `Agent "${agentName}" already exists at ${sameLocation}. Refusing to overwrite secrets under --yes. Remove the directory first or choose a different name.`,
+      );
+    }
     const { overwrite } = await inquirer.prompt([
       {
         type: 'confirm',
@@ -119,30 +130,34 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
       return;
     }
   } else if (target === 'project' && resolveInHome(agentName)) {
-    const { shadow } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'shadow',
-        message: `A global agent "${agentName}" exists in ~/.elisym/${agentName}/. Create a project-local shadow?`,
-        default: true,
-      },
-    ]);
-    if (!shadow) {
-      console.log('Aborted.');
-      return;
+    if (!options.yes) {
+      const { shadow } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'shadow',
+          message: `A global agent "${agentName}" exists in ~/.elisym/${agentName}/. Create a project-local shadow?`,
+          default: true,
+        },
+      ]);
+      if (!shadow) {
+        console.log('Aborted.');
+        return;
+      }
     }
   } else if (target === 'home' && resolveInProject(agentName, cwd)) {
-    const { proceed } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'proceed',
-        message: `A project-local agent "${agentName}" exists. Create a global agent with the same name?`,
-        default: true,
-      },
-    ]);
-    if (!proceed) {
-      console.log('Aborted.');
-      return;
+    if (!options.yes) {
+      const { proceed } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'proceed',
+          message: `A project-local agent "${agentName}" exists. Create a global agent with the same name?`,
+          default: true,
+        },
+      ]);
+      if (!proceed) {
+        console.log('Aborted.');
+        return;
+      }
     }
   }
 
@@ -186,27 +201,37 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
     }
   }
 
-  // Step 6: Passphrase for encrypting secrets.
-  const { passphrase } = await inquirer.prompt([
-    {
-      type: 'password',
-      name: 'passphrase',
-      message: 'Passphrase to encrypt secrets (leave empty to skip):',
-      mask: '*',
-    },
-  ]);
-
-  if (passphrase) {
-    const { confirmPassphrase } = await inquirer.prompt([
+  // Step 6: Passphrase for encrypting secrets. Flag wins over env var wins
+  // over interactive prompt. Empty string ("") is an explicit opt-out from
+  // encryption, distinct from "flag not provided".
+  let passphrase = '';
+  const envPassphrase = process.env.ELISYM_PASSPHRASE;
+  if (options.passphrase !== undefined) {
+    passphrase = options.passphrase;
+  } else if (envPassphrase !== undefined) {
+    passphrase = envPassphrase;
+  } else {
+    const answer = await inquirer.prompt([
       {
         type: 'password',
-        name: 'confirmPassphrase',
-        message: 'Confirm passphrase:',
+        name: 'passphrase',
+        message: 'Passphrase to encrypt secrets (leave empty to skip):',
         mask: '*',
-        validate: (value: string) => value === passphrase || 'Passphrases do not match',
       },
     ]);
-    void confirmPassphrase;
+    passphrase = answer.passphrase ?? '';
+    if (passphrase) {
+      const { confirmPassphrase } = await inquirer.prompt([
+        {
+          type: 'password',
+          name: 'confirmPassphrase',
+          message: 'Confirm passphrase:',
+          mask: '*',
+          validate: (value: string) => value === passphrase || 'Passphrases do not match',
+        },
+      ]);
+      void confirmPassphrase;
+    }
   }
 
   // Step 7: Generate Nostr identity.

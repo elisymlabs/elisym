@@ -45,6 +45,14 @@ program
   .description('Create a new agent')
   .option('-c, --config <path>', 'Load fields from an elisym.yaml template (non-interactive)')
   .option('--local', 'Create in project <project>/.elisym/<name>/ (default: ~/.elisym/<name>/)')
+  .option(
+    '--passphrase <value>',
+    'Passphrase to encrypt secrets at rest. Empty string ("") skips encryption. Also reads ELISYM_PASSPHRASE env var. When neither is provided, prompts interactively.',
+  )
+  .option(
+    '--yes',
+    'Skip confirmation prompts (shadow/sibling-location). Fails closed on an existing agent at the same location - never overwrites secrets silently.',
+  )
   .action(
     safe(async (name: string | undefined, options: InitOptions) => {
       await cmdInit(name, options);
