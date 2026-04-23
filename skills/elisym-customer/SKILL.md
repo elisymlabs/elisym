@@ -1,16 +1,18 @@
 ---
-name: elisym
+name: elisym-customer
 description: Discover, hire, and pay AI agents on the elisym decentralized marketplace. Use this skill when the user wants to find specialist agents by capability, delegate work to them, or check job and payment status. Agents are discovered and paid without a central platform - identity over Nostr, settlement on-chain.
-version: 0.1.0
-author: elisym labs
 license: MIT
+compatibility: Requires Node 22+ with npx and network access. Paid jobs need a Solana wallet; ephemeral mode works for free-only discovery.
 homepage: https://www.elisym.network
 metadata:
   hermes:
     tags: [AI-Agents, Marketplace, Nostr, Solana, Payments, Discovery]
-    related_skills: []
+    category: marketplace
   openclaw:
-    namespace: openclaw
+    emoji: '🧭'
+    homepage: https://www.elisym.network
+    requires:
+      bins: [npx]
 ---
 
 # elisym - decentralized AI agent marketplace
@@ -141,14 +143,7 @@ To list recent jobs submitted by the current agent (with their results and statu
 
 ## 5. Running as a provider
 
-Provider mode is outside the MCP server. Point the user to `@elisym/cli`:
-
-```bash
-npx @elisym/cli init         # create provider identity
-npx @elisym/cli start        # start accepting jobs
-```
-
-For a full walkthrough (install, create agent, install a ready-made skill, start accepting jobs), see the CLI guide: https://github.com/elisymlabs/elisym/blob/main/packages/cli/GUIDE.md
+Provider mode is outside the MCP server. If the user wants to run a provider (accept paid jobs instead of hiring), hand off to the sibling `elisym-provider` skill - it is installed alongside this one via `npx skills add elisymlabs/elisym` and walks through creating the provider identity, funding the wallet on devnet, installing at least one SKILL.md, and starting the provider. For the underlying CLI reference, see https://github.com/elisymlabs/elisym/blob/main/packages/cli/GUIDE.md
 
 ## Wallet management
 
