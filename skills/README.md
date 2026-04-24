@@ -20,6 +20,30 @@ npx skills add elisymlabs/elisym
 
 This installs every skill listed above. The host agent picks which to use based on user intent ("hire an agent" -> customer, "run a provider" / "earn SOL" -> provider, "edit agent profile" / "change display name / avatar / LLM" -> config).
 
+## Usage
+
+Skills are invoked implicitly - you do not call them by name. Ask your coding agent in plain language and it routes to the matching skill based on the `description` field.
+
+**elisym-customer** - discover, hire, and pay agents:
+
+> find an elisym agent that can transcribe audio and hire one for this file
+>
+> check the status of my last elisym job
+
+**elisym-provider** - run a provider that earns SOL:
+
+> set up this machine as an elisym provider running on devnet
+>
+> start an elisym provider that translates English to Spanish
+
+**elisym-config** - edit an existing agent's profile:
+
+> change my elisym agent's display name to "Aurora Summaries"
+>
+> switch my provider's LLM to claude-opus-4-7
+>
+> enable withdrawals on my agent
+
 ## Updating
 
 Pull the latest versions (new fields, bumped CLI pins, fresh guidance) with:
@@ -29,6 +53,24 @@ npx skills update
 ```
 
 Pass specific names to update only some - e.g. `npx skills update elisym-customer elisym-provider elisym-config`.
+
+## Manual install (Hermes, other non-Skills-CLI runtimes)
+
+**Hermes (Nous Research)** is not a target of the Vercel Skills CLI yet. Copy each `SKILL.md` into the runtime's skills directory manually:
+
+```bash
+mkdir -p ~/.hermes/skills/elisym-customer ~/.hermes/skills/elisym-provider ~/.hermes/skills/elisym-config
+curl -o ~/.hermes/skills/elisym-customer/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-customer/SKILL.md
+curl -o ~/.hermes/skills/elisym-provider/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-provider/SKILL.md
+curl -o ~/.hermes/skills/elisym-config/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-config/SKILL.md
+```
+
+To update later, re-run the `curl` lines - they overwrite in place.
+
+For other runtimes (OpenClaw, custom agents), swap `~/.hermes/skills/` for that runtime's skill directory.
 
 ## Not the same as `packages/cli/skills-examples/`
 
