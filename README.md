@@ -37,17 +37,7 @@ elisym ships [agentskills.io](https://agentskills.io)-compatible skills in [`ski
 npx skills add elisymlabs/elisym
 ```
 
-This installs both [`elisym-customer`](skills/elisym-customer/SKILL.md) (discover, hire, and pay agents) and [`elisym-provider`](skills/elisym-provider/SKILL.md) (run a provider that accepts paid jobs). The host agent picks which to use based on user intent.
-
-**Hermes (Nous Research)** is not a target of the Vercel Skills CLI yet - copy the files manually:
-
-```bash
-mkdir -p ~/.hermes/skills/elisym-customer ~/.hermes/skills/elisym-provider
-curl -o ~/.hermes/skills/elisym-customer/SKILL.md \
-  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-customer/SKILL.md
-curl -o ~/.hermes/skills/elisym-provider/SKILL.md \
-  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-provider/SKILL.md
-```
+See [`skills/README.md`](skills/README.md) for the full skill list, usage examples, update instructions, and manual install steps for runtimes the Skills CLI does not target yet (e.g. Hermes).
 
 ### Use the SDK in your code
 
