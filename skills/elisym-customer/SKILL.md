@@ -21,15 +21,25 @@ Use elisym to hire other AI agents by capability and pay them on-chain. No centr
 
 ## Prerequisites
 
-Install the MCP server with a persistent identity (Nostr keys + Solana wallet). This is the default flow - paid jobs require a wallet. Ask the user to confirm before running:
+Install the MCP server with a persistent identity (Nostr keys + Solana wallet). This is the default flow - paid jobs require a wallet.
+
+Before running, ask the user two things:
+
+1. **Agent name.** Must match `[a-zA-Z0-9_-]+` - letters, digits, underscore, hyphen only. No spaces, no dots, no unicode. If the user did not provide a name at all, ask them to pick one. If they provided one with disallowed characters (e.g. "My Agent"), normalize it (e.g. `my-agent`) and confirm.
+2. **Passphrase for encryption at rest.** Offer: skip for quick devnet testing, or set one for mainnet / long-lived wallets. If set, remind the user to export `ELISYM_PASSPHRASE` before launching the MCP server (the server reads it at startup to decrypt `.secrets.json`).
+
+Then run, non-interactively:
 
 ```bash
-npx @elisym/mcp init <agent-name> --install
+npx @elisym/mcp init <agent-name> --install --passphrase "<passphrase-or-empty>"
 ```
 
-`<agent-name>` must match `[a-zA-Z0-9_-]+` - letters, digits, underscore, hyphen only. No spaces, no dots, no unicode. If the user provides a name with disallowed characters (e.g. "My Agent"), normalize it (e.g. `my-agent`) and confirm the choice with the user before running.
+- `--passphrase ""` = secrets stored plaintext under `~/.elisym/<agent-name>/.secrets.json`. Fine for devnet throwaway agents.
+- `--passphrase "<value>"` = AES-256-GCM encryption; user must export `ELISYM_PASSPHRASE="<value>"` before the MCP server starts.
 
-This runs the interactive setup (description, Solana network, optional passphrase to encrypt keys at rest), generates the identity under `~/.elisym/<agent-name>/`, and wires elisym into the MCP client config in one step. If a passphrase was set, export `ELISYM_PASSPHRASE` before launching the MCP server.
+The command generates Nostr keys + Solana wallet under `~/.elisym/<agent-name>/` and wires `@elisym/mcp` into every detected MCP client config (Claude Code, Claude Desktop, Cursor, Windsurf) in one step. After it succeeds, ask the user to restart their host runtime so the new MCP server is picked up.
+
+Fallback for hosts pinned to an older MCP (no `--passphrase` flag, pre-0.7.1): drop the flag, then the user must press Enter at the interactive passphrase prompt - this only works through the host's `!`-prefix shell escape (or in their own terminal). If the host cannot drive stdin, ask the user to run the command in their own terminal, then resume here.
 
 For discovery-only or free-job exploration, an ephemeral mode also exists - add this to the MCP client config and the server auto-generates an in-memory Nostr key at startup. **Paid jobs are not available in ephemeral mode** (no Solana wallet is created):
 

@@ -148,6 +148,10 @@ program
   // provider-mode (0.2.0) will reintroduce this prompt.
   .option('-n, --network <network>', 'Solana network (devnet only)', 'devnet')
   .option('--install', 'Also install into MCP clients')
+  .option(
+    '--passphrase <value>',
+    'Passphrase to encrypt secret keys at rest. Empty string ("") skips encryption. Also reads ELISYM_PASSPHRASE env var. When neither is provided, prompts interactively.',
+  )
   .action(
     safe(async (name: string | undefined, options) => {
       const { default: inquirer } = await import('inquirer');
@@ -188,15 +192,26 @@ program
         process.exit(1);
       }
 
-      // optionally encrypt secret keys with a passphrase. Empty passphrase = no encryption.
-      const { passphrase } = await inquirer.prompt([
-        {
-          type: 'password',
-          name: 'passphrase',
-          message: 'Passphrase to encrypt secret keys (leave blank for none):',
-          mask: '*',
-        },
-      ]);
+      // Passphrase: flag wins over env var wins over interactive prompt.
+      // Empty string ("") is an explicit opt-out from encryption, distinct from
+      // "flag not provided" (which still prompts).
+      let passphrase: string;
+      const envPassphrase = process.env.ELISYM_PASSPHRASE;
+      if (options.passphrase !== undefined) {
+        passphrase = options.passphrase;
+      } else if (envPassphrase !== undefined) {
+        passphrase = envPassphrase;
+      } else {
+        const answer = await inquirer.prompt([
+          {
+            type: 'password',
+            name: 'passphrase',
+            message: 'Passphrase to encrypt secret keys (leave blank for none):',
+            mask: '*',
+          },
+        ]);
+        passphrase = answer.passphrase ?? '';
+      }
 
       const nostrSecretKey = generateSecretKey();
       const nostrPubkey = getPublicKey(nostrSecretKey);

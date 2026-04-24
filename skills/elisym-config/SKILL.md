@@ -11,7 +11,7 @@ allowed-tools:
     'Bash(ls ~/.elisym/*)',
     'Bash(cat ~/.elisym/*/elisym.yaml)',
     'Bash(find . -name .elisym -type d*)',
-    'Bash(npx -y @elisym/cli@0.6.1 list*)',
+    'Bash(npx -y @elisym/cli list*)',
   ]
 metadata:
   hermes:
@@ -93,7 +93,7 @@ Source of truth: `ElisymYamlSchema` in [`packages/sdk/src/agent-store/schema.ts`
 1. **Identify the file.** Confirm with the user which agent they mean if more than one exists. Absolute path preferred (`~/.elisym/<name>/elisym.yaml` or `<project>/.elisym/<name>/elisym.yaml`).
 2. **Read the current YAML.** Use the host `Read` tool. Show the user the fields you plan to change - old value → new value - and ask for explicit confirmation before writing.
 3. **Edit with the host `Edit` tool.** Keep formatting consistent with what the writer produces (`yaml.stringify` output: 2-space indent, no quotes around plain scalars). Do not introduce top-level keys outside the Fields table above - the schema is strict and any unknown key will make `loadAgent` throw.
-4. **Verify.** Run `npx -y @elisym/cli@0.6.1 list` from any directory - the command loads every agent through the Zod schema and prints the `npub` / Solana address on success. If the listing for the edited agent prints without a trailing `(encrypted)` or error hint but is missing the `npub`/address, re-read the file and look for a parse error.
+4. **Verify.** Run `npx -y @elisym/cli list` from any directory - the command loads every agent through the Zod schema and prints the `npub` / Solana address on success. If the listing for the edited agent prints without a trailing `(encrypted)` or error hint but is missing the `npub`/address, re-read the file and look for a parse error.
 5. **Propagate if needed.** If the user changed `display_name`, description, picture, or banner and a provider process is running (`elisym start`), they need to restart it to republish the capability card.
 
 ## 4. Security-sensitive edits - always confirm

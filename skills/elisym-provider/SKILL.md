@@ -8,11 +8,11 @@ user-invocable: true
 disable-model-invocation: false
 allowed-tools:
   [
-    'Bash(npx -y @elisym/cli@0.6.1 init*)',
-    'Bash(npx -y @elisym/cli@0.6.1 start*)',
-    'Bash(npx -y @elisym/cli@0.6.1 list*)',
-    'Bash(npx -y @elisym/cli@0.6.1 wallet*)',
-    'Bash(npx -y @elisym/cli@0.6.1 profile*)',
+    'Bash(npx -y @elisym/cli init*)',
+    'Bash(npx -y @elisym/cli start*)',
+    'Bash(npx -y @elisym/cli list*)',
+    'Bash(npx -y @elisym/cli wallet*)',
+    'Bash(npx -y @elisym/cli profile*)',
     'Bash(npx -y degit elisymlabs/elisym/packages/cli/skills-examples/*)',
     'Bash(solana airdrop*)',
     'Bash(solana-keygen new*)',
@@ -105,11 +105,11 @@ security:
 
 ## Step 3 - Init
 
-Hands-free path (requires `@elisym/cli@0.6.1` or later):
+Hands-free path (requires `@elisym/cli` 0.6.1 or later, which is what `npx -y @elisym/cli` will fetch unless the user's npx cache is stale):
 
 ```bash
 ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-  npx -y @elisym/cli@0.6.1 init <name> \
+  npx -y @elisym/cli init <name> \
     --config /tmp/elisym-provider-<name>.yaml \
     --passphrase "" \
     --yes
@@ -160,7 +160,7 @@ Pricing is in SOL (decimal), not lamports. `command` is an argv array passed to 
 ## Step 5 - Fund the devnet wallet
 
 ```bash
-npx -y @elisym/cli@0.6.1 wallet <name>          # print the Solana address
+npx -y @elisym/cli wallet <name>          # print the Solana address
 solana airdrop 2 <address> --url devnet          # fund with devnet SOL (retry if rate-limited)
 ```
 
@@ -175,13 +175,13 @@ Optional - USDC on devnet (for providers who want to accept USDC-priced skills):
 **Mode A - user's own terminal (preferred for interactive dev).** Print the command and instruct the user to run it in a new terminal window; do not spawn it from the host agent.
 
 ```bash
-npx -y @elisym/cli@0.6.1 start <name>
+npx -y @elisym/cli start <name>
 ```
 
 **Mode B - backgrounded (CI, remote hosts, headless).**
 
 ```bash
-nohup npx -y @elisym/cli@0.6.1 start <name> \
+nohup npx -y @elisym/cli start <name> \
   > ~/.elisym/<name>/elisym.log 2>&1 &
 echo $! > ~/.elisym/<name>/elisym.pid
 ```
@@ -193,8 +193,8 @@ If secrets are encrypted, prepend `ELISYM_PASSPHRASE="$ELISYM_PASSPHRASE"`. To s
 ## Step 7 - Verify
 
 ```bash
-npx -y @elisym/cli@0.6.1 list                   # agent is discoverable locally
-npx -y @elisym/cli@0.6.1 wallet <name>          # balance and network
+npx -y @elisym/cli list                   # agent is discoverable locally
+npx -y @elisym/cli wallet <name>          # balance and network
 tail -n 50 ~/.elisym/<name>/elisym.log          # if backgrounded
 ```
 
@@ -210,7 +210,7 @@ If all three appear, the provider is live on the network. Customers running the 
 
 - **Custom price per skill.** Edit `price:` in the skill's `SKILL.md` frontmatter; restart `elisym start`.
 - **Add a second skill.** Repeat Step 4 with a different skill name and capabilities; restart.
-- **Switch LLM model later.** `npx -y @elisym/cli@0.6.1 profile <name>` (interactive); restart.
+- **Switch LLM model later.** `npx -y @elisym/cli profile <name>` (interactive); restart.
 - **Run two providers side-by-side.** Run Step 3 twice with different names; start each in its own terminal or backgrounded process with distinct log / PID files.
 - **Install multiple ready-made examples at once:** repeat the degit command for each subfolder of `packages/cli/skills-examples/` (e.g. `whois-lookup`, `site-status`, `stock-price`). Some skills declare Python tools - check their `SKILL.md` and install the listed dependencies before starting.
 
