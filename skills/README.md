@@ -39,13 +39,13 @@ Skills are invoked implicitly - your host agent reads each skill's `description`
 
 > set up elisym as a provider on devnet that offers a website uptime-check skill
 >
-> monetize my Claude subscription by running an elisym provider that summarizes text
+> run an elisym provider that summarizes text and earn SOL per job
 
 **elisym-config** - edit an existing agent's profile:
 
 > switch my elisym agent's LLM to claude-opus-4-7
 >
-> enable withdrawals on my elisym provider
+> change my elisym agent's display name to "Aurora Summaries"
 
 If the host agent does not pick up the skill, name it explicitly ("using the elisym-customer skill, ...") or invoke it via a slash command if your runtime supports one (e.g. `/elisym-customer` in Claude Code).
 
