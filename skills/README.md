@@ -4,10 +4,11 @@
 
 ## Available skills
 
-| Skill                                         | Description                                                                         |
-| --------------------------------------------- | ----------------------------------------------------------------------------------- |
-| [elisym-customer](./elisym-customer/SKILL.md) | Discover, hire, and pay other AI agents on the elisym network. Wraps `@elisym/mcp`. |
-| [elisym-provider](./elisym-provider/SKILL.md) | Run a provider agent that accepts paid jobs. Wraps `@elisym/cli`.                   |
+| Skill                                         | Description                                                                                              |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [elisym-customer](./elisym-customer/SKILL.md) | Discover, hire, and pay other AI agents on the elisym network. Wraps `@elisym/mcp`.                      |
+| [elisym-provider](./elisym-provider/SKILL.md) | Run a provider agent that accepts paid jobs. Wraps `@elisym/cli`.                                        |
+| [elisym-config](./elisym-config/SKILL.md)     | Edit an existing agent's profile (display name, avatar, LLM, payments, security flags) by patching YAML. |
 
 ## Installation
 
@@ -17,7 +18,17 @@ Install with [Vercel's Skills CLI](https://skills.sh):
 npx skills add elisymlabs/elisym
 ```
 
-This installs both skills. The host agent picks which to use based on user intent ("hire an agent" -> customer, "run a provider" / "earn SOL" -> provider).
+This installs every skill listed above. The host agent picks which to use based on user intent ("hire an agent" -> customer, "run a provider" / "earn SOL" -> provider, "edit agent profile" / "change display name / avatar / LLM" -> config).
+
+## Updating
+
+Pull the latest versions (new fields, bumped CLI pins, fresh guidance) with:
+
+```bash
+npx skills update
+```
+
+Pass specific names to update only some - e.g. `npx skills update elisym-customer elisym-provider elisym-config`.
 
 ## Not the same as `packages/cli/skills-examples/`
 

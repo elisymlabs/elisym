@@ -40,6 +40,11 @@ export const SecurityFlagsSchema = z.object({
 /**
  * elisym.yaml schema. Public - committed to git.
  * Agent name NOT stored here - derived from containing folder name.
+ *
+ * The top-level field list is mirrored in `skills/elisym-config/SKILL.md`
+ * so the elisym-config agent skill can patch this file directly. Drift
+ * is guarded by `packages/sdk/tests/config-skill-drift.test.ts` - when
+ * you add or remove a top-level field here, update that SKILL.md too.
  */
 export const ElisymYamlSchema = z
   .object({
