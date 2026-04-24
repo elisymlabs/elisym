@@ -61,9 +61,53 @@ npx skills update
 
 Pass specific names to update only some - e.g. `npx skills update elisym-customer elisym-provider elisym-config`.
 
-## Manual install (Hermes, other non-Skills-CLI runtimes)
+## Manual install (without Skills CLI)
 
-**Hermes (Nous Research)** is not a target of the Vercel Skills CLI yet. Copy each `SKILL.md` into the runtime's skills directory manually:
+Each host runtime reads skills from its own directory. To skip the Skills CLI (or target a runtime it does not support), copy the `SKILL.md` files in directly. To update later, re-run the `curl` lines - they overwrite in place.
+
+### Claude Code
+
+Alternative to `npx skills add` - installs to the same location the CLI would use:
+
+```bash
+mkdir -p ~/.claude/skills/elisym-customer ~/.claude/skills/elisym-provider ~/.claude/skills/elisym-config
+curl -o ~/.claude/skills/elisym-customer/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-customer/SKILL.md
+curl -o ~/.claude/skills/elisym-provider/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-provider/SKILL.md
+curl -o ~/.claude/skills/elisym-config/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-config/SKILL.md
+```
+
+Restart Claude Code so it picks up the new skills.
+
+### OpenClaw
+
+OpenClaw reads skills from `~/.openclaw/skills/` (and also from `<workspace>/skills` and `<workspace>/.agents/skills` if you prefer project-scoped install):
+
+```bash
+mkdir -p ~/.openclaw/skills/elisym-customer ~/.openclaw/skills/elisym-provider ~/.openclaw/skills/elisym-config
+curl -o ~/.openclaw/skills/elisym-customer/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-customer/SKILL.md
+curl -o ~/.openclaw/skills/elisym-provider/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-provider/SKILL.md
+curl -o ~/.openclaw/skills/elisym-config/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-config/SKILL.md
+```
+
+Start a new OpenClaw session so the skills snapshot refreshes (no gateway restart needed).
+
+**Extra step for `elisym-customer`:** OpenClaw supports stdio MCP servers, but `npx @elisym/mcp init --install` only auto-writes config for Claude Code, Claude Desktop, Cursor, and Windsurf - it does not know about OpenClaw's `mcp.servers` registry. After running `init`, register the server manually (the CLI takes a single JSON argument, not flags):
+
+```bash
+openclaw mcp set elisym '{"command":"npx","args":["-y","@elisym/mcp"],"env":{"ELISYM_AGENT":"<agent-name>"}}'
+```
+
+Substitute `<agent-name>` with the name you picked during `init`. Verify with `openclaw mcp list` / `openclaw mcp show elisym`. `elisym-provider` and `elisym-config` do not touch MCP and work as-is.
+
+### Hermes (Nous Research)
+
+Hermes is not yet a target of the Vercel Skills CLI. Copy each `SKILL.md` into its skills directory manually:
 
 ```bash
 mkdir -p ~/.hermes/skills/elisym-customer ~/.hermes/skills/elisym-provider ~/.hermes/skills/elisym-config
@@ -75,9 +119,9 @@ curl -o ~/.hermes/skills/elisym-config/SKILL.md \
   https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-config/SKILL.md
 ```
 
-To update later, re-run the `curl` lines - they overwrite in place.
+### Other runtimes
 
-For other runtimes (OpenClaw, custom agents), swap `~/.hermes/skills/` for that runtime's skill directory.
+Same pattern - swap the target for the runtime's skills directory. Loading layout is universal: `<runtime-skills-dir>/<skill-name>/SKILL.md`.
 
 ## Not the same as `packages/cli/skills-examples/`
 
