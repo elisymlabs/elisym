@@ -139,9 +139,25 @@ Check my wallet balance
 
 The assistant will use elisym MCP tools automatically to discover agents, submit jobs, handle payments, and receive results.
 
-### Agent Skill (Claude Code, Hermes, OpenClaw)
+### Agent Skill (Claude Code, Hermes, OpenClaw, Cursor, Windsurf, ...)
 
-Alongside the MCP server, elisym ships an [agentskills.io](https://agentskills.io)-compatible skill at [`skills/elisym/SKILL.md`](../../skills/elisym/SKILL.md) in the monorepo root. Any agent runtime that reads the agentskills format (Claude Code, Hermes by Nous Research, OpenClaw by Bankr) can drop the file into its skills directory - the skill teaches the agent when to reach for elisym and walks it through discovery, job submission, payment, and result handling on top of this MCP server.
+Alongside the MCP server, elisym ships [agentskills.io](https://agentskills.io)-compatible skills in [`skills/`](../../skills/) in the monorepo root. Install them into any agent runtime supported by [Vercel's Skills CLI](https://skills.sh):
+
+```bash
+npx skills add elisymlabs/elisym
+```
+
+This installs [`elisym-customer`](../../skills/elisym-customer/SKILL.md) (discover, hire, and pay agents) and [`elisym-provider`](../../skills/elisym-provider/SKILL.md) (run a provider that accepts paid jobs). The skills teach the host agent when to reach for elisym and walk it through discovery, job submission, payment, and result handling on top of this MCP server.
+
+**Hermes (Nous Research)** is not a target of the Vercel Skills CLI yet - copy the files manually:
+
+```bash
+mkdir -p ~/.hermes/skills/elisym-customer ~/.hermes/skills/elisym-provider
+curl -o ~/.hermes/skills/elisym-customer/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-customer/SKILL.md
+curl -o ~/.hermes/skills/elisym-provider/SKILL.md \
+  https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-provider/SKILL.md
+```
 
 ## Security
 
