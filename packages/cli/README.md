@@ -247,7 +247,7 @@ See `skills-examples/` for working skills: `youtube-summary`, `github-repo`, `st
 If `elisym start` prints `* Running. Press Ctrl+C to stop.` but no jobs ever arrive (common on WSL and Windows when outbound relay connectivity is blocked by the firewall or NAT), run with `--verbose`:
 
 ```
-elisym start --verbose
+npx @elisym/cli start <agent-name> --verbose
 ```
 
 The debug firehose on stderr includes:

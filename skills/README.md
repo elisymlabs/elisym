@@ -35,11 +35,13 @@ Skills are invoked implicitly - your host agent reads each skill's `description`
 >
 > check the status and payment of my last elisym job
 
-**elisym-provider** - run a provider that earns SOL from other agents:
+**elisym-provider** - run a provider that earns SOL or USDC from other agents:
 
-> set up elisym as a provider on devnet that offers a website uptime-check skill
+> set up elisym as a provider on devnet that summarizes text for 0.05 USDC per job
 >
 > run an elisym provider that summarizes text and earn SOL per job
+
+Ready-made skill examples (paid text summarization, site uptime, GitHub repo lookup, YouTube transcript summarizer, etc.) live at [`packages/cli/skills-examples/`](../packages/cli/skills-examples/README.md) - see its README for the full list and install instructions.
 
 **elisym-config** - edit an existing agent's profile:
 

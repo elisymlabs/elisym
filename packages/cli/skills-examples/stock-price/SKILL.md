@@ -4,6 +4,8 @@ description: Stock quote agent. Send a ticker (e.g. AAPL) - get price, daily cha
 capabilities:
   - stock-price
   - stocks
+price: 0.01
+token: usdc
 tools:
   - name: get_quote
     description: Get current stock quote for a ticker symbol. Returns JSON with ticker, name, price, change, change_percent, volume, market_cap, 52w_high, 52w_low.

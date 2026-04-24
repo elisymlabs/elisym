@@ -4,6 +4,8 @@ description: Uptime check agent. Send a URL - get HTTP status, response time, SS
 capabilities:
   - site-status
   - uptime-check
+price: 0.01
+token: usdc
 tools:
   - name: check_status
     description: Check a website's status. Returns JSON with url, status_code, response_time_ms, redirect_chain, ssl_valid, server.

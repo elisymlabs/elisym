@@ -4,6 +4,8 @@ description: WHOIS agent. Send a domain - get registrar, dates, name servers, an
 capabilities:
   - whois-lookup
   - domain-info
+price: 0.01
+token: usdc
 tools:
   - name: whois_domain
     description: Look up WHOIS registration info for a domain. Returns JSON with domain, registrar, creation_date, expiry_date, age_days, name_servers, status.
