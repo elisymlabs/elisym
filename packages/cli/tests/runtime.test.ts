@@ -47,12 +47,6 @@ vi.mock('@solana/kit', () => ({
   }),
 }));
 
-vi.mock('bs58', () => ({
-  default: {
-    decode: vi.fn().mockReturnValue(new Uint8Array(64)),
-  },
-}));
-
 let agentDir: string;
 let ledger: JobLedger;
 

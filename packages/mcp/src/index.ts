@@ -23,8 +23,7 @@ import {
 } from '@elisym/sdk';
 import { globalConfigPath } from '@elisym/sdk/agent-store';
 import { loadGlobalConfig, writeGlobalConfig } from '@elisym/sdk/node';
-import { generateKeyPairSigner } from '@solana/kit';
-import bs58 from 'bs58';
+import { generateKeyPairSigner, getBase58Decoder } from '@solana/kit';
 /**
  * elisym MCP server - entry point.
  *
@@ -43,6 +42,8 @@ import { startServer } from './server.js';
 import { buildEffectiveLimits, DEFAULT_SESSION_LIMITS } from './session-limits.js';
 import { buildAgentInstance, exportKeyPairBytes } from './tools/agent.js';
 import { PACKAGE_VERSION } from './utils.js';
+
+const BASE58_DECODER = getBase58Decoder();
 
 /**
  * Wrap an action handler so any thrown Error surfaces as a single clean line
@@ -223,7 +224,7 @@ program
         description: options.description,
         relays: [...RELAYS],
         nostrSecretKey: Buffer.from(nostrSecretKey).toString('hex'),
-        solanaSecretKey: bs58.encode(solanaSecretBytes),
+        solanaSecretKey: BASE58_DECODER.decode(solanaSecretBytes),
         solanaAddress: solanaSigner.address,
         network: 'devnet',
         security: { withdrawals_enabled: false, agent_switch_enabled: false },

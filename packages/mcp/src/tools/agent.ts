@@ -3,8 +3,9 @@ import {
   type KeyPairSigner,
   createKeyPairSignerFromBytes,
   generateKeyPairSigner,
+  getBase58Decoder,
+  getBase58Encoder,
 } from '@solana/kit';
-import bs58 from 'bs58';
 import { generateSecretKey, nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import { listAgentNames, loadAgentConfig, saveAgentConfig } from '../config.js';
@@ -12,6 +13,9 @@ import type { AgentInstance, AgentSecurityFlags, SolanaNetwork } from '../contex
 import { logger } from '../logger.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, errorResult, textResult } from './types.js';
+
+const BASE58_ENCODER = getBase58Encoder();
+const BASE58_DECODER = getBase58Decoder();
 
 /**
  * Extract the 64-byte secret key (32-byte private seed + 32-byte public key)
@@ -90,7 +94,7 @@ export async function buildAgentInstance(
   let solanaKeypair: AgentInstance['solanaKeypair'];
   if (config.solanaSecretKey) {
     try {
-      const decoded = bs58.decode(config.solanaSecretKey);
+      const decoded = new Uint8Array(BASE58_ENCODER.encode(config.solanaSecretKey));
       const signer = await createKeyPairSignerFromBytes(decoded);
       solanaKeypair = {
         publicKey: signer.address,
@@ -174,7 +178,7 @@ export const agentTools: ToolDefinition[] = [
       const solanaSecretBytes = await exportKeyPairBytes(solanaSigner);
 
       const nostrSecretHex = Buffer.from(nostrSecretKey).toString('hex');
-      const solanaSecretBase58 = bs58.encode(solanaSecretBytes);
+      const solanaSecretBase58 = BASE58_DECODER.decode(solanaSecretBytes);
 
       await saveAgentConfig(input.name, {
         name: input.name,
