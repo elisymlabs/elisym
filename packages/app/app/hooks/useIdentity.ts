@@ -6,6 +6,7 @@ import {
   useState,
   useCallback,
   useEffect,
+  useRef,
   createElement,
   type ReactNode,
 } from 'react';
@@ -130,6 +131,23 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<IdentityState | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // The first state we observe comes from `loadInitialState`, which itself
+  // already wrote to localStorage if it had to regenerate; skip persisting
+  // that one to avoid a redundant re-encrypt on mount.
+  const skipNextPersistRef = useRef(true);
+
+  useEffect(() => {
+    if (!state) {
+      return;
+    }
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      return;
+    }
+    writeActiveId(state.activeId);
+    void saveIdentities(state.allIdentities);
+  }, [state]);
+
   useEffect(() => {
     if (typeof window === 'undefined') {
       return;
@@ -152,8 +170,6 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       }
       const { entry, identity } = freshEntry(`Key ${prev.allIdentities.length + 1}`);
       const newList = [...prev.allIdentities, entry];
-      writeActiveId(entry.id);
-      void saveIdentities(newList);
       return { allIdentities: newList, activeId: entry.id, identity };
     });
   }, []);
@@ -167,7 +183,6 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       if (!entry) {
         return prev;
       }
-      writeActiveId(id);
       return {
         allIdentities: prev.allIdentities,
         activeId: id,
@@ -185,14 +200,10 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
         return prev;
       }
       const newList = prev.allIdentities.filter((entry) => entry.id !== id);
-      void saveIdentities(newList);
-
-      let newActiveId = prev.activeId;
-      if (prev.activeId === id) {
-        newActiveId = firstOrThrow(newList, 'removeIdentity: new active').id;
-        writeActiveId(newActiveId);
-      }
-
+      const newActiveId =
+        prev.activeId === id
+          ? firstOrThrow(newList, 'removeIdentity: new active').id
+          : prev.activeId;
       const active = newList.find((entry) => entry.id === newActiveId);
       if (!active) {
         return prev;
@@ -213,7 +224,6 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       const newList = prev.allIdentities.map((entry) =>
         entry.id === id ? { ...entry, name } : entry,
       );
-      void saveIdentities(newList);
       return { ...prev, allIdentities: newList };
     });
   }, []);

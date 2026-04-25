@@ -127,22 +127,41 @@ interface PendingConfirmation {
   timestamp: number;
 }
 
+// Local-only resumption queue. A corrupted entry must never block the on-chain
+// payment confirmation publish, so all reads/writes fail soft.
+function readPendingConfirmations(): PendingConfirmation[] {
+  try {
+    const raw = localStorage.getItem(PENDING_CONFIRMATIONS_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PendingConfirmation[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 function savePendingConfirmation(pc: PendingConfirmation) {
-  const existing = JSON.parse(
-    localStorage.getItem(PENDING_CONFIRMATIONS_KEY) || '[]',
-  ) as PendingConfirmation[];
-  existing.push(pc);
-  localStorage.setItem(PENDING_CONFIRMATIONS_KEY, JSON.stringify(existing));
+  try {
+    const existing = readPendingConfirmations();
+    existing.push(pc);
+    localStorage.setItem(PENDING_CONFIRMATIONS_KEY, JSON.stringify(existing));
+  } catch {
+    // best-effort - resumption queue failures must not abort the publish
+  }
 }
 
 function removePendingConfirmation(jobEventId: string) {
-  const existing = JSON.parse(
-    localStorage.getItem(PENDING_CONFIRMATIONS_KEY) || '[]',
-  ) as PendingConfirmation[];
-  localStorage.setItem(
-    PENDING_CONFIRMATIONS_KEY,
-    JSON.stringify(existing.filter((p) => p.jobEventId !== jobEventId)),
-  );
+  try {
+    const existing = readPendingConfirmations();
+    localStorage.setItem(
+      PENDING_CONFIRMATIONS_KEY,
+      JSON.stringify(existing.filter((entry) => entry.jobEventId !== jobEventId)),
+    );
+  } catch {
+    // best-effort
+  }
 }
 
 async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {

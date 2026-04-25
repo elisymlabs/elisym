@@ -33,9 +33,16 @@ export function ElisymProvider({
   }, [client]);
 
   useEffect(() => {
-    client.pool.querySync({ kinds: [0], limit: 1 }).then(() => {
-      setRelaysConnected(true);
-    });
+    client.pool
+      .querySync({ kinds: [0], limit: 1 })
+      .catch(() => {
+        // Probe can reject if every relay errors; surface the UI as
+        // connected anyway so downstream calls aren't blocked - real
+        // failures will surface on subsequent queries.
+      })
+      .finally(() => {
+        setRelaysConnected(true);
+      });
     return () => client.close();
   }, [client]);
 
