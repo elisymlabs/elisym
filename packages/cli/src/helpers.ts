@@ -13,6 +13,16 @@ export const WATCHDOG_PROBE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 export const WATCHDOG_PROBE_TIMEOUT_MS = 10_000;
 export const WATCHDOG_SELF_PING_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 export const WATCHDOG_SELF_PING_TIMEOUT_MS = 15_000;
+/**
+ * If a watchdog tick fires after a wall-clock gap larger than the smaller of
+ * its two intervals multiplied by this factor, the gap is treated as host
+ * suspension (macOS sleep, hibernation, container pause) rather than normal
+ * scheduling jitter. Both `setInterval` callbacks freeze during OS sleep and
+ * fire late on resume; the tick that detects the gap forces an immediate pool
+ * reset instead of running the regular probe/self-ping (which would race
+ * against still-half-dead WebSocket state).
+ */
+export const WATCHDOG_SLEEP_DETECT_MULTIPLIER = 2;
 
 // --- Solana RPC ---
 
