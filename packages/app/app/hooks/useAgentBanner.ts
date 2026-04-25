@@ -13,6 +13,9 @@ export function useAgentBanner(pubkey: string): string | undefined {
     if (!pubkey) {
       return;
     }
+    // Clear any prior agent's banner so we never paint stale imagery while the
+    // new profile loads (or when the new agent has no banner at all).
+    setBanner(undefined);
     let cancelled = false;
 
     client.pool
