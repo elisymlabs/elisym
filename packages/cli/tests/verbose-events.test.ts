@@ -5,7 +5,7 @@ import { createLogger } from '../src/logging';
 /**
  * These tests assert the structural invariants of the debug firehose
  * emitted when `--verbose` is on: a subset of events - config_resolved,
- * publish_ack, publish_failed, heartbeat_ack, pool_reset - MUST land on
+ * publish_ack, publish_failed, pool_reset - MUST land on
  * the pino stream with a `{ event, ... }` shape, and MUST never carry a
  * secret-path or input-path field verbatim.
  */

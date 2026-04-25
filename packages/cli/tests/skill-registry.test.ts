@@ -97,6 +97,35 @@ describe('SkillRegistry', () => {
     expect(reg.route([])).toBe(s1);
   });
 
+  it('routes a human-readable skill name via its toDTag form', () => {
+    const reg = new SkillRegistry();
+    // Display name is Title Case with a space; the SDK publishes capability
+    // cards under `toDTag(name) === 'whois-lookup'`, so incoming tags arrive
+    // d-tag-shaped. Before the fix `route(['whois-lookup'])` returned null
+    // because raw `skill.name === tag` missed and no capability listed it.
+    const skill = makeSkill('WHOIS Lookup', ['domain-info']);
+    reg.register(skill);
+
+    expect(reg.route(['whois-lookup'])).toBe(skill);
+  });
+
+  it('still routes kebab-case names by their canonical tag', () => {
+    const reg = new SkillRegistry();
+    const skill = makeSkill('youtube-summary', ['video-analysis']);
+    reg.register(skill);
+
+    expect(reg.route(['youtube-summary'])).toBe(skill);
+  });
+
+  it('falls back to capability match when the name does not normalize to the tag', () => {
+    const reg = new SkillRegistry();
+    // toDTag('X') === 'x', so 'some-cap' must hit via capabilities.
+    const skill = makeSkill('X', ['some-cap']);
+    reg.register(skill);
+
+    expect(reg.route(['some-cap'])).toBe(skill);
+  });
+
   it('returns null when empty', () => {
     const reg = new SkillRegistry();
     expect(reg.route(['anything'])).toBeNull();

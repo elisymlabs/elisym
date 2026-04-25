@@ -47,7 +47,16 @@ export interface Agent {
   cards: CapabilityCard[];
   eventId: string;
   supportedKinds: number[];
+  /** Newest network signal of any kind: capability publish, result event, or feedback event. */
   lastSeen: number;
+  /** Unix seconds of the agent's most recent on-chain-verified paid job. Undefined if none. */
+  lastPaidJobAt?: number;
+  /** Solana tx signature of the verified paid job referenced by `lastPaidJobAt`. */
+  lastPaidJobTx?: string;
+  /** Count of `rating=1` feedback events targeting this agent (last 30 days). */
+  positiveCount?: number;
+  /** Count of all rated feedback events targeting this agent (last 30 days). */
+  totalRatingCount?: number;
   picture?: string;
   name?: string;
   about?: string;

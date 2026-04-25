@@ -2,7 +2,7 @@
  * Skill interface and registry.
  */
 
-import type { Asset } from '@elisym/sdk';
+import { toDTag, type Asset } from '@elisym/sdk';
 
 export interface SkillInput {
   data: string;
@@ -82,6 +82,8 @@ export interface Skill {
   image?: string;
   /** Local file path for hero image (uploaded on first start). */
   imageFile?: string;
+  /** On-disk skill directory (e.g. `<agent>/skills/whois-lookup`). */
+  dir?: string;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;
 }
 
@@ -97,10 +99,13 @@ export class SkillRegistry {
   }
 
   route(tags: string[]): Skill | null {
-    // Exact match by skill name first - this is the canonical tag the SDK's
-    // `toDTag(skill.name)` attaches to outgoing job requests.
+    // Match by skill name in canonical d-tag form. Outgoing capability cards
+    // publish `['d', toDTag(card.name)]`, so incoming job tags arrive
+    // d-tag-shaped (lowercase, ASCII letters + digits + hyphens). Comparing
+    // raw `skill.name` only works when the name is already kebab-case;
+    // normalize through `toDTag` so human-readable names route too.
     for (const tag of tags) {
-      const byName = this.skills.find((skill) => skill.name === tag);
+      const byName = this.skills.find((skill) => toDTag(skill.name) === tag);
       if (byName) {
         return byName;
       }

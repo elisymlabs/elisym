@@ -31,6 +31,7 @@ export class ScriptSkill implements Skill {
   asset: Asset;
   image?: string;
   imageFile?: string;
+  dir: string;
   private inner: SdkScriptSkill;
 
   constructor(
@@ -83,6 +84,7 @@ export class ScriptSkill implements Skill {
     this.asset = asset;
     this.image = image;
     this.imageFile = imageFile;
+    this.dir = skillDir;
     this.inner = new SdkScriptSkill({
       name,
       description,

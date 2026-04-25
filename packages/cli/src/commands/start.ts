@@ -33,7 +33,6 @@ import { address, createSolanaRpc } from '@solana/kit';
 import { probeRelays } from '../diagnostics.js';
 import {
   getRpcUrl,
-  HEARTBEAT_INTERVAL_MS,
   MAX_CONCURRENT_JOBS,
   RECOVERY_MAX_RETRIES,
   RECOVERY_INTERVAL_SECS,
@@ -243,11 +242,12 @@ export async function cmdStart(
   );
 
   for (const skill of allSkills) {
-    if (skill.image || !skill.imageFile) {
+    if (skill.image || !skill.imageFile || !skill.dir) {
       continue;
     }
-    const skillRoot = join(skillsDir, skill.name);
-    const cacheKey = `./skills/${skill.name}/${skill.imageFile}`;
+    const skillRoot = skill.dir;
+    const folderName = basename(skillRoot);
+    const cacheKey = `./skills/${folderName}/${skill.imageFile}`;
     const absPath = join(skillRoot, skill.imageFile);
     const url = await uploadOrReuse(
       cacheKey,
@@ -365,22 +365,7 @@ export async function cmdStart(
     client.ping.sendPong(identity, senderPubkey, nonce).catch(() => {});
   };
 
-  // -- Step 14: Start heartbeat (republish first card to update lastSeen) --
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  if (allSkills.length > 0) {
-    const heartbeatCard = buildCard(allSkills[0]!);
-    heartbeatTimer = setInterval(async () => {
-      try {
-        await client.discovery.publishCapability(identity, heartbeatCard, kinds);
-        logger.debug({ event: 'heartbeat_ack', skill: heartbeatCard.name }, 'heartbeat ok');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.warn({ event: 'heartbeat_failed', error: message }, 'heartbeat publish failed');
-      }
-    }, HEARTBEAT_INTERVAL_MS);
-  }
-
-  // -- Step 15: Build transport + ledger + runtime --
+  // -- Step 14: Build transport + ledger + runtime --
   const transport = new NostrTransport(client, identity, [DEFAULT_KIND_OFFSET]);
   const ledger = new JobLedger(paths.jobs);
 
@@ -445,13 +430,10 @@ export async function cmdStart(
     onLog: diagLog,
     onStop: () => {
       watchdog.stop();
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-      }
     },
   });
 
-  // -- Step 16: Run --
+  // -- Step 15: Run --
   console.log('  * Running. Press Ctrl+C to stop.\n');
   await runtime.run();
 }
