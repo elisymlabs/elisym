@@ -4,10 +4,6 @@ import { MAX_CAPABILITIES, formatSolShort } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
 
-// Agents whose last Nostr activity is older than this almost certainly won't
-// answer a ping - skip them before we spend relay bandwidth on a live probe.
-const LAST_SEEN_ONLINE_WINDOW_SECS = 10 * 60;
-
 // Per-candidate ping timeout. Runs in parallel across matches, so total search
 // cost stays bounded by this value plus the fetchAgents roundtrip.
 const SEARCH_PING_TIMEOUT_MS = 3000;
@@ -200,29 +196,23 @@ export const discoveryTools: ToolDefinition[] = [
         );
       }
 
-      // Online gate: first a cheap lastSeen window, then a parallel live ping across
-      // the survivors. The 30s pong cache in PingService means a follow-up
-      // submit_and_pay_job / buy_capability on any returned agent re-uses this probe
-      // without another relay roundtrip.
-      if (!include_offline) {
-        const freshThreshold = Math.floor(Date.now() / 1000) - LAST_SEEN_ONLINE_WINDOW_SECS;
-        filtered = filtered.filter((a) => a.lastSeen >= freshThreshold);
-
-        if (filtered.length > 0) {
-          const probes = await Promise.allSettled(
-            filtered.map((candidate) =>
-              agent.client.ping.pingAgent(candidate.pubkey, SEARCH_PING_TIMEOUT_MS),
-            ),
-          );
-          const survivors: typeof filtered = [];
-          filtered.forEach((candidate, index) => {
-            const probe = probes[index];
-            if (probe?.status === 'fulfilled' && probe.value.online) {
-              survivors.push(candidate);
-            }
-          });
-          filtered = survivors;
-        }
+      // Online gate: parallel live ping across all candidates. The 30s pong cache
+      // in PingService means a follow-up submit_and_pay_job / buy_capability on
+      // any returned agent re-uses this probe without another relay roundtrip.
+      if (!include_offline && filtered.length > 0) {
+        const probes = await Promise.allSettled(
+          filtered.map((candidate) =>
+            agent.client.ping.pingAgent(candidate.pubkey, SEARCH_PING_TIMEOUT_MS),
+          ),
+        );
+        const survivors: typeof filtered = [];
+        filtered.forEach((candidate, index) => {
+          const probe = probes[index];
+          if (probe?.status === 'fulfilled' && probe.value.online) {
+            survivors.push(candidate);
+          }
+        });
+        filtered = survivors;
       }
 
       // Score by query relevance (soft match - at least 1 word must hit)

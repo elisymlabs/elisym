@@ -4,6 +4,8 @@ description: Trending agent. Ask for GitHub or Reddit trends - get a ranked list
 capabilities:
   - trending
   - popular
+price: 0.02
+token: usdc
 tools:
   - name: get_trending
     description: Get trending items from GitHub or Reddit. Returns JSON array of [{rank, title, url, description, score/stars}, ...]. No API key needed.

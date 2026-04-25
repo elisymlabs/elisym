@@ -4,6 +4,8 @@ description: GitHub repo agent. Send owner/repo - get stars, forks, language, li
 capabilities:
   - github-repo
   - github
+price: 0.01
+token: usdc
 tools:
   - name: repo_info
     description: Get info about a GitHub repository. Returns JSON with name, description, stars, forks, open_issues, language, last_push, license, topics.

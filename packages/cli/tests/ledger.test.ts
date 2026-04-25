@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 
 let tmpDir: string;
@@ -245,23 +245,34 @@ describe('JobLedger', () => {
   });
 
   it('pruneOldEntries retains an entry exactly at the retention boundary', () => {
-    const ledger = new JobLedger(ledgerPath);
-    const retentionSecs = 30 * 24 * 60 * 60;
-    const boundary = Math.floor(Date.now() / 1000) - retentionSecs;
+    // Freeze the clock so `boundary` (computed here) and `cutoff` (computed
+    // inside pruneOldEntries) reference the same whole second. Without this,
+    // the test is flaky when a second tick falls between the two Date.now()
+    // reads and boundary-keep slides across the cutoff.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-15T12:00:00Z'));
 
-    // created_at exactly at cutoff - the condition is `< cutoff`, so boundary is kept.
-    ledger.recordPaid({ ...makeEntry('boundary-keep'), created_at: boundary });
-    ledger.markExecuted('boundary-keep', 'r');
-    ledger.markDelivered('boundary-keep');
+      const ledger = new JobLedger(ledgerPath);
+      const retentionSecs = 30 * 24 * 60 * 60;
+      const boundary = Math.floor(Date.now() / 1000) - retentionSecs;
 
-    // one second older - strictly before cutoff, should drop.
-    ledger.recordPaid({ ...makeEntry('boundary-drop'), created_at: boundary - 1 });
-    ledger.markExecuted('boundary-drop', 'r');
-    ledger.markDelivered('boundary-drop');
+      // created_at exactly at cutoff - the condition is `< cutoff`, so boundary is kept.
+      ledger.recordPaid({ ...makeEntry('boundary-keep'), created_at: boundary });
+      ledger.markExecuted('boundary-keep', 'r');
+      ledger.markDelivered('boundary-keep');
 
-    const deleted = ledger.pruneOldEntries(retentionSecs * 1000);
-    expect(deleted).toBe(1);
-    expect(ledger.getStatus('boundary-keep')).toBe('delivered');
-    expect(ledger.getStatus('boundary-drop')).toBeUndefined();
+      // one second older - strictly before cutoff, should drop.
+      ledger.recordPaid({ ...makeEntry('boundary-drop'), created_at: boundary - 1 });
+      ledger.markExecuted('boundary-drop', 'r');
+      ledger.markDelivered('boundary-drop');
+
+      const deleted = ledger.pruneOldEntries(retentionSecs * 1000);
+      expect(deleted).toBe(1);
+      expect(ledger.getStatus('boundary-keep')).toBe('delivered');
+      expect(ledger.getStatus('boundary-drop')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

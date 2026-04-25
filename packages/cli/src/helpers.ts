@@ -6,7 +6,6 @@ import { calculateProtocolFee } from '@elisym/sdk';
 // --- Constants ---
 
 export const RENT_EXEMPT_MINIMUM = 890_880; // lamports
-export const HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 export const MAX_CONCURRENT_JOBS = 10;
 export const RECOVERY_MAX_RETRIES = 5;
 export const RECOVERY_INTERVAL_SECS = 60;
