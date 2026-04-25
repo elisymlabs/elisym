@@ -10,10 +10,18 @@ import {
   jobResultKind,
 } from '../constants';
 import { assertLamports } from '../payment/fee';
+import { parsePaymentRequest } from '../payment/schema';
 import { nip44Encrypt, nip44Decrypt } from '../primitives/crypto';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
-import type { Job, JobStatus, SubCloser, SubmitJobOptions, JobSubscriptionOptions } from '../types';
+import type {
+  Job,
+  JobStatus,
+  PaymentAssetRef,
+  SubCloser,
+  SubmitJobOptions,
+  JobSubscriptionOptions,
+} from '../types';
 
 function isEncrypted(event: Event): boolean {
   return event.tags.some((t) => t[0] === 'encrypted' && t[1] === 'nip44');
@@ -726,6 +734,7 @@ export class MarketplaceService {
       let status: JobStatus = 'processing';
       let amount: number | undefined;
       let txHash: string | undefined;
+      let asset: PaymentAssetRef | undefined;
 
       if (result) {
         status = 'success';
@@ -733,13 +742,23 @@ export class MarketplaceService {
         amount = safeParseInt(amtTag?.[1]);
       }
 
-      // Check all feedbacks for tx hash
+      // Check all feedbacks for tx hash + payment asset (encoded inside the
+      // payment-required feedback's amount tag as `[amount, raw, requestJson, chain]`).
       const allFeedbacksForReq = feedbacksByRequestId.get(req.id) ?? [];
       for (const fb of allFeedbacksForReq) {
         const txTag = fb.tags.find((t) => t[0] === 'tx');
-        if (txTag?.[1]) {
+        if (txTag?.[1] && !txHash) {
           txHash = txTag[1];
-          break;
+        }
+        if (!asset) {
+          const amtTag = fb.tags.find((t) => t[0] === 'amount');
+          const requestJson = amtTag?.[2];
+          if (requestJson) {
+            const parsed = parsePaymentRequest(requestJson);
+            if (parsed.ok && parsed.data.asset) {
+              asset = parsed.data.asset;
+            }
+          }
         }
       }
 
@@ -775,6 +794,7 @@ export class MarketplaceService {
         resultEventId: result?.id,
         amount,
         txHash,
+        asset,
         createdAt: req.created_at,
       });
     }

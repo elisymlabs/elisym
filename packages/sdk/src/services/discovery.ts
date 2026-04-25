@@ -1,4 +1,3 @@
-import { type Address, type Rpc, type SolanaRpcApi } from '@solana/kit';
 import { nip19, finalizeEvent, verifyEvent, type Filter, type Event } from 'nostr-tools';
 import {
   KIND_APP_HANDLER,
@@ -10,7 +9,6 @@ import {
   DEFAULT_KIND_OFFSET,
   LIMITS,
 } from '../constants';
-import { verifyJobPaymentQuick } from '../payment/quick-verify';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type { Agent, CapabilityCard, Network } from '../types';
@@ -18,12 +16,6 @@ import type { Agent, CapabilityCard, Network } from '../types';
 const RANKING_ACTIVITY_WINDOW_SECS = 30 * 24 * 60 * 60;
 const RANKING_BUCKET_SIZE_SECS = 60;
 const COLD_START_BUCKET = -Infinity;
-// Cap how many `payment-completed` feedback events we'll on-chain verify per
-// agent. Feedback is open Nostr - anyone can publish - so a malicious actor
-// could spam fake `payment-completed` events to inflate verification cost or
-// bury the legitimate one. We try the newest N candidates and stop at the
-// first that verifies.
-const MAX_PAID_CANDIDATES_PER_AGENT = 5;
 
 /** Convert a capability name to its Nostr d-tag form (ASCII-only, lowercase, hyphen-separated). */
 export function toDTag(name: string): string {
@@ -222,51 +214,8 @@ function buildAgentsFromEvents(events: Event[], network: Network): Map<string, A
   return agentMap;
 }
 
-/** Pick the Solana payment address from an agent's capability cards. Returns first card with one. */
-function pickSolanaAddress(agent: Agent): string | null {
-  for (const card of agent.cards) {
-    const addr = card.payment?.address;
-    if (card.payment?.chain === 'solana' && typeof addr === 'string' && addr.length > 0) {
-      return addr;
-    }
-  }
-  return null;
-}
-
-interface PaidJobCandidate {
-  txSignature: string;
-  createdAt: number;
-}
-
-async function verifyNewestPaidCandidate(
-  rpc: Rpc<SolanaRpcApi>,
-  recipient: Address,
-  candidatesNewestFirst: readonly PaidJobCandidate[],
-): Promise<PaidJobCandidate | null> {
-  const settled = await Promise.allSettled(
-    candidatesNewestFirst.map((candidate) =>
-      verifyJobPaymentQuick(rpc, candidate.txSignature, recipient),
-    ),
-  );
-  for (let i = 0; i < settled.length; i++) {
-    const entry = settled[i];
-    if (entry?.status === 'fulfilled' && entry.value.verified) {
-      return candidatesNewestFirst[i] ?? null;
-    }
-  }
-  return null;
-}
-
 export class DiscoveryService {
-  constructor(
-    private pool: NostrPool,
-    private defaultRpc?: Rpc<SolanaRpcApi>,
-  ) {}
-
-  /** Configure the Solana RPC used for on-chain payment verification in `fetchAgents`. */
-  setRpc(rpc: Rpc<SolanaRpcApi> | undefined): void {
-    this.defaultRpc = rpc;
-  }
+  constructor(private pool: NostrPool) {}
 
   /** Count elisym agents (kind:31990 with "elisym" tag). */
   async fetchAllAgentCount(): Promise<number> {
@@ -371,24 +320,26 @@ export class DiscoveryService {
   }
 
   /**
-   * Fetch elisym agents filtered by network, ranked by verified paid-job recency.
+   * Fetch elisym agents filtered by network, ranked by paid-job recency and
+   * positive-feedback rate.
    *
    * Ranking algorithm:
-   * 1. Bucket each agent into 1-minute slots by `lastPaidJobAt` (last on-chain
-   *    verified payment). Cold-start agents (no verified paid job) go into a
+   * 1. Bucket each agent into 1-minute slots by `lastPaidJobAt` (newest
+   *    `payment-completed` feedback timestamp). Cold-start agents go into a
    *    sentinel bucket below all populated buckets.
    * 2. Within a bucket, sort by positive review rate descending.
    * 3. Tiebreak by raw `lastPaidJobAt`, then `lastSeen` (NIP-89 freshness).
    *
-   * On-chain verification uses {@link verifyJobPaymentQuick} - one-shot, cached.
-   * If `rpc` is not configured, all agents fall through to cold-start and order
-   * is determined by `lastSeen` only.
+   * NOTE: We trust the `payment-completed` feedback timestamp directly; we do
+   * not verify the embedded `tx` signature on-chain. Public Solana devnet RPC
+   * rate-limits trivially exceed what discovery needs (N agents * up-to-5
+   * candidates), and the resulting 429s blocked discovery entirely. This
+   * means a malicious customer can publish a fake `payment-completed` to lift
+   * an agent's ranking. Acceptable trade-off for devnet / MVP; tighten via
+   * recipient-tied checks when the network moves to mainnet with a paid RPC
+   * provider.
    */
-  async fetchAgents(
-    network: Network = 'devnet',
-    limit?: number,
-    rpcOverride?: Rpc<SolanaRpcApi>,
-  ): Promise<Agent[]> {
+  async fetchAgents(network: Network = 'devnet', limit?: number): Promise<Agent[]> {
     const filter: Filter = {
       kinds: [KIND_APP_HANDLER],
       '#t': ['elisym'],
@@ -446,10 +397,8 @@ export class DiscoveryService {
     }
 
     // Feedback events: written by the *customer*, target agent in the `p` tag.
-    // Tally rating counters and collect payment-completed candidates per agent
-    // for on-chain verification. We keep the newest N per agent so that a
-    // single fake `payment-completed` event can't shadow a legitimate one.
-    const paidCandidates = new Map<string, PaidJobCandidate[]>();
+    // Tally rating counters and pick the newest `payment-completed` feedback
+    // per agent as `lastPaidJobAt` / `lastPaidJobTx`.
     for (const ev of feedbackEvents) {
       if (!verifyEvent(ev)) {
         continue;
@@ -478,35 +427,11 @@ export class DiscoveryService {
       const txTag = ev.tags.find((t) => t[0] === 'tx');
       const txSignature = txTag?.[1];
       if (status === 'payment-completed' && typeof txSignature === 'string' && txSignature) {
-        const list = paidCandidates.get(targetPubkey);
-        const candidate: PaidJobCandidate = { txSignature, createdAt: ev.created_at };
-        if (list) {
-          list.push(candidate);
-        } else {
-          paidCandidates.set(targetPubkey, [candidate]);
+        if (!agent.lastPaidJobAt || ev.created_at > agent.lastPaidJobAt) {
+          agent.lastPaidJobAt = ev.created_at;
+          agent.lastPaidJobTx = txSignature;
         }
       }
-    }
-
-    const rpc = rpcOverride ?? this.defaultRpc;
-    if (rpc && paidCandidates.size > 0) {
-      const perAgent = Array.from(paidCandidates.entries()).map(([agentPubkey, list]) => {
-        const agent = agentMap.get(agentPubkey);
-        const recipient = agent ? pickSolanaAddress(agent) : null;
-        if (!agent || !recipient) {
-          return Promise.resolve();
-        }
-        const ordered = [...list]
-          .sort((a, b) => b.createdAt - a.createdAt)
-          .slice(0, MAX_PAID_CANDIDATES_PER_AGENT);
-        return verifyNewestPaidCandidate(rpc, recipient as Address, ordered).then((winner) => {
-          if (winner) {
-            agent.lastPaidJobAt = winner.createdAt;
-            agent.lastPaidJobTx = winner.txSignature;
-          }
-        });
-      });
-      await Promise.all(perAgent);
     }
 
     agents.sort(compareAgentsByRank);
