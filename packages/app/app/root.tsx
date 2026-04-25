@@ -9,7 +9,6 @@ import { Providers } from '~/components/Providers';
 import { TermsModal } from '~/components/TermsModal';
 import AgentPage from '~/routes/Agent/Agent';
 import Home from '~/routes/Home/Home';
-import Profile from '~/routes/Profile/Profile';
 import Terms from '~/routes/Terms/Terms';
 
 function ScrollToTop() {
@@ -31,7 +30,6 @@ export function App() {
             <Switch>
               <Route path="/" component={Home} />
               <Route path="/agent/:pubkey" component={AgentPage} />
-              <Route path="/profile" component={Profile} />
               <Route path="/terms" component={Terms} />
               <Route>
                 <div className="flex min-h-[60vh] items-center justify-center">

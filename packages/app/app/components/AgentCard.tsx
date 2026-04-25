@@ -19,7 +19,6 @@ interface Props {
 
 export function AgentCard({ agent, isVerified, index = 0 }: Props) {
   const displayName = agent.name || truncateKey(nip19.npubEncode(agent.pubkey), 8);
-  const isOnline = Math.floor(Date.now() / 1000) - agent.lastSeenTs < 10 * 60;
   const href = `/agent/${agent.pubkey}`;
   const [imgError, setImgError] = useState(false);
 
@@ -44,29 +43,21 @@ export function AgentCard({ agent, isVerified, index = 0 }: Props) {
       style={{ animationDelay: `${index * STAGGER_STEP_SECONDS}s` }}
       className="appear flex flex-col rounded-3xl border border-black/7 bg-surface no-underline shadow-[0_2px_8px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] transition-all [contain-intrinsic-size:auto_300px] [content-visibility:auto] hover:-translate-y-2 hover:shadow-lg"
     >
-      <div className="flex flex-1 flex-col gap-16 p-20">
+      <div className="flex flex-1 flex-col gap-14 p-16 sm:gap-16 sm:p-20">
         <div className="flex items-start justify-between gap-12">
           <div className="flex min-w-0 items-center gap-12">
-            <div className="relative size-40 shrink-0">
-              <div className="flex size-40 items-center justify-center overflow-hidden rounded-full">
-                {agent.picture && !imgError ? (
-                  <img
-                    src={agent.picture}
-                    alt={displayName}
-                    loading="lazy"
-                    className="size-full object-cover"
-                    onError={() => setImgError(true)}
-                  />
-                ) : (
-                  <MarbleAvatar name={agent.pubkey} size={40} />
-                )}
-              </div>
-              <span
-                className={cn(
-                  'absolute right-0 bottom-0 size-10 rounded-full border-2 border-surface',
-                  isOnline ? 'bg-green' : 'bg-[#ccc]',
-                )}
-              />
+            <div className="flex size-40 shrink-0 items-center justify-center overflow-hidden rounded-full">
+              {agent.picture && !imgError ? (
+                <img
+                  src={agent.picture}
+                  alt={displayName}
+                  loading="lazy"
+                  className="size-full object-cover"
+                  onError={() => setImgError(true)}
+                />
+              ) : (
+                <MarbleAvatar name={agent.pubkey} size={40} />
+              )}
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -112,7 +103,7 @@ export function AgentCard({ agent, isVerified, index = 0 }: Props) {
             {agent.tags.slice(0, 3).map((tag) => (
               <span
                 key={tag}
-                className="rounded-full bg-tag-bg px-10 py-4 text-[11px] font-semibold tracking-wide text-text-2 uppercase"
+                className="rounded-full bg-tag-bg px-10 py-4 font-mono text-[11px] font-medium tracking-wide text-text-2 uppercase"
               >
                 {tag}
               </span>
@@ -165,7 +156,7 @@ export function AgentCard({ agent, isVerified, index = 0 }: Props) {
         )}
       </div>
 
-      <div className="flex items-center gap-12 px-20 pb-20">
+      <div className="flex items-center gap-12 px-16 pb-16 sm:px-20 sm:pb-20">
         {agent.price !== 'N/A' && (
           <div className="flex-1 text-sm font-bold">
             {agent.price}

@@ -123,10 +123,23 @@ function JobInputInner({
           value={input}
           onChange={(event) => setInput(event.target.value)}
           placeholder={`Ask ${agentName || 'agent'}…`}
-          className="min-h-[40px] w-full resize-none bg-transparent px-20 pt-20 pb-8 font-[inherit] text-sm text-text outline-none placeholder:text-text-2/40"
+          className="min-h-[40px] w-full resize-none bg-transparent px-14 pt-16 pb-8 font-[inherit] text-sm text-text outline-none placeholder:text-text-2/40 sm:px-20 sm:pt-20"
         />
       )}
-      <div className="flex items-center justify-between gap-8 px-16 py-12">
+      {/*
+        Mobile-only gas fee row slot. For non-static cards (with textarea) the
+        slot is always reserved so height stays identical when switching
+        capabilities mid-typing. For static cards (no textarea) we skip the
+        empty slot - otherwise free + static would have visible empty space
+        above the action row but none below. On sm+ the fee renders inline
+        next to the Buy button.
+      */}
+      {!isOwn && (!isStatic || (hasPrice && !isFree)) && (
+        <div className="flex min-h-24 items-center px-12 pt-4 sm:hidden">
+          {hasPrice && !isFree && <NetworkFeeRow lamports={gasFeeLamports} />}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-8 px-12 py-10 sm:px-16 sm:py-12">
         <div className="flex min-w-0 items-center gap-8">
           <CapabilityDropdown
             cards={allCards}
@@ -136,11 +149,11 @@ function JobInputInner({
 
           {hasPrice &&
             (isFree ? (
-              <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-sky-bg px-10 text-xs font-semibold tracking-wider whitespace-nowrap text-stat-sky uppercase">
+              <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-sky-bg px-10 font-mono text-xs font-medium tracking-wider whitespace-nowrap text-stat-sky uppercase">
                 Free
               </span>
             ) : (
-              <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-emerald-bg px-10 text-xs font-semibold whitespace-nowrap text-stat-emerald tabular-nums">
+              <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-emerald-bg px-10 font-mono text-xs font-medium whitespace-nowrap text-stat-emerald tabular-nums">
                 {priceLabel}
               </span>
             ))}
@@ -155,7 +168,7 @@ function JobInputInner({
               <button
                 onClick={handleBuy}
                 disabled={isDisabled}
-                className="inline-flex h-36 min-w-[92px] cursor-pointer items-center justify-center gap-8 rounded-xl border-none bg-surface-dark px-16 text-xs font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-25"
+                className="inline-flex h-36 min-w-[72px] cursor-pointer items-center justify-center gap-8 rounded-xl border-none bg-surface-dark px-14 text-xs font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-25 sm:min-w-[92px] sm:px-16"
               >
                 {buying && (
                   <svg aria-hidden className="size-14 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -178,7 +191,7 @@ function JobInputInner({
                 <span>{buttonLabel()}</span>
               </button>
               {tip && (
-                <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-10 w-240 -translate-x-1/2 rounded-2xl bg-surface-dark px-16 py-12 text-xs leading-relaxed text-white/70 opacity-0 shadow-[0_4px_16px_rgba(0,0,0,0.3)] transition-opacity group-hover:opacity-100">
+                <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-10 hidden w-240 -translate-x-1/2 rounded-2xl bg-surface-dark px-16 py-12 text-xs leading-relaxed text-white/70 opacity-0 shadow-[0_4px_16px_rgba(0,0,0,0.3)] transition-opacity group-hover:opacity-100 sm:inline-block">
                   {tip}
                   <svg
                     aria-hidden
@@ -195,17 +208,6 @@ function JobInputInner({
           )}
         </div>
       </div>
-      {/*
-        Mobile-only gas fee row. On sm+ the fee renders inline next to the Buy
-        button; below sm there's no horizontal room, so we split it onto its own
-        line rather than hide it - users need to know the SOL cost before signing.
-      */}
-      {!isOwn && hasPrice && !isFree && (
-        <NetworkFeeRow
-          lamports={gasFeeLamports}
-          className="flex justify-end px-16 pb-12 sm:hidden"
-        />
-      )}
       {error && <div className="px-20 pb-12 text-xs text-red-500">{error}</div>}
     </div>
   );

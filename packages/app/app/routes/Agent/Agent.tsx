@@ -1,6 +1,6 @@
-import { formatSol, nip44Decrypt, truncateKey } from '@elisym/sdk';
+import { formatSol, nip44Decrypt, toDTag, truncateKey } from '@elisym/sdk';
 import { nip19, type Event as NostrEvent } from 'nostr-tools';
-import { useState, useMemo, useEffect, useCallback, type ReactNode } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import { Link, useParams } from 'wouter';
@@ -13,6 +13,7 @@ import { useAgents } from '~/hooks/useAgents';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { usePingAgent, type PingStatus } from '~/hooks/usePingAgent';
+import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
 import { cacheGet, cacheSet } from '~/lib/localCache';
@@ -30,6 +31,7 @@ import { ProductCard } from './ProductCard';
 import { ScrambleText } from './ScrambleText';
 import type { Artifact } from './types';
 import { useArtifacts } from './useArtifacts';
+import { useNostrArtifacts } from './useNostrArtifacts';
 
 const APPEAR_DURATION_MS = 600;
 const THANKS_VISIBLE_MS = 3000;
@@ -123,6 +125,99 @@ function NotFound() {
       </div>
     </div>
   );
+}
+
+function TabsBar({ activeTab, onSelect }: { activeTab: TabId; onSelect: (tab: TabId) => void }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { atStart, atEnd } = useScrollEdges(scrollRef);
+  return (
+    <div className="relative -mx-4 mb-16 sm:mb-20">
+      <div ref={scrollRef} className="no-scrollbar flex items-center gap-4 overflow-x-auto px-4">
+        {TABS.map((tab, index) => {
+          const active = activeTab === tab.id;
+          const isFirst = index === 0;
+          const isLast = index === TABS.length - 1;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={(event) => {
+                onSelect(tab.id);
+                const container = scrollRef.current;
+                if (!container) {
+                  return;
+                }
+                if (isFirst) {
+                  container.scrollTo({ left: 0, behavior: 'smooth' });
+                } else if (isLast) {
+                  container.scrollTo({ left: container.scrollWidth, behavior: 'smooth' });
+                } else {
+                  event.currentTarget.scrollIntoView({
+                    behavior: 'smooth',
+                    inline: 'nearest',
+                    block: 'nearest',
+                  });
+                }
+              }}
+              className={cn(
+                'inline-flex shrink-0 cursor-pointer items-center gap-6 rounded-full border-0 px-12 py-8 text-[13px] font-medium whitespace-nowrap transition-colors sm:px-16 sm:py-10 sm:text-sm',
+                active ? 'bg-tag-bg text-text' : 'bg-transparent text-text-2 hover:bg-tag-bg/60',
+              )}
+            >
+              <span className="text-text-2">{tab.icon}</span>
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+      <div
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute inset-y-0 left-0 w-32 bg-gradient-to-r from-surface to-transparent transition-opacity duration-150',
+          atStart ? 'opacity-0' : 'opacity-100',
+        )}
+      />
+      <div
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute inset-y-0 right-0 w-32 bg-gradient-to-l from-surface to-transparent transition-opacity duration-150',
+          atEnd ? 'opacity-0' : 'opacity-100',
+        )}
+      />
+    </div>
+  );
+}
+
+function mergeArtifacts(
+  local: Artifact[],
+  remote: Omit<Artifact, 'cardName'>[] | undefined,
+  cards: { name: string }[],
+): Artifact[] {
+  const byId = new Map<string, Artifact>();
+  for (const artifact of local) {
+    byId.set(artifact.id, artifact);
+  }
+  if (remote) {
+    const cardNameByDTag = new Map<string, string>();
+    for (const card of cards) {
+      cardNameByDTag.set(toDTag(card.name), card.name);
+    }
+    for (const partial of remote) {
+      const existing = byId.get(partial.id);
+      if (existing) {
+        byId.set(partial.id, {
+          ...existing,
+          prompt: existing.prompt ?? partial.prompt,
+          priceLamports: existing.priceLamports ?? partial.priceLamports,
+        });
+      } else {
+        const capability = partial.capability;
+        const cardName = (capability && cardNameByDTag.get(capability)) ?? capability ?? 'Job';
+        byId.set(partial.id, { ...partial, cardName });
+      }
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt);
 }
 
 function useHydrateArtifacts(
@@ -220,7 +315,13 @@ export default function AgentPage() {
   }, []);
   const appearCls = appeared ? '' : 'appear';
 
-  const { artifacts, append: appendArtifact, update: updateArtifact } = useArtifacts(pubkey);
+  const {
+    artifacts,
+    hydrated: artifactsHydrated,
+    append: appendArtifact,
+    update: updateArtifact,
+  } = useArtifacts(pubkey);
+  const { artifacts: nostrArtifacts, loading: nostrArtifactsLoading } = useNostrArtifacts(pubkey);
   const nostrBanner = useAgentBanner(pubkey);
   const { client } = useElisymClient();
   const [ratedArtifacts, setRatedArtifacts] = useState<Set<string>>(new Set());
@@ -272,6 +373,11 @@ export default function AgentPage() {
   }, [artifacts]);
 
   useHydrateArtifacts(artifacts, pubkey, updateArtifact);
+
+  const mergedArtifacts = useMemo(
+    () => mergeArtifacts(artifacts, nostrArtifacts, agentData?.cards ?? []),
+    [artifacts, nostrArtifacts, agentData],
+  );
 
   const rateArtifact = useCallback(
     async (artifact: Artifact, positive: boolean) => {
@@ -340,7 +446,7 @@ export default function AgentPage() {
   const currentCardIndex = Math.min(selectedCardIndex, cards.length - 1);
   const currentCard = cards[currentCardIndex];
   const openArtifact = openArtifactId
-    ? artifacts.find((artifact) => artifact.id === openArtifactId)
+    ? mergedArtifacts.find((artifact) => artifact.id === openArtifactId)
     : undefined;
 
   function handleBackClick() {
@@ -381,21 +487,21 @@ export default function AgentPage() {
   }
 
   return (
-    <div id="light-content" className="pt-16 pb-64">
-      <div className="mx-auto max-w-5xl px-16 sm:px-24">
+    <div id="light-content" className="pt-12 pb-48 sm:pt-16 sm:pb-64">
+      <div className="mx-auto max-w-5xl px-12 sm:px-24">
         {/* Profile Header Card */}
         <div
           className={cn(
             appearCls,
-            'mb-16 overflow-hidden rounded-3xl border border-black/7 bg-surface shadow-[0_2px_24px_rgba(0,0,0,0.06)] [animation-delay:0ms]',
+            'mb-12 overflow-hidden rounded-3xl border border-black/7 bg-surface shadow-[0_2px_24px_rgba(0,0,0,0.06)] [animation-delay:0ms] sm:mb-16',
           )}
         >
           {/* Banner */}
-          <div className="relative h-128 w-full overflow-hidden">
+          <div className="relative h-96 w-full overflow-hidden sm:h-128">
             <button
               type="button"
               onClick={handleBackClick}
-              className="absolute top-12 left-12 z-10 inline-flex cursor-pointer items-center gap-4 rounded-full border border-white/10 bg-black/35 py-4 pr-12 pl-8 text-xs font-normal text-white/85 backdrop-blur-md transition-colors hover:bg-black/50 hover:text-white"
+              className="absolute top-12 left-12 z-10 inline-flex cursor-pointer items-center gap-4 rounded-full bg-black/35 py-4 pr-12 pl-8 text-xs font-normal text-white/85 backdrop-blur-md transition-colors hover:bg-black/50 hover:text-white"
             >
               <svg
                 aria-hidden
@@ -424,62 +530,65 @@ export default function AgentPage() {
           </div>
 
           {/* Avatar + info */}
-          <div className="px-24 pb-20">
-            <div className="relative -mt-70 mb-12 size-100 shrink-0">
-              <div className="size-100 overflow-hidden rounded-full border-4 border-white bg-surface-2">
-                {agentData.picture ? (
-                  <img
-                    src={agentData.picture}
-                    alt={displayName}
-                    className="size-full object-cover"
-                  />
-                ) : (
-                  <MarbleAvatar name={pubkey} size={100} />
-                )}
+          <div className="px-16 pb-16 sm:px-24 sm:pb-20">
+            <div className="flex items-start justify-between gap-12">
+              <div className="relative -mt-48 mb-10 size-80 shrink-0 sm:-mt-70 sm:mb-12 sm:size-100">
+                <div className="size-80 overflow-hidden rounded-full border-2 border-white bg-surface-2 sm:size-100">
+                  {agentData.picture ? (
+                    <img
+                      src={agentData.picture}
+                      alt={displayName}
+                      className="size-full object-cover"
+                    />
+                  ) : (
+                    <MarbleAvatar name={pubkey} size={100} />
+                  )}
+                </div>
+                <span
+                  className={cn(
+                    'absolute right-4 bottom-4 size-12 rounded-full border-2 border-white sm:right-8 sm:bottom-8 sm:size-14',
+                    STATUS_DOT[pingStatus],
+                  )}
+                />
               </div>
-              <span
-                className={cn(
-                  'absolute right-8 bottom-8 size-14 rounded-full border-2 border-white',
-                  STATUS_DOT[pingStatus],
-                )}
-              />
+              <span className="mt-12 shrink-0 text-xs text-text-2 opacity-60 sm:hidden">
+                {agentData.lastSeen}
+              </span>
             </div>
 
-            <div className="flex items-start justify-between gap-12">
+            <div className="flex flex-col items-start gap-8 sm:flex-row sm:items-start sm:justify-between sm:gap-12">
               <div className="min-w-0">
-                <div className="mb-8 flex items-center gap-4">
-                  <h1 className="text-xl leading-tight font-bold">{clampedDisplayName}</h1>
+                <div className="mb-4 flex items-center gap-4">
+                  <h1 className="text-lg leading-tight font-bold sm:text-xl">
+                    {clampedDisplayName}
+                  </h1>
                   {VERIFIED_PUBKEYS.has(pubkey) && <VerifiedBadge className="size-20" />}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-16 text-xs text-text-2">
-                  {agentData.walletAddress && (
-                    <button
-                      type="button"
-                      onClick={() => void copyWallet()}
-                      className="group inline-flex cursor-pointer items-center gap-6 border-0 bg-transparent p-0 font-mono opacity-60 transition-opacity hover:opacity-100"
-                      title="Copy wallet address"
+                {agentData.walletAddress && (
+                  <button
+                    type="button"
+                    onClick={() => void copyWallet()}
+                    className="group mb-10 inline-flex cursor-pointer items-center gap-6 border-0 bg-transparent p-0 font-mono text-xs text-text-2 opacity-60 transition-opacity hover:opacity-100 sm:mb-0"
+                    title="Copy wallet address"
+                  >
+                    {truncateKey(agentData.walletAddress)}
+                    <svg
+                      aria-hidden
+                      className="size-14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
                     >
-                      {truncateKey(agentData.walletAddress)}
-                      <svg
-                        aria-hidden
-                        className="size-14"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                      </svg>
-                    </button>
-                  )}
-                  {agentData.walletAddress &&
-                    (cards.length > 0 || agentData.purchases > 0 || feedbackPct !== null) && (
-                      <span aria-hidden className="h-14 w-px bg-border" />
-                    )}
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                  </button>
+                )}
+                <div className="flex flex-wrap items-center gap-x-12 gap-y-6 text-xs text-text-2 sm:mt-8 sm:gap-16">
                   {cards.length > 0 && (
                     <span className="flex items-center gap-6">
                       <svg
@@ -537,7 +646,7 @@ export default function AgentPage() {
                 </div>
               </div>
 
-              <div className="shrink-0 text-right text-xs text-text-2 opacity-60">
+              <div className="hidden shrink-0 text-xs text-text-2 opacity-60 sm:block sm:text-right">
                 {agentData.lastSeen}
               </div>
             </div>
@@ -554,35 +663,15 @@ export default function AgentPage() {
             agentPicture={agentData.picture}
           >
             {(buyState) => (
-              <div className="flex min-w-0 flex-col gap-16">
+              <div className="order-2 flex min-w-0 flex-col gap-16 lg:order-1">
                 {/* Tabs + content */}
                 <div
                   className={cn(
                     appearCls,
-                    'rounded-3xl border border-black/7 bg-surface p-20 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms]',
+                    'rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
                   )}
                 >
-                  <div className="-mx-4 mb-20 flex items-center gap-4">
-                    {TABS.map((tab) => {
-                      const active = activeTab === tab.id;
-                      return (
-                        <button
-                          key={tab.id}
-                          type="button"
-                          onClick={() => setActiveTab(tab.id)}
-                          className={cn(
-                            'inline-flex cursor-pointer items-center gap-6 rounded-full border-0 px-16 py-10 text-sm font-medium transition-colors',
-                            active
-                              ? 'bg-tag-bg text-text'
-                              : 'bg-transparent text-text-2 hover:bg-tag-bg/60',
-                          )}
-                        >
-                          <span className="text-text-2">{tab.icon}</span>
-                          {tab.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <TabsBar activeTab={activeTab} onSelect={setActiveTab} />
 
                   {activeTab === 'products' && (
                     <ProductsTab
@@ -594,7 +683,10 @@ export default function AgentPage() {
 
                   {activeTab === 'artifacts' && (
                     <ArtifactsTab
-                      artifacts={artifacts}
+                      artifacts={mergedArtifacts}
+                      loading={
+                        !artifactsHydrated || (artifacts.length === 0 && nostrArtifactsLoading)
+                      }
                       newArtifactIds={newArtifactIds}
                       unseenArtifactIds={unseenArtifactIds}
                       onOpenArtifact={setOpenArtifactId}
@@ -617,20 +709,33 @@ export default function AgentPage() {
                 </div>
 
                 {cards.length > 0 && activeTab === 'products' && (
-                  <div className={cn(appearCls, '[animation-delay:160ms]')}>
-                    <JobInput
-                      agentPubkey={pubkey}
-                      agentName={agentData.name}
-                      pingStatus={pingStatus}
-                      cards={cards}
-                      selectedIndex={currentCardIndex}
-                      onSelectIndex={setSelectedCardIndex}
-                      buyState={buyState}
-                    />
-                    <p className="mt-8 px-16 text-center text-[11px] text-text-2/50">
+                  <>
+                    <div
+                      className={cn(
+                        appearCls,
+                        'relative sticky bottom-0 z-40 -mx-12 [animation-delay:160ms] lg:static lg:mx-0',
+                      )}
+                    >
+                      <div
+                        aria-hidden
+                        className="pointer-events-none absolute -top-20 right-0 left-0 h-20 bg-gradient-to-t from-bg-page to-transparent lg:hidden"
+                      />
+                      <div className="bg-bg-page px-12 pb-[max(env(safe-area-inset-bottom),10px)] lg:bg-transparent lg:p-0">
+                        <JobInput
+                          agentPubkey={pubkey}
+                          agentName={agentData.name}
+                          pingStatus={pingStatus}
+                          cards={cards}
+                          selectedIndex={currentCardIndex}
+                          onSelectIndex={setSelectedCardIndex}
+                          buyState={buyState}
+                        />
+                      </div>
+                    </div>
+                    <p className="-mt-8 px-16 text-center text-[11px] text-text-2/50">
                       Agents on Elisym can make mistakes. Always verify important information.
                     </p>
-                  </div>
+                  </>
                 )}
 
                 <ArtifactCapturer
@@ -657,15 +762,15 @@ export default function AgentPage() {
           </BuyProvider>
 
           {/* Right column */}
-          <div className="flex min-w-0 flex-col gap-16 lg:sticky lg:top-16">
+          <div className="order-1 flex min-w-0 flex-col gap-16 lg:sticky lg:top-16 lg:order-2">
             {(agentData.description || agentData.tags.length > 0) && (
               <div
                 className={cn(
                   appearCls,
-                  'rounded-3xl border border-black/7 bg-surface p-20 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:120ms]',
+                  'rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:120ms] sm:p-20',
                 )}
               >
-                <h2 className="mb-16 text-base font-semibold">About</h2>
+                <h2 className="mb-12 text-base font-semibold sm:mb-16">About</h2>
                 {agentData.description && (
                   <p className="m-0 text-sm leading-relaxed text-text-2">{agentData.description}</p>
                 )}
@@ -679,7 +784,7 @@ export default function AgentPage() {
                     {agentData.tags.map((tag) => (
                       <span
                         key={tag}
-                        className="rounded-full bg-tag-bg px-10 py-4 text-[11px] font-semibold tracking-wide text-text-2 uppercase"
+                        className="rounded-full bg-tag-bg px-10 py-4 font-mono text-[11px] font-medium tracking-wide text-text-2 uppercase"
                       >
                         {tag}
                       </span>
@@ -734,6 +839,7 @@ function ProductsTab({
 
 interface ArtifactsTabProps {
   artifacts: Artifact[];
+  loading: boolean;
   newArtifactIds: Set<string>;
   unseenArtifactIds: Set<string>;
   onOpenArtifact: (id: string) => void;
@@ -742,16 +848,23 @@ interface ArtifactsTabProps {
 
 function ArtifactsTab({
   artifacts,
+  loading,
   newArtifactIds,
   unseenArtifactIds,
   onOpenArtifact,
   onAnimationEnd,
 }: ArtifactsTabProps) {
+  if (loading) {
+    return <ArtifactsTabSkeleton />;
+  }
+
   if (artifacts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center px-16 py-56">
         <p className="m-0 text-sm text-text-2">No history yet</p>
-        <p className="m-0 mt-4 text-sm text-text-2/60">Results from your jobs will appear here</p>
+        <p className="m-0 mt-4 text-center text-sm text-text-2/60">
+          Results from your jobs will appear here
+        </p>
       </div>
     );
   }
@@ -768,6 +881,45 @@ function ArtifactsTab({
           onAnimationEnd={() => onAnimationEnd(artifact.id)}
         />
       ))}
+    </div>
+  );
+}
+
+const ARTIFACT_SKELETON_COUNT = 4;
+
+function ArtifactsTabSkeleton() {
+  return (
+    <div className="grid grid-cols-1 gap-12 sm:grid-cols-2">
+      {Array.from({ length: ARTIFACT_SKELETON_COUNT }).map((_, index) => (
+        <ArtifactTileSkeleton key={index} />
+      ))}
+    </div>
+  );
+}
+
+function ArtifactTileSkeleton() {
+  return (
+    <div className="flex flex-col overflow-hidden rounded-3xl border border-black/7 bg-surface p-16 shadow-[0_2px_8px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] sm:p-24">
+      <div className="mb-12 flex items-center gap-12">
+        <div className="skeleton size-28 rounded-full" />
+        <div className="skeleton h-12 w-96 rounded-full" />
+      </div>
+      <div className="flex flex-1 flex-col gap-12">
+        <div className="flex flex-col gap-6">
+          <div className="skeleton h-10 w-48 rounded-full" />
+          <div className="skeleton h-12 w-full rounded-full" />
+          <div className="skeleton h-12 w-4/5 rounded-full" />
+        </div>
+        <div className="flex flex-col gap-6">
+          <div className="skeleton h-10 w-48 rounded-full" />
+          <div className="skeleton h-12 w-full rounded-full" />
+          <div className="skeleton h-12 w-3/4 rounded-full" />
+        </div>
+      </div>
+      <div className="mt-16 flex items-center gap-8 border-t border-black/6 pt-12">
+        <div className="skeleton h-10 w-64 rounded-full" />
+        <div className="skeleton ml-auto h-10 w-48 rounded-full" />
+      </div>
     </div>
   );
 }
@@ -798,7 +950,7 @@ function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: Ar
     <button
       type="button"
       onClick={onClick}
-      className="group relative flex cursor-pointer flex-col overflow-hidden rounded-3xl border border-black/7 bg-surface p-24 text-left shadow-[0_2px_8px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] transition-all hover:-translate-y-2 hover:shadow-[0_6px_20px_rgba(0,0,0,0.08)]"
+      className="group relative flex cursor-pointer flex-col overflow-hidden rounded-3xl border border-black/7 bg-surface p-16 text-left shadow-[0_2px_8px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] transition-all hover:-translate-y-2 hover:shadow-[0_6px_20px_rgba(0,0,0,0.08)] sm:p-24"
     >
       {isNew && (
         <span
@@ -811,7 +963,7 @@ function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: Ar
         <ProductAvatar name={artifact.cardName} size={28} />
         <div className="truncate text-xs font-medium text-text-2">{artifact.cardName}</div>
         {isUnseen && (
-          <span className="inline-flex shrink-0 items-center rounded-full px-10 py-[3px] text-[11px] font-semibold artifact-new-badge">
+          <span className="shrink-0 rounded-full border border-stat-emerald/20 bg-stat-emerald-bg px-10 py-2 font-mono text-[10px] font-medium tracking-wide text-stat-emerald uppercase">
             New
           </span>
         )}
@@ -819,7 +971,7 @@ function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: Ar
       <div className="flex flex-1 flex-col gap-12">
         {artifact.prompt && (
           <div className="w-full rounded-xl py-8 pr-12 pl-12 prompt-block">
-            <div className="mb-6 text-xs text-text-2">Prompt</div>
+            <div className="mb-2 text-xs text-text-2">Prompt</div>
             <div className="line-clamp-2 text-[13px] leading-relaxed break-words text-text">
               {artifact.prompt}
             </div>
@@ -827,7 +979,7 @@ function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: Ar
         )}
         {preview && (
           <div>
-            <div className="mb-6 text-xs text-text-2">Answer</div>
+            <div className="mb-2 text-xs text-text-2">Answer</div>
             <div className="line-clamp-2 text-[13px] leading-relaxed break-words text-text">
               {preview}
             </div>

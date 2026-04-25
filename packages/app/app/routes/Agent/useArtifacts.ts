@@ -4,14 +4,17 @@ import type { Artifact } from './types';
 export function useArtifacts(agentPubkey: string) {
   const storageKey = `elisym:artifacts:${agentPubkey}`;
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
+    setHydrated(false);
     try {
       const raw = localStorage.getItem(storageKey);
       setArtifacts(raw ? (JSON.parse(raw) as Artifact[]) : []);
     } catch {
       setArtifacts([]);
     }
+    setHydrated(true);
   }, [storageKey]);
 
   const append = useCallback(
@@ -60,5 +63,5 @@ export function useArtifacts(agentPubkey: string) {
     [storageKey],
   );
 
-  return { artifacts, append, update };
+  return { artifacts, hydrated, append, update };
 }

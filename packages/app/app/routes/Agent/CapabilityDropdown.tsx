@@ -43,11 +43,11 @@ export function CapabilityDropdown({ cards, selectedIndex, onSelectIndex }: Prop
         onClick={() => multiple && setOpen((current) => !current)}
         disabled={!multiple}
         className={cn(
-          'inline-flex h-28 items-center rounded-full bg-tag-bg pl-12 text-[11px] font-semibold tracking-wide text-text-2 uppercase transition-colors outline-none',
+          'inline-flex h-28 items-center rounded-full bg-tag-bg pl-12 font-mono text-[11px] font-medium tracking-wide text-text-2 uppercase transition-colors outline-none',
           multiple ? 'cursor-pointer pr-32 hover:bg-tag-bg/80' : 'cursor-default pr-12',
         )}
       >
-        <span className="max-w-[200px] truncate">{current?.name}</span>
+        <span className="max-w-[88px] truncate sm:max-w-[200px]">{current?.name}</span>
         {multiple && (
           <svg
             aria-hidden
