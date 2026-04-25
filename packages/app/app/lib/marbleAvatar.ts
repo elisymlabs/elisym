@@ -6,7 +6,8 @@ function hashStr(s: string): number {
   return Math.abs(h);
 }
 
-const COLORS = ['#264653', '#2a9d8f', '#e9c46a', '#f4a261', '#e76f51'];
+const COLORS = ['#264653', '#2a9d8f', '#e9c46a', '#f4a261', '#e76f51'] as const;
+const FALLBACK_COLOR = COLORS[0];
 
 export interface MarbleAvatarColors {
   bg: string;
@@ -28,9 +29,9 @@ export interface MarbleAvatarColors {
 
 export function getMarbleColors(name: string): MarbleAvatarColors {
   const h = hashStr(name);
-  const bg = COLORS[h % 5]!;
-  const c1 = COLORS[(h >> 4) % 5]!;
-  const c2 = COLORS[(h >> 8) % 5]!;
+  const bg = COLORS[h % 5] ?? FALLBACK_COLOR;
+  const c1 = COLORS[(h >> 4) % 5] ?? FALLBACK_COLOR;
+  const c2 = COLORS[(h >> 8) % 5] ?? FALLBACK_COLOR;
   return {
     bg,
     c1,

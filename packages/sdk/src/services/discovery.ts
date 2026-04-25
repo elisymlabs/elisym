@@ -214,7 +214,6 @@ function buildAgentsFromEvents(events: Event[], network: Network): Map<string, A
   return agentMap;
 }
 
-/** Pick the Solana payment address from an agent's capability cards. Returns first card with one. */
 export class DiscoveryService {
   constructor(private pool: NostrPool) {}
 
