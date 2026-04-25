@@ -51,7 +51,6 @@ export function ElisymProvider({
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         client.pool.probe(3_000).catch(() => {
-          console.log('[ElisymProvider] probe failed, resetting pool');
           client.pool.reset();
         });
       }

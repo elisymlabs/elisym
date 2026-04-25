@@ -26,14 +26,12 @@ export function usePingAgent(agentPubkey: string) {
       if (cancelled) {
         return;
       }
-      console.log(`[usePingAgent] attempt ${attempt} for ${agentPubkey.slice(0, 8)}`);
       client.ping
         .pingAgent(agentPubkey, 15_000)
         .then(({ online }) => {
           if (cancelled) {
             return;
           }
-          console.log(`[usePingAgent] attempt ${attempt} result: ${online ? 'online' : 'offline'}`);
           if (online) {
             setStatus('online');
           } else if (attempt < 2) {
@@ -46,11 +44,10 @@ export function usePingAgent(agentPubkey: string) {
             setStatus('offline');
           }
         })
-        .catch((err) => {
+        .catch(() => {
           if (cancelled) {
             return;
           }
-          console.error(`[usePingAgent] attempt ${attempt} error:`, err);
           if (attempt < 2) {
             retryTimer = setTimeout(() => {
               if (!cancelled) {
