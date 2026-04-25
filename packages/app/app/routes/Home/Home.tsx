@@ -1,3 +1,4 @@
+import { compareAgentsByRank } from '@elisym/sdk';
 import { useState, useEffect, useRef, useMemo, useDeferredValue, useCallback } from 'react';
 import { AgentCard } from '~/components/AgentCard';
 import { AgentCardSkeleton } from '~/components/AgentCardSkeleton';
@@ -14,7 +15,6 @@ import { cn } from '~/lib/cn';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
 
 const PAGE_SIZE = 18;
-const TEN_MINUTES_SECONDS = 10 * 60;
 const PAGE_FADE_MS = 180;
 
 /** Compact page numbers: [1, '...', current, '...', total] - max 4 items */
@@ -34,10 +34,6 @@ function getPageNumbers(current: number, total: number): (number | '...')[] {
   }
   pages.push(total);
   return pages;
-}
-
-function positiveRate(agent: AgentDisplayData): number {
-  return agent.feedbackTotal > 0 ? agent.feedbackPositive / agent.feedbackTotal : 0;
 }
 
 function applyCategoryFilter(
@@ -65,16 +61,21 @@ function applySearchFilter(agents: AgentDisplayData[], query: string): AgentDisp
   );
 }
 
-function sortOnlineFirst(agents: AgentDisplayData[]): AgentDisplayData[] {
-  const now = Math.floor(Date.now() / 1000);
-  const online = agents.filter((agent) => now - agent.lastSeenTs < TEN_MINUTES_SECONDS);
-  const rest = agents.filter((agent) => now - agent.lastSeenTs >= TEN_MINUTES_SECONDS);
-  online.sort((a, b) => {
-    const rateDiff = positiveRate(b) - positiveRate(a);
-    return rateDiff !== 0 ? rateDiff : b.lastSeenTs - a.lastSeenTs;
-  });
-  rest.sort((a, b) => b.lastSeenTs - a.lastSeenTs);
-  return [...online, ...rest];
+/**
+ * Global ordering by SDK ranking. `compareAgentsByRank` (SDK 0.10) groups by
+ * `lastPaidJobAt` in 1-minute slots, then sorts by positive review rate, then
+ * tiebreaks by raw `lastPaidJobAt` / `lastSeen`. Cold-start agents (no
+ * verified paid job) land in the `-Infinity` bucket and therefore always
+ * follow agents that have any verified paid job - matching the user's
+ * expectation that an agent with a more recent paid job ranks higher
+ * regardless of NIP-89 freshness.
+ *
+ * No online/offline split: `lastSeen` (NIP-89 freshness) is dominated by
+ * heartbeat capability publishes and is not a reliable signal of "did real
+ * work recently".
+ */
+function sortByRank(agents: AgentDisplayData[]): AgentDisplayData[] {
+  return [...agents].sort((a, b) => compareAgentsByRank(a.agent, b.agent));
 }
 
 export default function Home() {
@@ -112,7 +113,7 @@ export default function Home() {
   const filtered = useMemo(() => {
     const byCategory = applyCategoryFilter(displayAgents, state.currentFilter);
     const bySearch = applySearchFilter(byCategory, searchQuery);
-    return sortOnlineFirst(bySearch);
+    return sortByRank(bySearch);
   }, [displayAgents, state.currentFilter, searchQuery]);
 
   const prevFilter = useRef(state.currentFilter);

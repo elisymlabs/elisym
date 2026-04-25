@@ -89,7 +89,14 @@ export function AgentCard({ agent, isVerified, index = 0 }: Props) {
               )}
             </div>
           </div>
-          <span className="mt-2 shrink-0 text-[11px] text-text-2">{agent.lastSeen}</span>
+          {agent.lastPaidJobLabel && (
+            <span
+              className="mt-2 shrink-0 text-[11px] text-text-2"
+              title="Last verified on-chain paid job"
+            >
+              {agent.lastPaidJobLabel}
+            </span>
+          )}
         </div>
 
         {agent.description && (

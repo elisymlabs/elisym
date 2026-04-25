@@ -92,14 +92,11 @@ function formatCount(n: number | string): string {
   return typeof n === 'number' ? n.toLocaleString('en-US') : n;
 }
 
-function StatSkeleton({ width }: { width: number }) {
+function StatSkeleton() {
   return (
     <div className="flex flex-col items-center gap-8">
-      <div className="h-28 animate-pulse rounded-lg bg-white/10" style={{ width: `${width}px` }} />
-      <div
-        className="h-10 animate-pulse rounded-full bg-white/7"
-        style={{ width: `${width * 0.7}px` }}
-      />
+      <div className="h-28 w-96 animate-pulse rounded-lg bg-white/10" />
+      <div className="h-10 w-64 animate-pulse rounded-full bg-white/7" />
     </div>
   );
 }
@@ -386,11 +383,11 @@ export function StatsBar() {
           <div className="flex items-center justify-center gap-40">
             {isLoading ? (
               <>
-                <StatSkeleton width={56} />
+                <StatSkeleton />
                 <Divider />
-                <StatSkeleton width={80} />
+                <StatSkeleton />
                 <Divider />
-                <StatSkeleton width={96} />
+                <StatSkeleton />
               </>
             ) : (
               <>

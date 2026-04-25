@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@elisym/sdk": "workspace:*",
+    "@solana-program/token": "~0.5.0",
     "@solana/kit": "~6.8.0",
-    "@solana/spl-token": "~0.4.14",
     "@solana/wallet-adapter-base": "~0.9.27",
     "@solana/wallet-adapter-react": "~0.15.39",
     "@solana/wallet-adapter-react-ui": "~0.9.39",

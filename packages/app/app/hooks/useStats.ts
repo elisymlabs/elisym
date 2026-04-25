@@ -1,12 +1,13 @@
-import type { NetworkStats } from '@elisym/sdk';
+import { USDC_SOLANA_DEVNET, type NetworkStats } from '@elisym/sdk';
 import { useQuery } from '@tanstack/react-query';
+import Decimal from 'decimal.js-light';
 import { useRef } from 'react';
 import { useElisymClient } from './useElisymClient';
 
 /**
  * UI-side stats shape that augments NetworkStats with per-asset volumes.
- * SDK currently aggregates a single `totalLamports`, so USDC volume is mocked
- * here until the SDK separates volume by asset.
+ * SDK exposes asset on each Job since 0.10.x; we bucket by `asset.mint`
+ * (USDC mint -> totalUsdcMicro, otherwise -> totalLamports).
  */
 export interface UiNetworkStats extends NetworkStats {
   /** Total volume in USDC subunits (1e6 = 1 USDC). */
@@ -48,23 +49,29 @@ export function useStats() {
       );
 
       const completedJobs = jobs.filter((j) => j.status === 'success');
-      let totalLamports = 0;
-      for (const j of completedJobs) {
-        if (j.amount) {
-          totalLamports += j.amount;
+      // Aggregate via decimal.js-light so 6-decimal USDC subunits don't lose
+      // precision once the volume hits 2^53. Convert to Number only when
+      // writing the stats payload that the StatsBar consumes.
+      let lamports = new Decimal(0);
+      let usdcMicro = new Decimal(0);
+      for (const job of completedJobs) {
+        if (!job.amount) {
+          continue;
+        }
+        const isUsdc = job.asset?.mint === USDC_SOLANA_DEVNET.mint;
+        if (isUsdc) {
+          usdcMicro = usdcMicro.plus(job.amount);
+        } else {
+          lamports = lamports.plus(job.amount);
         }
       }
-
-      // TODO: replace with real per-asset volume once SDK exposes it.
-      // Derived placeholder so the USDC switcher in the hero isn't always 0.
-      const totalUsdcMicro = Math.floor(totalLamports / 1000);
 
       const stats: UiNetworkStats = {
         totalAgentCount,
         agentCount: totalAgentCount,
         jobCount: completedJobs.length,
-        totalLamports,
-        totalUsdcMicro,
+        totalLamports: Number(lamports.toString()),
+        totalUsdcMicro: Number(usdcMicro.toString()),
       };
 
       highWater.current = mergeMax(highWater.current, stats);

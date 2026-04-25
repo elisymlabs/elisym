@@ -1,4 +1,4 @@
-import { ElisymClient, type ElisymClientConfig } from '@elisym/sdk';
+import { ElisymClient, type ElisymClientFullConfig } from '@elisym/sdk';
 import {
   createContext,
   useContext,
@@ -21,7 +21,7 @@ export function ElisymProvider({
   config,
   children,
 }: {
-  config?: ElisymClientConfig;
+  config?: ElisymClientFullConfig;
   children: ReactNode;
 }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- config is only used on initial mount

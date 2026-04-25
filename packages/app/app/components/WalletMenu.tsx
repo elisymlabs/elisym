@@ -1,7 +1,7 @@
 import { USDC_SOLANA_DEVNET } from '@elisym/sdk';
-import { getAssociatedTokenAddressSync } from '@solana/spl-token';
-import { useConnection, useWallet } from '@solana/wallet-adapter-react';
-import { PublicKey } from '@solana/web3.js';
+import { findAssociatedTokenPda, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
+import { address as toAddress, createSolanaRpc } from '@solana/kit';
+import { useWallet } from '@solana/wallet-adapter-react';
 import { useQuery } from '@tanstack/react-query';
 import Decimal from 'decimal.js-light';
 import { useEffect, useId, useRef, useState } from 'react';
@@ -18,6 +18,11 @@ const IDENTITY_AVATAR_PX = 32;
 const COPY_FEEDBACK_MS = 1400;
 const SOL_DISPLAY_DECIMALS = 4;
 const USDC_DISPLAY_DECIMALS = 2;
+
+// Module-level Kit RPC singleton: balance queries fire from many components
+// and we want to share a single connection. Kept in step with the devnet
+// hardcode in Providers.tsx.
+const balanceRpc = createSolanaRpc('https://api.devnet.solana.com');
 
 type CopyKey = 'identity' | 'wallet';
 
@@ -196,7 +201,6 @@ function WalletGlyph() {
 
 export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Props) {
   const { publicKey, disconnect } = useWallet();
-  const { connection } = useConnection();
   const { npub, publicKey: nostrPubkey } = useIdentity();
   const [, setLocation] = useLocation();
   const [copiedKey, setCopiedKey] = useState<CopyKey | null>(null);
@@ -216,8 +220,9 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
       if (!publicKey) {
         return null;
       }
-      const lamports = await connection.getBalance(publicKey);
-      return new Decimal(lamports).div(1e9).toFixed(SOL_DISPLAY_DECIMALS);
+      const owner = toAddress(publicKey.toBase58());
+      const { value: lamports } = await balanceRpc.getBalance(owner).send();
+      return new Decimal(lamports.toString()).div(1e9).toFixed(SOL_DISPLAY_DECIMALS);
     },
     enabled: !!publicKey,
     staleTime: BALANCE_STALE_MS,
@@ -234,10 +239,15 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
       if (!mintAddress) {
         throw new Error('USDC asset missing mint');
       }
-      const ata = getAssociatedTokenAddressSync(new PublicKey(mintAddress), publicKey);
+      const owner = toAddress(publicKey.toBase58());
+      const [ata] = await findAssociatedTokenPda({
+        owner,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        mint: toAddress(mintAddress),
+      });
       try {
-        const res = await connection.getTokenAccountBalance(ata);
-        return new Decimal(res.value.amount)
+        const { value } = await balanceRpc.getTokenAccountBalance(ata).send();
+        return new Decimal(value.amount)
           .div(new Decimal(10).pow(USDC_SOLANA_DEVNET.decimals))
           .toFixed(USDC_DISPLAY_DECIMALS);
       } catch {

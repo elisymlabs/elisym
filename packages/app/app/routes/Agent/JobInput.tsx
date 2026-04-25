@@ -70,7 +70,7 @@ function JobInputInner({
   const price = card.payment?.job_price;
   const isFree = price === 0;
   const hasPrice = price !== null && price !== undefined;
-  const gasFeeLamports = useSolGasFeeEstimate();
+  const gasFeeLamports = useSolGasFeeEstimate(card);
   const priceLabel = hasPrice && !isFree ? formatCardPrice(card.payment, price) : null;
 
   function handleBuy() {

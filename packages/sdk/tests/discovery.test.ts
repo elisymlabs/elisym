@@ -1,6 +1,5 @@
-import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import { finalizeEvent, type Event, type Filter } from 'nostr-tools';
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   KIND_APP_HANDLER,
   KIND_JOB_FEEDBACK,
@@ -8,7 +7,6 @@ import {
   KIND_JOB_RESULT,
   LIMITS,
 } from '../src/constants';
-import { clearQuickVerifyCache } from '../src/payment/quick-verify';
 import { ElisymIdentity } from '../src/primitives/identity';
 import {
   DiscoveryService,
@@ -522,7 +520,6 @@ describe('DiscoveryService.publishProfile', () => {
 const SOL_ADDRESS_A = 'So11111111111111111111111111111111111111112';
 const SOL_ADDRESS_B = 'So11111111111111111111111111111111111111113';
 const SOL_ADDRESS_C = 'So11111111111111111111111111111111111111114';
-const PAYER_ADDRESS = 'So11111111111111111111111111111111111111199';
 
 function makeFeedbackEvent(
   customer: ElisymIdentity,
@@ -570,33 +567,6 @@ function makeResultEvent(
   );
 }
 
-function buildVerifyingRpc(
-  validSignatures: ReadonlySet<string>,
-  recipient: string,
-): Rpc<SolanaRpcApi> {
-  return {
-    getTransaction: (sig: string) => ({
-      send: () =>
-        Promise.resolve(
-          validSignatures.has(sig)
-            ? {
-                meta: {
-                  err: null,
-                  preBalances: [BigInt(2_000_000), BigInt(0)],
-                  postBalances: [BigInt(1_000_000), BigInt(1_000_000)],
-                },
-                transaction: {
-                  message: {
-                    accountKeys: [PAYER_ADDRESS, recipient],
-                  },
-                },
-              }
-            : null,
-        ),
-    }),
-  } as unknown as Rpc<SolanaRpcApi>;
-}
-
 interface RoutedPool extends NostrPool {
   published: Event[];
 }
@@ -631,14 +601,6 @@ function setupRoutedPool(opts: {
 }
 
 describe('DiscoveryService.fetchAgents ranking', () => {
-  beforeEach(() => {
-    clearQuickVerifyCache();
-  });
-
-  afterEach(() => {
-    clearQuickVerifyCache();
-  });
-
   it('sorts agents in the same minute bucket by positive rate DESC', async () => {
     // Pin `now` to second :50 of the current minute so `now - 10` (=:40) and
     // `now - 15` (=:35) deterministically share a 60s bucket. Using a raw
@@ -689,26 +651,7 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       feedbackEvents: feedbacks,
     });
 
-    // Each tx signature has its own dedicated recipient in the on-chain accountKeys.
-    const sigToRecipient: Record<string, string> = {
-      'sig-a1': SOL_ADDRESS_A,
-      'sig-a2': SOL_ADDRESS_B,
-    };
-    const rpc = {
-      getTransaction: (sig: string) => ({
-        send: () => {
-          const recipient = sigToRecipient[sig];
-          if (!recipient) {
-            return Promise.resolve(null);
-          }
-          return (
-            buildVerifyingRpc(new Set([sig]), recipient).getTransaction(sig as any) as any
-          ).send();
-        },
-      }),
-    } as unknown as Rpc<SolanaRpcApi>;
-
-    const svc = new DiscoveryService(pool as any, rpc);
+    const svc = new DiscoveryService(pool as any);
     const agents = await svc.fetchAgents('devnet');
 
     expect(agents.length).toBe(2);
@@ -764,29 +707,7 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       feedbackEvents: feedbacks,
     });
 
-    const rpc = {
-      getTransaction: (sig: string) => ({
-        send: () => {
-          if (sig === 'sig-fresh') {
-            return (
-              buildVerifyingRpc(new Set(['sig-fresh']), SOL_ADDRESS_A).getTransaction(
-                sig as any,
-              ) as any
-            ).send();
-          }
-          if (sig === 'sig-stale') {
-            return (
-              buildVerifyingRpc(new Set(['sig-stale']), SOL_ADDRESS_B).getTransaction(
-                sig as any,
-              ) as any
-            ).send();
-          }
-          return Promise.resolve(null);
-        },
-      }),
-    } as unknown as Rpc<SolanaRpcApi>;
-
-    const svc = new DiscoveryService(pool as any, rpc);
+    const svc = new DiscoveryService(pool as any);
     const agents = await svc.fetchAgents('devnet');
 
     expect(agents.length).toBe(2);
@@ -840,9 +761,7 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       feedbackEvents: feedbacks,
     });
 
-    const rpc = buildVerifyingRpc(new Set(['sig-paid']), SOL_ADDRESS_A);
-
-    const svc = new DiscoveryService(pool as any, rpc);
+    const svc = new DiscoveryService(pool as any);
     const agents = await svc.fetchAgents('devnet');
 
     expect(agents.length).toBe(3);
@@ -888,46 +807,7 @@ describe('DiscoveryService.fetchAgents ranking', () => {
     expect(agents[0]!.positiveCount).toBe(2);
   });
 
-  it('keeps agent in cold-start when on-chain verification fails', async () => {
-    const now = Math.floor(Date.now() / 1000);
-    const agent = ElisymIdentity.generate();
-    const customer = ElisymIdentity.generate();
-
-    const cap = makeCapabilityEvent(
-      agent,
-      makeCard({
-        name: 'unverified',
-        payment: { chain: 'solana', network: 'devnet', address: SOL_ADDRESS_A },
-      }),
-    );
-    const feedbacks = [
-      makeFeedbackEvent(customer, agent.publicKey, {
-        createdAt: now - 30,
-        status: 'payment-completed',
-        txSignature: 'sig-missing',
-      }),
-    ];
-
-    const pool = setupRoutedPool({
-      capabilityEvents: [cap],
-      resultEvents: [],
-      feedbackEvents: feedbacks,
-    });
-
-    // RPC always returns null for getTransaction (tx not found)
-    const rpc = {
-      getTransaction: () => ({ send: () => Promise.resolve(null) }),
-    } as unknown as Rpc<SolanaRpcApi>;
-
-    const svc = new DiscoveryService(pool as any, rpc);
-    const agents = await svc.fetchAgents('devnet');
-
-    expect(agents.length).toBe(1);
-    expect(agents[0]!.lastPaidJobAt).toBeUndefined();
-    expect(agents[0]!.lastPaidJobTx).toBeUndefined();
-  });
-
-  it('falls back to cold-start ordering when no RPC is configured', async () => {
+  it('orders cold-start agents by lastSeen DESC when no payment-completed feedback exists', async () => {
     const now = Math.floor(Date.now() / 1000);
     const aOld = ElisymIdentity.generate();
     const aNew = ElisymIdentity.generate();
@@ -955,7 +835,8 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       feedbackEvents: [],
     });
 
-    // No RPC: discovery cannot verify, both agents stay cold-start.
+    // No payment-completed feedback for either agent, so both land in the
+    // cold-start (-Infinity) bucket and are tiebroken by lastSeen.
     const svc = new DiscoveryService(pool as any);
     const agents = await svc.fetchAgents('devnet');
 
@@ -964,55 +845,6 @@ describe('DiscoveryService.fetchAgents ranking', () => {
     // newer NIP-89 first (lastSeen tiebreak)
     expect(agents[0]!.pubkey).toBe(aNew.publicKey);
     expect(agents[1]!.pubkey).toBe(aOld.publicKey);
-  });
-
-  it('falls through to an older verified candidate when the newest fake fails verification', async () => {
-    // Anti-grief: a malicious customer publishes a fake `payment-completed`
-    // feedback (newer createdAt, garbage tx) to demote a competitor. With a
-    // single-candidate verifier the agent would drop to cold-start; we should
-    // walk past the fake and credit the legitimate older payment.
-    const now = Math.floor(Date.now() / 1000);
-    const agent = ElisymIdentity.generate();
-    const customer = ElisymIdentity.generate();
-    const griefer = ElisymIdentity.generate();
-
-    const cap = makeCapabilityEvent(
-      agent,
-      makeCard({
-        name: 'griefable',
-        payment: { chain: 'solana', network: 'devnet', address: SOL_ADDRESS_A },
-      }),
-    );
-    const feedbacks = [
-      // Newest: fake from a griefer with a tx that won't verify.
-      makeFeedbackEvent(griefer, agent.publicKey, {
-        createdAt: now - 10,
-        status: 'payment-completed',
-        txSignature: 'sig-fake',
-      }),
-      // Older: real payment from a customer.
-      makeFeedbackEvent(customer, agent.publicKey, {
-        createdAt: now - 120,
-        status: 'payment-completed',
-        txSignature: 'sig-real',
-      }),
-    ];
-
-    const pool = setupRoutedPool({
-      capabilityEvents: [cap],
-      resultEvents: [],
-      feedbackEvents: feedbacks,
-    });
-
-    // RPC verifies only `sig-real`; `sig-fake` returns null (not_found).
-    const rpc = buildVerifyingRpc(new Set(['sig-real']), SOL_ADDRESS_A);
-
-    const svc = new DiscoveryService(pool as any, rpc);
-    const agents = await svc.fetchAgents('devnet');
-
-    expect(agents.length).toBe(1);
-    expect(agents[0]!.lastPaidJobAt).toBe(now - 120);
-    expect(agents[0]!.lastPaidJobTx).toBe('sig-real');
   });
 
   it('result events update lastSeen even when there is no paid job', async () => {

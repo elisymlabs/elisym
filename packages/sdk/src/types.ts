@@ -94,6 +94,13 @@ export interface Job {
   amount?: number;
   txHash?: string;
   createdAt: number;
+  /**
+   * Payment asset, derived from the `payment-required` feedback's embedded
+   * payment request when present. Undefined means either no payment-required
+   * feedback was observed for this job, or the embedded request was missing
+   * an `asset` field (treated as native SOL by callers).
+   */
+  asset?: PaymentAssetRef;
 }
 
 export interface SubmitJobOptions {

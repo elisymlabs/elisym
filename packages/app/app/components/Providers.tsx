@@ -21,7 +21,7 @@ export function Providers({ children }: { children: ReactNode }) {
       <ConnectionProvider endpoint={endpoint}>
         <WalletProvider wallets={wallets} autoConnect>
           <WalletModalProvider>
-            <ElisymProvider config={{}}>
+            <ElisymProvider>
               <IdentityProvider>
                 <UIProvider>
                   <PageHeaderProvider>{children}</PageHeaderProvider>

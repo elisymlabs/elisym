@@ -36,8 +36,17 @@ export interface AgentDisplayData {
   priceLamports: number | undefined;
   wallet: string;
   walletAddress: string;
+  /** Newest network signal (capability publish, result, feedback). Used for the runtime "online" indicator only. */
   lastSeen: string;
   lastSeenTs: number;
+  /**
+   * Display label for the most recent on-chain-verified paid job. Undefined
+   * for cold-start agents that have not had a verified paid job within the
+   * SDK's ranking window. Source: `Agent.lastPaidJobAt` from
+   * `DiscoveryService.fetchAgents` (requires Solana RPC in ElisymClient).
+   */
+  lastPaidJobLabel: string | undefined;
+  lastPaidJobAt: number | undefined;
   picture: string | undefined;
   cards: CapabilityCard[];
   agent: Agent;
@@ -98,6 +107,8 @@ function toDisplayData(agent: Agent, feedbackMap?: FeedbackMap): AgentDisplayDat
     walletAddress,
     lastSeen: approxTimeAgo(agent.lastSeen),
     lastSeenTs: agent.lastSeen,
+    lastPaidJobLabel: agent.lastPaidJobAt ? approxTimeAgo(agent.lastPaidJobAt) : undefined,
+    lastPaidJobAt: agent.lastPaidJobAt,
     picture: agent.picture,
     cards,
     agent,

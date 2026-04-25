@@ -1,121 +1,47 @@
 import {
+  buildPaymentInstructions,
+  estimatePriorityFeeMicroLamports,
   getProtocolConfig,
   getProtocolProgramId,
-  resolveAssetFromPaymentRequest,
   SolanaPaymentStrategy,
   toDTag,
   type CapabilityCard,
   type PaymentRequestData,
 } from '@elisym/sdk';
-import { createSolanaRpc } from '@solana/kit';
 import {
-  createAssociatedTokenAccountIdempotentInstruction,
-  createTransferCheckedInstruction,
-  getAssociatedTokenAddressSync,
-} from '@solana/spl-token';
-import { PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
-
-const payment = new SolanaPaymentStrategy();
-const PROTOCOL_PROGRAM_ID = getProtocolProgramId('devnet');
-const protocolRpc = createSolanaRpc('https://api.devnet.solana.com');
-
-/**
- * Build an unsigned payment transaction for a payment request.
- *
- * Wallet-adapter signs the transaction itself, so the SDK's `buildTransaction`
- * (which requires a Solana Kit `Signer`) is not usable here. We reconstruct
- * the same instruction shape manually.
- *
- * For native SOL: `SystemProgram.transfer` to the provider with the payment
- * `reference` attached as a read-only key, plus a second transfer to the
- * protocol treasury when a fee applies.
- *
- * For SPL (USDC): `CreateAssociatedTokenAccountIdempotent` for the recipient
- * and treasury ATAs followed by `TransferChecked` for provider + fee. Idempotent
- * create is free when the ATA already exists, and costs ~0.00204 SOL of rent
- * otherwise - `useSolGasFeeEstimate` does not yet reflect that for the card
- * preview.
- */
-function buildPaymentTransaction(
-  paymentRequest: PaymentRequestData,
-  payer: PublicKey,
-): Transaction {
-  const asset = resolveAssetFromPaymentRequest(paymentRequest);
-  const feeAmount = paymentRequest.fee_amount ?? 0;
-  const providerAmount = paymentRequest.fee_address
-    ? paymentRequest.amount - feeAmount
-    : paymentRequest.amount;
-  if (providerAmount <= 0) {
-    throw new Error(`Fee amount (${feeAmount}) exceeds total amount (${paymentRequest.amount}).`);
-  }
-
-  const tx = new Transaction();
-  const recipient = new PublicKey(paymentRequest.recipient);
-  const reference = new PublicKey(paymentRequest.reference);
-
-  if (!asset.mint) {
-    const providerIx = SystemProgram.transfer({
-      fromPubkey: payer,
-      toPubkey: recipient,
-      lamports: providerAmount,
-    });
-    providerIx.keys.push({ pubkey: reference, isSigner: false, isWritable: false });
-    tx.add(providerIx);
-
-    if (paymentRequest.fee_address && feeAmount > 0) {
-      tx.add(
-        SystemProgram.transfer({
-          fromPubkey: payer,
-          toPubkey: new PublicKey(paymentRequest.fee_address),
-          lamports: feeAmount,
-        }),
-      );
-    }
-    return tx;
-  }
-
-  // SPL path (USDC). Canonical Solana Pay flow: idempotent-create recipient
-  // and treasury ATAs (no-op if they exist), then TransferChecked, attaching
-  // `reference` as an extra read-only key on the provider transfer so the
-  // provider can locate the tx via getSignaturesForAddress(reference).
-  const mint = new PublicKey(asset.mint);
-  const payerAta = getAssociatedTokenAddressSync(mint, payer);
-  const recipientAta = getAssociatedTokenAddressSync(mint, recipient);
-
-  tx.add(createAssociatedTokenAccountIdempotentInstruction(payer, recipientAta, recipient, mint));
-
-  const providerTransferIx = createTransferCheckedInstruction(
-    payerAta,
-    mint,
-    recipientAta,
-    payer,
-    BigInt(providerAmount),
-    asset.decimals,
-  );
-  providerTransferIx.keys.push({ pubkey: reference, isSigner: false, isWritable: false });
-  tx.add(providerTransferIx);
-
-  if (paymentRequest.fee_address && feeAmount > 0) {
-    const treasury = new PublicKey(paymentRequest.fee_address);
-    const treasuryAta = getAssociatedTokenAddressSync(mint, treasury);
-    tx.add(createAssociatedTokenAccountIdempotentInstruction(payer, treasuryAta, treasury, mint));
-    tx.add(
-      createTransferCheckedInstruction(
-        payerAta,
-        mint,
-        treasuryAta,
-        payer,
-        BigInt(feeAmount),
-        asset.decimals,
-      ),
-    );
-  }
-
-  return tx;
-}
+  address,
+  appendTransactionMessageInstructions,
+  compileTransaction,
+  createNoopSigner,
+  createSolanaRpc,
+  createTransactionMessage,
+  getBase64EncodedWireTransaction,
+  pipe,
+  setTransactionMessageComputeUnitLimit,
+  setTransactionMessageComputeUnitPrice,
+  setTransactionMessageFeePayerSigner,
+  setTransactionMessageLifetimeUsingBlockhash,
+} from '@solana/kit';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+// VersionedTransaction is the only @solana/web3.js type we still touch: the
+// wallet-adapter API (`signTransaction` / `sendTransaction`) accepts either
+// legacy Transaction or VersionedTransaction. Once wallet-adapter exposes a
+// Kit-native sign path, this import goes away. Do not grow web3.js usage
+// elsewhere in this file - everything else is Kit.
+import { VersionedTransaction } from '@solana/web3.js';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
+import { track } from '~/lib/analytics';
+import { cacheSet } from '~/lib/localCache';
+import { useElisymClient } from './useElisymClient';
+import { useIdentity } from './useIdentity';
+import { useJobHistory } from './useJobHistory';
+
+const COMPUTE_UNIT_LIMIT = 200_000;
+const PRIORITY_FEE_PERCENTILE = 75;
+const PROTOCOL_PROGRAM_ID = getProtocolProgramId('devnet');
+const kitRpc = createSolanaRpc('https://api.devnet.solana.com');
+const payment = new SolanaPaymentStrategy();
 
 const PENDING_CONFIRMATIONS_KEY = 'elisym:pending-confirmations';
 
@@ -177,11 +103,58 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promis
   }
   throw new Error('Retry exhausted');
 }
-import { track } from '~/lib/analytics';
-import { cacheSet } from '~/lib/localCache';
-import { useElisymClient } from './useElisymClient';
-import { useIdentity } from './useIdentity';
-import { useJobHistory } from './useJobHistory';
+
+/**
+ * Build an unsigned payment transaction for a payment request via the SDK's
+ * Kit-native instruction builder, then bridge to a wallet-adapter-compatible
+ * VersionedTransaction.
+ *
+ * Why bridge instead of using the SDK's `buildTransaction` directly: SDK
+ * `buildTransaction` requires a real `TransactionSigner` and signs in place,
+ * but wallet-adapter signs through the connected extension. We construct
+ * with a `createNoopSigner` (only contributes the fee-payer address), compile
+ * to wire bytes, and rehydrate as a VersionedTransaction so wallet-adapter
+ * can sign and submit.
+ *
+ * Includes ComputeBudget set-limit + set-price instructions so the tx carries
+ * a priority fee. The SDK applies the same defaults (200k CU limit, 75th
+ * percentile priority fee) when it builds tx itself; mirroring them here
+ * keeps both paths in lockstep.
+ *
+ * For SPL/USDC, the SDK builder emits `CreateAssociatedTokenIdempotent`
+ * instructions for the recipient (and treasury) ATAs followed by
+ * `TransferChecked`. The reference key is attached as a read-only account on
+ * the provider transfer.
+ */
+async function buildVersionedPaymentTransaction(
+  paymentRequest: PaymentRequestData,
+  payerAddress: string,
+): Promise<VersionedTransaction> {
+  const payerSigner = createNoopSigner(address(payerAddress));
+  const instructions = await buildPaymentInstructions(paymentRequest, payerSigner);
+  const priorityFeeMicroLamports = await estimatePriorityFeeMicroLamports(kitRpc, {
+    percentile: PRIORITY_FEE_PERCENTILE,
+  });
+  const { value: latestBlockhash } = await kitRpc.getLatestBlockhash().send();
+
+  const message = pipe(
+    createTransactionMessage({ version: 0 }),
+    (m) => setTransactionMessageFeePayerSigner(payerSigner, m),
+    (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
+    (m) => setTransactionMessageComputeUnitLimit(COMPUTE_UNIT_LIMIT, m),
+    (m) => setTransactionMessageComputeUnitPrice(priorityFeeMicroLamports, m),
+    (m) =>
+      appendTransactionMessageInstructions(
+        instructions as Parameters<typeof appendTransactionMessageInstructions>[0],
+        m,
+      ),
+  );
+
+  const compiled = compileTransaction(message);
+  const wireBase64 = getBase64EncodedWireTransaction(compiled);
+  const wireBytes = Uint8Array.from(atob(wireBase64), (c) => c.charCodeAt(0));
+  return VersionedTransaction.deserialize(wireBytes);
+}
 
 interface BuyCapabilityOptions {
   agentPubkey: string;
@@ -294,7 +267,7 @@ export function useBuyCapability({
                 // validator can verify fee_amount / fee_address match what
                 // the protocol currently requires. getProtocolConfig caches
                 // for 60s, so back-to-back purchases reuse the same snapshot.
-                const protocolConfig = await getProtocolConfig(protocolRpc, PROTOCOL_PROGRAM_ID);
+                const protocolConfig = await getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID);
 
                 // Validate payment request
                 const validationError = payment.validatePaymentRequest(
@@ -308,18 +281,13 @@ export function useBuyCapability({
 
                 const paymentRequest: PaymentRequestData = JSON.parse(paymentRequestJson);
 
-                // Build and send transaction. The SDK's buildTransaction
-                // requires a Solana Kit Signer, which wallet-adapter does not
-                // expose - the wallet signs itself via sendTransaction. So we
-                // build an unsigned web3.js Transaction with matching shape.
-                const tx = buildPaymentTransaction(paymentRequest, publicKey);
-                const { blockhash } = await connection.getLatestBlockhash();
-                tx.recentBlockhash = blockhash;
-                tx.feePayer = publicKey;
-
                 toast.loading('Approve the transaction in your wallet...', { id: toastId });
 
-                const signature = await sendTransaction(tx, connection);
+                const versionedTx = await buildVersionedPaymentTransaction(
+                  paymentRequest,
+                  publicKey.toBase58(),
+                );
+                const signature = await sendTransaction(versionedTx, connection);
                 await connection.confirmTransaction(signature, 'confirmed');
 
                 // Persist before publishing so we can retry on page reload

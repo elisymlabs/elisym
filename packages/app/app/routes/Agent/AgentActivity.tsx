@@ -1,8 +1,27 @@
-import { timeAgo, KIND_JOB_FEEDBACK, KIND_JOB_RESULT } from '@elisym/sdk';
-import Decimal from 'decimal.js-light';
+import {
+  timeAgo,
+  KIND_JOB_FEEDBACK,
+  KIND_JOB_RESULT,
+  parsePaymentRequest,
+  resolveKnownAsset,
+  type PaymentAssetRef,
+} from '@elisym/sdk';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
+import { compactZeros, formatDecimal } from '~/lib/formatPrice';
 import type { ActivityEvent } from './types';
+
+const DEFAULT_SOL_DECIMALS = 9;
+const DEFAULT_SOL_SYMBOL = 'SOL';
+
+function formatActivityAmount(amount: number, asset: PaymentAssetRef | undefined): string {
+  if (!asset) {
+    return `${compactZeros(formatDecimal(amount, DEFAULT_SOL_DECIMALS))} ${DEFAULT_SOL_SYMBOL}`;
+  }
+  const known = resolveKnownAsset(asset.chain, asset.token, asset.mint);
+  const symbol = known?.symbol ?? asset.token.toUpperCase();
+  return `${compactZeros(formatDecimal(amount, asset.decimals))} ${symbol}`;
+}
 
 interface Props {
   agentPubkey: string;
@@ -38,7 +57,15 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
             )
           : [];
 
-      const amountByJobId = new Map<string, number>();
+      // Per NIP-90 elisym, the payment-required feedback's amount tag is
+      // shaped as [amount, raw, paymentRequestJson, chain]. The third element
+      // carries the asset descriptor (SOL/USDC/...) so we can render the
+      // activity row in the right currency instead of always SOL.
+      interface FeedbackInfo {
+        amount: number;
+        asset?: PaymentAssetRef;
+      }
+      const infoByJobId = new Map<string, FeedbackInfo>();
       for (const feedback of feedbacks) {
         const statusTag = feedback.tags.find((tag) => tag[0] === 'status');
         if (statusTag?.[1] !== 'payment-required') {
@@ -46,10 +73,19 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
         }
         const eTag = feedback.tags.find((tag) => tag[0] === 'e');
         const amountTag = feedback.tags.find((tag) => tag[0] === 'amount');
-        const lamports = amountTag?.[1] ? parseInt(amountTag[1], 10) : undefined;
-        if (eTag?.[1] && lamports && Number.isFinite(lamports)) {
-          amountByJobId.set(eTag[1], lamports);
+        const raw = amountTag?.[1] ? parseInt(amountTag[1], 10) : undefined;
+        if (!eTag?.[1] || !raw || !Number.isFinite(raw)) {
+          continue;
         }
+        let asset: PaymentAssetRef | undefined;
+        const requestJson = amountTag?.[2];
+        if (requestJson) {
+          const parsed = parsePaymentRequest(requestJson);
+          if (parsed.ok && parsed.data.asset) {
+            asset = parsed.data.asset;
+          }
+        }
+        infoByJobId.set(eTag[1], { amount: raw, asset });
       }
 
       return results
@@ -59,14 +95,15 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
           const amountTag = event.tags.find((tag) => tag[0] === 'amount');
           const jobId = eTag?.[1];
           const directAmount = amountTag?.[1] ? parseInt(amountTag[1], 10) : undefined;
-          const fallbackAmount = jobId ? amountByJobId.get(jobId) : undefined;
-          const amountLamports =
-            directAmount && Number.isFinite(directAmount) ? directAmount : fallbackAmount;
+          const fallback = jobId ? infoByJobId.get(jobId) : undefined;
+          const amount =
+            directAmount && Number.isFinite(directAmount) ? directAmount : fallback?.amount;
           return {
             id: event.id,
             createdAt: event.created_at,
             capability: capTag?.[1],
-            amountLamports,
+            amount,
+            asset: fallback?.asset,
           };
         })
         .sort((a, b) => b.createdAt - a.createdAt);
@@ -117,13 +154,13 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
             </div>
             <span className="text-[11px] text-text-2">{timeAgo(event.createdAt)}</span>
           </div>
-          {!event.amountLamports ? (
+          {!event.amount ? (
             <span className="shrink-0 rounded-full bg-stat-sky-bg px-10 py-4 font-mono text-[11px] font-medium tracking-wide text-stat-sky uppercase">
               Free
             </span>
           ) : (
             <span className="shrink-0 rounded-full bg-stat-emerald-bg px-10 py-4 font-mono text-xs font-medium text-stat-emerald tabular-nums">
-              +{new Decimal(event.amountLamports).div(1e9).toFixed(4)} SOL
+              +{formatActivityAmount(event.amount, event.asset)}
             </span>
           )}
         </div>

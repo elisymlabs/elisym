@@ -551,9 +551,14 @@ export default function AgentPage() {
                   )}
                 />
               </div>
-              <span className="mt-12 shrink-0 text-xs text-text-2 opacity-60 sm:hidden">
-                {agentData.lastSeen}
-              </span>
+              {agentData.lastPaidJobLabel && (
+                <span
+                  className="mt-12 shrink-0 text-xs text-text-2 opacity-60 sm:hidden"
+                  title="Last verified on-chain paid job"
+                >
+                  {agentData.lastPaidJobLabel}
+                </span>
+              )}
             </div>
 
             <div className="flex flex-col items-start gap-8 sm:flex-row sm:items-start sm:justify-between sm:gap-12">
@@ -646,9 +651,14 @@ export default function AgentPage() {
                 </div>
               </div>
 
-              <div className="hidden shrink-0 text-xs text-text-2 opacity-60 sm:block sm:text-right">
-                {agentData.lastSeen}
-              </div>
+              {agentData.lastPaidJobLabel && (
+                <div
+                  className="hidden shrink-0 text-xs text-text-2 opacity-60 sm:block sm:text-right"
+                  title="Last verified on-chain paid job"
+                >
+                  {agentData.lastPaidJobLabel}
+                </div>
+              )}
             </div>
           </div>
         </div>

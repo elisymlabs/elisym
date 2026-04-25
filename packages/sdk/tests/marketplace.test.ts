@@ -903,3 +903,131 @@ describe('MarketplaceService.submitErrorFeedback', () => {
     );
   });
 });
+
+describe('MarketplaceService.fetchRecentJobs asset parsing', () => {
+  function buildJobRequest(customer: ElisymIdentity, providerPubkey: string): Event {
+    return finalizeEvent(
+      {
+        kind: KIND_JOB_REQUEST,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['t', 'elisym'],
+          ['t', 'general'],
+          ['p', providerPubkey],
+        ],
+        content: 'hello',
+      },
+      customer.secretKey,
+    );
+  }
+
+  function buildPaymentRequiredFeedback(
+    provider: ElisymIdentity,
+    requestEvent: Event,
+    paymentRequestJson: string | undefined,
+  ): Event {
+    const amountTag: string[] = ['amount', '1000000'];
+    if (paymentRequestJson) {
+      amountTag.push(paymentRequestJson, 'solana');
+    }
+    return finalizeEvent(
+      {
+        kind: KIND_JOB_FEEDBACK,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['e', requestEvent.id],
+          ['p', requestEvent.pubkey],
+          ['status', 'payment-required'],
+          amountTag,
+          ['t', 'elisym'],
+        ],
+        content: '',
+      },
+      provider.secretKey,
+    );
+  }
+
+  function makePool(requests: Event[], feedbacks: Event[]): NostrPool {
+    return {
+      querySync: vi.fn().mockResolvedValue(requests),
+      queryBatched: vi.fn().mockResolvedValue([]),
+      queryBatchedByTag: vi.fn(async (filter: Filter) => {
+        if (filter.kinds?.includes(KIND_JOB_FEEDBACK)) {
+          return feedbacks;
+        }
+        return [];
+      }),
+      publish: vi.fn(),
+      publishAll: vi.fn(),
+      subscribe: vi.fn(),
+      subscribeAndWait: vi.fn(),
+      probe: vi.fn(),
+      reset: vi.fn(),
+      getRelays: vi.fn().mockReturnValue([]),
+      close: vi.fn(),
+    } as any;
+  }
+
+  it('returns asset undefined when there is no feedback', async () => {
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+    const requestEvent = buildJobRequest(customer, provider.publicKey);
+    const pool = makePool([requestEvent], []);
+    const svc = new MarketplaceService(pool);
+
+    const jobs = await svc.fetchRecentJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.asset).toBeUndefined();
+  });
+
+  it('returns asset undefined for a SOL payment request (no asset field)', async () => {
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+    const requestEvent = buildJobRequest(customer, provider.publicKey);
+    const solanaAddress = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
+    const reference = 'EWj2cuEuVhi7RX81cnAY3TzpyFwnHzzVwvuTyfmxmhs3';
+    const paymentRequestJson = JSON.stringify({
+      recipient: solanaAddress,
+      amount: 1_000_000,
+      reference,
+      created_at: Math.floor(Date.now() / 1000),
+      expiry_secs: 600,
+    });
+    const feedback = buildPaymentRequiredFeedback(provider, requestEvent, paymentRequestJson);
+    const pool = makePool([requestEvent], [feedback]);
+    const svc = new MarketplaceService(pool);
+
+    const jobs = await svc.fetchRecentJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.asset).toBeUndefined();
+  });
+
+  it('returns USDC asset when feedback embeds a USDC payment request', async () => {
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+    const requestEvent = buildJobRequest(customer, provider.publicKey);
+    const solanaAddress = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
+    const reference = 'EWj2cuEuVhi7RX81cnAY3TzpyFwnHzzVwvuTyfmxmhs3';
+    const usdcMint = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+    const paymentRequestJson = JSON.stringify({
+      recipient: solanaAddress,
+      amount: 1_000_000,
+      reference,
+      created_at: Math.floor(Date.now() / 1000),
+      expiry_secs: 600,
+      asset: { chain: 'solana', token: 'usdc', mint: usdcMint, decimals: 6 },
+    });
+    const feedback = buildPaymentRequiredFeedback(provider, requestEvent, paymentRequestJson);
+    const pool = makePool([requestEvent], [feedback]);
+    const svc = new MarketplaceService(pool);
+
+    const jobs = await svc.fetchRecentJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.asset).toEqual({
+      chain: 'solana',
+      token: 'usdc',
+      mint: usdcMint,
+      decimals: 6,
+    });
+  });
+});
