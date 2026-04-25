@@ -1,5 +1,5 @@
-import { toDTag, DEFAULT_KIND_OFFSET, SolanaPaymentStrategy } from '@elisym/sdk';
-import type { Agent as ProviderAgent, PaymentRequestData } from '@elisym/sdk';
+import { formatAssetAmount, toDTag, DEFAULT_KIND_OFFSET, SolanaPaymentStrategy } from '@elisym/sdk';
+import type { Agent as ProviderAgent, Asset, PaymentRequestData } from '@elisym/sdk';
 import {
   createKeyPairSignerFromBytes,
   createSolanaRpc,
@@ -28,9 +28,8 @@ import {
   isLikelyBase64,
 } from '../sanitize.js';
 import {
+  assetFromCardPayment,
   checkLen,
-  formatSol,
-  formatSolShort,
   payment,
   MAX_INPUT_LEN,
   MAX_NPUB_LEN,
@@ -321,12 +320,24 @@ export function makePaymentFeedbackHandler(opts: {
       );
       return;
     }
+    // Resolve asset from the signed request before any user-facing string so
+    // confirmation/cap messages render in the provider's actual asset (SOL, USDC, ...)
+    // rather than always reading "SOL". An unknown asset is a hard failure - we cannot
+    // safely display, charge against, or compare to the session cap if we don't know
+    // the unit.
+    let asset: Asset;
+    try {
+      asset = resolveAssetFromPaymentRequest(parsedRequest as PaymentRequestData);
+    } catch (e) {
+      opts.rejectPayment(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
     // Confirmation gate: if no max_price_lamports was set, reject with the price
     // so the caller can confirm and retry with a limit.
     if (opts.maxPriceLamports === undefined && signedAmount !== undefined) {
       opts.rejectPayment(
         new Error(
-          `Payment of ${formatSol(BigInt(signedAmount))} required but no max_price_lamports set. ` +
+          `Payment of ${formatAssetAmount(asset, BigInt(signedAmount))} required but no max_price_lamports set. ` +
             `Retry with max_price_lamports to approve.`,
         ),
       );
@@ -339,7 +350,7 @@ export function makePaymentFeedbackHandler(opts: {
     ) {
       opts.rejectPayment(
         new Error(
-          `Price ${formatSol(BigInt(signedAmount))} exceeds max ${formatSol(BigInt(opts.maxPriceLamports))}`,
+          `Price ${formatAssetAmount(asset, BigInt(signedAmount))} exceeds max ${formatAssetAmount(asset, BigInt(opts.maxPriceLamports))}`,
         ),
       );
       return;
@@ -347,7 +358,7 @@ export function makePaymentFeedbackHandler(opts: {
     if (!opts.agent.solanaKeypair) {
       opts.resolveNoWallet(
         `Payment required but no Solana wallet configured.\n` +
-          `Amount: ${signedAmount !== undefined ? formatSol(BigInt(signedAmount)) : 'unknown'}\n` +
+          `Amount: ${signedAmount !== undefined ? formatAssetAmount(asset, BigInt(signedAmount)) : 'unknown'}\n` +
           `Payment request: ${paymentRequest}`,
       );
       return;
@@ -357,7 +368,6 @@ export function makePaymentFeedbackHandler(opts: {
     // total wallet outflow. Reserving (check + increment in one step) closes the
     // race where two concurrent handlers both pass a read-only check against a
     // stale counter.
-    const asset = resolveAssetFromPaymentRequest(parsedRequest as PaymentRequestData);
     let reservedAmount: bigint | undefined;
     if (signedAmount !== undefined) {
       try {
@@ -846,9 +856,10 @@ export const customerTools: ToolDefinition[] = [
       }
 
       const price = card.payment?.job_price ?? 0;
+      const cardAsset = assetFromCardPayment(card.payment);
       if (input.max_price_lamports !== undefined && price > input.max_price_lamports) {
         return errorResult(
-          `Price ${formatSolShort(BigInt(price))} exceeds max ${formatSolShort(BigInt(input.max_price_lamports))}`,
+          `Price ${formatAssetAmount(cardAsset, BigInt(price))} exceeds max ${formatAssetAmount(cardAsset, BigInt(input.max_price_lamports))}`,
         );
       }
 
@@ -861,7 +872,7 @@ export const customerTools: ToolDefinition[] = [
               type: 'text' as const,
               text:
                 `Capability "${input.capability}" from "${provider.name || input.provider_npub}" ` +
-                `costs ${formatSolShort(BigInt(price))}.\n\n` +
+                `costs ${formatAssetAmount(cardAsset, BigInt(price))}.\n\n` +
                 `To confirm, call buy_capability again with max_price_lamports set ` +
                 `(e.g. ${price} or higher).`,
             },
