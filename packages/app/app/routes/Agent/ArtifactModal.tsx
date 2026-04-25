@@ -59,25 +59,25 @@ export function ArtifactModal({
 
   return createPortal(
     <div
-      className="backdrop-in fixed inset-0 z-[9999] flex items-center justify-center bg-black/30 p-16 backdrop-blur-md"
+      className="backdrop-in fixed inset-0 z-[9999] flex items-center justify-center bg-black/30 p-8 backdrop-blur-md sm:p-16"
       onClick={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
         }
       }}
     >
-      <div className="modal-in relative flex max-h-[90vh] w-760 max-w-[95vw] flex-col overflow-hidden rounded-20 bg-surface shadow-[0_24px_60px_rgba(0,0,0,0.18),0_2px_8px_rgba(0,0,0,0.08)]">
-        <div className="flex items-start gap-12 border-b border-black/6 px-32 pt-28 pr-64 pb-20">
+      <div className="modal-in relative flex max-h-[92vh] w-760 max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-20 bg-surface shadow-[0_24px_60px_rgba(0,0,0,0.18),0_2px_8px_rgba(0,0,0,0.08)] sm:max-w-[95vw]">
+        <div className="flex items-start gap-10 border-b border-black/6 px-16 pt-20 pr-48 pb-16 sm:gap-12 sm:px-32 sm:pt-28 sm:pr-64 sm:pb-20">
           <ProductAvatar name={artifact.cardName} size={40} />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-base leading-tight font-semibold">
+            <div className="truncate text-[15px] leading-tight font-semibold sm:text-base">
               {artifact.cardName}
             </div>
             <div className="mt-2 text-xs text-text-2/80 tabular-nums">{dateStr}</div>
           </div>
           <button
             onClick={() => void copyResult(artifact.result)}
-            className="inline-flex shrink-0 cursor-pointer items-center gap-8 rounded-12 border-0 bg-surface-2 px-16 py-10 text-sm font-medium text-text-2 transition-colors hover:bg-tag-bg hover:text-text"
+            className="inline-flex shrink-0 cursor-pointer items-center gap-6 rounded-12 border-0 bg-surface-2 px-10 py-8 text-[13px] font-medium text-text-2 transition-colors hover:bg-tag-bg hover:text-text sm:gap-8 sm:px-16 sm:py-10 sm:text-sm"
             title="Copy result"
           >
             <svg
@@ -97,7 +97,7 @@ export function ArtifactModal({
           </button>
           <button
             onClick={onClose}
-            className="absolute top-12 right-12 z-10 flex size-36 cursor-pointer items-center justify-center border-none bg-transparent p-0 text-text-2 transition-colors hover:text-text"
+            className="absolute top-8 right-8 z-10 flex size-36 cursor-pointer items-center justify-center border-none bg-transparent p-0 text-text-2 transition-colors hover:text-text sm:top-12 sm:right-12"
             aria-label="Close"
           >
             <svg
@@ -114,24 +114,26 @@ export function ArtifactModal({
             </svg>
           </button>
         </div>
-        <div className="overflow-y-auto px-32 py-28">
+        <div className="min-h-0 flex-1 overflow-y-auto px-16 pt-20 pb-24 sm:px-32 sm:pt-28 sm:pb-28">
           {artifact.prompt && (
-            <div className="mb-20 w-full rounded-xl px-16 py-12 prompt-block">
-              <div className="mb-6 text-xs text-text-2">Prompt</div>
+            <div className="mb-16 w-full rounded-xl px-12 py-10 prompt-block sm:mb-20 sm:px-16 sm:py-12">
+              <div className="mb-2 text-xs text-text-2">Prompt</div>
               <div className="text-sm break-words whitespace-pre-wrap text-text">
                 {artifact.prompt}
               </div>
             </div>
           )}
-          <div className="text-[15px] leading-[1.65] break-words whitespace-pre-wrap text-text">
+          <div className="text-[14px] leading-[1.6] break-words whitespace-pre-wrap text-text sm:text-[15px] sm:leading-[1.65]">
             {artifact.result}
           </div>
         </div>
         {showFeedbackRow && (
           <div
             className={cn(
-              'flex h-70 items-center gap-12 overflow-hidden bg-surface-2/40 px-32 transition-[opacity,max-height,padding] duration-[600ms]',
-              feedbackCollapsed ? 'max-h-0 py-0 opacity-0' : 'max-h-70 py-16 opacity-100',
+              'flex shrink-0 flex-wrap items-center gap-8 overflow-hidden bg-surface-2/40 px-16 pb-[max(env(safe-area-inset-bottom),0px)] transition-[opacity,max-height,padding] duration-[600ms] sm:h-70 sm:flex-nowrap sm:gap-12 sm:px-32',
+              feedbackCollapsed
+                ? 'max-h-0 py-0 opacity-0'
+                : 'max-h-[200px] py-12 opacity-100 sm:max-h-70 sm:py-16',
             )}
           >
             {rated ? (

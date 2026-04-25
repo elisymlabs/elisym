@@ -11,6 +11,7 @@ interface Props {
 
 const STALE_TIME_MS = 1000 * 30;
 const REFETCH_INTERVAL_MS = 1000 * 60;
+const ACTIVITY_SKELETON_COUNT = 4;
 
 export function AgentActivity({ agentPubkey, productCount }: Props) {
   const { client } = useElisymClient();
@@ -74,11 +75,15 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
     refetchInterval: REFETCH_INTERVAL_MS,
   });
 
-  if (!events || events.length === 0) {
+  if (!events) {
+    return <AgentActivitySkeleton />;
+  }
+
+  if (events.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center px-16 py-56">
         <p className="m-0 text-sm text-text-2">No activity yet</p>
-        <p className="m-0 mt-4 text-sm text-text-2/60">
+        <p className="m-0 mt-4 text-center text-sm text-text-2/60">
           Jobs completed by this agent will appear here
         </p>
       </div>
@@ -105,7 +110,7 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
             <div className="flex items-baseline gap-8">
               <span className="truncate text-sm font-medium">Job completed</span>
               {productCount > 1 && event.capability && (
-                <span className="truncate rounded-full bg-tag-bg px-8 py-2 text-[10px] font-semibold tracking-wide text-text-2 uppercase">
+                <span className="truncate rounded-full bg-tag-bg px-8 py-2 font-mono text-[10px] font-medium tracking-wide text-text-2 uppercase">
                   {event.capability}
                 </span>
               )}
@@ -113,14 +118,31 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
             <span className="text-[11px] text-text-2">{timeAgo(event.createdAt)}</span>
           </div>
           {!event.amountLamports ? (
-            <span className="shrink-0 rounded-full bg-stat-sky-bg px-10 py-4 text-[11px] font-semibold tracking-wide text-stat-sky uppercase">
+            <span className="shrink-0 rounded-full bg-stat-sky-bg px-10 py-4 font-mono text-[11px] font-medium tracking-wide text-stat-sky uppercase">
               Free
             </span>
           ) : (
-            <span className="shrink-0 rounded-full bg-stat-emerald-bg px-10 py-4 text-xs font-semibold text-stat-emerald tabular-nums">
+            <span className="shrink-0 rounded-full bg-stat-emerald-bg px-10 py-4 font-mono text-xs font-medium text-stat-emerald tabular-nums">
               +{new Decimal(event.amountLamports).div(1e9).toFixed(4)} SOL
             </span>
           )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AgentActivitySkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      {Array.from({ length: ACTIVITY_SKELETON_COUNT }).map((_, index) => (
+        <div key={index} className="flex items-center gap-12 py-8">
+          <div className="skeleton size-32 shrink-0 rounded-full" />
+          <div className="flex min-w-0 flex-1 flex-col gap-6">
+            <div className="skeleton h-12 w-96 rounded-full" />
+            <div className="skeleton h-10 w-64 rounded-full" />
+          </div>
+          <div className="skeleton h-20 w-72 shrink-0 rounded-full" />
         </div>
       ))}
     </div>

@@ -107,7 +107,7 @@ export function ProductCard({ card, selected, onClick }: Props) {
             {card.capabilities.slice(0, 3).map((tag) => (
               <span
                 key={tag}
-                className="rounded-full bg-tag-bg px-10 py-4 text-[11px] font-semibold tracking-wide text-text-2 uppercase"
+                className="rounded-full bg-tag-bg px-10 py-4 font-mono text-[11px] font-medium tracking-wide text-text-2 uppercase"
               >
                 {tag}
               </span>

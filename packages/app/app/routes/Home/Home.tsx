@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useDeferredValue, useCallback } from 'react';
 import { AgentCard } from '~/components/AgentCard';
 import { AgentCardSkeleton } from '~/components/AgentCardSkeleton';
-import { FilterBar, KNOWN_CATEGORIES } from '~/components/FilterBar';
+import { FilterBar } from '~/components/FilterBar';
 import { HeroSection } from '~/components/HeroSection';
 import { useUI } from '~/contexts/UIContext';
 import type { AgentDisplayData } from '~/hooks/useAgentDisplay';
@@ -9,6 +9,7 @@ import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
 import { useAgents } from '~/hooks/useAgents';
 import { useStats } from '~/hooks/useStats';
+import { findCategory } from '~/lib/categories';
 import { cn } from '~/lib/cn';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
 
@@ -43,17 +44,11 @@ function applyCategoryFilter(
   agents: AgentDisplayData[],
   currentFilter: string,
 ): AgentDisplayData[] {
-  if (currentFilter === 'all') {
+  const category = findCategory(currentFilter);
+  if (!category) {
     return agents;
   }
-  if (currentFilter === 'other') {
-    return agents.filter((agent) =>
-      agent.tags.some((tag) => !KNOWN_CATEGORIES.includes(tag.toLowerCase())),
-    );
-  }
-  return agents.filter((agent) =>
-    agent.tags.some((tag) => tag.toLowerCase().includes(currentFilter.toLowerCase())),
-  );
+  return agents.filter((agent) => category.match(agent));
 }
 
 function applySearchFilter(agents: AgentDisplayData[], query: string): AgentDisplayData[] {
@@ -144,7 +139,7 @@ export default function Home() {
   let content: React.ReactNode;
   if (agentsLoading) {
     content = (
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-20">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-14 sm:gap-20">
         {Array.from({ length: PAGE_SIZE }).map((_, index) => (
           <AgentCardSkeleton key={index} />
         ))}
@@ -157,7 +152,7 @@ export default function Home() {
       <>
         <div
           className={cn(
-            'grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-20 transition-opacity duration-[180ms]',
+            'grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-14 transition-opacity duration-[180ms] sm:gap-20',
             gridOpaque ? 'opacity-100' : 'opacity-0',
           )}
         >
@@ -171,8 +166,8 @@ export default function Home() {
           ))}
         </div>
 
-        {totalPages > 1 && (
-          <div className="mt-40 mb-[120px] flex items-center justify-center gap-4">
+        {deferredFiltered.length > 0 && (
+          <div className="mt-28 mb-24 flex items-center justify-center gap-4 sm:mt-40 sm:mb-[120px]">
             <button
               onClick={() => goToPage(Math.max(1, safePage - 1))}
               disabled={safePage === 1}
@@ -229,9 +224,9 @@ export default function Home() {
       <div
         id="light-content"
         ref={gridRef}
-        className="relative z-[1] -mt-40 min-h-screen scroll-mt-65 rounded-t-[40px] bg-surface"
+        className="relative z-[1] -mt-24 min-h-screen scroll-mt-65 rounded-t-[28px] bg-surface sm:-mt-40 sm:rounded-t-[40px]"
       >
-        <div className="mx-auto max-w-6xl px-24 pt-56 pb-32">
+        <div className="mx-auto max-w-6xl px-16 pt-24 pb-32 sm:px-24 sm:pt-56">
           <FilterBar searchQuery={searchQuery} onSearchChange={setSearchQuery} />
           {content}
         </div>

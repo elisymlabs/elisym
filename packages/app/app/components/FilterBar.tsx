@@ -1,21 +1,12 @@
-import { useMemo, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useUI } from '~/contexts/UIContext';
-import { useAgentFeedback } from '~/hooks/useAgentFeedback';
-import { useAgents } from '~/hooks/useAgents';
+import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { track } from '~/lib/analytics';
+import { CATEGORIES } from '~/lib/categories';
 import { cn } from '~/lib/cn';
 
-export const KNOWN_CATEGORIES = ['ui-ux', 'summary', 'tools', 'code', 'data'];
-
-const FILTERS = [
-  { key: 'all', label: 'All' },
-  { key: 'ui-ux', label: 'UI/UX' },
-  { key: 'summary', label: 'Summary' },
-  { key: 'tools', label: 'Tools' },
-  { key: 'code', label: 'Code' },
-  { key: 'data', label: 'Data' },
-  { key: 'other', label: 'Other' },
-];
+const PILL_CLASSES =
+  'shrink-0 cursor-pointer rounded-full border-none px-16 py-8 text-sm font-semibold whitespace-nowrap transition-colors';
 
 interface Props {
   searchQuery: string;
@@ -24,38 +15,78 @@ interface Props {
 
 export function FilterBar({ searchQuery, onSearchChange }: Props) {
   const [state, dispatch] = useUI();
-  const { data: agents } = useAgents();
-  const agentPubkeys = useMemo(() => (agents ?? []).map((agent) => agent.pubkey), [agents]);
-  useAgentFeedback(agentPubkeys);
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { atStart, atEnd } = useScrollEdges(scrollRef);
 
   return (
-    <div className="mb-40 flex items-center gap-16">
-      <div className="no-scrollbar flex flex-1 items-center gap-4 overflow-x-auto">
-        {FILTERS.map((filter) => (
-          <button
-            key={filter.key}
-            onClick={() => {
-              track('filter', { category: filter.key });
-              dispatch({ type: 'SET_FILTER', filter: filter.key });
-            }}
-            className={cn(
-              'shrink-0 cursor-pointer rounded-full border-none px-16 py-8 text-sm font-semibold whitespace-nowrap transition-colors',
-              state.currentFilter === filter.key
-                ? 'bg-surface-2 text-text'
-                : 'bg-transparent text-text-2 hover:text-text',
-            )}
-          >
-            {filter.label}
-          </button>
-        ))}
+    <div className="mb-24 flex flex-col gap-20 sm:mb-40 sm:flex-row sm:items-center sm:gap-12">
+      <div className="relative min-w-0 flex-1">
+        <div
+          ref={scrollRef}
+          className="no-scrollbar flex items-center gap-4 overflow-x-auto scroll-smooth sm:px-12"
+        >
+          {CATEGORIES.map((filter, index) => {
+            const isFirst = index === 0;
+            const isLast = index === CATEGORIES.length - 1;
+            return (
+              <button
+                key={filter.key}
+                onClick={(event) => {
+                  track('filter', { category: filter.key });
+                  dispatch({ type: 'SET_FILTER', filter: filter.key });
+                  const container = scrollRef.current;
+                  if (!container) {
+                    return;
+                  }
+                  if (isFirst) {
+                    container.scrollTo({ left: 0, behavior: 'smooth' });
+                  } else if (isLast) {
+                    container.scrollTo({
+                      left: container.scrollWidth,
+                      behavior: 'smooth',
+                    });
+                  } else {
+                    event.currentTarget.scrollIntoView({
+                      behavior: 'smooth',
+                      inline: 'nearest',
+                      block: 'nearest',
+                    });
+                  }
+                }}
+                className={cn(
+                  PILL_CLASSES,
+                  state.currentFilter === filter.key
+                    ? 'bg-surface-2 text-text'
+                    : 'bg-transparent text-text-2 hover:text-text',
+                )}
+              >
+                {filter.label}
+              </button>
+            );
+          })}
+        </div>
+        <div
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-y-0 left-0 w-32 bg-gradient-to-r from-surface to-transparent transition-opacity duration-150',
+            atStart ? 'opacity-0' : 'opacity-100',
+          )}
+        />
+        <div
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-y-0 right-0 w-32 bg-gradient-to-l from-surface to-transparent transition-opacity duration-150',
+            atEnd ? 'opacity-0' : 'opacity-100',
+          )}
+        />
       </div>
 
       <div
         onClick={() => inputRef.current?.focus()}
         className={cn(
-          'flex h-46 w-340 shrink-0 items-center gap-6 rounded-full border-[1.5px] bg-surface-2 pr-18 pl-14 transition-[border-color,box-shadow] duration-150',
+          'flex h-46 w-full shrink-0 items-center gap-6 rounded-full border-[1.5px] bg-surface-2 pr-18 pl-14 transition-[border-color,box-shadow] duration-150 sm:w-340',
           focused
             ? 'cursor-text border-[#d0d0d8] shadow-[0_0_0_3px_rgba(0,0,0,0.06)]'
             : 'cursor-pointer border-transparent',
