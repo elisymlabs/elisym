@@ -43,53 +43,6 @@ const PROTOCOL_PROGRAM_ID = getProtocolProgramId('devnet');
 const kitRpc = createSolanaRpc('https://api.devnet.solana.com');
 const payment = new SolanaPaymentStrategy();
 
-const PENDING_CONFIRMATIONS_KEY = 'elisym:pending-confirmations';
-
-interface PendingConfirmation {
-  jobEventId: string;
-  agentPubkey: string;
-  signature: string;
-  identityHex: string;
-  timestamp: number;
-}
-
-// Local-only resumption queue. A corrupted entry must never block the on-chain
-// payment confirmation publish, so all reads/writes fail soft.
-function readPendingConfirmations(): PendingConfirmation[] {
-  try {
-    const raw = localStorage.getItem(PENDING_CONFIRMATIONS_KEY);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as PendingConfirmation[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function savePendingConfirmation(pc: PendingConfirmation) {
-  try {
-    const existing = readPendingConfirmations();
-    existing.push(pc);
-    localStorage.setItem(PENDING_CONFIRMATIONS_KEY, JSON.stringify(existing));
-  } catch {
-    // best-effort - resumption queue failures must not abort the publish
-  }
-}
-
-function removePendingConfirmation(jobEventId: string) {
-  try {
-    const existing = readPendingConfirmations();
-    localStorage.setItem(
-      PENDING_CONFIRMATIONS_KEY,
-      JSON.stringify(existing.filter((entry) => entry.jobEventId !== jobEventId)),
-    );
-  } catch {
-    // best-effort
-  }
-}
-
 async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -290,16 +243,6 @@ export function useBuyCapability({
                 const signature = await sendTransaction(versionedTx, connection);
                 await connection.confirmTransaction(signature, 'confirmed');
 
-                // Persist before publishing so we can retry on page reload
-                savePendingConfirmation({
-                  jobEventId,
-                  agentPubkey,
-                  signature,
-                  identityHex: '',
-                  timestamp: Date.now(),
-                });
-
-                // Publish payment confirmation with retry
                 await retryWithBackoff(() =>
                   client.marketplace.submitPaymentConfirmation(
                     identity,
@@ -308,8 +251,6 @@ export function useBuyCapability({
                     signature,
                   ),
                 );
-
-                removePendingConfirmation(jobEventId);
 
                 updateJob(jobEventId, {
                   status: 'payment-completed',
