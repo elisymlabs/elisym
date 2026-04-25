@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "lint": "oxlint",
     "typecheck": "tsc --noEmit",
+    "qa": "vite build && tsc --noEmit && oxlint app/ && oxfmt --check app/",
     "clean": "rm -rf build dist"
   },
   "dependencies": {

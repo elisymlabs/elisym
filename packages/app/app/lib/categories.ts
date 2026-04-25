@@ -10,6 +10,10 @@ function tagIncludes(agent: AgentDisplayData, needle: string): boolean {
   return agent.tags.some((tag) => tag.toLowerCase().includes(needle));
 }
 
+function tagIncludesAny(agent: AgentDisplayData, needles: string[]): boolean {
+  return needles.some((needle) => tagIncludes(agent, needle));
+}
+
 export const CATEGORIES: Category[] = [
   {
     key: 'all',
@@ -24,7 +28,7 @@ export const CATEGORIES: Category[] = [
   {
     key: 'summarization',
     label: 'Summarization',
-    match: (agent) => tagIncludes(agent, 'summar'),
+    match: (agent) => tagIncludesAny(agent, ['summary', 'summarize', 'summarization']),
   },
   {
     key: 'video',
