@@ -221,3 +221,100 @@ describe('startWatchdog', () => {
     expect(pingSubCloses[0]).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('startWatchdog sleep detection', () => {
+  function buildWithClock(getMockNow: () => number): ReturnType<typeof startWatchdog> {
+    return startWatchdog({
+      client: createClient(),
+      identity: createIdentity(),
+      transport: mockTransport as unknown as NostrTransport,
+      onPing: () => {},
+      log,
+      probeIntervalMs: PROBE_INTERVAL,
+      probeTimeoutMs: 10,
+      selfPingIntervalMs: SELF_PING_INTERVAL,
+      selfPingTimeoutMs: 10,
+      now: getMockNow,
+    });
+  }
+
+  it('forces pool reset on a tick that fires after a long host suspension', async () => {
+    // Simulates the macOS-sleep-on-mac-mini case: the JS event loop is paused
+    // for hours, both setInterval callbacks freeze, then exactly one of them
+    // fires once on resume with `Date.now()` jumped forward by the sleep
+    // duration. The watchdog must catch the gap and reset before the dead
+    // long-lived ping subscription silently swallows the next external ping.
+    let mockNow = 0;
+    const watchdog = buildWithClock(() => mockNow);
+
+    // First normal probe tick: clock advanced by exactly one interval, no sleep.
+    mockNow = PROBE_INTERVAL;
+    await vi.advanceTimersByTimeAsync(PROBE_INTERVAL);
+    expect(mockPool.probe).toHaveBeenCalledTimes(1);
+    expect(mockPool.reset).not.toHaveBeenCalled();
+
+    // Mac slept for an hour. Timer scheduler then fires the next tick once.
+    const sleepGapMs = 60 * 60 * 1000;
+    mockNow += sleepGapMs;
+    await vi.advanceTimersByTimeAsync(PROBE_INTERVAL);
+
+    expect(mockPool.reset).toHaveBeenCalledTimes(1);
+    expect(mockTransport.stop).toHaveBeenCalled();
+    expect(mockTransport.restart).toHaveBeenCalled();
+    // Initial subscribeToPings (in startWatchdog) + one more after the reset.
+    expect(mockPing.subscribeToPings).toHaveBeenCalledTimes(2);
+    // The sleep tick must short-circuit the regular probe to avoid racing
+    // against still-half-dead WebSocket state.
+    expect(mockPool.probe).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('host suspend / sleep detected'));
+
+    watchdog.stop();
+  });
+
+  it('does not trigger a sleep reset under normal interval cadence', async () => {
+    let mockNow = 0;
+    const watchdog = buildWithClock(() => mockNow);
+
+    // Five back-to-back probe ticks. Each one advances the wall clock by
+    // exactly PROBE_INTERVAL, so the gap stays under threshold.
+    for (let tick = 1; tick <= 5; tick += 1) {
+      mockNow = tick * PROBE_INTERVAL;
+      await vi.advanceTimersByTimeAsync(PROBE_INTERVAL);
+    }
+
+    expect(mockPool.probe).toHaveBeenCalledTimes(5);
+    expect(mockPool.reset).not.toHaveBeenCalled();
+    expect(mockTransport.stop).not.toHaveBeenCalled();
+
+    watchdog.stop();
+  });
+
+  it('lets self-ping fire while a probe is still in flight (separate busy flags)', async () => {
+    // Regression guard for the previous shared `busy` flag, which would
+    // suppress every self-ping for as long as a probe was pending - exactly
+    // the scenario where catching a dead long-lived subscription matters most.
+    let resolveProbe: (v: boolean) => void = () => {};
+    mockPool.probe.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveProbe = resolve;
+        }),
+    );
+
+    const watchdog = build();
+    // First probe tick: stays pending.
+    await vi.advanceTimersByTimeAsync(PROBE_INTERVAL);
+    expect(mockPool.probe).toHaveBeenCalledTimes(1);
+    expect(mockPing.pingAgent).not.toHaveBeenCalled();
+
+    // Advance to the self-ping interval. Probe is still pending; self-ping
+    // must still run.
+    await vi.advanceTimersByTimeAsync(SELF_PING_INTERVAL - PROBE_INTERVAL);
+    expect(mockPing.pingAgent).toHaveBeenCalledTimes(1);
+
+    resolveProbe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    watchdog.stop();
+  });
+});
