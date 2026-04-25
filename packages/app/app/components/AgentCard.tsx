@@ -90,10 +90,7 @@ export function AgentCard({ agent, isVerified, index = 0 }: Props) {
             </div>
           </div>
           {agent.lastPaidJobLabel && (
-            <span
-              className="mt-2 shrink-0 text-[11px] text-text-2"
-              title="Last verified on-chain paid job"
-            >
+            <span className="mt-2 shrink-0 text-[11px] text-text-2" title="Last paid job">
               {agent.lastPaidJobLabel}
             </span>
           )}

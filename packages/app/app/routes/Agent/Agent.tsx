@@ -554,7 +554,7 @@ export default function AgentPage() {
               {agentData.lastPaidJobLabel && (
                 <span
                   className="mt-12 shrink-0 text-xs text-text-2 opacity-60 sm:hidden"
-                  title="Last verified on-chain paid job"
+                  title="Last paid job"
                 >
                   {agentData.lastPaidJobLabel}
                 </span>
@@ -654,7 +654,7 @@ export default function AgentPage() {
               {agentData.lastPaidJobLabel && (
                 <div
                   className="hidden shrink-0 text-xs text-text-2 opacity-60 sm:block sm:text-right"
-                  title="Last verified on-chain paid job"
+                  title="Last paid job"
                 >
                   {agentData.lastPaidJobLabel}
                 </div>
