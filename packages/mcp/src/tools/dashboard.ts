@@ -1,6 +1,7 @@
+import { formatAssetAmount } from '@elisym/sdk';
 import { z } from 'zod';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
-import { formatSolShort } from '../utils.js';
+import { assetFromCardPayment } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult } from './types.js';
 
@@ -34,13 +35,13 @@ export const dashboardTools: ToolDefinition[] = [
       const rows = filtered
         .map((a) => {
           const mainCard = a.cards[0];
+          const mainAsset = assetFromCardPayment(mainCard?.payment);
+          const mainPrice = mainCard?.payment?.job_price;
           return {
             name: sanitizeField(a.name || mainCard?.name || 'unknown', 30),
             npub: a.npub,
             capabilities: (mainCard?.capabilities ?? []).join(', '),
-            price: mainCard?.payment?.job_price
-              ? formatSolShort(BigInt(mainCard.payment.job_price))
-              : 'free',
+            price: mainPrice ? formatAssetAmount(mainAsset, BigInt(mainPrice)) : 'free',
             cards_count: a.cards.length,
           };
         })

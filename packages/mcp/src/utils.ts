@@ -4,7 +4,8 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SolanaPaymentStrategy, LIMITS } from '@elisym/sdk';
+import { NATIVE_SOL, resolveKnownAsset, SolanaPaymentStrategy, LIMITS } from '@elisym/sdk';
+import type { Asset, Chain, PaymentInfo } from '@elisym/sdk';
 
 /** Standard LAMPORTS_PER_SOL as a BigInt for integer math. */
 const LAMPORTS_PER_SOL = 1_000_000_000n;
@@ -50,6 +51,37 @@ export function formatSolShort(lamports: bigint): string {
   const whole = lamports / LAMPORTS_PER_SOL;
   const frac = (lamports % LAMPORTS_PER_SOL) / 100_000n;
   return `${whole}.${frac.toString().padStart(4, '0')} SOL`;
+}
+
+/**
+ * Resolve the `Asset` a capability card is denominated in for display purposes.
+ *
+ * Card schema (`PaymentInfo`) carries `chain`/`token`/`mint`/`decimals`/`symbol`.
+ * This helper:
+ *   1. tries to map to a `KNOWN_ASSETS` entry from the SDK (the verifier-truth source);
+ *   2. falls back to a self-describing card (token + symbol + decimals) for forward-compat
+ *      with assets the SDK doesn't yet recognize - safe because we use this only for the
+ *      MCP display layer, never for on-chain verify;
+ *   3. defaults to `NATIVE_SOL` when the card omits payment metadata or only carries chain.
+ */
+export function assetFromCardPayment(payment: PaymentInfo | undefined): Asset {
+  if (!payment) {
+    return NATIVE_SOL;
+  }
+  const known = resolveKnownAsset(payment.chain, payment.token ?? 'sol', payment.mint);
+  if (known) {
+    return known;
+  }
+  if (payment.token && payment.symbol && typeof payment.decimals === 'number') {
+    return {
+      chain: payment.chain as Chain,
+      token: payment.token,
+      mint: payment.mint,
+      symbol: payment.symbol,
+      decimals: payment.decimals,
+    };
+  }
+  return NATIVE_SOL;
 }
 
 /**

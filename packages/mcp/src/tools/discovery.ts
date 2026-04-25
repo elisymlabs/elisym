@@ -1,6 +1,7 @@
+import { formatAssetAmount } from '@elisym/sdk';
 import { z } from 'zod';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
-import { MAX_CAPABILITIES, formatSolShort } from '../utils.js';
+import { MAX_CAPABILITIES, assetFromCardPayment } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
 
@@ -262,17 +263,22 @@ export const discoveryTools: ToolDefinition[] = [
       const results = filtered.map((a) => ({
         npub: a.npub,
         name: sanitizeField(a.name || '', 200),
-        cards: a.cards.map((c) => ({
-          name: sanitizeField(c.name || '', 200),
-          description: sanitizeField(c.description || '', 500),
-          capabilities: c.capabilities,
-          job_price_lamports: c.payment?.job_price,
-          price_display: c.payment?.job_price
-            ? formatSolShort(BigInt(c.payment.job_price))
-            : 'free',
-          chain: c.payment?.chain,
-          network: c.payment?.network,
-        })),
+        cards: a.cards.map((card) => {
+          const asset = assetFromCardPayment(card.payment);
+          const price = card.payment?.job_price;
+          return {
+            name: sanitizeField(card.name || '', 200),
+            description: sanitizeField(card.description || '', 500),
+            capabilities: card.capabilities,
+            job_price_subunits: price,
+            price_display: price ? formatAssetAmount(asset, BigInt(price)) : 'free',
+            asset_token: asset.token,
+            asset_symbol: asset.symbol,
+            asset_mint: asset.mint,
+            chain: card.payment?.chain,
+            network: card.payment?.network,
+          };
+        }),
         supported_kinds: a.supportedKinds,
       }));
 
