@@ -13,7 +13,13 @@ export type { ElisymClientFullConfig } from './client';
 export { NostrPool } from './transport/pool';
 
 // --- Services ---
-export { DiscoveryService, toDTag } from './services/discovery';
+export {
+  DiscoveryService,
+  toDTag,
+  computeRankKey,
+  compareAgentsByRank,
+} from './services/discovery';
+export type { RankKey } from './services/discovery';
 export { MarketplaceService } from './services/marketplace';
 export { MediaService } from './services/media';
 export { PingService } from './services/ping';
@@ -41,6 +47,8 @@ export { estimateSolFeeLamports, formatFeeBreakdown } from './payment/feeEstimat
 export type { SolFeeEstimate, EstimateSolFeeOptions } from './payment/feeEstimate';
 export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
+export { verifyJobPaymentQuick, clearQuickVerifyCache } from './payment/quick-verify';
+export type { QuickVerifyResult, QuickVerifyReason } from './payment/quick-verify';
 export {
   NATIVE_SOL,
   USDC_SOLANA_DEVNET,

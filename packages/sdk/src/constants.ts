@@ -84,7 +84,7 @@ export function getProtocolProgramId(cluster: ProtocolCluster): Address {
 /** Default values for timeouts, retries, and batch sizes. */
 export const DEFAULTS = {
   SUBSCRIPTION_TIMEOUT_MS: 120_000,
-  PING_TIMEOUT_MS: 15_000,
+  PING_TIMEOUT_MS: 3_000,
   PING_RETRIES: 2,
   PING_CACHE_TTL_MS: 30_000,
   PAYMENT_EXPIRY_SECS: 600,

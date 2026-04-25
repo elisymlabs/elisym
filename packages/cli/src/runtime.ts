@@ -44,7 +44,7 @@ export interface RuntimeCallbacks {
   /**
    * Invoked at the start of `stop()`, before the abort signal fires and before
    * the transport is torn down, so callers can tear down external resources
-   * (watchdogs, heartbeats, ping subscriptions) that live outside the runtime.
+   * (watchdogs, ping subscriptions) that live outside the runtime.
    *
    * Contract:
    * - Runs exactly once per runtime - `stop()` is idempotent; repeated calls

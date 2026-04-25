@@ -1,3 +1,4 @@
+import { type Address, type Rpc, type SolanaRpcApi } from '@solana/kit';
 import { nip19, finalizeEvent, verifyEvent, type Filter, type Event } from 'nostr-tools';
 import {
   KIND_APP_HANDLER,
@@ -9,9 +10,20 @@ import {
   DEFAULT_KIND_OFFSET,
   LIMITS,
 } from '../constants';
+import { verifyJobPaymentQuick } from '../payment/quick-verify';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type { Agent, CapabilityCard, Network } from '../types';
+
+const RANKING_ACTIVITY_WINDOW_SECS = 30 * 24 * 60 * 60;
+const RANKING_BUCKET_SIZE_SECS = 60;
+const COLD_START_BUCKET = -Infinity;
+// Cap how many `payment-completed` feedback events we'll on-chain verify per
+// agent. Feedback is open Nostr - anyone can publish - so a malicious actor
+// could spam fake `payment-completed` events to inflate verification cost or
+// bury the legitimate one. We try the newest N candidates and stop at the
+// first that verifies.
+const MAX_PAID_CANDIDATES_PER_AGENT = 5;
 
 /** Convert a capability name to its Nostr d-tag form (ASCII-only, lowercase, hyphen-separated). */
 export function toDTag(name: string): string {
@@ -24,6 +36,45 @@ export function toDTag(name: string): string {
     throw new Error('Capability name must contain at least one ASCII alphanumeric character.');
   }
   return tag;
+}
+
+/** Sort key derived from an Agent. Higher bucket / rate / lastPaidJobAt = ranks higher. */
+export interface RankKey {
+  /** Floor-to-minute timestamp of the agent's last verified paid job. `-Infinity` for cold start. */
+  bucket: number;
+  /** Positive review rate in `[0, 1]`. 0 when the agent has no rated feedback. */
+  rate: number;
+  /** Raw `lastPaidJobAt` (Unix sec) for tiebreak inside a bucket. 0 for cold start. */
+  lastPaidJobAt: number;
+  /** Final tiebreak; orders cold-start agents by NIP-89 freshness. */
+  lastSeen: number;
+}
+
+export function computeRankKey(agent: Agent): RankKey {
+  const lastPaidJobAt = agent.lastPaidJobAt ?? 0;
+  const total = agent.totalRatingCount ?? 0;
+  const positive = agent.positiveCount ?? 0;
+  const rate = total > 0 ? positive / total : 0;
+  const bucket =
+    lastPaidJobAt > 0
+      ? Math.floor(lastPaidJobAt / RANKING_BUCKET_SIZE_SECS) * RANKING_BUCKET_SIZE_SECS
+      : COLD_START_BUCKET;
+  return { bucket, rate, lastPaidJobAt, lastSeen: agent.lastSeen };
+}
+
+export function compareAgentsByRank(a: Agent, b: Agent): number {
+  const ka = computeRankKey(a);
+  const kb = computeRankKey(b);
+  if (kb.bucket !== ka.bucket) {
+    return kb.bucket - ka.bucket;
+  }
+  if (kb.rate !== ka.rate) {
+    return kb.rate - ka.rate;
+  }
+  if (kb.lastPaidJobAt !== ka.lastPaidJobAt) {
+    return kb.lastPaidJobAt - ka.lastPaidJobAt;
+  }
+  return kb.lastSeen - ka.lastSeen;
 }
 
 /**
@@ -171,8 +222,51 @@ function buildAgentsFromEvents(events: Event[], network: Network): Map<string, A
   return agentMap;
 }
 
+/** Pick the Solana payment address from an agent's capability cards. Returns first card with one. */
+function pickSolanaAddress(agent: Agent): string | null {
+  for (const card of agent.cards) {
+    const addr = card.payment?.address;
+    if (card.payment?.chain === 'solana' && typeof addr === 'string' && addr.length > 0) {
+      return addr;
+    }
+  }
+  return null;
+}
+
+interface PaidJobCandidate {
+  txSignature: string;
+  createdAt: number;
+}
+
+async function verifyNewestPaidCandidate(
+  rpc: Rpc<SolanaRpcApi>,
+  recipient: Address,
+  candidatesNewestFirst: readonly PaidJobCandidate[],
+): Promise<PaidJobCandidate | null> {
+  const settled = await Promise.allSettled(
+    candidatesNewestFirst.map((candidate) =>
+      verifyJobPaymentQuick(rpc, candidate.txSignature, recipient),
+    ),
+  );
+  for (let i = 0; i < settled.length; i++) {
+    const entry = settled[i];
+    if (entry?.status === 'fulfilled' && entry.value.verified) {
+      return candidatesNewestFirst[i] ?? null;
+    }
+  }
+  return null;
+}
+
 export class DiscoveryService {
-  constructor(private pool: NostrPool) {}
+  constructor(
+    private pool: NostrPool,
+    private defaultRpc?: Rpc<SolanaRpcApi>,
+  ) {}
+
+  /** Configure the Solana RPC used for on-chain payment verification in `fetchAgents`. */
+  setRpc(rpc: Rpc<SolanaRpcApi> | undefined): void {
+    this.defaultRpc = rpc;
+  }
 
   /** Count elisym agents (kind:31990 with "elisym" tag). */
   async fetchAllAgentCount(): Promise<number> {
@@ -276,8 +370,25 @@ export class DiscoveryService {
     return agents;
   }
 
-  /** Fetch elisym agents filtered by network. */
-  async fetchAgents(network: Network = 'devnet', limit?: number): Promise<Agent[]> {
+  /**
+   * Fetch elisym agents filtered by network, ranked by verified paid-job recency.
+   *
+   * Ranking algorithm:
+   * 1. Bucket each agent into 1-minute slots by `lastPaidJobAt` (last on-chain
+   *    verified payment). Cold-start agents (no verified paid job) go into a
+   *    sentinel bucket below all populated buckets.
+   * 2. Within a bucket, sort by positive review rate descending.
+   * 3. Tiebreak by raw `lastPaidJobAt`, then `lastSeen` (NIP-89 freshness).
+   *
+   * On-chain verification uses {@link verifyJobPaymentQuick} - one-shot, cached.
+   * If `rpc` is not configured, all agents fall through to cold-start and order
+   * is determined by `lastSeen` only.
+   */
+  async fetchAgents(
+    network: Network = 'devnet',
+    limit?: number,
+    rpcOverride?: Rpc<SolanaRpcApi>,
+  ): Promise<Agent[]> {
     const filter: Filter = {
       kinds: [KIND_APP_HANDLER],
       '#t': ['elisym'],
@@ -288,47 +399,117 @@ export class DiscoveryService {
     const events = await this.pool.querySync(filter);
 
     const agentMap = buildAgentsFromEvents(events, network);
-
-    const agents = Array.from(agentMap.values()).sort((a, b) => b.lastSeen - a.lastSeen);
-
-    // Update lastSeen from recent job activity
+    const agents = Array.from(agentMap.values());
     const agentPubkeys = Array.from(agentMap.keys());
-    if (agentPubkeys.length > 0) {
-      const activitySince = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
-      // Derive result kinds from agents' supported request kinds (5xxx - 6xxx)
-      const resultKinds = new Set<number>();
-      for (const agent of agentMap.values()) {
-        for (const k of agent.supportedKinds) {
-          if (k >= KIND_JOB_REQUEST_BASE && k < KIND_JOB_RESULT_BASE) {
-            resultKinds.add(KIND_JOB_RESULT_BASE + (k - KIND_JOB_REQUEST_BASE));
-          }
-        }
-      }
-      resultKinds.add(jobResultKind(DEFAULT_KIND_OFFSET));
 
-      // Fetch activity and metadata in parallel (independent: activity writes lastSeen, metadata writes name/picture/about)
-      const [activityEvents] = await Promise.all([
-        this.pool.queryBatched(
-          {
-            kinds: [...resultKinds, KIND_JOB_FEEDBACK],
-            since: activitySince,
-          } as Omit<Filter, 'authors'>,
-          agentPubkeys,
-        ),
-        this.enrichWithMetadata(agents),
-      ]);
-      for (const ev of activityEvents) {
-        if (!verifyEvent(ev)) {
-          continue;
-        }
-        const agent = agentMap.get(ev.pubkey);
-        if (agent && ev.created_at > agent.lastSeen) {
-          agent.lastSeen = ev.created_at;
-        }
-      }
-
-      agents.sort((a, b) => b.lastSeen - a.lastSeen);
+    if (agentPubkeys.length === 0) {
+      return agents;
     }
+
+    const activitySince = Math.floor(Date.now() / 1000) - RANKING_ACTIVITY_WINDOW_SECS;
+    // Derive result kinds from agents' supported request kinds (5xxx - 6xxx)
+    const resultKinds = new Set<number>();
+    for (const agent of agentMap.values()) {
+      for (const k of agent.supportedKinds) {
+        if (k >= KIND_JOB_REQUEST_BASE && k < KIND_JOB_RESULT_BASE) {
+          resultKinds.add(KIND_JOB_RESULT_BASE + (k - KIND_JOB_REQUEST_BASE));
+        }
+      }
+    }
+    resultKinds.add(jobResultKind(DEFAULT_KIND_OFFSET));
+
+    const [resultEvents, feedbackEvents] = await Promise.all([
+      this.pool.queryBatched(
+        {
+          kinds: [...resultKinds],
+          since: activitySince,
+        } as Omit<Filter, 'authors'>,
+        agentPubkeys,
+      ),
+      this.pool.queryBatchedByTag(
+        { kinds: [KIND_JOB_FEEDBACK], since: activitySince } as Filter,
+        'p',
+        agentPubkeys,
+      ),
+      this.enrichWithMetadata(agents),
+    ]);
+
+    // Result events: written by the agent, indexed by author.
+    for (const ev of resultEvents) {
+      if (!verifyEvent(ev)) {
+        continue;
+      }
+      const agent = agentMap.get(ev.pubkey);
+      if (agent && ev.created_at > agent.lastSeen) {
+        agent.lastSeen = ev.created_at;
+      }
+    }
+
+    // Feedback events: written by the *customer*, target agent in the `p` tag.
+    // Tally rating counters and collect payment-completed candidates per agent
+    // for on-chain verification. We keep the newest N per agent so that a
+    // single fake `payment-completed` event can't shadow a legitimate one.
+    const paidCandidates = new Map<string, PaidJobCandidate[]>();
+    for (const ev of feedbackEvents) {
+      if (!verifyEvent(ev)) {
+        continue;
+      }
+      const targetPubkey = ev.tags.find((t) => t[0] === 'p')?.[1];
+      if (!targetPubkey) {
+        continue;
+      }
+      const agent = agentMap.get(targetPubkey);
+      if (!agent) {
+        continue;
+      }
+      if (ev.created_at > agent.lastSeen) {
+        agent.lastSeen = ev.created_at;
+      }
+
+      const rating = ev.tags.find((t) => t[0] === 'rating')?.[1];
+      if (rating === '1' || rating === '0') {
+        agent.totalRatingCount = (agent.totalRatingCount ?? 0) + 1;
+        if (rating === '1') {
+          agent.positiveCount = (agent.positiveCount ?? 0) + 1;
+        }
+      }
+
+      const status = ev.tags.find((t) => t[0] === 'status')?.[1];
+      const txTag = ev.tags.find((t) => t[0] === 'tx');
+      const txSignature = txTag?.[1];
+      if (status === 'payment-completed' && typeof txSignature === 'string' && txSignature) {
+        const list = paidCandidates.get(targetPubkey);
+        const candidate: PaidJobCandidate = { txSignature, createdAt: ev.created_at };
+        if (list) {
+          list.push(candidate);
+        } else {
+          paidCandidates.set(targetPubkey, [candidate]);
+        }
+      }
+    }
+
+    const rpc = rpcOverride ?? this.defaultRpc;
+    if (rpc && paidCandidates.size > 0) {
+      const perAgent = Array.from(paidCandidates.entries()).map(([agentPubkey, list]) => {
+        const agent = agentMap.get(agentPubkey);
+        const recipient = agent ? pickSolanaAddress(agent) : null;
+        if (!agent || !recipient) {
+          return Promise.resolve();
+        }
+        const ordered = [...list]
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .slice(0, MAX_PAID_CANDIDATES_PER_AGENT);
+        return verifyNewestPaidCandidate(rpc, recipient as Address, ordered).then((winner) => {
+          if (winner) {
+            agent.lastPaidJobAt = winner.createdAt;
+            agent.lastPaidJobTx = winner.txSignature;
+          }
+        });
+      });
+      await Promise.all(perAgent);
+    }
+
+    agents.sort(compareAgentsByRank);
 
     return agents;
   }
