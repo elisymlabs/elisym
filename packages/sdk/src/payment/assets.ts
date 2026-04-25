@@ -9,6 +9,8 @@
  * MCP `DEFAULT_SESSION_LIMITS` catalogue.
  */
 
+import Decimal from 'decimal.js-light';
+
 export type Chain = 'solana';
 
 export interface Asset {
@@ -139,15 +141,16 @@ export function parseAssetAmount(asset: Asset, human: string): bigint {
   return raw;
 }
 
-/** Format raw subunits back to `"<whole>.<frac> <SYMBOL>"`. Keeps all `decimals` digits. */
+// Cloned config keeps `Decimal.toString()` from switching to exponential notation
+// for small fractional amounts (e.g. 1 lamport = 1e-9 SOL).
+const FormatDecimal = Decimal.clone({ toExpNeg: -100, toExpPos: 100, precision: 50 });
+
+/**
+ * Format raw subunits back to `"<value> <SYMBOL>"`. Trailing zeros and a bare
+ * trailing dot are stripped, so 0.01 USDC renders as `"0.01 USDC"` rather than
+ * `"0.010000 USDC"`.
+ */
 export function formatAssetAmount(asset: Asset, raw: bigint): string {
-  const sign = raw < 0n ? '-' : '';
-  const abs = raw < 0n ? -raw : raw;
-  const unit = 10n ** BigInt(asset.decimals);
-  const whole = abs / unit;
-  const frac = abs % unit;
-  if (asset.decimals === 0) {
-    return `${sign}${whole} ${asset.symbol}`;
-  }
-  return `${sign}${whole}.${frac.toString().padStart(asset.decimals, '0')} ${asset.symbol}`;
+  const value = new FormatDecimal(raw.toString()).div(new FormatDecimal(10).pow(asset.decimals));
+  return `${value.toString()} ${asset.symbol}`;
 }

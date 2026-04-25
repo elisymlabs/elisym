@@ -86,22 +86,27 @@ describe('parseAssetAmount', () => {
 });
 
 describe('formatAssetAmount', () => {
-  it('formats SOL with full decimals', () => {
-    expect(formatAssetAmount(NATIVE_SOL, 0n)).toBe('0.000000000 SOL');
+  it('formats SOL trimming trailing zeros', () => {
+    expect(formatAssetAmount(NATIVE_SOL, 0n)).toBe('0 SOL');
     expect(formatAssetAmount(NATIVE_SOL, 1n)).toBe('0.000000001 SOL');
-    expect(formatAssetAmount(NATIVE_SOL, 100_000_000n)).toBe('0.100000000 SOL');
-    expect(formatAssetAmount(NATIVE_SOL, 1_000_000_000n)).toBe('1.000000000 SOL');
+    expect(formatAssetAmount(NATIVE_SOL, 100_000_000n)).toBe('0.1 SOL');
+    expect(formatAssetAmount(NATIVE_SOL, 1_000_000_000n)).toBe('1 SOL');
   });
 
-  it('formats SPL with its own decimals', () => {
+  it('formats SPL trimming trailing zeros', () => {
     expect(formatAssetAmount(SPL_FIXTURE, 1_234_567n)).toBe('1.234567 USDC');
-    expect(formatAssetAmount(SPL_FIXTURE, 1_000_000n)).toBe('1.000000 USDC');
+    expect(formatAssetAmount(SPL_FIXTURE, 1_000_000n)).toBe('1 USDC');
+    expect(formatAssetAmount(SPL_FIXTURE, 10_000n)).toBe('0.01 USDC');
+  });
+
+  it('formats negative amounts', () => {
+    expect(formatAssetAmount(SPL_FIXTURE, -10_000n)).toBe('-0.01 USDC');
   });
 
   it('roundtrips parse → format → parse', () => {
     const raw = parseAssetAmount(NATIVE_SOL, '0.5');
     const formatted = formatAssetAmount(NATIVE_SOL, raw);
-    expect(formatted).toBe('0.500000000 SOL');
-    expect(parseAssetAmount(NATIVE_SOL, '0.500000000')).toBe(raw);
+    expect(formatted).toBe('0.5 SOL');
+    expect(parseAssetAmount(NATIVE_SOL, '0.5')).toBe(raw);
   });
 });
