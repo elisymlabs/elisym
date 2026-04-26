@@ -1,7 +1,7 @@
 import type { CapabilityCard } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import type { PingStatus } from '~/hooks/usePingAgent';
@@ -85,12 +85,17 @@ function JobInputInner({
     buy(isStatic ? card.name : input);
   }
 
-  function buttonLabel() {
+  function buttonLabel(): ReactNode {
     if (buying) {
       return 'Processing...';
     }
     if (!isFree && !publicKey) {
-      return 'Connect Wallet';
+      return (
+        <>
+          <span className="sm:hidden">Connect</span>
+          <span className="hidden sm:inline">Connect Wallet</span>
+        </>
+      );
     }
     return isFree ? 'Get' : 'Buy';
   }
@@ -135,7 +140,7 @@ function JobInputInner({
           {!isFree && <NetworkFeeRow lamports={gasFeeLamports} />}
         </div>
       )}
-      <div className="flex items-center justify-between gap-8 px-12 py-10 sm:px-16 sm:py-12">
+      <div className="flex items-center justify-between gap-12 px-12 py-10 sm:px-16 sm:py-12">
         <div className="flex min-w-0 items-center gap-8">
           <CapabilityDropdown
             cards={allCards}
@@ -144,11 +149,11 @@ function JobInputInner({
           />
 
           {isFree ? (
-            <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-sky-bg px-10 font-mono text-xs font-medium tracking-wider whitespace-nowrap text-stat-sky uppercase">
+            <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-sky-bg px-10 font-mono text-xs leading-none font-medium tracking-wider whitespace-nowrap text-stat-sky uppercase">
               Free
             </span>
           ) : (
-            <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-emerald-bg px-10 font-mono text-xs font-medium whitespace-nowrap text-stat-emerald tabular-nums">
+            <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-emerald-bg px-10 font-mono text-xs leading-none font-medium whitespace-nowrap text-stat-emerald tabular-nums">
               {priceLabel}
             </span>
           )}
@@ -163,7 +168,7 @@ function JobInputInner({
               <button
                 onClick={handleBuy}
                 disabled={isDisabled}
-                className="inline-flex h-36 min-w-[72px] cursor-pointer items-center justify-center gap-8 rounded-xl border-none bg-surface-dark px-14 text-xs font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-25 sm:min-w-[92px] sm:px-16"
+                className="inline-flex h-32 min-w-[72px] cursor-pointer items-center justify-center gap-8 rounded-xl border-none bg-surface-dark px-14 text-xs leading-none font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-25 sm:h-36 sm:min-w-[92px] sm:px-16"
               >
                 {buying && (
                   <svg aria-hidden className="size-14 animate-spin" viewBox="0 0 24 24" fill="none">

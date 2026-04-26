@@ -726,7 +726,7 @@ export default function AgentPage() {
                     <div
                       className={cn(
                         appearCls,
-                        'relative sticky bottom-0 z-40 -mx-12 [animation-delay:160ms] lg:static lg:mx-0',
+                        'relative sticky bottom-[var(--devnet-banner-h,0px)] z-40 -mx-12 [animation-delay:160ms] lg:static lg:bottom-auto lg:mx-0',
                       )}
                     >
                       <div

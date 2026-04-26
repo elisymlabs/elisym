@@ -23,6 +23,8 @@
 @theme {
   /* Tiny-phone breakpoint: anything below 380px (iPhone SE 1, Galaxy Fold) */
   --breakpoint-xs: 23.75rem;
+  /* Stats-strip breakpoint: switch from stacked card to horizontal strip at 800px */
+  --breakpoint-stats: 50rem;
 
   /* Page surfaces */
   --color-bg: #f5f5f7;
@@ -94,6 +96,22 @@ html {
   overflow-y: scroll;
   scrollbar-gutter: stable;
   scroll-behavior: smooth;
+  /* Updated at runtime by DevnetBanner via ResizeObserver. Fallback prevents
+     the mobile sticky JobInput from clipping under the banner before the
+     measurement runs. */
+  --devnet-banner-h: 56px;
+}
+
+/* iOS Safari auto-zooms when a focused input/textarea/select has font-size < 16px.
+   Force 16px on touch devices. `:not(:disabled)` and `:not([type='hidden'])` lift
+   specificity above Tailwind utility classes so explicit `text-[13px]` etc. are
+   overridden without resorting to `!important`. */
+@media (pointer: coarse) {
+  input:not([type='hidden']):not(:disabled),
+  textarea:not(:disabled),
+  select:not(:disabled) {
+    font-size: max(16px, 1em);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

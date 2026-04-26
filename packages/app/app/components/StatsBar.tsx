@@ -50,40 +50,22 @@ const STAT_ICONS: Record<string, ReactElement> = {
   ),
 };
 
-const VOLUME_ICON: Record<VolumeCurrency, ReactElement> = {
-  sol: (
-    <svg
-      aria-hidden
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="12" cy="12" r="9" />
-      <circle cx="12" cy="12" r="3.2" />
-    </svg>
-  ),
-  usdc: (
-    <svg
-      aria-hidden
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <line x1="12" y1="2" x2="12" y2="22" />
-      <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-    </svg>
-  ),
-};
+const VOLUME_ICON: ReactElement = (
+  <svg
+    aria-hidden
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="3.2" />
+  </svg>
+);
 
 function withCommas(decimalStr: string): string {
   const [intPart, decPart] = decimalStr.split('.');
@@ -302,10 +284,10 @@ function MobileStatRow({
   tooltipText?: string;
 }) {
   return (
-    <div className="flex items-center gap-10 px-16 py-14">
+    <div className="flex h-48 items-center gap-10 px-16">
       <MobileRowIcon>{icon}</MobileRowIcon>
       <MobileRowLabel tooltipText={tooltipText}>{label}</MobileRowLabel>
-      <span className="text-xl leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/95 tabular-nums">
+      <span className="text-base leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/95 tabular-nums">
         {value}
       </span>
     </div>
@@ -322,14 +304,12 @@ function MobileVolumeRow({
   cycleCurrency: (delta: number) => void;
 }) {
   return (
-    <div className="flex items-center gap-10 px-16 py-14">
-      <MobileRowIcon>
-        <CurrencyStack currency={currency}>{(cur) => VOLUME_ICON[cur]}</CurrencyStack>
-      </MobileRowIcon>
+    <div className="flex h-48 items-center gap-10 px-16">
+      <MobileRowIcon>{VOLUME_ICON}</MobileRowIcon>
       <MobileRowLabel tooltipText={ON_CHAIN_TOOLTIP_TEXT}>Volume</MobileRowLabel>
       <div className="flex items-center gap-6">
         <VolumeArrow direction="left" onClick={() => cycleCurrency(-1)} />
-        <span className="text-xl leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/95">
+        <span className="text-base leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/95">
           <CurrencyStack currency={currency}>{(cur) => volumes[cur]}</CurrencyStack>
         </span>
         <VolumeArrow direction="right" onClick={() => cycleCurrency(1)} />
@@ -344,7 +324,7 @@ function MobileRowDivider() {
 
 function MobileRowSkeleton() {
   return (
-    <div className="flex items-center gap-10 px-16 py-14">
+    <div className="flex h-48 items-center gap-10 px-16">
       <div className="size-16 shrink-0 animate-pulse rounded-md bg-white/10" />
       <div className="h-10 w-96 animate-pulse rounded-full bg-white/7" />
       <div className="ml-auto h-16 w-72 animate-pulse rounded-md bg-white/10" />
@@ -375,9 +355,9 @@ export function StatsBar() {
     : { usdc: '-', sol: '-' };
 
   return (
-    <div className="mx-auto max-w-3xl px-16 pb-72 sm:px-24 sm:pb-96">
-      {/* Mobile: glass card with stacked rows */}
-      <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-md sm:hidden">
+    <div className="mx-auto max-w-[480px] px-16 pb-72 sm:px-24 sm:pb-96 stats:max-w-[780px]">
+      {/* Mobile / narrow desktop (< 800px): glass card with stacked rows */}
+      <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-md stats:hidden">
         {isLoading ? (
           <>
             <MobileRowSkeleton />
@@ -407,8 +387,8 @@ export function StatsBar() {
         )}
       </div>
 
-      {/* Desktop: glass card containing horizontal stat strip */}
-      <div className="hidden justify-center sm:flex">
+      {/* Desktop (>= 800px): glass card containing horizontal stat strip */}
+      <div className="hidden justify-center stats:flex">
         <div className="rounded-3xl border border-white/[0.08] bg-white/[0.04] px-32 py-20 backdrop-blur-md">
           <div className="flex items-center justify-center gap-40">
             {isLoading ? (
@@ -439,7 +419,7 @@ export function StatsBar() {
                   </div>
                   <span className="flex items-center justify-center gap-4">
                     <div className="flex items-center justify-center gap-4 text-center text-white/35">
-                      <CurrencyStack currency={currency}>{(cur) => VOLUME_ICON[cur]}</CurrencyStack>
+                      {VOLUME_ICON}
                       <span className="font-mono text-[10px] font-normal tracking-[0.14em] uppercase">
                         Volume
                       </span>
