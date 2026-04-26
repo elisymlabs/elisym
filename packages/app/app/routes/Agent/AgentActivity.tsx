@@ -131,6 +131,7 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
 
   return (
     <div className="flex flex-col gap-6">
+      <p className="m-0 mb-8 px-2 text-xs text-text-2 opacity-60">Last 10 completed jobs</p>
       {events.map((event) => (
         <div
           key={event.id}
@@ -174,6 +175,7 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
 function AgentActivitySkeleton() {
   return (
     <div className="flex flex-col gap-6">
+      <p className="m-0 mb-8 px-2 text-xs text-text-2 opacity-60">Last 10 completed jobs</p>
       {Array.from({ length: ACTIVITY_SKELETON_COUNT }).map((_, index) => (
         <div key={index} className="flex items-center gap-12 py-8">
           <div className="skeleton size-32 shrink-0 rounded-full" />

@@ -222,7 +222,10 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
       }
       const owner = toAddress(publicKey.toBase58());
       const { value: lamports } = await balanceRpc.getBalance(owner).send();
-      return new Decimal(lamports.toString()).div(1e9).toFixed(SOL_DISPLAY_DECIMALS);
+      return new Decimal(lamports.toString())
+        .div(1e9)
+        .toDecimalPlaces(SOL_DISPLAY_DECIMALS)
+        .toString();
     },
     enabled: !!publicKey,
     staleTime: BALANCE_STALE_MS,
@@ -249,10 +252,11 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
         const { value } = await balanceRpc.getTokenAccountBalance(ata).send();
         return new Decimal(value.amount)
           .div(new Decimal(10).pow(USDC_SOLANA_DEVNET.decimals))
-          .toFixed(USDC_DISPLAY_DECIMALS);
+          .toDecimalPlaces(USDC_DISPLAY_DECIMALS)
+          .toString();
       } catch {
         // No ATA for this owner yet => user has never held USDC.
-        return (0).toFixed(USDC_DISPLAY_DECIMALS);
+        return '0';
       }
     },
     enabled: !!publicKey,
