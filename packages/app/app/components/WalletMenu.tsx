@@ -294,7 +294,7 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
           <span className="text-[10px] font-semibold tracking-[0.14em] text-text-2/80 uppercase">
             Balance
           </span>
-          <span className="rounded-full border border-[#a06b1d]/20 bg-[#fbf2d6] px-10 py-2 font-mono text-[10px] font-medium tracking-wide text-[#a06b1d] uppercase">
+          <span className="rounded-12 bg-stat-indigo-bg px-8 py-5 font-mono text-[10px] leading-none font-medium tracking-wide text-stat-indigo uppercase">
             Devnet
           </span>
         </div>
