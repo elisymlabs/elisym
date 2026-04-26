@@ -6,7 +6,7 @@ import { TAG_FILTERS, VIEW_MODES } from '~/lib/categories';
 import { cn } from '~/lib/cn';
 
 const SWITCHER_TRACK_CLASSES =
-  'relative flex shrink-0 items-center gap-2 rounded-full border border-white/60 bg-black/5 p-3 backdrop-blur-md';
+  'relative flex shrink-0 items-center gap-2 rounded-full border border-white/60 bg-tag-bg p-3 backdrop-blur-md';
 const SWITCHER_PILL_CLASSES =
   'relative z-10 cursor-pointer rounded-full border-none bg-transparent px-14 py-6 text-sm font-semibold whitespace-nowrap transition-colors duration-200';
 const SWITCHER_PILL_ACTIVE = 'text-text';
@@ -58,7 +58,7 @@ export function FilterBar({ searchQuery, onSearchChange }: Props) {
       <div className="relative min-w-0 flex-1">
         <div
           ref={scrollRef}
-          className="no-scrollbar flex items-center gap-8 overflow-x-auto scroll-smooth sm:px-12"
+          className="no-scrollbar flex items-center gap-8 overflow-x-auto scroll-smooth sm:pr-12"
         >
           <div ref={switcherTrackRef} className={SWITCHER_TRACK_CLASSES}>
             {indicator && (

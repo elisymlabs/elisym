@@ -797,7 +797,7 @@ export default function AgentPage() {
                     {agentData.tags.map((tag) => (
                       <span
                         key={tag}
-                        className="rounded-full bg-tag-bg px-10 py-4 font-mono text-[11px] font-medium tracking-wide text-text-2 uppercase"
+                        className="inline-flex h-24 items-center rounded-full bg-tag-bg px-10 font-mono text-[11px] leading-none font-medium tracking-wide text-text-2 uppercase"
                       >
                         {tag}
                       </span>
