@@ -97,7 +97,7 @@ function formatCount(n: number | string): string {
 
 function StatSkeleton() {
   return (
-    <div className="flex flex-col items-center gap-8">
+    <div className="flex min-w-180 flex-col items-center gap-8">
       <div className="h-28 w-96 animate-pulse rounded-lg bg-white/10" />
       <div className="h-10 w-64 animate-pulse rounded-full bg-white/7" />
     </div>
@@ -212,7 +212,7 @@ function StatItem({
   tooltipText?: string;
 }) {
   return (
-    <div className="flex flex-col items-center gap-8">
+    <div className="flex min-w-180 flex-col items-center gap-8">
       <StatValue>{value}</StatValue>
       <StatLabel icon={STAT_ICONS[label] ?? null} label={label} tooltipText={tooltipText} />
     </div>
@@ -429,7 +429,7 @@ export function StatsBar() {
                   tooltipText={ON_CHAIN_TOOLTIP_TEXT}
                 />
                 <Divider />
-                <div className="flex flex-col items-center gap-8">
+                <div className="flex min-w-180 flex-col items-center gap-8">
                   <div className="flex items-center justify-center gap-8">
                     <VolumeArrow direction="left" onClick={() => cycleCurrency(-1)} />
                     <StatValue>
