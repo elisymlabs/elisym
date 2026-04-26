@@ -16,6 +16,7 @@ import {
   DEFAULTS,
   DEFAULT_KIND_OFFSET,
   jobRequestKind,
+  toDTag,
   type CapabilityCard,
 } from '@elisym/sdk';
 import {
@@ -332,15 +333,20 @@ export async function cmdStart(
       authors: [identity.publicKey],
       '#t': ['elisym'],
     });
-    const skillNames = new Set(allSkills.map((s) => s.name));
+    // Compare by d-tag, not card.name. toDTag() is lossy (e.g. "WHOIS Lookup"
+    // and "whois-lookup" collapse to the same d-tag), so name-based comparison
+    // can flag a card whose d-tag actually matches an active skill - the
+    // resulting deletion event then replaces the freshly-published card on the
+    // relay (kind:31990 is replaceable by author+kind+d-tag).
+    const skillDTags = new Set(allSkills.map((s) => toDTag(s.name)));
     for (const ev of existingEvents) {
       const dTag = ev.tags.find((t: string[]) => t[0] === 'd')?.[1];
-      if (!dTag) {
+      if (!dTag || skillDTags.has(dTag)) {
         continue;
       }
       try {
         const card = JSON.parse(ev.content);
-        if (card.name && !skillNames.has(card.name)) {
+        if (card.name) {
           await client.discovery.deleteCapability(identity, card.name);
           console.log(`  Removed stale capability: ${card.name}`);
         }
