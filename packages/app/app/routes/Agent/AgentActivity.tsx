@@ -31,6 +31,7 @@ interface Props {
 const STALE_TIME_MS = 1000 * 30;
 const REFETCH_INTERVAL_MS = 1000 * 60;
 const ACTIVITY_SKELETON_COUNT = 4;
+const MAX_ACTIVITY_EVENTS = 10;
 
 export function AgentActivity({ agentPubkey, productCount }: Props) {
   const { client } = useElisymClient();
@@ -41,7 +42,7 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
       const results = await client.pool.querySync({
         kinds: [KIND_JOB_RESULT],
         authors: [agentPubkey],
-        limit: 100,
+        limit: MAX_ACTIVITY_EVENTS,
       });
 
       const jobIds = results
@@ -106,7 +107,8 @@ export function AgentActivity({ agentPubkey, productCount }: Props) {
             asset: fallback?.asset,
           };
         })
-        .sort((a, b) => b.createdAt - a.createdAt);
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, MAX_ACTIVITY_EVENTS);
     },
     staleTime: STALE_TIME_MS,
     refetchInterval: REFETCH_INTERVAL_MS,

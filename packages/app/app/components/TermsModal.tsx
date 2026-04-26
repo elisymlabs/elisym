@@ -83,7 +83,7 @@ export function TermsModal() {
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="font-medium text-accent hover:underline"
+              className="font-medium text-accent underline"
             >
               Terms of Service
             </a>
