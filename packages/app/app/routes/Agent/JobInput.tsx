@@ -67,11 +67,10 @@ function JobInputInner({
 
   const [input, setInput] = useState('');
   const isStatic = card.static === true;
-  const price = card.payment?.job_price;
+  const price = card.payment?.job_price ?? 0;
   const isFree = price === 0;
-  const hasPrice = price !== null && price !== undefined;
   const gasFeeLamports = useSolGasFeeEstimate(card);
-  const priceLabel = hasPrice && !isFree ? formatCardPrice(card.payment, price) : null;
+  const priceLabel = isFree ? null : formatCardPrice(card.payment, price);
 
   function handleBuy() {
     if (!isFree && !publicKey) {
@@ -93,10 +92,7 @@ function JobInputInner({
     if (!isFree && !publicKey) {
       return 'Connect Wallet';
     }
-    if (hasPrice) {
-      return isFree ? 'Get' : 'Buy';
-    }
-    return 'Submit';
+    return isFree ? 'Get' : 'Buy';
   }
 
   const isDisabled =
@@ -134,9 +130,9 @@ function JobInputInner({
         above the action row but none below. On sm+ the fee renders inline
         next to the Buy button.
       */}
-      {!isOwn && (!isStatic || (hasPrice && !isFree)) && (
+      {!isOwn && (!isStatic || !isFree) && (
         <div className="flex min-h-24 items-center px-12 pt-4 sm:hidden">
-          {hasPrice && !isFree && <NetworkFeeRow lamports={gasFeeLamports} />}
+          {!isFree && <NetworkFeeRow lamports={gasFeeLamports} />}
         </div>
       )}
       <div className="flex items-center justify-between gap-8 px-12 py-10 sm:px-16 sm:py-12">
@@ -147,23 +143,22 @@ function JobInputInner({
             onSelectIndex={onSelectIndex}
           />
 
-          {hasPrice &&
-            (isFree ? (
-              <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-sky-bg px-10 font-mono text-xs font-medium tracking-wider whitespace-nowrap text-stat-sky uppercase">
-                Free
-              </span>
-            ) : (
-              <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-emerald-bg px-10 font-mono text-xs font-medium whitespace-nowrap text-stat-emerald tabular-nums">
-                {priceLabel}
-              </span>
-            ))}
+          {isFree ? (
+            <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-sky-bg px-10 font-mono text-xs font-medium tracking-wider whitespace-nowrap text-stat-sky uppercase">
+              Free
+            </span>
+          ) : (
+            <span className="inline-flex h-28 shrink-0 items-center rounded-full bg-stat-emerald-bg px-10 font-mono text-xs font-medium whitespace-nowrap text-stat-emerald tabular-nums">
+              {priceLabel}
+            </span>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-12">
-          {!isOwn && hasPrice && !isFree && (
+          {!isOwn && !isFree && (
             <NetworkFeeRow lamports={gasFeeLamports} className="hidden sm:inline-flex" />
           )}
-          {!isOwn && hasPrice && (
+          {!isOwn && (
             <span className="group relative shrink-0">
               <button
                 onClick={handleBuy}

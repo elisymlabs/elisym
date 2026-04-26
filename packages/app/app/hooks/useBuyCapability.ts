@@ -160,7 +160,7 @@ export function useBuyCapability({
       if (buying) {
         return;
       }
-      const isFree = card.payment?.job_price === 0;
+      const isFree = (card.payment?.job_price ?? 0) === 0;
       if (!isFree && !publicKey) {
         toast.error('Connect your wallet first');
         return;

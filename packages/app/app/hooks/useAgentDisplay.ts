@@ -89,6 +89,10 @@ function toDisplayData(agent: Agent, feedbackMap?: FeedbackMap): AgentDisplayDat
 
   const fb = feedbackMap?.[agent.pubkey];
 
+  const effectivePrice = price ?? 0;
+  const priceLabel =
+    effectivePrice === 0 ? 'Free' : formatCardPrice(cheapestCard?.payment, effectivePrice);
+
   return {
     pubkey: agent.pubkey,
     npub: agent.npub,
@@ -96,12 +100,7 @@ function toDisplayData(agent: Agent, feedbackMap?: FeedbackMap): AgentDisplayDat
     description,
     tags: allTags,
     category: allTags[0] || 'other',
-    price: (() => {
-      if (price === null || price === undefined) {
-        return 'N/A';
-      }
-      return price === 0 ? 'Free' : formatCardPrice(cheapestCard?.payment, price);
-    })(),
+    price: priceLabel,
     priceLamports: price,
     wallet: walletAddress ? truncateKey(walletAddress, 4) : '',
     walletAddress,

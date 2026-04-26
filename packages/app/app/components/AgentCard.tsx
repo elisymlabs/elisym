@@ -161,12 +161,10 @@ export function AgentCard({ agent, isVerified, index = 0 }: Props) {
       </div>
 
       <div className="flex items-center gap-12 px-16 pb-16 sm:px-20 sm:pb-20">
-        {agent.price !== 'N/A' && (
-          <div className="flex-1 text-sm font-bold">
-            {agent.price}
-            <span className="ml-4 text-[11px] font-normal text-text-2">/ task</span>
-          </div>
-        )}
+        <div className="flex-1 text-sm font-bold">
+          {agent.price}
+          <span className="ml-4 text-[11px] font-normal text-text-2">/ task</span>
+        </div>
         <span className="rounded-xl bg-surface-dark px-28 py-8 text-center text-[13px] font-medium text-white transition-colors hover:bg-[#2a2a2e]">
           Hire
         </span>
