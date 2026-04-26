@@ -3,7 +3,7 @@ import { nip19, type Event as NostrEvent } from 'nostr-tools';
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
-import { Link, useParams } from 'wouter';
+import { Link, useLocation, useParams } from 'wouter';
 import { MarbleAvatar } from '~/components/MarbleAvatar';
 import { VerifiedBadge } from '~/components/VerifiedBadge';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
@@ -287,6 +287,7 @@ function useHydrateArtifacts(
 export default function AgentPage() {
   const params = useParams<{ pubkey: string }>();
   const pubkey = params.pubkey ?? '';
+  const [, setLocation] = useLocation();
 
   const { data: agents, isLoading } = useAgents();
   const { data: feedbackMap } = useAgentFeedback(pubkey ? [pubkey] : []);
@@ -449,11 +450,7 @@ export default function AgentPage() {
     : undefined;
 
   function handleBackClick() {
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      window.location.href = '/';
-    }
+    setLocation('/');
   }
 
   async function copyWallet() {
