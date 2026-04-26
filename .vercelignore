@@ -1,0 +1,18 @@
+# Solana / Anchor program (Rust - not needed for web app build)
+programs/
+target/
+Anchor.toml
+Cargo.toml
+Cargo.lock
+
+# Documentation, skills, registry metadata
+docs/
+skills/
+glama.json
+
+# Spell-check config (only used by `bun qa`, not by Vercel build)
+cspell.json
+cspell-dictionary.txt
+
+# CI / GitHub
+.github/

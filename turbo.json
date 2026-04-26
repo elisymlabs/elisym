@@ -1,5 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalPassThroughEnv": ["GIT_AUTH_TOKEN", "GIT_CREDENTIALS"],
   "tasks": {
     "generate": {
       "inputs": ["../../target/idl/*.json", "codama.config.mjs"],
