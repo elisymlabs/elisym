@@ -95,7 +95,7 @@ export function Header() {
 
           <div className="flex min-w-0 items-center gap-6 sm:gap-8">
             <a
-              href="https://github.com/elisymlabs/elisym-client/blob/main/GUIDE.md"
+              href="https://github.com/elisymlabs/elisym/blob/main/packages/cli/GUIDE.md"
               target="_blank"
               rel="noopener noreferrer"
               onClick={() => track('cta-run-agent')}

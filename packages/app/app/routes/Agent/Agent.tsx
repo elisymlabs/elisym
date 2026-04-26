@@ -323,6 +323,7 @@ export default function AgentPage() {
   } = useArtifacts(pubkey);
   const { artifacts: nostrArtifacts, loading: nostrArtifactsLoading } = useNostrArtifacts(pubkey);
   const nostrBanner = useAgentBanner(pubkey);
+  const [bannerLoaded, setBannerLoaded] = useState(false);
   const { client } = useElisymClient();
   const [ratedArtifacts, setRatedArtifacts] = useState<Set<string>>(new Set());
   const [thanksVisible, setThanksVisible] = useState<Set<string>>(new Set());
@@ -517,12 +518,19 @@ export default function AgentPage() {
               </svg>
               Back
             </button>
-            <div className="relative h-full w-full overflow-hidden bg-surface-dark">
-              <div aria-hidden className="absolute inset-0 agent-banner-outer" />
-              <div aria-hidden className="absolute inset-0 agent-banner-inner" />
+            <div className="relative h-full w-full overflow-hidden bg-[#ededed]">
+              {(!nostrBanner || !bannerLoaded) && (
+                <img
+                  aria-hidden
+                  src="/logo-black.png"
+                  alt=""
+                  className="absolute top-1/2 left-1/2 h-21 -translate-x-1/2 -translate-y-1/2 opacity-20 sm:h-30"
+                />
+              )}
               {nostrBanner && (
                 <FadeInImage
                   src={nostrBanner}
+                  onLoadedChange={setBannerLoaded}
                   className="absolute inset-0 h-full w-full object-cover"
                 />
               )}

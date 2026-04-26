@@ -3,11 +3,15 @@ import { useElisymClient } from './useElisymClient';
 
 export type PingStatus = 'pinging' | 'online' | 'offline';
 
+const FAST_OFFLINE_TIMEOUT_MS = 3000;
+
 /**
  * Pings an agent on mount with automatic retry.
  * - Starts as "pinging" (yellow)
+ * - After 3s without a pong → "offline" (grey), but keeps pinging in the background
+ * - If a pong arrives at any point → "online" (green) — even after we visually
+ *   gave up, so a slow agent still gets to flip the dot.
  * - Up to 3 attempts with 1.5s between retries
- * - If pong arrives → "online" (green)
  */
 export function usePingAgent(agentPubkey: string) {
   const { client } = useElisymClient();
@@ -21,6 +25,12 @@ export function usePingAgent(agentPubkey: string) {
 
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const fastOfflineTimer = setTimeout(() => {
+      if (cancelled) {
+        return;
+      }
+      setStatus((current) => (current === 'pinging' ? 'offline' : current));
+    }, FAST_OFFLINE_TIMEOUT_MS);
 
     const ping = (attempt: number) => {
       if (cancelled) {
@@ -64,6 +74,7 @@ export function usePingAgent(agentPubkey: string) {
 
     return () => {
       cancelled = true;
+      clearTimeout(fastOfflineTimer);
       if (retryTimer) {
         clearTimeout(retryTimer);
       }

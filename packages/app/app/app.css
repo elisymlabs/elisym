@@ -412,23 +412,6 @@ button:not(:disabled) {
   background: #f7f7f9;
 }
 
-@utility agent-banner-outer {
-  background: radial-gradient(
-    ellipse 140% 200% at 50% 120%,
-    rgba(29, 158, 117, 0.55) 0%,
-    transparent 70%
-  );
-}
-
-@utility agent-banner-inner {
-  background: radial-gradient(
-    ellipse 100% 150% at 50% 130%,
-    rgba(132, 232, 200, 0.45) 0%,
-    rgba(29, 158, 117, 0.2) 50%,
-    transparent 80%
-  );
-}
-
 @keyframes artifact-new-pop {
   0% {
     opacity: 0;

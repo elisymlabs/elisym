@@ -8,16 +8,16 @@ import { PageHeaderProvider } from '~/contexts/PageHeaderContext';
 import { UIProvider } from '~/contexts/UIContext';
 import { ElisymProvider } from '~/hooks/useElisymClient';
 import { IdentityProvider } from '~/hooks/useIdentity';
+import { SOLANA_RPC_URL } from '~/lib/cluster';
 
 const queryClient = new QueryClient();
-const DEVNET_RPC_URL = 'https://api.devnet.solana.com';
 
 export function Providers({ children }: { children: ReactNode }) {
   const wallets = useMemo(() => [new PhantomWalletAdapter(), new SolflareWalletAdapter()], []);
 
   return (
     <QueryClientProvider client={queryClient}>
-      <ConnectionProvider endpoint={DEVNET_RPC_URL}>
+      <ConnectionProvider endpoint={SOLANA_RPC_URL}>
         <WalletProvider wallets={wallets} autoConnect>
           <WalletModalProvider>
             <ElisymProvider>

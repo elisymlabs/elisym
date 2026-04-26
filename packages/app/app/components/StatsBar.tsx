@@ -7,8 +7,11 @@ import { cn } from '~/lib/cn';
 type VolumeCurrency = 'usdc' | 'sol';
 const VOLUME_ORDER: VolumeCurrency[] = ['usdc', 'sol'];
 
-const TOOLTIP_TEXT =
+const AGENTS_TOOLTIP_TEXT =
   'Data is collected from decentralized Nostr relays. Each relay stores a partial view of the network, so the actual numbers may be higher.';
+
+const ON_CHAIN_TOOLTIP_TEXT =
+  'Based on incoming transfers to the protocol treasury address on Solana.';
 
 const TOOLTIP_MAX_WIDTH = 240;
 const TOOLTIP_EDGE_MARGIN = 12;
@@ -173,33 +176,51 @@ function StatValue({ children }: { children: ReactNode }) {
   );
 }
 
-function StatLabel({ icon, label }: { icon: ReactElement | null; label: string }) {
+function StatLabel({
+  icon,
+  label,
+  tooltipText,
+}: {
+  icon: ReactElement | null;
+  label: string;
+  tooltipText?: string;
+}) {
   return (
     <span className="flex items-center justify-center gap-4">
       <div className="flex items-center justify-center gap-4 text-center text-white/35">
         {icon && <span className="flex shrink-0">{icon}</span>}
-        <span className="font-mono text-[10px] font-semibold tracking-[0.14em] uppercase">
+        <span className="font-mono text-[10px] font-normal tracking-[0.14em] uppercase">
           {label}
         </span>
       </div>
-      <span className="inline-flex">
-        <InfoTooltip text={TOOLTIP_TEXT} />
-      </span>
+      {tooltipText && (
+        <span className="inline-flex">
+          <InfoTooltip text={tooltipText} />
+        </span>
+      )}
     </span>
   );
 }
 
-function StatItem({ value, label }: { value: string | number; label: string }) {
+function StatItem({
+  value,
+  label,
+  tooltipText,
+}: {
+  value: string | number;
+  label: string;
+  tooltipText?: string;
+}) {
   return (
     <div className="flex flex-col items-center gap-8">
       <StatValue>{value}</StatValue>
-      <StatLabel icon={STAT_ICONS[label] ?? null} label={label} />
+      <StatLabel icon={STAT_ICONS[label] ?? null} label={label} tooltipText={tooltipText} />
     </div>
   );
 }
 
 function Divider() {
-  return <div className="h-32 w-[1px] shrink-0 self-stretch bg-white/10" />;
+  return <div className="w-[1px] shrink-0 self-stretch bg-white/10" />;
 }
 
 function VolumeArrow({ direction, onClick }: { direction: 'left' | 'right'; onClick: () => void }) {
@@ -260,10 +281,11 @@ function MobileRowIcon({ children }: { children: ReactNode }) {
   );
 }
 
-function MobileRowLabel({ children }: { children: ReactNode }) {
+function MobileRowLabel({ children, tooltipText }: { children: ReactNode; tooltipText?: string }) {
   return (
-    <span className="flex-1 truncate font-mono text-[10px] font-semibold tracking-[0.14em] text-white/50 uppercase">
-      {children}
+    <span className="flex flex-1 items-center gap-4 font-mono text-[10px] font-normal tracking-[0.14em] text-white/50 uppercase">
+      <span className="truncate">{children}</span>
+      {tooltipText && <InfoTooltip text={tooltipText} />}
     </span>
   );
 }
@@ -272,15 +294,17 @@ function MobileStatRow({
   icon,
   label,
   value,
+  tooltipText,
 }: {
   icon: ReactElement | null;
   label: string;
   value: ReactNode;
+  tooltipText?: string;
 }) {
   return (
     <div className="flex items-center gap-10 px-16 py-14">
       <MobileRowIcon>{icon}</MobileRowIcon>
-      <MobileRowLabel>{label}</MobileRowLabel>
+      <MobileRowLabel tooltipText={tooltipText}>{label}</MobileRowLabel>
       <span className="text-xl leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/95 tabular-nums">
         {value}
       </span>
@@ -302,7 +326,7 @@ function MobileVolumeRow({
       <MobileRowIcon>
         <CurrencyStack currency={currency}>{(cur) => VOLUME_ICON[cur]}</CurrencyStack>
       </MobileRowIcon>
-      <MobileRowLabel>Volume</MobileRowLabel>
+      <MobileRowLabel tooltipText={ON_CHAIN_TOOLTIP_TEXT}>Volume</MobileRowLabel>
       <div className="flex items-center gap-6">
         <VolumeArrow direction="left" onClick={() => cycleCurrency(-1)} />
         <span className="text-xl leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/95">
@@ -364,12 +388,18 @@ export function StatsBar() {
           </>
         ) : (
           <>
-            <MobileStatRow icon={STAT_ICONS.Agents ?? null} label="Agents" value={agentCount} />
+            <MobileStatRow
+              icon={STAT_ICONS.Agents ?? null}
+              label="Agents"
+              value={agentCount}
+              tooltipText={AGENTS_TOOLTIP_TEXT}
+            />
             <MobileRowDivider />
             <MobileStatRow
               icon={STAT_ICONS['Completed Jobs'] ?? null}
               label="Completed Jobs"
               value={jobCount}
+              tooltipText={ON_CHAIN_TOOLTIP_TEXT}
             />
             <MobileRowDivider />
             <MobileVolumeRow currency={currency} volumes={volumes} cycleCurrency={cycleCurrency} />
@@ -391,9 +421,13 @@ export function StatsBar() {
               </>
             ) : (
               <>
-                <StatItem value={agentCount} label="Agents" />
+                <StatItem value={agentCount} label="Agents" tooltipText={AGENTS_TOOLTIP_TEXT} />
                 <Divider />
-                <StatItem value={jobCount} label="Completed Jobs" />
+                <StatItem
+                  value={jobCount}
+                  label="Completed Jobs"
+                  tooltipText={ON_CHAIN_TOOLTIP_TEXT}
+                />
                 <Divider />
                 <div className="flex flex-col items-center gap-8">
                   <div className="flex items-center justify-center gap-8">
@@ -406,12 +440,12 @@ export function StatsBar() {
                   <span className="flex items-center justify-center gap-4">
                     <div className="flex items-center justify-center gap-4 text-center text-white/35">
                       <CurrencyStack currency={currency}>{(cur) => VOLUME_ICON[cur]}</CurrencyStack>
-                      <span className="font-mono text-[10px] font-semibold tracking-[0.14em] uppercase">
+                      <span className="font-mono text-[10px] font-normal tracking-[0.14em] uppercase">
                         Volume
                       </span>
                     </div>
                     <span className="inline-flex">
-                      <InfoTooltip text={TOOLTIP_TEXT} />
+                      <InfoTooltip text={ON_CHAIN_TOOLTIP_TEXT} />
                     </span>
                   </span>
                 </div>
