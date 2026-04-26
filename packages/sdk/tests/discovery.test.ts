@@ -529,9 +529,13 @@ function makeFeedbackEvent(
     rating?: '0' | '1';
     status?: string;
     txSignature?: string;
+    jobEventId?: string;
   },
 ): Event {
   const tags: string[][] = [['p', targetPubkey]];
+  if (opts.jobEventId) {
+    tags.push(['e', opts.jobEventId]);
+  }
   if (opts.rating !== undefined) {
     tags.push(['rating', opts.rating]);
   }
@@ -554,13 +558,21 @@ function makeFeedbackEvent(
 
 function makeResultEvent(
   agent: ElisymIdentity,
-  opts: { createdAt: number; kind?: number } = { createdAt: Math.floor(Date.now() / 1000) },
+  opts: {
+    createdAt: number;
+    kind?: number;
+    jobEventId?: string;
+  } = { createdAt: Math.floor(Date.now() / 1000) },
 ): Event {
+  const tags: string[][] = [];
+  if (opts.jobEventId) {
+    tags.push(['e', opts.jobEventId]);
+  }
   return finalizeEvent(
     {
       kind: opts.kind ?? KIND_JOB_RESULT,
       created_at: opts.createdAt,
-      tags: [],
+      tags,
       content: 'result-payload',
     },
     agent.secretKey,
@@ -627,11 +639,14 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       }),
     );
 
+    const jobA1 = 'job-a1';
+    const jobA2 = 'job-a2';
     const feedbacks = [
       makeFeedbackEvent(customer, a1.publicKey, {
         createdAt: now - 10,
         status: 'payment-completed',
         txSignature: 'sig-a1',
+        jobEventId: jobA1,
       }),
       makeFeedbackEvent(customer, a1.publicKey, { createdAt: now - 50, rating: '1' }),
       makeFeedbackEvent(customer, a1.publicKey, { createdAt: now - 51, rating: '0' }),
@@ -640,14 +655,19 @@ describe('DiscoveryService.fetchAgents ranking', () => {
         createdAt: now - 15,
         status: 'payment-completed',
         txSignature: 'sig-a2',
+        jobEventId: jobA2,
       }),
       makeFeedbackEvent(customer, a2.publicKey, { createdAt: now - 60, rating: '1' }),
       makeFeedbackEvent(customer, a2.publicKey, { createdAt: now - 61, rating: '1' }),
     ];
+    const results = [
+      makeResultEvent(a1, { createdAt: now - 11, jobEventId: jobA1 }),
+      makeResultEvent(a2, { createdAt: now - 16, jobEventId: jobA2 }),
+    ];
 
     const pool = setupRoutedPool({
       capabilityEvents: [cap1, cap2],
-      resultEvents: [],
+      resultEvents: results,
       feedbackEvents: feedbacks,
     });
 
@@ -684,26 +704,34 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       }),
     );
 
+    const jobFresh = 'job-fresh';
+    const jobStale = 'job-stale';
     const feedbacks = [
       // fresh: paid 30s ago, no ratings
       makeFeedbackEvent(customer, aFresh.publicKey, {
         createdAt: now - 30,
         status: 'payment-completed',
         txSignature: 'sig-fresh',
+        jobEventId: jobFresh,
       }),
       // stale: paid 10 minutes ago, perfect rating
       makeFeedbackEvent(customer, aStale.publicKey, {
         createdAt: now - 600,
         status: 'payment-completed',
         txSignature: 'sig-stale',
+        jobEventId: jobStale,
       }),
       makeFeedbackEvent(customer, aStale.publicKey, { createdAt: now - 601, rating: '1' }),
       makeFeedbackEvent(customer, aStale.publicKey, { createdAt: now - 602, rating: '1' }),
     ];
+    const results = [
+      makeResultEvent(aFresh, { createdAt: now - 31, jobEventId: jobFresh }),
+      makeResultEvent(aStale, { createdAt: now - 601, jobEventId: jobStale }),
+    ];
 
     const pool = setupRoutedPool({
       capabilityEvents: [capFresh, capStale],
-      resultEvents: [],
+      resultEvents: results,
       feedbackEvents: feedbacks,
     });
 
@@ -747,17 +775,20 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       { createdAt: now - 5000 },
     );
 
+    const jobPaid = 'job-paid';
     const feedbacks = [
       makeFeedbackEvent(customer, aPaid.publicKey, {
         createdAt: now - 200,
         status: 'payment-completed',
         txSignature: 'sig-paid',
+        jobEventId: jobPaid,
       }),
     ];
+    const results = [makeResultEvent(aPaid, { createdAt: now - 201, jobEventId: jobPaid })];
 
     const pool = setupRoutedPool({
       capabilityEvents: [capPaid, capColdNew, capColdOld],
-      resultEvents: [],
+      resultEvents: results,
       feedbackEvents: feedbacks,
     });
 
@@ -845,6 +876,76 @@ describe('DiscoveryService.fetchAgents ranking', () => {
     // newer NIP-89 first (lastSeen tiebreak)
     expect(agents[0]!.pubkey).toBe(aNew.publicKey);
     expect(agents[1]!.pubkey).toBe(aOld.publicKey);
+  });
+
+  it('ignores payment-completed feedback without a matching kind:6xxx result', async () => {
+    // A customer can publish a `payment-completed` feedback unilaterally
+    // (immediately on payment, before the result arrives, or to game the
+    // ranking with a fake `tx`). Without a matching result event signed by
+    // the provider on the same `e` job id, we treat it as unverified and do
+    // not set `lastPaidJobAt`.
+    const now = Math.floor(Date.now() / 1000);
+    const orphanAgent = ElisymIdentity.generate();
+    const verifiedAgent = ElisymIdentity.generate();
+    const customer = ElisymIdentity.generate();
+
+    const capOrphan = makeCapabilityEvent(
+      orphanAgent,
+      makeCard({
+        name: 'orphan',
+        payment: { chain: 'solana', network: 'devnet', address: SOL_ADDRESS_A },
+      }),
+      { createdAt: now - 30 },
+    );
+    const capVerified = makeCapabilityEvent(
+      verifiedAgent,
+      makeCard({
+        name: 'verified',
+        payment: { chain: 'solana', network: 'devnet', address: SOL_ADDRESS_B },
+      }),
+      { createdAt: now - 30 },
+    );
+
+    const jobVerified = 'job-verified';
+    const feedbacks = [
+      // Orphan: payment-completed with no matching result event.
+      makeFeedbackEvent(customer, orphanAgent.publicKey, {
+        createdAt: now - 60,
+        status: 'payment-completed',
+        txSignature: 'sig-orphan',
+        jobEventId: 'job-orphan',
+      }),
+      // Verified: payment-completed paired with a real result event below.
+      makeFeedbackEvent(customer, verifiedAgent.publicKey, {
+        createdAt: now - 600,
+        status: 'payment-completed',
+        txSignature: 'sig-verified',
+        jobEventId: jobVerified,
+      }),
+    ];
+    const results = [
+      makeResultEvent(verifiedAgent, { createdAt: now - 601, jobEventId: jobVerified }),
+    ];
+
+    const pool = setupRoutedPool({
+      capabilityEvents: [capOrphan, capVerified],
+      resultEvents: results,
+      feedbackEvents: feedbacks,
+    });
+
+    const svc = new DiscoveryService(pool as any);
+    const agents = await svc.fetchAgents('devnet');
+
+    expect(agents.length).toBe(2);
+    const orphan = agents.find((a) => a.pubkey === orphanAgent.publicKey)!;
+    const verified = agents.find((a) => a.pubkey === verifiedAgent.publicKey)!;
+    expect(orphan.lastPaidJobAt).toBeUndefined();
+    expect(orphan.lastPaidJobTx).toBeUndefined();
+    expect(verified.lastPaidJobAt).toBe(now - 600);
+    expect(verified.lastPaidJobTx).toBe('sig-verified');
+    // Verified ranks above orphan despite orphan's "newer" feedback timestamp.
+    expect(agents[0]!.pubkey).toBe(verifiedAgent.publicKey);
+    expect(agents[1]!.pubkey).toBe(orphanAgent.publicKey);
   });
 
   it('result events update lastSeen even when there is no paid job', async () => {

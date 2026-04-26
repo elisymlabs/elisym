@@ -40,10 +40,11 @@ export interface AgentDisplayData {
   lastSeen: string;
   lastSeenTs: number;
   /**
-   * Display label for the most recent on-chain-verified paid job. Undefined
-   * for cold-start agents that have not had a verified paid job within the
-   * SDK's ranking window. Source: `Agent.lastPaidJobAt` from
-   * `DiscoveryService.fetchAgents` (requires Solana RPC in ElisymClient).
+   * Display label for the most recent paid job that has a `payment-completed`
+   * feedback paired with a kind:6xxx result event from the provider on the
+   * same job (cross-checked in `DiscoveryService.fetchAgents`). Undefined
+   * for cold-start agents that have not had such a verified paid job within
+   * the SDK's ranking window.
    */
   lastPaidJobLabel: string | undefined;
   lastPaidJobAt: number | undefined;

@@ -328,18 +328,20 @@ export class DiscoveryService {
    *
    * Ranking algorithm:
    * 1. Bucket each agent into 1-minute slots by `lastPaidJobAt` (newest
-   *    `payment-completed` feedback timestamp). Cold-start agents go into a
-   *    sentinel bucket below all populated buckets.
+   *    `payment-completed` feedback timestamp, gated by a matching kind:6xxx
+   *    result from the provider on the same job event). Cold-start agents go
+   *    into a sentinel bucket below all populated buckets.
    * 2. Within a bucket, sort by positive review rate descending.
    * 3. Tiebreak by raw `lastPaidJobAt`, then `lastSeen` (NIP-89 freshness).
    *
-   * NOTE: We trust the `payment-completed` feedback timestamp directly; we do
-   * not verify the embedded `tx` signature on-chain. Public Solana devnet RPC
-   * rate-limits trivially exceed what discovery needs (N agents * up-to-5
-   * candidates), and the resulting 429s blocked discovery entirely. This
-   * means a malicious customer can publish a fake `payment-completed` to lift
-   * an agent's ranking. Acceptable trade-off for devnet / MVP; tighten via
-   * recipient-tied checks when the network moves to mainnet with a paid RPC
+   * NOTE: We do not verify the `tx` signature on-chain - public Solana devnet
+   * RPC rate-limits trivially exceed what discovery needs (N agents * up-to-5
+   * candidates), and the resulting 429s blocked discovery entirely. As a
+   * lighter sybil mitigation we cross-check `payment-completed` feedback
+   * against a kind:6xxx result event authored by the provider on the same
+   * job: a customer can publish a fake `payment-completed`, but they cannot
+   * forge a result event signed by the provider. Tighten with recipient-tied
+   * on-chain checks when the network moves to mainnet with a paid RPC
    * provider.
    */
   async fetchAgents(network: Network = 'devnet', limit?: number): Promise<Agent[]> {
@@ -388,20 +390,39 @@ export class DiscoveryService {
       this.enrichWithMetadata(agents),
     ]);
 
-    // Result events: written by the agent, indexed by author.
+    // Result events: written by the agent, indexed by author. Build
+    // (provider, jobEventId) pairs so we can cross-check `payment-completed`
+    // feedback against an actual delivered result. Customers publish
+    // `payment-completed` immediately on payment, before the result arrives -
+    // an unmatched feedback means the provider never delivered (or never
+    // existed at the time), so it must not count as a verified paid job.
+    const deliveredJobsByProvider = new Map<string, Set<string>>();
     for (const ev of resultEvents) {
       if (!verifyEvent(ev)) {
         continue;
       }
       const agent = agentMap.get(ev.pubkey);
-      if (agent && ev.created_at > agent.lastSeen) {
+      if (!agent) {
+        continue;
+      }
+      if (ev.created_at > agent.lastSeen) {
         agent.lastSeen = ev.created_at;
+      }
+      const jobEventId = ev.tags.find((t) => t[0] === 'e')?.[1];
+      if (jobEventId) {
+        let delivered = deliveredJobsByProvider.get(ev.pubkey);
+        if (!delivered) {
+          delivered = new Set();
+          deliveredJobsByProvider.set(ev.pubkey, delivered);
+        }
+        delivered.add(jobEventId);
       }
     }
 
     // Feedback events: written by the *customer*, target agent in the `p` tag.
     // Tally rating counters and pick the newest `payment-completed` feedback
-    // per agent as `lastPaidJobAt` / `lastPaidJobTx`.
+    // per agent as `lastPaidJobAt` / `lastPaidJobTx`, but only when the same
+    // job has a matching kind:6xxx result from the provider.
     for (const ev of feedbackEvents) {
       if (!verifyEvent(ev)) {
         continue;
@@ -429,7 +450,16 @@ export class DiscoveryService {
       const status = ev.tags.find((t) => t[0] === 'status')?.[1];
       const txTag = ev.tags.find((t) => t[0] === 'tx');
       const txSignature = txTag?.[1];
-      if (status === 'payment-completed' && typeof txSignature === 'string' && txSignature) {
+      const jobEventId = ev.tags.find((t) => t[0] === 'e')?.[1];
+      const hasDeliveredResult =
+        jobEventId !== undefined &&
+        deliveredJobsByProvider.get(targetPubkey)?.has(jobEventId) === true;
+      if (
+        status === 'payment-completed' &&
+        typeof txSignature === 'string' &&
+        txSignature &&
+        hasDeliveredResult
+      ) {
         if (!agent.lastPaidJobAt || ev.created_at > agent.lastPaidJobAt) {
           agent.lastPaidJobAt = ev.created_at;
           agent.lastPaidJobTx = txSignature;
