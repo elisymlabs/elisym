@@ -2,6 +2,7 @@ import './app.css';
 import { useEffect } from 'react';
 import { Toaster } from 'sonner';
 import { Route, Switch, useLocation } from 'wouter';
+import { DevnetBanner } from '~/components/DevnetBanner';
 import { ErrorBoundary } from '~/components/ErrorBoundary';
 import { Footer } from '~/components/Footer';
 import { Header } from '~/components/Header';
@@ -42,6 +43,7 @@ export function App() {
             </Switch>
           </main>
         </ErrorBoundary>
+        <DevnetBanner />
         <Footer />
         <TermsModal />
         <Toaster theme="dark" position="bottom-right" duration={1500} />
