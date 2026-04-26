@@ -1,16 +1,18 @@
-import { useRef, useState } from 'react';
-import { useUI } from '~/contexts/UIContext';
+import { useLayoutEffect, useRef, useState } from 'react';
+import { useUI, type ViewMode } from '~/contexts/UIContext';
 import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { track } from '~/lib/analytics';
 import { TAG_FILTERS, VIEW_MODES } from '~/lib/categories';
 import { cn } from '~/lib/cn';
 
 const SWITCHER_TRACK_CLASSES =
-  'flex shrink-0 items-center gap-2 rounded-full border border-white/60 bg-black/5 p-3 backdrop-blur-md';
+  'relative flex shrink-0 items-center gap-2 rounded-full border border-white/60 bg-black/5 p-3 backdrop-blur-md';
 const SWITCHER_PILL_CLASSES =
-  'cursor-pointer rounded-full border-none bg-transparent px-14 py-6 text-sm font-semibold whitespace-nowrap transition-[background-color,color,box-shadow] duration-200';
-const SWITCHER_PILL_ACTIVE = 'bg-white text-text shadow-card';
+  'relative z-10 cursor-pointer rounded-full border-none bg-transparent px-14 py-6 text-sm font-semibold whitespace-nowrap transition-colors duration-200';
+const SWITCHER_PILL_ACTIVE = 'text-text';
 const SWITCHER_PILL_INACTIVE = 'text-text-2 hover:text-text';
+const SWITCHER_INDICATOR_CLASSES =
+  'pointer-events-none absolute top-3 bottom-3 left-0 rounded-full bg-white shadow-card transition-[transform,width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]';
 
 const TAG_CHIP_CLASSES =
   'shrink-0 cursor-pointer rounded-full border-none px-12 py-6 text-xs font-medium whitespace-nowrap transition-[background-color,color,transform] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-transform active:scale-[0.97]';
@@ -27,7 +29,29 @@ export function FilterBar({ searchQuery, onSearchChange }: Props) {
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const switcherTrackRef = useRef<HTMLDivElement>(null);
+  const switcherPillRefs = useRef<Map<ViewMode, HTMLButtonElement>>(new Map());
+  const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null);
   const { atStart, atEnd } = useScrollEdges(scrollRef);
+
+  useLayoutEffect(() => {
+    const pill = switcherPillRefs.current.get(state.viewMode);
+    const trackEl = switcherTrackRef.current;
+    if (!pill || !trackEl) {
+      return;
+    }
+    const measure = () => {
+      setIndicator({
+        left: pill.offsetLeft,
+        width: pill.offsetWidth,
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(pill);
+    observer.observe(trackEl);
+    return () => observer.disconnect();
+  }, [state.viewMode]);
 
   return (
     <div className="mb-24 flex flex-col gap-20 sm:mb-40 sm:flex-row sm:items-center sm:gap-16">
@@ -36,12 +60,29 @@ export function FilterBar({ searchQuery, onSearchChange }: Props) {
           ref={scrollRef}
           className="no-scrollbar flex items-center gap-8 overflow-x-auto scroll-smooth sm:px-12"
         >
-          <div className={SWITCHER_TRACK_CLASSES}>
+          <div ref={switcherTrackRef} className={SWITCHER_TRACK_CLASSES}>
+            {indicator && (
+              <span
+                aria-hidden
+                className={SWITCHER_INDICATOR_CLASSES}
+                style={{
+                  transform: `translateX(${indicator.left}px)`,
+                  width: `${indicator.width}px`,
+                }}
+              />
+            )}
             {VIEW_MODES.map((mode) => {
               const isActive = state.viewMode === mode.key;
               return (
                 <button
                   key={mode.key}
+                  ref={(button) => {
+                    if (button) {
+                      switcherPillRefs.current.set(mode.key, button);
+                    } else {
+                      switcherPillRefs.current.delete(mode.key);
+                    }
+                  }}
                   onClick={() => {
                     track('view_mode', { mode: mode.key });
                     dispatch({ type: 'SET_VIEW_MODE', viewMode: mode.key });
