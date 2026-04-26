@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "bun run build --filter=@elisym/app...",
   "installCommand": "bun install --frozen-lockfile",
-  "outputDirectory": "dist",
+  "outputDirectory": "packages/app/dist",
   "cleanUrls": false,
   "trailingSlash": false,
   "rewrites": [{ "source": "/((?!.*\\.).*)", "destination": "/index.html" }]

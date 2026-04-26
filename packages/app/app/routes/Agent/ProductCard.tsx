@@ -26,7 +26,7 @@ export function ProductCard({ card, selected, onClick }: Props) {
       )}
     >
       {card.image && (
-        <div className="relative aspect-[4/3] w-full overflow-hidden rounded-b-2xl bg-surface-2">
+        <div className="relative h-180 w-full overflow-hidden rounded-b-2xl bg-surface-2">
           <img
             src={card.image}
             alt={card.name}
