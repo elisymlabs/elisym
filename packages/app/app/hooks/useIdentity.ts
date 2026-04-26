@@ -10,6 +10,7 @@ import {
   createElement,
   type ReactNode,
 } from 'react';
+import { toast } from 'sonner';
 import { loadIdentities, saveIdentities } from '~/lib/keyVault';
 
 const ACTIVE_KEY = 'elisym:active-identity';
@@ -77,7 +78,13 @@ interface IdentityContextValue {
 const IdentityContext = createContext<IdentityContextValue | null>(null);
 
 async function loadInitialState(): Promise<IdentityState> {
-  let list = await loadIdentities();
+  const { identities, vaultLost } = await loadIdentities();
+  if (vaultLost) {
+    toast.error('Saved identities could not be decrypted. A new identity was generated.', {
+      duration: 10_000,
+    });
+  }
+  let list = identities;
   let activeId = readActiveId();
 
   if (list.length === 0) {

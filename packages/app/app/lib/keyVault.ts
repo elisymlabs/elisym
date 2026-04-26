@@ -11,42 +11,22 @@
  */
 
 import type { StoredIdentity } from '~/hooks/useIdentity';
+import { getDB, KV_STORE } from './idb';
 
 const VAULT_KEY = 'elisym:vault';
+// Single slot used to preserve a vault we couldn't decrypt (CryptoKey lost or
+// blob corrupt). Overwrites prior to bound localStorage growth. A power user
+// who restores IndexedDB later may try to recover from it.
+const VAULT_LOST_KEY = 'elisym:vault.lost';
 const IDB_KEY = 'vault-key';
 
-const DB_NAME = 'elisym-cache';
-const STORE_NAME = 'kv';
-
-// ── IndexedDB helpers (reuse existing DB) ──────────────────────────
-
-let dbPromise: Promise<IDBDatabase> | null = null;
-
-function getDB(): Promise<IDBDatabase> {
-  if (!dbPromise) {
-    dbPromise = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME);
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => {
-        dbPromise = null;
-        reject(req.error);
-      };
-    });
-  }
-  return dbPromise;
-}
+// ── IndexedDB helpers ──────────────────────────────────────────────
 
 async function idbGet<T>(key: string): Promise<T | undefined> {
   const db = await getDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const req = tx.objectStore(STORE_NAME).get(key);
+    const tx = db.transaction(KV_STORE, 'readonly');
+    const req = tx.objectStore(KV_STORE).get(key);
     req.onsuccess = () => resolve(req.result as T | undefined);
     req.onerror = () => reject(req.error);
   });
@@ -55,8 +35,8 @@ async function idbGet<T>(key: string): Promise<T | undefined> {
 async function idbSet<T>(key: string, value: T): Promise<void> {
   const db = await getDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put(value, key);
+    const tx = db.transaction(KV_STORE, 'readwrite');
+    tx.objectStore(KV_STORE).put(value, key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -122,21 +102,29 @@ async function decrypt(key: CryptoKey, blob: EncryptedBlob): Promise<string> {
 
 // ── Public API ─────────────────────────────────────────────────────
 
-export async function loadIdentities(): Promise<StoredIdentity[]> {
+export interface LoadIdentitiesResult {
+  identities: StoredIdentity[];
+  // True when an encrypted vault existed but could not be decrypted (CryptoKey
+  // lost or blob corrupt). Distinct from a fresh first launch where no vault
+  // existed at all - lets the caller surface a destructive-event warning.
+  vaultLost: boolean;
+}
+
+export async function loadIdentities(): Promise<LoadIdentitiesResult> {
   const raw = localStorage.getItem(VAULT_KEY);
   if (!raw) {
-    return [];
+    return { identities: [], vaultLost: false };
   }
 
   try {
     const blob: EncryptedBlob = JSON.parse(raw);
     const key = await getOrCreateKey();
     const json = await decrypt(key, blob);
-    return JSON.parse(json) as StoredIdentity[];
+    return { identities: JSON.parse(json) as StoredIdentity[], vaultLost: false };
   } catch {
-    // CryptoKey lost (IndexedDB cleared) or corrupt data - cannot recover
+    localStorage.setItem(VAULT_LOST_KEY, raw);
     localStorage.removeItem(VAULT_KEY);
-    return [];
+    return { identities: [], vaultLost: true };
   }
 }
 
