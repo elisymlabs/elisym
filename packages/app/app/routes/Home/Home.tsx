@@ -4,13 +4,13 @@ import { AgentCard } from '~/components/AgentCard';
 import { AgentCardSkeleton } from '~/components/AgentCardSkeleton';
 import { FilterBar } from '~/components/FilterBar';
 import { HeroSection } from '~/components/HeroSection';
-import { useUI } from '~/contexts/UIContext';
+import { useUI, type ViewMode } from '~/contexts/UIContext';
 import type { AgentDisplayData } from '~/hooks/useAgentDisplay';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
 import { useAgents } from '~/hooks/useAgents';
 import { useStats } from '~/hooks/useStats';
-import { findCategory } from '~/lib/categories';
+import { findTagFilter, findViewMode } from '~/lib/categories';
 import { cn } from '~/lib/cn';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
 
@@ -36,15 +36,26 @@ function getPageNumbers(current: number, total: number): (number | '...')[] {
   return pages;
 }
 
-function applyCategoryFilter(
-  agents: AgentDisplayData[],
-  currentFilter: string,
-): AgentDisplayData[] {
-  const category = findCategory(currentFilter);
-  if (!category) {
+function applyViewMode(agents: AgentDisplayData[], viewMode: ViewMode): AgentDisplayData[] {
+  const mode = findViewMode(viewMode);
+  if (!mode) {
     return agents;
   }
-  return agents.filter((agent) => category.match(agent));
+  return agents.filter((agent) => mode.match(agent));
+}
+
+/** OR semantics: agent matches if it satisfies any selected tag filter. Empty selection passes through. */
+function applyTagFilter(agents: AgentDisplayData[], selectedTags: string[]): AgentDisplayData[] {
+  if (selectedTags.length === 0) {
+    return agents;
+  }
+  const matchers = selectedTags
+    .map((tag) => findTagFilter(tag))
+    .filter((filter): filter is NonNullable<typeof filter> => filter !== undefined);
+  if (matchers.length === 0) {
+    return agents;
+  }
+  return agents.filter((agent) => matchers.some((filter) => filter.match(agent)));
 }
 
 function applySearchFilter(agents: AgentDisplayData[], query: string): AgentDisplayData[] {
@@ -76,6 +87,10 @@ function applySearchFilter(agents: AgentDisplayData[], query: string): AgentDisp
  */
 function sortByRank(agents: AgentDisplayData[]): AgentDisplayData[] {
   return [...agents].sort((a, b) => compareAgentsByRank(a.agent, b.agent));
+}
+
+function sortByNewest(agents: AgentDisplayData[]): AgentDisplayData[] {
+  return [...agents].sort((a, b) => b.lastSeenTs - a.lastSeenTs);
 }
 
 export default function Home() {
@@ -111,26 +126,20 @@ export default function Home() {
   }, []);
 
   const filtered = useMemo(() => {
-    const byCategory = applyCategoryFilter(displayAgents, state.currentFilter);
-    const bySearch = applySearchFilter(byCategory, searchQuery);
-    return sortByRank(bySearch);
-  }, [displayAgents, state.currentFilter, searchQuery]);
+    const byView = applyViewMode(displayAgents, state.viewMode);
+    const byTags = applyTagFilter(byView, state.selectedTags);
+    const bySearch = applySearchFilter(byTags, searchQuery);
+    return state.viewMode === 'new' ? sortByNewest(bySearch) : sortByRank(bySearch);
+  }, [displayAgents, state.viewMode, state.selectedTags, searchQuery]);
 
-  const prevFilter = useRef(state.currentFilter);
+  const filterSignature = `${state.viewMode}|${state.selectedTags.join(',')}|${searchQuery}`;
+  const prevSignature = useRef(filterSignature);
   useEffect(() => {
-    if (prevFilter.current !== state.currentFilter) {
-      prevFilter.current = state.currentFilter;
+    if (prevSignature.current !== filterSignature) {
+      prevSignature.current = filterSignature;
       setPage(1);
     }
-  }, [state.currentFilter]);
-
-  const prevSearch = useRef(searchQuery);
-  useEffect(() => {
-    if (prevSearch.current !== searchQuery) {
-      prevSearch.current = searchQuery;
-      setPage(1);
-    }
-  }, [searchQuery]);
+  }, [filterSignature]);
 
   const deferredFiltered = useDeferredValue(filtered);
   const totalPages = Math.max(1, Math.ceil(deferredFiltered.length / PAGE_SIZE));

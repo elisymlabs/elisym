@@ -1,22 +1,35 @@
 import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from 'react';
 
+export type ViewMode = 'all' | 'new';
+
 interface UIState {
-  currentFilter: string;
+  viewMode: ViewMode;
+  selectedTags: string[];
 }
 
-interface UIAction {
-  type: 'SET_FILTER';
-  filter: string;
-}
+type UIAction =
+  | { type: 'SET_VIEW_MODE'; viewMode: ViewMode }
+  | { type: 'TOGGLE_TAG'; tag: string }
+  | { type: 'CLEAR_TAGS' };
 
 const initialState: UIState = {
-  currentFilter: 'all',
+  viewMode: 'all',
+  selectedTags: [],
 };
 
 function uiReducer(state: UIState, action: UIAction): UIState {
   switch (action.type) {
-    case 'SET_FILTER':
-      return { ...state, currentFilter: action.filter };
+    case 'SET_VIEW_MODE':
+      return { ...state, viewMode: action.viewMode };
+    case 'TOGGLE_TAG': {
+      const exists = state.selectedTags.includes(action.tag);
+      const selectedTags = exists
+        ? state.selectedTags.filter((tag) => tag !== action.tag)
+        : [...state.selectedTags, action.tag];
+      return { ...state, selectedTags };
+    }
+    case 'CLEAR_TAGS':
+      return { ...state, selectedTags: [] };
     default:
       return state;
   }

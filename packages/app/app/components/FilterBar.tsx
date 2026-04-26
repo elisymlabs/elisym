@@ -2,11 +2,20 @@ import { useRef, useState } from 'react';
 import { useUI } from '~/contexts/UIContext';
 import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { track } from '~/lib/analytics';
-import { CATEGORIES } from '~/lib/categories';
+import { TAG_FILTERS, VIEW_MODES } from '~/lib/categories';
 import { cn } from '~/lib/cn';
 
-const PILL_CLASSES =
-  'shrink-0 cursor-pointer rounded-full border-none px-16 py-8 text-sm font-semibold whitespace-nowrap transition-colors';
+const SWITCHER_TRACK_CLASSES =
+  'flex shrink-0 items-center gap-2 rounded-full border border-white/60 bg-black/5 p-3 backdrop-blur-md';
+const SWITCHER_PILL_CLASSES =
+  'cursor-pointer rounded-full border-none bg-transparent px-14 py-6 text-sm font-semibold whitespace-nowrap transition-[background-color,color,box-shadow] duration-200';
+const SWITCHER_PILL_ACTIVE = 'bg-white text-text shadow-card';
+const SWITCHER_PILL_INACTIVE = 'text-text-2 hover:text-text';
+
+const TAG_CHIP_CLASSES =
+  'shrink-0 cursor-pointer rounded-full border-none px-12 py-6 text-xs font-medium whitespace-nowrap transition-[background-color,color,transform] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-transform active:scale-[0.97]';
+const TAG_CHIP_ACTIVE = 'bg-surface-dark text-white shadow-card';
+const TAG_CHIP_INACTIVE = 'bg-tag-bg text-text-2 hover:bg-black/[0.08] hover:text-text';
 
 interface Props {
   searchQuery: string;
@@ -21,46 +30,50 @@ export function FilterBar({ searchQuery, onSearchChange }: Props) {
   const { atStart, atEnd } = useScrollEdges(scrollRef);
 
   return (
-    <div className="mb-24 flex flex-col gap-20 sm:mb-40 sm:flex-row sm:items-center sm:gap-12">
+    <div className="mb-24 flex flex-col gap-20 sm:mb-40 sm:flex-row sm:items-center sm:gap-16">
       <div className="relative min-w-0 flex-1">
         <div
           ref={scrollRef}
-          className="no-scrollbar flex items-center gap-4 overflow-x-auto scroll-smooth sm:px-12"
+          className="no-scrollbar flex items-center gap-8 overflow-x-auto scroll-smooth sm:px-12"
         >
-          {CATEGORIES.map((filter, index) => {
-            const isFirst = index === 0;
-            const isLast = index === CATEGORIES.length - 1;
+          <div className={SWITCHER_TRACK_CLASSES}>
+            {VIEW_MODES.map((mode) => {
+              const isActive = state.viewMode === mode.key;
+              return (
+                <button
+                  key={mode.key}
+                  onClick={() => {
+                    track('view_mode', { mode: mode.key });
+                    dispatch({ type: 'SET_VIEW_MODE', viewMode: mode.key });
+                  }}
+                  aria-pressed={isActive}
+                  className={cn(
+                    SWITCHER_PILL_CLASSES,
+                    isActive ? SWITCHER_PILL_ACTIVE : SWITCHER_PILL_INACTIVE,
+                  )}
+                >
+                  {mode.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {TAG_FILTERS.map((filter) => {
+            const isActive = state.selectedTags.includes(filter.key);
             return (
               <button
                 key={filter.key}
                 onClick={(event) => {
-                  track('filter', { category: filter.key });
-                  dispatch({ type: 'SET_FILTER', filter: filter.key });
-                  const container = scrollRef.current;
-                  if (!container) {
-                    return;
-                  }
-                  if (isFirst) {
-                    container.scrollTo({ left: 0, behavior: 'smooth' });
-                  } else if (isLast) {
-                    container.scrollTo({
-                      left: container.scrollWidth,
-                      behavior: 'smooth',
-                    });
-                  } else {
-                    event.currentTarget.scrollIntoView({
-                      behavior: 'smooth',
-                      inline: 'nearest',
-                      block: 'nearest',
-                    });
-                  }
+                  track('tag_filter', { tag: filter.key, action: isActive ? 'remove' : 'add' });
+                  dispatch({ type: 'TOGGLE_TAG', tag: filter.key });
+                  event.currentTarget.scrollIntoView({
+                    behavior: 'smooth',
+                    inline: 'nearest',
+                    block: 'nearest',
+                  });
                 }}
-                className={cn(
-                  PILL_CLASSES,
-                  state.currentFilter === filter.key
-                    ? 'bg-surface-2 text-text'
-                    : 'bg-transparent text-text-2 hover:text-text',
-                )}
+                aria-pressed={isActive}
+                className={cn(TAG_CHIP_CLASSES, isActive ? TAG_CHIP_ACTIVE : TAG_CHIP_INACTIVE)}
               >
                 {filter.label}
               </button>

@@ -1,6 +1,13 @@
+import type { ViewMode } from '~/contexts/UIContext';
 import type { AgentDisplayData } from '~/hooks/useAgentDisplay';
 
-export interface Category {
+export interface ViewModeDef {
+  key: ViewMode;
+  label: string;
+  match: (agent: AgentDisplayData) => boolean;
+}
+
+export interface TagFilter {
   key: string;
   label: string;
   match: (agent: AgentDisplayData) => boolean;
@@ -14,12 +21,20 @@ function tagIncludesAny(agent: AgentDisplayData, needles: string[]): boolean {
   return needles.some((needle) => tagIncludes(agent, needle));
 }
 
-export const CATEGORIES: Category[] = [
+export const VIEW_MODES: ViewModeDef[] = [
   {
     key: 'all',
     label: 'All',
     match: () => true,
   },
+  {
+    key: 'new',
+    label: 'New',
+    match: (agent) => agent.purchases === 0,
+  },
+];
+
+export const TAG_FILTERS: TagFilter[] = [
   {
     key: 'trending',
     label: 'Trending',
@@ -42,6 +57,10 @@ export const CATEGORIES: Category[] = [
   },
 ];
 
-export function findCategory(key: string): Category | undefined {
-  return CATEGORIES.find((category) => category.key === key);
+export function findViewMode(key: ViewMode): ViewModeDef | undefined {
+  return VIEW_MODES.find((mode) => mode.key === key);
+}
+
+export function findTagFilter(key: string): TagFilter | undefined {
+  return TAG_FILTERS.find((filter) => filter.key === key);
 }

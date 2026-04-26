@@ -306,6 +306,9 @@ export class DiscoveryService {
         if (typeof meta.picture === 'string') {
           agent.picture = meta.picture;
         }
+        if (typeof meta.banner === 'string') {
+          agent.banner = meta.banner;
+        }
         if (typeof meta.name === 'string') {
           agent.name = meta.name;
         }

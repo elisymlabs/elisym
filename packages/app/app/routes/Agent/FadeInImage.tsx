@@ -1,28 +1,24 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { cn } from '~/lib/cn';
 
 interface Props {
   src: string;
   className?: string;
   alt?: string;
-  onLoadedChange?: (loaded: boolean) => void;
 }
 
 const LOADED_URLS = new Set<string>();
 
-export function FadeInImage({ src, className, alt = '', onLoadedChange }: Props) {
+export function FadeInImage({ src, className, alt = '' }: Props) {
   const [loaded, setLoaded] = useState(() => LOADED_URLS.has(src));
 
   useEffect(() => {
-    const cached = LOADED_URLS.has(src);
-    setLoaded(cached);
-    onLoadedChange?.(cached);
-  }, [src, onLoadedChange]);
+    setLoaded(LOADED_URLS.has(src));
+  }, [src]);
 
   function handleLoad() {
     LOADED_URLS.add(src);
     setLoaded(true);
-    onLoadedChange?.(true);
   }
 
   return (

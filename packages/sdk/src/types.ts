@@ -58,6 +58,7 @@ export interface Agent {
   /** Count of all rated feedback events targeting this agent (last 30 days). */
   totalRatingCount?: number;
   picture?: string;
+  banner?: string;
   name?: string;
   about?: string;
 }
