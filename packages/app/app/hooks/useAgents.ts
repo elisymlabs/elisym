@@ -1,6 +1,10 @@
 import type { Agent, SubCloser } from '@elisym/sdk';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { cacheGet, cacheSet } from '~/lib/localCache';
+import {
+  getAllAgentProfiles,
+  migrateLegacyListSnapshot,
+  setAgentProfiles,
+} from '~/lib/agentProfileCache';
 import { useElisymClient } from './useElisymClient';
 
 export type StreamStatus = 'idle' | 'streaming' | 'eose' | 'enriched';
@@ -11,7 +15,7 @@ export interface UseAgentsResult {
   error: Error | null;
 }
 
-const NETWORK = 'devnet';
+export const NETWORK = 'devnet';
 
 type Patch = { type: 'agent'; agent: Agent } | { type: 'paidJob'; pubkey: string; ts: number };
 
@@ -27,10 +31,16 @@ export function useAgents(): UseAgentsResult {
   useEffect(() => {
     let cancelled = false;
     let closer: SubCloser | null = null;
+    // Defer IDB writes from per-frame patches until enrichment fires
+    // `onComplete`. Pre-enrichment, streamed capability events lack
+    // name/picture/banner/about, so persisting them would overwrite a
+    // previously-cached enriched profile and cause the picture to vanish
+    // until the next enrichment finishes.
+    let enriched = false;
 
     const flush = () => {
       rafRef.current = null;
-      let touched = false;
+      const touchedPubkeys = new Set<string>();
       for (const patch of pendingRef.current) {
         if (patch.type === 'agent') {
           const prior = agentMapRef.current.get(patch.agent.pubkey);
@@ -43,7 +53,7 @@ export function useAgents(): UseAgentsResult {
             next.lastSeen = prior.lastSeen;
           }
           agentMapRef.current.set(patch.agent.pubkey, next);
-          touched = true;
+          touchedPubkeys.add(patch.agent.pubkey);
         } else {
           const existing = agentMapRef.current.get(patch.pubkey);
           // Don't overwrite a verified `lastPaidJobAt` from enrichment.
@@ -58,12 +68,24 @@ export function useAgents(): UseAgentsResult {
             (!existing.lastPaidJobAt || patch.ts > existing.lastPaidJobAt)
           ) {
             agentMapRef.current.set(patch.pubkey, { ...existing, lastPaidJobAt: patch.ts });
-            touched = true;
+            touchedPubkeys.add(patch.pubkey);
           }
         }
       }
       pendingRef.current = [];
-      if (touched) {
+      if (touchedPubkeys.size > 0) {
+        if (enriched) {
+          const changedAgents: Agent[] = [];
+          for (const pubkey of touchedPubkeys) {
+            const agent = agentMapRef.current.get(pubkey);
+            if (agent) {
+              changedAgents.push(agent);
+            }
+          }
+          if (changedAgents.length > 0) {
+            void setAgentProfiles(NETWORK, changedAgents);
+          }
+        }
         setVersion((prev) => prev + 1);
       }
     };
@@ -75,22 +97,23 @@ export function useAgents(): UseAgentsResult {
       rafRef.current = requestAnimationFrame(flush);
     };
 
-    const cacheKey = `agents:${NETWORK}`;
-    void cacheGet<Agent[]>(cacheKey).then((cached) => {
-      if (cancelled || !cached || cached.length === 0) {
+    const seedFromCache = async () => {
+      await migrateLegacyListSnapshot(NETWORK);
+      const cached = await getAllAgentProfiles(NETWORK);
+      if (cancelled || cached.length === 0) {
         return;
       }
-      // Seed only if no live event has arrived yet, otherwise we would
-      // overwrite fresher data with the snapshot.
-      if (agentMapRef.current.size > 0) {
-        return;
-      }
+      // Merge cached fields *under* live data so enriched profile fields
+      // (name/picture/banner/about) survive the case where a streamed
+      // capability event landed in the map before the IDB read resolved.
+      // Live data still wins for any field it sets.
       for (const agent of cached) {
-        agentMapRef.current.set(agent.pubkey, agent);
+        const live = agentMapRef.current.get(agent.pubkey);
+        agentMapRef.current.set(agent.pubkey, live ? { ...agent, ...live } : agent);
       }
       setStatus((prev) => (prev === 'idle' ? 'streaming' : prev));
       setVersion((prev) => prev + 1);
-    });
+    };
 
     const open = () => {
       closer = client.discovery.streamAgents(NETWORK, {
@@ -116,14 +139,32 @@ export function useAgents(): UseAgentsResult {
             agentMapRef.current.set(agent.pubkey, agent);
           }
           enrichedOrderRef.current = sortedAgents;
-          void cacheSet(cacheKey, sortedAgents);
+          enriched = true;
+          void setAgentProfiles(NETWORK, sortedAgents);
           setStatus('enriched');
           setVersion((prev) => prev + 1);
         },
       });
     };
 
-    open();
+    // Generation token guards against parallel `init()` runs (e.g. a
+    // `pool.onReset` firing while the previous seed is still awaiting).
+    // Each `init` captures its generation; only the current one is allowed
+    // to call `open()`. Block subscription on the IDB seed so a freshly
+    // mounted hook never renders streamed agents (which carry no
+    // name/picture/banner from `parseCapabilityEvent`) before the cached
+    // enriched fields are merged in.
+    let generation = 0;
+
+    const init = async (myGen: number) => {
+      await seedFromCache();
+      if (cancelled || myGen !== generation) {
+        return;
+      }
+      open();
+    };
+
+    void init(generation);
 
     const unregisterReset = client.pool.onReset(() => {
       closer?.close('pool reset');
@@ -135,9 +176,11 @@ export function useAgents(): UseAgentsResult {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
+      enriched = false;
       setStatus('streaming');
       setVersion((prev) => prev + 1);
-      open();
+      generation += 1;
+      void init(generation);
     });
 
     return () => {
