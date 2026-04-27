@@ -124,4 +124,12 @@ export interface BuildTransactionOptions {
    * quartile (default), 90 = aggressive.
    */
   priorityFeePercentile?: number;
+  /**
+   * Nostr job request event id (hex) to embed in an SPL Memo instruction
+   * with payload `elisym:v1:<jobEventId>`. Off-chain indexers join the memo
+   * back to the originating job for per-provider/per-capability analytics.
+   * Memo is omitted when this option is absent; the protocol tag is still
+   * attached either way.
+   */
+  jobEventId?: string;
 }

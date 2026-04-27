@@ -1,3 +1,4 @@
+import { getAddMemoInstruction } from '@solana-program/memo';
 import { getTransferSolInstruction } from '@solana-program/system';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
@@ -25,7 +26,7 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { getProtocolConfig } from '../config/onchain';
-import { DEFAULTS, LIMITS } from '../constants';
+import { DEFAULTS, ELISYM_PROTOCOL_TAG, LIMITS } from '../constants';
 import type {
   PaymentAssetRef,
   PaymentRequestData,
@@ -298,7 +299,9 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     // Build payment instructions first - this surfaces shape errors (e.g. fee
     // >= amount) and, for SPL assets, derives the ATAs, before any RPC
     // round-trip that depends on them.
-    const paymentInstructions = await buildPaymentInstructions(paymentRequest, payerSigner);
+    const paymentInstructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
+      jobEventId: options?.jobEventId,
+    });
 
     const priorityFeeMicroLamports =
       options?.priorityFeeMicroLamports ??
@@ -717,6 +720,16 @@ function waitMs(ms: number): Promise<void> {
  *      extra read-only account (canonical Solana Pay pattern);
  *   4. `TransferChecked` from payer ATA to treasury ATA if a fee applies.
  *
+ * Every provider transfer instruction also carries `ELISYM_PROTOCOL_TAG` as a
+ * read-only marker account so off-chain indexers can enumerate every elisym
+ * transaction with a single `getSignaturesForAddress(ELISYM_PROTOCOL_TAG)`
+ * call, regardless of fee size.
+ *
+ * If `options.jobEventId` is provided, an SPL Memo instruction with payload
+ * `elisym:v1:<jobEventId>` is prepended so explorers display the originating
+ * Nostr job id and indexers can join on-chain payments back to off-chain
+ * job context.
+ *
  * Async because SPL ATAs are PDAs and `findAssociatedTokenPda` is async.
  *
  * Caller is responsible for validating `paymentRequest` upstream;
@@ -725,9 +738,11 @@ function waitMs(ms: number): Promise<void> {
 export async function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
   payerSigner: Signer,
+  options?: { jobEventId?: string },
 ): Promise<readonly unknown[]> {
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);
+  const protocolTag = address(ELISYM_PROTOCOL_TAG);
   const feeAmount = paymentRequest.fee_amount ?? 0;
   const providerAmount =
     paymentRequest.fee_address && feeAmount > 0
@@ -740,6 +755,10 @@ export async function buildPaymentInstructions(
     );
   }
 
+  const memoInstruction = options?.jobEventId
+    ? getAddMemoInstruction({ memo: `elisym:v1:${options.jobEventId}` })
+    : null;
+
   // Native SOL path - unchanged from the pre-USDC behaviour.
   const asset = resolveAssetFromPaymentRequest(paymentRequest);
   if (!asset.mint) {
@@ -748,15 +767,20 @@ export async function buildPaymentInstructions(
       destination: recipient,
       amount: BigInt(providerAmount),
     });
-    const providerTransferIxWithReference = {
+    const providerTransferIxWithMarkers = {
       ...providerTransferIx,
       accounts: [
         ...providerTransferIx.accounts,
         { address: reference, role: AccountRole.READONLY },
+        { address: protocolTag, role: AccountRole.READONLY },
       ],
     };
 
-    const instructions: unknown[] = [providerTransferIxWithReference];
+    const instructions: unknown[] = [];
+    if (memoInstruction) {
+      instructions.push(memoInstruction);
+    }
+    instructions.push(providerTransferIxWithMarkers);
     if (paymentRequest.fee_address && feeAmount > 0) {
       instructions.push(
         getTransferSolInstruction({
@@ -784,6 +808,9 @@ export async function buildPaymentInstructions(
   });
 
   const instructions: unknown[] = [];
+  if (memoInstruction) {
+    instructions.push(memoInstruction);
+  }
   instructions.push(
     getCreateAssociatedTokenIdempotentInstruction(
       {
@@ -825,11 +852,15 @@ export async function buildPaymentInstructions(
     amount: BigInt(providerAmount),
     decimals: asset.decimals,
   });
-  const providerTransferIxWithReference = {
+  const providerTransferIxWithMarkers = {
     ...providerTransferIx,
-    accounts: [...providerTransferIx.accounts, { address: reference, role: AccountRole.READONLY }],
+    accounts: [
+      ...providerTransferIx.accounts,
+      { address: reference, role: AccountRole.READONLY },
+      { address: protocolTag, role: AccountRole.READONLY },
+    ],
   };
-  instructions.push(providerTransferIxWithReference);
+  instructions.push(providerTransferIxWithMarkers);
 
   if (treasuryAta && paymentRequest.fee_address && feeAmount > 0) {
     instructions.push(

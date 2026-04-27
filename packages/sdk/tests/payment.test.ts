@@ -9,6 +9,7 @@ import {
 } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ELISYM_PROTOCOL_TAG,
   PROTOCOL_FEE_BPS,
   PROTOCOL_TREASURY,
   USDC_SOLANA_DEVNET,
@@ -287,7 +288,7 @@ describe('buildPaymentInstructions', () => {
     }
   });
 
-  it('attaches reference as read-only non-signer account on provider transfer', async () => {
+  it('attaches reference + protocol tag as read-only non-signer accounts on provider transfer', async () => {
     interface IxLike {
       accounts: ReadonlyArray<{ address: string; role: number }>;
     }
@@ -306,10 +307,52 @@ describe('buildPaymentInstructions', () => {
       signer as never,
     );
     const providerIx = instructions[0] as IxLike;
-    const lastAccount = providerIx.accounts[providerIx.accounts.length - 1]!;
-    expect(lastAccount.address).toBe(reference);
-    // AccountRole.READONLY === 0
-    expect(lastAccount.role).toBe(0);
+    const tail = providerIx.accounts.slice(-2);
+    expect(tail[0]?.address).toBe(reference);
+    expect(tail[0]?.role).toBe(0);
+    expect(tail[1]?.address).toBe(ELISYM_PROTOCOL_TAG);
+    expect(tail[1]?.role).toBe(0);
+  });
+
+  it('prepends an SPL Memo instruction when jobEventId is provided', async () => {
+    interface IxLike {
+      programAddress: string;
+      data: Uint8Array;
+    }
+    const jobEventId = 'a'.repeat(64);
+    const signer = makeSigner(makeAddress());
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      signer as never,
+      { jobEventId },
+    );
+    expect(instructions.length).toBe(2);
+    const memoIx = instructions[0] as IxLike;
+    // SPL Memo program ID
+    expect(memoIx.programAddress).toBe('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+    const decoded = new TextDecoder().decode(memoIx.data);
+    expect(decoded).toBe(`elisym:v1:${jobEventId}`);
+  });
+
+  it('omits the memo instruction when jobEventId is absent', async () => {
+    const signer = makeSigner(makeAddress());
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      signer as never,
+    );
+    expect(instructions.length).toBe(1);
   });
 });
 
@@ -848,11 +891,12 @@ describe('USDC (SPL) payment flow', () => {
     interface IxLike {
       accounts: ReadonlyArray<{ address: string; role: number }>;
     }
-    // TransferChecked with reference is ix[2] (after the two ATA creates).
+    // TransferChecked with reference + protocol tag is ix[2] (after the two ATA creates).
     const providerIx = instructions[2] as IxLike;
-    const lastAccount = providerIx.accounts[providerIx.accounts.length - 1]!;
-    expect(lastAccount.address).toBe(reference);
-    // AccountRole.READONLY === 0
-    expect(lastAccount.role).toBe(0);
+    const tail = providerIx.accounts.slice(-2);
+    expect(tail[0]?.address).toBe(reference);
+    expect(tail[0]?.role).toBe(0);
+    expect(tail[1]?.address).toBe(ELISYM_PROTOCOL_TAG);
+    expect(tail[1]?.role).toBe(0);
   });
 });

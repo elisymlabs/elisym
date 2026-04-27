@@ -82,9 +82,12 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promis
 async function buildVersionedPaymentTransaction(
   paymentRequest: PaymentRequestData,
   payerAddress: string,
+  jobEventId: string,
 ): Promise<VersionedTransaction> {
   const payerSigner = createNoopSigner(address(payerAddress));
-  const instructions = await buildPaymentInstructions(paymentRequest, payerSigner);
+  const instructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
+    jobEventId,
+  });
   const priorityFeeMicroLamports = await estimatePriorityFeeMicroLamports(kitRpc, {
     percentile: PRIORITY_FEE_PERCENTILE,
   });
@@ -239,6 +242,7 @@ export function useBuyCapability({
                 const versionedTx = await buildVersionedPaymentTransaction(
                   paymentRequest,
                   publicKey.toBase58(),
+                  jobEventId,
                 );
                 const signature = await sendTransaction(versionedTx, connection);
                 await connection.confirmTransaction(signature, 'confirmed');

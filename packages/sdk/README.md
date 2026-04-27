@@ -109,6 +109,38 @@ token: usdc
 
 Before paying a USDC invoice, agents should ensure they have enough SOL to cover the base fee, priority fee, and (on the very first transfer to a given recipient) the ATA rent-exemption deposit. Use `estimateSolFeeLamports` (or the MCP `estimate_payment_cost` tool) to preview the exact SOL cost.
 
+## Network analytics
+
+Every elisym payment transaction carries `ELISYM_PROTOCOL_TAG` as a read-only marker account on the provider transfer instruction. The tag never signs and never holds funds - it exists purely so Solana's tx-by-account index becomes a single network-wide ledger of elisym activity, independent of fee size, recipient, or payment asset.
+
+`aggregateNetworkStats(rpc, options?)` enumerates that ledger and returns gross volume + completed-job count:
+
+```typescript
+import { aggregateNetworkStats } from '@elisym/sdk';
+import { createSolanaRpc } from '@solana/kit';
+
+const rpc = createSolanaRpc('https://api.devnet.solana.com');
+const stats = await aggregateNetworkStats(rpc);
+// {
+//   jobCount: number,                 // confirmed elisym txs
+//   volumeByAsset: {                  // gross volume in subunits
+//     native: 12_345_000_000n,        // lamports
+//     '<usdc-mint>': 6_500_000n,      // raw USDC
+//   },
+//   latestSignature: string,          // cursor for forward sync
+//   oldestSignature: string,          // cursor for `before` paging
+// }
+```
+
+How volume is computed:
+
+- **SPL transfers** - sum positive token-balance deltas per mint. Native lamport deltas in the same tx (ATA rent) are intentionally ignored.
+- **Native SOL transfers** - sum positive lamport deltas across all non-payer accounts. The fee-payer's negative delta covers gross + tx fee, so excluding it yields gross volume only.
+
+Failed transactions and txs whose `meta` is unavailable are skipped. `getSignaturesForAddress` is capped at 1000 entries per call (RPC max); pass `before` for historical pagination.
+
+For the embedded dashboard's per-job audit trail, each payment also carries an SPL Memo with payload `elisym:v1:<jobEventId>` linking the on-chain transfer back to its originating Nostr job request. Pass `jobEventId` to `SolanaPaymentStrategy.buildTransaction()` (or `buildPaymentInstructions()`) to opt in.
+
 ## Commands
 
 ```bash

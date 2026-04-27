@@ -65,6 +65,19 @@ export const PROTOCOL_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy' 
  */
 export const PROTOCOL_PROGRAM_ID_DEVNET = 'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE' as Address;
 
+/**
+ * Read-only marker pubkey attached as a non-signer account to every elisym
+ * payment transaction. Lets indexers enumerate every elisym tx network-wide
+ * via a single `getSignaturesForAddress(ELISYM_PROTOCOL_TAG)` call,
+ * independent of fee size or recipient.
+ *
+ * The account does not need to exist on-chain; including its pubkey as an
+ * extra read-only account in the provider transfer instruction is enough for
+ * Solana's tx-by-account index to pick it up. The corresponding secret key
+ * was generated and discarded - the tag never signs and never holds funds.
+ */
+export const ELISYM_PROTOCOL_TAG = 'ELiZksgwDt41LaeuPDLkUfWgFXhGgVayTMP7L5nTSEL8' as Address;
+
 export type ProtocolCluster = 'devnet' | 'mainnet' | 'localnet';
 
 /**

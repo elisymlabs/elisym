@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { useStats } from '~/hooks/useStats';
 
 const ON_CHAIN_TOOLTIP_TEXT =
-  'Based on incoming transfers to the protocol treasury address on Solana.';
+  'Aggregated from every elisym payment transaction on Solana, indexed by the on-chain protocol tag attached to each transfer.';
 
 const TOOLTIP_MAX_WIDTH = 240;
 const TOOLTIP_EDGE_MARGIN = 12;
