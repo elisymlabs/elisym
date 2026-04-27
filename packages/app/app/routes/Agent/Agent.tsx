@@ -9,6 +9,7 @@ import { VerifiedBadge } from '~/components/VerifiedBadge';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
 import { useAgents } from '~/hooks/useAgents';
+import { useCachedAgentProfile } from '~/hooks/useCachedAgentProfile';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { usePingAgent, type PingStatus } from '~/hooks/usePingAgent';
@@ -296,12 +297,18 @@ export default function AgentPage() {
   // yet include the target pubkey would flip into <NotFound /> before the
   // event arrives.
   const agentListSettled = agentsStatus === 'eose' || agentsStatus === 'enriched';
-  const isLoading = !agentListSettled;
 
-  const agent = useMemo(
+  const liveAgent = useMemo(
     () => agents.find((candidate) => candidate.pubkey === pubkey),
     [agents, pubkey],
   );
+  const cachedAgent = useCachedAgentProfile(pubkey);
+  // Use the IDB-cached profile as a placeholder *only* while the cap stream
+  // is still loading. Once it settles, fall back to the live result so an
+  // agent that has gone offline doesn't get rendered forever from stale
+  // cache instead of routing to <NotFound />.
+  const agent = liveAgent ?? (agentListSettled ? undefined : cachedAgent);
+  const isLoading = !agent && !agentListSettled;
 
   const displayAgents = useAgentDisplay(agent ? [agent] : [], feedbackMap);
   const agentData = agent ? displayAgents[0] : undefined;

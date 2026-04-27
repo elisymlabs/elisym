@@ -1,7 +1,7 @@
 import { USDC_SOLANA_DEVNET, aggregateNetworkStats } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
-import { useQuery } from '@tanstack/react-query';
 import { SOLANA_RPC_URL } from '~/lib/cluster';
+import { useLocalQuery } from './useLocalQuery';
 
 /**
  * Stats derived from the protocol tag's tx index. Volume + jobCount come
@@ -34,7 +34,7 @@ async function fetchOnchainStats(): Promise<UiNetworkStats> {
 }
 
 export function useStats() {
-  return useQuery<UiNetworkStats>({
+  return useLocalQuery<UiNetworkStats>({
     queryKey: ['network-stats'],
     queryFn: fetchOnchainStats,
     retry: 3,
