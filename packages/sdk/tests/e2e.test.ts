@@ -22,8 +22,6 @@ import {
   KIND_JOB_RESULT,
   MarketplaceService,
   PingService,
-  PROTOCOL_FEE_BPS,
-  PROTOCOL_TREASURY,
   SolanaPaymentStrategy,
   type CapabilityCard,
   type ProtocolConfigInput,
@@ -37,9 +35,12 @@ function makeAddress(): Address {
   return ADDRESS_DECODER.decode(bytes);
 }
 
+const TEST_FEE_BPS = 300;
+const TEST_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy' as Address;
+
 const CONFIG: ProtocolConfigInput = {
-  feeBps: PROTOCOL_FEE_BPS,
-  treasury: PROTOCOL_TREASURY,
+  feeBps: TEST_FEE_BPS,
+  treasury: TEST_TREASURY,
 };
 
 // ---------------------------------------------------------------------------
@@ -300,7 +301,7 @@ describe('E2E: Targeted job flow', () => {
     const customerSigner = makeMockSigner(CUSTOMER_WALLET);
     const instructions = await buildPaymentInstructions(parsedPayReq, customerSigner as never);
     expect(instructions.length).toBe(2);
-    const fee = calculateProtocolFee(JOB_PRICE, PROTOCOL_FEE_BPS);
+    const fee = calculateProtocolFee(JOB_PRICE, TEST_FEE_BPS);
     const netAmount = JOB_PRICE - fee;
     expect(fee + netAmount).toBe(JOB_PRICE);
 
@@ -322,7 +323,7 @@ describe('E2E: Targeted job flow', () => {
 
     // --- Provider step 7: verifyPayment ---
     const rpc = mockKitRpc({
-      keys: [CUSTOMER_WALLET, PROVIDER_WALLET, parsedPayReq.reference, PROTOCOL_TREASURY],
+      keys: [CUSTOMER_WALLET, PROVIDER_WALLET, parsedPayReq.reference, TEST_TREASURY],
       preBalances: [1_000_000_000, 0, 0, 0],
       postBalances: [1_000_000_000 - JOB_PRICE, netAmount, 0, fee],
       txSignature,
@@ -675,11 +676,11 @@ describe('E2E: Error flows', () => {
   it('payment verification rejects transaction with wrong reference key (replay)', async () => {
     const payment = new SolanaPaymentStrategy();
     const payReq = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
-    const fee = calculateProtocolFee(JOB_PRICE, PROTOCOL_FEE_BPS);
+    const fee = calculateProtocolFee(JOB_PRICE, TEST_FEE_BPS);
     const net = JOB_PRICE - fee;
 
     const rpc = mockKitRpc({
-      keys: [CUSTOMER_WALLET, PROVIDER_WALLET, makeAddress(), PROTOCOL_TREASURY],
+      keys: [CUSTOMER_WALLET, PROVIDER_WALLET, makeAddress(), TEST_TREASURY],
       preBalances: [1_000_000_000, 0, 0, 0],
       postBalances: [1_000_000_000 - JOB_PRICE, net, 0, fee],
       txSignature: 'replay_sig',

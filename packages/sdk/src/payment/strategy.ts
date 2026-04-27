@@ -22,10 +22,10 @@ export type Signer = TransactionSigner;
 /**
  * Protocol fee + treasury inputs for building a payment request.
  *
- * In Phase 2 the SDK no longer reads PROTOCOL_FEE_BPS / PROTOCOL_TREASURY
- * from constants. Callers supply this config so they can either pass
- * the bundled fallbacks or, in Phase 3, values fetched from the on-chain
- * elisym-config program.
+ * Callers must supply this config explicitly - the SDK does not bundle a
+ * fallback. The canonical source is `getProtocolConfig(rpc, programId)`,
+ * which reads the on-chain elisym-config program; tests and offline tools
+ * may pass fixture values directly.
  */
 export interface ProtocolConfigInput {
   /** Protocol fee in basis points (300 = 3%). Must be a non-negative integer. */

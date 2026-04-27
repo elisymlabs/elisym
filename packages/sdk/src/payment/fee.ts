@@ -13,9 +13,8 @@ export function assertLamports(value: number, field: string): void {
  * Calculate the protocol fee using basis-point math (no floats).
  * Returns ceil(amount * feeBps / 10000).
  *
- * The caller passes the current fee (in basis points). Phase 2 of the
- * Solana Kit migration removes the implicit dependency on PROTOCOL_FEE_BPS
- * so callers can supply on-chain or test values.
+ * The caller passes the current fee (in basis points), typically obtained
+ * from `getProtocolConfig` or supplied as a test fixture.
  */
 export function calculateProtocolFee(amount: number, feeBps: number): number {
   if (!Number.isInteger(feeBps) || feeBps < 0) {

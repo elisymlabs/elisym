@@ -10,8 +10,6 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import {
   ELISYM_PROTOCOL_TAG,
-  PROTOCOL_FEE_BPS,
-  PROTOCOL_TREASURY,
   USDC_SOLANA_DEVNET,
   calculateProtocolFee,
   buildPaymentInstructions,
@@ -29,9 +27,12 @@ function makeAddress(): Address {
   return ADDRESS_DECODER.decode(bytes);
 }
 
+const TEST_FEE_BPS = 300;
+const TEST_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy' as Address;
+
 const CONFIG: ProtocolConfigInput = {
-  feeBps: PROTOCOL_FEE_BPS,
-  treasury: PROTOCOL_TREASURY,
+  feeBps: TEST_FEE_BPS,
+  treasury: TEST_TREASURY,
 };
 
 const payment = new SolanaPaymentStrategy();
@@ -39,7 +40,7 @@ const validAddress = makeAddress();
 
 describe('calculateProtocolFee', () => {
   it('returns 0 for zero amount', () => {
-    expect(calculateProtocolFee(0, PROTOCOL_FEE_BPS)).toBe(0);
+    expect(calculateProtocolFee(0, TEST_FEE_BPS)).toBe(0);
   });
 
   it('returns 0 when feeBps is zero', () => {
@@ -48,36 +49,36 @@ describe('calculateProtocolFee', () => {
 
   it('calculates 3% fee correctly (ceil)', () => {
     // 100_000_000 lamports (0.1 SOL) -> 3% = 3_000_000
-    expect(calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS)).toBe(3_000_000);
+    expect(calculateProtocolFee(100_000_000, TEST_FEE_BPS)).toBe(3_000_000);
   });
 
   it('rounds up (ceil) for non-divisible amounts', () => {
     // 1 lamport -> ceil(1 * 300 / 10000) = ceil(0.03) = 1
-    expect(calculateProtocolFee(1, PROTOCOL_FEE_BPS)).toBe(1);
+    expect(calculateProtocolFee(1, TEST_FEE_BPS)).toBe(1);
   });
 
   it('handles small amounts correctly', () => {
     // 10 lamports -> ceil(10 * 300 / 10000) = ceil(0.3) = 1
-    expect(calculateProtocolFee(10, PROTOCOL_FEE_BPS)).toBe(1);
+    expect(calculateProtocolFee(10, TEST_FEE_BPS)).toBe(1);
     // 100 lamports -> ceil(100 * 300 / 10000) = ceil(3) = 3
-    expect(calculateProtocolFee(100, PROTOCOL_FEE_BPS)).toBe(3);
+    expect(calculateProtocolFee(100, TEST_FEE_BPS)).toBe(3);
     // 333 lamports -> ceil(333 * 300 / 10000) = ceil(9.99) = 10
-    expect(calculateProtocolFee(333, PROTOCOL_FEE_BPS)).toBe(10);
+    expect(calculateProtocolFee(333, TEST_FEE_BPS)).toBe(10);
   });
 
   it('handles 1 SOL', () => {
     // 1_000_000_000 lamports -> 3% = 30_000_000
-    expect(calculateProtocolFee(1_000_000_000, PROTOCOL_FEE_BPS)).toBe(30_000_000);
+    expect(calculateProtocolFee(1_000_000_000, TEST_FEE_BPS)).toBe(30_000_000);
   });
 
   it('handles large amounts without overflow', () => {
     // 100 SOL = 100_000_000_000 lamports -> 3% = 3_000_000_000
-    expect(calculateProtocolFee(100_000_000_000, PROTOCOL_FEE_BPS)).toBe(3_000_000_000);
+    expect(calculateProtocolFee(100_000_000_000, TEST_FEE_BPS)).toBe(3_000_000_000);
   });
 
   it('throws on negative amount', () => {
-    expect(() => calculateProtocolFee(-1, PROTOCOL_FEE_BPS)).toThrow('non-negative');
-    expect(() => calculateProtocolFee(-100_000_000, PROTOCOL_FEE_BPS)).toThrow('non-negative');
+    expect(() => calculateProtocolFee(-1, TEST_FEE_BPS)).toThrow('non-negative');
+    expect(() => calculateProtocolFee(-100_000_000, TEST_FEE_BPS)).toThrow('non-negative');
   });
 
   it('throws on negative feeBps', () => {
@@ -87,8 +88,8 @@ describe('calculateProtocolFee', () => {
   it('matches basis points formula: ceil(amount * BPS / 10000)', () => {
     const amounts = [1, 33, 100, 999, 1337, 50000, 140_000_000, 1_000_000_000];
     for (const amount of amounts) {
-      const expected = Math.ceil((amount * PROTOCOL_FEE_BPS) / 10_000);
-      expect(calculateProtocolFee(amount, PROTOCOL_FEE_BPS)).toBe(expected);
+      const expected = Math.ceil((amount * TEST_FEE_BPS) / 10_000);
+      expect(calculateProtocolFee(amount, TEST_FEE_BPS)).toBe(expected);
     }
   });
 });
@@ -101,8 +102,8 @@ describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
     recipient: recipientAddr,
     amount: 140_000_000,
     reference: referenceAddr,
-    fee_address: PROTOCOL_TREASURY,
-    fee_amount: calculateProtocolFee(140_000_000, PROTOCOL_FEE_BPS),
+    fee_address: TEST_TREASURY,
+    fee_amount: calculateProtocolFee(140_000_000, TEST_FEE_BPS),
     created_at: Math.floor(Date.now() / 1000),
     expiry_secs: 3600,
   };
@@ -158,7 +159,7 @@ describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
     // Regression: set_fee_bps enforces <= MAX_FEE_BPS but not > 0. When an admin
     // sets feeBps=0, createPaymentRequest emits fee_address=treasury, fee_amount=0.
     // validatePaymentRequest must accept the same request it just produced.
-    const zeroFeeConfig = { feeBps: 0, treasury: PROTOCOL_TREASURY };
+    const zeroFeeConfig = { feeBps: 0, treasury: TEST_TREASURY };
     const zeroFeeRequest = { ...validRequest, fee_amount: 0 };
     const result = payment.validatePaymentRequest(
       JSON.stringify(zeroFeeRequest),
@@ -174,7 +175,7 @@ describe('SolanaPaymentStrategy.createPaymentRequest', () => {
     const pr = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG);
     expect(pr.recipient).toBe(validAddress);
     expect(pr.amount).toBe(100_000_000);
-    expect(pr.fee_address).toBe(PROTOCOL_TREASURY);
+    expect(pr.fee_address).toBe(TEST_TREASURY);
     expect(pr.fee_amount).toBe(3_000_000);
     expect(pr.reference).toBeTruthy();
     expect(pr.created_at).toBeGreaterThan(0);
@@ -215,7 +216,7 @@ describe('SolanaPaymentStrategy.createPaymentRequest', () => {
   it('rejects invalid treasury in config', () => {
     expect(() =>
       payment.createPaymentRequest(validAddress, 100_000_000, {
-        feeBps: PROTOCOL_FEE_BPS,
+        feeBps: TEST_FEE_BPS,
         treasury: 'not-a-valid-address' as Address,
       }),
     ).toThrow('Invalid treasury address');
@@ -234,8 +235,8 @@ describe('buildPaymentInstructions', () => {
         recipient: makeAddress(),
         amount: 100_000_000,
         reference: makeAddress(),
-        fee_address: PROTOCOL_TREASURY,
-        fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
+        fee_address: TEST_TREASURY,
+        fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
         created_at: Math.floor(Date.now() / 1000),
         expiry_secs: 600,
       },
@@ -268,13 +269,13 @@ describe('buildPaymentInstructions', () => {
     const signer = makeSigner(makeAddress());
     const amounts = [10, 33, 100, 333, 999, 1337, 50_000, 140_000_000, 1_000_000_000];
     for (const amount of amounts) {
-      const fee = calculateProtocolFee(amount, PROTOCOL_FEE_BPS);
+      const fee = calculateProtocolFee(amount, TEST_FEE_BPS);
       const instructions = await buildPaymentInstructions(
         {
           recipient: makeAddress(),
           amount,
           reference: makeAddress(),
-          fee_address: PROTOCOL_TREASURY,
+          fee_address: TEST_TREASURY,
           fee_amount: fee,
           created_at: Math.floor(Date.now() / 1000),
           expiry_secs: 600,
@@ -299,8 +300,8 @@ describe('buildPaymentInstructions', () => {
         recipient: makeAddress(),
         amount: 100_000_000,
         reference,
-        fee_address: PROTOCOL_TREASURY,
-        fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
+        fee_address: TEST_TREASURY,
+        fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
         created_at: Math.floor(Date.now() / 1000),
         expiry_secs: 600,
       },
@@ -390,7 +391,7 @@ describe('SolanaPaymentStrategy.buildTransaction', () => {
           recipient: makeAddress(),
           amount: 100,
           reference: makeAddress(),
-          fee_address: PROTOCOL_TREASURY,
+          fee_address: TEST_TREASURY,
           fee_amount: 999,
           created_at: Math.floor(Date.now() / 1000),
           expiry_secs: 600,
@@ -411,7 +412,7 @@ describe('SolanaPaymentStrategy.buildTransaction', () => {
           amount: 100_000_000,
           reference: makeAddress(),
           fee_address: makeAddress(),
-          fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
+          fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
           created_at: Math.floor(Date.now() / 1000),
           expiry_secs: 600,
         },
@@ -430,8 +431,8 @@ describe('SolanaPaymentStrategy.buildTransaction', () => {
           recipient: makeAddress(),
           amount: 100_000_000,
           reference: makeAddress(),
-          fee_address: PROTOCOL_TREASURY,
-          fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
+          fee_address: TEST_TREASURY,
+          fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
           created_at: Math.floor(Date.now() / 1000) - 7200,
           expiry_secs: 3600,
         },
@@ -449,8 +450,8 @@ describe('SolanaPaymentStrategy.validatePaymentRequest - expiry', () => {
       recipient: makeAddress(),
       amount: 100_000_000,
       reference: makeAddress(),
-      fee_address: PROTOCOL_TREASURY,
-      fee_amount: calculateProtocolFee(100_000_000, PROTOCOL_FEE_BPS),
+      fee_address: TEST_TREASURY,
+      fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
       created_at: Math.floor(Date.now() / 1000) - 7200, // 2 hours ago
       expiry_secs: 3600, // 1 hour expiry
     };
@@ -466,7 +467,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
   const recipientAddr = makeAddress();
   const referenceAddr = makeAddress();
   const amount = 100_000_000;
-  const feeAmount = calculateProtocolFee(amount, PROTOCOL_FEE_BPS);
+  const feeAmount = calculateProtocolFee(amount, TEST_FEE_BPS);
   const netAmount = amount - feeAmount;
 
   function makePR(overrides?: Record<string, unknown>) {
@@ -474,7 +475,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       recipient: recipientAddr,
       amount,
       reference: referenceAddr,
-      fee_address: PROTOCOL_TREASURY,
+      fee_address: TEST_TREASURY,
       fee_amount: feeAmount,
       created_at: Math.floor(Date.now() / 1000),
       expiry_secs: 600,
@@ -526,7 +527,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           send: () =>
             Promise.resolve(
               makeTx({
-                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
                 pre: [200_000_000, 0, 0, 0],
                 post: [200_000_000 - amount, netAmount, 0, feeAmount],
               }),
@@ -549,7 +550,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           send: () =>
             Promise.resolve(
               makeTx({
-                keys: [payerAddr, recipientAddr, wrongRef, PROTOCOL_TREASURY],
+                keys: [payerAddr, recipientAddr, wrongRef, TEST_TREASURY],
                 pre: [200_000_000, 0, 0, 0],
                 post: [200_000_000 - amount, netAmount, 0, feeAmount],
               }),
@@ -571,7 +572,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           send: () =>
             Promise.resolve(
               makeTx({
-                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
                 pre: [0, 0, 0, 0],
                 post: [0, 0, 0, 0],
                 err: { InstructionError: [0, 'Custom'] },
@@ -594,7 +595,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           send: () =>
             Promise.resolve(
               makeTx({
-                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
                 pre: [200_000_000, 0, 0, 0],
                 post: [200_000_000, 1_000, 0, feeAmount],
               }),
@@ -616,7 +617,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           send: () =>
             Promise.resolve(
               makeTx({
-                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
                 pre: [200_000_000, 0, 0, 0],
                 post: [200_000_000 - amount, netAmount, 0, 1],
               }),
@@ -638,7 +639,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           send: () =>
             Promise.resolve(
               makeTx({
-                keys: [payerAddr, null, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                keys: [payerAddr, null, recipientAddr, referenceAddr, TEST_TREASURY],
                 pre: [200_000_000, 0, 0, 0, 0],
                 post: [200_000_000 - amount, 0, netAmount, 0, feeAmount],
               }),
@@ -662,7 +663,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
             if (calls < 3) return Promise.resolve(null);
             return Promise.resolve(
               makeTx({
-                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
                 pre: [200_000_000, 0, 0, 0],
                 post: [200_000_000 - amount, netAmount, 0, feeAmount],
               }),
@@ -693,7 +694,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           send: () =>
             Promise.resolve(
               makeTx({
-                keys: [payerAddr, recipientAddr, referenceAddr, PROTOCOL_TREASURY],
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
                 pre: [200_000_000, 0, 0, 0],
                 post: [200_000_000 - amount, netAmount, 0, feeAmount],
               }),
@@ -793,8 +794,8 @@ describe('USDC (SPL) payment flow', () => {
       recipient: validAddress,
       amount: 50_000_000,
       reference: makeAddress(),
-      fee_address: PROTOCOL_TREASURY,
-      fee_amount: calculateProtocolFee(50_000_000, PROTOCOL_FEE_BPS),
+      fee_address: TEST_TREASURY,
+      fee_amount: calculateProtocolFee(50_000_000, TEST_FEE_BPS),
       created_at: Math.floor(Date.now() / 1000),
       expiry_secs: 600,
       asset: {
@@ -831,8 +832,8 @@ describe('USDC (SPL) payment flow', () => {
       recipient: validAddress,
       amount: 50_000_000,
       reference: makeAddress(),
-      fee_address: PROTOCOL_TREASURY,
-      fee_amount: calculateProtocolFee(50_000_000, PROTOCOL_FEE_BPS),
+      fee_address: TEST_TREASURY,
+      fee_amount: calculateProtocolFee(50_000_000, TEST_FEE_BPS),
       created_at: Math.floor(Date.now() / 1000),
       expiry_secs: 600,
       asset: {
@@ -872,8 +873,8 @@ describe('USDC (SPL) payment flow', () => {
         recipient,
         amount: 50_000_000,
         reference,
-        fee_address: PROTOCOL_TREASURY,
-        fee_amount: calculateProtocolFee(50_000_000, PROTOCOL_FEE_BPS),
+        fee_address: TEST_TREASURY,
+        fee_amount: calculateProtocolFee(50_000_000, TEST_FEE_BPS),
         created_at: Math.floor(Date.now() / 1000),
         expiry_secs: 600,
         asset: {

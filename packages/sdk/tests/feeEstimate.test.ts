@@ -1,8 +1,6 @@
 import { type Address, type Rpc, type SolanaRpcApi, getAddressDecoder } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  PROTOCOL_FEE_BPS,
-  PROTOCOL_TREASURY,
   USDC_SOLANA_DEVNET,
   calculateProtocolFee,
   estimateSolFeeLamports,
@@ -16,6 +14,9 @@ function makeAddress(): Address {
   globalThis.crypto.getRandomValues(bytes);
   return ADDRESS_DECODER.decode(bytes);
 }
+
+const TEST_FEE_BPS = 300;
+const TEST_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy' as Address;
 
 /**
  * Build an RPC stub that returns the supplied priority-fee samples and lets
@@ -54,8 +55,8 @@ describe('estimateSolFeeLamports', () => {
     recipient: makeAddress(),
     amount: 50_000_000,
     reference: makeAddress(),
-    fee_address: PROTOCOL_TREASURY as string,
-    fee_amount: calculateProtocolFee(50_000_000, PROTOCOL_FEE_BPS),
+    fee_address: TEST_TREASURY as string,
+    fee_amount: calculateProtocolFee(50_000_000, TEST_FEE_BPS),
     created_at: Math.floor(Date.now() / 1000),
     expiry_secs: 600,
     asset: {

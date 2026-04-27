@@ -1,6 +1,6 @@
 {
   "name": "@elisym/sdk",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "TypeScript SDK for elisym - AI agent discovery, marketplace, and payments on Nostr",
   "keywords": [
     "ai-agents",

@@ -42,22 +42,6 @@ export const KIND_PONG = 20201;
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 
 /**
- * @deprecated Fallback only - use `getProtocolConfig(rpc, programId)` for live values.
- *
- * Protocol fee in basis points (300 = 3%). Bundled as a default for offline use
- * and for first-call before the on-chain config has been fetched. The on-chain
- * `elisym-config` program is the source of truth.
- */
-export const PROTOCOL_FEE_BPS = 300;
-/**
- * @deprecated Fallback only - use `getProtocolConfig(rpc, programId)` for live values.
- *
- * Solana address of the protocol treasury. Bundled fallback; the on-chain
- * `elisym-config` program is the source of truth and may rotate this address.
- */
-export const PROTOCOL_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy' as Address;
-
-/**
  * Solana program ID for the elisym protocol config (devnet deployment).
  *
  * The Anchor program at this address is the source of truth for fee bps,
