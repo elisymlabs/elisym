@@ -2,6 +2,7 @@ import Decimal from 'decimal.js-light';
 import { useId, useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useStats } from '~/hooks/useStats';
+import { useTweenedNumber } from '~/hooks/useTweenedNumber';
 
 const ON_CHAIN_TOOLTIP_TEXT =
   'Aggregated from every elisym payment transaction on Solana, indexed by the on-chain protocol tag attached to each transfer.';
@@ -140,7 +141,7 @@ function InfoTooltip({ text }: { text: string }) {
 
 function StatValue({ children }: { children: ReactNode }) {
   return (
-    <span className="text-xl leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/92 sm:text-2xl">
+    <span className="text-xl leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/92 tabular-nums sm:text-2xl">
       {children}
     </span>
   );
@@ -249,9 +250,13 @@ function MobileRowSkeleton() {
 export function StatsBar() {
   const { data, isLoading } = useStats();
 
-  const jobCount = formatCount(data?.jobCount ?? '-');
-  const solVolume = data ? withCommas(new Decimal(data.totalLamports).div(1e9).toFixed(2)) : '-';
-  const usdcVolume = data ? withCommas(new Decimal(data.totalUsdcMicro).div(1e6).toFixed(2)) : '-';
+  const tweenedJobs = useTweenedNumber(data?.jobCount);
+  const tweenedLamports = useTweenedNumber(data?.totalLamports);
+  const tweenedUsdcMicro = useTweenedNumber(data?.totalUsdcMicro);
+
+  const jobCount = data ? formatCount(Math.round(tweenedJobs)) : '-';
+  const solVolume = data ? withCommas(new Decimal(tweenedLamports).div(1e9).toFixed(2)) : '-';
+  const usdcVolume = data ? withCommas(new Decimal(tweenedUsdcMicro).div(1e6).toFixed(2)) : '-';
 
   return (
     <div className="mx-auto max-w-[480px] px-16 pb-72 sm:px-24 sm:pb-96 stats:max-w-[780px]">
