@@ -154,8 +154,15 @@ export class NostrPool {
     }
   }
 
-  subscribe(filter: Filter, onEvent: (event: Event) => void): SubCloser {
-    const rawSub = this.pool.subscribeMany(this.relays, filter, { onevent: onEvent });
+  subscribe(
+    filter: Filter,
+    onEvent: (event: Event) => void,
+    opts?: { oneose?: () => void },
+  ): SubCloser {
+    const rawSub = this.pool.subscribeMany(this.relays, filter, {
+      onevent: onEvent,
+      oneose: opts?.oneose,
+    });
     const tracked: SubCloser = {
       close: (reason?: string) => {
         this.activeSubscriptions.delete(tracked);
