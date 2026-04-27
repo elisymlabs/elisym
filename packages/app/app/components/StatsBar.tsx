@@ -26,12 +26,6 @@ const COMPLETED_JOBS_ICON: ReactElement = (
   </svg>
 );
 
-const SOL_ICON: ReactElement = (
-  <svg aria-hidden width="16" height="16" viewBox="0 0 397.7 311.7" fill="currentColor">
-    <path d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7zM64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8zM333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.6z" />
-  </svg>
-);
-
 const USDC_DOLLAR_PATH =
   'M15.05 8.4c-2.32.34-3.86 1.92-3.86 4.05 0 2.45 1.55 3.62 4.83 4.21 2.07.42 2.62.86 2.62 1.95 0 .97-.85 1.65-2 1.65-1.45 0-1.97-.62-2.16-1.55-.05-.18-.21-.3-.4-.3h-.92c-.23 0-.4.18-.4.4v.04c.21 1.65 1.5 2.84 3.4 3.16v1.5c0 .23.14.4.36.4h.86c.23 0 .4-.18.4-.4v-1.5c2.39-.32 4.04-1.86 4.04-4.06 0-2.5-1.59-3.7-4.94-4.27-2.23-.4-2.55-.83-2.55-1.83 0-.85.7-1.46 1.92-1.46 1.36 0 1.97.5 2.16 1.41.05.18.21.3.4.3h.92c.21 0 .4-.18.4-.4v-.05c-.23-1.55-1.45-2.7-3.27-3.04V7.06c0-.23-.14-.4-.36-.4h-.86c-.23 0-.4.18-.4.4v1.34z';
 
@@ -251,11 +245,9 @@ export function StatsBar() {
   const { data, isLoading } = useStats();
 
   const tweenedJobs = useTweenedNumber(data?.jobCount);
-  const tweenedLamports = useTweenedNumber(data?.totalLamports);
   const tweenedUsdcMicro = useTweenedNumber(data?.totalUsdcMicro);
 
   const jobCount = data ? formatCount(Math.round(tweenedJobs)) : '-';
-  const solVolume = data ? withCommas(new Decimal(tweenedLamports).div(1e9).toFixed(2)) : '-';
   const usdcVolume = data ? withCommas(new Decimal(tweenedUsdcMicro).div(1e6).toFixed(2)) : '-';
 
   return (
@@ -267,8 +259,6 @@ export function StatsBar() {
             <MobileRowSkeleton />
             <MobileRowDivider />
             <MobileRowSkeleton />
-            <MobileRowDivider />
-            <MobileRowSkeleton />
           </>
         ) : (
           <>
@@ -276,13 +266,6 @@ export function StatsBar() {
               icon={COMPLETED_JOBS_ICON}
               label="Completed Jobs"
               value={jobCount}
-              tooltipText={ON_CHAIN_TOOLTIP_TEXT}
-            />
-            <MobileRowDivider />
-            <MobileStatRow
-              icon={SOL_ICON}
-              label="SOL Volume"
-              value={solVolume}
               tooltipText={ON_CHAIN_TOOLTIP_TEXT}
             />
             <MobileRowDivider />
@@ -305,8 +288,6 @@ export function StatsBar() {
                 <StatSkeleton />
                 <Divider />
                 <StatSkeleton />
-                <Divider />
-                <StatSkeleton />
               </>
             ) : (
               <>
@@ -314,13 +295,6 @@ export function StatsBar() {
                   value={jobCount}
                   label="Completed Jobs"
                   icon={COMPLETED_JOBS_ICON}
-                  tooltipText={ON_CHAIN_TOOLTIP_TEXT}
-                />
-                <Divider />
-                <StatItem
-                  value={solVolume}
-                  label="SOL Volume"
-                  icon={SOL_ICON}
                   tooltipText={ON_CHAIN_TOOLTIP_TEXT}
                 />
                 <Divider />
