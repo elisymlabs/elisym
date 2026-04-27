@@ -14,9 +14,10 @@
     },
     "packages/app": {
       "name": "@elisym/app",
-      "version": "0.2.0",
+      "version": "0.2.6",
       "dependencies": {
-        "@elisym/sdk": "workspace:*",
+        "@elisym/sdk": "~0.11.0",
+        "@solana-program/memo": "~0.11.0",
         "@solana-program/token": "~0.5.0",
         "@solana/kit": "~6.8.0",
         "@solana/wallet-adapter-base": "~0.9.27",
@@ -50,12 +51,13 @@
     },
     "packages/cli": {
       "name": "@elisym/cli",
-      "version": "0.7.0",
+      "version": "0.7.8",
       "bin": {
         "elisym": "./dist/index.js",
       },
       "dependencies": {
-        "@elisym/sdk": "~0.10.0",
+        "@elisym/sdk": "~0.11.0",
+        "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",
         "@solana-program/token": "~0.5.0",
         "@solana/kit": "~6.8.0",
@@ -93,13 +95,14 @@
     },
     "packages/mcp": {
       "name": "@elisym/mcp",
-      "version": "0.8.0",
+      "version": "0.8.7",
       "bin": {
         "elisym-mcp": "./dist/index.js",
       },
       "dependencies": {
-        "@elisym/sdk": "~0.10.0",
+        "@elisym/sdk": "~0.11.0",
         "@modelcontextprotocol/sdk": "~1.28.0",
+        "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",
         "@solana-program/token": "~0.5.0",
         "@solana/kit": "~6.8.0",
@@ -119,13 +122,14 @@
     },
     "packages/sdk": {
       "name": "@elisym/sdk",
-      "version": "0.10.1",
+      "version": "0.11.0",
       "dependencies": {
         "yaml": "~2.8.3",
         "zod": "~3.25.0",
       },
       "devDependencies": {
         "@elisym/config-client": "workspace:*",
+        "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",
         "@solana-program/token": "~0.5.0",
         "@solana/kit": "~6.8.0",
@@ -137,6 +141,7 @@
         "vitest": "~3.0.0",
       },
       "peerDependencies": {
+        "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",
         "@solana-program/token": "~0.5.0",
         "@solana/kit": "~6.8.0",
@@ -713,6 +718,8 @@
     "@solana-mobile/wallet-standard-mobile": ["@solana-mobile/wallet-standard-mobile@0.5.2", "", { "dependencies": { "@solana-mobile/mobile-wallet-adapter-protocol": "^2.2.8", "@solana/wallet-standard-chains": "^1.1.1", "@solana/wallet-standard-features": "^1.3.0", "@wallet-standard/base": "^1.0.1", "@wallet-standard/features": "^1.0.3", "@wallet-standard/wallet": "^1.1.0", "bs58": "^6.0.0", "js-base64": "^3.7.5", "qrcode": "^1.5.4", "tslib": "^2.8.1" }, "optionalDependencies": { "@react-native-async-storage/async-storage": "^1.17.7" } }, "sha512-orEGv4N/Ttd0umwfWUzGcEnVc9eJDTgRSEcDitvFWpIf2D968h6128L0rq9/y7sUw88Gvu/lU0euoC2ASEijqQ=="],
 
     "@solana-program/compute-budget": ["@solana-program/compute-budget@0.8.0", "", { "peerDependencies": { "@solana/kit": "^2.1.0" } }, "sha512-qPKxdxaEsFxebZ4K5RPuy7VQIm/tfJLa1+Nlt3KNA8EYQkz9Xm8htdoEaXVrer9kpgzzp9R3I3Bh6omwCM06tQ=="],
+
+    "@solana-program/memo": ["@solana-program/memo@0.11.0", "", { "peerDependencies": { "@solana/kit": "^6.0.0" } }, "sha512-/WVM2y76hL5zWJJwaHsbvMREeIUzhKDHU+ftMXTf4aLPJFDKG6am4X5RID3CHsI3oYNEMywgVvsFdnorwgEuwA=="],
 
     "@solana-program/stake": ["@solana-program/stake@0.2.1", "", { "peerDependencies": { "@solana/kit": "^2.1.0" } }, "sha512-ssNPsJv9XHaA+L7ihzmWGYcm/+XYURQ8UA3wQMKf6ccEHyHOUgoglkkDU/BoA0+wul6HxZUN0tHFymC0qFw6sg=="],
 

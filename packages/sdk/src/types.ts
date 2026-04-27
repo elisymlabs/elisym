@@ -216,8 +216,6 @@ export interface PaymentValidationError {
 // --- Network Stats ---
 
 export interface NetworkStats {
-  totalAgentCount: number;
-  agentCount: number;
   jobCount: number;
   totalLamports: number;
 }

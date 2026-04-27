@@ -176,7 +176,15 @@ async function executePaymentFlow(
   const httpUrl = rpcUrlFor(agent.network);
   const rpc = createSolanaRpc(httpUrl);
 
-  const signedTx = await paymentStrategy.buildTransaction(requestData, signer, rpc, protocolConfig);
+  const signedTx = await paymentStrategy.buildTransaction(
+    requestData,
+    signer,
+    rpc,
+    protocolConfig,
+    {
+      jobEventId: jobId,
+    },
+  );
 
   const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
   const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });

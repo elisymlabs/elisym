@@ -1,56 +1,15 @@
 import Decimal from 'decimal.js-light';
-import { useCallback, useState, type ReactElement, type ReactNode } from 'react';
+import { useId, useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useStats } from '~/hooks/useStats';
-import { cn } from '~/lib/cn';
-
-type VolumeCurrency = 'usdc' | 'sol';
-const VOLUME_ORDER: VolumeCurrency[] = ['usdc', 'sol'];
-
-const AGENTS_TOOLTIP_TEXT =
-  'Data is collected from decentralized Nostr relays. Each relay stores a partial view of the network, so the actual numbers may be higher.';
 
 const ON_CHAIN_TOOLTIP_TEXT =
-  'Based on incoming transfers to the protocol treasury address on Solana.';
+  'Aggregated from every elisym payment transaction on Solana, indexed by the on-chain protocol tag attached to each transfer.';
 
 const TOOLTIP_MAX_WIDTH = 240;
 const TOOLTIP_EDGE_MARGIN = 12;
 
-const STAT_ICONS: Record<string, ReactElement> = {
-  Agents: (
-    <svg
-      aria-hidden
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect x="7" y="7" width="10" height="10" rx="2" />
-      <path d="M9 3v2M12 3v2M15 3v2M9 19v2M12 19v2M15 19v2M3 9h2M3 12h2M3 15h2M19 9h2M19 12h2M19 15h2" />
-    </svg>
-  ),
-  'Completed Jobs': (
-    <svg
-      aria-hidden
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M20 6 9 17l-5-5" />
-    </svg>
-  ),
-};
-
-const VOLUME_ICON: ReactElement = (
+const COMPLETED_JOBS_ICON: ReactElement = (
   <svg
     aria-hidden
     width="16"
@@ -62,10 +21,39 @@ const VOLUME_ICON: ReactElement = (
     strokeLinecap="round"
     strokeLinejoin="round"
   >
-    <circle cx="12" cy="12" r="9" />
-    <circle cx="12" cy="12" r="3.2" />
+    <path d="M20 6 9 17l-5-5" />
   </svg>
 );
+
+const SOL_ICON: ReactElement = (
+  <svg aria-hidden width="16" height="16" viewBox="0 0 397.7 311.7" fill="currentColor">
+    <path d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7zM64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8zM333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.6z" />
+  </svg>
+);
+
+const USDC_DOLLAR_PATH =
+  'M15.05 8.4c-2.32.34-3.86 1.92-3.86 4.05 0 2.45 1.55 3.62 4.83 4.21 2.07.42 2.62.86 2.62 1.95 0 .97-.85 1.65-2 1.65-1.45 0-1.97-.62-2.16-1.55-.05-.18-.21-.3-.4-.3h-.92c-.23 0-.4.18-.4.4v.04c.21 1.65 1.5 2.84 3.4 3.16v1.5c0 .23.14.4.36.4h.86c.23 0 .4-.18.4-.4v-1.5c2.39-.32 4.04-1.86 4.04-4.06 0-2.5-1.59-3.7-4.94-4.27-2.23-.4-2.55-.83-2.55-1.83 0-.85.7-1.46 1.92-1.46 1.36 0 1.97.5 2.16 1.41.05.18.21.3.4.3h.92c.21 0 .4-.18.4-.4v-.05c-.23-1.55-1.45-2.7-3.27-3.04V7.06c0-.23-.14-.4-.36-.4h-.86c-.23 0-.4.18-.4.4v1.34z';
+
+const USDC_CIRCLE_AND_ARCS_PATH =
+  'M16 32C24.84 32 32 24.84 32 16S24.84 0 16 0 0 7.16 0 16s7.16 16 16 16zM2.83 16c0 5.73 3.66 10.55 8.86 12.36.4.14.8-.16.8-.6v-.92c0-.34-.18-.56-.45-.7-3.93-1.45-6.43-5.04-6.43-10.14s2.5-8.7 6.43-10.14c.27-.14.45-.36.45-.7v-.92c0-.45-.4-.74-.8-.6C6.49 5.45 2.83 10.27 2.83 16zm26.34 0c0-5.73-3.66-10.55-8.86-12.36-.4-.14-.8.16-.8.6v.92c0 .34.18.56.45.7 3.93 1.45 6.43 5.04 6.43 10.14s-2.5 8.7-6.43 10.14c-.27.14-.45.36-.45.7v.92c0 .45.4.74.8.6 5.2-1.81 8.86-6.63 8.86-12.36z';
+
+function UsdcIcon() {
+  const maskId = useId();
+  return (
+    <svg aria-hidden width="16" height="16" viewBox="0 0 32 32" fill="currentColor">
+      <mask id={maskId}>
+        <rect width="32" height="32" fill="white" />
+        <path d={USDC_DOLLAR_PATH} fill="black" transform="rotate(9 16 16)" />
+      </mask>
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d={USDC_CIRCLE_AND_ARCS_PATH}
+        mask={`url(#${maskId})`}
+      />
+    </svg>
+  );
+}
 
 function withCommas(decimalStr: string): string {
   const [intPart, decPart] = decimalStr.split('.');
@@ -163,23 +151,21 @@ function StatLabel({
   label,
   tooltipText,
 }: {
-  icon: ReactElement | null;
+  icon: ReactElement;
   label: string;
-  tooltipText?: string;
+  tooltipText: string;
 }) {
   return (
     <span className="flex items-center justify-center gap-4">
       <div className="flex items-center justify-center gap-4 text-center text-white/35">
-        {icon && <span className="flex shrink-0">{icon}</span>}
+        <span className="flex shrink-0">{icon}</span>
         <span className="font-mono text-[10px] font-normal tracking-[0.14em] uppercase">
           {label}
         </span>
       </div>
-      {tooltipText && (
-        <span className="inline-flex">
-          <InfoTooltip text={tooltipText} />
-        </span>
-      )}
+      <span className="inline-flex">
+        <InfoTooltip text={tooltipText} />
+      </span>
     </span>
   );
 }
@@ -187,72 +173,24 @@ function StatLabel({
 function StatItem({
   value,
   label,
+  icon,
   tooltipText,
 }: {
-  value: string | number;
+  value: string;
   label: string;
-  tooltipText?: string;
+  icon: ReactElement;
+  tooltipText: string;
 }) {
   return (
     <div className="flex min-w-180 flex-col items-center gap-8">
       <StatValue>{value}</StatValue>
-      <StatLabel icon={STAT_ICONS[label] ?? null} label={label} tooltipText={tooltipText} />
+      <StatLabel icon={icon} label={label} tooltipText={tooltipText} />
     </div>
   );
 }
 
 function Divider() {
   return <div className="w-[1px] shrink-0 self-stretch bg-white/10" />;
-}
-
-function VolumeArrow({ direction, onClick }: { direction: 'left' | 'right'; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={direction === 'left' ? 'Previous currency' : 'Next currency'}
-      className="flex size-20 cursor-pointer items-center justify-center rounded-full border-0 bg-white/5 text-white/55 transition-colors hover:bg-white/10 hover:text-white/85"
-    >
-      <svg
-        aria-hidden
-        className="size-12"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        {direction === 'left' ? (
-          <polyline points="15 6 9 12 15 18" />
-        ) : (
-          <polyline points="9 6 15 12 9 18" />
-        )}
-      </svg>
-    </button>
-  );
-}
-
-function CurrencyStack({
-  currency,
-  children,
-}: {
-  currency: VolumeCurrency;
-  children: (cur: VolumeCurrency) => ReactNode;
-}) {
-  return (
-    <span className="volume-stack tabular-nums">
-      {VOLUME_ORDER.map((cur) => (
-        <span
-          key={cur}
-          aria-hidden={cur !== currency}
-          className={cn('volume-stack-item', cur === currency ? 'opacity-100' : 'opacity-0')}
-        >
-          {children(cur)}
-        </span>
-      ))}
-    </span>
-  );
 }
 
 function MobileRowIcon({ children }: { children: ReactNode }) {
@@ -263,11 +201,11 @@ function MobileRowIcon({ children }: { children: ReactNode }) {
   );
 }
 
-function MobileRowLabel({ children, tooltipText }: { children: ReactNode; tooltipText?: string }) {
+function MobileRowLabel({ children, tooltipText }: { children: ReactNode; tooltipText: string }) {
   return (
     <span className="flex flex-1 items-center gap-4 font-mono text-[10px] font-normal tracking-[0.14em] text-white/50 uppercase">
       <span className="truncate">{children}</span>
-      {tooltipText && <InfoTooltip text={tooltipText} />}
+      <InfoTooltip text={tooltipText} />
     </span>
   );
 }
@@ -278,10 +216,10 @@ function MobileStatRow({
   value,
   tooltipText,
 }: {
-  icon: ReactElement | null;
+  icon: ReactElement;
   label: string;
   value: ReactNode;
-  tooltipText?: string;
+  tooltipText: string;
 }) {
   return (
     <div className="flex h-48 items-center gap-10 px-16">
@@ -290,30 +228,6 @@ function MobileStatRow({
       <span className="text-base leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/95 tabular-nums">
         {value}
       </span>
-    </div>
-  );
-}
-
-function MobileVolumeRow({
-  currency,
-  volumes,
-  cycleCurrency,
-}: {
-  currency: VolumeCurrency;
-  volumes: Record<VolumeCurrency, string>;
-  cycleCurrency: (delta: number) => void;
-}) {
-  return (
-    <div className="flex h-48 items-center gap-10 px-16">
-      <MobileRowIcon>{VOLUME_ICON}</MobileRowIcon>
-      <MobileRowLabel tooltipText={ON_CHAIN_TOOLTIP_TEXT}>Volume</MobileRowLabel>
-      <div className="flex items-center gap-6">
-        <VolumeArrow direction="left" onClick={() => cycleCurrency(-1)} />
-        <span className="text-base leading-none font-semibold tracking-[-0.02em] whitespace-nowrap text-white/95">
-          <CurrencyStack currency={currency}>{(cur) => volumes[cur]}</CurrencyStack>
-        </span>
-        <VolumeArrow direction="right" onClick={() => cycleCurrency(1)} />
-      </div>
     </div>
   );
 }
@@ -334,25 +248,10 @@ function MobileRowSkeleton() {
 
 export function StatsBar() {
   const { data, isLoading } = useStats();
-  const [currency, setCurrency] = useState<VolumeCurrency>('usdc');
 
-  const cycleCurrency = useCallback((delta: number) => {
-    setCurrency((cur) => {
-      const idx = VOLUME_ORDER.indexOf(cur);
-      const next = (idx + delta + VOLUME_ORDER.length) % VOLUME_ORDER.length;
-      return VOLUME_ORDER[next] ?? cur;
-    });
-  }, []);
-
-  const agentCount = formatCount(data?.totalAgentCount ?? '-');
   const jobCount = formatCount(data?.jobCount ?? '-');
-
-  const volumes: Record<VolumeCurrency, string> = data
-    ? {
-        usdc: `${withCommas(new Decimal(data.totalUsdcMicro).div(1e6).toFixed(2))} USDC`,
-        sol: `${withCommas(new Decimal(data.totalLamports).div(1e9).toFixed(2))} SOL`,
-      }
-    : { usdc: '-', sol: '-' };
+  const solVolume = data ? withCommas(new Decimal(data.totalLamports).div(1e9).toFixed(2)) : '-';
+  const usdcVolume = data ? withCommas(new Decimal(data.totalUsdcMicro).div(1e6).toFixed(2)) : '-';
 
   return (
     <div className="mx-auto max-w-[480px] px-16 pb-72 sm:px-24 sm:pb-96 stats:max-w-[780px]">
@@ -369,20 +268,25 @@ export function StatsBar() {
         ) : (
           <>
             <MobileStatRow
-              icon={STAT_ICONS.Agents ?? null}
-              label="Agents"
-              value={agentCount}
-              tooltipText={AGENTS_TOOLTIP_TEXT}
-            />
-            <MobileRowDivider />
-            <MobileStatRow
-              icon={STAT_ICONS['Completed Jobs'] ?? null}
+              icon={COMPLETED_JOBS_ICON}
               label="Completed Jobs"
               value={jobCount}
               tooltipText={ON_CHAIN_TOOLTIP_TEXT}
             />
             <MobileRowDivider />
-            <MobileVolumeRow currency={currency} volumes={volumes} cycleCurrency={cycleCurrency} />
+            <MobileStatRow
+              icon={SOL_ICON}
+              label="SOL Volume"
+              value={solVolume}
+              tooltipText={ON_CHAIN_TOOLTIP_TEXT}
+            />
+            <MobileRowDivider />
+            <MobileStatRow
+              icon={<UsdcIcon />}
+              label="USDC Volume"
+              value={usdcVolume}
+              tooltipText={ON_CHAIN_TOOLTIP_TEXT}
+            />
           </>
         )}
       </div>
@@ -401,34 +305,26 @@ export function StatsBar() {
               </>
             ) : (
               <>
-                <StatItem value={agentCount} label="Agents" tooltipText={AGENTS_TOOLTIP_TEXT} />
-                <Divider />
                 <StatItem
                   value={jobCount}
                   label="Completed Jobs"
+                  icon={COMPLETED_JOBS_ICON}
                   tooltipText={ON_CHAIN_TOOLTIP_TEXT}
                 />
                 <Divider />
-                <div className="flex min-w-180 flex-col items-center gap-8">
-                  <div className="flex items-center justify-center gap-8">
-                    <VolumeArrow direction="left" onClick={() => cycleCurrency(-1)} />
-                    <StatValue>
-                      <CurrencyStack currency={currency}>{(cur) => volumes[cur]}</CurrencyStack>
-                    </StatValue>
-                    <VolumeArrow direction="right" onClick={() => cycleCurrency(1)} />
-                  </div>
-                  <span className="flex items-center justify-center gap-4">
-                    <div className="flex items-center justify-center gap-4 text-center text-white/35">
-                      {VOLUME_ICON}
-                      <span className="font-mono text-[10px] font-normal tracking-[0.14em] uppercase">
-                        Volume
-                      </span>
-                    </div>
-                    <span className="inline-flex">
-                      <InfoTooltip text={ON_CHAIN_TOOLTIP_TEXT} />
-                    </span>
-                  </span>
-                </div>
+                <StatItem
+                  value={solVolume}
+                  label="SOL Volume"
+                  icon={SOL_ICON}
+                  tooltipText={ON_CHAIN_TOOLTIP_TEXT}
+                />
+                <Divider />
+                <StatItem
+                  value={usdcVolume}
+                  label="USDC Volume"
+                  icon={<UsdcIcon />}
+                  tooltipText={ON_CHAIN_TOOLTIP_TEXT}
+                />
               </>
             )}
           </div>
