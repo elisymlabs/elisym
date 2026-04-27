@@ -67,7 +67,7 @@ function formatCount(n: number | string): string {
 
 function StatSkeleton() {
   return (
-    <div className="flex min-w-180 flex-col items-center gap-8">
+    <div className="flex h-90 min-w-180 flex-col items-center justify-center gap-8">
       <div className="h-28 w-96 animate-pulse rounded-lg bg-white/10" />
       <div className="h-10 w-64 animate-pulse rounded-full bg-white/7" />
     </div>
@@ -293,8 +293,8 @@ export function StatsBar() {
 
       {/* Desktop (>= 800px): glass card containing horizontal stat strip */}
       <div className="hidden justify-center stats:flex">
-        <div className="rounded-3xl border border-white/[0.08] bg-white/[0.04] px-32 py-20 backdrop-blur-md">
-          <div className="flex items-center justify-center gap-40">
+        <div className="h-90 rounded-3xl border border-white/[0.08] bg-white/[0.04] px-32 backdrop-blur-md">
+          <div className="flex h-full items-center justify-center gap-40">
             {isLoading ? (
               <>
                 <StatSkeleton />

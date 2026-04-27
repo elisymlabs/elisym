@@ -4,6 +4,7 @@ import {
   KIND_JOB_FEEDBACK,
   KIND_JOB_REQUEST,
   KIND_JOB_REQUEST_BASE,
+  KIND_JOB_RESULT,
   KIND_JOB_RESULT_BASE,
   jobResultKind,
   DEFAULT_KIND_OFFSET,
@@ -11,11 +12,14 @@ import {
 } from '../constants';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
-import type { Agent, CapabilityCard, Network } from '../types';
+import type { Agent, CapabilityCard, Network, SubCloser } from '../types';
 
 const RANKING_ACTIVITY_WINDOW_SECS = 30 * 24 * 60 * 60;
 const RANKING_BUCKET_SIZE_SECS = 60;
 const COLD_START_BUCKET = -Infinity;
+
+/** Sentinel signal that never aborts; lets `runEnrichment` accept an `AbortSignal` uniformly. */
+const NEVER_ABORTED_SIGNAL: AbortSignal = new AbortController().signal;
 
 /** Convert a capability name to its Nostr d-tag form (ASCII-only, lowercase, hyphen-separated). */
 export function toDTag(name: string): string {
@@ -70,17 +74,99 @@ export function compareAgentsByRank(a: Agent, b: Agent): number {
 }
 
 /**
+ * Parse a single NIP-89 capability event into a one-card Agent.
+ *
+ * Returns `null` if the event fails signature verification, content schema
+ * checks, or the `network` filter. The returned Agent's `supportedKinds`
+ * holds only this event's `k` tags - merging across multiple events for the
+ * same author is the caller's responsibility.
+ */
+export function parseCapabilityEvent(event: Event, network: Network): Agent | null {
+  if (!verifyEvent(event)) {
+    return null;
+  }
+  if (!event.content) {
+    return null;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(event.content);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const candidate = raw as Record<string, unknown>;
+  if (typeof candidate.name !== 'string' || !candidate.name) {
+    return null;
+  }
+  if (typeof candidate.description !== 'string') {
+    return null;
+  }
+  if (
+    !Array.isArray(candidate.capabilities) ||
+    !candidate.capabilities.every((cap: unknown) => typeof cap === 'string')
+  ) {
+    return null;
+  }
+  if (candidate.deleted) {
+    return null;
+  }
+  const card = candidate as unknown as CapabilityCard & { deleted?: boolean };
+
+  if (
+    card.payment &&
+    (typeof card.payment.chain !== 'string' ||
+      typeof card.payment.network !== 'string' ||
+      typeof card.payment.address !== 'string')
+  ) {
+    return null;
+  }
+
+  if (
+    card.payment?.job_price !== null &&
+    card.payment?.job_price !== undefined &&
+    (!Number.isInteger(card.payment.job_price) || card.payment.job_price < 0)
+  ) {
+    return null;
+  }
+
+  const agentNetwork = card.payment?.network ?? 'devnet';
+  if (agentNetwork !== network) {
+    return null;
+  }
+
+  const kTags = event.tags
+    .filter((tag) => tag[0] === 'k')
+    .map((tag) => parseInt(tag[1] ?? '', 10))
+    .filter((kind) => !isNaN(kind));
+
+  return {
+    pubkey: event.pubkey,
+    npub: nip19.npubEncode(event.pubkey),
+    cards: [card],
+    eventId: event.id,
+    supportedKinds: kTags,
+    lastSeen: event.created_at,
+  };
+}
+
+/**
  * Deduplicate events by (pubkey, d-tag) keeping only the newest,
  * then build an Agent map filtered by network.
  */
 function buildAgentsFromEvents(events: Event[], network: Network): Map<string, Agent> {
-  // Deduplicate by author + d-tag, keeping only the newest event
+  // Deduplicate by author + d-tag, keeping only the newest event.
+  // Verify here (not in `parseCapabilityEvent` alone) so a forged event with
+  // a future `created_at` cannot displace a legitimate event from the dedup
+  // map and effectively erase the victim's agent from results.
   const latestByDTag = new Map<string, Event>();
   for (const event of events) {
     if (!verifyEvent(event)) {
       continue;
     }
-    const dTag = event.tags.find((t) => t[0] === 'd')?.[1] ?? '';
+    const dTag = event.tags.find((tag) => tag[0] === 'd')?.[1] ?? '';
     const key = `${event.pubkey}:${dTag}`;
     const prev = latestByDTag.get(key);
     if (!prev || event.created_at > prev.created_at) {
@@ -88,127 +174,63 @@ function buildAgentsFromEvents(events: Event[], network: Network): Map<string, A
     }
   }
 
-  // Intermediate structure: keep kTags per card so we can recompute
-  // supportedKinds from only the surviving (deduplicated) entries.
-  interface CardEntry {
-    card: CapabilityCard;
-    kTags: number[];
-    createdAt: number;
+  // Per-pubkey accumulator. We track per-card `createdAt` + `kTags` so
+  // `supportedKinds` is recomputed from only the surviving (name-dedup'd)
+  // cards, matching the pre-refactor behavior.
+  interface Accum {
+    agent: Agent;
+    perCard: Map<string, { createdAt: number; kTags: number[] }>;
   }
-  interface AgentAccum {
-    pubkey: string;
-    npub: string;
-    entries: CardEntry[];
-    eventId: string;
-    lastSeen: number;
-  }
-
-  const accumMap = new Map<string, AgentAccum>();
+  const accumMap = new Map<string, Accum>();
 
   for (const event of latestByDTag.values()) {
-    try {
-      if (!event.content) {
-        continue;
-      }
-      const raw = JSON.parse(event.content);
-      if (!raw || typeof raw !== 'object') {
-        continue;
-      }
-      if (typeof raw.name !== 'string' || !raw.name) {
-        continue;
-      }
-      if (typeof raw.description !== 'string') {
-        continue;
-      }
-      if (
-        !Array.isArray(raw.capabilities) ||
-        !raw.capabilities.every((c: unknown) => typeof c === 'string')
-      ) {
-        continue;
-      }
-      if (raw.deleted) {
-        continue;
-      }
-      const card = raw as CapabilityCard & { deleted?: boolean };
+    const parsed = parseCapabilityEvent(event, network);
+    if (!parsed) {
+      continue;
+    }
+    const card = parsed.cards[0]!;
+    const cardKinds = parsed.supportedKinds;
+    const createdAt = parsed.lastSeen;
 
-      // Validate payment field types if present
-      if (
-        card.payment &&
-        (typeof card.payment.chain !== 'string' ||
-          typeof card.payment.network !== 'string' ||
-          typeof card.payment.address !== 'string')
-      ) {
-        continue;
-      }
-
-      // Validate payment.job_price if present
-      if (
-        card.payment?.job_price !== null &&
-        card.payment?.job_price !== undefined &&
-        (!Number.isInteger(card.payment.job_price) || card.payment.job_price < 0)
-      ) {
-        continue;
-      }
-
-      const agentNetwork = card.payment?.network ?? 'devnet';
-      if (agentNetwork !== network) {
-        continue;
-      }
-
-      const kTags = event.tags
-        .filter((t) => t[0] === 'k')
-        .map((t) => parseInt(t[1] ?? '', 10))
-        .filter((k) => !isNaN(k));
-
-      const entry: CardEntry = { card, kTags, createdAt: event.created_at };
-
-      const existing = accumMap.get(event.pubkey);
-      if (existing) {
-        // Deduplicate by card name - keep the newer version
-        const dupIndex = existing.entries.findIndex((e) => e.card.name === card.name);
-        if (dupIndex >= 0) {
-          if (entry.createdAt >= existing.entries[dupIndex]!.createdAt) {
-            existing.entries[dupIndex] = entry;
+    const existing = accumMap.get(parsed.pubkey);
+    if (existing) {
+      const prevForName = existing.perCard.get(card.name);
+      if (prevForName) {
+        if (createdAt >= prevForName.createdAt) {
+          const idx = existing.agent.cards.findIndex(
+            (existingCard) => existingCard.name === card.name,
+          );
+          if (idx >= 0) {
+            existing.agent.cards[idx] = card;
           }
-        } else {
-          existing.entries.push(entry);
-        }
-        if (event.created_at > existing.lastSeen) {
-          existing.lastSeen = event.created_at;
-          existing.eventId = event.id;
+          existing.perCard.set(card.name, { createdAt, kTags: cardKinds });
         }
       } else {
-        accumMap.set(event.pubkey, {
-          pubkey: event.pubkey,
-          npub: nip19.npubEncode(event.pubkey),
-          entries: [entry],
-          eventId: event.id,
-          lastSeen: event.created_at,
-        });
+        existing.agent.cards.push(card);
+        existing.perCard.set(card.name, { createdAt, kTags: cardKinds });
       }
-    } catch {
-      // skip malformed events
+      if (createdAt > existing.agent.lastSeen) {
+        existing.agent.lastSeen = createdAt;
+        existing.agent.eventId = parsed.eventId;
+      }
+    } else {
+      accumMap.set(parsed.pubkey, {
+        agent: parsed,
+        perCard: new Map([[card.name, { createdAt, kTags: cardKinds }]]),
+      });
     }
   }
 
-  // Build final Agent map - recompute supportedKinds from surviving entries only
   const agentMap = new Map<string, Agent>();
   for (const [pubkey, acc] of accumMap) {
     const kindsSet = new Set<number>();
-    for (const e of acc.entries) {
-      for (const k of e.kTags) {
-        kindsSet.add(k);
+    for (const { kTags } of acc.perCard.values()) {
+      for (const kind of kTags) {
+        kindsSet.add(kind);
       }
     }
-    const supportedKinds = [...kindsSet];
-    agentMap.set(pubkey, {
-      pubkey: acc.pubkey,
-      npub: acc.npub,
-      cards: acc.entries.map((e) => e.card),
-      eventId: acc.eventId,
-      supportedKinds,
-      lastSeen: acc.lastSeen,
-    });
+    acc.agent.supportedKinds = [...kindsSet];
+    agentMap.set(pubkey, acc.agent);
   }
 
   return agentMap;
@@ -339,8 +361,26 @@ export class DiscoveryService {
 
     const agentMap = buildAgentsFromEvents(events, network);
     const agents = Array.from(agentMap.values());
-    const agentPubkeys = Array.from(agentMap.keys());
 
+    return this.runEnrichment(agents, agentMap, NEVER_ABORTED_SIGNAL);
+  }
+
+  /**
+   * Enrich an agent map with paid-job stats, feedback counters, and kind:0
+   * metadata, then return them sorted by `compareAgentsByRank`. Mutates the
+   * passed-in `Agent` objects in place.
+   *
+   * Shared between `fetchAgents` (one-shot) and `streamAgents` (post-EOSE
+   * second pass). The `signal` short-circuits the post-query work; in-flight
+   * pool queries are not cancellable today (they fall through to the standard
+   * timeout) and the caller drops the resolved value.
+   */
+  private async runEnrichment(
+    agents: Agent[],
+    agentMap: Map<string, Agent>,
+    signal: AbortSignal,
+  ): Promise<Agent[]> {
+    const agentPubkeys = Array.from(agentMap.keys());
     if (agentPubkeys.length === 0) {
       return agents;
     }
@@ -349,9 +389,9 @@ export class DiscoveryService {
     // Derive result kinds from agents' supported request kinds (5xxx - 6xxx)
     const resultKinds = new Set<number>();
     for (const agent of agentMap.values()) {
-      for (const k of agent.supportedKinds) {
-        if (k >= KIND_JOB_REQUEST_BASE && k < KIND_JOB_RESULT_BASE) {
-          resultKinds.add(KIND_JOB_RESULT_BASE + (k - KIND_JOB_REQUEST_BASE));
+      for (const supportedKind of agent.supportedKinds) {
+        if (supportedKind >= KIND_JOB_REQUEST_BASE && supportedKind < KIND_JOB_RESULT_BASE) {
+          resultKinds.add(KIND_JOB_RESULT_BASE + (supportedKind - KIND_JOB_REQUEST_BASE));
         }
       }
     }
@@ -373,6 +413,10 @@ export class DiscoveryService {
       this.enrichWithMetadata(agents),
     ]);
 
+    if (signal.aborted) {
+      return agents;
+    }
+
     // Result events: written by the agent, indexed by author. Build
     // (provider, jobEventId) pairs so we can cross-check `payment-completed`
     // feedback against an actual delivered result. Customers publish
@@ -391,7 +435,7 @@ export class DiscoveryService {
       if (ev.created_at > agent.lastSeen) {
         agent.lastSeen = ev.created_at;
       }
-      const jobEventId = ev.tags.find((t) => t[0] === 'e')?.[1];
+      const jobEventId = ev.tags.find((tag) => tag[0] === 'e')?.[1];
       if (jobEventId) {
         let delivered = deliveredJobsByProvider.get(ev.pubkey);
         if (!delivered) {
@@ -410,7 +454,7 @@ export class DiscoveryService {
       if (!verifyEvent(ev)) {
         continue;
       }
-      const targetPubkey = ev.tags.find((t) => t[0] === 'p')?.[1];
+      const targetPubkey = ev.tags.find((tag) => tag[0] === 'p')?.[1];
       if (!targetPubkey) {
         continue;
       }
@@ -422,7 +466,7 @@ export class DiscoveryService {
         agent.lastSeen = ev.created_at;
       }
 
-      const rating = ev.tags.find((t) => t[0] === 'rating')?.[1];
+      const rating = ev.tags.find((tag) => tag[0] === 'rating')?.[1];
       if (rating === '1' || rating === '0') {
         agent.totalRatingCount = (agent.totalRatingCount ?? 0) + 1;
         if (rating === '1') {
@@ -430,10 +474,10 @@ export class DiscoveryService {
         }
       }
 
-      const status = ev.tags.find((t) => t[0] === 'status')?.[1];
-      const txTag = ev.tags.find((t) => t[0] === 'tx');
+      const status = ev.tags.find((tag) => tag[0] === 'status')?.[1];
+      const txTag = ev.tags.find((tag) => tag[0] === 'tx');
       const txSignature = txTag?.[1];
-      const jobEventId = ev.tags.find((t) => t[0] === 'e')?.[1];
+      const jobEventId = ev.tags.find((tag) => tag[0] === 'e')?.[1];
       const hasDeliveredResult =
         jobEventId !== undefined &&
         deliveredJobsByProvider.get(targetPubkey)?.has(jobEventId) === true;
@@ -453,6 +497,179 @@ export class DiscoveryService {
     agents.sort(compareAgentsByRank);
 
     return agents;
+  }
+
+  /**
+   * Stream elisym agents progressively as relays deliver events.
+   *
+   * Two live subscriptions:
+   *   - kind:31990 (capability cards) - emits `onAgent(agent)` for every new or
+   *     updated `(pubkey, d-tag)`. The emitted Agent is the merged view across
+   *     all surviving cards for that author.
+   *   - kind:6100 (default-offset job results) tagged `t=elisym` since 30d ago -
+   *     emits `onPaidJob(pubkey, ts)` for each delivered result. Custom-kind
+   *     results (offset != 100) are not on this stream; they enter the final
+   *     ranking via the post-EOSE enrichment pass.
+   *
+   * After capabilities EOSE, an enrichment pass runs in parallel to the live
+   * subscriptions and produces a ranked snapshot via `onComplete`. The snapshot
+   * is a clone, so further live updates do not mutate it.
+   *
+   * `closer.close()` tears down both subscriptions and aborts an in-flight
+   * enrichment. If `opts.signal` is provided, aborting it does the same.
+   */
+  streamAgents(
+    network: Network,
+    opts: {
+      onAgent: (agent: Agent) => void;
+      onPaidJob?: (pubkey: string, ts: number) => void;
+      onEose?: () => void;
+      onComplete?: (agents: Agent[]) => void;
+      signal?: AbortSignal;
+    },
+  ): SubCloser {
+    const eventsByPubkey = new Map<string, Map<string, Event>>();
+    const agentByPubkey = new Map<string, Agent>();
+    const eoseSeen = { caps: false, results: false };
+    let enrichmentStarted = false;
+    const enrichmentAbort = new AbortController();
+
+    const onExternalAbort = () => enrichmentAbort.abort();
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        enrichmentAbort.abort();
+      } else {
+        opts.signal.addEventListener('abort', onExternalAbort, { once: true });
+      }
+    }
+
+    const checkEose = () => {
+      if (eoseSeen.caps && eoseSeen.results) {
+        opts.onEose?.();
+      }
+    };
+
+    const startEnrichment = () => {
+      if (enrichmentStarted) {
+        return;
+      }
+      enrichmentStarted = true;
+      // Snapshot live agents so further `onAgent` updates do not race with
+      // enrichment mutation.
+      const snapshotAgents = Array.from(agentByPubkey.values()).map((agent) => ({ ...agent }));
+      const snapshotMap = new Map(snapshotAgents.map((agent) => [agent.pubkey, agent]));
+      void this.runEnrichment(snapshotAgents, snapshotMap, enrichmentAbort.signal).then(
+        (sorted) => {
+          if (enrichmentAbort.signal.aborted) {
+            return;
+          }
+          opts.onComplete?.(sorted);
+        },
+        () => {
+          /* enrichment errors are swallowed - stream stays usable until closed */
+        },
+      );
+    };
+
+    const capSub = this.pool.subscribe(
+      { kinds: [KIND_APP_HANDLER], '#t': ['elisym'] },
+      (event) => {
+        const dTag = event.tags.find((tag) => tag[0] === 'd')?.[1] ?? '';
+        let perDTag = eventsByPubkey.get(event.pubkey);
+        const prev = perDTag?.get(dTag);
+        if (prev && event.created_at <= prev.created_at) {
+          return;
+        }
+        // Verify before trusting `event.pubkey`. An unsigned forged event with a
+        // future `created_at` would otherwise displace a legitimate event from
+        // the (pubkey, d-tag) slot.
+        if (!verifyEvent(event)) {
+          return;
+        }
+
+        // Distinguish tombstones (`{deleted: true}`) from invalid events.
+        // `parseCapabilityEvent` returns null for both, but tombstones must be
+        // stored in `perDTag` so the next `buildAgentsFromEvents` re-merge can
+        // drop the corresponding card. Truthy check matches the validator in
+        // `parseCapabilityEvent` (`if (candidate.deleted) return null`).
+        if (!event.content) {
+          return;
+        }
+        let payload: unknown;
+        try {
+          payload = JSON.parse(event.content);
+        } catch {
+          return;
+        }
+        const isTombstone =
+          payload !== null &&
+          typeof payload === 'object' &&
+          Boolean((payload as { deleted?: unknown }).deleted);
+
+        if (!isTombstone && !parseCapabilityEvent(event, network)) {
+          return;
+        }
+
+        if (!perDTag) {
+          perDTag = new Map();
+          eventsByPubkey.set(event.pubkey, perDTag);
+        }
+        perDTag.set(dTag, event);
+
+        const merged = buildAgentsFromEvents(Array.from(perDTag.values()), network).get(
+          event.pubkey,
+        );
+        if (!merged) {
+          // All cards for this author are now tombstoned. Drop the agent from
+          // the snapshot so the post-EOSE enrichment pass excludes it. The
+          // live UI will continue to show the agent until the next remount;
+          // adding a removal callback is the proper fix.
+          agentByPubkey.delete(event.pubkey);
+          return;
+        }
+        agentByPubkey.set(event.pubkey, merged);
+        opts.onAgent(merged);
+      },
+      {
+        oneose: () => {
+          eoseSeen.caps = true;
+          startEnrichment();
+          checkEose();
+        },
+      },
+    );
+
+    const activitySince = Math.floor(Date.now() / 1000) - RANKING_ACTIVITY_WINDOW_SECS;
+    const resultsSub = this.pool.subscribe(
+      { kinds: [KIND_JOB_RESULT], '#t': ['elisym'], since: activitySince },
+      (event) => {
+        // Verify signature before trusting `event.pubkey`. Without this, a
+        // forged unsigned event would let an attacker bump any pubkey's
+        // streaming `lastPaidJobAt` until enrichment overrides it. The
+        // post-enrichment flush guards against bare-event spoofing once
+        // `lastPaidJobTx` is set, but the pre-enrichment window would
+        // otherwise be unprotected.
+        if (!verifyEvent(event)) {
+          return;
+        }
+        opts.onPaidJob?.(event.pubkey, event.created_at);
+      },
+      {
+        oneose: () => {
+          eoseSeen.results = true;
+          checkEose();
+        },
+      },
+    );
+
+    return {
+      close: (reason) => {
+        capSub.close(reason);
+        resultsSub.close(reason);
+        enrichmentAbort.abort();
+        opts.signal?.removeEventListener('abort', onExternalAbort);
+      },
+    };
   }
 
   /**

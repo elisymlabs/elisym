@@ -1,5 +1,6 @@
 import { KIND_JOB_FEEDBACK, KIND_JOB_REQUEST, KIND_JOB_RESULT } from '@elisym/sdk';
 import { useRef } from 'react';
+import type { StreamStatus } from './useAgents';
 import { useElisymClient } from './useElisymClient';
 import { useLocalQuery } from './useLocalQuery';
 
@@ -65,13 +66,20 @@ function mergeCapabilityMax(
 /**
  * Fetches feedback and purchase stats for a given set of agent pubkeys.
  * Builds both per-agent and per-capability groupings in a single pass.
+ *
+ * `streamStatus` gates the network fetch: if provided, the query waits for
+ * the discovery stream to finish enumerating agents (`'eose'` / `'enriched'`)
+ * before issuing the feedback query. This avoids one fetch per intermediate
+ * agent batch as the live stream fills in.
  */
-export function useAgentFeedback(agentPubkeys: string[]) {
+export function useAgentFeedback(agentPubkeys: string[], streamStatus?: StreamStatus) {
   const { client } = useElisymClient();
   const highWater = useRef<FeedbackMap>({});
 
   // Stable key: sort and join so order doesn't cause refetches
   const pubkeysKey = agentPubkeys.slice().sort().join(',');
+  const streamReady =
+    streamStatus === undefined || streamStatus === 'eose' || streamStatus === 'enriched';
 
   return useLocalQuery<FeedbackMap>({
     queryKey: ['agent-feedback-v2', pubkeysKey],
@@ -223,6 +231,6 @@ export function useAgentFeedback(agentPubkeys: string[]) {
     },
     staleTime: 1000 * 30,
     refetchInterval: 1000 * 60,
-    enabled: agentPubkeys.length > 0,
+    enabled: agentPubkeys.length > 0 && streamReady,
   });
 }

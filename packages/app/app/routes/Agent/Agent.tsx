@@ -289,11 +289,17 @@ export default function AgentPage() {
   const pubkey = params.pubkey ?? '';
   const [, setLocation] = useLocation();
 
-  const { data: agents, isLoading } = useAgents();
-  const { data: feedbackMap } = useAgentFeedback(pubkey ? [pubkey] : []);
+  const { agents, status: agentsStatus } = useAgents();
+  const { data: feedbackMap } = useAgentFeedback(pubkey ? [pubkey] : [], agentsStatus);
+  // Wait for the cap stream to finish enumerating agents before deciding the
+  // target is missing - otherwise an early `streaming` snapshot that doesn't
+  // yet include the target pubkey would flip into <NotFound /> before the
+  // event arrives.
+  const agentListSettled = agentsStatus === 'eose' || agentsStatus === 'enriched';
+  const isLoading = !agentListSettled;
 
   const agent = useMemo(
-    () => (agents ?? []).find((candidate) => candidate.pubkey === pubkey),
+    () => agents.find((candidate) => candidate.pubkey === pubkey),
     [agents, pubkey],
   );
 

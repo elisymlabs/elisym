@@ -158,6 +158,23 @@ describe('NostrPool.subscribe', () => {
     sub.close();
     expect(rawClose).toHaveBeenCalled();
   });
+
+  it('forwards oneose callback to subscribeMany', () => {
+    mockSubscribeMany.mockReturnValue({ close: vi.fn() });
+
+    const pool = new NostrPool(TEST_RELAYS);
+    const onEvent = vi.fn();
+    const oneose = vi.fn();
+    pool.subscribe({ kinds: [1] } as Filter, onEvent, { oneose });
+
+    const params = mockSubscribeMany.mock.calls[0]![2];
+    expect(params.onevent).toBe(onEvent);
+    expect(params.oneose).toBe(oneose);
+
+    // Simulate relay sending EOSE - the wrapped callback should fire ours.
+    params.oneose();
+    expect(oneose).toHaveBeenCalledTimes(1);
+  });
 });
 
 // --- close ---

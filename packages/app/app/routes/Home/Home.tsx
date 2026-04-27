@@ -94,11 +94,12 @@ function sortByNewest(agents: AgentDisplayData[]): AgentDisplayData[] {
 }
 
 export default function Home() {
-  const { data: agents, isLoading: agentsLoading } = useAgents();
+  const { agents, status: agentsStatus } = useAgents();
   useStats();
-  const agentPubkeys = useMemo(() => (agents ?? []).map((agent) => agent.pubkey), [agents]);
-  const { data: feedbackMap } = useAgentFeedback(agentPubkeys);
-  const displayAgents = useAgentDisplay(agents ?? [], feedbackMap);
+  const agentPubkeys = useMemo(() => agents.map((agent) => agent.pubkey), [agents]);
+  const { data: feedbackMap } = useAgentFeedback(agentPubkeys, agentsStatus);
+  const displayAgents = useAgentDisplay(agents, feedbackMap);
+  const showSkeletons = agents.length === 0 && agentsStatus !== 'enriched';
   const [state] = useUI();
   const [page, setPage] = useState(() => {
     if (typeof sessionStorage === 'undefined') {
@@ -147,7 +148,7 @@ export default function Home() {
   const paged = deferredFiltered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   let content: React.ReactNode;
-  if (agentsLoading) {
+  if (showSkeletons) {
     content = (
       <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-14 sm:gap-20">
         {Array.from({ length: PAGE_SIZE }).map((_, index) => (

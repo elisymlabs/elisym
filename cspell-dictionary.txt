@@ -82,6 +82,7 @@ tailwindcss
 tanstack
 testnet
 tokio
+tombstoned
 togglable
 tsup
 turborepo
