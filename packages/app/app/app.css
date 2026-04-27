@@ -449,15 +449,3 @@ button:not(:disabled) {
     left: 120%;
   }
 }
-
-@utility volume-stack {
-  display: grid;
-  grid-template-areas: 'stack';
-  align-items: center;
-  justify-items: center;
-}
-
-@utility volume-stack-item {
-  grid-area: stack;
-  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}

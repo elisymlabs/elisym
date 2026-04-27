@@ -217,23 +217,6 @@ function buildAgentsFromEvents(events: Event[], network: Network): Map<string, A
 export class DiscoveryService {
   constructor(private pool: NostrPool) {}
 
-  /** Count elisym agents (kind:31990 with "elisym" tag). */
-  async fetchAllAgentCount(): Promise<number> {
-    const events = await this.pool.querySync({
-      kinds: [KIND_APP_HANDLER],
-      '#t': ['elisym'],
-    } as Filter);
-
-    const uniquePubkeys = new Set<string>();
-    for (const event of events) {
-      if (!verifyEvent(event)) {
-        continue;
-      }
-      uniquePubkeys.add(event.pubkey);
-    }
-    return uniquePubkeys.size;
-  }
-
   /**
    * Fetch a single page of elisym agents with relay-side pagination.
    * Uses `until` cursor for Nostr cursor-based pagination.

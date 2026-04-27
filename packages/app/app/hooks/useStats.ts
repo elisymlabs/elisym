@@ -1,32 +1,21 @@
-import {
-  PROTOCOL_FEE_BPS,
-  PROTOCOL_TREASURY,
-  USDC_SOLANA_DEVNET,
-  type NetworkStats,
-} from '@elisym/sdk';
+import { PROTOCOL_FEE_BPS, PROTOCOL_TREASURY, USDC_SOLANA_DEVNET } from '@elisym/sdk';
 import { findAssociatedTokenPda, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import { address as toAddress, createSolanaRpc } from '@solana/kit';
 import { useQuery } from '@tanstack/react-query';
 import Decimal from 'decimal.js-light';
-import { useEffect, useRef } from 'react';
 import { SOLANA_RPC_URL } from '~/lib/cluster';
-import { useElisymClient } from './useElisymClient';
-
-class EmptyStatsError extends Error {
-  constructor() {
-    super('Relays returned no agents (likely timeout or stale pool)');
-    this.name = 'EmptyStatsError';
-  }
-}
 
 /**
- * UI-side stats shape that augments NetworkStats with per-asset volumes.
- * Volume is derived from the protocol treasury's current balance: every
- * successful job sends `PROTOCOL_FEE_BPS / BPS_DENOMINATOR` of the gross
- * payment to treasury, so projecting back gives lifetime gross volume.
- * Assumes treasury hasn't been drained - withdrawals would understate.
+ * Stats derived entirely from the protocol treasury. Volume is projected back
+ * from the fee balance: every successful job sends `PROTOCOL_FEE_BPS /
+ * BPS_DENOMINATOR` of the gross payment to treasury, so scaling the inflow
+ * gives lifetime gross volume. Assumes treasury hasn't been drained -
+ * withdrawals would understate.
  */
-export interface UiNetworkStats extends NetworkStats {
+export interface UiNetworkStats {
+  jobCount: number;
+  /** Total volume in lamports (1e9 = 1 SOL). */
+  totalLamports: number;
   /** Total volume in USDC subunits (1e6 = 1 USDC). */
   totalUsdcMicro: number;
 }
@@ -41,31 +30,6 @@ const TREASURY_SEED_SIGNATURE =
   '26EYz6HixU7KDu51j9JyfFkCwWGCqqX5xUJN4qCLR74mwq4Cy1h37vUtc1hyCF4XaFvGCu7ZD3gW97tZbXPJ5SMB';
 const treasuryRpc = createSolanaRpc(SOLANA_RPC_URL);
 
-/** Keep the max of each stat field */
-function mergeMax(prev: UiNetworkStats, next: UiNetworkStats): UiNetworkStats {
-  return {
-    totalAgentCount: Math.max(prev.totalAgentCount, next.totalAgentCount),
-    agentCount: Math.max(prev.agentCount, next.agentCount),
-    jobCount: Math.max(prev.jobCount, next.jobCount),
-    totalLamports: Math.max(prev.totalLamports, next.totalLamports),
-    totalUsdcMicro: Math.max(prev.totalUsdcMicro, next.totalUsdcMicro),
-  };
-}
-
-const ZERO: UiNetworkStats = {
-  totalAgentCount: 0,
-  agentCount: 0,
-  jobCount: 0,
-  totalLamports: 0,
-  totalUsdcMicro: 0,
-};
-
-interface TreasuryStats {
-  jobCount: number;
-  totalLamports: number;
-  totalUsdcMicro: number;
-}
-
 /**
  * Pull all stats from the protocol treasury in a single RPC fan-out:
  * - SOL fees land in the treasury wallet, USDC fees in the treasury USDC ATA.
@@ -78,7 +42,7 @@ interface TreasuryStats {
  *   funding, ATA setup, admin ops). Capped at 1000 most recent per address;
  *   pagination not implemented.
  */
-async function fetchTreasuryStats(): Promise<TreasuryStats> {
+async function fetchTreasuryStats(): Promise<UiNetworkStats> {
   const usdcMint = USDC_SOLANA_DEVNET.mint;
   if (!usdcMint) {
     throw new Error('USDC asset missing mint');
@@ -132,57 +96,12 @@ async function fetchTreasuryStats(): Promise<TreasuryStats> {
 }
 
 export function useStats() {
-  const { client, resetPool } = useElisymClient();
-  const highWater = useRef<UiNetworkStats>(ZERO);
-
-  const query = useQuery<UiNetworkStats>({
+  return useQuery<UiNetworkStats>({
     queryKey: ['network-stats'],
-    queryFn: async () => {
-      const [totalAgentCount, treasuryStats] = await Promise.all([
-        client.discovery.fetchAllAgentCount(),
-        fetchTreasuryStats(),
-      ]);
-
-      // `NostrPool.querySync` swallows relay timeouts and resolves to `[]`,
-      // which surfaces here as `totalAgentCount === 0`. The devnet registry is
-      // never actually empty - treat it as a transient failure so the
-      // retry/refetch logic below kicks in instead of caching a bogus zero.
-      if (totalAgentCount === 0) {
-        throw new EmptyStatsError();
-      }
-
-      const stats: UiNetworkStats = {
-        totalAgentCount,
-        agentCount: totalAgentCount,
-        jobCount: treasuryStats.jobCount,
-        totalLamports: treasuryStats.totalLamports,
-        totalUsdcMicro: treasuryStats.totalUsdcMicro,
-      };
-
-      highWater.current = mergeMax(highWater.current, stats);
-      return highWater.current;
-    },
-    // Exponential backoff with an upper bound. 4 attempts at 0.75s / 1.5s / 3s
-    // ≈ 5s total before giving up and surfacing the error.
+    queryFn: fetchTreasuryStats,
     retry: 3,
     retryDelay: (attempt) => Math.min(750 * 2 ** attempt, 3_000),
     staleTime: 1000 * 30,
     refetchInterval: 1000 * 60,
   });
-
-  // Mirror useAgents: if all retries exhausted because the pool is stuck on
-  // empty results, drop the SimplePool once and refetch with a clean socket.
-  const resetOnceRef = useRef(false);
-  useEffect(() => {
-    if (query.isError && query.error instanceof EmptyStatsError && !resetOnceRef.current) {
-      resetOnceRef.current = true;
-      resetPool();
-      query.refetch();
-    }
-    if (!query.isError) {
-      resetOnceRef.current = false;
-    }
-  }, [query.isError, query.error, query, resetPool]);
-
-  return query;
 }
