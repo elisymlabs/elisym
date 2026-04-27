@@ -94,12 +94,18 @@ function sortByNewest(agents: AgentDisplayData[]): AgentDisplayData[] {
 }
 
 export default function Home() {
-  const { agents, status: agentsStatus } = useAgents();
+  const {
+    agents,
+    status: agentsStatus,
+    displayReady,
+  } = useAgents({
+    firstPaintBatchSize: PAGE_SIZE,
+  });
   useStats();
   const agentPubkeys = useMemo(() => agents.map((agent) => agent.pubkey), [agents]);
   const { data: feedbackMap } = useAgentFeedback(agentPubkeys, agentsStatus);
   const displayAgents = useAgentDisplay(agents, feedbackMap);
-  const showSkeletons = agents.length === 0 && agentsStatus !== 'enriched';
+  const showSkeletons = !displayReady;
   const [state] = useUI();
   const [page, setPage] = useState(() => {
     if (typeof sessionStorage === 'undefined') {

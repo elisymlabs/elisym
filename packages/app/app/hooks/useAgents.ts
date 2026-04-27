@@ -5,6 +5,7 @@ import {
   migrateLegacyListSnapshot,
   setAgentProfiles,
 } from '~/lib/agentProfileCache';
+import { preloadFirstBatchPictures } from '~/lib/imagePreload';
 import { useElisymClient } from './useElisymClient';
 
 export type StreamStatus = 'idle' | 'streaming' | 'eose' | 'enriched';
@@ -12,14 +13,30 @@ export type StreamStatus = 'idle' | 'streaming' | 'eose' | 'enriched';
 export interface UseAgentsResult {
   agents: Agent[];
   status: StreamStatus;
+  displayReady: boolean;
   error: Error | null;
+}
+
+export interface UseAgentsOptions {
+  /**
+   * Cold-start preload size. After enrichment, the hook waits (with a
+   * `PRELOAD_TIMEOUT_MS` cap) for the first N agents' picture bytes to load
+   * before flipping `displayReady`. Pass `0` to disable byte-preload (e.g.
+   * the agent detail page does not depend on the discovery grid being
+   * painted).
+   */
+  firstPaintBatchSize?: number;
 }
 
 export const NETWORK = 'devnet';
 
+const PRELOAD_TIMEOUT_MS = 3000;
+const MAX_FIRST_PAINT_MS = 8000;
+
 type Patch = { type: 'agent'; agent: Agent } | { type: 'paidJob'; pubkey: string; ts: number };
 
-export function useAgents(): UseAgentsResult {
+export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
+  const { firstPaintBatchSize = 0 } = options;
   const { client } = useElisymClient();
   const agentMapRef = useRef<Map<string, Agent>>(new Map());
   const pendingRef = useRef<Patch[]>([]);
@@ -27,10 +44,14 @@ export function useAgents(): UseAgentsResult {
   const rafRef = useRef<number | null>(null);
   const [version, setVersion] = useState(0);
   const [status, setStatus] = useState<StreamStatus>('idle');
+  const [displayReady, setDisplayReady] = useState(false);
+  const displayReadyRef = useRef(false);
+  displayReadyRef.current = displayReady;
 
   useEffect(() => {
     let cancelled = false;
     let closer: SubCloser | null = null;
+    let ceilingTimer: ReturnType<typeof setTimeout> | null = null;
     // Defer IDB writes from per-frame patches until enrichment fires
     // `onComplete`. Pre-enrichment, streamed capability events lack
     // name/picture/banner/about, so persisting them would overwrite a
@@ -113,9 +134,14 @@ export function useAgents(): UseAgentsResult {
       }
       setStatus((prev) => (prev === 'idle' ? 'streaming' : prev));
       setVersion((prev) => prev + 1);
+      // Warm-path first-paint: cached profiles already carry picture URLs
+      // from a prior enrichment. Repeat visitors usually have the bytes in
+      // the browser HTTP cache, so skip the byte-preload step and flip
+      // immediately - matches today's near-instant warm render.
+      setDisplayReady(true);
     };
 
-    const open = () => {
+    const open = (myGen: number) => {
       closer = client.discovery.streamAgents(NETWORK, {
         onAgent: (agent) => {
           pendingRef.current.push({ type: 'agent', agent });
@@ -143,6 +169,21 @@ export function useAgents(): UseAgentsResult {
           void setAgentProfiles(NETWORK, sortedAgents);
           setStatus('enriched');
           setVersion((prev) => prev + 1);
+          // Cold-path first-paint: warm path already flipped `displayReady`,
+          // so skip the redundant 18 GETs on warm reloads.
+          if (displayReadyRef.current) {
+            return;
+          }
+          void preloadFirstBatchPictures(
+            sortedAgents,
+            firstPaintBatchSize,
+            PRELOAD_TIMEOUT_MS,
+          ).then(() => {
+            if (cancelled || myGen !== generation) {
+              return;
+            }
+            setDisplayReady(true);
+          });
         },
       });
     };
@@ -156,12 +197,30 @@ export function useAgents(): UseAgentsResult {
     // enriched fields are merged in.
     let generation = 0;
 
+    const scheduleCeiling = (myGen: number) => {
+      if (ceilingTimer !== null) {
+        clearTimeout(ceilingTimer);
+      }
+      ceilingTimer = setTimeout(() => {
+        ceilingTimer = null;
+        if (cancelled || myGen !== generation) {
+          return;
+        }
+        // Hard floor: even if enrichment never reaches `onComplete` and the
+        // cache was empty, flip `displayReady` so the user is not stuck on
+        // skeletons forever. Falls back to today's "streaming with no
+        // pictures" UX rather than something worse.
+        setDisplayReady(true);
+      }, MAX_FIRST_PAINT_MS);
+    };
+
     const init = async (myGen: number) => {
+      scheduleCeiling(myGen);
       await seedFromCache();
       if (cancelled || myGen !== generation) {
         return;
       }
-      open();
+      open(myGen);
     };
 
     void init(generation);
@@ -178,6 +237,7 @@ export function useAgents(): UseAgentsResult {
       }
       enriched = false;
       setStatus('streaming');
+      setDisplayReady(false);
       setVersion((prev) => prev + 1);
       generation += 1;
       void init(generation);
@@ -189,11 +249,15 @@ export function useAgents(): UseAgentsResult {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
+      if (ceilingTimer !== null) {
+        clearTimeout(ceilingTimer);
+        ceilingTimer = null;
+      }
       pendingRef.current = [];
       unregisterReset();
       closer?.close('unmount');
     };
-  }, [client]);
+  }, [client, firstPaintBatchSize]);
 
   const agents = useMemo<Agent[]>(() => {
     void version;
@@ -231,5 +295,5 @@ export function useAgents(): UseAgentsResult {
     });
   }, [version, status]);
 
-  return { agents, status, error: null };
+  return { agents, status, displayReady, error: null };
 }
