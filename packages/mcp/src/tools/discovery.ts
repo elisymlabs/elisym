@@ -1,5 +1,7 @@
-import { formatAssetAmount } from '@elisym/sdk';
+import { estimateNetworkBaseline, formatAssetAmount, formatSol } from '@elisym/sdk';
+import { createSolanaRpc } from '@solana/kit';
 import { z } from 'zod';
+import { rpcUrlFor } from '../context.js';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
 import { readContacts } from '../storage/contacts.js';
 import { MAX_CAPABILITIES, assetFromCardPayment } from '../utils.js';
@@ -295,12 +297,44 @@ export const discoveryTools: ToolDefinition[] = [
         );
       }
 
+      // Pre-compute Solana network gas estimates for paid cards in this result
+      // set. Two possible asset shapes (with/without ATA rent for USDC), each
+      // estimated at most once and shared across cards. Silent on RPC failure
+      // so a flaky cluster never breaks search itself.
+      const needsAtaSeen = new Set<boolean>();
+      for (const a of filtered) {
+        for (const card of a.cards) {
+          if ((card.payment?.chain ?? 'solana') !== 'solana') {
+            continue;
+          }
+          if (!card.payment?.job_price) {
+            continue;
+          }
+          needsAtaSeen.add(assetFromCardPayment(card.payment).mint !== undefined);
+        }
+      }
+      const gasByAtaNeed = new Map<boolean, string>();
+      if (needsAtaSeen.size > 0) {
+        try {
+          const rpc = createSolanaRpc(rpcUrlFor(agent.network));
+          await Promise.all(
+            Array.from(needsAtaSeen).map(async (needsAta) => {
+              const baseline = await estimateNetworkBaseline(rpc, { includeAtaRent: needsAta });
+              gasByAtaNeed.set(needsAta, formatSol(Number(baseline.totalLamports)));
+            }),
+          );
+        } catch {
+          /* RPC down - omit gas info, search continues */
+        }
+      }
+
       const results = filtered.map((a) => ({
         npub: a.npub,
         name: sanitizeField(a.name || '', 200),
         cards: a.cards.map((card) => {
           const asset = assetFromCardPayment(card.payment);
           const price = card.payment?.job_price;
+          const gasEstimate = price ? gasByAtaNeed.get(asset.mint !== undefined) : undefined;
           return {
             name: sanitizeField(card.name || '', 200),
             description: sanitizeField(card.description || '', 500),
@@ -312,6 +346,7 @@ export const discoveryTools: ToolDefinition[] = [
             asset_mint: asset.mint,
             chain: card.payment?.chain,
             network: card.payment?.network,
+            network_fee_estimate_sol: gasEstimate,
           };
         }),
         supported_kinds: a.supportedKinds,
