@@ -1,6 +1,31 @@
-import { toDTag, type CapabilityCard } from '@elisym/sdk';
+import {
+  resolveKnownAsset,
+  toDTag,
+  type CapabilityCard,
+  type PaymentAssetRef,
+  type PaymentInfo,
+} from '@elisym/sdk';
 import { useEffect, useRef } from 'react';
 import type { Artifact, BuyState } from './types';
+
+function paymentToAsset(payment: PaymentInfo | undefined): PaymentAssetRef | undefined {
+  if (!payment || !payment.token || payment.token === 'sol') {
+    return undefined;
+  }
+  const known = resolveKnownAsset(payment.chain, payment.token, payment.mint);
+  if (known) {
+    return { chain: known.chain, token: known.token, mint: known.mint, decimals: known.decimals };
+  }
+  if (payment.decimals === undefined) {
+    return undefined;
+  }
+  return {
+    chain: payment.chain,
+    token: payment.token,
+    mint: payment.mint,
+    decimals: payment.decimals,
+  };
+}
 
 interface Props {
   buyState: BuyState | null;
@@ -25,6 +50,7 @@ export function ArtifactCapturer({ buyState, card, onCapture }: Props) {
       result: buyState.result,
       createdAt: Date.now(),
       priceLamports: card.payment?.job_price,
+      asset: paymentToAsset(card.payment),
       prompt: buyState.lastInput || undefined,
       capability: toDTag(card.name),
     });

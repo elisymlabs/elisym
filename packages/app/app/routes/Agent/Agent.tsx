@@ -1,10 +1,11 @@
-import { formatSol, nip44Decrypt, toDTag, truncateKey } from '@elisym/sdk';
+import { nip44Decrypt, resolveKnownAsset, toDTag, truncateKey } from '@elisym/sdk';
 import { nip19, type Event as NostrEvent } from 'nostr-tools';
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import { Link, useLocation, useParams } from 'wouter';
 import { MarbleAvatar } from '~/components/MarbleAvatar';
+import { UsdcIcon } from '~/components/UsdcIcon';
 import { VerifiedBadge } from '~/components/VerifiedBadge';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
@@ -16,6 +17,7 @@ import { usePingAgent, type PingStatus } from '~/hooks/usePingAgent';
 import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
+import { compactZeros, formatDecimal } from '~/lib/formatPrice';
 import { cacheGet, cacheSet } from '~/lib/localCache';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
 import { AgentActivity } from './AgentActivity';
@@ -29,6 +31,7 @@ import { STATUS_DOT } from './lib/status';
 import { ProductAvatar } from './ProductAvatar';
 import { ProductCard } from './ProductCard';
 import { ScrambleText } from './ScrambleText';
+import { SolIcon } from './SolIcon';
 import type { Artifact } from './types';
 import { useArtifacts } from './useArtifacts';
 import { useNostrArtifacts } from './useNostrArtifacts';
@@ -209,6 +212,7 @@ function mergeArtifacts(
           ...existing,
           prompt: existing.prompt ?? partial.prompt,
           priceLamports: existing.priceLamports ?? partial.priceLamports,
+          asset: existing.asset ?? partial.asset,
         });
       } else {
         const capability = partial.capability;
@@ -955,6 +959,8 @@ interface ArtifactTileProps {
   onAnimationEnd: () => void;
 }
 
+const SOL_DECIMALS = 9;
+
 function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: ArtifactTileProps) {
   const preview = cleanPreviewText(artifact.result);
   const hasPrice = artifact.priceLamports !== undefined && artifact.priceLamports > 0;
@@ -962,11 +968,21 @@ function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: Ar
 
   let priceNode: ReactNode = null;
   if (knownPrice && artifact.priceLamports !== undefined) {
-    priceNode = (
-      <span className="ml-auto font-semibold">
-        {hasPrice ? formatSol(artifact.priceLamports) : 'Free'}
-      </span>
-    );
+    if (!hasPrice) {
+      priceNode = <span className="ml-auto font-semibold">Free</span>;
+    } else {
+      const asset = artifact.asset;
+      const known = asset ? resolveKnownAsset(asset.chain, asset.token, asset.mint) : undefined;
+      const decimals = asset?.decimals ?? SOL_DECIMALS;
+      const isUsdc = known?.token === 'usdc';
+      const formatted = compactZeros(formatDecimal(artifact.priceLamports, decimals));
+      priceNode = (
+        <span className="ml-auto inline-flex items-center gap-6 font-semibold">
+          {isUsdc ? <UsdcIcon className="size-12" /> : <SolIcon className="size-12" mono />}
+          <span className="tabular-nums">{formatted}</span>
+        </span>
+      );
+    }
   }
 
   return (
