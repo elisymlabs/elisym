@@ -83,6 +83,13 @@ export interface AgentInstance {
   network: SolanaNetwork;
   solanaKeypair?: { publicKey: string; secretKey: Uint8Array };
   security: AgentSecurityFlags;
+  /**
+   * Absolute path to this agent's `.elisym/<name>/` directory on disk.
+   * Undefined for ephemeral agents (ELISYM_NOSTR_SECRET, auto-created
+   * fallback) which have no persistent storage. Tools that read/write
+   * `.customer-history.json` or `.contacts.json` MUST gate on this field.
+   */
+  agentDir?: string;
 }
 
 /** Pending withdrawal preview. A call without nonce produces one of these. */

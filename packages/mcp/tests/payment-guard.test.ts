@@ -106,7 +106,12 @@ describe('makePaymentFeedbackHandler', () => {
     await Promise.resolve();
 
     expect(onPaid).toHaveBeenCalledTimes(1);
-    expect(onPaid).toHaveBeenCalledWith('sig-1', expect.any(Array));
+    expect(onPaid).toHaveBeenCalledWith(
+      'sig-1',
+      expect.any(Array),
+      expect.any(BigInt),
+      expect.any(String),
+    );
     expect(rejectPayment).not.toHaveBeenCalled();
 
     // Post-paid duplicates are also ignored.
@@ -122,7 +127,12 @@ describe('makePaymentFeedbackHandler', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(executor).toHaveBeenCalledTimes(1);
-    expect(onPaid).toHaveBeenCalledWith('sig-1', expect.any(Array));
+    expect(onPaid).toHaveBeenCalledWith(
+      'sig-1',
+      expect.any(Array),
+      expect.any(BigInt),
+      expect.any(String),
+    );
 
     // Now a late duplicate arrives.
     handler('payment-required', 1000, '{"recipient":"x","amount":1000}');
@@ -180,7 +190,12 @@ describe('makePaymentFeedbackHandler', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(executor).toHaveBeenCalledTimes(2);
-    expect(onPaid).toHaveBeenCalledWith('sig-ok', expect.any(Array));
+    expect(onPaid).toHaveBeenCalledWith(
+      'sig-ok',
+      expect.any(Array),
+      expect.any(BigInt),
+      expect.any(String),
+    );
   });
 
   it('rejects payment when max_price_lamports is not set (confirmation gate)', () => {
@@ -191,6 +206,7 @@ describe('makePaymentFeedbackHandler', () => {
     expect(executor).not.toHaveBeenCalled();
     expect(rejectPayment).toHaveBeenCalledTimes(1);
     expect(rejectPayment.mock.calls[0]?.[0].message).toMatch(/no max_price_lamports set/);
+    expect(rejectPayment.mock.calls[0]?.[0].message).toMatch(/estimate_payment_cost/);
   });
 
   it('enforces max_price_lamports against the signed JSON amount, not the tag amount', () => {

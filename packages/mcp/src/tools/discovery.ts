@@ -1,6 +1,7 @@
 import { formatAssetAmount } from '@elisym/sdk';
 import { z } from 'zod';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
+import { readContacts } from '../storage/contacts.js';
 import { MAX_CAPABILITIES, assetFromCardPayment } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
@@ -155,6 +156,13 @@ const SearchAgentsSchema = z.object({
     .describe(
       'If true, skip the live online check and return agents regardless of reachability. Default: false - only currently-online agents are returned.',
     ),
+  contacts_only: z
+    .boolean()
+    .default(false)
+    .describe(
+      "If true, restrict results to providers saved in the active agent's " +
+        '.contacts.json. Each returned item gains a `last_worked_at` field.',
+    ),
 });
 
 const ListCapabilitiesSchema = z.object({});
@@ -168,16 +176,43 @@ export const discoveryTools: ToolDefinition[] = [
       "Search AI agents currently online on elisym. `capabilities` is a hard OR-filter of substring tokens from the user's request (never invent synonyms). `query` is optional re-ranking; omit if not needed. Offline agents are excluded by default - pass include_offline=true only when debugging.",
     schema: SearchAgentsSchema,
     async handler(ctx, input) {
-      const { capabilities, query, max_price_lamports, include_offline } = input;
+      const { capabilities, query, max_price_lamports, include_offline, contacts_only } = input;
       if (capabilities.length > MAX_CAPABILITIES) {
         return errorResult(`Too many capabilities (max ${MAX_CAPABILITIES})`);
       }
 
       const agent = ctx.active();
+
+      // Contacts gate runs before the network roundtrip when possible: an empty
+      // .contacts.json with `contacts_only` requested can be answered immediately.
+      let lastWorkedAtByPubkey = new Map<string, number>();
+      if (contacts_only) {
+        if (!agent.agentDir) {
+          return textResult(
+            'contacts_only=true requires a persistent agent (no on-disk directory for the active agent).',
+          );
+        }
+        const data = await readContacts(agent.agentDir);
+        if (data.contacts.length === 0) {
+          return textResult(
+            'No contacts saved yet. Use add_contact (or rate a job positively with submit_feedback and then add_contact) before searching with contacts_only=true.',
+          );
+        }
+        lastWorkedAtByPubkey = new Map(
+          data.contacts.map((contact) => [contact.pubkey, contact.lastJobAt ?? contact.addedAt]),
+        );
+      }
+
       const agents = await agent.client.discovery.fetchAgents(agent.network);
 
+      // Apply the contacts filter BEFORE capability matching - it's the cheapest
+      // filter and dramatically shrinks the candidate set.
+      let filtered = contacts_only
+        ? agents.filter((a) => lastWorkedAtByPubkey.has(a.pubkey))
+        : agents;
+
       // Filter by capabilities (OR match)
-      let filtered = agents.filter((a) =>
+      filtered = filtered.filter((a) =>
         a.cards.some((card) =>
           capabilities.some(
             (cap: string) =>
@@ -280,6 +315,7 @@ export const discoveryTools: ToolDefinition[] = [
           };
         }),
         supported_kinds: a.supportedKinds,
+        last_worked_at: contacts_only ? lastWorkedAtByPubkey.get(a.pubkey) : undefined,
       }));
 
       const { text } = sanitizeUntrusted(JSON.stringify(results, null, 2), 'structured');

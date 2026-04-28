@@ -1,4 +1,5 @@
 import { ElisymClient, ElisymIdentity, RELAYS, validateAgentName } from '@elisym/sdk';
+import { resolveAgent } from '@elisym/sdk/agent-store';
 import {
   type KeyPairSigner,
   createKeyPairSignerFromBytes,
@@ -108,6 +109,7 @@ export async function buildAgentInstance(
     }
   }
 
+  const resolved = resolveAgent(name, process.cwd());
   return {
     client,
     identity,
@@ -115,6 +117,7 @@ export async function buildAgentInstance(
     network: config.network,
     solanaKeypair,
     security: config.security ?? {},
+    agentDir: resolved?.dir,
   };
 }
 

@@ -1,4 +1,12 @@
-import { formatAssetAmount, toDTag, DEFAULT_KIND_OFFSET, SolanaPaymentStrategy } from '@elisym/sdk';
+import {
+  assetKey,
+  estimateNetworkBaseline,
+  formatAssetAmount,
+  formatNetworkBaseline,
+  toDTag,
+  DEFAULT_KIND_OFFSET,
+  SolanaPaymentStrategy,
+} from '@elisym/sdk';
 import type { Agent as ProviderAgent, Asset, PaymentRequestData } from '@elisym/sdk';
 import {
   createKeyPairSignerFromBytes,
@@ -7,7 +15,6 @@ import {
   getSignatureFromTransaction,
   sendAndConfirmTransactionFactory,
 } from '@solana/kit';
-import { nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import type { AgentContext, AgentInstance } from '../context.js';
 import {
@@ -28,8 +35,14 @@ import {
   isLikelyBase64,
 } from '../sanitize.js';
 import {
+  appendCustomerJob,
+  readCustomerHistory,
+  type CustomerJobEntry,
+} from '../storage/customer-history.js';
+import {
   assetFromCardPayment,
   checkLen,
+  decodeNpub,
   payment,
   MAX_INPUT_LEN,
   MAX_NPUB_LEN,
@@ -79,6 +92,13 @@ const GetJobResultSchema = z.object({
 const ListMyJobsSchema = z.object({
   limit: z.number().int().min(1).max(50).default(20),
   kind_offset: z.number().int().min(0).max(999).default(DEFAULT_KIND_OFFSET),
+  include_nostr: z
+    .boolean()
+    .default(true)
+    .describe(
+      'When true (default), merge local history with results pulled from Nostr relays. ' +
+        'Set false to read only the local cache (faster, useful offline).',
+    ),
 });
 
 const SubmitAndPayJobSchema = z.object({
@@ -97,15 +117,6 @@ const BuyCapabilitySchema = z.object({
   max_price_lamports: z.number().int().optional(),
   timeout_secs: z.number().int().min(1).max(600).default(120),
 });
-
-/** Decode an npub into a hex pubkey. Throws with a clean message on bad input. */
-function decodeNpub(npub: string): string {
-  const decoded = nip19.decode(npub);
-  if (decoded.type !== 'npub') {
-    throw new Error(`Expected npub, got ${decoded.type}`);
-  }
-  return decoded.data;
-}
 
 /**
  * resolve the Solana recipient address published by a provider in its capability card.
@@ -131,6 +142,74 @@ function providerSolanaAddress(provider: ProviderAgent, dTag?: string): string |
 /** Derive WebSocket URL from HTTP RPC URL for subscriptions. */
 function wsUrlFor(httpUrl: string): string {
   return httpUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+}
+
+/**
+ * Append a successful customer job to the per-agent local history. Best-effort:
+ * a write failure is logged but never propagated, so storage problems cannot
+ * mask a successful job result. No-op for ephemeral agents (no agentDir).
+ */
+async function recordJobOutcome(agent: AgentInstance, entry: CustomerJobEntry): Promise<void> {
+  if (!agent.agentDir) {
+    return;
+  }
+  try {
+    await appendCustomerJob(agent.agentDir, entry);
+  } catch (e) {
+    logger.warn(
+      { event: 'customer_history_write_failed', agent: agent.name, error: String(e) },
+      'failed to write .customer-history.json',
+    );
+  }
+}
+
+/**
+ * Provider display names come from kind:0 metadata on Nostr - unbounded by the
+ * relay. Cap at 200 chars to match `CustomerJobEntrySchema.providerName`'s
+ * `.max(200)`, otherwise an oversized name would fail schema validation in
+ * `appendCustomerJob` and the local job would be dropped.
+ */
+function clipProviderName(name: string | undefined): string | undefined {
+  if (name === undefined) {
+    return undefined;
+  }
+  return name.length > 200 ? name.slice(0, 200) : name;
+}
+
+/** Tip appended to the success-text of submit_and_pay_job / buy_capability. */
+function buildJobCompletionTip(jobId: string, providerNpub: string): string {
+  return (
+    `\n\nTip: rate this provider with submit_feedback ` +
+    `(job_event_id="${jobId}", rating="positive"|"negative"), ` +
+    `or save them with add_contact (npub="${providerNpub}").`
+  );
+}
+
+/** Map an awaitJobResult error message to one of our local-history statuses. */
+function classifyJobFailure(message: string): 'timeout' | 'failed' {
+  return /timed out/i.test(message) ? 'timeout' : 'failed';
+}
+
+/**
+ * Best-effort network gas hint for the buy_capability confirmation gate.
+ * The payment_request is not yet known there - we only know the card's asset
+ * (and whether it needs an ATA). Reuses the SDK priority-fee cache (TTL 10s).
+ * Returns an empty string when the estimator throws so confirmation strings
+ * never break on RPC issues.
+ */
+async function gasHintForCardAsset(agent: AgentInstance, asset: Asset): Promise<string> {
+  if (!agent.solanaKeypair) {
+    return '';
+  }
+  try {
+    const rpc = createSolanaRpc(rpcUrlFor(agent.network));
+    const baseline = await estimateNetworkBaseline(rpc, {
+      includeAtaRent: asset.mint !== undefined,
+    });
+    return `\n${formatNetworkBaseline(baseline)}`;
+  } catch {
+    return '';
+  }
 }
 
 const paymentStrategy = new SolanaPaymentStrategy();
@@ -261,9 +340,16 @@ export function makePaymentFeedbackHandler(opts: {
   /**
    * Fires after on-chain confirmation. `warnings` contains any newly-crossed
    * 50% / 80% session-spend-cap warnings to surface back to the user; each
-   * threshold fires at most once per process.
+   * threshold fires at most once per process. `paidAmountSubunits` and
+   * `paidAssetKey` describe what was paid - both undefined when the provider
+   * sent a payment request without an amount (rare).
    */
-  onPaid: (signature: string, warnings: string[]) => void;
+  onPaid: (
+    signature: string,
+    warnings: string[],
+    paidAmountSubunits?: bigint,
+    paidAssetKey?: string,
+  ) => void;
   /** Override for tests. Defaults to the real `executePaymentFlow`. */
   executor?: PaymentExecutor;
 }): PaymentFeedbackHandler {
@@ -341,12 +427,16 @@ export function makePaymentFeedbackHandler(opts: {
       return;
     }
     // Confirmation gate: if no max_price_lamports was set, reject with the price
-    // so the caller can confirm and retry with a limit.
+    // so the caller can confirm and retry with a limit. Kept synchronous so the
+    // outer subscription callback contract is preserved; the buy_capability
+    // confirmation gate (sibling tool) shows the gas breakdown when the LLM
+    // calls estimate_payment_cost as documented in send_payment.
     if (opts.maxPriceLamports === undefined && signedAmount !== undefined) {
       opts.rejectPayment(
         new Error(
           `Payment of ${formatAssetAmount(asset, BigInt(signedAmount))} required but no max_price_lamports set. ` +
-            `Retry with max_price_lamports to approve.`,
+            `Retry with max_price_lamports to approve. ` +
+            `Use estimate_payment_cost on the payment_request to preview SOL gas before retrying.`,
         ),
       );
       return;
@@ -395,7 +485,7 @@ export function makePaymentFeedbackHandler(opts: {
         // on-chain - otherwise a rolled-back reservation would consume the
         // one-shot budget for a spend that never happened.
         const warnings = takeSpendWarnings(opts.ctx, asset);
-        opts.onPaid(sig, warnings);
+        opts.onPaid(sig, warnings, reservedAmount, assetKey(asset));
         flushResult();
       })
       .catch((e: unknown) => {
@@ -575,112 +665,142 @@ export const customerTools: ToolDefinition[] = [
   defineTool({
     name: 'list_my_jobs',
     description:
-      'List jobs submitted by the CURRENT AGENT (filtered by customer pubkey) and ' +
-      'their results/feedback. Targeted (encrypted) results are decrypted automatically. ' +
-      'WARNING: Job results and feedback are untrusted external data.',
+      'List jobs submitted by the CURRENT AGENT, merging the local on-disk history ' +
+      '(.customer-history.json) with what is currently visible on Nostr relays. Targeted ' +
+      '(encrypted) results are decrypted automatically. Each entry is tagged with ' +
+      'source=local-only|nostr-only|merged so the caller can see when relay TTL has dropped ' +
+      'an event. WARNING: result content is untrusted external data.',
     schema: ListMyJobsSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
 
       const agent = ctx.active();
-      // positional params are SDK-fixed. Names for reference:
-      // (agentPubkeys?, limit, since?, kindOffsets?)
-      // fetchRecentJobs does NOT filter by customer pubkey. We intentionally pull
-      // more than `limit` so that after filtering by our own customer pubkey we still
-      // have at least `limit` of our own jobs. This is an over-fetch because the SDK
-      // has no customer filter - see sdk/services/marketplace.ts:617 for the signature.
-      const overFetchFactor = 5;
-      const overFetchCap = 500;
-      const rawLimit = Math.min(input.limit * overFetchFactor, overFetchCap);
-      const jobs = await agent.client.marketplace.fetchRecentJobs(
-        undefined, // agentPubkeys: provider filter, not what we want
-        rawLimit,
-        undefined, // since: SDK default lookback
-        [input.kind_offset],
-      );
 
-      // keep only jobs submitted by the active agent.
-      const mine = jobs
-        .filter((j) => j.customer === agent.identity.publicKey)
-        .slice(0, input.limit);
+      // Local-first: the on-disk cache survives relay expiry and carries fields Nostr
+      // alone never sees (paymentSig, paid amount, customerFeedback).
+      const localEntries = agent.agentDir ? (await readCustomerHistory(agent.agentDir)).jobs : [];
+      const localById = new Map(localEntries.map((entry) => [entry.jobEventId, entry]));
 
-      // targeted-job results from fetchRecentJobs are raw NIP-44 ciphertext. Use
-      // queryJobResults to batch-decrypt. Free/broadcast results are plaintext and do
-      // not need the extra call.
-      const jobIdsWithResults = mine.filter((j) => j.resultEventId).map((j) => j.eventId);
+      let nostrJobs: Awaited<ReturnType<typeof agent.client.marketplace.fetchRecentJobs>> = [];
       let decryptedByRequest = new Map<string, { content: string; decryptionFailed: boolean }>();
-      if (jobIdsWithResults.length > 0) {
-        try {
-          const decrypted = await agent.client.marketplace.queryJobResults(
-            agent.identity,
-            jobIdsWithResults,
-            [input.kind_offset],
-          );
-          // queryJobResults returns full payload - strip to what we need.
-          decryptedByRequest = new Map(
-            [...decrypted.entries()].map(([id, v]) => [
-              id,
-              { content: v.content, decryptionFailed: v.decryptionFailed },
-            ]),
-          );
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          logger.error(
-            { event: 'list_my_jobs_query_failed', err: message },
-            'queryJobResults failed',
-          );
-          // Fall through - we'll show raw ciphertext as last resort.
+
+      if (input.include_nostr) {
+        // fetchRecentJobs has no customer-pubkey filter (see sdk/services/marketplace.ts).
+        // Over-fetch so post-filtering still yields enough of our own jobs.
+        const overFetchFactor = 5;
+        const overFetchCap = 500;
+        const rawLimit = Math.min(input.limit * overFetchFactor, overFetchCap);
+        nostrJobs = (
+          await agent.client.marketplace.fetchRecentJobs(undefined, rawLimit, undefined, [
+            input.kind_offset,
+          ])
+        ).filter((job) => job.customer === agent.identity.publicKey);
+
+        const jobIdsWithResults = nostrJobs
+          .filter((job) => job.resultEventId)
+          .map((job) => job.eventId);
+        if (jobIdsWithResults.length > 0) {
+          try {
+            const decrypted = await agent.client.marketplace.queryJobResults(
+              agent.identity,
+              jobIdsWithResults,
+              [input.kind_offset],
+            );
+            decryptedByRequest = new Map(
+              [...decrypted.entries()].map(([id, value]) => [
+                id,
+                { content: value.content, decryptionFailed: value.decryptionFailed },
+              ]),
+            );
+          } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            logger.error(
+              { event: 'list_my_jobs_query_failed', err: message },
+              'queryJobResults failed',
+            );
+          }
         }
       }
 
-      // Scanning of long free-text result bodies happens here, per-field, with
-      // the FULL pattern set (incl. data_exfil/role_hijack/jailbreak/urgency).
-      // The outer `sanitizeUntrusted(..., 'structured')` only runs the strict
-      // subset, which is right for short metadata but would miss exfil-style
-      // phrasing inside a job result. We OR up a single signal across all
-      // results and pass it via `extraInjectionSignal` so the WARNING fires
-      // exactly once at the top of the assembled response.
+      const nostrById = new Map(nostrJobs.map((job) => [job.eventId, job]));
+
+      // Per-field scan of long free-text result bodies with the FULL pattern set.
+      // OR'd into `extraInjectionSignal` for the outer sanitizeUntrusted boundary.
       let freetextSuspicious = false;
 
-      const results = mine.map((job) => {
-        const dec = decryptedByRequest.get(job.eventId);
+      const allIds = new Set<string>([...localById.keys(), ...nostrById.keys()]);
+      const merged = [...allIds].map((eventId) => {
+        const local = localById.get(eventId);
+        const nostr = nostrById.get(eventId);
+        let source: 'merged' | 'local-only' | 'nostr-only';
+        if (local && nostr) {
+          source = 'merged';
+        } else if (local) {
+          source = 'local-only';
+        } else {
+          source = 'nostr-only';
+        }
+
         let resultText: string | undefined;
-        if (dec) {
-          if (dec.decryptionFailed) {
-            resultText = '[decryption failed - targeted result not for this agent]';
-          } else {
-            const cleaned = sanitizeInner(dec.content);
+        if (nostr) {
+          const decrypted = decryptedByRequest.get(eventId);
+          if (decrypted) {
+            if (decrypted.decryptionFailed) {
+              resultText = '[decryption failed - targeted result not for this agent]';
+            } else {
+              const cleaned = sanitizeInner(decrypted.content);
+              if (scanForInjections(cleaned, 'full')) {
+                freetextSuspicious = true;
+              }
+              resultText = cleaned;
+            }
+          } else if (nostr.result) {
+            const cleaned = sanitizeInner(nostr.result);
             if (scanForInjections(cleaned, 'full')) {
               freetextSuspicious = true;
             }
             resultText = cleaned;
           }
-        } else if (job.result) {
-          // Broadcast/plaintext result.
-          const cleaned = sanitizeInner(job.result);
+        }
+        // Fall back to the local snapshot (capped at 500 chars) when Nostr has nothing.
+        if (!resultText && local?.resultPreview) {
+          const cleaned = sanitizeInner(local.resultPreview);
           if (scanForInjections(cleaned, 'full')) {
             freetextSuspicious = true;
           }
           resultText = cleaned;
         }
+
+        const status = nostr?.status ?? local?.status;
+        const capability = nostr?.capability ?? local?.capability;
+        const amount = nostr?.amount ?? local?.paidAmountSubunits;
+        // Normalize timestamps to Unix seconds so local-only and nostr-only
+        // entries sort consistently. Nostr `createdAt` is already seconds;
+        // local `submittedAt` is `Date.now()` (milliseconds).
+        const timestamp =
+          nostr?.createdAt ?? (local ? Math.floor(local.submittedAt / 1000) : undefined);
+
         return {
-          event_id: job.eventId,
-          status: sanitizeField(job.status ?? '', 100),
-          capability: sanitizeField(job.capability ?? '', 100),
-          amount: job.amount,
-          timestamp: job.createdAt,
+          event_id: eventId,
+          source,
+          status: status !== undefined ? sanitizeField(String(status), 100) : undefined,
+          capability: capability !== undefined ? sanitizeField(String(capability), 100) : undefined,
+          amount: amount !== undefined ? String(amount) : undefined,
+          asset_key: local?.assetKey,
+          timestamp,
           result: resultText,
+          payment_sig: local?.paymentSig,
+          customer_feedback: local?.customerFeedback,
         };
       });
 
-      // Single trust boundary around the whole structured response. Strict
-      // subset still runs over the assembled JSON for the metadata fields;
-      // `extraInjectionSignal` lifts the WARNING when our per-field full scan
-      // above caught something the structured scan would otherwise miss.
-      const { text: wrapped } = sanitizeUntrusted(JSON.stringify(results, null, 2), 'structured', {
+      merged.sort((left, right) => (right.timestamp ?? 0) - (left.timestamp ?? 0));
+      const limited = merged.slice(0, input.limit);
+
+      const { text: wrapped } = sanitizeUntrusted(JSON.stringify(limited, null, 2), 'structured', {
         extraInjectionSignal: freetextSuspicious,
       });
-      return textResult(`Found ${results.length} of your jobs:\n${wrapped}`);
+      return textResult(`Found ${limited.length} of your jobs:\n${wrapped}`);
     },
   }),
 
@@ -743,6 +863,7 @@ export const customerTools: ToolDefinition[] = [
         );
       }
 
+      const submittedAt = Date.now();
       const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
         input: input.input,
         capability: input.capability,
@@ -752,6 +873,8 @@ export const customerTools: ToolDefinition[] = [
 
       // include jobId in every outcome so the caller can recover.
       let paymentSig: string | undefined;
+      let paidAmountSubunits: bigint | undefined;
+      let paidAssetKey: string | undefined;
       let paymentWarnings: string[] = [];
       try {
         const result = await awaitJobResult<string>(
@@ -768,8 +891,10 @@ export const customerTools: ToolDefinition[] = [
               resolveNoWallet: resolve,
               resolveResult: resolve,
               rejectPayment: reject,
-              onPaid: (sig, warnings) => {
+              onPaid: (sig, warnings, amount, assetKey) => {
                 paymentSig = sig;
+                paidAmountSubunits = amount;
+                paidAssetKey = assetKey;
                 paymentWarnings = warnings;
                 for (const line of warnings) {
                   logger.warn({ event: 'session_spend_threshold', agent: agent.name }, line);
@@ -798,10 +923,36 @@ export const customerTools: ToolDefinition[] = [
           timeout + 5_000,
         );
 
+        await recordJobOutcome(agent, {
+          jobEventId: jobId,
+          capability: input.capability,
+          providerPubkey,
+          providerName: clipProviderName(provider.name),
+          paidAmountSubunits: paidAmountSubunits?.toString(),
+          assetKey: paidAssetKey,
+          status: 'completed',
+          submittedAt,
+          completedAt: Date.now(),
+          resultPreview: result.slice(0, 500),
+          paymentSig,
+        });
         const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
-        return textResult(`${warningBlock}event_id=${jobId}\n${result}`);
+        const tip = buildJobCompletionTip(jobId, input.provider_npub);
+        return textResult(`${warningBlock}event_id=${jobId}\n${result}${tip}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        await recordJobOutcome(agent, {
+          jobEventId: jobId,
+          capability: input.capability,
+          providerPubkey,
+          providerName: clipProviderName(provider.name),
+          paidAmountSubunits: paidAmountSubunits?.toString(),
+          assetKey: paidAssetKey,
+          status: classifyJobFailure(msg),
+          submittedAt,
+          completedAt: Date.now(),
+          paymentSig,
+        });
         const paid = paymentSig
           ? ` Payment already sent (sig=${paymentSig}) - use get_job_result with event_id="${jobId}" to retrieve once ready.`
           : '';
@@ -872,15 +1023,17 @@ export const customerTools: ToolDefinition[] = [
       }
 
       // Confirmation gate: if the capability is paid and no max_price_lamports was provided,
-      // return the price for user confirmation instead of auto-paying.
+      // return the price for user confirmation instead of auto-paying. The network gas
+      // estimate is appended best-effort - RPC failures degrade silently.
       if (price > 0 && input.max_price_lamports === undefined) {
+        const gasLine = await gasHintForCardAsset(agent, cardAsset);
         return {
           content: [
             {
               type: 'text' as const,
               text:
                 `Capability "${input.capability}" from "${provider.name || input.provider_npub}" ` +
-                `costs ${formatAssetAmount(cardAsset, BigInt(price))}.\n\n` +
+                `costs ${formatAssetAmount(cardAsset, BigInt(price))}.${gasLine}\n\n` +
                 `To confirm, call buy_capability again with max_price_lamports set ` +
                 `(e.g. ${price} or higher).`,
             },
@@ -899,6 +1052,7 @@ export const customerTools: ToolDefinition[] = [
         );
       }
 
+      const submittedAt = Date.now();
       const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
         input: input.input || '',
         capability: dTag,
@@ -906,6 +1060,8 @@ export const customerTools: ToolDefinition[] = [
       });
 
       let paymentSig: string | undefined;
+      let paidAmountSubunits: bigint | undefined;
+      let paidAssetKey: string | undefined;
       let paymentWarnings: string[] = [];
       try {
         const result = await awaitJobResult<string>(
@@ -922,8 +1078,10 @@ export const customerTools: ToolDefinition[] = [
               resolveNoWallet: resolve,
               resolveResult: resolve,
               rejectPayment: reject,
-              onPaid: (sig, warnings) => {
+              onPaid: (sig, warnings, amount, assetKey) => {
                 paymentSig = sig;
+                paidAmountSubunits = amount;
+                paidAssetKey = assetKey;
                 paymentWarnings = warnings;
                 for (const line of warnings) {
                   logger.warn({ event: 'session_spend_threshold', agent: agent.name }, line);
@@ -954,10 +1112,36 @@ export const customerTools: ToolDefinition[] = [
           timeout + 5_000,
         );
 
+        await recordJobOutcome(agent, {
+          jobEventId: jobId,
+          capability: dTag,
+          providerPubkey,
+          providerName: clipProviderName(provider.name),
+          paidAmountSubunits: paidAmountSubunits?.toString(),
+          assetKey: paidAssetKey,
+          status: 'completed',
+          submittedAt,
+          completedAt: Date.now(),
+          resultPreview: result.slice(0, 500),
+          paymentSig,
+        });
         const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
-        return textResult(`${warningBlock}event_id=${jobId}\n${result}`);
+        const tip = buildJobCompletionTip(jobId, input.provider_npub);
+        return textResult(`${warningBlock}event_id=${jobId}\n${result}${tip}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        await recordJobOutcome(agent, {
+          jobEventId: jobId,
+          capability: dTag,
+          providerPubkey,
+          providerName: clipProviderName(provider.name),
+          paidAmountSubunits: paidAmountSubunits?.toString(),
+          assetKey: paidAssetKey,
+          status: classifyJobFailure(msg),
+          submittedAt,
+          completedAt: Date.now(),
+          paymentSig,
+        });
         const paid = paymentSig
           ? ` Payment already sent (sig=${paymentSig}) - use get_job_result with event_id="${jobId}" to retrieve once ready.`
           : '';

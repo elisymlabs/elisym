@@ -17,6 +17,8 @@ const GITIGNORE_CONTENT = [
   '.media-cache.json',
   '.jobs.json',
   '.jobs.json.corrupt.*',
+  '.customer-history.json',
+  '.contacts.json',
   '',
 ].join('\n');
 

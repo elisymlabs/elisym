@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NATIVE_SOL, resolveKnownAsset, SolanaPaymentStrategy, LIMITS } from '@elisym/sdk';
 import type { Asset, Chain, PaymentInfo } from '@elisym/sdk';
+import { nip19 } from 'nostr-tools';
 
 /** Standard LAMPORTS_PER_SOL as a BigInt for integer math. */
 const LAMPORTS_PER_SOL = 1_000_000_000n;
@@ -188,4 +189,17 @@ let _paymentStrategy: SolanaPaymentStrategy | null = null;
 export function payment(): SolanaPaymentStrategy {
   _paymentStrategy ??= new SolanaPaymentStrategy();
   return _paymentStrategy;
+}
+
+/**
+ * Decode an `npub1...` Nostr identifier to its 64-char hex pubkey. Throws with
+ * a caller-facing message on any malformed input - tools should wrap this in a
+ * try/catch and surface an `errorResult` rather than letting it propagate.
+ */
+export function decodeNpub(npub: string): string {
+  const decoded = nip19.decode(npub);
+  if (decoded.type !== 'npub') {
+    throw new Error(`Expected npub, got ${decoded.type}`);
+  }
+  return decoded.data;
 }
