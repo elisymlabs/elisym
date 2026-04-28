@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -47,23 +47,8 @@ describe('contacts', () => {
       npub: NPUB_A,
       name: 'Alice',
       note: 'hi',
-      jobCount: 0,
     });
-  });
-
-  it('increments jobCount on repeat upsert without explicit jobCount', async () => {
-    await upsertContact(agentDir, { pubkey: PUBKEY_A, npub: NPUB_A });
-    await upsertContact(agentDir, { pubkey: PUBKEY_A, npub: NPUB_A });
-    await upsertContact(agentDir, { pubkey: PUBKEY_A, npub: NPUB_A });
-    const found = await findContact(agentDir, PUBKEY_A);
-    expect(found?.jobCount).toBe(2);
-  });
-
-  it('replaces jobCount when explicitly provided', async () => {
-    await upsertContact(agentDir, { pubkey: PUBKEY_A, npub: NPUB_A });
-    await upsertContact(agentDir, { pubkey: PUBKEY_A, npub: NPUB_A, jobCount: 7 });
-    const found = await findContact(agentDir, PUBKEY_A);
-    expect(found?.jobCount).toBe(7);
+    expect(data.contacts[0]).not.toHaveProperty('jobCount');
   });
 
   it('preserves existing fields when omitted on update', async () => {
@@ -111,6 +96,25 @@ describe('contacts', () => {
     await upsertContact(agentDir, { pubkey: PUBKEY_A, npub: NPUB_A });
     const path = join(agentDir, CONTACTS_FILENAME);
     expect(path.endsWith('.contacts.json')).toBe(true);
+  });
+
+  it('silently drops legacy jobCount field from on-disk contacts', async () => {
+    const legacy = {
+      version: 1,
+      contacts: [
+        {
+          pubkey: PUBKEY_A,
+          npub: NPUB_A,
+          addedAt: 1_700_000_000_000,
+          jobCount: 5,
+        },
+      ],
+    };
+    writeFileSync(join(agentDir, CONTACTS_FILENAME), JSON.stringify(legacy));
+    const data = await readContacts(agentDir);
+    expect(data.contacts).toHaveLength(1);
+    expect(data.contacts[0]).not.toHaveProperty('jobCount');
+    expect(data.contacts[0]?.pubkey).toBe(PUBKEY_A);
   });
 
   it('preserves all contacts under concurrent upserts of distinct pubkeys', async () => {

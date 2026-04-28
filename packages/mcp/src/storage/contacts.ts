@@ -16,25 +16,22 @@ import { z } from 'zod';
 
 export const CONTACTS_FILENAME = '.contacts.json';
 
-export const ContactSchema = z
-  .object({
-    pubkey: z.string().regex(/^[a-f0-9]{64}$/),
-    npub: z.string().min(1).max(80),
-    name: z.string().max(200).optional(),
-    addedAt: z.number().int().nonnegative(),
-    lastJobAt: z.number().int().nonnegative().optional(),
-    jobCount: z.number().int().nonnegative(),
-    lastCapability: z.string().max(200).optional(),
-    note: z.string().max(500).optional(),
-  })
-  .strict();
+// Non-strict on purpose: legacy entries on disk may carry retired fields
+// (e.g. `jobCount`) that we now drop silently on read.
+export const ContactSchema = z.object({
+  pubkey: z.string().regex(/^[a-f0-9]{64}$/),
+  npub: z.string().min(1).max(80),
+  name: z.string().max(200).optional(),
+  addedAt: z.number().int().nonnegative(),
+  lastJobAt: z.number().int().nonnegative().optional(),
+  lastCapability: z.string().max(200).optional(),
+  note: z.string().max(500).optional(),
+});
 
-export const ContactsSchema = z
-  .object({
-    version: z.literal(1),
-    contacts: z.array(ContactSchema),
-  })
-  .strict();
+export const ContactsSchema = z.object({
+  version: z.literal(1),
+  contacts: z.array(ContactSchema),
+});
 
 export type Contact = z.infer<typeof ContactSchema>;
 export type Contacts = z.infer<typeof ContactsSchema>;
@@ -94,18 +91,12 @@ export interface UpsertContactInput {
   note?: string;
   lastJobAt?: number;
   lastCapability?: string;
-  /**
-   * Override `jobCount` directly (e.g. when seeding from history). When
-   * omitted, the existing count is incremented by 1 on each call.
-   */
-  jobCount?: number;
 }
 
 /**
- * Insert or update a contact, keyed by `pubkey`. On a repeat call:
- *  - jobCount: replaced if `input.jobCount` is set, otherwise incremented by 1.
- *  - lastJobAt / lastCapability / name / note: replaced when present in input,
- *    preserved when absent.
+ * Insert or update a contact, keyed by `pubkey`. On a repeat call,
+ * `lastJobAt` / `lastCapability` / `name` / `note` are replaced when present
+ * in the input and preserved when absent.
  */
 export async function upsertContact(agentDir: string, input: UpsertContactInput): Promise<Contact> {
   const path = pathFor(agentDir);
@@ -122,7 +113,6 @@ export async function upsertContact(agentDir: string, input: UpsertContactInput)
         note: input.note ?? existing.note,
         lastJobAt: input.lastJobAt ?? existing.lastJobAt,
         lastCapability: input.lastCapability ?? existing.lastCapability,
-        jobCount: input.jobCount ?? existing.jobCount + 1,
       });
       data.contacts[index] = merged;
     } else {
@@ -134,7 +124,6 @@ export async function upsertContact(agentDir: string, input: UpsertContactInput)
         addedAt: Date.now(),
         lastJobAt: input.lastJobAt,
         lastCapability: input.lastCapability,
-        jobCount: input.jobCount ?? 0,
       });
       data.contacts.push(merged);
     }

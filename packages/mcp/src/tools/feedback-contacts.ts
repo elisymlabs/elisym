@@ -140,8 +140,8 @@ export const feedbackContactsTools: ToolDefinition[] = [
     description:
       "Add a provider to the active agent's contacts list (.contacts.json). When the " +
       'provider has prior jobs in the local history, the contact is enriched with ' +
-      'jobCount, lastJobAt, and lastCapability. Idempotent: re-calling with the same ' +
-      'npub updates name/note in place without duplicating the entry.',
+      'lastJobAt and lastCapability. Idempotent: re-calling with the same npub ' +
+      'updates name/note in place without duplicating the entry.',
     schema: AddContactSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
@@ -179,14 +179,12 @@ export const feedbackContactsTools: ToolDefinition[] = [
         note: cleanNote,
         lastJobAt: last?.completedAt,
         lastCapability: last?.capability,
-        jobCount: history.length,
       });
 
       const lines = [
         `Saved contact ${contact.npub}.`,
         contact.name ? `  name: ${contact.name}` : null,
         contact.lastCapability ? `  last capability: ${contact.lastCapability}` : null,
-        contact.jobCount > 0 ? `  prior jobs: ${contact.jobCount}` : null,
       ].filter((line): line is string => line !== null);
       return textResult(lines.join('\n'));
     },
@@ -252,7 +250,6 @@ export const feedbackContactsTools: ToolDefinition[] = [
           contact.lastCapability !== undefined
             ? sanitizeField(contact.lastCapability, 200)
             : undefined,
-        job_count: contact.jobCount,
       }));
 
       const { text: wrapped } = sanitizeUntrusted(JSON.stringify(limited, null, 2), 'structured');
