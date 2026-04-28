@@ -247,7 +247,7 @@ export function StatsBar() {
             />
             <MobileRowDivider />
             <MobileStatRow
-              icon={<UsdcIcon />}
+              icon={<UsdcIcon className="size-14" />}
               label="USDC Volume"
               value={usdcVolume}
               tooltipText={ON_CHAIN_TOOLTIP_TEXT}
@@ -278,7 +278,7 @@ export function StatsBar() {
                 <StatItem
                   value={usdcVolume}
                   label="USDC Volume"
-                  icon={<UsdcIcon />}
+                  icon={<UsdcIcon className="size-14" />}
                   tooltipText={ON_CHAIN_TOOLTIP_TEXT}
                 />
               </>
