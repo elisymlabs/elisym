@@ -43,8 +43,18 @@ export {
   pickPercentileFee,
 } from './payment/priorityFee';
 export type { EstimatePriorityFeeOptions } from './payment/priorityFee';
-export { estimateSolFeeLamports, formatFeeBreakdown } from './payment/feeEstimate';
-export type { SolFeeEstimate, EstimateSolFeeOptions } from './payment/feeEstimate';
+export {
+  estimateSolFeeLamports,
+  formatFeeBreakdown,
+  estimateNetworkBaseline,
+  formatNetworkBaseline,
+} from './payment/feeEstimate';
+export type {
+  SolFeeEstimate,
+  EstimateSolFeeOptions,
+  NetworkBaselineEstimate,
+  NetworkBaselineOptions,
+} from './payment/feeEstimate';
 export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
 export { verifyJobPaymentQuick, clearQuickVerifyCache } from './payment/quick-verify';

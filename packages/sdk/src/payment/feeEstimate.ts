@@ -230,3 +230,76 @@ function lamportsToSol(lamports: bigint): string {
   const frac = lamports % LAMPORTS_PER_SOL;
   return `${whole}.${frac.toString().padStart(9, '0')}`;
 }
+
+export interface NetworkBaselineEstimate {
+  baseFeeLamports: bigint;
+  priorityFeeMicroLamports: bigint;
+  computeUnitLimit: number;
+  priorityFeeLamports: bigint;
+  /** Present only when `includeAtaRent: true`. */
+  ataRentLamports?: bigint;
+  /** baseFeeLamports + priorityFeeLamports + (ataRentLamports ?? 0n). */
+  totalLamports: bigint;
+}
+
+export interface NetworkBaselineOptions {
+  /** Add one ATA rent-exemption deposit to the total (USDC first-time payer). */
+  includeAtaRent?: boolean;
+  /** Override the priority-fee percentile (default 75). */
+  priorityFeePercentile?: number;
+  /** Override the compute-unit limit (default 200_000). */
+  computeUnitLimit?: number;
+  /** Override priority fee directly, skipping the RPC call. */
+  priorityFeeMicroLamports?: bigint;
+}
+
+/**
+ * Estimate the SOL cost of a typical payment transaction on the current
+ * cluster, without needing a concrete `payment_request`. Used by MCP
+ * confirmation messages (e.g. `buy_capability` price gate) to surface
+ * gas before the provider has issued a payment-required feedback.
+ *
+ * Reuses the priority-fee cache in `estimatePriorityFeeMicroLamports`
+ * (TTL 10s) so consecutive confirmations don't double-hit the RPC.
+ */
+export async function estimateNetworkBaseline(
+  rpc: Rpc<SolanaRpcApi>,
+  options?: NetworkBaselineOptions,
+): Promise<NetworkBaselineEstimate> {
+  const computeUnitLimit = options?.computeUnitLimit ?? DEFAULT_COMPUTE_UNIT_LIMIT;
+  const priorityFeeMicroLamports =
+    options?.priorityFeeMicroLamports ??
+    (await estimatePriorityFeeMicroLamports(rpc, {
+      percentile: options?.priorityFeePercentile ?? DEFAULT_PRIORITY_FEE_PERCENTILE,
+    }));
+  const baseFeeLamports = BASE_FEE_LAMPORTS_PER_SIGNATURE;
+  const priorityFeeLamports = ceilDiv(
+    priorityFeeMicroLamports * BigInt(computeUnitLimit),
+    1_000_000n,
+  );
+  const ataRentLamports = options?.includeAtaRent ? await fetchAtaRent(rpc) : undefined;
+  const totalLamports = baseFeeLamports + priorityFeeLamports + (ataRentLamports ?? 0n);
+  return {
+    baseFeeLamports,
+    priorityFeeMicroLamports,
+    computeUnitLimit,
+    priorityFeeLamports,
+    ataRentLamports,
+    totalLamports,
+  };
+}
+
+/**
+ * Single-line summary of a network baseline estimate, suitable for embedding
+ * inside MCP confirmation strings.
+ */
+export function formatNetworkBaseline(estimate: NetworkBaselineEstimate): string {
+  const total = lamportsToSol(estimate.totalLamports);
+  const base = lamportsToSol(estimate.baseFeeLamports);
+  const priority = lamportsToSol(estimate.priorityFeeLamports);
+  const parts = [`base ${base}`, `priority ${priority}`];
+  if (estimate.ataRentLamports !== undefined) {
+    parts.push(`ATA rent ${lamportsToSol(estimate.ataRentLamports)}`);
+  }
+  return `Estimated network gas: ${total} SOL (${parts.join(' + ')}).`;
+}

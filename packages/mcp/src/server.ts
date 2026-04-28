@@ -21,6 +21,7 @@ import { customerTools } from './tools/customer.js';
 import { dashboardTools } from './tools/dashboard.js';
 // Import all tool modules
 import { discoveryTools } from './tools/discovery.js';
+import { feedbackContactsTools } from './tools/feedback-contacts.js';
 import type { ToolDefinition } from './tools/types.js';
 import { walletTools } from './tools/wallet.js';
 import { PACKAGE_VERSION, formatSolNumeric } from './utils.js';
@@ -33,6 +34,7 @@ const allTools: ToolDefinition[] = [
   ...walletTools,
   ...dashboardTools,
   ...agentTools,
+  ...feedbackContactsTools,
 ];
 
 // fail at startup if any tool name is duplicated or empty. A silent overwrite in
