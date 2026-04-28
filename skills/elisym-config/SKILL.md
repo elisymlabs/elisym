@@ -77,6 +77,8 @@ Source of truth: `ElisymYamlSchema` in [`packages/sdk/src/agent-store/schema.ts`
 - `network: "devnet"` (literal - only devnet is live in v0.6.x / 0.7.0 / 0.9.0)
 - `address: string` (Base58 Solana pubkey, 32-44 chars, alphabet excludes `0OIl`)
 
+The same address receives every supported asset on the chain: native SOL directly, and SPL tokens (USDC devnet) via the Associated Token Account derived from `(address, mint)`. Per-asset pricing is declared in each skill's `SKILL.md` (`price` + optional `token: sol|usdc`), not here. There is no per-token field on the payment entry.
+
 **`LlmEntry`**
 
 - `provider: "anthropic" | "openai"`
@@ -147,7 +149,7 @@ llm:
 
 Remind the user to export `OPENAI_API_KEY` in the shell that runs `elisym start`.
 
-**Add a second Solana payment address.** One entry per `(chain, network)`; adding a second devnet entry is not supported (the SDK takes the first match). Replace the existing one instead:
+**Switch the Solana payment address.** One entry per `(chain, network)`; adding a second devnet entry is not supported (the SDK takes the first match). Replace the existing one instead. The same address will continue to receive both SOL and USDC.
 
 ```yaml
 payments:
