@@ -3,7 +3,7 @@ import { createSolanaRpc } from '@solana/kit';
 import { z } from 'zod';
 import { rpcUrlFor } from '../context.js';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
-import { readContacts } from '../storage/contacts.js';
+import { type Contact, readContacts } from '../storage/contacts.js';
 import { MAX_CAPABILITIES, assetFromCardPayment } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
@@ -175,7 +175,7 @@ export const discoveryTools: ToolDefinition[] = [
   defineTool({
     name: 'search_agents',
     description:
-      "Search AI agents currently online on elisym. `capabilities` is a hard OR-filter of substring tokens from the user's request (never invent synonyms). `query` is optional re-ranking; omit if not needed. Offline agents are excluded by default - pass include_offline=true only when debugging.",
+      'Search AI agents currently online on elisym. `capabilities` is a hard OR-filter of substring tokens from the user\'s request (never invent synonyms). `query` is optional re-ranking; omit if not needed. Offline agents are excluded by default - pass include_offline=true only when debugging. Results that match a saved contact are sorted to the top and annotated with `is_contact`, `last_worked_at`, `last_capability`, and `contact_note` - surface this to the user (e.g. "already in your contacts, last used <date>") so they can prefer providers they\'ve worked with before.',
     schema: SearchAgentsSchema,
     async handler(ctx, input) {
       const { capabilities, query, max_price_lamports, include_offline, contacts_only } = input;
@@ -185,33 +185,35 @@ export const discoveryTools: ToolDefinition[] = [
 
       const agent = ctx.active();
 
-      // Contacts gate runs before the network roundtrip when possible: an empty
-      // .contacts.json with `contacts_only` requested can be answered immediately.
-      let lastWorkedAtByPubkey = new Map<string, number>();
+      // Always load contacts when there's an on-disk dir - even outside
+      // contacts_only we annotate every result and sort known providers to
+      // the top, so the LLM can tell the user "you've used this one before".
+      const contactByPubkey = new Map<string, Contact>();
+      if (agent.agentDir) {
+        const data = await readContacts(agent.agentDir);
+        for (const contact of data.contacts) {
+          contactByPubkey.set(contact.pubkey, contact);
+        }
+      }
+
       if (contacts_only) {
         if (!agent.agentDir) {
           return textResult(
             'contacts_only=true requires a persistent agent (no on-disk directory for the active agent).',
           );
         }
-        const data = await readContacts(agent.agentDir);
-        if (data.contacts.length === 0) {
+        if (contactByPubkey.size === 0) {
           return textResult(
             'No contacts saved yet. Use add_contact (or rate a job positively with submit_feedback and then add_contact) before searching with contacts_only=true.',
           );
         }
-        lastWorkedAtByPubkey = new Map(
-          data.contacts.map((contact) => [contact.pubkey, contact.lastJobAt ?? contact.addedAt]),
-        );
       }
 
       const agents = await agent.client.discovery.fetchAgents(agent.network);
 
       // Apply the contacts filter BEFORE capability matching - it's the cheapest
       // filter and dramatically shrinks the candidate set.
-      let filtered = contacts_only
-        ? agents.filter((a) => lastWorkedAtByPubkey.has(a.pubkey))
-        : agents;
+      let filtered = contacts_only ? agents.filter((a) => contactByPubkey.has(a.pubkey)) : agents;
 
       // Filter by capabilities (OR match)
       filtered = filtered.filter((a) =>
@@ -253,7 +255,9 @@ export const discoveryTools: ToolDefinition[] = [
         filtered = survivors;
       }
 
-      // Score by query relevance (soft match - at least 1 word must hit)
+      // Score by query relevance (soft match - at least 1 word must hit).
+      // Contacts get a +0.5 boost: smaller than a single keyword hit, so a
+      // strictly-better non-contact match still wins, but enough to break ties.
       if (query) {
         // non-ASCII queries bypass stop-word filtering (English-only stop list).
         // eslint-disable-next-line no-control-regex
@@ -279,7 +283,8 @@ export const discoveryTools: ToolDefinition[] = [
                 hits++;
               }
             }
-            return { agent: a, score: hits };
+            const contactBoost = contactByPubkey.has(a.pubkey) ? 0.5 : 0;
+            return { agent: a, score: hits + contactBoost };
           });
 
           filtered = scored
@@ -287,6 +292,25 @@ export const discoveryTools: ToolDefinition[] = [
             .sort((a, b) => b.score - a.score)
             .map((s) => s.agent);
         }
+      } else if (contactByPubkey.size > 0) {
+        // No query: stable-sort contacts (most recent first) ahead of strangers
+        // so the LLM sees known providers at the top of the result list.
+        filtered = [...filtered].sort((left, right) => {
+          const leftContact = contactByPubkey.get(left.pubkey);
+          const rightContact = contactByPubkey.get(right.pubkey);
+          if (leftContact && !rightContact) {
+            return -1;
+          }
+          if (rightContact && !leftContact) {
+            return 1;
+          }
+          if (leftContact && rightContact) {
+            const leftTs = leftContact.lastJobAt ?? leftContact.addedAt;
+            const rightTs = rightContact.lastJobAt ?? rightContact.addedAt;
+            return rightTs - leftTs;
+          }
+          return 0;
+        });
       }
 
       if (filtered.length === 0) {
@@ -328,30 +352,36 @@ export const discoveryTools: ToolDefinition[] = [
         }
       }
 
-      const results = filtered.map((a) => ({
-        npub: a.npub,
-        name: sanitizeField(a.name || '', 200),
-        cards: a.cards.map((card) => {
-          const asset = assetFromCardPayment(card.payment);
-          const price = card.payment?.job_price;
-          const gasEstimate = price ? gasByAtaNeed.get(asset.mint !== undefined) : undefined;
-          return {
-            name: sanitizeField(card.name || '', 200),
-            description: sanitizeField(card.description || '', 500),
-            capabilities: card.capabilities,
-            job_price_subunits: price,
-            price_display: price ? formatAssetAmount(asset, BigInt(price)) : 'free',
-            asset_token: asset.token,
-            asset_symbol: asset.symbol,
-            asset_mint: asset.mint,
-            chain: card.payment?.chain,
-            network: card.payment?.network,
-            network_fee_estimate_sol: gasEstimate,
-          };
-        }),
-        supported_kinds: a.supportedKinds,
-        last_worked_at: contacts_only ? lastWorkedAtByPubkey.get(a.pubkey) : undefined,
-      }));
+      const results = filtered.map((a) => {
+        const contact = contactByPubkey.get(a.pubkey);
+        return {
+          npub: a.npub,
+          name: sanitizeField(a.name || '', 200),
+          cards: a.cards.map((card) => {
+            const asset = assetFromCardPayment(card.payment);
+            const price = card.payment?.job_price;
+            const gasEstimate = price ? gasByAtaNeed.get(asset.mint !== undefined) : undefined;
+            return {
+              name: sanitizeField(card.name || '', 200),
+              description: sanitizeField(card.description || '', 500),
+              capabilities: card.capabilities,
+              job_price_subunits: price,
+              price_display: price ? formatAssetAmount(asset, BigInt(price)) : 'free',
+              asset_token: asset.token,
+              asset_symbol: asset.symbol,
+              asset_mint: asset.mint,
+              chain: card.payment?.chain,
+              network: card.payment?.network,
+              network_fee_estimate_sol: gasEstimate,
+            };
+          }),
+          supported_kinds: a.supportedKinds,
+          is_contact: contact ? true : undefined,
+          last_worked_at: contact ? (contact.lastJobAt ?? contact.addedAt) : undefined,
+          last_capability: contact?.lastCapability,
+          contact_note: contact?.note ? sanitizeField(contact.note, 500) : undefined,
+        };
+      });
 
       const { text } = sanitizeUntrusted(JSON.stringify(results, null, 2), 'structured');
       return textResult(text);
