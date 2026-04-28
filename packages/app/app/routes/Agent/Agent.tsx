@@ -6,10 +6,9 @@ import { toast } from 'sonner';
 import { Link, useLocation, useParams } from 'wouter';
 import { MarbleAvatar } from '~/components/MarbleAvatar';
 import { VerifiedBadge } from '~/components/VerifiedBadge';
+import { useAgent } from '~/hooks/useAgent';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
-import { useAgents } from '~/hooks/useAgents';
-import { useCachedAgentProfile } from '~/hooks/useCachedAgentProfile';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { usePingAgent, type PingStatus } from '~/hooks/usePingAgent';
@@ -292,25 +291,14 @@ export default function AgentPage() {
   const pubkey = params.pubkey ?? '';
   const [, setLocation] = useLocation();
 
-  const { agents, status: agentsStatus } = useAgents();
-  const { data: feedbackMap } = useAgentFeedback(pubkey ? [pubkey] : [], agentsStatus);
-  // Wait for the cap stream to finish enumerating agents before deciding the
-  // target is missing - otherwise an early `streaming` snapshot that doesn't
-  // yet include the target pubkey would flip into <NotFound /> before the
-  // event arrives.
-  const agentListSettled = agentsStatus === 'eose' || agentsStatus === 'enriched';
-
-  const liveAgent = useMemo(
-    () => agents.find((candidate) => candidate.pubkey === pubkey),
-    [agents, pubkey],
-  );
-  const cachedAgent = useCachedAgentProfile(pubkey);
-  // Use the IDB-cached profile as a placeholder *only* while the cap stream
-  // is still loading. Once it settles, fall back to the live result so an
-  // agent that has gone offline doesn't get rendered forever from stale
-  // cache instead of routing to <NotFound />.
-  const agent = liveAgent ?? (agentListSettled ? undefined : cachedAgent);
-  const isLoading = !agent && !agentListSettled;
+  const { agent, status: agentStatus } = useAgent(pubkey);
+  // `useAgent` exposes a single fetch for this author, so feedback can use
+  // the same gating it used to derive from the global stream's lifecycle:
+  // wait until the targeted fetch has resolved (or failed) before issuing
+  // the feedback batch.
+  const feedbackGate = agentStatus === 'ready' || agentStatus === 'not-found' ? 'eose' : 'idle';
+  const { data: feedbackMap } = useAgentFeedback(pubkey ? [pubkey] : [], feedbackGate);
+  const isLoading = !agent && agentStatus === 'loading';
 
   const displayAgents = useAgentDisplay(agent ? [agent] : [], feedbackMap);
   const agentData = agent ? displayAgents[0] : undefined;
