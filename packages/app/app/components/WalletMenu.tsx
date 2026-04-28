@@ -9,6 +9,7 @@ import { useWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
 import { MarbleAvatar } from './MarbleAvatar';
+import { WalletGlyph } from './WalletGlyph';
 
 const IDENTITY_AVATAR_PX = 32;
 const COPY_FEEDBACK_MS = 1400;
@@ -118,7 +119,7 @@ function BalanceCell({ amount, symbol, icon, isLoading }: BalanceCellProps) {
     );
   }
   return (
-    <div className="flex items-center justify-center gap-7 tabular-nums">
+    <div className="flex h-28 items-center justify-center gap-7 tabular-nums">
       <span className="truncate text-[24px] leading-none font-semibold tracking-[-0.02em] text-text">
         {amount ?? '0'}
       </span>
@@ -167,25 +168,6 @@ function UsdcMark({ className }: { className?: string }) {
         fill="white"
         d="M787.5 1595.83c-325-116.67-491.67-479.17-370.83-800 62.5-175 200-308.33 370.83-370.83 16.67-8.33 25-20.83 25-41.67v-58.33c0-16.67-8.33-29.17-25-33.33-4.17 0-12.5 0-16.67 4.17-395.83 125-612.5 545.83-487.5 941.67 75 233.33 254.17 412.5 487.5 487.5 16.67 8.33 33.33 0 37.5-16.67 4.17-4.17 4.17-8.33 4.17-16.67v-58.33c0-12.5-12.5-29.17-25-37.5zM1229.17 295.83c-16.67-8.33-33.33 0-37.5 16.67-4.17 4.17-4.17 8.33-4.17 16.67v58.33c0 16.67 12.5 33.33 25 41.67 325 116.67 491.67 479.17 370.83 800-62.5 175-200 308.33-370.83 370.83-16.67 8.33-25 20.83-25 41.67v58.33c0 16.67 8.33 29.17 25 33.33 4.17 0 12.5 0 16.67-4.17 395.83-125 612.5-545.83 487.5-941.67-75-237.5-258.33-416.67-487.5-491.67z"
       />
-    </svg>
-  );
-}
-
-function WalletGlyph() {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="size-16 text-text-2"
-    >
-      <rect x="2.5" y="6" width="19" height="14" rx="2.5" />
-      <path d="M2.5 10h19" />
-      <circle cx="17" cy="15" r="1.3" fill="currentColor" />
     </svg>
   );
 }
