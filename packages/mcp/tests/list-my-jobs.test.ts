@@ -58,7 +58,7 @@ describe('list_my_jobs', () => {
     ctx.register(agent);
 
     const tool = findTool('list_my_jobs');
-    const input = tool.schema.parse({ limit: 10 });
+    const input = tool.schema.parse({ limit: 10, include_nostr: true });
     const result = await tool.handler(ctx, input);
 
     expect(result.isError).toBeFalsy();
@@ -78,7 +78,7 @@ describe('list_my_jobs', () => {
     ctx.register(agent);
 
     const tool = findTool('list_my_jobs');
-    const input = tool.schema.parse({ limit: 20 });
+    const input = tool.schema.parse({ limit: 20, include_nostr: true });
     await tool.handler(ctx, input);
     // overFetchFactor is 5x: 20 * 5 = 100 (capped at 500).
     expect(fetchRecentJobs).toHaveBeenCalledWith(undefined, 100, undefined, [100]);
@@ -120,7 +120,7 @@ describe('list_my_jobs', () => {
     ctx.register(agent);
 
     const tool = findTool('list_my_jobs');
-    const input = tool.schema.parse({ limit: 10 });
+    const input = tool.schema.parse({ limit: 10, include_nostr: true });
     const result = await tool.handler(ctx, input);
 
     expect(result.isError).toBeFalsy();
@@ -162,7 +162,7 @@ describe('list_my_jobs', () => {
     ctx.register(agent);
 
     const tool = findTool('list_my_jobs');
-    const result = await tool.handler(ctx, tool.schema.parse({}));
+    const result = await tool.handler(ctx, tool.schema.parse({ include_nostr: true }));
     const text = result.content[0]?.text ?? '';
     expect(text).toContain('[decryption failed');
     expect(text).not.toContain('SOME_CIPHERTEXT');
@@ -188,7 +188,7 @@ describe('list_my_jobs', () => {
     ctx.register(agent);
 
     const tool = findTool('list_my_jobs');
-    const result = await tool.handler(ctx, tool.schema.parse({}));
+    const result = await tool.handler(ctx, tool.schema.parse({ include_nostr: true }));
     expect(result.isError).toBeFalsy();
     // Last-resort fallback: raw content wrapped in boundary markers.
     expect(result.content[0]?.text).toContain('plain result');
