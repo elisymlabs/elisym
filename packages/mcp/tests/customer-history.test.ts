@@ -97,7 +97,7 @@ describe('customer-history', () => {
     expect(history.jobs.length).toBe(MAX_HISTORY_ENTRIES);
     const oldest = Math.min(...history.jobs.map((entry) => entry.submittedAt));
     expect(oldest).toBe(1_700_000_000_005);
-  });
+  }, 30_000); // 505 serialized atomic-file writes can exceed the 5s default on slow CI.
 
   it('preserves all entries under concurrent appends', async () => {
     const total = 30;
