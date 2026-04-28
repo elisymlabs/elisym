@@ -29,7 +29,7 @@ function coerceNetwork(raw: string | undefined, name: string): SolanaNetwork {
     throw new Error(
       `Agent "${name}" is configured for mainnet, which is not supported until the ` +
         `elisym-config program is deployed there. Re-create the agent with --network devnet: ` +
-        `rm -rf ~/.elisym/${name} && elisym-mcp init ${name} --network devnet`,
+        `rm -rf ~/.elisym/${name} && npx @elisym/mcp init ${name} --network devnet`,
     );
   }
   throw new Error(`Agent "${name}" has unsupported network "${raw}". Expected "devnet".`);

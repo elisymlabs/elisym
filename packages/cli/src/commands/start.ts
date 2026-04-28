@@ -120,7 +120,7 @@ export async function cmdStart(
 
   // -- Step 5: LLM check --
   if (!loaded.yaml.llm) {
-    console.error('  ! No LLM configured. Run `elisym init` to set up LLM.\n');
+    console.error('  ! No LLM configured. Run `npx @elisym/cli init` to set up LLM.\n');
     process.exit(1);
   }
   if (!loaded.secrets.llm_api_key) {
@@ -143,7 +143,9 @@ export async function cmdStart(
   } else if (verification.reason === 'invalid') {
     console.log('INVALID');
     console.error(`  ! ${llmProvider} rejected the API key (HTTP ${verification.status}).`);
-    console.error(`    Update it via \`elisym profile\` or set ${keyEnvVar} to a valid key.\n`);
+    console.error(
+      `    Update it via \`npx @elisym/cli profile\` or set ${keyEnvVar} to a valid key.\n`,
+    );
     process.exit(1);
   } else {
     console.log('unavailable');
@@ -178,7 +180,9 @@ export async function cmdStart(
   // Validate that paid skills have a Solana address configured.
   const hasPaid = allSkills.some((s) => s.priceSubunits > 0);
   if (hasPaid && !solanaAddress) {
-    console.error('  ! Paid skills require a Solana address. Run `elisym init` to configure.\n');
+    console.error(
+      '  ! Paid skills require a Solana address. Run `npx @elisym/cli init` to configure.\n',
+    );
     process.exit(1);
   }
 
@@ -549,7 +553,7 @@ async function resolveStartAgentName(
   }
   const agents = await listAgents(cwd);
   if (agents.length === 0) {
-    console.log('No agents configured. Run `elisym init` first.');
+    console.log('No agents configured. Run `npx @elisym/cli init` first.');
     process.exit(1);
   }
   const { default: inquirer } = await import('inquirer');
