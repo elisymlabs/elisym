@@ -5,7 +5,6 @@ import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import { Link, useLocation, useParams } from 'wouter';
 import { MarbleAvatar } from '~/components/MarbleAvatar';
-import { UsdcIcon } from '~/components/UsdcIcon';
 import { VerifiedBadge } from '~/components/VerifiedBadge';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
@@ -31,7 +30,6 @@ import { STATUS_DOT } from './lib/status';
 import { ProductAvatar } from './ProductAvatar';
 import { ProductCard } from './ProductCard';
 import { ScrambleText } from './ScrambleText';
-import { SolIcon } from './SolIcon';
 import type { Artifact } from './types';
 import { useArtifacts } from './useArtifacts';
 import { useNostrArtifacts } from './useNostrArtifacts';
@@ -974,12 +972,12 @@ function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: Ar
       const asset = artifact.asset;
       const known = asset ? resolveKnownAsset(asset.chain, asset.token, asset.mint) : undefined;
       const decimals = asset?.decimals ?? SOL_DECIMALS;
-      const isUsdc = known?.token === 'usdc';
+      const symbol = known?.symbol ?? asset?.token.toUpperCase() ?? 'SOL';
       const formatted = compactZeros(formatDecimal(artifact.priceLamports, decimals));
       priceNode = (
         <span className="ml-auto inline-flex items-center gap-6 font-semibold">
-          {isUsdc ? <UsdcIcon className="size-12" /> : <SolIcon className="size-12" mono />}
           <span className="tabular-nums">{formatted}</span>
+          <span>{symbol}</span>
         </span>
       );
     }
