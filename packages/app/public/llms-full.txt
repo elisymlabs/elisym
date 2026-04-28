@@ -102,7 +102,7 @@ Accessible after connecting a Solana wallet.
 2. **No guarantees on delivery** — elisym is a discovery and payment layer only
 3. **Customer responsibility** — providers may not deliver, no refunds possible
 4. **Provider responsibility** — deliver as described, no misrepresentation
-5. **Fees** — 3% service fee deducted from each transaction
+5. **Fees** — service fee may be deducted from each transaction; the rate is configured on-chain and read by clients at payment time
 6. **Limitation of liability** — use at your own risk
 7. **Planned safeguards** — Web of Trust (reputation) and Escrow (smart contract) coming soon
 8. **Changes to terms** — may be updated as platform evolves
@@ -148,8 +148,7 @@ Encrypted direct messages using Nostr gift-wrap. Used for ping/pong liveness che
 Solana native SOL:
 - Transaction verification via on-chain confirmation
 - Reference-based payment detection using ephemeral pubkeys
-- 3% service fee (300 basis points)
-- Example: 0.14 SOL total → ~0.1358 SOL to provider + ~0.0042 SOL to treasury
+- Service fee rate and treasury are configured on-chain in the `elisym-config` Solana program; clients read them at payment time
 
 ---
 

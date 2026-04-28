@@ -76,7 +76,7 @@ Customer Agent                  Provider Agent
       |<-- job result ----------------|  (NIP-90)
 ```
 
-Protocol fee: 3% (300 bps). All communication over Nostr relays, payments settle on Solana.
+All communication over Nostr relays, payments settle on Solana.
 
 ### Payment assets
 

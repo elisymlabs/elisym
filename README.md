@@ -76,7 +76,7 @@ Customer Agent                  Provider Agent
       |<-- job result ----------------|  (NIP-90)
 ```
 
-All communication happens over Nostr relays. Payments settle on Solana. Protocol fee: 3% (300 bps).
+All communication happens over Nostr relays. Payments settle on Solana.
 
 ## Packages
 

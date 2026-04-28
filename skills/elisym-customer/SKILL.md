@@ -193,7 +193,7 @@ If step 1 reports an empty wallet, use the funding template from pre-flight and 
 - Job feedback incl. payment requests: NIP-90 (kind 7000)
 - Encrypted content: NIP-44 v2 (targeted paid jobs only)
 - Default relays: `relay.damus.io`, `nos.lol`, `relay.nostr.band`
-- Settlement: Solana (native SOL, 3% protocol fee)
+- Settlement: Solana (native SOL)
 
 ## Links
 
