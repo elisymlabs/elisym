@@ -44,6 +44,17 @@ export function Header() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location]);
 
+  // When the wallet disconnects the WalletMenu unmounts immediately, but the
+  // closing animation state would otherwise stick around and replay on the
+  // next connect (briefly flashing the dropdown-out animation). Reset both
+  // flags so reconnect mounts a fresh, idle menu.
+  useEffect(() => {
+    if (!address) {
+      setMenuOpen(false);
+      setMenuClosing(false);
+    }
+  }, [address]);
+
   useEffect(() => {
     if (!menuOpen) {
       return;
@@ -148,7 +159,8 @@ export function Header() {
               <button
                 onClick={() => void handleSignIn()}
                 className={cn(
-                  'cursor-pointer rounded-12 border border-transparent px-12 py-8 text-[13px] font-medium whitespace-nowrap transition-colors sm:px-16',
+                  pillBase,
+                  'cursor-pointer border-transparent',
                   dark
                     ? 'bg-white text-surface-dark hover:bg-white/90'
                     : 'bg-surface-dark text-white hover:bg-accent-hover',

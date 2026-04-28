@@ -2,7 +2,9 @@ import { USDC_SOLANA_DEVNET } from '@elisym/sdk';
 import { findAssociatedTokenPda, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
 import { address as toAddress, createSolanaRpc } from '@solana/kit';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { useQuery, type QueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { SOLANA_RPC_URL } from '~/lib/cluster';
+import { useWalletStandardChange } from './useWalletStandardChange';
 
 const BALANCE_STALE_MS = 1000 * 10;
 const BALANCE_REFETCH_MS = 1000 * 10;
@@ -26,9 +28,8 @@ export function invalidateWalletBalances(
 }
 
 // Module-level Kit RPC singleton: balance queries fire from many components
-// and we want to share a single connection. Kept in step with the devnet
-// hardcode in Providers.tsx.
-const balanceRpc = createSolanaRpc('https://api.devnet.solana.com');
+// and we want to share a single connection. Cluster comes from `~/lib/cluster`.
+const balanceRpc = createSolanaRpc(SOLANA_RPC_URL);
 
 interface WalletBalances {
   solLamports: bigint | null;
@@ -55,6 +56,16 @@ interface WalletBalances {
 export function useWalletBalances(): WalletBalances {
   const { publicKey } = useWallet();
   const walletAddress = publicKey?.toBase58() ?? null;
+  const queryClient = useQueryClient();
+
+  // Wallet Standard `change` covers cluster toggles AND in-wallet account
+  // switches. The query key already keys on `walletAddress`, so an account
+  // switch refetches via the new key naturally - the explicit invalidate
+  // here primarily covers cluster toggles, where the address is unchanged
+  // but we still want fresh balances without waiting for the polling tick.
+  useWalletStandardChange(() => {
+    invalidateWalletBalances(queryClient, walletAddress);
+  });
 
   const { data: solLamports = null, isLoading: isSolLoading } = useQuery({
     queryKey: [SOL_BALANCE_QUERY_KEY, walletAddress],

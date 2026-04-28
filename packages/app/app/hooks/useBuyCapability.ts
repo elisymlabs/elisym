@@ -33,6 +33,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 import { track } from '~/lib/analytics';
+import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { cacheSet } from '~/lib/localCache';
 import { useElisymClient } from './useElisymClient';
 import { useIdentity } from './useIdentity';
@@ -41,8 +42,8 @@ import { invalidateWalletBalances } from './useWalletBalances';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
 const PRIORITY_FEE_PERCENTILE = 75;
-const PROTOCOL_PROGRAM_ID = getProtocolProgramId('devnet');
-const kitRpc = createSolanaRpc('https://api.devnet.solana.com');
+const PROTOCOL_PROGRAM_ID = getProtocolProgramId(SDK_CLUSTER);
+const kitRpc = createSolanaRpc(SOLANA_RPC_URL);
 const payment = new SolanaPaymentStrategy();
 
 async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {

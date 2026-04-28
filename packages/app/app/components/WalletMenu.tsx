@@ -7,6 +7,7 @@ import { useLocation } from 'wouter';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
+import { SOLANA_CLUSTER_LABEL } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
 import { MarbleAvatar } from './MarbleAvatar';
 import { WalletGlyph } from './WalletGlyph';
@@ -238,7 +239,7 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
             Balance
           </span>
           <span className="rounded-12 bg-stat-indigo-bg px-8 py-5 font-mono text-[10px] leading-none font-medium tracking-wide text-stat-indigo uppercase">
-            Devnet
+            {SOLANA_CLUSTER_LABEL}
           </span>
         </div>
         <div className="mt-14 grid grid-cols-2 items-center divide-x divide-black/5">

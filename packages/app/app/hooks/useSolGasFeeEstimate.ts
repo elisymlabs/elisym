@@ -5,6 +5,7 @@ import {
 } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 import { useEffect, useState } from 'react';
+import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 
 /**
  * Base fee per signature (lamports) for a Solana transaction.
@@ -32,11 +33,11 @@ const PRIORITY_FEE_PERCENTILE = 75;
 const REFRESH_MS = 30_000;
 
 // Shared across all consumers so we only hit RPC once per refresh window.
-const rpc = createSolanaRpc('https://api.devnet.solana.com');
+const rpc = createSolanaRpc(SOLANA_RPC_URL);
 // Kept for a future extension that scopes priority-fee samples to the
 // protocol program address. `estimatePriorityFeeMicroLamports` ignores it
 // today but keeping the lookup here avoids re-importing from every caller.
-void getProtocolProgramId('devnet');
+void getProtocolProgramId(SDK_CLUSTER);
 
 function isUsdcCard(card: CapabilityCard | undefined): boolean {
   const token = card?.payment?.token;
