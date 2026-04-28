@@ -1,6 +1,7 @@
 import type { CapabilityCard } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
+import Decimal from 'decimal.js-light';
 import { useState, type ReactNode } from 'react';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
@@ -8,7 +9,7 @@ import type { PingStatus } from '~/hooks/usePingAgent';
 import { useSolGasFeeEstimate } from '~/hooks/useSolGasFeeEstimate';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
-import { compactZeros, formatCardPrice, formatDecimal } from '~/lib/formatPrice';
+import { formatCardPrice } from '~/lib/formatPrice';
 import { CapabilityDropdown } from './CapabilityDropdown';
 import { SolIcon } from './SolIcon';
 import type { BuyState } from './types';
@@ -34,15 +35,19 @@ interface InnerProps {
   buyState: BuyState;
 }
 
+const NETWORK_FEE_DISPLAY_DECIMALS = 4;
+
 function NetworkFeeRow({ lamports, className }: { lamports: number; className?: string }) {
+  const sol = new Decimal(lamports)
+    .div(new Decimal(10).pow(9))
+    .toDecimalPlaces(NETWORK_FEE_DISPLAY_DECIMALS, Decimal.ROUND_UP)
+    .toString();
   return (
     <span
       className={cn('flex items-center gap-6 text-[11px] whitespace-nowrap text-text-2', className)}
     >
       <SolIcon />
-      <span className="tabular-nums">
-        ~{compactZeros(formatDecimal(lamports, 9))} SOL network fee
-      </span>
+      <span className="tabular-nums">~{sol} network fee</span>
     </span>
   );
 }
