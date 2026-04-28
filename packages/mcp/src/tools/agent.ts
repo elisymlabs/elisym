@@ -126,7 +126,7 @@ export const agentTools: ToolDefinition[] = [
       'saves config to ~/.elisym/<name>/. When activate=true (default), the ' +
       'current active agent must have `security.agent_switch_enabled` set to true, ' +
       'otherwise the new agent is created but NOT activated (pass activate=false or ' +
-      'run `elisym-mcp enable-agent-switch <current-agent>`).',
+      'run `npx @elisym/mcp enable-agent-switch <current-agent>`).',
     schema: CreateAgentSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
@@ -164,7 +164,7 @@ export const agentTools: ToolDefinition[] = [
             return errorResult(
               `Cannot activate a new agent: agent_switch is disabled for current agent ` +
                 `"${current.name}". Either create with activate=false, or enable the flag ` +
-                `on the current agent first: elisym-mcp enable-agent-switch ${current.name}`,
+                `on the current agent first: npx @elisym/mcp enable-agent-switch ${current.name}`,
             );
           }
         } catch {
@@ -234,7 +234,7 @@ export const agentTools: ToolDefinition[] = [
         if (!envOverride && !currentAgent.security.agent_switch_enabled) {
           return errorResult(
             `switch_agent is disabled for agent "${currentAgent.name}". ` +
-              `Enable with: elisym-mcp enable-agent-switch ${currentAgent.name}`,
+              `Enable with: npx @elisym/mcp enable-agent-switch ${currentAgent.name}`,
           );
         }
       } catch {

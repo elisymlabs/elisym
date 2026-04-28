@@ -392,7 +392,7 @@ export const walletTools: ToolDefinition[] = [
     description:
       "Withdraw SOL or USDC from the agent's wallet to an explicit destination address. " +
       'GATED: requires `security.withdrawals_enabled` in the agent config ' +
-      '(set via `elisym-mcp enable-withdrawals <agent>`). ' +
+      '(set via `npx @elisym/mcp enable-withdrawals <agent>`). ' +
       'TWO-STEP: first call with {address, amount, token?} returns a preview with a nonce. ' +
       'Second call with the same {address, amount, token?, nonce} executes the transfer. ' +
       'Use amount="all" to drain the balance (SOL: minus tx fee reserve; USDC: the full ATA balance). ' +
@@ -421,7 +421,7 @@ export const walletTools: ToolDefinition[] = [
       if (!envOverride && !agent.security.withdrawals_enabled) {
         return errorResult(
           `Withdrawals are disabled for agent "${agent.name}". ` +
-            `Enable with: elisym-mcp enable-withdrawals ${agent.name}`,
+            `Enable with: npx @elisym/mcp enable-withdrawals ${agent.name}`,
         );
       }
 

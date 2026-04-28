@@ -67,7 +67,7 @@ export async function loadResolvedAgent(
     secretsRaw = await readFile(paths.secrets, 'utf-8');
   } catch {
     throw new Error(
-      `Agent "${resolved.name}" has elisym.yaml but no secrets at ${paths.secrets}. Run \`elisym init\` to initialize secrets.`,
+      `Agent "${resolved.name}" has elisym.yaml but no secrets at ${paths.secrets}. Run \`npx @elisym/cli init\` to initialize secrets.`,
     );
   }
 

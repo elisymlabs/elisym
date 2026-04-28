@@ -88,7 +88,7 @@ program
       const cwd = process.cwd();
       const agents = await listAgents(cwd);
       if (agents.length === 0) {
-        console.log('No agents found. Run `elisym init` to create one.');
+        console.log('No agents found. Run `npx @elisym/cli init` to create one.');
         return;
       }
       console.log('\nAgents:');

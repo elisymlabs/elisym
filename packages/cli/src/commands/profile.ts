@@ -20,7 +20,7 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
   if (!name) {
     const agents = await listAgents(cwd);
     if (agents.length === 0) {
-      console.error('No agents found. Run `elisym init` first.');
+      console.error('No agents found. Run `npx @elisym/cli init` first.');
       process.exit(1);
     }
     const { selected } = await inquirer.prompt([
