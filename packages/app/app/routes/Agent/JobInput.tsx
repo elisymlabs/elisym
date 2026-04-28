@@ -7,10 +7,12 @@ import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import { useSolGasFeeEstimate } from '~/hooks/useSolGasFeeEstimate';
+import { useWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { CapabilityDropdown } from './CapabilityDropdown';
+import { checkBuyAffordability } from './lib/balanceCheck';
 import { SolIcon } from './SolIcon';
 import type { BuyState } from './types';
 
@@ -76,6 +78,11 @@ function JobInputInner({
   const isFree = price === 0;
   const gasFeeLamports = useSolGasFeeEstimate(card);
   const priceLabel = isFree ? null : formatCardPrice(card.payment, price);
+  const { solLamports, usdcRaw } = useWalletBalances();
+  const affordability =
+    !isFree && !!publicKey && !buying
+      ? checkBuyAffordability({ card, solLamports, usdcRaw, gasLamports: gasFeeLamports })
+      : { ok: true as const };
 
   function handleBuy() {
     if (!isFree && !publicKey) {
@@ -109,7 +116,8 @@ function JobInputInner({
     buying ||
     !relaysConnected ||
     ((!!publicKey || isFree) && !isStatic && !input.trim()) ||
-    ((!!publicKey || isFree) && pingStatus !== 'online');
+    ((!!publicKey || isFree) && pingStatus !== 'online') ||
+    !affordability.ok;
 
   let tip: string | null = null;
   if (!buying) {
@@ -119,6 +127,8 @@ function JobInputInner({
       tip = 'Checking if the agent is available…';
     } else if ((!!publicKey || isFree) && pingStatus !== 'online') {
       tip = "This agent is offline right now, so you can't place an order. Try again later.";
+    } else if (!affordability.ok) {
+      tip = affordability.tooltip;
     }
   }
 
