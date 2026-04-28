@@ -1,4 +1,4 @@
-import { formatSol, nip44Decrypt, toDTag, truncateKey } from '@elisym/sdk';
+import { nip44Decrypt, resolveKnownAsset, toDTag, truncateKey } from '@elisym/sdk';
 import { nip19, type Event as NostrEvent } from 'nostr-tools';
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -6,16 +6,16 @@ import { toast } from 'sonner';
 import { Link, useLocation, useParams } from 'wouter';
 import { MarbleAvatar } from '~/components/MarbleAvatar';
 import { VerifiedBadge } from '~/components/VerifiedBadge';
+import { useAgent } from '~/hooks/useAgent';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
-import { useAgents } from '~/hooks/useAgents';
-import { useCachedAgentProfile } from '~/hooks/useCachedAgentProfile';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { usePingAgent, type PingStatus } from '~/hooks/usePingAgent';
 import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
+import { compactZeros, formatDecimal } from '~/lib/formatPrice';
 import { cacheGet, cacheSet } from '~/lib/localCache';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
 import { AgentActivity } from './AgentActivity';
@@ -209,6 +209,7 @@ function mergeArtifacts(
           ...existing,
           prompt: existing.prompt ?? partial.prompt,
           priceLamports: existing.priceLamports ?? partial.priceLamports,
+          asset: existing.asset ?? partial.asset,
         });
       } else {
         const capability = partial.capability;
@@ -290,25 +291,14 @@ export default function AgentPage() {
   const pubkey = params.pubkey ?? '';
   const [, setLocation] = useLocation();
 
-  const { agents, status: agentsStatus } = useAgents();
-  const { data: feedbackMap } = useAgentFeedback(pubkey ? [pubkey] : [], agentsStatus);
-  // Wait for the cap stream to finish enumerating agents before deciding the
-  // target is missing - otherwise an early `streaming` snapshot that doesn't
-  // yet include the target pubkey would flip into <NotFound /> before the
-  // event arrives.
-  const agentListSettled = agentsStatus === 'eose' || agentsStatus === 'enriched';
-
-  const liveAgent = useMemo(
-    () => agents.find((candidate) => candidate.pubkey === pubkey),
-    [agents, pubkey],
-  );
-  const cachedAgent = useCachedAgentProfile(pubkey);
-  // Use the IDB-cached profile as a placeholder *only* while the cap stream
-  // is still loading. Once it settles, fall back to the live result so an
-  // agent that has gone offline doesn't get rendered forever from stale
-  // cache instead of routing to <NotFound />.
-  const agent = liveAgent ?? (agentListSettled ? undefined : cachedAgent);
-  const isLoading = !agent && !agentListSettled;
+  const { agent, status: agentStatus } = useAgent(pubkey);
+  // `useAgent` exposes a single fetch for this author, so feedback can use
+  // the same gating it used to derive from the global stream's lifecycle:
+  // wait until the targeted fetch has resolved (or failed) before issuing
+  // the feedback batch.
+  const feedbackGate = agentStatus === 'ready' || agentStatus === 'not-found' ? 'eose' : 'idle';
+  const { data: feedbackMap } = useAgentFeedback(pubkey ? [pubkey] : [], feedbackGate);
+  const isLoading = !agent && agentStatus === 'loading';
 
   const displayAgents = useAgentDisplay(agent ? [agent] : [], feedbackMap);
   const agentData = agent ? displayAgents[0] : undefined;
@@ -955,6 +945,8 @@ interface ArtifactTileProps {
   onAnimationEnd: () => void;
 }
 
+const SOL_DECIMALS = 9;
+
 function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: ArtifactTileProps) {
   const preview = cleanPreviewText(artifact.result);
   const hasPrice = artifact.priceLamports !== undefined && artifact.priceLamports > 0;
@@ -962,11 +954,21 @@ function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: Ar
 
   let priceNode: ReactNode = null;
   if (knownPrice && artifact.priceLamports !== undefined) {
-    priceNode = (
-      <span className="ml-auto font-semibold">
-        {hasPrice ? formatSol(artifact.priceLamports) : 'Free'}
-      </span>
-    );
+    if (!hasPrice) {
+      priceNode = <span className="ml-auto font-semibold">Free</span>;
+    } else {
+      const asset = artifact.asset;
+      const known = asset ? resolveKnownAsset(asset.chain, asset.token, asset.mint) : undefined;
+      const decimals = asset?.decimals ?? SOL_DECIMALS;
+      const symbol = known?.symbol ?? asset?.token.toUpperCase() ?? 'SOL';
+      const formatted = compactZeros(formatDecimal(artifact.priceLamports, decimals));
+      priceNode = (
+        <span className="ml-auto inline-flex items-center gap-6 font-semibold">
+          <span className="tabular-nums">{formatted}</span>
+          <span>{symbol}</span>
+        </span>
+      );
+    }
   }
 
   return (

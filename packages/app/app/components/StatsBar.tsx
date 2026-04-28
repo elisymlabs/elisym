@@ -1,8 +1,9 @@
 import Decimal from 'decimal.js-light';
-import { useId, useState, type ReactElement, type ReactNode } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useStats } from '~/hooks/useStats';
 import { useTweenedNumber } from '~/hooks/useTweenedNumber';
+import { UsdcIcon } from './UsdcIcon';
 
 const ON_CHAIN_TOOLTIP_TEXT =
   'Aggregated from every elisym payment transaction on Solana, indexed by the on-chain protocol tag attached to each transfer.';
@@ -25,30 +26,6 @@ const COMPLETED_JOBS_ICON: ReactElement = (
     <path d="M20 6 9 17l-5-5" />
   </svg>
 );
-
-const USDC_DOLLAR_PATH =
-  'M15.05 8.4c-2.32.34-3.86 1.92-3.86 4.05 0 2.45 1.55 3.62 4.83 4.21 2.07.42 2.62.86 2.62 1.95 0 .97-.85 1.65-2 1.65-1.45 0-1.97-.62-2.16-1.55-.05-.18-.21-.3-.4-.3h-.92c-.23 0-.4.18-.4.4v.04c.21 1.65 1.5 2.84 3.4 3.16v1.5c0 .23.14.4.36.4h.86c.23 0 .4-.18.4-.4v-1.5c2.39-.32 4.04-1.86 4.04-4.06 0-2.5-1.59-3.7-4.94-4.27-2.23-.4-2.55-.83-2.55-1.83 0-.85.7-1.46 1.92-1.46 1.36 0 1.97.5 2.16 1.41.05.18.21.3.4.3h.92c.21 0 .4-.18.4-.4v-.05c-.23-1.55-1.45-2.7-3.27-3.04V7.06c0-.23-.14-.4-.36-.4h-.86c-.23 0-.4.18-.4.4v1.34z';
-
-const USDC_CIRCLE_AND_ARCS_PATH =
-  'M16 32C24.84 32 32 24.84 32 16S24.84 0 16 0 0 7.16 0 16s7.16 16 16 16zM2.83 16c0 5.73 3.66 10.55 8.86 12.36.4.14.8-.16.8-.6v-.92c0-.34-.18-.56-.45-.7-3.93-1.45-6.43-5.04-6.43-10.14s2.5-8.7 6.43-10.14c.27-.14.45-.36.45-.7v-.92c0-.45-.4-.74-.8-.6C6.49 5.45 2.83 10.27 2.83 16zm26.34 0c0-5.73-3.66-10.55-8.86-12.36-.4-.14-.8.16-.8.6v.92c0 .34.18.56.45.7 3.93 1.45 6.43 5.04 6.43 10.14s-2.5 8.7-6.43 10.14c-.27.14-.45.36-.45.7v.92c0 .45.4.74.8.6 5.2-1.81 8.86-6.63 8.86-12.36z';
-
-function UsdcIcon() {
-  const maskId = useId();
-  return (
-    <svg aria-hidden width="16" height="16" viewBox="0 0 32 32" fill="currentColor">
-      <mask id={maskId}>
-        <rect width="32" height="32" fill="white" />
-        <path d={USDC_DOLLAR_PATH} fill="black" transform="rotate(9 16 16)" />
-      </mask>
-      <path
-        fillRule="evenodd"
-        clipRule="evenodd"
-        d={USDC_CIRCLE_AND_ARCS_PATH}
-        mask={`url(#${maskId})`}
-      />
-    </svg>
-  );
-}
 
 function withCommas(decimalStr: string): string {
   const [intPart, decPart] = decimalStr.split('.');
@@ -270,7 +247,7 @@ export function StatsBar() {
             />
             <MobileRowDivider />
             <MobileStatRow
-              icon={<UsdcIcon />}
+              icon={<UsdcIcon className="size-14" />}
               label="USDC Volume"
               value={usdcVolume}
               tooltipText={ON_CHAIN_TOOLTIP_TEXT}
@@ -301,7 +278,7 @@ export function StatsBar() {
                 <StatItem
                   value={usdcVolume}
                   label="USDC Volume"
-                  icon={<UsdcIcon />}
+                  icon={<UsdcIcon className="size-14" />}
                   tooltipText={ON_CHAIN_TOOLTIP_TEXT}
                 />
               </>

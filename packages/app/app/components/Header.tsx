@@ -3,18 +3,14 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'wouter';
-import { useIdentity } from '~/hooks/useIdentity';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
-import { MarbleAvatar } from './MarbleAvatar';
+import { WalletGlyph } from './WalletGlyph';
 import { WalletMenu } from './WalletMenu';
-
-const AVATAR_SIZE = 26;
 
 export function Header() {
   const { publicKey } = useWallet();
   const { setVisible } = useWalletModal();
-  const { npub, publicKey: nostrPubkey } = useIdentity();
   const [location] = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuClosing, setMenuClosing] = useState(false);
@@ -23,8 +19,8 @@ export function Header() {
   const dark = location === '/';
 
   const address = publicKey?.toBase58();
-  const display = address ? truncateKey(npub, 4) : null;
-  const displayShort = address ? truncateKey(npub, 2) : null;
+  const display = address ? truncateKey(address, 4) : null;
+  const displayShort = address ? truncateKey(address, 2) : null;
 
   function startClose() {
     setMenuOpen(false);
@@ -47,6 +43,17 @@ export function Header() {
     // location change should close the menu; ignore other deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location]);
+
+  // When the wallet disconnects the WalletMenu unmounts immediately, but the
+  // closing animation state would otherwise stick around and replay on the
+  // next connect (briefly flashing the dropdown-out animation). Reset both
+  // flags so reconnect mounts a fresh, idle menu.
+  useEffect(() => {
+    if (!address) {
+      setMenuOpen(false);
+      setMenuClosing(false);
+    }
+  }, [address]);
 
   useEffect(() => {
     if (!menuOpen) {
@@ -76,10 +83,10 @@ export function Header() {
   }
 
   const pillBase =
-    'inline-flex shrink-0 items-center gap-6 rounded-12 px-12 py-8 text-[13px] font-medium whitespace-nowrap no-underline transition-colors sm:px-16';
+    'inline-flex shrink-0 items-center gap-6 rounded-12 border px-12 py-8 text-xs font-medium whitespace-nowrap no-underline transition-colors sm:px-16';
   const pillVariant = dark
-    ? 'bg-white/8 border border-white/8 text-white hover:bg-white/10'
-    : 'bg-transparent border border-black/15 text-surface-dark hover:bg-black/4';
+    ? 'bg-white/8 border-white/8 text-white hover:bg-white/10'
+    : 'bg-transparent border-black/15 text-surface-dark hover:bg-black/4';
 
   return (
     <header className="relative z-10">
@@ -113,15 +120,15 @@ export function Header() {
                   aria-expanded={menuOpen}
                   aria-haspopup="menu"
                   className={cn(
-                    'flex shrink-0 cursor-pointer items-center gap-8 rounded-12 border py-5 pr-12 pl-5 transition-colors',
+                    'flex shrink-0 cursor-pointer items-center gap-8 rounded-12 border px-12 py-8 transition-colors',
                     dark
                       ? 'border-white/8 bg-white/8 hover:bg-white/10'
                       : 'border-black/15 bg-transparent hover:bg-black/4',
                   )}
                 >
-                  <div className="size-26 overflow-hidden rounded-full">
-                    <MarbleAvatar name={nostrPubkey} size={AVATAR_SIZE} />
-                  </div>
+                  <WalletGlyph
+                    className={cn('size-14', dark ? 'text-white' : 'text-surface-dark')}
+                  />
                   <span
                     className={cn(
                       'font-mono text-xs font-medium',
@@ -152,7 +159,8 @@ export function Header() {
               <button
                 onClick={() => void handleSignIn()}
                 className={cn(
-                  'cursor-pointer rounded-12 border border-transparent px-12 py-8 text-[13px] font-medium whitespace-nowrap transition-colors sm:px-16',
+                  pillBase,
+                  'cursor-pointer border-transparent',
                   dark
                     ? 'bg-white text-surface-dark hover:bg-white/90'
                     : 'bg-surface-dark text-white hover:bg-accent-hover',

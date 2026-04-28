@@ -1,4 +1,10 @@
-import { KIND_JOB_REQUEST, nip44Decrypt } from '@elisym/sdk';
+import {
+  KIND_JOB_FEEDBACK,
+  KIND_JOB_REQUEST,
+  nip44Decrypt,
+  parsePaymentRequest,
+  type PaymentAssetRef,
+} from '@elisym/sdk';
 import type { Event as NostrEvent } from 'nostr-tools';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
@@ -36,9 +42,36 @@ export function useNostrArtifacts(agentPubkey: string) {
       }
 
       const requestIds = requests.map((req) => req.id);
-      const resultMap = await client.marketplace
-        .queryJobResults(identity, requestIds, undefined, agentPubkey)
-        .catch(() => new Map());
+      const [resultMap, feedbacks] = await Promise.all([
+        client.marketplace
+          .queryJobResults(identity, requestIds, undefined, agentPubkey)
+          .catch(() => new Map()),
+        client.pool
+          .queryBatchedByTag(
+            { kinds: [KIND_JOB_FEEDBACK], authors: [agentPubkey] },
+            'e',
+            requestIds,
+          )
+          .catch(() => [] as NostrEvent[]),
+      ]);
+
+      const assetByJobId = new Map<string, PaymentAssetRef>();
+      for (const feedback of feedbacks) {
+        const statusTag = feedback.tags.find((tag) => tag[0] === 'status');
+        if (statusTag?.[1] !== 'payment-required') {
+          continue;
+        }
+        const eTag = feedback.tags.find((tag) => tag[0] === 'e');
+        const amountTag = feedback.tags.find((tag) => tag[0] === 'amount');
+        const requestJson = amountTag?.[2];
+        if (!eTag?.[1] || !requestJson || assetByJobId.has(eTag[1])) {
+          continue;
+        }
+        const parsed = parsePaymentRequest(requestJson);
+        if (parsed.ok && parsed.data.asset) {
+          assetByJobId.set(eTag[1], parsed.data.asset);
+        }
+      }
 
       const out: Omit<Artifact, 'cardName'>[] = [];
       for (const req of requests) {
@@ -67,6 +100,7 @@ export function useNostrArtifacts(agentPubkey: string) {
           result: result.content,
           createdAt: req.created_at * 1000,
           priceLamports: result.amount,
+          asset: assetByJobId.get(req.id),
           prompt,
         });
       }

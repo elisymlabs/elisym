@@ -8,7 +8,10 @@ export interface Artifact {
   cardName: string;
   result: string;
   createdAt: number;
+  /** Raw amount in subunits of `asset` (lamports for SOL, 1e-6 for USDC). */
   priceLamports?: number;
+  /** Payment asset descriptor. Undefined => native SOL (back-compat). */
+  asset?: PaymentAssetRef;
   prompt?: string;
   capability?: string;
 }

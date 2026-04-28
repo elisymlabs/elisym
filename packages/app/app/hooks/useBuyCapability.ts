@@ -29,18 +29,21 @@ import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 // Kit-native sign path, this import goes away. Do not grow web3.js usage
 // elsewhere in this file - everything else is Kit.
 import { VersionedTransaction } from '@solana/web3.js';
+import { useQueryClient } from '@tanstack/react-query';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 import { track } from '~/lib/analytics';
+import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { cacheSet } from '~/lib/localCache';
 import { useElisymClient } from './useElisymClient';
 import { useIdentity } from './useIdentity';
 import { useJobHistory } from './useJobHistory';
+import { invalidateWalletBalances } from './useWalletBalances';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
 const PRIORITY_FEE_PERCENTILE = 75;
-const PROTOCOL_PROGRAM_ID = getProtocolProgramId('devnet');
-const kitRpc = createSolanaRpc('https://api.devnet.solana.com');
+const PROTOCOL_PROGRAM_ID = getProtocolProgramId(SDK_CLUSTER);
+const kitRpc = createSolanaRpc(SOLANA_RPC_URL);
 const payment = new SolanaPaymentStrategy();
 
 async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
@@ -131,6 +134,7 @@ export function useBuyCapability({
   const { connection } = useConnection();
   const wallet = publicKey?.toBase58() ?? '';
   const { saveJob, updateJob } = useJobHistory({ wallet });
+  const queryClient = useQueryClient();
 
   const [buying, setBuying] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -246,6 +250,7 @@ export function useBuyCapability({
                 );
                 const signature = await sendTransaction(versionedTx, connection);
                 await connection.confirmTransaction(signature, 'confirmed');
+                invalidateWalletBalances(queryClient, publicKey.toBase58());
 
                 await retryWithBackoff(() =>
                   client.marketplace.submitPaymentConfirmation(
@@ -319,6 +324,7 @@ export function useBuyCapability({
       sendTransaction,
       saveJob,
       updateJob,
+      queryClient,
     ],
   );
 

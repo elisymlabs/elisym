@@ -1,28 +1,21 @@
 import { USDC_SOLANA_DEVNET } from '@elisym/sdk';
-import { findAssociatedTokenPda, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
-import { address as toAddress, createSolanaRpc } from '@solana/kit';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { useQuery } from '@tanstack/react-query';
 import Decimal from 'decimal.js-light';
 import { useEffect, useId, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useLocation } from 'wouter';
 import { useIdentity } from '~/hooks/useIdentity';
+import { useWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
+import { SOLANA_CLUSTER_LABEL } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
 import { MarbleAvatar } from './MarbleAvatar';
+import { WalletGlyph } from './WalletGlyph';
 
-const BALANCE_STALE_MS = 1000 * 30;
-const BALANCE_REFETCH_MS = 1000 * 60;
 const IDENTITY_AVATAR_PX = 32;
 const COPY_FEEDBACK_MS = 1400;
 const SOL_DISPLAY_DECIMALS = 4;
 const USDC_DISPLAY_DECIMALS = 2;
-
-// Module-level Kit RPC singleton: balance queries fire from many components
-// and we want to share a single connection. Kept in step with the devnet
-// hardcode in Providers.tsx.
-const balanceRpc = createSolanaRpc('https://api.devnet.solana.com');
 
 type CopyKey = 'identity' | 'wallet';
 
@@ -127,7 +120,7 @@ function BalanceCell({ amount, symbol, icon, isLoading }: BalanceCellProps) {
     );
   }
   return (
-    <div className="flex items-center justify-center gap-7 tabular-nums">
+    <div className="flex h-28 items-center justify-center gap-7 tabular-nums">
       <span className="truncate text-[24px] leading-none font-semibold tracking-[-0.02em] text-text">
         {amount ?? '0'}
       </span>
@@ -180,27 +173,8 @@ function UsdcMark({ className }: { className?: string }) {
   );
 }
 
-function WalletGlyph() {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="size-16 text-text-2"
-    >
-      <rect x="2.5" y="6" width="19" height="14" rx="2.5" />
-      <path d="M2.5 10h19" />
-      <circle cx="17" cy="15" r="1.3" fill="currentColor" />
-    </svg>
-  );
-}
-
 export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Props) {
-  const { publicKey, disconnect } = useWallet();
+  const { disconnect } = useWallet();
   const { npub, publicKey: nostrPubkey } = useIdentity();
   const [, setLocation] = useLocation();
   const [copiedKey, setCopiedKey] = useState<CopyKey | null>(null);
@@ -214,55 +188,21 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
     };
   }, []);
 
-  const { data: solBalance, isLoading: isSolLoading } = useQuery({
-    queryKey: ['sol-balance', address],
-    queryFn: async () => {
-      if (!publicKey) {
-        return null;
-      }
-      const owner = toAddress(publicKey.toBase58());
-      const { value: lamports } = await balanceRpc.getBalance(owner).send();
-      return new Decimal(lamports.toString())
-        .div(1e9)
-        .toDecimalPlaces(SOL_DISPLAY_DECIMALS)
-        .toString();
-    },
-    enabled: !!publicKey,
-    staleTime: BALANCE_STALE_MS,
-    refetchInterval: BALANCE_REFETCH_MS,
-  });
-
-  const { data: usdcBalance, isLoading: isUsdcLoading } = useQuery({
-    queryKey: ['usdc-balance', address],
-    queryFn: async () => {
-      if (!publicKey) {
-        return null;
-      }
-      const mintAddress = USDC_SOLANA_DEVNET.mint;
-      if (!mintAddress) {
-        throw new Error('USDC asset missing mint');
-      }
-      const owner = toAddress(publicKey.toBase58());
-      const [ata] = await findAssociatedTokenPda({
-        owner,
-        tokenProgram: TOKEN_PROGRAM_ADDRESS,
-        mint: toAddress(mintAddress),
-      });
-      try {
-        const { value } = await balanceRpc.getTokenAccountBalance(ata).send();
-        return new Decimal(value.amount)
+  const { solLamports, usdcRaw, isSolLoading, isUsdcLoading } = useWalletBalances();
+  const solBalance =
+    solLamports === null
+      ? null
+      : new Decimal(solLamports.toString())
+          .div(1e9)
+          .toDecimalPlaces(SOL_DISPLAY_DECIMALS)
+          .toString();
+  const usdcBalance =
+    usdcRaw === null
+      ? null
+      : new Decimal(usdcRaw.toString())
           .div(new Decimal(10).pow(USDC_SOLANA_DEVNET.decimals))
           .toDecimalPlaces(USDC_DISPLAY_DECIMALS)
           .toString();
-      } catch {
-        // No ATA for this owner yet => user has never held USDC.
-        return '0';
-      }
-    },
-    enabled: !!publicKey,
-    staleTime: BALANCE_STALE_MS,
-    refetchInterval: BALANCE_REFETCH_MS,
-  });
 
   async function handleCopy(key: CopyKey, value: string, toastText: string) {
     await navigator.clipboard.writeText(value);
@@ -299,7 +239,7 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
             Balance
           </span>
           <span className="rounded-12 bg-stat-indigo-bg px-8 py-5 font-mono text-[10px] leading-none font-medium tracking-wide text-stat-indigo uppercase">
-            Devnet
+            {SOLANA_CLUSTER_LABEL}
           </span>
         </div>
         <div className="mt-14 grid grid-cols-2 items-center divide-x divide-black/5">

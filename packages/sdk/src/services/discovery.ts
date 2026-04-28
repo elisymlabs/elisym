@@ -366,6 +366,31 @@ export class DiscoveryService {
   }
 
   /**
+   * Fetch a single agent by pubkey, fully enriched (kind:0 metadata,
+   * cross-checked `lastPaidJobAt`, rating counters). Returns `null` if the
+   * pubkey has no surviving capability cards on the requested network.
+   *
+   * Use this when navigating directly to an agent's page; running
+   * `fetchAgents`/`streamAgents` for that case streams the entire marketplace
+   * just to find one author.
+   */
+  async fetchAgent(network: Network, pubkey: string): Promise<Agent | null> {
+    const events = await this.pool.querySync({
+      kinds: [KIND_APP_HANDLER],
+      '#t': ['elisym'],
+      authors: [pubkey],
+    });
+
+    const agentMap = buildAgentsFromEvents(events, network);
+    if (agentMap.size === 0) {
+      return null;
+    }
+    const agents = Array.from(agentMap.values());
+    await this.runEnrichment(agents, agentMap, NEVER_ABORTED_SIGNAL);
+    return agentMap.get(pubkey) ?? null;
+  }
+
+  /**
    * Enrich an agent map with paid-job stats, feedback counters, and kind:0
    * metadata, then return them sorted by `compareAgentsByRank`. Mutates the
    * passed-in `Agent` objects in place.

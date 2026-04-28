@@ -3,12 +3,12 @@ import { useElisymClient } from './useElisymClient';
 
 export type PingStatus = 'pinging' | 'online' | 'offline';
 
-const FAST_OFFLINE_TIMEOUT_MS = 3000;
+const FAST_OFFLINE_TIMEOUT_MS = 5000;
 
 /**
  * Pings an agent on mount with automatic retry.
  * - Starts as "pinging" (yellow)
- * - After 3s without a pong → "offline" (grey), but keeps pinging in the background
+ * - After 5s without a pong → "offline" (grey), but keeps pinging in the background
  * - If a pong arrives at any point → "online" (green) — even after we visually
  *   gave up, so a slow agent still gets to flip the dot.
  * - Up to 3 attempts with 1.5s between retries
