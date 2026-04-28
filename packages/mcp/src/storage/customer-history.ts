@@ -17,6 +17,7 @@ import { z } from 'zod';
 
 export const CUSTOMER_HISTORY_FILENAME = '.customer-history.json';
 export const MAX_HISTORY_ENTRIES = 500;
+export const RESULT_PREVIEW_MAX_LEN = 10000;
 
 const StatusSchema = z.enum(['completed', 'failed', 'timeout']);
 const FeedbackSchema = z.enum(['positive', 'negative']);
@@ -32,7 +33,7 @@ export const CustomerJobEntrySchema = z
     status: StatusSchema,
     submittedAt: z.number().int().nonnegative(),
     completedAt: z.number().int().nonnegative(),
-    resultPreview: z.string().max(500).optional(),
+    resultPreview: z.string().max(RESULT_PREVIEW_MAX_LEN).optional(),
     paymentSig: z.string().max(128).optional(),
     customerFeedback: FeedbackSchema.optional(),
   })

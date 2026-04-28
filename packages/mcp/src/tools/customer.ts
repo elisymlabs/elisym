@@ -37,6 +37,7 @@ import {
 import {
   appendCustomerJob,
   readCustomerHistory,
+  RESULT_PREVIEW_MAX_LEN,
   type CustomerJobEntry,
 } from '../storage/customer-history.js';
 import {
@@ -936,7 +937,7 @@ export const customerTools: ToolDefinition[] = [
           status: 'completed',
           submittedAt,
           completedAt: Date.now(),
-          resultPreview: result.slice(0, 500),
+          resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
           paymentSig,
         });
         const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
@@ -1125,7 +1126,7 @@ export const customerTools: ToolDefinition[] = [
           status: 'completed',
           submittedAt,
           completedAt: Date.now(),
-          resultPreview: result.slice(0, 500),
+          resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
           paymentSig,
         });
         const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
