@@ -105,12 +105,16 @@ export class NostrTransport {
    * dramatically more reliable on the public devnet RPC, which throttles and
    * lags the address index.
    *
-   * Resolves with `null` if `signal` aborts before a valid signature arrives.
+   * Resolves with `null` if `signal` aborts or `timeoutMs` elapses before a
+   * valid signature arrives. The timeout exists so a customer that disappears
+   * after job submission does not hold a `p-limit` slot for the full payment
+   * expiry window - without it this path waits forever on the relay.
    */
   waitForPaymentSignature(
     jobId: string,
     customerPubkey: string,
     signal: AbortSignal,
+    timeoutMs?: number,
   ): Promise<string | null> {
     return new Promise((resolve) => {
       let settled = false;
@@ -120,6 +124,19 @@ export class NostrTransport {
         authors: [customerPubkey],
         '#t': ['elisym'],
         since: Math.floor(Date.now() / 1000) - 5,
+      };
+
+      const finish = (sig: string | null) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        signal.removeEventListener('abort', onAbort);
+        sub.close();
+        resolve(sig);
       };
 
       const sub = this.client.pool.subscribe(filter, (event: Event) => {
@@ -144,20 +161,12 @@ export class NostrTransport {
         if (chain !== undefined && chain !== 'solana') {
           return;
         }
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        sub.close();
-        resolve(sig);
+        finish(sig);
       });
 
-      const onAbort = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        sub.close();
-        resolve(null);
-      };
+      const onAbort = () => finish(null);
+      const timer =
+        timeoutMs !== undefined && timeoutMs > 0 ? setTimeout(() => finish(null), timeoutMs) : null;
 
       if (signal.aborted) {
         onAbort();

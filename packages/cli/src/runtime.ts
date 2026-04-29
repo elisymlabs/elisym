@@ -24,6 +24,11 @@ const payment = new SolanaPaymentStrategy();
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, mirrors plugin
 const TOTAL_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+// How long the Nostr-feedback signature path waits for a `payment-completed`
+// before giving up. Solana confirmation + wallet signing is single-digit
+// seconds in the happy path, so 60s is generous; past that the customer is
+// almost certainly not coming back and the slot should be released.
+const SIG_PATH_TIMEOUT_MS = 60 * 1000;
 
 export interface RuntimeConfig {
   paymentTimeoutSecs: number;
@@ -429,15 +434,19 @@ export class AgentRuntime {
       chain: 'solana',
     });
 
-    // Verify payment on-chain. Two paths run in parallel under a hard deadline:
+    // Verify payment on-chain. Two paths run in parallel, both self-bounded:
     //   (a) Signature path - subscribe to the customer's payment-completed
     //       Nostr feedback, take the tx signature it carries, and verify it
     //       directly via `getTransaction(sig, 'confirmed')`. Fast (~1-3s) and
-    //       cheap on RPC quota.
+    //       cheap on RPC quota. Self-times out after SIG_PATH_TIMEOUT_MS so an
+    //       abandoned customer does not hold a `p-limit` slot indefinitely.
     //   (b) Reference path - SDK's getSignaturesForAddress(reference) loop.
     //       Slower and more brittle on the public devnet RPC, but works as a
-    //       fallback when Nostr feedback is dropped.
-    // First `verified: true` wins; otherwise we hit the deadline and time out.
+    //       fallback when Nostr feedback is dropped. Self-times out via SDK
+    //       retry budget (~30s).
+    // First `verified: true` wins; if both fail we resolve immediately with
+    // the last failure. The outer `deadlineMs` backstop only triggers if both
+    // paths somehow hang past their own timeouts.
     const rpc = createSolanaRpc(getRpcUrl(this.config.network));
     const verifyAbort = new AbortController();
     const onOuterAbort = () => verifyAbort.abort();
@@ -449,6 +458,7 @@ export class AgentRuntime {
       }
     }
     const deadlineMs = this.config.paymentTimeoutSecs * 1000;
+    const sigPathTimeoutMs = Math.min(deadlineMs, SIG_PATH_TIMEOUT_MS);
 
     let result: { verified: boolean };
     try {
@@ -482,7 +492,7 @@ export class AgentRuntime {
 
         // Path (a) - signature path
         this.transport
-          .waitForPaymentSignature(job.jobId, job.customerId, verifyAbort.signal)
+          .waitForPaymentSignature(job.jobId, job.customerId, verifyAbort.signal, sigPathTimeoutMs)
           .then(async (sig) => {
             if (settled) {
               return;
