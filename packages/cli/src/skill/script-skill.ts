@@ -8,7 +8,11 @@
  * stay identical to the plugin / SDK path.
  */
 import { NATIVE_SOL, type Asset } from '@elisym/sdk';
-import { ScriptSkill as SdkScriptSkill, type SkillToolDef } from '@elisym/sdk/skills';
+import {
+  ScriptSkill as SdkScriptSkill,
+  type SkillMode,
+  type SkillToolDef,
+} from '@elisym/sdk/skills';
 import type { Skill, SkillContext, SkillInput, SkillOutput } from './index.js';
 
 /**
@@ -29,6 +33,7 @@ export class ScriptSkill implements Skill {
   capabilities: string[];
   priceSubunits: number;
   asset: Asset;
+  mode: SkillMode = 'llm';
   image?: string;
   imageFile?: string;
   dir: string;

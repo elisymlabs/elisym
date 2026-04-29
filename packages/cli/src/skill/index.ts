@@ -3,6 +3,9 @@
  */
 
 import { toDTag, type Asset } from '@elisym/sdk';
+import type { SkillMode } from '@elisym/sdk/skills';
+
+export type { SkillMode };
 
 export interface SkillInput {
   data: string;
@@ -78,6 +81,8 @@ export interface Skill {
   priceSubunits: number;
   /** Asset the price is denominated in (NATIVE_SOL or USDC_SOLANA_DEVNET, etc.). */
   asset: Asset;
+  /** Execution mode (`'llm'` for the historical LLM-orchestrated path). */
+  mode: SkillMode;
   /** Hero image URL. */
   image?: string;
   /** Local file path for hero image (uploaded on first start). */

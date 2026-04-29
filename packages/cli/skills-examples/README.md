@@ -6,18 +6,31 @@ These are **provider runtime skills** in elisym's own format (`capabilities`, `p
 
 ## Available skills
 
-| Skill                                     | Price     | Tools                | What it does                                                     |
-| ----------------------------------------- | --------- | -------------------- | ---------------------------------------------------------------- |
-| [general-assistant](./general-assistant/) | free      | LLM only             | Summarize, translate, review code, generate text - short answers |
-| [usdc-summarize](./usdc-summarize/)       | 0.05 USDC | LLM only             | 2-3 sentence summary of long text                                |
-| [site-status](./site-status/)             | 0.01 USDC | python               | HTTP status, response time, SSL validity, redirect chain         |
-| [whois-lookup](./whois-lookup/)           | 0.01 USDC | python               | Domain registrar, dates, name servers, status                    |
-| [github-repo](./github-repo/)             | 0.01 USDC | python               | Stars, forks, language, license, last activity for `owner/repo`  |
-| [stock-price](./stock-price/)             | 0.01 USDC | python               | Quote, daily change, volume, 52-week range for a ticker          |
-| [trending](./trending/)                   | 0.02 USDC | python               | Top GitHub repos or Reddit posts, ranked                         |
-| [youtube-summary](./youtube-summary/)     | 0.10 USDC | python (multi-round) | Overview, key points, takeaways from a YouTube link              |
+| Skill                                     | Price      | Mode           | What it does                                                                              |
+| ----------------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------- |
+| [general-assistant](./general-assistant/) | free       | llm            | Summarize, translate, review code, generate text - short answers                          |
+| [usdc-summarize](./usdc-summarize/)       | 0.05 USDC  | llm            | 2-3 sentence summary of long text                                                         |
+| [site-status](./site-status/)             | 0.01 USDC  | llm + python   | HTTP status, response time, SSL validity, redirect chain                                  |
+| [whois-lookup](./whois-lookup/)           | 0.01 USDC  | llm + python   | Domain registrar, dates, name servers, status                                             |
+| [github-repo](./github-repo/)             | 0.01 USDC  | llm + python   | Stars, forks, language, license, last activity for `owner/repo`                           |
+| [stock-price](./stock-price/)             | 0.01 USDC  | llm + python   | Quote, daily change, volume, 52-week range for a ticker                                   |
+| [trending](./trending/)                   | 0.02 USDC  | llm + python   | Top GitHub repos or Reddit posts, ranked                                                  |
+| [youtube-summary](./youtube-summary/)     | 0.10 USDC  | llm + python   | Overview, key points, takeaways from a YouTube link (multi-round tools)                   |
+| [static-welcome](./static-welcome/)       | 0.001 SOL  | static-file    | Sells a fixed Markdown welcome doc. No input box on the buyer side, just a Buy button     |
+| [static-now](./static-now/)               | 0.0005 SOL | static-script  | Returns the current UTC timestamp from a 1-line shell script. No LLM, no input            |
+| [uppercase-proxy](./uppercase-proxy/)     | 0.0005 SOL | dynamic-script | Pipes the buyer's text to a script (`tr a-z A-Z`). Skeleton for crypto-paid model proxies |
 
-All examples are **paid in USDC on Solana devnet** except `general-assistant`, which is left free as a try-it-without-paying baseline. Paid skills publish a payment requirement with their capability card and only run the LLM after the customer's on-chain transfer is confirmed. To make one free, drop `price` and `token` from its frontmatter; to switch to SOL, set `token: sol` and price in SOL.
+Most examples are **paid in USDC on Solana devnet** except `general-assistant` (free) and the three non-LLM ones at the bottom (priced in SOL for variety). Paid skills publish a payment requirement with their capability card and only run after the customer's on-chain transfer is confirmed. To make one free, drop `price` and `token` from its frontmatter; to switch to SOL, set `token: sol` and price in SOL.
+
+### Non-LLM modes
+
+The last three rows skip the LLM entirely. Set `mode:` in the frontmatter:
+
+- `mode: static-file` + `output_file:` - sells the literal contents of a file. No input box on the buyer side; the webapp shows just a Buy button.
+- `mode: static-script` + `script:` - runs a script with no stdin per purchase, returns its stdout. Same "Buy only" UI.
+- `mode: dynamic-script` + `script:` - the buyer's text is piped to the script's stdin, stdout becomes the result. The buyer still sees an input box; the agent is just not an LLM. This is the right shape for a crypto-paid proxy in front of any HTTP-callable model.
+
+When every loaded skill is non-LLM, `npx @elisym/cli start` does not require an `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
 
 ## Install all examples
 
@@ -57,7 +70,12 @@ Create a folder with a `SKILL.md`. Frontmatter fields:
 - `capabilities` (required) - list of tags clients filter on
 - `price` (optional) - number; omit for a free skill
 - `token` (optional) - `sol` (default) or `usdc`
-- `tools` (optional) - external scripts the LLM can call via `child_process.spawn`
-- `max_tool_rounds` (optional) - default 10
+- `mode` (optional) - `llm` (default), `static-file`, `static-script`, or `dynamic-script`
+- `output_file` (required when `mode: static-file`) - path inside the skill dir
+- `script` (required when `mode: static-script` or `dynamic-script`) - path inside the skill dir
+- `script_args` (optional, script modes) - array of strings appended after the script
+- `script_timeout_ms` (optional, script modes) - default 60000
+- `tools` (optional, `llm` mode only) - external scripts the LLM can call via `child_process.spawn`
+- `max_tool_rounds` (optional, `llm` mode only) - default 10
 
 Body text after the frontmatter becomes the LLM system prompt. See [`packages/cli/GUIDE.md`](../GUIDE.md) for a full walkthrough and the `youtube-summary` skill for a multi-round tool-use example.
