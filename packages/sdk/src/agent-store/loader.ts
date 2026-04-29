@@ -89,11 +89,14 @@ export async function loadResolvedAgent(
     if (decrypted.solana_secret_key && isEncrypted(decrypted.solana_secret_key)) {
       decrypted.solana_secret_key = decryptSecret(decrypted.solana_secret_key, effectivePassphrase);
     }
-    if (decrypted.anthropic_api_key && isEncrypted(decrypted.anthropic_api_key)) {
-      decrypted.anthropic_api_key = decryptSecret(decrypted.anthropic_api_key, effectivePassphrase);
-    }
-    if (decrypted.openai_api_key && isEncrypted(decrypted.openai_api_key)) {
-      decrypted.openai_api_key = decryptSecret(decrypted.openai_api_key, effectivePassphrase);
+    if (decrypted.llm_api_keys) {
+      const decryptedKeys: Record<string, string> = {};
+      for (const [providerId, value] of Object.entries(decrypted.llm_api_keys)) {
+        decryptedKeys[providerId] = isEncrypted(value)
+          ? decryptSecret(value, effectivePassphrase)
+          : value;
+      }
+      decrypted.llm_api_keys = decryptedKeys;
     }
   }
 
@@ -116,11 +119,12 @@ function listEncryptedFields(secrets: Secrets): string[] {
   if (secrets.solana_secret_key && isEncrypted(secrets.solana_secret_key)) {
     out.push('solana_secret_key');
   }
-  if (secrets.anthropic_api_key && isEncrypted(secrets.anthropic_api_key)) {
-    out.push('anthropic_api_key');
-  }
-  if (secrets.openai_api_key && isEncrypted(secrets.openai_api_key)) {
-    out.push('openai_api_key');
+  if (secrets.llm_api_keys) {
+    for (const [providerId, value] of Object.entries(secrets.llm_api_keys)) {
+      if (isEncrypted(value)) {
+        out.push(`llm_api_keys.${providerId}`);
+      }
+    }
   }
   return out;
 }

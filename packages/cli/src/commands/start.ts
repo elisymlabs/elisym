@@ -41,7 +41,13 @@ import {
   RECOVERY_INTERVAL_SECS,
 } from '../helpers.js';
 import { JobLedger } from '../ledger.js';
-import { createLlmClient, verifyLlmApiKey, type LlmProvider, type LlmConfig } from '../llm';
+import {
+  createLlmClient,
+  getLlmProvider,
+  verifyLlmApiKey,
+  type LlmConfig,
+  type LlmProvider,
+} from '../llm';
 import { cacheKeyFor, resolveTripleForOverride } from '../llm/cache.js';
 import { resolveProviderApiKey } from '../llm/keys.js';
 import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
@@ -242,7 +248,7 @@ export async function cmdStart(
       if (!apiKey) {
         continue;
       }
-      const envVar = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+      const envVar = getLlmProvider(provider)?.envVar ?? `${provider.toUpperCase()}_API_KEY`;
       process.stdout.write(`  Verifying ${provider} API key... `);
       const verification = await verifyLlmApiKey(provider, apiKey);
       if (verification.ok) {

@@ -16,7 +16,6 @@ import { StaticFileSkill } from './staticFileSkill';
 import { StaticScriptSkill } from './staticScriptSkill';
 import type { Skill, SkillLlmOverride, SkillMode } from './types';
 
-const VALID_PROVIDERS: readonly SkillLlmOverride['provider'][] = ['anthropic', 'openai'] as const;
 const MAX_TOKENS_LIMIT = 200_000;
 
 export const DEFAULT_MAX_TOOL_ROUNDS = 10;
@@ -41,7 +40,7 @@ export interface SkillFrontmatter {
   image_file?: unknown;
   tools?: unknown;
   max_tool_rounds?: unknown;
-  /** Optional per-skill LLM provider override ('anthropic' | 'openai'). Pairs with `model`. */
+  /** Optional per-skill LLM provider override (e.g. 'anthropic', 'openai'). Pairs with `model`. */
   provider?: unknown;
   /** Optional per-skill LLM model override. Pairs with `provider`. */
   model?: unknown;
@@ -311,18 +310,13 @@ function validateLlmOverride(
   const override: SkillLlmOverride = {};
 
   if (hasProvider && hasModel) {
-    if (typeof frontmatter.provider !== 'string') {
-      throw new Error(`SKILL.md "${skillName}": "provider" must be a string`);
-    }
-    if (!(VALID_PROVIDERS as readonly string[]).includes(frontmatter.provider)) {
-      throw new Error(
-        `SKILL.md "${skillName}": invalid provider "${frontmatter.provider}". Allowed: ${VALID_PROVIDERS.join(', ')}`,
-      );
+    if (typeof frontmatter.provider !== 'string' || frontmatter.provider.length === 0) {
+      throw new Error(`SKILL.md "${skillName}": "provider" must be a non-empty string`);
     }
     if (typeof frontmatter.model !== 'string' || frontmatter.model.length === 0) {
       throw new Error(`SKILL.md "${skillName}": "model" must be a non-empty string`);
     }
-    override.provider = frontmatter.provider as 'anthropic' | 'openai';
+    override.provider = frontmatter.provider;
     override.model = frontmatter.model;
   }
 

@@ -72,18 +72,32 @@ prompt`),
     ).toThrow(/"provider" and "model" must be set together/);
   });
 
-  it('rejects invalid provider value', () => {
+  it('rejects empty provider value', () => {
     expect(() =>
       parseAndValidate(`---
 name: bad
 description: bad
 capabilities: [text]
 price: 0.001
+provider: ''
+model: command-r
+---
+prompt`),
+    ).toThrow(/"provider" must be a non-empty string/);
+  });
+
+  it('accepts arbitrary provider id - runtime validation lives in the CLI registry', () => {
+    expect(() =>
+      parseAndValidate(`---
+name: ok
+description: ok
+capabilities: [text]
+price: 0.001
 provider: cohere
 model: command-r
 ---
 prompt`),
-    ).toThrow(/invalid provider/);
+    ).not.toThrow();
   });
 
   it('rejects empty model string', () => {

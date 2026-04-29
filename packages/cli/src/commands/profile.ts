@@ -12,6 +12,7 @@ import {
  * Writes back to elisym.yaml (public) and .secrets.json (private).
  */
 import { isAddress } from '@solana/kit';
+import { getLlmProvider, listLlmProviders } from '../llm';
 
 export async function cmdProfile(name: string | undefined): Promise<void> {
   const { default: inquirer } = await import('inquirer');
@@ -141,27 +142,39 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
     }
 
     if (section === 'llm') {
+      const providerChoices = listLlmProviders().map((descriptor) => ({
+        name: descriptor.displayName,
+        value: descriptor.id,
+      }));
+      if (providerChoices.length === 0) {
+        console.error('  ! No LLM providers registered.');
+        continue;
+      }
+      const firstChoice = providerChoices[0];
+      if (!firstChoice) {
+        console.error('  ! No LLM providers registered.');
+        continue;
+      }
       const { llmProvider } = await inquirer.prompt([
         {
           type: 'list',
           name: 'llmProvider',
           message: 'Default LLM provider (used by skills without a `provider:` override):',
-          choices: [
-            { name: 'Anthropic (Claude)', value: 'anthropic' },
-            { name: 'OpenAI (GPT)', value: 'openai' },
-          ],
-          default: loaded.yaml.llm?.provider ?? 'anthropic',
+          choices: providerChoices,
+          default: loaded.yaml.llm?.provider ?? firstChoice.value,
         },
       ]);
-      const otherProvider: 'anthropic' | 'openai' =
-        llmProvider === 'anthropic' ? 'openai' : 'anthropic';
+      const defaultDescriptor = getLlmProvider(llmProvider);
+      if (!defaultDescriptor) {
+        throw new Error(`Internal: provider "${llmProvider}" not registered.`);
+      }
 
       const defaultKeyStatus = describeKeyStatus(loaded.secrets, llmProvider);
       const { apiKey } = await inquirer.prompt([
         {
           type: 'password',
           name: 'apiKey',
-          message: `${labelFor(llmProvider)} API key [${defaultKeyStatus}] (leave empty to keep current):`,
+          message: `${defaultDescriptor.displayName} API key [${defaultKeyStatus}] (leave empty to keep current):`,
           mask: '*',
         },
       ]);
@@ -191,37 +204,46 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
         },
       ]);
 
-      const otherKeyStatus = describeKeyStatus(loaded.secrets, otherProvider);
-      const { otherApiKey } = await inquirer.prompt([
-        {
-          type: 'password',
-          name: 'otherApiKey',
-          message: `${labelFor(otherProvider)} API key for skill overrides [${otherKeyStatus}] (leave empty to keep current):`,
-          mask: '*',
-        },
-      ]);
+      // Optional keys for OTHER registered providers (used by skills
+      // that override the default provider in their SKILL.md).
+      const otherDescriptors = listLlmProviders().filter(
+        (descriptor) => descriptor.id !== llmProvider,
+      );
+      const otherKeys = new Map<string, string>();
+      for (const descriptor of otherDescriptors) {
+        const status = describeKeyStatus(loaded.secrets, descriptor.id);
+        const { otherApiKey } = await inquirer.prompt([
+          {
+            type: 'password',
+            name: 'otherApiKey',
+            message: `${descriptor.displayName} API key for skill overrides [${status}] (leave empty to keep current):`,
+            mask: '*',
+          },
+        ]);
+        if (otherApiKey) {
+          otherKeys.set(descriptor.id, otherApiKey);
+        }
+      }
 
       const nextLlm: LlmEntry = { provider: llmProvider, model, max_tokens: maxTokens };
       const nextYaml: ElisymYaml = { ...loaded.yaml, llm: nextLlm };
       await writeYaml(loaded.dir, nextYaml);
       loaded.yaml = nextYaml;
 
-      if (apiKey || otherApiKey) {
-        const nextSecrets = { ...loaded.secrets };
+      if (apiKey || otherKeys.size > 0) {
+        const nextLlmApiKeys: Record<string, string> = {
+          ...(loaded.secrets.llm_api_keys ?? {}),
+        };
         if (apiKey) {
-          if (llmProvider === 'anthropic') {
-            nextSecrets.anthropic_api_key = apiKey;
-          } else {
-            nextSecrets.openai_api_key = apiKey;
-          }
+          nextLlmApiKeys[llmProvider] = apiKey;
         }
-        if (otherApiKey) {
-          if (otherProvider === 'anthropic') {
-            nextSecrets.anthropic_api_key = otherApiKey;
-          } else {
-            nextSecrets.openai_api_key = otherApiKey;
-          }
+        for (const [providerId, key] of otherKeys) {
+          nextLlmApiKeys[providerId] = key;
         }
+        const nextSecrets: Secrets = {
+          ...loaded.secrets,
+          llm_api_keys: nextLlmApiKeys,
+        };
         await writeSecrets(loaded.dir, nextSecrets, passphrase);
         loaded.secrets = nextSecrets;
       }
@@ -239,18 +261,13 @@ function truncate(value: string, max = 40): string {
   return value.slice(0, max - 1) + '…';
 }
 
-function labelFor(provider: 'anthropic' | 'openai'): string {
-  return provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
-}
-
 /** Status hint shown next to the API-key prompt so the user knows what's stored. */
-function describeKeyStatus(secrets: Secrets, provider: 'anthropic' | 'openai'): string {
-  const perProviderField = provider === 'anthropic' ? 'anthropic_api_key' : 'openai_api_key';
-  return secrets[perProviderField] ? 'set' : 'not set';
+function describeKeyStatus(secrets: Secrets, providerId: string): string {
+  return secrets.llm_api_keys?.[providerId] ? 'set' : 'not set';
 }
 
 /** Pick the stored key for model probing. `loaded.secrets` is post-decrypt, so values are plaintext. */
-function pickPlainKey(secrets: Secrets, provider: 'anthropic' | 'openai'): string {
-  const perProviderField = provider === 'anthropic' ? 'anthropic_api_key' : 'openai_api_key';
-  return secrets[perProviderField] ?? '';
+function pickPlainKey(secrets: Secrets, providerId: string): string {
+  const value = secrets.llm_api_keys?.[providerId];
+  return typeof value === 'string' ? value : '';
 }

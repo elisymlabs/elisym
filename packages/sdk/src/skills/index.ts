@@ -1,6 +1,8 @@
 export type {
   CompletionResult,
   LlmClient,
+  LlmClientConfig,
+  LlmProvider,
   Skill,
   SkillContext,
   SkillInput,
@@ -11,8 +13,6 @@ export type {
   ToolDef,
   ToolResult,
 } from './types';
-export { createAnthropicClient, createLlmClient, createOpenAIClient } from './llmClient';
-export type { LlmClientConfig, LlmProvider } from './llmClient';
 export {
   DEFAULT_SCRIPT_TIMEOUT_MS,
   MAX_SCRIPT_OUTPUT,

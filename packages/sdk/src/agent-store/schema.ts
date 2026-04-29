@@ -27,7 +27,7 @@ export const PaymentSchema = z.object({
 });
 
 export const LlmSchema = z.object({
-  provider: z.enum(['anthropic', 'openai']),
+  provider: z.string().min(1),
   model: z.string().min(1),
   max_tokens: z.number().int().positive().max(200_000).default(4096),
 });
@@ -70,14 +70,18 @@ export type SecurityFlags = z.infer<typeof SecurityFlagsSchema>;
 /**
  * secrets.json schema. Private - .gitignore.
  * Values may be plaintext or `encrypted:v1:...` blobs (AES-256-GCM + scrypt).
+ *
+ * `llm_api_keys` is a generic record keyed by provider id (e.g. `anthropic`,
+ * `openai`, future `xai`/`google`/...). Adding a new LLM provider does not
+ * require a schema change. Each value is a separate ciphertext blob when
+ * encrypted.
  */
 export const SecretsSchema = z
   .object({
     nostr_secret_key: z.string().min(1),
     solana_secret_key: z.string().optional(),
-    /** Per-provider LLM API keys. Used by skills and the agent-level LLM path. */
-    anthropic_api_key: z.string().optional(),
-    openai_api_key: z.string().optional(),
+    /** Per-provider LLM API keys, keyed by descriptor id (e.g. `anthropic`, `openai`). */
+    llm_api_keys: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 
