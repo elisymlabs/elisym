@@ -359,11 +359,30 @@ async function promptYaml(inquirer: {
       name: 'llmProvider',
       message: 'LLM provider:',
       choices: [
+        {
+          name: 'None (non-LLM agent - static-file / static-script / dynamic-script only)',
+          value: 'none',
+        },
         { name: 'Anthropic (Claude)', value: 'anthropic' },
         { name: 'OpenAI (GPT)', value: 'openai' },
       ],
     },
   ]);
+
+  const baseYaml = {
+    display_name: displayName || undefined,
+    description,
+    picture: picture || undefined,
+    banner: banner || undefined,
+    relays: [...RELAYS],
+    payments: solanaAddress ? [{ chain: 'solana', network: 'devnet', address: solanaAddress }] : [],
+    security: {},
+  };
+
+  if (llmProvider === 'none') {
+    const yaml: ElisymYaml = ElisymYamlSchema.parse(baseYaml);
+    return { yaml };
+  }
 
   const envKey =
     llmProvider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : process.env.OPENAI_API_KEY;
@@ -401,14 +420,8 @@ async function promptYaml(inquirer: {
   ]);
 
   const yaml: ElisymYaml = ElisymYamlSchema.parse({
-    display_name: displayName || undefined,
-    description,
-    picture: picture || undefined,
-    banner: banner || undefined,
-    relays: [...RELAYS],
-    payments: solanaAddress ? [{ chain: 'solana', network: 'devnet', address: solanaAddress }] : [],
+    ...baseYaml,
     llm: { provider: llmProvider, model, max_tokens: maxTokens },
-    security: {},
   });
   // envKey is returned only when the user explicitly typed it (not when
   // pulled from process.env) - the env-var path is handled in cmdInit Step 5.
