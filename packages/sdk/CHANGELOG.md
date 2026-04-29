@@ -20,8 +20,7 @@
     `homeElisymDir`, `agentPaths`.
   - Resolver: `resolveAgent` (project-local beats home-global; tracks
     `shadowsGlobal`), `resolveInProject`, `resolveInHome`.
-  - Loader: `loadAgent` (parses YAML + secrets, decrypts, falls back to
-    `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env when `llm_api_key` is absent).
+  - Loader: `loadAgent` (parses YAML + secrets, decrypts).
   - Writer: `createAgentDir` (auto-generates `.gitignore` for project-local),
     `writeYaml`, `writeSecrets` (atomic, 0o600 for secrets).
   - Listing: `listAgents` (union of project + home, dedup with project

@@ -103,9 +103,6 @@ export async function writeSecrets(
     solana_secret_key: validated.solana_secret_key
       ? maybeEncrypt(validated.solana_secret_key, passphrase)
       : undefined,
-    llm_api_key: validated.llm_api_key
-      ? maybeEncrypt(validated.llm_api_key, passphrase)
-      : undefined,
     anthropic_api_key: validated.anthropic_api_key
       ? maybeEncrypt(validated.anthropic_api_key, passphrase)
       : undefined,

@@ -27,12 +27,10 @@ export const SECRET_REDACT_PATHS: string[] = [
   'ELISYM_SOLANA_PRIVATE_KEY',
   // Canonical on-disk `.secrets.json` field names. Logging the whole
   // `secrets` object, or any single field directly, must not leak.
-  'llm_api_key',
   'anthropic_api_key',
   'openai_api_key',
   'nostr_secret_key',
   'solana_secret_key',
-  '*.llm_api_key',
   '*.anthropic_api_key',
   '*.openai_api_key',
   '*.nostr_secret_key',

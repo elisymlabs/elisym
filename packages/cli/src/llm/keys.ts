@@ -1,10 +1,8 @@
 /**
  * Resolve the API key for a given provider, walking the priority chain:
  *
- *   1. `secrets.<provider>_api_key` (per-provider, preferred).
- *   2. `secrets.llm_api_key` (legacy single-provider field, only when the
- *      provider matches the agent-level default).
- *   3. `process.env.<PROVIDER>_API_KEY` (operator convenience, especially
+ *   1. `secrets.<provider>_api_key` (per-provider field, preferred).
+ *   2. `process.env.<PROVIDER>_API_KEY` (operator convenience, especially
  *      for additional providers introduced via per-skill override).
  */
 
@@ -13,14 +11,13 @@ import type { LlmProvider } from './index';
 
 export interface ResolvedProviderKey {
   apiKey: string;
-  origin: 'secrets-per-provider' | 'secrets-legacy' | 'env';
+  origin: 'secrets-per-provider' | 'env';
 }
 
 export type ResolveProviderKeyResult = ResolvedProviderKey | { error: string };
 
 export interface ResolveProviderKeyInput {
   provider: LlmProvider;
-  agentLevelProvider: LlmProvider | undefined;
   secrets: Secrets;
   /** Names of skills that resolved to this provider. Surfaced in error messages. */
   dependentSkills: string[];
@@ -37,16 +34,12 @@ const SECRET_FIELD_FOR_PROVIDER: Record<LlmProvider, 'anthropic_api_key' | 'open
 };
 
 export function resolveProviderApiKey(input: ResolveProviderKeyInput): ResolveProviderKeyResult {
-  const { provider, agentLevelProvider, secrets, dependentSkills } = input;
+  const { provider, secrets, dependentSkills } = input;
 
   const perProviderField = SECRET_FIELD_FOR_PROVIDER[provider];
   const perProviderValue = secrets[perProviderField];
   if (perProviderValue) {
     return { apiKey: perProviderValue, origin: 'secrets-per-provider' };
-  }
-
-  if (provider === agentLevelProvider && secrets.llm_api_key) {
-    return { apiKey: secrets.llm_api_key, origin: 'secrets-legacy' };
   }
 
   const envVar = ENV_VAR_FOR_PROVIDER[provider];

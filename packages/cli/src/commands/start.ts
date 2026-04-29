@@ -214,7 +214,6 @@ export async function cmdStart(
     for (const [provider, dependents] of dependentSkillsByProvider) {
       const keyResult = resolveProviderApiKey({
         provider,
-        agentLevelProvider: (loaded.yaml.llm?.provider as LlmProvider | undefined) ?? undefined,
         secrets: loaded.secrets,
         dependentSkills: dependents,
       });

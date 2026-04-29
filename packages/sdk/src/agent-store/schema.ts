@@ -75,12 +75,7 @@ export const SecretsSchema = z
   .object({
     nostr_secret_key: z.string().min(1),
     solana_secret_key: z.string().optional(),
-    /**
-     * Legacy single-provider API key. Read by the agent-level LLM path for
-     * back-compat; new code should prefer per-provider keys below.
-     */
-    llm_api_key: z.string().optional(),
-    /** Per-provider API keys. Used when a skill overrides to a non-default provider. */
+    /** Per-provider LLM API keys. Used by skills and the agent-level LLM path. */
     anthropic_api_key: z.string().optional(),
     openai_api_key: z.string().optional(),
   })

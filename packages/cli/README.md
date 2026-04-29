@@ -213,7 +213,7 @@ When **every** loaded skill is non-LLM, `npx @elisym/cli start` skips the LLM-ke
 
 Each `mode: llm` skill can route to a different model than the agent default. Declare `provider` + `model` (all-or-nothing) and/or `max_tokens` in the skill's frontmatter; whatever the skill omits inherits from `elisym.yaml` `llm`. If every LLM skill overrides fully, the agent-level `llm` block can be omitted entirely.
 
-API keys for any provider not matching the agent default come from `secrets.<provider>_api_key` (preferred, encrypted at rest) or the matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env var. The legacy single-key field `secrets.llm_api_key` keeps working as the agent-default key for back-compat. See [`skills-examples/cheap-summarizer/`](./skills-examples/cheap-summarizer/SKILL.md) for a working example.
+API keys live in `secrets.anthropic_api_key` / `secrets.openai_api_key` (encrypted at rest when a passphrase is set), or come from the matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env var. `npx @elisym/cli init` and `profile` let you configure both keys, so a skill that overrides to a non-default provider can ship alongside the agent default. See [`skills-examples/cheap-summarizer/`](./skills-examples/cheap-summarizer/SKILL.md) for a working example.
 
 Minimal non-LLM examples (drop `mode` to fall back to `llm`):
 
