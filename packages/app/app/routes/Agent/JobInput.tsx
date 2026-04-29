@@ -12,7 +12,7 @@ import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { CapabilityDropdown } from './CapabilityDropdown';
-import { checkBuyAffordability } from './lib/balanceCheck';
+import { checkBuyAffordability, checkSelfPayment } from './lib/balanceCheck';
 import { SolIcon } from './SolIcon';
 import type { BuyState } from './types';
 
@@ -79,8 +79,12 @@ function JobInputInner({
   const gasFeeLamports = useSolGasFeeEstimate(card);
   const priceLabel = isFree ? null : formatCardPrice(card.payment, price);
   const { solLamports, usdcRaw } = useWalletBalances();
-  const affordability =
+  const selfPayment =
     !isFree && !!publicKey && !buying
+      ? checkSelfPayment({ card, buyerWallet: publicKey.toBase58() })
+      : { ok: true as const };
+  const affordability =
+    !isFree && !!publicKey && !buying && selfPayment.ok
       ? checkBuyAffordability({ card, solLamports, usdcRaw, gasLamports: gasFeeLamports })
       : { ok: true as const };
 
@@ -117,6 +121,7 @@ function JobInputInner({
     !relaysConnected ||
     ((!!publicKey || isFree) && !isStatic && !input.trim()) ||
     ((!!publicKey || isFree) && pingStatus !== 'online') ||
+    !selfPayment.ok ||
     !affordability.ok;
 
   let tip: string | null = null;
@@ -127,6 +132,8 @@ function JobInputInner({
       tip = 'Checking if the agent is available…';
     } else if ((!!publicKey || isFree) && pingStatus !== 'online') {
       tip = "This agent is offline right now, so you can't place an order. Try again later.";
+    } else if (!selfPayment.ok) {
+      tip = selfPayment.tooltip;
     } else if (!affordability.ok) {
       tip = affordability.tooltip;
     }
