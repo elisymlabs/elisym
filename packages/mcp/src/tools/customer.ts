@@ -867,6 +867,14 @@ export const customerTools: ToolDefinition[] = [
         );
       }
 
+      const buyerWallet = agent.solanaKeypair?.publicKey;
+      if (buyerWallet && expectedRecipient && buyerWallet === expectedRecipient) {
+        return errorResult(
+          `Cannot buy from yourself - your agent's Solana wallet (${buyerWallet}) ` +
+            `matches the provider's payment address. Use a different agent or provider.`,
+        );
+      }
+
       const submittedAt = Date.now();
       const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
         input: input.input,
@@ -1053,6 +1061,14 @@ export const customerTools: ToolDefinition[] = [
         return errorResult(
           `Provider "${input.provider_npub}" has no Solana payment address for ` +
             `capability "${input.capability}". Cannot verify payment recipient.`,
+        );
+      }
+
+      const buyerWallet = agent.solanaKeypair?.publicKey;
+      if (buyerWallet && expectedRecipient && buyerWallet === expectedRecipient) {
+        return errorResult(
+          `Cannot buy from yourself - your agent's Solana wallet (${buyerWallet}) ` +
+            `matches the provider's payment address. Use a different agent or provider.`,
         );
       }
 

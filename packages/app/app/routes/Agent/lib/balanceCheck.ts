@@ -93,3 +93,34 @@ export function checkBuyAffordability({
 
   return { ok: true };
 }
+
+interface SelfPaymentCheckArgs {
+  card: CapabilityCard;
+  buyerWallet: string | null;
+}
+
+/**
+ * Blocks paying yourself: connected Solana wallet equals the card's payment
+ * address. Independent of the Nostr `isOwn` check (different identity, same
+ * wallet is still a no-op transfer that burns gas + protocol fee).
+ */
+export function checkSelfPayment({ card, buyerWallet }: SelfPaymentCheckArgs): BalanceCheckResult {
+  const price = card.payment?.job_price ?? 0;
+  if (price === 0) {
+    return { ok: true };
+  }
+  if (!buyerWallet) {
+    return { ok: true };
+  }
+  if (card.payment?.chain !== 'solana') {
+    return { ok: true };
+  }
+  const providerAddress = card.payment.address;
+  if (!providerAddress || buyerWallet !== providerAddress) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    tooltip: "You can't buy from yourself - this capability pays the wallet you're connected with.",
+  };
+}
