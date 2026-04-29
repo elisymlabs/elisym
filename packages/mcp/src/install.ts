@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { validateAgentName } from '@elisym/sdk';
+import { listAgents } from '@elisym/sdk/agent-store';
 import { writeFileAtomic } from './atomic-write.js';
 import { PACKAGE_VERSION } from './utils.js';
 
@@ -150,7 +151,28 @@ export async function runInstall(options: {
   if (options.agent) {
     validateAgentName(options.agent);
   }
-  const entry = buildServerEntry(options.agent, options.env);
+
+  // No --agent → try to pick a sensible default from the user's agent store.
+  // 0 agents: fall through with no binding (server will run unbound).
+  // 1 agent : auto-bind, log so the user sees which one was chosen.
+  // ≥2      : refuse to guess; print the list and ask for an explicit --agent.
+  let effectiveAgent = options.agent;
+  if (effectiveAgent === undefined) {
+    const resolved = await resolveDefaultAgent();
+    if (resolved.kind === 'ambiguous') {
+      console.log(
+        `Multiple agents found (${resolved.names.join(', ')}). ` +
+          `Re-run with --agent <name> to choose one.`,
+      );
+      return;
+    }
+    if (resolved.kind === 'single') {
+      effectiveAgent = resolved.name;
+      console.log(`Auto-bound to agent "${effectiveAgent}".`);
+    }
+  }
+
+  const entry = buildServerEntry(effectiveAgent, options.env);
   let installed = 0;
   let rebound = 0;
 
@@ -165,12 +187,12 @@ export async function runInstall(options: {
     }
 
     try {
-      const result = await installToConfig(path, entry, options.agent);
+      const result = await installToConfig(path, entry, effectiveAgent);
       if (result === 'installed') {
         console.log(`Installed to ${client.name}: ${path}`);
         installed++;
       } else if (result === 'rebound') {
-        console.log(`Rebound ${client.name} to agent "${options.agent}": ${path}`);
+        console.log(`Rebound ${client.name} to agent "${effectiveAgent}": ${path}`);
         rebound++;
       } else {
         console.log(`Already installed in ${client.name}`);
@@ -183,6 +205,23 @@ export async function runInstall(options: {
   if (installed === 0 && rebound === 0 && !options.client) {
     console.log('No MCP clients found to install into.');
   }
+}
+
+type DefaultAgentResolution =
+  | { kind: 'none' }
+  | { kind: 'single'; name: string }
+  | { kind: 'ambiguous'; names: string[] };
+
+async function resolveDefaultAgent(): Promise<DefaultAgentResolution> {
+  const agents = await listAgents(process.cwd());
+  const [first, second] = agents;
+  if (!first) {
+    return { kind: 'none' };
+  }
+  if (!second) {
+    return { kind: 'single', name: first.name };
+  }
+  return { kind: 'ambiguous', names: agents.map((agent) => agent.name) };
 }
 
 export async function runUpdate(options: { client?: string; agent?: string }): Promise<void> {
