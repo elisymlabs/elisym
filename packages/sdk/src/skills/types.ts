@@ -17,9 +17,29 @@ export interface SkillOutput {
   outputMime?: string;
 }
 
+/**
+ * Optional per-skill LLM override declared in SKILL.md frontmatter.
+ *
+ * Parse-time invariant (enforced by `validateLlmOverride` in the loader):
+ * `provider` is set iff `model` is set. `maxTokens` is independent. So
+ * downstream code may rely on: when `provider !== undefined`, `model` is
+ * also defined.
+ */
+export interface SkillLlmOverride {
+  provider?: 'anthropic' | 'openai';
+  model?: string;
+  maxTokens?: number;
+}
+
 export interface SkillContext {
-  /** Required only when the routed skill has `mode === 'llm'`. */
+  /** Agent-default LLM client. May be undefined when every LLM skill overrides. */
   llm?: LlmClient;
+  /**
+   * Resolve the LLM client for a skill. The runtime caches clients by
+   * resolved (provider, model, maxTokens) triple. Callers pass their
+   * `llmOverride` (or undefined for the agent default).
+   */
+  getLlm?: (override?: SkillLlmOverride) => LlmClient | undefined;
   agentName: string;
   agentDescription: string;
   signal?: AbortSignal;
@@ -78,6 +98,12 @@ export interface Skill {
   asset: import('../payment/assets').Asset;
   /** Execution mode. Default 'llm' for back-compat. */
   mode: SkillMode;
+  /**
+   * Optional per-skill LLM config override (only set when mode === 'llm').
+   * Carried through from SKILL.md frontmatter so the runtime can route this
+   * skill to a non-default model/provider/max_tokens.
+   */
+  llmOverride?: SkillLlmOverride;
   image?: string;
   imageFile?: string;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;

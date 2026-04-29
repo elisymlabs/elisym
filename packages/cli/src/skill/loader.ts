@@ -34,6 +34,7 @@ function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
         parsed.systemPrompt,
         parsed.tools,
         parsed.maxToolRounds,
+        parsed.llmOverride,
       );
     case 'static-file': {
       if (parsed.outputFile === undefined) {

@@ -92,6 +92,12 @@ export async function loadResolvedAgent(
     if (decrypted.llm_api_key && isEncrypted(decrypted.llm_api_key)) {
       decrypted.llm_api_key = decryptSecret(decrypted.llm_api_key, effectivePassphrase);
     }
+    if (decrypted.anthropic_api_key && isEncrypted(decrypted.anthropic_api_key)) {
+      decrypted.anthropic_api_key = decryptSecret(decrypted.anthropic_api_key, effectivePassphrase);
+    }
+    if (decrypted.openai_api_key && isEncrypted(decrypted.openai_api_key)) {
+      decrypted.openai_api_key = decryptSecret(decrypted.openai_api_key, effectivePassphrase);
+    }
   }
 
   const finalSecrets = applyLlmApiKeyEnvFallback(decrypted, yaml);
@@ -117,6 +123,12 @@ function listEncryptedFields(secrets: Secrets): string[] {
   }
   if (secrets.llm_api_key && isEncrypted(secrets.llm_api_key)) {
     out.push('llm_api_key');
+  }
+  if (secrets.anthropic_api_key && isEncrypted(secrets.anthropic_api_key)) {
+    out.push('anthropic_api_key');
+  }
+  if (secrets.openai_api_key && isEncrypted(secrets.openai_api_key)) {
+    out.push('openai_api_key');
   }
   return out;
 }

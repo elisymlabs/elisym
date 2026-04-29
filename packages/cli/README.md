@@ -169,6 +169,9 @@ then return a concise overview and key points.
 | `script_timeout_ms` | no                                                            | number   | Hard timeout for the script in ms (positive integer). Default: `60000`. Script modes only.                                                                                                 |
 | `tools`             | no                                                            | object[] | External scripts the LLM can call via tool-use. `mode: llm` only.                                                                                                                          |
 | `max_tool_rounds`   | no                                                            | number   | Max LLM-tool interaction rounds per job. Default: `10`. `mode: llm` only.                                                                                                                  |
+| `provider`          | no                                                            | string   | Per-skill LLM provider override (`anthropic` or `openai`). Must be set together with `model`. Falls back to agent-level `llm.provider`. `mode: llm` only.                                  |
+| `model`             | no                                                            | string   | Per-skill model override (e.g. `gpt-5-mini`, `claude-haiku-4-5-20251001`). Must be set together with `provider`. Falls back to agent-level `llm.model`. `mode: llm` only.                  |
+| `max_tokens`        | no                                                            | number   | Per-skill max-tokens override (positive integer, max 200000). Independent of `provider`/`model`. Falls back to agent-level `llm.max_tokens`, then `4096`. `mode: llm` only.                |
 
 ### Tool definition
 
@@ -205,6 +208,12 @@ Everything after the closing `---` becomes the LLM system prompt. Describe the a
 | `dynamic-script` | Spawns a script and pipes the buyer's text into stdin. Returns trimmed stdout. The skeleton for any crypto-paid HTTP/AI proxy. | Input box on the buyer side; the agent itself is not an LLM.       | `script`       |
 
 When **every** loaded skill is non-LLM, `npx @elisym/cli start` skips the LLM-key check - a fully non-AI provider can run with no `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` configured.
+
+### Per-skill model / provider overrides
+
+Each `mode: llm` skill can route to a different model than the agent default. Declare `provider` + `model` (all-or-nothing) and/or `max_tokens` in the skill's frontmatter; whatever the skill omits inherits from `elisym.yaml` `llm`. If every LLM skill overrides fully, the agent-level `llm` block can be omitted entirely.
+
+API keys for any provider not matching the agent default come from `secrets.<provider>_api_key` (preferred, encrypted at rest) or the matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env var. The legacy single-key field `secrets.llm_api_key` keeps working as the agent-default key for back-compat. See [`skills-examples/cheap-summarizer/`](./skills-examples/cheap-summarizer/SKILL.md) for a working example.
 
 Minimal non-LLM examples (drop `mode` to fall back to `llm`):
 

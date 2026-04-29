@@ -14,7 +14,10 @@ import { resolveInsidePath } from './path-safety';
 import { DEFAULT_SCRIPT_TIMEOUT_MS, ScriptSkill, type SkillToolDef } from './scriptSkill';
 import { StaticFileSkill } from './staticFileSkill';
 import { StaticScriptSkill } from './staticScriptSkill';
-import type { Skill, SkillMode } from './types';
+import type { Skill, SkillLlmOverride, SkillMode } from './types';
+
+const VALID_PROVIDERS: readonly SkillLlmOverride['provider'][] = ['anthropic', 'openai'] as const;
+const MAX_TOKENS_LIMIT = 200_000;
 
 export const DEFAULT_MAX_TOOL_ROUNDS = 10;
 
@@ -38,6 +41,12 @@ export interface SkillFrontmatter {
   image_file?: unknown;
   tools?: unknown;
   max_tool_rounds?: unknown;
+  /** Optional per-skill LLM provider override ('anthropic' | 'openai'). Pairs with `model`. */
+  provider?: unknown;
+  /** Optional per-skill LLM model override. Pairs with `provider`. */
+  model?: unknown;
+  /** Optional per-skill max_tokens override. Independent of provider/model. */
+  max_tokens?: unknown;
   /** Execution mode. Default 'llm'. */
   mode?: unknown;
   /** Required when mode === 'static-file'. Path relative to skill dir. */
@@ -61,6 +70,12 @@ export interface ParsedSkill {
   systemPrompt: string;
   tools: SkillToolDef[];
   maxToolRounds: number;
+  /**
+   * Per-skill LLM override (only present when mode === 'llm' and the SKILL.md
+   * declared at least one of `provider`/`model`/`max_tokens`). Parse-time
+   * invariant: `provider` set iff `model` set.
+   */
+  llmOverride?: SkillLlmOverride;
   image?: string;
   imageFile?: string;
   /** Set when mode === 'static-file'. */
@@ -258,6 +273,76 @@ function validateScriptArgs(skillName: string, raw: unknown): string[] {
   return raw as string[];
 }
 
+/**
+ * Parse the optional per-skill LLM override block. The all-or-nothing rule
+ * applies to (`provider`, `model`); `max_tokens` is independent.
+ *
+ * Returns `undefined` when no LLM override fields are declared at all.
+ * Throws on partial pair, invalid provider, empty model, or out-of-range
+ * max_tokens.
+ *
+ * Rejects all three fields when `mode !== 'llm'`.
+ */
+function validateLlmOverride(
+  skillName: string,
+  frontmatter: SkillFrontmatter,
+  mode: SkillMode,
+): SkillLlmOverride | undefined {
+  const hasProvider = frontmatter.provider !== undefined && frontmatter.provider !== null;
+  const hasModel = frontmatter.model !== undefined && frontmatter.model !== null;
+  const hasMaxTokens = frontmatter.max_tokens !== undefined && frontmatter.max_tokens !== null;
+
+  if (!hasProvider && !hasModel && !hasMaxTokens) {
+    return undefined;
+  }
+
+  if (mode !== 'llm') {
+    throw new Error(
+      `SKILL.md "${skillName}": "provider"/"model"/"max_tokens" are only valid in mode 'llm' (got '${mode}')`,
+    );
+  }
+
+  if (hasProvider !== hasModel) {
+    throw new Error(
+      `SKILL.md "${skillName}": "provider" and "model" must be set together (declare both, or neither)`,
+    );
+  }
+
+  const override: SkillLlmOverride = {};
+
+  if (hasProvider && hasModel) {
+    if (typeof frontmatter.provider !== 'string') {
+      throw new Error(`SKILL.md "${skillName}": "provider" must be a string`);
+    }
+    if (!(VALID_PROVIDERS as readonly string[]).includes(frontmatter.provider)) {
+      throw new Error(
+        `SKILL.md "${skillName}": invalid provider "${frontmatter.provider}". Allowed: ${VALID_PROVIDERS.join(', ')}`,
+      );
+    }
+    if (typeof frontmatter.model !== 'string' || frontmatter.model.length === 0) {
+      throw new Error(`SKILL.md "${skillName}": "model" must be a non-empty string`);
+    }
+    override.provider = frontmatter.provider as 'anthropic' | 'openai';
+    override.model = frontmatter.model;
+  }
+
+  if (hasMaxTokens) {
+    if (
+      typeof frontmatter.max_tokens !== 'number' ||
+      !Number.isInteger(frontmatter.max_tokens) ||
+      frontmatter.max_tokens <= 0 ||
+      frontmatter.max_tokens > MAX_TOKENS_LIMIT
+    ) {
+      throw new Error(
+        `SKILL.md "${skillName}": "max_tokens" must be a positive integer <= ${MAX_TOKENS_LIMIT}`,
+      );
+    }
+    override.maxTokens = frontmatter.max_tokens;
+  }
+
+  return override;
+}
+
 function validateScriptTimeoutMs(skillName: string, raw: unknown): number | undefined {
   if (raw === undefined || raw === null) {
     return undefined;
@@ -423,6 +508,8 @@ export function validateSkillFrontmatter(
   const image = typeof frontmatter.image === 'string' ? frontmatter.image : undefined;
   const imageFile = typeof frontmatter.image_file === 'string' ? frontmatter.image_file : undefined;
 
+  const llmOverride = validateLlmOverride(frontmatter.name, frontmatter, mode);
+
   return {
     name: frontmatter.name,
     description: frontmatter.description,
@@ -433,6 +520,7 @@ export function validateSkillFrontmatter(
     systemPrompt,
     tools,
     maxToolRounds,
+    llmOverride,
     image,
     imageFile,
     outputFile,
@@ -455,6 +543,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         systemPrompt: parsed.systemPrompt,
         tools: parsed.tools,
         maxToolRounds: parsed.maxToolRounds,
+        llmOverride: parsed.llmOverride,
         image: parsed.image,
         imageFile: parsed.imageFile,
         logger,

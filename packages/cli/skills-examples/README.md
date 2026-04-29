@@ -77,5 +77,7 @@ Create a folder with a `SKILL.md`. Frontmatter fields:
 - `script_timeout_ms` (optional, script modes) - default 60000
 - `tools` (optional, `llm` mode only) - external scripts the LLM can call via `child_process.spawn`
 - `max_tool_rounds` (optional, `llm` mode only) - default 10
+- `provider` + `model` (optional, `llm` mode only) - per-skill LLM override. Must be set together; falls back to agent-level `llm` when omitted. See [`cheap-summarizer/`](./cheap-summarizer/SKILL.md).
+- `max_tokens` (optional, `llm` mode only) - per-skill max-tokens override; independent of `provider`/`model`.
 
 Body text after the frontmatter becomes the LLM system prompt. See [`packages/cli/GUIDE.md`](../GUIDE.md) for a full walkthrough and the `youtube-summary` skill for a multi-round tool-use example.

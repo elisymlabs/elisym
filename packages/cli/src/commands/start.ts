@@ -39,10 +39,14 @@ import {
   RECOVERY_INTERVAL_SECS,
 } from '../helpers.js';
 import { JobLedger } from '../ledger.js';
-import { createLlmClient, verifyLlmApiKey, type LlmProvider } from '../llm';
+import { createLlmClient, verifyLlmApiKey, type LlmProvider, type LlmConfig } from '../llm';
+import { cacheKeyFor, resolveTripleForOverride } from '../llm/cache.js';
+import { resolveProviderApiKey } from '../llm/keys.js';
+import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
 import { createLogger } from '../logging.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
-import { SkillRegistry, type SkillContext } from '../skill';
+import { SkillRegistry, type SkillContext, type SkillLlmOverride } from '../skill';
+import type { LlmClient } from '../skill/index.js';
 import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
 import { startWatchdog } from '../watchdog.js';
@@ -154,68 +158,141 @@ export async function cmdStart(
   }
 
   // -- Step 6: LLM check (only when at least one skill needs it) --
-  const hasLlmSkill = allSkills.some((skill) => skill.mode === 'llm');
-  let llm: ReturnType<typeof createLlmClient> | undefined;
+  // Per-skill LLM resolution. Each `mode: 'llm'` skill resolves to a concrete
+  // (provider, model, maxTokens) triple. Agent-level `llm` in elisym.yaml is
+  // the fallback for skills that don't override; if every LLM skill overrides,
+  // agent-level `llm` may be omitted entirely.
+  const llmSkills = allSkills.filter((skill) => skill.mode === 'llm');
+  const triplesByKey = new Map<string, ResolvedSkillLlm>();
+  const dependentSkillsByProvider = new Map<LlmProvider, string[]>();
+  let agentDefaultCacheKey: string | undefined;
+  const llmClientCache = new Map<string, LlmClient>();
 
-  if (hasLlmSkill) {
-    const llmSkillNames = allSkills
-      .filter((skill) => skill.mode === 'llm')
-      .map((skill) => skill.name);
-    if (!loaded.yaml.llm) {
-      console.error(
-        `  ! No LLM configured, but ${llmSkillNames.length} skill(s) require it: ${llmSkillNames.join(', ')}.`,
-      );
-      console.error(
-        `    Add an LLM provider via \`npx @elisym/cli profile ${agentName}\`, or remove those skills from ${skillsDir}.\n`,
-      );
-      process.exit(1);
-    }
-    if (!loaded.secrets.llm_api_key) {
-      const keyEnvVar =
-        loaded.yaml.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
-      console.error(`  ! No LLM API key (required by skill(s): ${llmSkillNames.join(', ')}).`);
-      console.error(
-        `    Set ${keyEnvVar} or update the agent's secrets via \`npx @elisym/cli profile ${agentName}\`.\n`,
-      );
-      process.exit(1);
-    }
+  if (llmSkills.length > 0) {
+    const resolutionErrors: string[] = [];
 
-    // Verify LLM API key is accepted by the provider before we publish
-    // capabilities to Nostr - otherwise the agent advertises itself as
-    // available while every LLM job would fail at first call with a 401.
-    const llmProvider = loaded.yaml.llm.provider as LlmProvider;
-    const keyEnvVar = llmProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
-    process.stdout.write(`  Verifying ${llmProvider} API key... `);
-    const verification = await verifyLlmApiKey(llmProvider, loaded.secrets.llm_api_key);
-    if (verification.ok) {
-      console.log('ok');
-    } else if (verification.reason === 'invalid') {
-      console.log('INVALID');
-      console.error(`  ! ${llmProvider} rejected the API key (HTTP ${verification.status}).`);
-      console.error(
-        `    Update it via \`npx @elisym/cli profile\` or set ${keyEnvVar} to a valid key.\n`,
+    for (const skill of llmSkills) {
+      const skillMdPath = join(skillsDir, skill.name, 'SKILL.md');
+      const result = resolveSkillLlm(
+        { skillName: skill.name, skillMdPath, llmOverride: skill.llmOverride },
+        loaded.yaml.llm,
       );
-      process.exit(1);
-    } else {
-      console.log('unavailable');
-      console.warn(
-        `  ! Could not verify ${llmProvider} API key (${verification.error}). Continuing - jobs will fail if the key is invalid.\n`,
-      );
+      if ('error' in result) {
+        resolutionErrors.push(result.error);
+        continue;
+      }
+      const cacheKey = cacheKeyFor(result);
+      triplesByKey.set(cacheKey, result);
+      const list = dependentSkillsByProvider.get(result.provider) ?? [];
+      list.push(skill.name);
+      dependentSkillsByProvider.set(result.provider, list);
     }
 
-    llm = createLlmClient({
-      provider: loaded.yaml.llm.provider as any,
-      apiKey: loaded.secrets.llm_api_key,
-      model: loaded.yaml.llm.model,
-      maxTokens: loaded.yaml.llm.max_tokens,
-      logUsage: true,
-    });
+    if (resolutionErrors.length > 0) {
+      for (const message of resolutionErrors) {
+        console.error(`  ! ${message}`);
+      }
+      console.error('');
+      process.exit(1);
+    }
+
+    if (loaded.yaml.llm) {
+      const agentDefaultTriple: ResolvedSkillLlm = {
+        provider: loaded.yaml.llm.provider as LlmProvider,
+        model: loaded.yaml.llm.model,
+        maxTokens: loaded.yaml.llm.max_tokens,
+      };
+      const agentKey = cacheKeyFor(agentDefaultTriple);
+      if (triplesByKey.has(agentKey)) {
+        agentDefaultCacheKey = agentKey;
+      }
+    }
+
+    // Resolve + verify each provider's API key once.
+    const keyByProvider = new Map<LlmProvider, string>();
+    const keyErrors: string[] = [];
+    for (const [provider, dependents] of dependentSkillsByProvider) {
+      const keyResult = resolveProviderApiKey({
+        provider,
+        agentLevelProvider: (loaded.yaml.llm?.provider as LlmProvider | undefined) ?? undefined,
+        secrets: loaded.secrets,
+        dependentSkills: dependents,
+      });
+      if ('error' in keyResult) {
+        keyErrors.push(keyResult.error);
+        continue;
+      }
+      keyByProvider.set(provider, keyResult.apiKey);
+    }
+    if (keyErrors.length > 0) {
+      for (const message of keyErrors) {
+        console.error(`  ! ${message}`);
+      }
+      console.error('');
+      process.exit(1);
+    }
+
+    for (const provider of keyByProvider.keys()) {
+      const apiKey = keyByProvider.get(provider);
+      if (!apiKey) {
+        continue;
+      }
+      const envVar = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+      process.stdout.write(`  Verifying ${provider} API key... `);
+      const verification = await verifyLlmApiKey(provider, apiKey);
+      if (verification.ok) {
+        console.log('ok');
+      } else if (verification.reason === 'invalid') {
+        console.log('INVALID');
+        console.error(`  ! ${provider} rejected the API key (HTTP ${verification.status}).`);
+        console.error(
+          `    Update it via \`npx @elisym/cli profile ${agentName}\` or set ${envVar} to a valid key.\n`,
+        );
+        process.exit(1);
+      } else {
+        console.log('unavailable');
+        console.warn(
+          `  ! Could not verify ${provider} API key (${verification.error}). Continuing - jobs will fail if the key is invalid.\n`,
+        );
+      }
+    }
+
+    // Eager client construction. One LlmClient per unique triple.
+    for (const [cacheKey, triple] of triplesByKey) {
+      const apiKey = keyByProvider.get(triple.provider);
+      if (!apiKey) {
+        // Should never happen - keyByProvider is built from the same provider
+        // set as the triples. Defensive guard for type narrowing.
+        console.error(`  ! Internal error: no API key for provider "${triple.provider}".\n`);
+        process.exit(1);
+      }
+      const config: LlmConfig = {
+        provider: triple.provider,
+        apiKey,
+        model: triple.model,
+        maxTokens: triple.maxTokens,
+        logUsage: true,
+      };
+      llmClientCache.set(cacheKey, createLlmClient(config));
+    }
   } else {
     console.log('  No LLM skills loaded; skipping LLM key check.\n');
   }
 
+  const agentDefaultClient =
+    agentDefaultCacheKey !== undefined ? llmClientCache.get(agentDefaultCacheKey) : undefined;
+
+  const getLlm = (override?: SkillLlmOverride): LlmClient | undefined => {
+    const triple = resolveTripleForOverride(override, loaded.yaml.llm);
+    if (!triple) {
+      return undefined;
+    }
+    return llmClientCache.get(cacheKeyFor(triple));
+  };
+
   const skillCtx: SkillContext = {
-    llm,
+    llm: agentDefaultClient,
+    getLlm,
     agentName,
     agentDescription: loaded.yaml.description ?? '',
   };

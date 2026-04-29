@@ -102,6 +102,27 @@ describe('SecretsSchema', () => {
     });
     expect(parsed.nostr_secret_key).toHaveLength(64);
   });
+
+  it('accepts per-provider api keys alongside legacy llm_api_key', () => {
+    const parsed = SecretsSchema.parse({
+      nostr_secret_key: 'a'.repeat(64),
+      llm_api_key: 'sk-legacy',
+      anthropic_api_key: 'sk-ant',
+      openai_api_key: 'sk-oai',
+    });
+    expect(parsed.anthropic_api_key).toBe('sk-ant');
+    expect(parsed.openai_api_key).toBe('sk-oai');
+    expect(parsed.llm_api_key).toBe('sk-legacy');
+  });
+
+  it('rejects unknown secret fields (.strict guard)', () => {
+    expect(() =>
+      SecretsSchema.parse({
+        nostr_secret_key: 'a'.repeat(64),
+        cohere_api_key: 'unsupported',
+      }),
+    ).toThrow();
+  });
 });
 
 describe('findProjectElisymDir', () => {
