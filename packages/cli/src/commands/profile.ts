@@ -11,7 +11,6 @@ import {
  * Profile command - edit agent profile, wallet, and LLM settings.
  * Writes back to elisym.yaml (public) and .secrets.json (private).
  */
-import { isEncrypted } from '@elisym/sdk/node';
 import { isAddress } from '@solana/kit';
 
 export async function cmdProfile(name: string | undefined): Promise<void> {
@@ -247,22 +246,11 @@ function labelFor(provider: 'anthropic' | 'openai'): string {
 /** Status hint shown next to the API-key prompt so the user knows what's stored. */
 function describeKeyStatus(secrets: Secrets, provider: 'anthropic' | 'openai'): string {
   const perProviderField = provider === 'anthropic' ? 'anthropic_api_key' : 'openai_api_key';
-  const stored = secrets[perProviderField];
-  if (!stored) {
-    return 'not set';
-  }
-  return isEncrypted(stored) ? 'set, encrypted' : 'set';
+  return secrets[perProviderField] ? 'set' : 'not set';
 }
 
-/**
- * Pick a plaintext key for model probing. Encrypted values are skipped because
- * the passphrase isn't in scope here.
- */
+/** Pick the stored key for model probing. `loaded.secrets` is post-decrypt, so values are plaintext. */
 function pickPlainKey(secrets: Secrets, provider: 'anthropic' | 'openai'): string {
   const perProviderField = provider === 'anthropic' ? 'anthropic_api_key' : 'openai_api_key';
-  const stored = secrets[perProviderField];
-  if (stored && !isEncrypted(stored)) {
-    return stored;
-  }
-  return '';
+  return secrets[perProviderField] ?? '';
 }
