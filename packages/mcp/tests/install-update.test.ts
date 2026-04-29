@@ -504,6 +504,34 @@ describe('runInstall', () => {
     const afterRaw = await readFile(cursorPath, 'utf-8');
     expect(afterRaw).toBe(beforeRaw);
   });
+
+  it('auto-binds to the only agent in ~/.elisym when --agent is omitted', async () => {
+    await mkdir(join(dir, '.elisym', 'solo'), { recursive: true });
+    await writeFile(join(dir, '.elisym', 'solo', 'elisym.yaml'), '', { mode: 0o600 });
+
+    await runInstall({ client: 'cursor' });
+
+    const after = JSON.parse(await readFile(cursorPath, 'utf-8'));
+    expect(after.mcpServers.elisym.env).toEqual({ ELISYM_AGENT: 'solo' });
+    const calls = logSpy.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((s) => s.includes('Auto-bound to agent "solo"'))).toBe(true);
+  });
+
+  it('refuses to guess when multiple agents exist and asks for --agent', async () => {
+    await mkdir(join(dir, '.elisym', 'alice'), { recursive: true });
+    await writeFile(join(dir, '.elisym', 'alice', 'elisym.yaml'), '', { mode: 0o600 });
+    await mkdir(join(dir, '.elisym', 'bob'), { recursive: true });
+    await writeFile(join(dir, '.elisym', 'bob', 'elisym.yaml'), '', { mode: 0o600 });
+
+    await runInstall({ client: 'cursor' });
+
+    // No file written: ambiguous resolution must abort before touching configs.
+    await expect(readFile(cursorPath, 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+    const calls = logSpy.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((s) => s.includes('Multiple agents found') && s.includes('--agent'))).toBe(
+      true,
+    );
+  });
 });
 
 describe('safeRewriteJson', () => {
