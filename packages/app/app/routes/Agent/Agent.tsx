@@ -752,9 +752,17 @@ export default function AgentPage() {
             )}
 
             <ArtifactCapturer
-              buyState={buyState}
+              buyState={artifactsHydrated ? buyState : null}
               card={currentCard}
               onCapture={(artifact) => {
+                // Skip side effects when the session result was already
+                // captured on a prior mount. BuyProvider lives at the app
+                // root now, so session.result/jobId persist across
+                // navigation - revisiting an agent would otherwise re-flip
+                // the tab and re-fire the "new" animation every time.
+                if (artifacts.some((existing) => existing.id === artifact.id)) {
+                  return;
+                }
                 appendArtifact(artifact);
                 setActiveTab('artifacts');
                 setNewArtifactIds((prev) => {
