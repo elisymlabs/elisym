@@ -4,6 +4,7 @@ export type {
   Skill,
   SkillContext,
   SkillInput,
+  SkillLlmOverride,
   SkillMode,
   SkillOutput,
   ToolCall,

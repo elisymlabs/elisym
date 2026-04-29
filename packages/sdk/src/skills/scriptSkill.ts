@@ -7,6 +7,7 @@ import type {
   Skill,
   SkillContext,
   SkillInput,
+  SkillLlmOverride,
   SkillMode,
   SkillOutput,
   ToolCall,
@@ -130,6 +131,8 @@ export interface ScriptSkillParams {
   systemPrompt: string;
   tools: SkillToolDef[];
   maxToolRounds: number;
+  /** Optional per-skill LLM override (provider/model pair and/or maxTokens). */
+  llmOverride?: SkillLlmOverride;
   image?: string;
   imageFile?: string;
   logger?: ScriptSkillLogger;
@@ -149,6 +152,7 @@ export class ScriptSkill implements Skill {
   priceSubunits: bigint;
   asset: Asset;
   mode: SkillMode = 'llm';
+  readonly llmOverride?: SkillLlmOverride;
   image?: string;
   imageFile?: string;
   private skillDir: string;
@@ -163,6 +167,7 @@ export class ScriptSkill implements Skill {
     this.capabilities = params.capabilities;
     this.priceSubunits = params.priceSubunits;
     this.asset = params.asset;
+    this.llmOverride = params.llmOverride;
     this.image = params.image;
     this.imageFile = params.imageFile;
     this.skillDir = params.skillDir;
@@ -173,12 +178,10 @@ export class ScriptSkill implements Skill {
   }
 
   async execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput> {
-    if (!ctx.llm) {
-      throw new Error('LLM client not configured for skill runtime');
-    }
+    const llm = this.resolveLlmClient(ctx);
 
     if (this.tools.length === 0) {
-      const result = await ctx.llm.complete(this.systemPrompt, input.data, ctx.signal);
+      const result = await llm.complete(this.systemPrompt, input.data, ctx.signal);
       return { data: result };
     }
 
@@ -193,7 +196,6 @@ export class ScriptSkill implements Skill {
     }));
 
     const messages: unknown[] = [{ role: 'user', content: input.data }];
-    const llm: LlmClient = ctx.llm;
 
     for (let round = 0; round < this.maxToolRounds; round++) {
       if (ctx.signal?.aborted) {
@@ -230,6 +232,35 @@ export class ScriptSkill implements Skill {
     }
 
     throw new Error(`Max tool rounds (${this.maxToolRounds}) exceeded`);
+  }
+
+  /**
+   * Resolve the LLM client for this skill from the runtime context.
+   *
+   * Contract:
+   * - When `llmOverride` is set, `ctx.getLlm` MUST be wired. Falling back to
+   *   `ctx.llm` (the agent default) would silently use the wrong configuration
+   *   for max-tokens-only overrides.
+   * - When no override is set, prefer `ctx.getLlm()` (returns the agent
+   *   default), then fall back to `ctx.llm` for legacy callers that wire only
+   *   a single client.
+   */
+  private resolveLlmClient(ctx: SkillContext): LlmClient {
+    let client: LlmClient | undefined;
+    if (this.llmOverride) {
+      client = ctx.getLlm?.(this.llmOverride);
+      if (!client) {
+        throw new Error(
+          `Skill "${this.name}" requires ctx.getLlm to be configured (llmOverride is set)`,
+        );
+      }
+      return client;
+    }
+    client = ctx.getLlm?.() ?? ctx.llm;
+    if (!client) {
+      throw new Error('LLM client not configured for skill runtime');
+    }
+    return client;
   }
 
   private async runTool(

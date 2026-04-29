@@ -5,12 +5,12 @@ import {
   writeYaml,
   type ElisymYaml,
   type LlmEntry,
+  type Secrets,
 } from '@elisym/sdk/agent-store';
 /**
  * Profile command - edit agent profile, wallet, and LLM settings.
  * Writes back to elisym.yaml (public) and .secrets.json (private).
  */
-import { isEncrypted } from '@elisym/sdk/node';
 import { isAddress } from '@solana/kit';
 
 export async function cmdProfile(name: string | undefined): Promise<void> {
@@ -145,7 +145,7 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
         {
           type: 'list',
           name: 'llmProvider',
-          message: 'LLM provider:',
+          message: 'Default LLM provider (used by skills without a `provider:` override):',
           choices: [
             { name: 'Anthropic (Claude)', value: 'anthropic' },
             { name: 'OpenAI (GPT)', value: 'openai' },
@@ -153,21 +153,20 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
           default: loaded.yaml.llm?.provider ?? 'anthropic',
         },
       ]);
+      const otherProvider: 'anthropic' | 'openai' =
+        llmProvider === 'anthropic' ? 'openai' : 'anthropic';
 
+      const defaultKeyStatus = describeKeyStatus(loaded.secrets, llmProvider);
       const { apiKey } = await inquirer.prompt([
         {
           type: 'password',
           name: 'apiKey',
-          message: 'API key (leave empty to keep current):',
+          message: `${labelFor(llmProvider)} API key [${defaultKeyStatus}] (leave empty to keep current):`,
           mask: '*',
         },
       ]);
 
-      const currentKeyPlain =
-        loaded.secrets.llm_api_key && !isEncrypted(loaded.secrets.llm_api_key)
-          ? loaded.secrets.llm_api_key
-          : '';
-      const probeKey = apiKey || currentKeyPlain;
+      const probeKey = apiKey || pickPlainKey(loaded.secrets, llmProvider);
 
       console.log('  Fetching available models...');
       const { fetchModels } = await import('./init.js');
@@ -192,14 +191,39 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
         },
       ]);
 
+      const otherKeyStatus = describeKeyStatus(loaded.secrets, otherProvider);
+      const { otherApiKey } = await inquirer.prompt([
+        {
+          type: 'password',
+          name: 'otherApiKey',
+          message: `${labelFor(otherProvider)} API key for skill overrides [${otherKeyStatus}] (leave empty to keep current):`,
+          mask: '*',
+        },
+      ]);
+
       const nextLlm: LlmEntry = { provider: llmProvider, model, max_tokens: maxTokens };
       const nextYaml: ElisymYaml = { ...loaded.yaml, llm: nextLlm };
       await writeYaml(loaded.dir, nextYaml);
       loaded.yaml = nextYaml;
 
-      if (apiKey) {
-        await writeSecrets(loaded.dir, { ...loaded.secrets, llm_api_key: apiKey }, passphrase);
-        loaded.secrets = { ...loaded.secrets, llm_api_key: apiKey };
+      if (apiKey || otherApiKey) {
+        const nextSecrets = { ...loaded.secrets };
+        if (apiKey) {
+          if (llmProvider === 'anthropic') {
+            nextSecrets.anthropic_api_key = apiKey;
+          } else {
+            nextSecrets.openai_api_key = apiKey;
+          }
+        }
+        if (otherApiKey) {
+          if (otherProvider === 'anthropic') {
+            nextSecrets.anthropic_api_key = otherApiKey;
+          } else {
+            nextSecrets.openai_api_key = otherApiKey;
+          }
+        }
+        await writeSecrets(loaded.dir, nextSecrets, passphrase);
+        loaded.secrets = nextSecrets;
       }
       console.log('  LLM updated.\n');
     }
@@ -213,4 +237,20 @@ function truncate(value: string, max = 40): string {
     return value;
   }
   return value.slice(0, max - 1) + '…';
+}
+
+function labelFor(provider: 'anthropic' | 'openai'): string {
+  return provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+}
+
+/** Status hint shown next to the API-key prompt so the user knows what's stored. */
+function describeKeyStatus(secrets: Secrets, provider: 'anthropic' | 'openai'): string {
+  const perProviderField = provider === 'anthropic' ? 'anthropic_api_key' : 'openai_api_key';
+  return secrets[perProviderField] ? 'set' : 'not set';
+}
+
+/** Pick the stored key for model probing. `loaded.secrets` is post-decrypt, so values are plaintext. */
+function pickPlainKey(secrets: Secrets, provider: 'anthropic' | 'openai'): string {
+  const perProviderField = provider === 'anthropic' ? 'anthropic_api_key' : 'openai_api_key';
+  return secrets[perProviderField] ?? '';
 }

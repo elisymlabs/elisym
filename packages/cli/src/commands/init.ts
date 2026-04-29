@@ -174,20 +174,21 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
     promptedApiKey = result.apiKey;
   }
 
-  // Step 5: LLM API key (from env, then reuse prompt-collected key, else prompt).
-  let llmApiKey: string | undefined;
+  // Step 5: LLM API key for the default provider (from env, then reuse
+  // prompt-collected key, else prompt).
+  let defaultProviderKey: string | undefined;
   if (yaml.llm) {
     const envKey =
       yaml.llm.provider === 'anthropic'
         ? process.env.ANTHROPIC_API_KEY
         : process.env.OPENAI_API_KEY;
     if (envKey) {
-      llmApiKey = envKey;
+      defaultProviderKey = envKey;
       console.log(
         `  Using ${yaml.llm.provider === 'anthropic' ? 'ANTHROPIC' : 'OPENAI'}_API_KEY from environment.`,
       );
     } else if (promptedApiKey) {
-      llmApiKey = promptedApiKey;
+      defaultProviderKey = promptedApiKey;
     } else {
       const { apiKey } = await inquirer.prompt([
         {
@@ -197,7 +198,45 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
           mask: '*',
         },
       ]);
-      llmApiKey = apiKey || undefined;
+      defaultProviderKey = apiKey || undefined;
+    }
+  }
+
+  // Step 5b: Optional API key for the OTHER provider, used by skills that
+  // declare a `provider:` override in their SKILL.md. Skipped when running
+  // from a YAML template (non-interactive); operators can supply per-provider
+  // keys via env vars or by editing `.secrets.json` directly.
+  let otherProviderKey: string | undefined;
+  if (yaml.llm && !template) {
+    const otherProvider: 'anthropic' | 'openai' =
+      yaml.llm.provider === 'anthropic' ? 'openai' : 'anthropic';
+    const otherProviderLabel = otherProvider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+    const otherEnvVar = otherProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+    const otherEnvKey = process.env[otherEnvVar];
+
+    const { configureOther } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'configureOther',
+        message: `Configure ${otherProviderLabel} API key too (for skills that override the default provider)?`,
+        default: Boolean(otherEnvKey),
+      },
+    ]);
+    if (configureOther) {
+      if (otherEnvKey) {
+        otherProviderKey = otherEnvKey;
+        console.log(`  Using ${otherEnvVar} from environment.`);
+      } else {
+        const { promptedOther } = await inquirer.prompt([
+          {
+            type: 'password',
+            name: 'promptedOther',
+            message: `${otherProviderLabel} API key:`,
+            mask: '*',
+          },
+        ]);
+        otherProviderKey = promptedOther || undefined;
+      }
     }
   }
 
@@ -239,14 +278,19 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   const nostrPubkey = getPublicKey(nostrSecretBytes);
   const nostrSecretHex = Buffer.from(nostrSecretBytes).toString('hex');
 
-  // Step 8: Create agent directory + write files.
+  // Step 8: Create agent directory + write files. Each provider's key lands
+  // in its own per-provider field; the start-time resolver reads them
+  // directly (or falls back to the matching env var).
   const created = await createAgentDir({ target, name: agentName, cwd });
+  const anthropicKey = yaml.llm?.provider === 'anthropic' ? defaultProviderKey : otherProviderKey;
+  const openaiKey = yaml.llm?.provider === 'openai' ? defaultProviderKey : otherProviderKey;
   await writeYaml(created.dir, yaml);
   await writeSecrets(
     created.dir,
     {
       nostr_secret_key: nostrSecretHex,
-      llm_api_key: llmApiKey,
+      anthropic_api_key: anthropicKey,
+      openai_api_key: openaiKey,
     },
     passphrase || undefined,
   );

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import YAML from 'yaml';
 import {
   ElisymYamlSchema,
@@ -94,13 +94,34 @@ describe('SecretsSchema', () => {
     expect(() => SecretsSchema.parse({})).toThrow();
   });
 
-  it('accepts optional solana and llm keys', () => {
+  it('accepts optional solana and per-provider llm keys', () => {
     const parsed = SecretsSchema.parse({
       nostr_secret_key: 'a'.repeat(64),
       solana_secret_key: 'xyz',
-      llm_api_key: 'sk-...',
+      anthropic_api_key: 'sk-ant',
+      openai_api_key: 'sk-oai',
     });
     expect(parsed.nostr_secret_key).toHaveLength(64);
+    expect(parsed.anthropic_api_key).toBe('sk-ant');
+    expect(parsed.openai_api_key).toBe('sk-oai');
+  });
+
+  it('rejects unknown secret fields (.strict guard)', () => {
+    expect(() =>
+      SecretsSchema.parse({
+        nostr_secret_key: 'a'.repeat(64),
+        cohere_api_key: 'unsupported',
+      }),
+    ).toThrow();
+  });
+
+  it('rejects the removed legacy llm_api_key field', () => {
+    expect(() =>
+      SecretsSchema.parse({
+        nostr_secret_key: 'a'.repeat(64),
+        llm_api_key: 'sk-legacy',
+      }),
+    ).toThrow();
   });
 });
 
@@ -218,7 +239,7 @@ describe('writeYaml + loadAgent round-trip', () => {
 
   const secrets: Secrets = {
     nostr_secret_key: 'a'.repeat(64),
-    llm_api_key: 'sk-test-key',
+    anthropic_api_key: 'sk-test-key',
   };
 
   it('writes and reads YAML + secrets from home', async () => {
@@ -232,7 +253,7 @@ describe('writeYaml + loadAgent round-trip', () => {
     expect(loaded.yaml.display_name).toBe('Bobbert');
     expect(loaded.yaml.payments[0]?.address).toBe('CYWTD...');
     expect(loaded.secrets.nostr_secret_key).toBe('a'.repeat(64));
-    expect(loaded.secrets.llm_api_key).toBe('sk-test-key');
+    expect(loaded.secrets.anthropic_api_key).toBe('sk-test-key');
     expect(loaded.encrypted).toBe(false);
   });
 
@@ -243,12 +264,12 @@ describe('writeYaml + loadAgent round-trip', () => {
 
     const raw = JSON.parse(await readFile(join(dir, '.secrets.json'), 'utf-8'));
     expect(raw.nostr_secret_key).toMatch(/^encrypted:v1:/);
-    expect(raw.llm_api_key).toMatch(/^encrypted:v1:/);
+    expect(raw.anthropic_api_key).toMatch(/^encrypted:v1:/);
 
     const loaded = await loadAgent('Bob', work, 'correct horse battery staple');
     expect(loaded.encrypted).toBe(true);
     expect(loaded.secrets.nostr_secret_key).toBe('a'.repeat(64));
-    expect(loaded.secrets.llm_api_key).toBe('sk-test-key');
+    expect(loaded.secrets.anthropic_api_key).toBe('sk-test-key');
   }, 15_000);
 
   it('throws if encrypted without passphrase', async () => {
@@ -256,19 +277,6 @@ describe('writeYaml + loadAgent round-trip', () => {
     await writeYaml(dir, yaml);
     await writeSecrets(dir, secrets, 'pw');
     await expect(loadAgent('Bob', work)).rejects.toThrow(/encrypted secrets/);
-  });
-
-  it('ANTHROPIC_API_KEY env fallback when llm_api_key is absent', async () => {
-    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
-    await writeYaml(dir, yaml);
-    await writeSecrets(dir, { nostr_secret_key: 'a'.repeat(64) });
-    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-env-key');
-    try {
-      const loaded = await loadAgent('Bob', work);
-      expect(loaded.secrets.llm_api_key).toBe('sk-env-key');
-    } finally {
-      vi.unstubAllEnvs();
-    }
   });
 
   it('loads project-local agent when .elisym/ is present', async () => {

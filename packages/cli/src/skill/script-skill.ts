@@ -10,6 +10,7 @@
 import { NATIVE_SOL, type Asset } from '@elisym/sdk';
 import {
   ScriptSkill as SdkScriptSkill,
+  type SkillLlmOverride,
   type SkillMode,
   type SkillToolDef,
 } from '@elisym/sdk/skills';
@@ -34,6 +35,7 @@ export class ScriptSkill implements Skill {
   priceSubunits: number;
   asset: Asset;
   mode: SkillMode = 'llm';
+  readonly llmOverride?: SkillLlmOverride;
   image?: string;
   imageFile?: string;
   dir: string;
@@ -51,6 +53,7 @@ export class ScriptSkill implements Skill {
     promptOrTools: string | SkillToolDef[],
     toolsOrRounds: SkillToolDef[] | number,
     rounds?: number,
+    llmOverride?: SkillLlmOverride,
   ) {
     // Detect the new-style (asset passed as 5th arg) vs legacy-style (asset
     // omitted, image at 5th arg). An Asset has the shape { chain, token, decimals, symbol }.
@@ -87,6 +90,7 @@ export class ScriptSkill implements Skill {
     this.capabilities = capabilities;
     this.priceSubunits = priceSubunits;
     this.asset = asset;
+    this.llmOverride = llmOverride;
     this.image = image;
     this.imageFile = imageFile;
     this.dir = skillDir;
@@ -100,6 +104,7 @@ export class ScriptSkill implements Skill {
       systemPrompt,
       tools,
       maxToolRounds,
+      llmOverride,
       image,
       imageFile,
     });

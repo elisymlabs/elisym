@@ -3,9 +3,9 @@
  */
 
 import { toDTag, type Asset } from '@elisym/sdk';
-import type { SkillMode } from '@elisym/sdk/skills';
+import type { SkillLlmOverride, SkillMode } from '@elisym/sdk/skills';
 
-export type { SkillMode };
+export type { SkillLlmOverride, SkillMode };
 
 export interface SkillInput {
   data: string;
@@ -20,7 +20,14 @@ export interface SkillOutput {
 }
 
 export interface SkillContext {
+  /** Agent-default LLM client. Undefined when every LLM skill overrides. */
   llm?: LlmClient;
+  /**
+   * Resolve the LLM client for a skill. The runtime caches clients by
+   * resolved (provider, model, maxTokens) triple. Pass the skill's
+   * `llmOverride` (or undefined for the agent default).
+   */
+  getLlm?: (override?: SkillLlmOverride) => LlmClient | undefined;
   agentName: string;
   agentDescription: string;
   signal?: AbortSignal;
@@ -83,6 +90,8 @@ export interface Skill {
   asset: Asset;
   /** Execution mode (`'llm'` for the historical LLM-orchestrated path). */
   mode: SkillMode;
+  /** Optional per-skill LLM override (only set when mode === 'llm'). */
+  llmOverride?: SkillLlmOverride;
   /** Hero image URL. */
   image?: string;
   /** Local file path for hero image (uploaded on first start). */

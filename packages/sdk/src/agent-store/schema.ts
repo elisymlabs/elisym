@@ -75,7 +75,9 @@ export const SecretsSchema = z
   .object({
     nostr_secret_key: z.string().min(1),
     solana_secret_key: z.string().optional(),
-    llm_api_key: z.string().optional(),
+    /** Per-provider LLM API keys. Used by skills and the agent-level LLM path. */
+    anthropic_api_key: z.string().optional(),
+    openai_api_key: z.string().optional(),
   })
   .strict();
 
