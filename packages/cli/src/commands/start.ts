@@ -158,13 +158,24 @@ export async function cmdStart(
   let llm: ReturnType<typeof createLlmClient> | undefined;
 
   if (hasLlmSkill) {
+    const llmSkillNames = allSkills
+      .filter((skill) => skill.mode === 'llm')
+      .map((skill) => skill.name);
     if (!loaded.yaml.llm) {
-      console.error('  ! No LLM configured. Run `npx @elisym/cli init` to set up LLM.\n');
+      console.error(
+        `  ! No LLM configured, but ${llmSkillNames.length} skill(s) require it: ${llmSkillNames.join(', ')}.`,
+      );
+      console.error(
+        `    Add an LLM provider via \`npx @elisym/cli profile ${agentName}\`, or remove those skills from ${skillsDir}.\n`,
+      );
       process.exit(1);
     }
     if (!loaded.secrets.llm_api_key) {
+      const keyEnvVar =
+        loaded.yaml.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+      console.error(`  ! No LLM API key (required by skill(s): ${llmSkillNames.join(', ')}).`);
       console.error(
-        `  ! No LLM API key. Set ${loaded.yaml.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} env var or update the agent's secrets.\n`,
+        `    Set ${keyEnvVar} or update the agent's secrets via \`npx @elisym/cli profile ${agentName}\`.\n`,
       );
       process.exit(1);
     }

@@ -105,6 +105,18 @@ function makeFakeTransport(): {
     stop: vi.fn(),
     sendFeedback: vi.fn().mockResolvedValue(undefined),
     deliverResult: vi.fn().mockResolvedValue('result-event-id'),
+    // Default: never receive a customer-published tx signature, so the
+    // reference-based verifyPayment mock decides the test outcome.
+    waitForPaymentSignature: vi.fn().mockImplementation(
+      (_jobId: string, _customer: string, signal: AbortSignal) =>
+        new Promise<string | null>((resolve) => {
+          if (signal.aborted) {
+            resolve(null);
+            return;
+          }
+          signal.addEventListener('abort', () => resolve(null), { once: true });
+        }),
+    ),
   } as unknown as NostrTransport;
 
   return {

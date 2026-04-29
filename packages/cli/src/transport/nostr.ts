@@ -2,9 +2,9 @@
  * NostrTransport - listens for targeted jobs on Nostr relays, delivers results.
  * Handles NIP-44 decryption, dedup, and retried delivery.
  */
-import { BoundedSet, jobRequestKind } from '@elisym/sdk';
+import { BoundedSet, KIND_JOB_FEEDBACK, jobRequestKind } from '@elisym/sdk';
 import type { ElisymClient, ElisymIdentity, SubCloser } from '@elisym/sdk';
-import type { Event } from 'nostr-tools';
+import { verifyEvent, type Event, type Filter } from 'nostr-tools';
 
 export interface IncomingJob {
   jobId: string;
@@ -91,6 +91,89 @@ export class NostrTransport {
         });
       },
     );
+  }
+
+  /**
+   * Wait for the customer's `payment-completed` feedback for a specific job
+   * and return the on-chain Solana tx signature it carries.
+   *
+   * The customer publishes this event right after `confirmTransaction(... 'confirmed')`
+   * succeeds (see packages/app/app/hooks/useBuyCapability.ts), so receiving it
+   * lets the provider verify the payment with a single targeted
+   * `getTransaction(sig, commitment: 'confirmed')` call instead of the
+   * heavyweight `getSignaturesForAddress(reference)` index lookup. This is
+   * dramatically more reliable on the public devnet RPC, which throttles and
+   * lags the address index.
+   *
+   * Resolves with `null` if `signal` aborts or `timeoutMs` elapses before a
+   * valid signature arrives. The timeout exists so a customer that disappears
+   * after job submission does not hold a `p-limit` slot for the full payment
+   * expiry window - without it this path waits forever on the relay.
+   */
+  waitForPaymentSignature(
+    jobId: string,
+    customerPubkey: string,
+    signal: AbortSignal,
+    timeoutMs?: number,
+  ): Promise<string | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const filter: Filter = {
+        kinds: [KIND_JOB_FEEDBACK],
+        '#e': [jobId],
+        authors: [customerPubkey],
+        '#t': ['elisym'],
+        since: Math.floor(Date.now() / 1000) - 5,
+      };
+
+      const finish = (sig: string | null) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        signal.removeEventListener('abort', onAbort);
+        sub.close();
+        resolve(sig);
+      };
+
+      const sub = this.client.pool.subscribe(filter, (event: Event) => {
+        if (settled) {
+          return;
+        }
+        if (!verifyEvent(event)) {
+          return;
+        }
+        const status = event.tags.find((t) => t[0] === 'status')?.[1];
+        if (status !== 'payment-completed') {
+          return;
+        }
+        const txTag = event.tags.find((t) => t[0] === 'tx');
+        const sig = txTag?.[1];
+        const chain = txTag?.[2];
+        if (typeof sig !== 'string' || sig.length === 0) {
+          return;
+        }
+        // Chain tag is optional for backwards compatibility, but if present it
+        // must be 'solana' - we cannot verify a signature on another chain.
+        if (chain !== undefined && chain !== 'solana') {
+          return;
+        }
+        finish(sig);
+      });
+
+      const onAbort = () => finish(null);
+      const timer =
+        timeoutMs !== undefined && timeoutMs > 0 ? setTimeout(() => finish(null), timeoutMs) : null;
+
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   /** Send job feedback to customer. */

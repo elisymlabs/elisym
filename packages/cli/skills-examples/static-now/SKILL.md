@@ -4,7 +4,8 @@ description: Returns current UTC timestamp on demand. No input, no LLM, no API k
 capabilities:
   - utc-now
   - timestamp
-price: 0.0005
+price: 0.01
+token: usdc
 mode: static-script
 script: ./scripts/now.sh
 ---

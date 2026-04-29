@@ -4,7 +4,8 @@ description: Send any text, get it back in upper case. Demonstrates piping user 
 capabilities:
   - uppercase
   - text-transform
-price: 0.0005
+price: 0.01
+token: usdc
 mode: dynamic-script
 script: ./scripts/upper.sh
 ---

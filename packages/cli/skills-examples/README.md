@@ -6,21 +6,21 @@ These are **provider runtime skills** in elisym's own format (`capabilities`, `p
 
 ## Available skills
 
-| Skill                                     | Price      | Mode           | What it does                                                                              |
-| ----------------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------- |
-| [general-assistant](./general-assistant/) | free       | llm            | Summarize, translate, review code, generate text - short answers                          |
-| [usdc-summarize](./usdc-summarize/)       | 0.05 USDC  | llm            | 2-3 sentence summary of long text                                                         |
-| [site-status](./site-status/)             | 0.01 USDC  | llm + python   | HTTP status, response time, SSL validity, redirect chain                                  |
-| [whois-lookup](./whois-lookup/)           | 0.01 USDC  | llm + python   | Domain registrar, dates, name servers, status                                             |
-| [github-repo](./github-repo/)             | 0.01 USDC  | llm + python   | Stars, forks, language, license, last activity for `owner/repo`                           |
-| [stock-price](./stock-price/)             | 0.01 USDC  | llm + python   | Quote, daily change, volume, 52-week range for a ticker                                   |
-| [trending](./trending/)                   | 0.02 USDC  | llm + python   | Top GitHub repos or Reddit posts, ranked                                                  |
-| [youtube-summary](./youtube-summary/)     | 0.10 USDC  | llm + python   | Overview, key points, takeaways from a YouTube link (multi-round tools)                   |
-| [static-welcome](./static-welcome/)       | 0.001 SOL  | static-file    | Sells a fixed Markdown welcome doc. No input box on the buyer side, just a Buy button     |
-| [static-now](./static-now/)               | 0.0005 SOL | static-script  | Returns the current UTC timestamp from a 1-line shell script. No LLM, no input            |
-| [uppercase-proxy](./uppercase-proxy/)     | 0.0005 SOL | dynamic-script | Pipes the buyer's text to a script (`tr a-z A-Z`). Skeleton for crypto-paid model proxies |
+| Skill                                     | Price     | Mode           | What it does                                                                              |
+| ----------------------------------------- | --------- | -------------- | ----------------------------------------------------------------------------------------- |
+| [general-assistant](./general-assistant/) | free      | llm            | Summarize, translate, review code, generate text - short answers                          |
+| [usdc-summarize](./usdc-summarize/)       | 0.05 USDC | llm            | 2-3 sentence summary of long text                                                         |
+| [site-status](./site-status/)             | 0.01 USDC | llm + python   | HTTP status, response time, SSL validity, redirect chain                                  |
+| [whois-lookup](./whois-lookup/)           | 0.01 USDC | llm + python   | Domain registrar, dates, name servers, status                                             |
+| [github-repo](./github-repo/)             | 0.01 USDC | llm + python   | Stars, forks, language, license, last activity for `owner/repo`                           |
+| [stock-price](./stock-price/)             | 0.01 USDC | llm + python   | Quote, daily change, volume, 52-week range for a ticker                                   |
+| [trending](./trending/)                   | 0.02 USDC | llm + python   | Top GitHub repos or Reddit posts, ranked                                                  |
+| [youtube-summary](./youtube-summary/)     | 0.10 USDC | llm + python   | Overview, key points, takeaways from a YouTube link (multi-round tools)                   |
+| [static-welcome](./static-welcome/)       | 0.05 USDC | static-file    | Sells a fixed Markdown welcome doc. No input box on the buyer side, just a Buy button     |
+| [static-now](./static-now/)               | 0.01 USDC | static-script  | Returns the current UTC timestamp from a 1-line shell script. No LLM, no input            |
+| [uppercase-proxy](./uppercase-proxy/)     | 0.01 USDC | dynamic-script | Pipes the buyer's text to a script (`tr a-z A-Z`). Skeleton for crypto-paid model proxies |
 
-Most examples are **paid in USDC on Solana devnet** except `general-assistant` (free) and the three non-LLM ones at the bottom (priced in SOL for variety). Paid skills publish a payment requirement with their capability card and only run after the customer's on-chain transfer is confirmed. To make one free, drop `price` and `token` from its frontmatter; to switch to SOL, set `token: sol` and price in SOL.
+Every paid example is **priced in USDC on Solana devnet**; `general-assistant` is the only free one. Paid skills publish a payment requirement with their capability card and only run after the customer's on-chain transfer is confirmed. To make one free, drop `price` and `token` from its frontmatter; to switch to SOL, set `token: sol` and price in SOL.
 
 ### Non-LLM modes
 
