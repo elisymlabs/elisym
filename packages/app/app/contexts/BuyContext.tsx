@@ -243,6 +243,8 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               if (!publicKey) {
                 toast.error('Wallet disconnected - reconnect and retry', { id: toastId });
                 setSession((prev) => (sessionMatches(prev) ? { ...prev, buying: false } : prev));
+                cleanupRef.current?.();
+                cleanupRef.current = null;
                 return;
               }
 
@@ -293,6 +295,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 setSession((prev) =>
                   sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
                 );
+                cleanupRef.current?.();
                 cleanupRef.current = null;
                 toast.error(msg, { id: toastId });
               }
