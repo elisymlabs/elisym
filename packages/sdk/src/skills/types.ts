@@ -26,7 +26,7 @@ export interface SkillOutput {
  * also defined.
  */
 export interface SkillLlmOverride {
-  provider?: 'anthropic' | 'openai';
+  provider?: string;
   model?: string;
   maxTokens?: number;
 }
@@ -86,6 +86,16 @@ export interface LlmClient {
     signal?: AbortSignal,
   ): Promise<CompletionResult>;
   formatToolResultMessages(results: ToolResult[]): unknown[];
+}
+
+/** Provider id. Plain string so the registry stays open to additions without type-union edits. */
+export type LlmProvider = string;
+
+export interface LlmClientConfig {
+  provider: LlmProvider;
+  apiKey: string;
+  model?: string;
+  maxTokens?: number;
 }
 
 export interface Skill {

@@ -94,16 +94,24 @@ describe('SecretsSchema', () => {
     expect(() => SecretsSchema.parse({})).toThrow();
   });
 
-  it('accepts optional solana and per-provider llm keys', () => {
+  it('accepts optional solana and per-provider llm keys (llm_api_keys map)', () => {
     const parsed = SecretsSchema.parse({
       nostr_secret_key: 'a'.repeat(64),
       solana_secret_key: 'xyz',
-      anthropic_api_key: 'sk-ant',
-      openai_api_key: 'sk-oai',
+      llm_api_keys: { anthropic: 'sk-ant', openai: 'sk-oai' },
     });
     expect(parsed.nostr_secret_key).toHaveLength(64);
-    expect(parsed.anthropic_api_key).toBe('sk-ant');
-    expect(parsed.openai_api_key).toBe('sk-oai');
+    expect(parsed.llm_api_keys?.anthropic).toBe('sk-ant');
+    expect(parsed.llm_api_keys?.openai).toBe('sk-oai');
+  });
+
+  it('rejects legacy top-level anthropic_api_key / openai_api_key fields', () => {
+    expect(() =>
+      SecretsSchema.parse({
+        nostr_secret_key: 'a'.repeat(64),
+        anthropic_api_key: 'sk-ant',
+      }),
+    ).toThrow();
   });
 
   it('rejects unknown secret fields (.strict guard)', () => {
@@ -239,7 +247,7 @@ describe('writeYaml + loadAgent round-trip', () => {
 
   const secrets: Secrets = {
     nostr_secret_key: 'a'.repeat(64),
-    anthropic_api_key: 'sk-test-key',
+    llm_api_keys: { anthropic: 'sk-test-key' },
   };
 
   it('writes and reads YAML + secrets from home', async () => {
@@ -253,7 +261,7 @@ describe('writeYaml + loadAgent round-trip', () => {
     expect(loaded.yaml.display_name).toBe('Bobbert');
     expect(loaded.yaml.payments[0]?.address).toBe('CYWTD...');
     expect(loaded.secrets.nostr_secret_key).toBe('a'.repeat(64));
-    expect(loaded.secrets.anthropic_api_key).toBe('sk-test-key');
+    expect(loaded.secrets.llm_api_keys?.anthropic).toBe('sk-test-key');
     expect(loaded.encrypted).toBe(false);
   });
 
@@ -264,12 +272,12 @@ describe('writeYaml + loadAgent round-trip', () => {
 
     const raw = JSON.parse(await readFile(join(dir, '.secrets.json'), 'utf-8'));
     expect(raw.nostr_secret_key).toMatch(/^encrypted:v1:/);
-    expect(raw.anthropic_api_key).toMatch(/^encrypted:v1:/);
+    expect(raw.llm_api_keys?.anthropic).toMatch(/^encrypted:v1:/);
 
     const loaded = await loadAgent('Bob', work, 'correct horse battery staple');
     expect(loaded.encrypted).toBe(true);
     expect(loaded.secrets.nostr_secret_key).toBe('a'.repeat(64));
-    expect(loaded.secrets.anthropic_api_key).toBe('sk-test-key');
+    expect(loaded.secrets.llm_api_keys?.anthropic).toBe('sk-test-key');
   }, 15_000);
 
   it('throws if encrypted without passphrase', async () => {

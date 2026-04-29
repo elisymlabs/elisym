@@ -27,14 +27,16 @@ export const SECRET_REDACT_PATHS: string[] = [
   'ELISYM_SOLANA_PRIVATE_KEY',
   // Canonical on-disk `.secrets.json` field names. Logging the whole
   // `secrets` object, or any single field directly, must not leak.
-  'anthropic_api_key',
-  'openai_api_key',
+  // `llm_api_keys` is a Record<provider-id, key> after the registry
+  // refactor; the wildcard variants cover any nested provider id.
   'nostr_secret_key',
   'solana_secret_key',
-  '*.anthropic_api_key',
-  '*.openai_api_key',
+  'llm_api_keys',
   '*.nostr_secret_key',
   '*.solana_secret_key',
+  '*.llm_api_keys',
+  'llm_api_keys.*',
+  '*.llm_api_keys.*',
   'secrets',
   '*.secrets',
 ];

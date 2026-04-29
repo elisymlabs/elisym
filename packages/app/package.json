@@ -1,6 +1,6 @@
 {
   "name": "@elisym/app",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,7 @@
     "clean": "rm -rf build dist"
   },
   "dependencies": {
-    "@elisym/sdk": "~0.13.0",
+    "@elisym/sdk": "~0.14.0",
     "@solana-program/memo": "~0.11.0",
     "@solana-program/token": "~0.5.0",
     "@solana/kit": "~6.8.0",

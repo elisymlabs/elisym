@@ -90,6 +90,8 @@ export async function writeYaml(agentDir: string, yaml: ElisymYaml): Promise<voi
 /**
  * Write .secrets.json atomically. If `passphrase` is given, encrypts all
  * plaintext secret fields (already-encrypted values are left as-is).
+ * Generic over `llm_api_keys` so any registered provider's key is
+ * encrypted without per-provider plumbing here.
  */
 export async function writeSecrets(
   agentDir: string,
@@ -97,18 +99,24 @@ export async function writeSecrets(
   passphrase?: string,
 ): Promise<void> {
   const validated = SecretsSchema.parse(secrets);
+  let encryptedLlmKeys: Record<string, string> | undefined;
+  if (validated.llm_api_keys) {
+    encryptedLlmKeys = {};
+    for (const [providerId, value] of Object.entries(validated.llm_api_keys)) {
+      if (value) {
+        encryptedLlmKeys[providerId] = maybeEncrypt(value, passphrase);
+      }
+    }
+    if (Object.keys(encryptedLlmKeys).length === 0) {
+      encryptedLlmKeys = undefined;
+    }
+  }
   const finalSecrets: Secrets = {
-    ...validated,
     nostr_secret_key: maybeEncrypt(validated.nostr_secret_key, passphrase),
     solana_secret_key: validated.solana_secret_key
       ? maybeEncrypt(validated.solana_secret_key, passphrase)
       : undefined,
-    anthropic_api_key: validated.anthropic_api_key
-      ? maybeEncrypt(validated.anthropic_api_key, passphrase)
-      : undefined,
-    openai_api_key: validated.openai_api_key
-      ? maybeEncrypt(validated.openai_api_key, passphrase)
-      : undefined,
+    llm_api_keys: encryptedLlmKeys,
   };
   const body = JSON.stringify(finalSecrets, null, 2) + '\n';
   const target = agentPaths(agentDir).secrets;

@@ -24,6 +24,7 @@ import {
 import { isAddress } from '@solana/kit';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import YAML from 'yaml';
+import { getLlmProvider, listLlmProviders } from '../llm';
 
 export interface InitOptions {
   config?: string;
@@ -32,54 +33,23 @@ export interface InitOptions {
   yes?: boolean;
 }
 
-const FALLBACK_MODELS: Record<string, string[]> = {
-  anthropic: ['claude-sonnet-4-6', 'claude-haiku-4-5-20251001', 'claude-opus-4-6'],
-  openai: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
-};
-
+/**
+ * Delegate to the descriptor's `fetchModels`. Returns `[]` if the
+ * provider id is not registered (defensive - in practice the caller
+ * only passes ids it pulled from the same registry). Falls back to the
+ * descriptor's `fallbackModels` when the live `fetchModels` call throws.
+ */
 export async function fetchModels(provider: string, apiKey: string): Promise<string[]> {
+  const descriptor = getLlmProvider(provider);
+  if (!descriptor) {
+    console.warn(`  ! Unknown provider "${provider}". No models available.`);
+    return [];
+  }
   try {
-    if (provider === 'anthropic') {
-      const res = await fetch('https://api.anthropic.com/v1/models?limit=1000', {
-        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      });
-      if (!res.ok) {
-        throw new Error(`${res.status}`);
-      }
-      const data = (await res.json()) as { data?: { id: string }[] };
-      const models = (data.data ?? []).map((m) => m.id).sort();
-      return models.length > 0 ? models : FALLBACK_MODELS.anthropic!;
-    }
-    if (provider === 'openai') {
-      const res = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
-      if (!res.ok) {
-        throw new Error(`${res.status}`);
-      }
-      const data = (await res.json()) as { data?: { id: string }[] };
-      const models = (data.data ?? [])
-        .map((m) => m.id)
-        .filter(
-          (id) =>
-            (id.startsWith('gpt-') ||
-              id.startsWith('o1') ||
-              id.startsWith('o3') ||
-              id.startsWith('o4') ||
-              id.startsWith('chatgpt-')) &&
-            !id.includes('instruct') &&
-            !id.includes('realtime') &&
-            !id.includes('audio') &&
-            !id.includes('tts') &&
-            !id.includes('whisper'),
-        )
-        .sort();
-      return models.length > 0 ? models : FALLBACK_MODELS.openai!;
-    }
-    return ['gpt-4o'];
+    return await descriptor.fetchModels(apiKey);
   } catch (e: any) {
     console.warn(`  ! Could not fetch models: ${e.message}. Using defaults.`);
-    return FALLBACK_MODELS[provider] ?? ['gpt-4o'];
+    return descriptor.fallbackModels;
   }
 }
 
@@ -175,26 +145,25 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   }
 
   // Step 5: LLM API key for the default provider (from env, then reuse
-  // prompt-collected key, else prompt).
+  // prompt-collected key, else prompt). Provider labels and env var
+  // names come from the descriptor.
   let defaultProviderKey: string | undefined;
-  if (yaml.llm) {
-    const envKey =
-      yaml.llm.provider === 'anthropic'
-        ? process.env.ANTHROPIC_API_KEY
-        : process.env.OPENAI_API_KEY;
-    if (envKey) {
+  const defaultProviderId = yaml.llm?.provider;
+  if (yaml.llm && defaultProviderId) {
+    const descriptor = getLlmProvider(defaultProviderId);
+    const envKey = descriptor ? process.env[descriptor.envVar] : undefined;
+    if (envKey && descriptor) {
       defaultProviderKey = envKey;
-      console.log(
-        `  Using ${yaml.llm.provider === 'anthropic' ? 'ANTHROPIC' : 'OPENAI'}_API_KEY from environment.`,
-      );
+      console.log(`  Using ${descriptor.envVar} from environment.`);
     } else if (promptedApiKey) {
       defaultProviderKey = promptedApiKey;
     } else {
+      const label = descriptor?.displayName ?? defaultProviderId;
       const { apiKey } = await inquirer.prompt([
         {
           type: 'password',
           name: 'apiKey',
-          message: `${yaml.llm.provider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API key:`,
+          message: `${label} API key:`,
           mask: '*',
         },
       ]);
@@ -202,40 +171,43 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
     }
   }
 
-  // Step 5b: Optional API key for the OTHER provider, used by skills that
-  // declare a `provider:` override in their SKILL.md. Skipped when running
-  // from a YAML template (non-interactive); operators can supply per-provider
-  // keys via env vars or by editing `.secrets.json` directly.
-  let otherProviderKey: string | undefined;
-  if (yaml.llm && !template) {
-    const otherProvider: 'anthropic' | 'openai' =
-      yaml.llm.provider === 'anthropic' ? 'openai' : 'anthropic';
-    const otherProviderLabel = otherProvider === 'anthropic' ? 'Anthropic' : 'OpenAI';
-    const otherEnvVar = otherProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
-    const otherEnvKey = process.env[otherEnvVar];
-
-    const { configureOther } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'configureOther',
-        message: `Configure ${otherProviderLabel} API key too (for skills that override the default provider)?`,
-        default: Boolean(otherEnvKey),
-      },
-    ]);
-    if (configureOther) {
+  // Step 5b: Optional API keys for OTHER registered providers - used by
+  // skills that declare a `provider:` override in their SKILL.md. Skipped
+  // when running from a YAML template (non-interactive); operators can
+  // supply per-provider keys via env vars or by editing `.secrets.json`.
+  const otherProviderKeys = new Map<string, string>();
+  if (yaml.llm && !template && defaultProviderId) {
+    const otherDescriptors = listLlmProviders().filter(
+      (descriptor) => descriptor.id !== defaultProviderId,
+    );
+    for (const descriptor of otherDescriptors) {
+      const otherEnvKey = process.env[descriptor.envVar];
+      const { configureOther } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'configureOther',
+          message: `Configure ${descriptor.displayName} API key too (for skills that override the default provider)?`,
+          default: Boolean(otherEnvKey),
+        },
+      ]);
+      if (!configureOther) {
+        continue;
+      }
       if (otherEnvKey) {
-        otherProviderKey = otherEnvKey;
-        console.log(`  Using ${otherEnvVar} from environment.`);
+        otherProviderKeys.set(descriptor.id, otherEnvKey);
+        console.log(`  Using ${descriptor.envVar} from environment.`);
       } else {
         const { promptedOther } = await inquirer.prompt([
           {
             type: 'password',
             name: 'promptedOther',
-            message: `${otherProviderLabel} API key:`,
+            message: `${descriptor.displayName} API key:`,
             mask: '*',
           },
         ]);
-        otherProviderKey = promptedOther || undefined;
+        if (promptedOther) {
+          otherProviderKeys.set(descriptor.id, promptedOther);
+        }
       }
     }
   }
@@ -278,19 +250,22 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   const nostrPubkey = getPublicKey(nostrSecretBytes);
   const nostrSecretHex = Buffer.from(nostrSecretBytes).toString('hex');
 
-  // Step 8: Create agent directory + write files. Each provider's key lands
-  // in its own per-provider field; the start-time resolver reads them
-  // directly (or falls back to the matching env var).
+  // Step 8: Create agent directory + write files. Each provider's key
+  // lands in `secrets.llm_api_keys[<provider-id>]`; the start-time
+  // resolver reads them directly (or falls back to the matching env
+  // var via the descriptor).
   const created = await createAgentDir({ target, name: agentName, cwd });
-  const anthropicKey = yaml.llm?.provider === 'anthropic' ? defaultProviderKey : otherProviderKey;
-  const openaiKey = yaml.llm?.provider === 'openai' ? defaultProviderKey : otherProviderKey;
+  const collectedKeys = new Map<string, string>(otherProviderKeys);
+  if (yaml.llm && defaultProviderKey) {
+    collectedKeys.set(yaml.llm.provider, defaultProviderKey);
+  }
+  const llmApiKeys = Object.fromEntries(collectedKeys);
   await writeYaml(created.dir, yaml);
   await writeSecrets(
     created.dir,
     {
       nostr_secret_key: nostrSecretHex,
-      anthropic_api_key: anthropicKey,
-      openai_api_key: openaiKey,
+      llm_api_keys: Object.keys(llmApiKeys).length > 0 ? llmApiKeys : undefined,
     },
     passphrase || undefined,
   );
@@ -407,8 +382,10 @@ async function promptYaml(inquirer: {
           name: 'None (non-LLM agent - static-file / static-script / dynamic-script only)',
           value: 'none',
         },
-        { name: 'Anthropic (Claude)', value: 'anthropic' },
-        { name: 'OpenAI (GPT)', value: 'openai' },
+        ...listLlmProviders().map((descriptor) => ({
+          name: descriptor.displayName,
+          value: descriptor.id,
+        })),
       ],
     },
   ]);
@@ -428,15 +405,18 @@ async function promptYaml(inquirer: {
     return { yaml };
   }
 
-  const envKey =
-    llmProvider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : process.env.OPENAI_API_KEY;
+  const descriptor = getLlmProvider(llmProvider);
+  if (!descriptor) {
+    throw new Error(`Internal: provider "${llmProvider}" not registered.`);
+  }
+  const envKey = process.env[descriptor.envVar];
   let apiKey: string | undefined = envKey;
   if (!apiKey) {
     const { promptedKey } = await inquirer.prompt([
       {
         type: 'password',
         name: 'promptedKey',
-        message: `${llmProvider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API key:`,
+        message: `${descriptor.displayName} API key:`,
         mask: '*',
       },
     ]);

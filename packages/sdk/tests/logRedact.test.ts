@@ -7,8 +7,9 @@ import {
 } from '../src/primitives/logRedact';
 
 describe('log redact constants', () => {
-  it('SECRET_REDACT_PATHS matches the expected snapshot', () => {
-    expect(SECRET_REDACT_PATHS).toEqual([
+  it('SECRET_REDACT_PATHS covers the static prefix and suffix', () => {
+    // Static "prefix" - env-var / generic secret-key paths.
+    expect(SECRET_REDACT_PATHS.slice(0, 8)).toEqual([
       '*.ELISYM_NOSTR_PRIVATE_KEY',
       '*.ELISYM_SOLANA_PRIVATE_KEY',
       '*.nostrPrivateKeyHex',
@@ -17,17 +18,18 @@ describe('log redact constants', () => {
       '*.secret',
       'ELISYM_NOSTR_PRIVATE_KEY',
       'ELISYM_SOLANA_PRIVATE_KEY',
-      'anthropic_api_key',
-      'openai_api_key',
-      'nostr_secret_key',
-      'solana_secret_key',
-      '*.anthropic_api_key',
-      '*.openai_api_key',
-      '*.nostr_secret_key',
-      '*.solana_secret_key',
-      'secrets',
-      '*.secrets',
     ]);
+    // Static "suffix" - generic secrets-object paths.
+    expect(SECRET_REDACT_PATHS.slice(-2)).toEqual(['secrets', '*.secrets']);
+  });
+
+  it('SECRET_REDACT_PATHS includes on-disk Secrets field names + llm_api_keys wildcards', () => {
+    expect(SECRET_REDACT_PATHS).toContain('nostr_secret_key');
+    expect(SECRET_REDACT_PATHS).toContain('solana_secret_key');
+    expect(SECRET_REDACT_PATHS).toContain('llm_api_keys');
+    expect(SECRET_REDACT_PATHS).toContain('*.llm_api_keys');
+    expect(SECRET_REDACT_PATHS).toContain('llm_api_keys.*');
+    expect(SECRET_REDACT_PATHS).toContain('*.llm_api_keys.*');
   });
 
   it('INPUT_REDACT_PATHS matches the expected snapshot', () => {
@@ -77,8 +79,9 @@ describe('makeCensor', () => {
 
   it('returns [REDACTED] for on-disk secret field names', () => {
     const censor = makeCensor();
-    expect(censor('leak', ['anthropic_api_key'])).toBe('[REDACTED]');
-    expect(censor('leak', ['openai_api_key'])).toBe('[REDACTED]');
+    expect(censor('{map-object}', ['llm_api_keys'])).toBe('[REDACTED]');
+    expect(censor('leak', ['llm_api_keys', 'anthropic'])).toBe('[REDACTED]');
+    expect(censor('leak', ['llm_api_keys', 'openai'])).toBe('[REDACTED]');
     expect(censor('leak', ['nostr_secret_key'])).toBe('[REDACTED]');
     expect(censor('leak', ['solana_secret_key'])).toBe('[REDACTED]');
     expect(censor('{leak-object}', ['secrets'])).toBe('[REDACTED]');

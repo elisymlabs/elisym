@@ -18,10 +18,10 @@ describe('resolveProviderApiKey', () => {
     process.env = { ...originalEnv };
   });
 
-  it('prefers per-provider secrets key', () => {
+  it('prefers per-provider secrets entry from llm_api_keys', () => {
     const result = resolveProviderApiKey({
       provider: 'anthropic',
-      secrets: { ...BASE_SECRETS, anthropic_api_key: 'sk-ant' },
+      secrets: { ...BASE_SECRETS, llm_api_keys: { anthropic: 'sk-ant' } },
       dependentSkills: ['summarizer'],
     });
     expect(result).toEqual({ apiKey: 'sk-ant', origin: 'secrets-per-provider' });
@@ -41,20 +41,20 @@ describe('resolveProviderApiKey', () => {
     process.env.OPENAI_API_KEY = 'env-openai';
     const result = resolveProviderApiKey({
       provider: 'openai',
-      secrets: { ...BASE_SECRETS, openai_api_key: 'sk-secret' },
+      secrets: { ...BASE_SECRETS, llm_api_keys: { openai: 'sk-secret' } },
       dependentSkills: ['x'],
     });
     expect(result).toEqual({ apiKey: 'sk-secret', origin: 'secrets-per-provider' });
   });
 
-  it('errors with named env var, secret field, and dependent skills', () => {
+  it('errors with named env var, llm_api_keys hint, and dependent skills', () => {
     const result = resolveProviderApiKey({
       provider: 'openai',
       secrets: BASE_SECRETS,
       dependentSkills: ['cheap-summarizer', 'translator'],
     });
     expect(result).toMatchObject({
-      error: expect.stringMatching(/openai_api_key/),
+      error: expect.stringMatching(/llm_api_keys\.openai/),
     });
     const message = (result as { error: string }).error;
     expect(message).toContain('OPENAI_API_KEY');
