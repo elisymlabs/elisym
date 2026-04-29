@@ -152,6 +152,7 @@ export async function runInstall(options: {
   }
   const entry = buildServerEntry(options.agent, options.env);
   let installed = 0;
+  let rebound = 0;
 
   for (const client of CLIENTS) {
     if (options.client && client.name !== options.client) {
@@ -164,10 +165,13 @@ export async function runInstall(options: {
     }
 
     try {
-      const success = await installToConfig(path, entry);
-      if (success) {
+      const result = await installToConfig(path, entry, options.agent);
+      if (result === 'installed') {
         console.log(`Installed to ${client.name}: ${path}`);
         installed++;
+      } else if (result === 'rebound') {
+        console.log(`Rebound ${client.name} to agent "${options.agent}": ${path}`);
+        rebound++;
       } else {
         console.log(`Already installed in ${client.name}`);
       }
@@ -176,7 +180,7 @@ export async function runInstall(options: {
     }
   }
 
-  if (installed === 0 && !options.client) {
+  if (installed === 0 && rebound === 0 && !options.client) {
     console.log('No MCP clients found to install into.');
   }
 }
@@ -374,7 +378,13 @@ async function writeJsonAtomic(path: string, data: unknown): Promise<void> {
   await writeFileAtomic(path, JSON.stringify(data, null, 2), 0o600);
 }
 
-async function installToConfig(path: string, entry: Record<string, any>): Promise<boolean> {
+type InstallResult = 'installed' | 'rebound' | 'unchanged';
+
+async function installToConfig(
+  path: string,
+  entry: Record<string, any>,
+  agentRebind: string | undefined,
+): Promise<InstallResult> {
   // Three distinct paths:
   //   1. ENOENT  → fresh file, write a minimal config and return.
   //   2. read OK + parse OK → modify-existing path with RMW guard.
@@ -392,7 +402,7 @@ async function installToConfig(path: string, entry: Record<string, any>): Promis
     }
     // Fresh file — no race to detect, just create it.
     await writeJsonAtomic(path, { mcpServers: { elisym: entry } });
-    return true;
+    return 'installed';
   }
 
   let config: any;
@@ -406,8 +416,29 @@ async function installToConfig(path: string, entry: Record<string, any>): Promis
     config.mcpServers = {};
   }
 
-  if (config.mcpServers.elisym) {
-    return false; // Already installed
+  const existing = config.mcpServers.elisym;
+  if (existing) {
+    // Already installed. Without --agent, install is a no-op (the user must
+    // explicitly opt into rebinding). With --agent, rewrite ELISYM_AGENT in
+    // place — preserving args/command/sibling env so customizations survive.
+    if (agentRebind === undefined) {
+      return 'unchanged';
+    }
+    if (typeof existing !== 'object' || Array.isArray(existing)) {
+      return 'unchanged';
+    }
+    const rawEnv = (existing as { env?: unknown }).env;
+    const currentEnv: Record<string, string> =
+      rawEnv && typeof rawEnv === 'object' && !Array.isArray(rawEnv)
+        ? { ...(rawEnv as Record<string, string>) }
+        : {};
+    if (currentEnv.ELISYM_AGENT === agentRebind) {
+      return 'unchanged';
+    }
+    currentEnv.ELISYM_AGENT = agentRebind;
+    (existing as Record<string, any>).env = currentEnv;
+    await safeRewriteJson(path, raw, config);
+    return 'rebound';
   }
 
   config.mcpServers.elisym = entry;
@@ -415,5 +446,5 @@ async function installToConfig(path: string, entry: Record<string, any>): Promis
   // (e.g. Claude Code mutating ~/.claude.json). Abort rather than silently
   // clobber. The outer try/catch in runInstall surfaces this as a Skipped log.
   await safeRewriteJson(path, raw, config);
-  return true;
+  return 'installed';
 }
