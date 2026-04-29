@@ -429,37 +429,150 @@ export class AgentRuntime {
       chain: 'solana',
     });
 
-    // Verify payment on-chain (SDK defaults: 15 retries, 2s interval = 30s window)
+    // Verify payment on-chain. Two paths run in parallel under a hard deadline:
+    //   (a) Signature path - subscribe to the customer's payment-completed
+    //       Nostr feedback, take the tx signature it carries, and verify it
+    //       directly via `getTransaction(sig, 'confirmed')`. Fast (~1-3s) and
+    //       cheap on RPC quota.
+    //   (b) Reference path - SDK's getSignaturesForAddress(reference) loop.
+    //       Slower and more brittle on the public devnet RPC, but works as a
+    //       fallback when Nostr feedback is dropped.
+    // First `verified: true` wins; otherwise we hit the deadline and time out.
     const rpc = createSolanaRpc(getRpcUrl(this.config.network));
-
-    // Wrap with abort signal since SDK doesn't accept one natively
-    let result: { verified: boolean };
+    const verifyAbort = new AbortController();
+    const onOuterAbort = () => verifyAbort.abort();
     if (signal) {
-      let abortHandler: (() => void) | undefined;
-      const abortPromise = new Promise<never>((_, reject) => {
-        abortHandler = () => {
+      if (signal.aborted) {
+        verifyAbort.abort();
+      } else {
+        signal.addEventListener('abort', onOuterAbort, { once: true });
+      }
+    }
+    const deadlineMs = this.config.paymentTimeoutSecs * 1000;
+
+    let result: { verified: boolean };
+    try {
+      result = await new Promise<{ verified: boolean }>((resolve, reject) => {
+        let settled = false;
+        let pending = 2;
+        let lastResult: { verified: boolean } = { verified: false };
+
+        const win = (verified: { verified: boolean }) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(deadline);
+          resolve(verified);
+        };
+
+        const lose = (verified: { verified: boolean }, reason: string) => {
+          if (settled) {
+            return;
+          }
+          lastResult = verified;
+          pending -= 1;
+          log(`[${job.jobId.slice(0, 8)}] verify ${reason}`);
+          if (pending === 0) {
+            settled = true;
+            clearTimeout(deadline);
+            resolve(lastResult);
+          }
+        };
+
+        // Path (a) - signature path
+        this.transport
+          .waitForPaymentSignature(job.jobId, job.customerId, verifyAbort.signal)
+          .then(async (sig) => {
+            if (settled) {
+              return;
+            }
+            if (!sig) {
+              lose({ verified: false }, 'sig path: no payment-completed feedback');
+              return;
+            }
+            log(`[${job.jobId.slice(0, 8)}] verify sig path: got ${sig.slice(0, 8)}...`);
+            try {
+              const verified = await payment.verifyPayment(rpc, request, protocolConfig, {
+                txSignature: sig,
+              });
+              if (verified.verified) {
+                win(verified);
+              } else {
+                const reason = (verified as { error?: string }).error ?? 'unknown';
+                lose(verified, `sig path: not verified (${reason})`);
+              }
+            } catch (err) {
+              lose(
+                { verified: false },
+                `sig path error: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          })
+          .catch((err) =>
+            lose(
+              { verified: false },
+              `sig path error: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+
+        // Path (b) - reference path
+        payment
+          .verifyPayment(rpc, request, protocolConfig)
+          .then((verified) => {
+            if (verified.verified) {
+              win(verified);
+            } else {
+              const reason = (verified as { error?: string }).error ?? 'unknown';
+              lose(verified, `ref path: not verified (${reason})`);
+            }
+          })
+          .catch((err) =>
+            lose(
+              { verified: false },
+              `ref path error: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+
+        // Hard deadline backstop - guarantees we never hang past paymentTimeoutSecs
+        const deadline = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          log(`[${job.jobId.slice(0, 8)}] verify deadline (${deadlineMs}ms) hit`);
+          resolve(lastResult);
+        }, deadlineMs);
+
+        // Outer abort propagation
+        if (signal?.aborted) {
+          settled = true;
+          clearTimeout(deadline);
           const err = new Error('The operation was aborted');
           err.name = 'AbortError';
           reject(err);
-        };
-        if (signal.aborted) {
-          abortHandler();
           return;
         }
-        signal.addEventListener('abort', abortHandler, { once: true });
+        signal?.addEventListener(
+          'abort',
+          () => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            clearTimeout(deadline);
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          },
+          { once: true },
+        );
       });
-      try {
-        result = await Promise.race([
-          payment.verifyPayment(rpc, request, protocolConfig),
-          abortPromise,
-        ]);
-      } finally {
-        if (abortHandler) {
-          signal.removeEventListener('abort', abortHandler);
-        }
+    } finally {
+      verifyAbort.abort();
+      if (signal) {
+        signal.removeEventListener('abort', onOuterAbort);
       }
-    } else {
-      result = await payment.verifyPayment(rpc, request, protocolConfig);
     }
 
     if (result.verified) {

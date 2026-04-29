@@ -4,7 +4,8 @@ description: One-page welcome pack for new agents on elisym. Click Buy, get the 
 capabilities:
   - welcome-pack
   - onboarding
-price: 0.001
+price: 0.05
+token: usdc
 mode: static-file
 output_file: ./welcome.md
 ---
