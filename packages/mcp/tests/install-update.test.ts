@@ -424,6 +424,86 @@ describe('runInstall', () => {
     expect(after.mcpServers['other-server']).toEqual({ command: 'foo', args: ['--bar'] });
     expect(after.mcpServers.elisym.args).toEqual(['-y', `@elisym/mcp@~${PACKAGE_VERSION}`]);
   });
+
+  it('rebinds an existing entry to a new agent when --agent is supplied', async () => {
+    const before = {
+      mcpServers: {
+        elisym: {
+          command: 'npx',
+          args: ['-y', `@elisym/mcp@~${PACKAGE_VERSION}`],
+          env: { ELISYM_AGENT: 'alice', ELISYM_PASSPHRASE: 'secret' },
+        },
+      },
+    };
+    await writeFile(cursorPath, JSON.stringify(before, null, 2), { mode: 0o600 });
+
+    await runInstall({ client: 'cursor', agent: 'bob' });
+
+    const after = JSON.parse(await readFile(cursorPath, 'utf-8'));
+    const entry = after.mcpServers.elisym;
+    expect(entry.env.ELISYM_AGENT).toBe('bob');
+    // Sibling env keys must survive the rebind.
+    expect(entry.env.ELISYM_PASSPHRASE).toBe('secret');
+    const calls = logSpy.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((s) => s.includes('Rebound cursor') && s.includes('"bob"'))).toBe(true);
+  });
+
+  it('sets ELISYM_AGENT on an existing entry that had no env block', async () => {
+    const before = {
+      mcpServers: {
+        elisym: {
+          command: 'npx',
+          args: ['-y', `@elisym/mcp@~${PACKAGE_VERSION}`],
+        },
+      },
+    };
+    await writeFile(cursorPath, JSON.stringify(before, null, 2), { mode: 0o600 });
+
+    await runInstall({ client: 'cursor', agent: 'carol' });
+
+    const after = JSON.parse(await readFile(cursorPath, 'utf-8'));
+    expect(after.mcpServers.elisym.env).toEqual({ ELISYM_AGENT: 'carol' });
+  });
+
+  it('is a no-op when --agent matches the already-stored ELISYM_AGENT', async () => {
+    const before = {
+      mcpServers: {
+        elisym: {
+          command: 'npx',
+          args: ['-y', `@elisym/mcp@~${PACKAGE_VERSION}`],
+          env: { ELISYM_AGENT: 'alice' },
+        },
+      },
+    };
+    const beforeRaw = JSON.stringify(before, null, 2);
+    await writeFile(cursorPath, beforeRaw, { mode: 0o600 });
+
+    await runInstall({ client: 'cursor', agent: 'alice' });
+
+    const afterRaw = await readFile(cursorPath, 'utf-8');
+    expect(afterRaw).toBe(beforeRaw);
+    const calls = logSpy.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((s) => s.includes('Already installed in cursor'))).toBe(true);
+  });
+
+  it('leaves existing entries untouched when --agent is not supplied', async () => {
+    const before = {
+      mcpServers: {
+        elisym: {
+          command: 'npx',
+          args: ['-y', `@elisym/mcp@~${PACKAGE_VERSION}`],
+          env: { ELISYM_AGENT: 'alice' },
+        },
+      },
+    };
+    const beforeRaw = JSON.stringify(before, null, 2);
+    await writeFile(cursorPath, beforeRaw, { mode: 0o600 });
+
+    await runInstall({ client: 'cursor' });
+
+    const afterRaw = await readFile(cursorPath, 'utf-8');
+    expect(afterRaw).toBe(beforeRaw);
+  });
 });
 
 describe('safeRewriteJson', () => {
