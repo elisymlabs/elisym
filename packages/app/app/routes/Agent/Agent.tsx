@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { Link, useLocation, useParams } from 'wouter';
 import { MarbleAvatar } from '~/components/MarbleAvatar';
 import { VerifiedBadge } from '~/components/VerifiedBadge';
+import { useBuyForCard } from '~/contexts/BuyContext';
 import { useAgent } from '~/hooks/useAgent';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
@@ -21,7 +22,6 @@ import { VERIFIED_PUBKEYS } from '~/lib/verified';
 import { AgentActivity } from './AgentActivity';
 import { ArtifactCapturer } from './ArtifactCapturer';
 import { ArtifactModal } from './ArtifactModal';
-import { BuyProvider } from './BuyProvider';
 import { FadeInImage } from './FadeInImage';
 import { JobInput } from './JobInput';
 import { cleanPreviewText, formatArtifactTime } from './lib/artifactPreview';
@@ -429,6 +429,18 @@ export default function AgentPage() {
 
   const displayName = agentData?.name || (pubkey ? truncateKey(nip19.npubEncode(pubkey), 8) : '');
 
+  // Hoisted above early returns: useBuyForCard is a hook and must run on
+  // every render, including the loading / not-found branches.
+  const cards = agentData?.cards ?? [];
+  const currentCardIndex = Math.min(selectedCardIndex, Math.max(0, cards.length - 1));
+  const currentCard = cards[currentCardIndex];
+  const buyState = useBuyForCard({
+    agentPubkey: pubkey,
+    agentName: agentData?.name ?? '',
+    agentPicture: agentData?.picture,
+    card: currentCard,
+  });
+
   if (isLoading && !agentData) {
     return <LoadingOverlay />;
   }
@@ -437,7 +449,6 @@ export default function AgentPage() {
     return <NotFound />;
   }
 
-  const cards = agentData.cards;
   const feedbackPct =
     agentData.feedbackPositive > 0
       ? Math.round((agentData.feedbackPositive / agentData.feedbackTotal) * 100)
@@ -446,8 +457,6 @@ export default function AgentPage() {
     displayName.length > MAX_DISPLAY_NAME
       ? `${displayName.slice(0, MAX_DISPLAY_NAME)}…`
       : displayName;
-  const currentCardIndex = Math.min(selectedCardIndex, cards.length - 1);
-  const currentCard = cards[currentCardIndex];
   const openArtifact = openArtifactId
     ? mergedArtifacts.find((artifact) => artifact.id === openArtifactId)
     : undefined;
@@ -669,110 +678,107 @@ export default function AgentPage() {
         {/* 2-column layout */}
         <div className="agent-page-grid items-start">
           {/* Left column */}
-          <BuyProvider
-            card={currentCard}
-            agentPubkey={pubkey}
-            agentName={agentData.name}
-            agentPicture={agentData.picture}
-          >
-            {(buyState) => (
-              <div className="order-2 flex min-w-0 flex-col gap-16 lg:order-1">
-                {/* Tabs + content */}
+          <div className="order-2 flex min-w-0 flex-col gap-16 lg:order-1">
+            {/* Tabs + content */}
+            <div
+              className={cn(
+                appearCls,
+                'rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
+              )}
+            >
+              <TabsBar activeTab={activeTab} onSelect={setActiveTab} />
+
+              {activeTab === 'products' && (
+                <ProductsTab
+                  cards={cards}
+                  selectedCardIndex={selectedCardIndex}
+                  onSelect={setSelectedCardIndex}
+                />
+              )}
+
+              {activeTab === 'artifacts' && (
+                <ArtifactsTab
+                  artifacts={mergedArtifacts}
+                  loading={!artifactsHydrated || (artifacts.length === 0 && nostrArtifactsLoading)}
+                  newArtifactIds={newArtifactIds}
+                  unseenArtifactIds={unseenArtifactIds}
+                  onOpenArtifact={setOpenArtifactId}
+                  onAnimationEnd={(artifactId) =>
+                    setNewArtifactIds((prev) => {
+                      if (!prev.has(artifactId)) {
+                        return prev;
+                      }
+                      const next = new Set(prev);
+                      next.delete(artifactId);
+                      return next;
+                    })
+                  }
+                />
+              )}
+
+              {activeTab === 'activity' && (
+                <AgentActivity agentPubkey={pubkey} productCount={cards.length} />
+              )}
+            </div>
+
+            {cards.length > 0 && activeTab === 'products' && (
+              <>
                 <div
                   className={cn(
                     appearCls,
-                    'rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
+                    'relative sticky bottom-[var(--devnet-banner-h,0px)] z-40 -mx-12 [animation-delay:160ms] lg:static lg:bottom-auto lg:mx-0',
                   )}
                 >
-                  <TabsBar activeTab={activeTab} onSelect={setActiveTab} />
-
-                  {activeTab === 'products' && (
-                    <ProductsTab
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute -top-20 right-0 left-0 h-20 bg-gradient-to-t from-bg-page to-transparent lg:hidden"
+                  />
+                  <div className="bg-bg-page px-12 pb-[max(env(safe-area-inset-bottom),10px)] lg:bg-transparent lg:p-0">
+                    <JobInput
+                      agentPubkey={pubkey}
+                      agentName={agentData.name}
+                      pingStatus={pingStatus}
                       cards={cards}
-                      selectedCardIndex={selectedCardIndex}
-                      onSelect={setSelectedCardIndex}
+                      selectedIndex={currentCardIndex}
+                      onSelectIndex={setSelectedCardIndex}
+                      buyState={buyState}
                     />
-                  )}
-
-                  {activeTab === 'artifacts' && (
-                    <ArtifactsTab
-                      artifacts={mergedArtifacts}
-                      loading={
-                        !artifactsHydrated || (artifacts.length === 0 && nostrArtifactsLoading)
-                      }
-                      newArtifactIds={newArtifactIds}
-                      unseenArtifactIds={unseenArtifactIds}
-                      onOpenArtifact={setOpenArtifactId}
-                      onAnimationEnd={(artifactId) =>
-                        setNewArtifactIds((prev) => {
-                          if (!prev.has(artifactId)) {
-                            return prev;
-                          }
-                          const next = new Set(prev);
-                          next.delete(artifactId);
-                          return next;
-                        })
-                      }
-                    />
-                  )}
-
-                  {activeTab === 'activity' && (
-                    <AgentActivity agentPubkey={pubkey} productCount={cards.length} />
-                  )}
+                  </div>
                 </div>
-
-                {cards.length > 0 && activeTab === 'products' && (
-                  <>
-                    <div
-                      className={cn(
-                        appearCls,
-                        'relative sticky bottom-[var(--devnet-banner-h,0px)] z-40 -mx-12 [animation-delay:160ms] lg:static lg:bottom-auto lg:mx-0',
-                      )}
-                    >
-                      <div
-                        aria-hidden
-                        className="pointer-events-none absolute -top-20 right-0 left-0 h-20 bg-gradient-to-t from-bg-page to-transparent lg:hidden"
-                      />
-                      <div className="bg-bg-page px-12 pb-[max(env(safe-area-inset-bottom),10px)] lg:bg-transparent lg:p-0">
-                        <JobInput
-                          agentPubkey={pubkey}
-                          agentName={agentData.name}
-                          pingStatus={pingStatus}
-                          cards={cards}
-                          selectedIndex={currentCardIndex}
-                          onSelectIndex={setSelectedCardIndex}
-                          buyState={buyState}
-                        />
-                      </div>
-                    </div>
-                    <p className="-mt-8 px-16 text-center text-[11px] text-text-2/50">
-                      Agents on Elisym can make mistakes. Always verify important information.
-                    </p>
-                  </>
-                )}
-
-                <ArtifactCapturer
-                  buyState={buyState}
-                  card={currentCard}
-                  onCapture={(artifact) => {
-                    appendArtifact(artifact);
-                    setActiveTab('artifacts');
-                    setNewArtifactIds((prev) => {
-                      const next = new Set(prev);
-                      next.add(artifact.id);
-                      return next;
-                    });
-                    setUnseenArtifactIds((prev) => {
-                      const next = new Set(prev);
-                      next.add(artifact.id);
-                      persistUnseen(next);
-                      return next;
-                    });
-                  }}
-                />
-              </div>
+                <p className="-mt-8 px-16 text-center text-[11px] text-text-2/50">
+                  Agents on Elisym can make mistakes. Always verify important information.
+                </p>
+              </>
             )}
-          </BuyProvider>
+
+            <ArtifactCapturer
+              buyState={artifactsHydrated ? buyState : null}
+              card={currentCard}
+              onCapture={(artifact) => {
+                // Skip side effects when the session result was already
+                // captured on a prior mount. BuyProvider lives at the app
+                // root now, so session.result/jobId persist across
+                // navigation - revisiting an agent would otherwise re-flip
+                // the tab and re-fire the "new" animation every time.
+                if (artifacts.some((existing) => existing.id === artifact.id)) {
+                  return;
+                }
+                appendArtifact(artifact);
+                setActiveTab('artifacts');
+                setNewArtifactIds((prev) => {
+                  const next = new Set(prev);
+                  next.add(artifact.id);
+                  return next;
+                });
+                setUnseenArtifactIds((prev) => {
+                  const next = new Set(prev);
+                  next.add(artifact.id);
+                  persistUnseen(next);
+                  return next;
+                });
+              }}
+            />
+          </div>
 
           {/* Right column */}
           <div className="order-1 flex min-w-0 flex-col gap-16 lg:sticky lg:top-16 lg:order-2">

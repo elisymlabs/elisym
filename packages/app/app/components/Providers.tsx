@@ -4,6 +4,7 @@ import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useMemo, type ReactNode } from 'react';
+import { BuyProvider } from '~/contexts/BuyContext';
 import { PageHeaderProvider } from '~/contexts/PageHeaderContext';
 import { UIProvider } from '~/contexts/UIContext';
 import { ElisymProvider } from '~/hooks/useElisymClient';
@@ -22,9 +23,11 @@ export function Providers({ children }: { children: ReactNode }) {
           <WalletModalProvider>
             <ElisymProvider>
               <IdentityProvider>
-                <UIProvider>
-                  <PageHeaderProvider>{children}</PageHeaderProvider>
-                </UIProvider>
+                <BuyProvider>
+                  <UIProvider>
+                    <PageHeaderProvider>{children}</PageHeaderProvider>
+                  </UIProvider>
+                </BuyProvider>
               </IdentityProvider>
             </ElisymProvider>
           </WalletModalProvider>

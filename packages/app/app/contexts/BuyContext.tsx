@@ -22,7 +22,7 @@ import {
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
 } from '@solana/kit';
-import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 // VersionedTransaction is the only @solana/web3.js type we still touch: the
 // wallet-adapter API (`signTransaction` / `sendTransaction`) accepts either
 // legacy Transaction or VersionedTransaction. Once wallet-adapter exposes a
@@ -30,15 +30,24 @@ import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 // elsewhere in this file - everything else is Kit.
 import { VersionedTransaction } from '@solana/web3.js';
 import { useQueryClient } from '@tanstack/react-query';
-import { useState, useCallback, useRef, useEffect } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { toast } from 'sonner';
+import { useElisymClient } from '~/hooks/useElisymClient';
+import { useIdentity } from '~/hooks/useIdentity';
+import { useJobHistory } from '~/hooks/useJobHistory';
+import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
 import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { cacheSet } from '~/lib/localCache';
-import { useElisymClient } from './useElisymClient';
-import { useIdentity } from './useIdentity';
-import { useJobHistory } from './useJobHistory';
-import { invalidateWalletBalances } from './useWalletBalances';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
 const PRIORITY_FEE_PERCENTILE = 75;
@@ -63,24 +72,7 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promis
 /**
  * Build an unsigned payment transaction for a payment request via the SDK's
  * Kit-native instruction builder, then bridge to a wallet-adapter-compatible
- * VersionedTransaction.
- *
- * Why bridge instead of using the SDK's `buildTransaction` directly: SDK
- * `buildTransaction` requires a real `TransactionSigner` and signs in place,
- * but wallet-adapter signs through the connected extension. We construct
- * with a `createNoopSigner` (only contributes the fee-payer address), compile
- * to wire bytes, and rehydrate as a VersionedTransaction so wallet-adapter
- * can sign and submit.
- *
- * Includes ComputeBudget set-limit + set-price instructions so the tx carries
- * a priority fee. The SDK applies the same defaults (200k CU limit, 75th
- * percentile priority fee) when it builds tx itself; mirroring them here
- * keeps both paths in lockstep.
- *
- * For SPL/USDC, the SDK builder emits `CreateAssociatedTokenIdempotent`
- * instructions for the recipient (and treasury) ATAs followed by
- * `TransferChecked`. The reference key is attached as a read-only account on
- * the provider transfer.
+ * VersionedTransaction. See useBuyCapability history for the full rationale.
  */
 async function buildVersionedPaymentTransaction(
   paymentRequest: PaymentRequestData,
@@ -115,42 +107,58 @@ async function buildVersionedPaymentTransaction(
   return VersionedTransaction.deserialize(wireBytes);
 }
 
-interface BuyCapabilityOptions {
+export interface ActiveBuySession {
+  agentPubkey: string;
+  agentName: string;
+  agentPicture?: string;
+  cardName: string;
+  jobId: string | null;
+  buying: boolean;
+  result: string | null;
+  error: string | null;
+  lastInput: string;
+  rated: boolean;
+}
+
+interface BuyArgs {
   agentPubkey: string;
   agentName: string;
   agentPicture?: string;
   card: CapabilityCard;
 }
 
-export function useBuyCapability({
-  agentPubkey,
-  agentName,
-  agentPicture,
-  card,
-}: BuyCapabilityOptions) {
+interface BuyCtx {
+  session: ActiveBuySession | null;
+  buy: (args: BuyArgs, input: string) => Promise<void>;
+  rate: (positive: boolean) => Promise<void>;
+}
+
+const Ctx = createContext<BuyCtx | null>(null);
+
+export function BuyProvider({ children }: { children: ReactNode }) {
   const { client } = useElisymClient();
   const idCtx = useIdentity();
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
+  const queryClient = useQueryClient();
   const wallet = publicKey?.toBase58() ?? '';
   const { saveJob, updateJob } = useJobHistory({ wallet });
-  const queryClient = useQueryClient();
 
-  const [buying, setBuying] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [rated, setRated] = useState(false);
-  const [lastInput, setLastInput] = useState<string>('');
+  const [session, setSession] = useState<ActiveBuySession | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
+  // Cleanup the active subscription only when the provider itself unmounts -
+  // i.e. when the whole app tears down (tab close / SPA reload). Crucially
+  // this no longer fires on per-route navigation, which is the entire point
+  // of lifting this out of the agent page.
   useEffect(() => {
     return () => {
       cleanupRef.current?.();
+      cleanupRef.current = null;
     };
   }, []);
 
-  // Warn user before closing tab during active payment
+  const buying = session?.buying ?? false;
   useEffect(() => {
     if (!buying) {
       return;
@@ -163,38 +171,55 @@ export function useBuyCapability({
   }, [buying]);
 
   const buy = useCallback(
-    async (input = '') => {
-      if (buying) {
+    async (args: BuyArgs, input: string) => {
+      if (session?.buying) {
         return;
       }
+      const { agentPubkey, agentName, agentPicture, card } = args;
       const isFree = (card.payment?.job_price ?? 0) === 0;
       if (!isFree && !publicKey) {
         toast.error('Connect your wallet first');
         return;
       }
 
-      setBuying(true);
-      setError(null);
-      setResult(null);
-      setLastInput(input);
+      // Snapshot wallet-scoped history mutators at click time. If the user
+      // disconnects mid-job, useJobHistory({ wallet: '' }) flips to no-op
+      // saveJob/updateJob and we'd silently drop status writes; the closure
+      // here keeps writing to the wallet that was connected at click.
+      const snapshotSaveJob = saveJob;
+      const snapshotUpdateJob = updateJob;
+
+      const cardName = card.name;
+      const sessionMatches = (s: ActiveBuySession | null): s is ActiveBuySession =>
+        !!s && s.agentPubkey === agentPubkey && s.cardName === cardName;
+
+      setSession({
+        agentPubkey,
+        agentName,
+        agentPicture,
+        cardName,
+        jobId: null,
+        buying: true,
+        result: null,
+        error: null,
+        lastInput: input,
+        rated: false,
+      });
 
       const toastId = toast.loading('Submitting job...');
 
       try {
         const identity = idCtx.identity;
+        const capability = toDTag(cardName);
 
-        const capability = toDTag(card.name);
-
-        // 1. Submit job request
         const jobEventId = await client.marketplace.submitJobRequest(identity, {
           input,
           capability,
           providerPubkey: agentPubkey,
         });
-        setJobId(jobEventId);
+        setSession((prev) => (sessionMatches(prev) ? { ...prev, jobId: jobEventId } : prev));
 
-        // 2. Save initial job
-        saveJob({
+        snapshotSaveJob({
           jobEventId,
           agentPubkey,
           agentName,
@@ -206,7 +231,6 @@ export function useBuyCapability({
 
         toast.loading('Waiting for provider...', { id: toastId });
 
-        // 3. Subscribe to updates
         const cleanup = client.marketplace.subscribeToJobUpdates({
           jobEventId,
           providerPubkey: agentPubkey,
@@ -218,18 +242,15 @@ export function useBuyCapability({
               }
               if (!publicKey) {
                 toast.error('Wallet disconnected - reconnect and retry', { id: toastId });
-                setBuying(false);
+                setSession((prev) => (sessionMatches(prev) ? { ...prev, buying: false } : prev));
+                cleanupRef.current?.();
+                cleanupRef.current = null;
                 return;
               }
 
               try {
-                // Fetch on-chain protocol config (fee + treasury) so the
-                // validator can verify fee_amount / fee_address match what
-                // the protocol currently requires. getProtocolConfig caches
-                // for 60s, so back-to-back purchases reuse the same snapshot.
                 const protocolConfig = await getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID);
 
-                // Validate payment request
                 const validationError = payment.validatePaymentRequest(
                   paymentRequestJson,
                   { feeBps: protocolConfig.feeBps, treasury: protocolConfig.treasury },
@@ -261,7 +282,7 @@ export function useBuyCapability({
                   ),
                 );
 
-                updateJob(jobEventId, {
+                snapshotUpdateJob(jobEventId, {
                   status: 'payment-completed',
                   paymentAmount: amount,
                   txHash: signature,
@@ -270,32 +291,36 @@ export function useBuyCapability({
                 toast.loading('Payment sent, waiting for result...', { id: toastId });
               } catch (err) {
                 const msg = err instanceof Error ? err.message : 'Payment failed';
-                setError(msg);
-                updateJob(jobEventId, { status: 'error' });
-                setBuying(false);
+                snapshotUpdateJob(jobEventId, { status: 'error' });
+                setSession((prev) =>
+                  sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
+                );
+                cleanupRef.current?.();
+                cleanupRef.current = null;
                 toast.error(msg, { id: toastId });
               }
             },
 
             onResult: (content: string, eventId: string) => {
-              setResult(content);
-              updateJob(jobEventId, { status: 'completed', result: content });
-
-              // Store in IndexedDB
+              snapshotUpdateJob(jobEventId, { status: 'completed', result: content });
               cacheSet(`purchase:${jobEventId}`, {
                 result: content,
                 eventId,
                 receivedAt: Date.now(),
               });
-
-              setBuying(false);
+              setSession((prev) =>
+                sessionMatches(prev) ? { ...prev, buying: false, result: content } : prev,
+              );
+              cleanupRef.current = null;
               toast.success('Result received!', { id: toastId });
             },
 
             onError: (errMsg: string) => {
-              setError(errMsg);
-              updateJob(jobEventId, { status: 'error' });
-              setBuying(false);
+              snapshotUpdateJob(jobEventId, { status: 'error' });
+              setSession((prev) =>
+                sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
+              );
+              cleanupRef.current = null;
               toast.error(errMsg, { id: toastId });
             },
           },
@@ -306,20 +331,18 @@ export function useBuyCapability({
         cleanupRef.current = cleanup;
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Failed to submit job';
-        setError(msg);
-        setBuying(false);
+        setSession((prev) =>
+          sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
+        );
+        cleanupRef.current = null;
         toast.error(msg, { id: toastId });
       }
     },
     [
-      buying,
+      session?.buying,
       publicKey,
       client,
       idCtx.identity,
-      agentPubkey,
-      agentName,
-      agentPicture,
-      card,
       connection,
       sendTransaction,
       saveJob,
@@ -330,10 +353,11 @@ export function useBuyCapability({
 
   const rate = useCallback(
     async (positive: boolean) => {
-      if (!jobId || rated) {
+      if (!session || !session.jobId || session.rated) {
         return;
       }
-      setRated(true);
+      const { jobId, agentPubkey, cardName } = session;
+      setSession((prev) => (prev ? { ...prev, rated: true } : prev));
       try {
         const identity = idCtx.identity;
         await client.marketplace.submitFeedback(
@@ -341,7 +365,7 @@ export function useBuyCapability({
           jobId,
           agentPubkey,
           positive,
-          toDTag(card.name),
+          toDTag(cardName),
         );
         await cacheSet(`rated:${jobId}`, true);
         track('rate-result', { rating: positive ? 'good' : 'bad' });
@@ -349,9 +373,91 @@ export function useBuyCapability({
         // silent fail
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- card.name is stable for the lifetime of this hook
-    [jobId, rated, client, idCtx.identity, agentPubkey],
+    [session, client, idCtx.identity],
   );
 
-  return { buy, buying, result, error, jobId, rate, rated, lastInput };
+  const value = useMemo<BuyCtx>(() => ({ session, buy, rate }), [session, buy, rate]);
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+export function useBuy(): BuyCtx {
+  const ctx = useContext(Ctx);
+  if (!ctx) {
+    throw new Error('useBuy must be used within BuyProvider');
+  }
+  return ctx;
+}
+
+interface UseBuyForCardArgs {
+  agentPubkey: string;
+  agentName: string;
+  agentPicture?: string;
+  card: CapabilityCard | undefined;
+}
+
+export interface ScopedBuyState {
+  buy: (input?: string) => Promise<void>;
+  buying: boolean;
+  result: string | null;
+  error: string | null;
+  jobId: string | null;
+  rate: (positive: boolean) => Promise<void>;
+  rated: boolean;
+  lastInput: string;
+}
+
+export function useBuyForCard(args: UseBuyForCardArgs): ScopedBuyState | null {
+  const ctx = useContext(Ctx);
+  if (!ctx) {
+    throw new Error('useBuyForCard must be used within BuyProvider');
+  }
+  const { agentPubkey, agentName, agentPicture, card } = args;
+  const { session, buy: globalBuy, rate: globalRate } = ctx;
+
+  const cardName = card?.name;
+  const matches = !!(
+    cardName &&
+    session &&
+    session.agentPubkey === agentPubkey &&
+    session.cardName === cardName
+  );
+
+  const buy = useCallback(
+    async (input = '') => {
+      if (!card) {
+        return;
+      }
+      await globalBuy({ agentPubkey, agentName, agentPicture, card }, input);
+    },
+    [globalBuy, agentPubkey, agentName, agentPicture, card],
+  );
+
+  const rate = useCallback(
+    async (positive: boolean) => {
+      if (!matches) {
+        return;
+      }
+      await globalRate(positive);
+    },
+    [globalRate, matches],
+  );
+
+  if (!card) {
+    return null;
+  }
+
+  return {
+    buy,
+    // `buying` is global on purpose: if any session is in flight, every other
+    // card's Buy button must stay disabled (single-job invariant, lifted from
+    // the previous per-page hook).
+    buying: session?.buying ?? false,
+    result: matches ? (session?.result ?? null) : null,
+    error: matches ? (session?.error ?? null) : null,
+    jobId: matches ? (session?.jobId ?? null) : null,
+    rate,
+    rated: matches ? (session?.rated ?? false) : false,
+    lastInput: matches ? (session?.lastInput ?? '') : '',
+  };
 }

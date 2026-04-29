@@ -1,7 +1,7 @@
 import type { PaymentAssetRef } from '@elisym/sdk';
-import type { useBuyCapability } from '~/hooks/useBuyCapability';
+import type { useBuyForCard } from '~/contexts/BuyContext';
 
-export type BuyState = ReturnType<typeof useBuyCapability>;
+export type BuyState = NonNullable<ReturnType<typeof useBuyForCard>>;
 
 export interface Artifact {
   id: string;
