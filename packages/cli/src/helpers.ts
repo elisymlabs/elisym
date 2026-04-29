@@ -1,7 +1,8 @@
 /**
  * Shared CLI helpers - RPC URLs, SOL formatting, price validation.
  */
-import { calculateProtocolFee } from '@elisym/sdk';
+import { USDC_SOLANA_DEVNET, calculateProtocolFee } from '@elisym/sdk';
+import { type Rpc, type SolanaRpcApi, address } from '@solana/kit';
 
 // --- Constants ---
 
@@ -77,6 +78,45 @@ export function parseSolToLamports(s: string): number | null {
   }
 
   return wholePart * 1_000_000_000 + frac;
+}
+
+// --- USDC balance ---
+
+/**
+ * Sum the agent's USDC token-account balances (raw subunits) on the connected
+ * Solana RPC. Returns 0n on any error or when the asset has no mint configured;
+ * callers display "0 USDC" rather than failing the whole banner.
+ */
+export async function fetchUsdcBalance(
+  rpc: Rpc<SolanaRpcApi>,
+  owner: ReturnType<typeof address>,
+): Promise<bigint> {
+  const mint = USDC_SOLANA_DEVNET.mint;
+  if (!mint) {
+    return 0n;
+  }
+  try {
+    const response = await rpc
+      .getTokenAccountsByOwner(
+        owner,
+        { mint: address(mint) },
+        { encoding: 'jsonParsed', commitment: 'confirmed' },
+      )
+      .send();
+    let total = 0n;
+    for (const entry of response.value) {
+      const parsed = entry.account.data as
+        | { parsed?: { info?: { tokenAmount?: { amount?: string } } } }
+        | undefined;
+      const raw = parsed?.parsed?.info?.tokenAmount?.amount;
+      if (typeof raw === 'string') {
+        total += BigInt(raw);
+      }
+    }
+    return total;
+  } catch {
+    return 0n;
+  }
 }
 
 // --- Price validation ---

@@ -10,6 +10,7 @@ import {
   ElisymClient,
   ElisymIdentity,
   MediaService,
+  USDC_SOLANA_DEVNET,
   formatAssetAmount,
   formatSol,
   RELAYS,
@@ -33,6 +34,7 @@ import {
 import { address, createSolanaRpc } from '@solana/kit';
 import { probeRelays } from '../diagnostics.js';
 import {
+  fetchUsdcBalance,
   getRpcUrl,
   MAX_CONCURRENT_JOBS,
   RECOVERY_MAX_RETRIES,
@@ -102,7 +104,10 @@ export async function cmdStart(
       const rpcUrl = getRpcUrl(walletNetwork);
       const rpc = createSolanaRpc(rpcUrl);
       const walletAddress = address(solanaAddress);
-      const { value: balanceLamports } = await rpc.getBalance(walletAddress).send();
+      const [{ value: balanceLamports }, usdcBalance] = await Promise.all([
+        rpc.getBalance(walletAddress).send(),
+        fetchUsdcBalance(rpc, walletAddress),
+      ]);
       const balance = Number(balanceLamports);
 
       console.log('  Wallet');
@@ -111,7 +116,8 @@ export async function cmdStart(
       if (process.env.SOLANA_RPC_URL) {
         console.log(`     RPC      ${process.env.SOLANA_RPC_URL} (custom)`);
       }
-      console.log(`     Balance  ${formatSol(balance)} (${balance} lamports)`);
+      console.log(`     SOL      ${formatSol(balance)} (${balance} lamports)`);
+      console.log(`     USDC     ${formatAssetAmount(USDC_SOLANA_DEVNET, usdcBalance)}`);
 
       if (balance === 0) {
         console.log('  ! Wallet is empty. Get devnet SOL: https://faucet.solana.com');
