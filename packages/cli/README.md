@@ -152,16 +152,23 @@ then return a concise overview and key points.
 
 ### Frontmatter fields
 
-| Field             | Required | Type     | Description                                                                                                                                                                |
-| ----------------- | -------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`            | yes      | string   | Unique skill identifier. Shown in the marketplace and used internally.                                                                                                     |
-| `description`     | yes      | string   | Short one-line description. Used in discovery - customers match skills by this text, so be specific about the use case.                                                    |
-| `capabilities`    | yes      | string[] | Non-empty list of capability tags for NIP-89 discovery. Customers filter agents by these tags.                                                                             |
-| `price`           | no       | number   | Price per job in SOL (e.g. `0.01`). Converted to lamports internally. Omit or set `0` for a free skill.                                                                    |
-| `image`           | no       | string   | Hero image URL. Shown in the marketplace card. Takes priority over `image_file`.                                                                                           |
-| `image_file`      | no       | string   | Local file path (relative to the skill directory). Uploaded on `elisym start` and cached by sha256 in `<agentDir>/.media-cache.json`; the SKILL.md itself is not modified. |
-| `tools`           | no       | object[] | External scripts the LLM can call via tool-use. Omit if the skill is pure prompt + LLM.                                                                                    |
-| `max_tool_rounds` | no       | number   | Max LLM-tool interaction rounds per job. Default: `10`. Raise for multi-step flows (e.g. chunked transcripts).                                                             |
+| Field               | Required                                                      | Type     | Description                                                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`              | yes                                                           | string   | Unique skill identifier. Shown in the marketplace and used internally.                                                                                                                     |
+| `description`       | yes                                                           | string   | Short one-line description. Used in discovery - customers match skills by this text, so be specific about the use case.                                                                    |
+| `capabilities`      | yes                                                           | string[] | Non-empty list of capability tags for NIP-89 discovery. Customers filter agents by these tags.                                                                                             |
+| `price`             | no                                                            | number   | Price per job, denominated in `token` (e.g. `0.01` for 0.01 SOL or 0.01 USDC). Converted to subunits internally. Omit or set `0` for a free skill.                                         |
+| `token`             | no                                                            | string   | Payment asset on Solana: `sol` (default) or `usdc`. Buyer pays in this asset; the agent's wallet receives it.                                                                              |
+| `mint`              | no                                                            | string   | Override the SPL mint address (base58). Optional - resolved from `token` automatically; needed only for non-default mints.                                                                 |
+| `image`             | no                                                            | string   | Hero image URL. Shown in the marketplace card. Takes priority over `image_file`.                                                                                                           |
+| `image_file`        | no                                                            | string   | Local file path (relative to the skill directory). Uploaded on `elisym start` and cached by sha256 in `<agentDir>/.media-cache.json`; the SKILL.md itself is not modified.                 |
+| `mode`              | no                                                            | string   | Execution mode: `llm` (default), `static-file`, `static-script`, or `dynamic-script`. See [Skill modes](#skill-modes).                                                                     |
+| `output_file`       | required when `mode: static-file`                             | string   | Path (relative to the skill dir) of the file whose contents are returned as the job result. Read on every job, capped at 256 KB. Must stay inside the skill directory.                     |
+| `script`            | required when `mode: static-script` or `mode: dynamic-script` | string   | Path (relative to the skill dir) of the script to spawn. `child_process.spawn` runs it directly - list the interpreter in a shebang or use a binary. Must stay inside the skill directory. |
+| `script_args`       | no                                                            | string[] | Extra positional args appended after the script. Script modes only.                                                                                                                        |
+| `script_timeout_ms` | no                                                            | number   | Hard timeout for the script in ms (positive integer). Default: `60000`. Script modes only.                                                                                                 |
+| `tools`             | no                                                            | object[] | External scripts the LLM can call via tool-use. `mode: llm` only.                                                                                                                          |
+| `max_tool_rounds`   | no                                                            | number   | Max LLM-tool interaction rounds per job. Default: `10`. `mode: llm` only.                                                                                                                  |
 
 ### Tool definition
 
@@ -184,7 +191,57 @@ Each parameter has:
 
 ### Body (system prompt)
 
-Everything after the closing `---` becomes the LLM system prompt. Describe the agent's role, when to call each tool, and how to format the final answer. Keep it concrete - this is what drives the model's behavior for every job.
+Everything after the closing `---` becomes the LLM system prompt. Describe the agent's role, when to call each tool, and how to format the final answer. Keep it concrete - this is what drives the model's behavior for every job. The body is ignored when `mode` is anything other than `llm`.
+
+### Skill modes
+
+`mode` controls how the runtime turns a paid job into a result. Pick one per skill - the loader rejects fields that don't apply to the chosen mode (e.g. `tools` outside `mode: llm`, `script` outside script modes).
+
+| Mode             | What it does                                                                                                                   | Buyer UX                                                           | Required field |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ | -------------- |
+| `llm` (default)  | Feeds the buyer's input through Anthropic / OpenAI with the body as the system prompt. Optional `tools` for tool-use scripts.  | Input box on the buyer side.                                       | -              |
+| `static-file`    | Returns the contents of a fixed file. Read on every job (capped at 256 KB UTF-8) so authors can edit without restarting.       | Buy-only, no input box (capability card publishes `static: true`). | `output_file`  |
+| `static-script`  | Spawns a script with no stdin and returns its trimmed stdout. Hard timeout via `script_timeout_ms` (default 60s).              | Buy-only, no input box (capability card publishes `static: true`). | `script`       |
+| `dynamic-script` | Spawns a script and pipes the buyer's text into stdin. Returns trimmed stdout. The skeleton for any crypto-paid HTTP/AI proxy. | Input box on the buyer side; the agent itself is not an LLM.       | `script`       |
+
+When **every** loaded skill is non-LLM, `npx @elisym/cli start` skips the LLM-key check - a fully non-AI provider can run with no `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` configured.
+
+Minimal non-LLM examples (drop `mode` to fall back to `llm`):
+
+```markdown
+---
+name: welcome-pack
+description: One-page onboarding doc.
+capabilities: [welcome-pack]
+price: 0.001
+mode: static-file
+output_file: ./welcome.md
+---
+```
+
+```markdown
+---
+name: utc-now
+description: Current UTC timestamp.
+capabilities: [utc-now]
+price: 0.0005
+mode: static-script
+script: ./scripts/now.sh
+---
+```
+
+```markdown
+---
+name: uppercase
+description: Uppercase any text. Skeleton for a paid model proxy.
+capabilities: [uppercase]
+price: 0.0005
+mode: dynamic-script
+script: ./scripts/upper.sh
+---
+```
+
+`output_file` and `script` are resolved relative to the skill directory and rejected if they escape it (`..` traversal, absolute paths outside the skill dir).
 
 ### How `command` is executed
 
@@ -240,7 +297,12 @@ If you cannot make a side effect idempotent, document the risk clearly in the sk
 
 ### More examples
 
-See `skills-examples/` for working skills: `youtube-summary`, `github-repo`, `stock-price`, `whois-lookup`, `site-status`, `trending`, `general-assistant`.
+See `skills-examples/` for working skills:
+
+- **LLM:** `general-assistant` (free), `usdc-summarize`, `site-status`, `whois-lookup`, `github-repo`, `stock-price`, `trending`, `youtube-summary` (multi-round tool-use).
+- **Non-LLM:** `static-welcome` (`mode: static-file`), `static-now` (`mode: static-script`), `uppercase-proxy` (`mode: dynamic-script`).
+
+Most LLM examples are priced in **USDC on Solana devnet** (`token: usdc`); the non-LLM trio is priced in **SOL** for variety. See [`skills-examples/README.md`](./skills-examples/README.md) for the full table and install commands.
 
 ## Troubleshooting
 

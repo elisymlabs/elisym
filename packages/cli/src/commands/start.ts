@@ -118,43 +118,10 @@ export async function cmdStart(
     }
   }
 
-  // -- Step 5: LLM check --
-  if (!loaded.yaml.llm) {
-    console.error('  ! No LLM configured. Run `npx @elisym/cli init` to set up LLM.\n');
-    process.exit(1);
-  }
-  if (!loaded.secrets.llm_api_key) {
-    console.error(
-      `  ! No LLM API key. Set ${loaded.yaml.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} env var or update the agent's secrets.\n`,
-    );
-    process.exit(1);
-  }
-
-  // -- Step 5b: Verify LLM API key is accepted by the provider --
-  // A valid key is required before we publish capabilities to Nostr -
-  // otherwise the agent advertises itself as available while every job
-  // would fail at first LLM call with a 401.
-  const llmProvider = loaded.yaml.llm.provider as LlmProvider;
-  const keyEnvVar = llmProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
-  process.stdout.write(`  Verifying ${llmProvider} API key... `);
-  const verification = await verifyLlmApiKey(llmProvider, loaded.secrets.llm_api_key);
-  if (verification.ok) {
-    console.log('ok');
-  } else if (verification.reason === 'invalid') {
-    console.log('INVALID');
-    console.error(`  ! ${llmProvider} rejected the API key (HTTP ${verification.status}).`);
-    console.error(
-      `    Update it via \`npx @elisym/cli profile\` or set ${keyEnvVar} to a valid key.\n`,
-    );
-    process.exit(1);
-  } else {
-    console.log('unavailable');
-    console.warn(
-      `  ! Could not verify ${llmProvider} API key (${verification.error}). Continuing - jobs will fail if the key is invalid.\n`,
-    );
-  }
-
-  // -- Step 6: Load and register all skills --
+  // -- Step 5: Load and register all skills --
+  // Skills load before the LLM check so a fully-non-LLM agent can start
+  // without an API key. The LLM block below runs only when at least one
+  // skill has `mode === 'llm'`.
   const paths = agentPaths(loaded.dir);
   const skillsDir = paths.skills;
   const allSkills = loadSkillsFromDir(skillsDir);
@@ -186,14 +153,55 @@ export async function cmdStart(
     process.exit(1);
   }
 
-  // -- Step 7: Build LLM client --
-  const llm = createLlmClient({
-    provider: loaded.yaml.llm.provider as any,
-    apiKey: loaded.secrets.llm_api_key,
-    model: loaded.yaml.llm.model,
-    maxTokens: loaded.yaml.llm.max_tokens,
-    logUsage: true,
-  });
+  // -- Step 6: LLM check (only when at least one skill needs it) --
+  const hasLlmSkill = allSkills.some((skill) => skill.mode === 'llm');
+  let llm: ReturnType<typeof createLlmClient> | undefined;
+
+  if (hasLlmSkill) {
+    if (!loaded.yaml.llm) {
+      console.error('  ! No LLM configured. Run `npx @elisym/cli init` to set up LLM.\n');
+      process.exit(1);
+    }
+    if (!loaded.secrets.llm_api_key) {
+      console.error(
+        `  ! No LLM API key. Set ${loaded.yaml.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'} env var or update the agent's secrets.\n`,
+      );
+      process.exit(1);
+    }
+
+    // Verify LLM API key is accepted by the provider before we publish
+    // capabilities to Nostr - otherwise the agent advertises itself as
+    // available while every LLM job would fail at first call with a 401.
+    const llmProvider = loaded.yaml.llm.provider as LlmProvider;
+    const keyEnvVar = llmProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+    process.stdout.write(`  Verifying ${llmProvider} API key... `);
+    const verification = await verifyLlmApiKey(llmProvider, loaded.secrets.llm_api_key);
+    if (verification.ok) {
+      console.log('ok');
+    } else if (verification.reason === 'invalid') {
+      console.log('INVALID');
+      console.error(`  ! ${llmProvider} rejected the API key (HTTP ${verification.status}).`);
+      console.error(
+        `    Update it via \`npx @elisym/cli profile\` or set ${keyEnvVar} to a valid key.\n`,
+      );
+      process.exit(1);
+    } else {
+      console.log('unavailable');
+      console.warn(
+        `  ! Could not verify ${llmProvider} API key (${verification.error}). Continuing - jobs will fail if the key is invalid.\n`,
+      );
+    }
+
+    llm = createLlmClient({
+      provider: loaded.yaml.llm.provider as any,
+      apiKey: loaded.secrets.llm_api_key,
+      model: loaded.yaml.llm.model,
+      maxTokens: loaded.yaml.llm.max_tokens,
+      logUsage: true,
+    });
+  } else {
+    console.log('  No LLM skills loaded; skipping LLM key check.\n');
+  }
 
   const skillCtx: SkillContext = {
     llm,
@@ -292,11 +300,13 @@ export async function cmdStart(
   const kinds = [jobRequestKind(DEFAULT_KIND_OFFSET)];
 
   function buildCard(skill: (typeof allSkills)[0]): CapabilityCard {
+    const isStatic = skill.mode === 'static-file' || skill.mode === 'static-script';
     return {
       name: skill.name,
       description: skill.description,
       capabilities: skill.capabilities,
       image: skill.image,
+      ...(isStatic ? { static: true } : {}),
       payment: solanaAddress
         ? {
             chain: 'solana',

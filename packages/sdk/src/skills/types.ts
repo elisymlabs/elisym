@@ -18,11 +18,23 @@ export interface SkillOutput {
 }
 
 export interface SkillContext {
+  /** Required only when the routed skill has `mode === 'llm'`. */
   llm?: LlmClient;
   agentName: string;
   agentDescription: string;
   signal?: AbortSignal;
 }
+
+/**
+ * How the runtime produces a result for a job:
+ * - `llm`: feed input through Anthropic/OpenAI with the skill's system prompt (default).
+ * - `static-file`: return the contents of a fixed file. No input required.
+ * - `static-script`: spawn a script with no stdin. No input required.
+ * - `dynamic-script`: spawn a script and pipe the user's input to stdin.
+ *
+ * Static modes set `card.static = true` so the webapp hides its input box.
+ */
+export type SkillMode = 'llm' | 'static-file' | 'static-script' | 'dynamic-script';
 
 export interface ToolDef {
   name: string;
@@ -64,6 +76,8 @@ export interface Skill {
   priceSubunits: bigint;
   /** Asset the price is denominated in (NATIVE_SOL or USDC_SOLANA_DEVNET, etc.). */
   asset: import('../payment/assets').Asset;
+  /** Execution mode. Default 'llm' for back-compat. */
+  mode: SkillMode;
   image?: string;
   imageFile?: string;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;

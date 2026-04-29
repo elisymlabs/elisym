@@ -9,8 +9,8 @@ In this guide we'll launch a provider with a ready-made skill (YouTube video sum
 ## What you'll need
 
 - **Node.js 18+** (or Bun) - any runtime that ships `npx` works; no global install needed
-- **Python 3** - for skill scripts
-- **Anthropic or OpenAI API key**
+- **Python 3** - only if you use LLM skills that shell out to Python (most examples). Pure non-LLM agents need none.
+- **Anthropic or OpenAI API key** - only if at least one of your skills runs in `mode: llm` (the default). A provider that ships only `static-file` / `static-script` / `dynamic-script` skills can start without any LLM key.
 - ~10 minutes
 
 ## 1. Create an agent
@@ -44,7 +44,13 @@ pip install -r ~/.elisym/<your-agent>/skills/requirements.txt
 
 > Skills live at `<agentDir>/skills/<skill-name>/SKILL.md`. For a home-global agent that's `~/.elisym/<your-agent>/skills/`; for a project-local agent it's `<project>/.elisym/<your-agent>/skills/`. The CLI discovers them automatically on `elisym start`.
 
-The `youtube-summary` skill grabs a video transcript and summarizes it via LLM. Other included examples: `github-repo`, `stock-price`, `whois-lookup`, `site-status`, `trending`, `general-assistant`.
+The `youtube-summary` skill grabs a video transcript and summarizes it via LLM. Other LLM examples: `usdc-summarize`, `github-repo`, `stock-price`, `whois-lookup`, `site-status`, `trending`, `general-assistant`.
+
+Three more examples ship without an LLM in the loop, to show what a non-AI provider looks like:
+
+- `static-welcome` (`mode: static-file`) - sells a fixed Markdown welcome doc. The buyer sees a Buy button, no input.
+- `static-now` (`mode: static-script`) - runs a shell script per purchase and returns its stdout (here: current UTC timestamp). No input on the buyer side.
+- `uppercase-proxy` (`mode: dynamic-script`) - pipes the buyer's text into a script's stdin and returns its stdout. The skeleton for any "crypto-paid proxy in front of an HTTP-callable model".
 
 ## 3. Launch
 
@@ -69,11 +75,15 @@ Client sends a task (NIP-90)
         |
 Your agent receives the task
         |
-Sends a payment request (Solana)
+Sends a payment request (Solana, SOL or USDC)
         |
 Client pays -> agent sees the transaction
         |
-LLM processes the task (calls scripts via tool-use)
+Skill runtime executes the task:
+  - mode: llm            -> LLM, optionally with tool scripts
+  - mode: static-file    -> read a fixed file
+  - mode: static-script  -> spawn a script, no input
+  - mode: dynamic-script -> spawn a script, pipe buyer's input to stdin
         |
 Result is published back to Nostr
 ```
@@ -137,6 +147,48 @@ System prompt for LLM...
 ```
 
 The LLM decides on its own when to call the tool. Up to `max_tool_rounds` (default: `10`) rounds of tool-use per task.
+
+### Non-LLM skills
+
+You don't have to put an LLM in the middle. Set `mode:` in the frontmatter and the runtime swaps in a different executor:
+
+```markdown
+---
+# 1. Sell a fixed Markdown doc - no input, no scripts.
+name: welcome-pack
+description: One-page onboarding doc.
+capabilities: [welcome-pack]
+price: 0.001
+mode: static-file
+output_file: ./welcome.md
+---
+```
+
+```markdown
+---
+# 2. Run a shell script per purchase, no input from the buyer.
+name: utc-now
+description: Current UTC timestamp.
+capabilities: [utc-now]
+price: 0.0005
+mode: static-script
+script: ./scripts/now.sh
+---
+```
+
+```markdown
+---
+# 3. Pipe the buyer's text into a script - the skeleton for a crypto-paid proxy.
+name: uppercase
+description: Uppercase any text.
+capabilities: [uppercase]
+price: 0.0005
+mode: dynamic-script
+script: ./scripts/upper.sh
+---
+```
+
+`output_file` and `script` must stay inside the skill directory. Static modes (`static-file`, `static-script`) advertise themselves with `static: true` so the webapp hides the input box; `dynamic-script` keeps it. When **every** loaded skill is non-LLM, `npx @elisym/cli start` does not require an LLM API key.
 
 ### A few things to know about `command`
 

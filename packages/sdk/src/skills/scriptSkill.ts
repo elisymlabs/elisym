@@ -7,14 +7,15 @@ import type {
   Skill,
   SkillContext,
   SkillInput,
+  SkillMode,
   SkillOutput,
   ToolCall,
   ToolDef,
   ToolResult,
 } from './types';
 
-const MAX_TOOL_OUTPUT = 1_000_000;
-const TOOL_TIMEOUT_MS = 60_000;
+export const MAX_SCRIPT_OUTPUT = 1_000_000;
+export const DEFAULT_SCRIPT_TIMEOUT_MS = 60_000;
 
 export interface SkillToolDef {
   name: string;
@@ -25,6 +26,98 @@ export interface SkillToolDef {
 
 export interface ScriptSkillLogger {
   debug?(obj: Record<string, unknown>, msg?: string): void;
+}
+
+export interface RunScriptOptions {
+  cwd: string;
+  /**
+   * UTF-8 string written to the child's stdin, then stdin closed.
+   * When undefined, stdin is closed immediately (EOF) so that children
+   * which read stdin do not block until `timeoutMs`.
+   */
+  stdin?: string;
+  /** Cancel the spawn. SIGKILL is sent on abort. */
+  signal?: AbortSignal;
+  /** Hard timeout in ms. Default `DEFAULT_SCRIPT_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** Cap on stdout/stderr capture. Default `MAX_SCRIPT_OUTPUT`. */
+  maxOutput?: number;
+}
+
+export interface RunScriptResult {
+  stdout: string;
+  stderr: string;
+  /** Null when the process was killed by signal before exiting. */
+  code: number | null;
+  /** Set when spawn itself failed (ENOENT, EACCES, etc.). */
+  spawnError?: Error;
+}
+
+/**
+ * Spawn `cmd` with `args` and capture stdout/stderr. Never uses `shell: true`,
+ * so shell metacharacters in arguments are safe. Caller is responsible for
+ * checking `code === 0` / interpreting `spawnError`.
+ */
+export function runScript(
+  cmd: string,
+  args: string[],
+  opts: RunScriptOptions,
+): Promise<RunScriptResult> {
+  return new Promise((resolveResult) => {
+    const maxOutput = opts.maxOutput ?? MAX_SCRIPT_OUTPUT;
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS;
+
+    const child = spawn(cmd, args, {
+      cwd: opts.cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
+      signal: opts.signal,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+
+    child.stdout?.on('data', (data: Buffer) => {
+      if (stdout.length < maxOutput) {
+        stdout += stdoutDecoder.write(data);
+        if (stdout.length > maxOutput) {
+          stdout = stdout.slice(0, maxOutput);
+        }
+      }
+    });
+    child.stderr?.on('data', (data: Buffer) => {
+      if (stderr.length < maxOutput) {
+        stderr += stderrDecoder.write(data);
+        if (stderr.length > maxOutput) {
+          stderr = stderr.slice(0, maxOutput);
+        }
+      }
+    });
+
+    child.on('close', (code) => {
+      // Flush any bytes the decoder buffered because a multi-byte UTF-8
+      // codepoint straddled the final chunk boundary.
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+      resolveResult({ stdout, stderr, code });
+    });
+
+    child.on('error', (err) => {
+      resolveResult({ stdout, stderr, code: null, spawnError: err });
+    });
+
+    if (child.stdin) {
+      child.stdin.on('error', () => {
+        // Ignore EPIPE - the child may exit without consuming all input.
+      });
+      // Always close stdin: a child that reads from stdin would otherwise
+      // block until `timeoutMs` even when the caller has no input to send.
+      child.stdin.end(opts.stdin ?? '');
+    }
+  });
 }
 
 export interface ScriptSkillParams {
@@ -55,6 +148,7 @@ export class ScriptSkill implements Skill {
   capabilities: string[];
   priceSubunits: bigint;
   asset: Asset;
+  mode: SkillMode = 'llm';
   image?: string;
   imageFile?: string;
   private skillDir: string;
@@ -138,81 +232,46 @@ export class ScriptSkill implements Skill {
     throw new Error(`Max tool rounds (${this.maxToolRounds}) exceeded`);
   }
 
-  private runTool(toolDef: SkillToolDef, call: ToolCall, signal?: AbortSignal): Promise<string> {
-    return new Promise((resolve) => {
-      const args = [...toolDef.command];
-      const cmd = args.shift();
-      if (!cmd) {
-        resolve(`Error: tool "${toolDef.name}" has an empty command`);
-        return;
+  private async runTool(
+    toolDef: SkillToolDef,
+    call: ToolCall,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const args = [...toolDef.command];
+    const cmd = args.shift();
+    if (!cmd) {
+      return `Error: tool "${toolDef.name}" has an empty command`;
+    }
+
+    const params = toolDef.parameters ?? [];
+    for (let index = 0; index < params.length; index++) {
+      const param = params[index];
+      if (!param) {
+        continue;
       }
-
-      const params = toolDef.parameters ?? [];
-      for (let index = 0; index < params.length; index++) {
-        const param = params[index];
-        if (!param) {
-          continue;
-        }
-        const value = call.arguments[param.name];
-        if (value === undefined) {
-          continue;
-        }
-        if (param.required && index === 0) {
-          args.push(String(value));
-        } else {
-          args.push(`--${param.name}`, String(value));
-        }
+      const value = call.arguments[param.name];
+      if (value === undefined) {
+        continue;
       }
+      if (param.required && index === 0) {
+        args.push(String(value));
+      } else {
+        args.push(`--${param.name}`, String(value));
+      }
+    }
 
-      const child = spawn(cmd, args, {
-        cwd: this.skillDir,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: TOOL_TIMEOUT_MS,
-        killSignal: 'SIGKILL',
-        signal,
-      });
+    const result = await runScript(cmd, args, { cwd: this.skillDir, signal });
 
-      let stdout = '';
-      let stderr = '';
-      const stdoutDecoder = new StringDecoder('utf8');
-      const stderrDecoder = new StringDecoder('utf8');
-
-      child.stdout?.on('data', (data: Buffer) => {
-        if (stdout.length < MAX_TOOL_OUTPUT) {
-          stdout += stdoutDecoder.write(data);
-          if (stdout.length > MAX_TOOL_OUTPUT) {
-            stdout = stdout.slice(0, MAX_TOOL_OUTPUT);
-          }
-        }
-      });
-      child.stderr?.on('data', (data: Buffer) => {
-        if (stderr.length < MAX_TOOL_OUTPUT) {
-          stderr += stderrDecoder.write(data);
-          if (stderr.length > MAX_TOOL_OUTPUT) {
-            stderr = stderr.slice(0, MAX_TOOL_OUTPUT);
-          }
-        }
-      });
-
-      child.on('close', (code) => {
-        // Flush any bytes the decoder buffered because a multi-byte UTF-8
-        // codepoint straddled the final chunk boundary.
-        stdout += stdoutDecoder.end();
-        stderr += stderrDecoder.end();
-        if (code === 0) {
-          resolve(stdout.trim());
-          return;
-        }
-        this.logger.debug?.(
-          { tool: toolDef.name, code, stderrLen: stderr.length },
-          'skill tool exited non-zero',
-        );
-        resolve(`Error (exit ${code}): ${stderr.trim() || stdout.trim()}`);
-      });
-
-      child.on('error', (err) => {
-        resolve(`Error: ${err.message}`);
-      });
-    });
+    if (result.spawnError) {
+      return `Error: ${result.spawnError.message}`;
+    }
+    if (result.code === 0) {
+      return result.stdout.trim();
+    }
+    this.logger.debug?.(
+      { tool: toolDef.name, code: result.code, stderrLen: result.stderr.length },
+      'skill tool exited non-zero',
+    );
+    return `Error (exit ${result.code}): ${result.stderr.trim() || result.stdout.trim()}`;
   }
 }

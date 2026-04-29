@@ -4,6 +4,7 @@ export type {
   Skill,
   SkillContext,
   SkillInput,
+  SkillMode,
   SkillOutput,
   ToolCall,
   ToolDef,
@@ -11,8 +12,26 @@ export type {
 } from './types';
 export { createAnthropicClient, createLlmClient, createOpenAIClient } from './llmClient';
 export type { LlmClientConfig, LlmProvider } from './llmClient';
-export { ScriptSkill } from './scriptSkill';
-export type { ScriptSkillLogger, ScriptSkillParams, SkillToolDef } from './scriptSkill';
+export {
+  DEFAULT_SCRIPT_TIMEOUT_MS,
+  MAX_SCRIPT_OUTPUT,
+  ScriptSkill,
+  runScript,
+} from './scriptSkill';
+export type {
+  RunScriptOptions,
+  RunScriptResult,
+  ScriptSkillLogger,
+  ScriptSkillParams,
+  SkillToolDef,
+} from './scriptSkill';
+export { MAX_STATIC_FILE_SIZE, StaticFileSkill } from './staticFileSkill';
+export type { StaticFileSkillParams } from './staticFileSkill';
+export { StaticScriptSkill } from './staticScriptSkill';
+export type { StaticScriptSkillParams } from './staticScriptSkill';
+export { DynamicScriptSkill } from './dynamicScriptSkill';
+export type { DynamicScriptSkillParams } from './dynamicScriptSkill';
+export { resolveInsidePath } from './path-safety';
 export {
   DEFAULT_MAX_TOOL_ROUNDS,
   loadSkillsFromDir,

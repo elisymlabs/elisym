@@ -9,10 +9,21 @@ import {
   parseAssetAmount,
   resolveKnownAsset,
 } from '../payment/assets';
-import { ScriptSkill, type SkillToolDef } from './scriptSkill';
-import type { Skill } from './types';
+import { DynamicScriptSkill } from './dynamicScriptSkill';
+import { resolveInsidePath } from './path-safety';
+import { DEFAULT_SCRIPT_TIMEOUT_MS, ScriptSkill, type SkillToolDef } from './scriptSkill';
+import { StaticFileSkill } from './staticFileSkill';
+import { StaticScriptSkill } from './staticScriptSkill';
+import type { Skill, SkillMode } from './types';
 
 export const DEFAULT_MAX_TOOL_ROUNDS = 10;
+
+const VALID_MODES: readonly SkillMode[] = [
+  'llm',
+  'static-file',
+  'static-script',
+  'dynamic-script',
+] as const;
 
 export interface SkillFrontmatter {
   name?: unknown;
@@ -27,6 +38,16 @@ export interface SkillFrontmatter {
   image_file?: unknown;
   tools?: unknown;
   max_tool_rounds?: unknown;
+  /** Execution mode. Default 'llm'. */
+  mode?: unknown;
+  /** Required when mode === 'static-file'. Path relative to skill dir. */
+  output_file?: unknown;
+  /** Required when mode === 'static-script' | 'dynamic-script'. Path relative to skill dir. */
+  script?: unknown;
+  /** Optional positional args appended after the script. */
+  script_args?: unknown;
+  /** Optional override of `DEFAULT_SCRIPT_TIMEOUT_MS`. */
+  script_timeout_ms?: unknown;
 }
 
 export interface ParsedSkill {
@@ -36,11 +57,20 @@ export interface ParsedSkill {
   /** Price in subunits of `asset`. */
   priceSubunits: bigint;
   asset: Asset;
+  mode: SkillMode;
   systemPrompt: string;
   tools: SkillToolDef[];
   maxToolRounds: number;
   image?: string;
   imageFile?: string;
+  /** Set when mode === 'static-file'. */
+  outputFile?: string;
+  /** Set when mode is a script mode. */
+  script?: string;
+  /** Empty when no script. */
+  scriptArgs: string[];
+  /** Undefined => caller uses `DEFAULT_SCRIPT_TIMEOUT_MS`. */
+  scriptTimeoutMs?: number;
 }
 
 export interface LoaderLogger {
@@ -198,6 +228,46 @@ function validateTool(raw: unknown, skillName: string, index: number): SkillTool
   };
 }
 
+function validateMode(skillName: string, raw: unknown): SkillMode {
+  if (raw === undefined || raw === null) {
+    return 'llm';
+  }
+  if (typeof raw !== 'string') {
+    throw new Error(`SKILL.md "${skillName}": "mode" must be a string`);
+  }
+  if (!(VALID_MODES as readonly string[]).includes(raw)) {
+    throw new Error(
+      `SKILL.md "${skillName}": invalid mode "${raw}". Allowed: ${VALID_MODES.join(', ')}`,
+    );
+  }
+  return raw as SkillMode;
+}
+
+function validateScriptArgs(skillName: string, raw: unknown): string[] {
+  if (raw === undefined || raw === null) {
+    return [];
+  }
+  if (!Array.isArray(raw)) {
+    throw new Error(`SKILL.md "${skillName}": "script_args" must be an array of strings`);
+  }
+  for (const part of raw) {
+    if (typeof part !== 'string') {
+      throw new Error(`SKILL.md "${skillName}": "script_args" entries must be strings`);
+    }
+  }
+  return raw as string[];
+}
+
+function validateScriptTimeoutMs(skillName: string, raw: unknown): number | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+    throw new Error(`SKILL.md "${skillName}": "script_timeout_ms" must be a positive integer`);
+  }
+  return raw;
+}
+
 export function validateSkillFrontmatter(
   frontmatter: SkillFrontmatter,
   systemPrompt: string,
@@ -262,8 +332,15 @@ export function validateSkillFrontmatter(
     }
   }
 
+  const mode = validateMode(frontmatter.name, frontmatter.mode);
+
   const tools: SkillToolDef[] = [];
   if (frontmatter.tools !== undefined) {
+    if (mode !== 'llm') {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "tools" is only valid in mode 'llm' (got '${mode}')`,
+      );
+    }
     if (!Array.isArray(frontmatter.tools)) {
       throw new Error(`SKILL.md "${frontmatter.name}": "tools" must be an array`);
     }
@@ -274,6 +351,11 @@ export function validateSkillFrontmatter(
 
   let maxToolRounds = DEFAULT_MAX_TOOL_ROUNDS;
   if (frontmatter.max_tool_rounds !== undefined) {
+    if (mode !== 'llm') {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "max_tool_rounds" is only valid in mode 'llm' (got '${mode}')`,
+      );
+    }
     if (
       typeof frontmatter.max_tool_rounds !== 'number' ||
       !Number.isInteger(frontmatter.max_tool_rounds) ||
@@ -286,6 +368,58 @@ export function validateSkillFrontmatter(
     maxToolRounds = frontmatter.max_tool_rounds;
   }
 
+  let outputFile: string | undefined;
+  let script: string | undefined;
+  let scriptArgs: string[] = [];
+  let scriptTimeoutMs: number | undefined;
+
+  if (mode === 'static-file') {
+    if (typeof frontmatter.output_file !== 'string' || frontmatter.output_file.length === 0) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": mode 'static-file' requires "output_file" (string)`,
+      );
+    }
+    if (frontmatter.script !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "script" is not valid in mode 'static-file'`,
+      );
+    }
+    outputFile = frontmatter.output_file;
+  } else if (mode === 'static-script' || mode === 'dynamic-script') {
+    if (typeof frontmatter.script !== 'string' || frontmatter.script.length === 0) {
+      throw new Error(`SKILL.md "${frontmatter.name}": mode '${mode}' requires "script" (string)`);
+    }
+    if (frontmatter.output_file !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "output_file" is only valid in mode 'static-file'`,
+      );
+    }
+    script = frontmatter.script;
+    scriptArgs = validateScriptArgs(frontmatter.name, frontmatter.script_args);
+    scriptTimeoutMs = validateScriptTimeoutMs(frontmatter.name, frontmatter.script_timeout_ms);
+  } else {
+    if (frontmatter.output_file !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "output_file" is only valid in mode 'static-file'`,
+      );
+    }
+    if (frontmatter.script !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "script" is only valid in script modes (static-script, dynamic-script)`,
+      );
+    }
+    if (frontmatter.script_args !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "script_args" is only valid in script modes`,
+      );
+    }
+    if (frontmatter.script_timeout_ms !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "script_timeout_ms" is only valid in script modes`,
+      );
+    }
+  }
+
   const image = typeof frontmatter.image === 'string' ? frontmatter.image : undefined;
   const imageFile = typeof frontmatter.image_file === 'string' ? frontmatter.image_file : undefined;
 
@@ -295,18 +429,91 @@ export function validateSkillFrontmatter(
     capabilities,
     priceSubunits,
     asset,
+    mode,
     systemPrompt,
     tools,
     maxToolRounds,
     image,
     imageFile,
+    outputFile,
+    script,
+    scriptArgs,
+    scriptTimeoutMs,
   };
+}
+
+function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: LoaderLogger): Skill {
+  switch (parsed.mode) {
+    case 'llm':
+      return new ScriptSkill({
+        name: parsed.name,
+        description: parsed.description,
+        capabilities: parsed.capabilities,
+        priceSubunits: parsed.priceSubunits,
+        asset: parsed.asset,
+        skillDir,
+        systemPrompt: parsed.systemPrompt,
+        tools: parsed.tools,
+        maxToolRounds: parsed.maxToolRounds,
+        image: parsed.image,
+        imageFile: parsed.imageFile,
+        logger,
+      });
+    case 'static-file': {
+      if (parsed.outputFile === undefined) {
+        throw new Error(
+          `SKILL.md "${parsed.name}": internal error - outputFile missing for mode 'static-file'`,
+        );
+      }
+      const outputFilePath = resolveInsidePath(skillDir, parsed.outputFile);
+      if (!outputFilePath) {
+        throw new Error(
+          `SKILL.md "${parsed.name}": "output_file" must stay inside the skill directory`,
+        );
+      }
+      return new StaticFileSkill({
+        name: parsed.name,
+        description: parsed.description,
+        capabilities: parsed.capabilities,
+        priceSubunits: parsed.priceSubunits,
+        asset: parsed.asset,
+        outputFilePath,
+        image: parsed.image,
+        imageFile: parsed.imageFile,
+      });
+    }
+    case 'static-script':
+    case 'dynamic-script': {
+      if (parsed.script === undefined) {
+        throw new Error(
+          `SKILL.md "${parsed.name}": internal error - script missing for mode '${parsed.mode}'`,
+        );
+      }
+      const scriptPath = resolveInsidePath(skillDir, parsed.script);
+      if (!scriptPath) {
+        throw new Error(`SKILL.md "${parsed.name}": "script" must stay inside the skill directory`);
+      }
+      const Ctor = parsed.mode === 'static-script' ? StaticScriptSkill : DynamicScriptSkill;
+      return new Ctor({
+        name: parsed.name,
+        description: parsed.description,
+        capabilities: parsed.capabilities,
+        priceSubunits: parsed.priceSubunits,
+        asset: parsed.asset,
+        scriptPath,
+        scriptArgs: parsed.scriptArgs,
+        scriptTimeoutMs: parsed.scriptTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
+        image: parsed.image,
+        imageFile: parsed.imageFile,
+      });
+    }
+  }
 }
 
 /**
  * Walk `skillsDir`, load each immediate subdirectory's SKILL.md, and
- * return constructed `ScriptSkill` instances. Malformed directories are
- * skipped with a `warn` log.
+ * return constructed `Skill` instances (LLM or non-LLM depending on
+ * frontmatter `mode`). Malformed directories are skipped with a `warn` log.
  */
 export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions = {}): Skill[] {
   const logger = options.logger ?? {};
@@ -335,22 +542,7 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions 
       const content = readFileSync(skillMdPath, 'utf-8');
       const { frontmatter, systemPrompt } = parseSkillMd(content);
       const parsed = validateSkillFrontmatter(frontmatter, systemPrompt, options);
-      skills.push(
-        new ScriptSkill({
-          name: parsed.name,
-          description: parsed.description,
-          capabilities: parsed.capabilities,
-          priceSubunits: parsed.priceSubunits,
-          asset: parsed.asset,
-          skillDir: entryPath,
-          systemPrompt: parsed.systemPrompt,
-          tools: parsed.tools,
-          maxToolRounds: parsed.maxToolRounds,
-          image: parsed.image,
-          imageFile: parsed.imageFile,
-          logger,
-        }),
-      );
+      skills.push(buildSkillFromParsed(parsed, entryPath, logger));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn?.({ dir: entry, err: message }, 'skipping malformed skill directory');

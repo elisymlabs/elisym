@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
@@ -182,6 +182,154 @@ Premium service.`,
     try {
       createTempSkill(tmp, 'bad', `---\nname: bad\ncapabilities: [a]\n---\nPrompt`);
 
+      const skills = loadSkillsFromDir(tmp);
+      expect(skills).toHaveLength(0);
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
+  it('llm mode default: skill has mode === "llm" and is the LLM ScriptSkill class', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'skill-test-'));
+    try {
+      createTempSkill(
+        tmp,
+        'llm',
+        `---\nname: llm-skill\ndescription: LLM skill\ncapabilities: [chat]\nprice: 0.001\n---\n\nYou are helpful.`,
+      );
+      const skills = loadSkillsFromDir(tmp);
+      expect(skills).toHaveLength(1);
+      expect(skills[0]!.mode).toBe('llm');
+      expect(skills[0]!.constructor.name).toBe('ScriptSkill');
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
+  it('static-file mode: dispatch wraps StaticFileSkill and execute reads the file', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'skill-test-'));
+    try {
+      const skillDir = join(tmp, 'doc');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        `---
+name: doc-skill
+description: Static doc
+capabilities: [doc]
+price: 0.001
+mode: static-file
+output_file: ./welcome.md
+---
+`,
+      );
+      writeFileSync(join(skillDir, 'welcome.md'), 'static body\n');
+
+      const skills = loadSkillsFromDir(tmp);
+      expect(skills).toHaveLength(1);
+      expect(skills[0]!.mode).toBe('static-file');
+      expect(skills[0]!.constructor.name).toBe('StaticFileSkill');
+      expect(skills[0]!.dir).toBe(skillDir);
+
+      const out = await skills[0]!.execute(
+        { data: '', inputType: 'text', tags: ['doc'], jobId: 'j' },
+        { agentName: 't', agentDescription: '' },
+      );
+      expect(out.data).toBe('static body\n');
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
+  it('static-script mode: dispatch wraps StaticScriptSkill and runs script', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'skill-test-'));
+    try {
+      const skillDir = join(tmp, 'gen');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        `---
+name: gen-skill
+description: Static gen
+capabilities: [gen]
+price: 0.001
+mode: static-script
+script: ./gen.sh
+---
+`,
+      );
+      const scriptPath = join(skillDir, 'gen.sh');
+      writeFileSync(scriptPath, '#!/bin/sh\necho ok\n');
+      chmodSync(scriptPath, 0o755);
+
+      const skills = loadSkillsFromDir(tmp);
+      expect(skills).toHaveLength(1);
+      expect(skills[0]!.mode).toBe('static-script');
+      expect(skills[0]!.constructor.name).toBe('StaticScriptSkill');
+
+      const out = await skills[0]!.execute(
+        { data: '', inputType: 'text', tags: ['gen'], jobId: 'j' },
+        { agentName: 't', agentDescription: '' },
+      );
+      expect(out.data).toBe('ok');
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
+  it('dynamic-script mode: dispatch wraps DynamicScriptSkill and pipes stdin', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'skill-test-'));
+    try {
+      const skillDir = join(tmp, 'upper');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        `---
+name: upper-skill
+description: Uppercase
+capabilities: [upper]
+price: 0.001
+mode: dynamic-script
+script: ./upper.sh
+---
+`,
+      );
+      const scriptPath = join(skillDir, 'upper.sh');
+      writeFileSync(scriptPath, '#!/bin/sh\ntr a-z A-Z\n');
+      chmodSync(scriptPath, 0o755);
+
+      const skills = loadSkillsFromDir(tmp);
+      expect(skills).toHaveLength(1);
+      expect(skills[0]!.mode).toBe('dynamic-script');
+      expect(skills[0]!.constructor.name).toBe('DynamicScriptSkill');
+
+      const out = await skills[0]!.execute(
+        { data: 'hello', inputType: 'text', tags: ['upper'], jobId: 'j' },
+        { agentName: 't', agentDescription: '' },
+      );
+      expect(out.data).toBe('HELLO');
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
+  it('skips skill whose script escapes the skill directory', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'skill-test-'));
+    try {
+      const skillDir = join(tmp, 'escape');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        `---
+name: escape
+description: bad
+capabilities: [bad]
+price: 0.001
+mode: static-script
+script: ../../../bin/sh
+---
+`,
+      );
       const skills = loadSkillsFromDir(tmp);
       expect(skills).toHaveLength(0);
     } finally {
