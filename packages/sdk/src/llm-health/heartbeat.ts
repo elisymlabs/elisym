@@ -17,7 +17,7 @@ export interface HeartbeatHandle {
 
 export interface StartLlmHeartbeatOptions {
   monitor: LlmHealthMonitor;
-  /** Defaults to 5 minutes. */
+  /** Defaults to 10 minutes. */
   intervalMs?: number;
   /** Operator log sink. Defaults to no-op (silent). */
   log?: (msg: string) => void;

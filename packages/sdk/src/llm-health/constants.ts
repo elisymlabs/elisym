@@ -5,8 +5,8 @@
  * the monitor/heartbeat options.
  */
 
-export const DEFAULT_HEALTH_TTL_MS = 5 * 60 * 1000;
-export const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+export const DEFAULT_HEALTH_TTL_MS = 10 * 60 * 1000;
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000;
 
 /**
  * Number of consecutive `unavailable` results tolerated before

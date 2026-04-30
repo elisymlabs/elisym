@@ -570,7 +570,7 @@ export async function cmdStart(
       monitor: healthMonitor,
       log: diagLog,
     });
-    diagLog('LLM health monitor armed (5min TTL, 5min heartbeat).');
+    diagLog('LLM health monitor armed (10min TTL, 10min heartbeat).');
   }
 
   const runtime = new AgentRuntime(
