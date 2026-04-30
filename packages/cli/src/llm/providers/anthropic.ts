@@ -220,6 +220,70 @@ async function verifyKey(apiKey: string, signal?: AbortSignal): Promise<LlmKeyVe
   }
 }
 
+const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient'];
+
+function bodyLooksLikeBilling(body: string): boolean {
+  const lower = body.toLowerCase();
+  return BILLING_BODY_MARKERS.some((marker) => lower.includes(marker));
+}
+
+/**
+ * Deep verification: actually invokes the messages endpoint with
+ * max_tokens=1. Costs a fraction of a cent per probe but distinguishes
+ * billing-exhausted accounts from valid ones - `/v1/models` returns 200
+ * even when the org has $0 balance.
+ *
+ * Use this at startup, runtime preflight, and heartbeat. Use the cheap
+ * `verifyKey` only for UI commands where billing isn't relevant.
+ */
+async function verifyKeyDeep(
+  apiKey: string,
+  model: string,
+  signal?: AbortSignal,
+): Promise<LlmKeyVerification> {
+  try {
+    const response = await fetchWithTimeout(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: '.' }],
+        }),
+      },
+      signal,
+    );
+    if (response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return { ok: true };
+    }
+    const body = (await response.text().catch(() => '')).slice(0, 500);
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, reason: 'invalid', status: response.status, body };
+    }
+    if (response.status === 402) {
+      return { ok: false, reason: 'billing', status: response.status, body };
+    }
+    if (response.status === 400 && bodyLooksLikeBilling(body)) {
+      return { ok: false, reason: 'billing', status: response.status, body };
+    }
+    return {
+      ok: false,
+      reason: 'unavailable',
+      error: `HTTP ${response.status}: ${body.slice(0, 200)}`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, reason: 'unavailable', error: message };
+  }
+}
+
 export const ANTHROPIC_PROVIDER: LlmProviderDescriptor = {
   id: 'anthropic',
   displayName: 'Anthropic (Claude)',
@@ -228,6 +292,7 @@ export const ANTHROPIC_PROVIDER: LlmProviderDescriptor = {
   fallbackModels: FALLBACK_MODELS,
   fetchModels,
   verifyKey,
+  verifyKeyDeep,
   createClient: (config) =>
     new AnthropicClient({
       apiKey: config.apiKey,

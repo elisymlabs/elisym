@@ -3,9 +3,22 @@
  */
 
 import { toDTag, type Asset } from '@elisym/sdk';
+import type { SkillRateLimit } from '@elisym/sdk/llm-health';
 import type { SkillLlmOverride, SkillMode } from '@elisym/sdk/skills';
 
-export type { SkillLlmOverride, SkillMode };
+export type { SkillLlmOverride, SkillMode, SkillRateLimit };
+
+/**
+ * Resolved (provider, model, maxTokens) triple for an LLM-mode skill.
+ * Computed once at startup in `start.ts` after `resolveSkillLlm`, then
+ * attached to the skill instance so the runtime preflight can read it
+ * without re-running resolution from `loaded.yaml`.
+ */
+export interface ResolvedSkillTriple {
+  provider: string;
+  model: string;
+  maxTokens: number;
+}
 
 export interface SkillInput {
   data: string;
@@ -98,6 +111,18 @@ export interface Skill {
   imageFile?: string;
   /** On-disk skill directory (e.g. `<agent>/skills/whois-lookup`). */
   dir?: string;
+  /**
+   * Resolved (provider, model, maxTokens) for LLM-mode skills. Set once
+   * at startup; undefined for non-LLM skills. Read by the runtime to
+   * gate against the `LlmHealthMonitor` before sending `payment-required`.
+   */
+  resolvedTriple?: ResolvedSkillTriple;
+  /**
+   * Optional per-skill rate limit declared in SKILL.md frontmatter
+   * (snake_case `rate_limit` -> camelCase). Applies to any mode but the
+   * runtime treats free LLM skills as the primary use case.
+   */
+  rateLimit?: SkillRateLimit;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;
 }
 

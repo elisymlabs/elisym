@@ -63,6 +63,12 @@ export function createLlmClient(config: LlmConfig): LlmClient {
 /**
  * Verify that an LLM API key is accepted by the provider before the agent
  * publishes capabilities. Delegates to the descriptor's `verifyKey`.
+ *
+ * Cheap probe (Anthropic/OpenAI `/v1/models`) - validates the key is
+ * accepted but does NOT detect billing exhaustion. Use this for UI
+ * commands like `profile` or `init` where biller status is irrelevant;
+ * use `verifyLlmApiKeyDeep` for authoritative checks (startup, runtime
+ * preflight, heartbeat).
  */
 export async function verifyLlmApiKey(
   provider: LlmProvider,
@@ -78,4 +84,27 @@ export async function verifyLlmApiKey(
     };
   }
   return descriptor.verifyKey(apiKey, signal);
+}
+
+/**
+ * Authoritative probe that consumes a single billing token to verify the
+ * key is both valid AND has credits available for the requested model.
+ * Costs ~$0.00001 on Haiku 4.5; negligible at startup and 5-min
+ * heartbeat cadences.
+ */
+export async function verifyLlmApiKeyDeep(
+  provider: LlmProvider,
+  apiKey: string,
+  model: string,
+  signal?: AbortSignal,
+): Promise<LlmKeyVerification> {
+  const descriptor = getLlmProvider(provider);
+  if (!descriptor) {
+    return {
+      ok: false,
+      reason: 'unavailable',
+      error: `Unknown LLM provider "${provider}"`,
+    };
+  }
+  return descriptor.verifyKeyDeep(apiKey, model, signal);
 }

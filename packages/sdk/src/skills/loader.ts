@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { LAMPORTS_PER_SOL } from '../constants';
+import type { SkillRateLimit } from '../llm-health/types';
 import {
   type Asset,
   NATIVE_SOL,
@@ -56,6 +57,12 @@ export interface SkillFrontmatter {
   script_args?: unknown;
   /** Optional override of `DEFAULT_SCRIPT_TIMEOUT_MS`. */
   script_timeout_ms?: unknown;
+  /**
+   * Optional per-skill rate limit. Applies to any skill mode. Snake-case
+   * keys here match the YAML frontmatter convention; parsed into camelCase
+   * `rateLimit` on `ParsedSkill`.
+   */
+  rate_limit?: unknown;
 }
 
 export interface ParsedSkill {
@@ -85,6 +92,8 @@ export interface ParsedSkill {
   scriptArgs: string[];
   /** Undefined => caller uses `DEFAULT_SCRIPT_TIMEOUT_MS`. */
   scriptTimeoutMs?: number;
+  /** Optional per-skill rate limit (any mode). */
+  rateLimit?: SkillRateLimit;
 }
 
 export interface LoaderLogger {
@@ -337,6 +346,53 @@ function validateLlmOverride(
   return override;
 }
 
+const MAX_RATE_LIMIT_WINDOW_SECS = 86400;
+const MAX_RATE_LIMIT_PER_WINDOW = 10000;
+
+/**
+ * Parse the optional per-skill `rate_limit` block. Snake-case in YAML,
+ * camelCase in the returned shape. Returns `undefined` when absent.
+ *
+ * Throws on partial or out-of-range values - we want operators to notice
+ * misconfigurations at startup rather than have them silently fall back
+ * to defaults at runtime.
+ */
+function validateRateLimit(skillName: string, raw: unknown): SkillRateLimit | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (typeof raw !== 'object') {
+    throw new Error(`SKILL.md "${skillName}": "rate_limit" must be an object`);
+  }
+  const record = raw as Record<string, unknown>;
+  const perWindowSecs = record.per_window_secs;
+  const maxPerWindow = record.max_per_window;
+  if (
+    typeof perWindowSecs !== 'number' ||
+    !Number.isInteger(perWindowSecs) ||
+    perWindowSecs < 1 ||
+    perWindowSecs > MAX_RATE_LIMIT_WINDOW_SECS
+  ) {
+    throw new Error(
+      `SKILL.md "${skillName}": "rate_limit.per_window_secs" must be an integer between 1 and ${MAX_RATE_LIMIT_WINDOW_SECS}`,
+    );
+  }
+  if (
+    typeof maxPerWindow !== 'number' ||
+    !Number.isInteger(maxPerWindow) ||
+    maxPerWindow < 1 ||
+    maxPerWindow > MAX_RATE_LIMIT_PER_WINDOW
+  ) {
+    throw new Error(
+      `SKILL.md "${skillName}": "rate_limit.max_per_window" must be an integer between 1 and ${MAX_RATE_LIMIT_PER_WINDOW}`,
+    );
+  }
+  return {
+    perWindowMs: perWindowSecs * 1000,
+    maxPerWindow,
+  };
+}
+
 function validateScriptTimeoutMs(skillName: string, raw: unknown): number | undefined {
   if (raw === undefined || raw === null) {
     return undefined;
@@ -503,6 +559,7 @@ export function validateSkillFrontmatter(
   const imageFile = typeof frontmatter.image_file === 'string' ? frontmatter.image_file : undefined;
 
   const llmOverride = validateLlmOverride(frontmatter.name, frontmatter, mode);
+  const rateLimit = validateRateLimit(frontmatter.name, frontmatter.rate_limit);
 
   return {
     name: frontmatter.name,
@@ -521,6 +578,7 @@ export function validateSkillFrontmatter(
     script,
     scriptArgs,
     scriptTimeoutMs,
+    rateLimit,
   };
 }
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.15.0
+
+### Added
+
+- New `@elisym/sdk/llm-health` subpath: provider-agnostic health monitor for
+  LLM API keys. Building blocks for CLI and plugin-elizaos to detect billing
+  exhaustion, invalid keys, and rate limits before the customer pays.
+  - `LlmHealthMonitor` class with TTL-cached state per `(provider, model)`
+    pair, in-flight probe deduplication, and tolerance for transient
+    `unavailable` results before pessimistic refusal.
+  - `startLlmHeartbeat({ monitor, intervalMs })` for periodic re-verification
+    with status-transition logging.
+  - `createFreeLlmLimiterSet()` two-tier sliding-window limiter for free LLM
+    skills: per-(customer, skill) cap plus global Sybil cap.
+  - Types: `LlmKeyVerification` discriminated union with
+    `'invalid' | 'billing' | 'unavailable'` reasons, `LlmHealthError`,
+    `SkillRateLimit`.
+- `validateSkillFrontmatter` now accepts an optional `rate_limit` block in
+  SKILL.md frontmatter (`per_window_secs`, `max_per_window`). Parsed into
+  camelCase `rateLimit: SkillRateLimit` on `ParsedSkill`. Applies to any
+  skill mode; CLI runtime treats free LLM skills as the primary use case.
+
 ## 0.5.0
 
 ### Breaking changes
