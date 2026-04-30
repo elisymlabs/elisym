@@ -1,6 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "bun run build --filter=@elisym/app...",
+  "ignoreCommand": "bunx turbo-ignore @elisym/app",
   "installCommand": "bun install --frozen-lockfile",
   "outputDirectory": "packages/app/dist",
   "cleanUrls": false,
