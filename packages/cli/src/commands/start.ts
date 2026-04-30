@@ -165,7 +165,7 @@ export async function cmdStart(
   const hasPaid = allSkills.some((s) => s.priceSubunits > 0);
   if (hasPaid && !solanaAddress) {
     console.error(
-      '  ! Paid skills require a Solana address. Run `npx @elisym/cli init` to configure.\n',
+      '  ! Paid skills require a Solana address. Run `npx @elisym/cli profile` to configure.\n',
     );
     process.exit(1);
   }
