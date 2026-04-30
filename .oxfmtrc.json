@@ -22,5 +22,11 @@
       }
     }
   ],
-  "ignorePatterns": ["dist/", "build/", "bun.lock", "**/generated/"]
+  "ignorePatterns": [
+    "dist/",
+    "build/",
+    "bun.lock",
+    "**/generated/",
+    "packages/config-client/idl.json"
+  ]
 }
