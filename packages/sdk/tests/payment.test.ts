@@ -242,7 +242,7 @@ describe('buildPaymentInstructions', () => {
       },
       signer as never,
     );
-    expect(instructions.length).toBe(2);
+    expect(instructions.length).toBe(3);
   });
 
   it('produces 1 instruction when fee is absent', async () => {
@@ -257,7 +257,7 @@ describe('buildPaymentInstructions', () => {
       },
       signer as never,
     );
-    expect(instructions.length).toBe(1);
+    expect(instructions.length).toBe(2);
   });
 
   it('fee + providerAmount === totalAmount for various amounts', async () => {
@@ -333,7 +333,7 @@ describe('buildPaymentInstructions', () => {
       signer as never,
       { jobEventId },
     );
-    expect(instructions.length).toBe(2);
+    expect(instructions.length).toBe(3);
     const memoIx = instructions[0] as IxLike;
     // SPL Memo program ID
     expect(memoIx.programAddress).toBe('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
@@ -353,7 +353,7 @@ describe('buildPaymentInstructions', () => {
       },
       signer as never,
     );
-    expect(instructions.length).toBe(1);
+    expect(instructions.length).toBe(2);
   });
 });
 
@@ -886,8 +886,8 @@ describe('USDC (SPL) payment flow', () => {
       },
       signer as never,
     );
-    // Expect: 2x ATA create (recipient + treasury) + 2x TransferChecked (provider + fee)
-    expect(instructions.length).toBe(4);
+    // Expect: 2x ATA create (recipient + treasury) + 2x TransferChecked (provider + fee) + increment_stats
+    expect(instructions.length).toBe(5);
 
     interface IxLike {
       accounts: ReadonlyArray<{ address: string; role: number }>;

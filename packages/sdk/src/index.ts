@@ -59,8 +59,12 @@ export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
 export { verifyJobPaymentQuick, clearQuickVerifyCache } from './payment/quick-verify';
 export type { QuickVerifyResult, QuickVerifyReason } from './payment/quick-verify';
-export { aggregateNetworkStats } from './payment/analytics';
-export type { AggregateNetworkStatsOptions, NetworkStatsResult } from './payment/analytics';
+export { aggregateNetworkStats, getNetworkStats } from './payment/analytics';
+export type {
+  AggregateNetworkStatsOptions,
+  NetworkStatsResult,
+  OnchainNetworkStats,
+} from './payment/analytics';
 export {
   NATIVE_SOL,
   USDC_SOLANA_DEVNET,

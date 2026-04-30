@@ -11,4 +11,6 @@ export * from './adminPendingCancelled';
 export * from './adminProposed';
 export * from './configInitialized';
 export * from './feeUpdated';
+export * from './statsIncremented';
+export * from './statsInitialized';
 export * from './treasuryUpdated';

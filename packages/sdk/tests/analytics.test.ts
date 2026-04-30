@@ -1,6 +1,17 @@
-import type { Rpc, SolanaRpcApi } from '@solana/kit';
+import {
+  deriveNetworkStatsAddress,
+  getNetworkStatsEncoder,
+  type NetworkStatsArgs,
+} from '@elisym/config-client';
+import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
-import { ELISYM_PROTOCOL_TAG, USDC_SOLANA_DEVNET, aggregateNetworkStats } from '../src';
+import {
+  ELISYM_PROTOCOL_TAG,
+  PROTOCOL_PROGRAM_ID_DEVNET,
+  USDC_SOLANA_DEVNET,
+  aggregateNetworkStats,
+  getNetworkStats,
+} from '../src';
 
 interface SignatureRow {
   signature: string;
@@ -195,5 +206,59 @@ describe('aggregateNetworkStats', () => {
     await aggregateNetworkStats(rpc, { limit: 50, before: 'cursor-sig' as never });
     const calls = (rpc.getSignaturesForAddress as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls[0]?.[1]).toMatchObject({ limit: 50, before: 'cursor-sig' });
+  });
+});
+
+describe('getNetworkStats', () => {
+  function makeNetworkStatsBase64(args: Omit<NetworkStatsArgs, 'reserved'>): string {
+    const fullArgs: NetworkStatsArgs = {
+      ...args,
+      reserved: new Uint8Array(128),
+    };
+    const buf = getNetworkStatsEncoder().encode(fullArgs);
+    return Buffer.from(buf).toString('base64');
+  }
+
+  function makeAccountInfoRpc(value: { data: [string, 'base64']; owner: string } | null) {
+    return {
+      getAccountInfo: vi.fn(() => ({
+        send: () => Promise.resolve({ value }),
+      })),
+    } as unknown as Rpc<SolanaRpcApi>;
+  }
+
+  it('returns null when the stats PDA is not initialized', async () => {
+    const rpc = makeAccountInfoRpc(null);
+    const result = await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET);
+    expect(result).toBeNull();
+  });
+
+  it('decodes job count and per-asset volumes from the on-chain account', async () => {
+    const data = makeNetworkStatsBase64({
+      version: 1,
+      bump: 255,
+      jobCount: 42n,
+      volumeNative: 5_000_000_000n,
+      volumeUsdc: 1_234_567n,
+      lastUpdated: 1_700_000_000n,
+    });
+    const rpc = makeAccountInfoRpc({
+      data: [data, 'base64'],
+      owner: PROTOCOL_PROGRAM_ID_DEVNET,
+    });
+
+    const result = await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET);
+    expect(result).not.toBeNull();
+    expect(result!.jobCount).toBe(42);
+    expect(result!.volumeNative).toBe(5_000_000_000n);
+    expect(result!.volumeUsdc).toBe(1_234_567n);
+  });
+
+  it('queries the canonical NetworkStats PDA derived from the program id', async () => {
+    const rpc = makeAccountInfoRpc(null);
+    await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET);
+    const expectedPda: Address = await deriveNetworkStatsAddress(PROTOCOL_PROGRAM_ID_DEVNET);
+    const calls = (rpc.getAccountInfo as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0]?.[0]).toBe(expectedPda);
   });
 });

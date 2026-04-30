@@ -16,7 +16,9 @@ import {
 import {
   type ParsedAcceptAdminInstruction,
   type ParsedCancelPendingAdminInstruction,
+  type ParsedIncrementStatsInstruction,
   type ParsedInitializeInstruction,
+  type ParsedInitializeStatsInstruction,
   type ParsedProposeAdminInstruction,
   type ParsedSetFeeBpsInstruction,
   type ParsedSetTreasuryInstruction,
@@ -27,6 +29,7 @@ export const ELISYM_CONFIG_PROGRAM_ADDRESS =
 
 export enum ElisymConfigAccount {
   Config,
+  NetworkStats,
 }
 
 export function identifyElisymConfigAccount(
@@ -44,6 +47,17 @@ export function identifyElisymConfigAccount(
   ) {
     return ElisymConfigAccount.Config;
   }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([171, 11, 222, 71, 255, 220, 21, 3])
+      ),
+      0
+    )
+  ) {
+    return ElisymConfigAccount.NetworkStats;
+  }
   throw new Error(
     'The provided account could not be identified as a elisymConfig account.'
   );
@@ -52,7 +66,9 @@ export function identifyElisymConfigAccount(
 export enum ElisymConfigInstruction {
   AcceptAdmin,
   CancelPendingAdmin,
+  IncrementStats,
   Initialize,
+  InitializeStats,
   ProposeAdmin,
   SetFeeBps,
   SetTreasury,
@@ -88,12 +104,34 @@ export function identifyElisymConfigInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([145, 78, 96, 206, 45, 21, 111, 175])
+      ),
+      0
+    )
+  ) {
+    return ElisymConfigInstruction.IncrementStats;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([175, 175, 109, 31, 13, 152, 155, 237])
       ),
       0
     )
   ) {
     return ElisymConfigInstruction.Initialize;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([144, 201, 117, 76, 127, 118, 176, 16])
+      ),
+      0
+    )
+  ) {
+    return ElisymConfigInstruction.InitializeStats;
   }
   if (
     containsBytes(
@@ -143,8 +181,14 @@ export type ParsedElisymConfigInstruction<
       instructionType: ElisymConfigInstruction.CancelPendingAdmin;
     } & ParsedCancelPendingAdminInstruction<TProgram>)
   | ({
+      instructionType: ElisymConfigInstruction.IncrementStats;
+    } & ParsedIncrementStatsInstruction<TProgram>)
+  | ({
       instructionType: ElisymConfigInstruction.Initialize;
     } & ParsedInitializeInstruction<TProgram>)
+  | ({
+      instructionType: ElisymConfigInstruction.InitializeStats;
+    } & ParsedInitializeStatsInstruction<TProgram>)
   | ({
       instructionType: ElisymConfigInstruction.ProposeAdmin;
     } & ParsedProposeAdminInstruction<TProgram>)

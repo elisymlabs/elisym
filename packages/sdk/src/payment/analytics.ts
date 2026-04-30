@@ -1,4 +1,5 @@
-import type { Rpc, Signature, SolanaRpcApi } from '@solana/kit';
+import { deriveNetworkStatsAddress, fetchMaybeNetworkStats } from '@elisym/config-client';
+import type { Address, Rpc, Signature, SolanaRpcApi } from '@solana/kit';
 import { address } from '@solana/kit';
 import { DEFAULTS, ELISYM_PROTOCOL_TAG } from '../constants';
 
@@ -166,4 +167,38 @@ function accumulateNativeDeltas(
       volumeByAsset[NATIVE_KEY] = (volumeByAsset[NATIVE_KEY] ?? 0n) + delta;
     }
   }
+}
+
+/**
+ * Best-effort network stats read from the on-chain `NetworkStats` PDA
+ * maintained by the elisym-config program. One `getAccountInfo` call - no
+ * signature scans, no per-tx aggregation.
+ *
+ * The PDA is incremented by the client SDK alongside each payment and is not
+ * yet bound to a verified transfer, so totals can be inflated cheaply by a
+ * malicious caller. Authoritative tracking will land with the escrow rewrite.
+ *
+ * Returns `null` when the PDA has not been initialized yet (admin must call
+ * `initialize_stats` once after program upgrade).
+ */
+export interface OnchainNetworkStats {
+  jobCount: number;
+  volumeNative: bigint;
+  volumeUsdc: bigint;
+}
+
+export async function getNetworkStats(
+  rpc: Rpc<SolanaRpcApi>,
+  programId: Address,
+): Promise<OnchainNetworkStats | null> {
+  const statsPda = await deriveNetworkStatsAddress(programId);
+  const account = await fetchMaybeNetworkStats(rpc, statsPda);
+  if (!account.exists) {
+    return null;
+  }
+  return {
+    jobCount: Number(account.data.jobCount),
+    volumeNative: account.data.volumeNative,
+    volumeUsdc: account.data.volumeUsdc,
+  };
 }

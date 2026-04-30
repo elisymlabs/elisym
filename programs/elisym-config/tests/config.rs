@@ -13,10 +13,15 @@
 //! Single-threaded because the tests share the workspace `target/deploy/elisym_config.so`
 //! through the `SBF_OUT_DIR` env var that we set inside `setup_sbf_dir`.
 
-use anchor_lang::{system_program, AccountDeserialize, InstructionData, ToAccountMetas};
+use anchor_lang::{
+    system_program, AccountDeserialize, AccountSerialize, InstructionData, Space, ToAccountMetas,
+};
 use elisym_config::accounts as ix_accounts;
 use elisym_config::instruction as ix_args;
-use elisym_config::state::{Config, CONFIG_SEED, CURRENT_VERSION, MAX_FEE_BPS};
+use elisym_config::state::{
+    Config, NetworkStats, CONFIG_SEED, CURRENT_STATS_VERSION, CURRENT_VERSION, MAX_FEE_BPS,
+    STATS_SEED,
+};
 use elisym_config::ID as PROGRAM_ID;
 use mollusk_svm::program;
 use mollusk_svm::result::Check;
@@ -42,6 +47,7 @@ const PENDING_ADMIN_ALREADY_SET: u32 = ANCHOR_ERROR_OFFSET + 5;
 // ConstraintHasOne (2001).
 const UNAUTHORIZED: u32 = ANCHOR_ERROR_OFFSET; // 6000
 const ANCHOR_ACCOUNT_ALREADY_INITIALIZED: u32 = 0; // SystemError::AccountAlreadyInUse
+const STATS_OVERFLOW: u32 = ANCHOR_ERROR_OFFSET + 7;
 
 fn setup_sbf_dir() {
     let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -87,12 +93,20 @@ fn config_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[CONFIG_SEED], &PROGRAM_ID)
 }
 
+fn stats_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[STATS_SEED], &PROGRAM_ID)
+}
+
 fn event_authority_pda() -> Pubkey {
     Pubkey::find_program_address(&[b"__event_authority"], &PROGRAM_ID).0
 }
 
 fn read_config(account: &Account) -> Config {
     Config::try_deserialize(&mut &account.data[..]).expect("Config deserialize")
+}
+
+fn read_stats(account: &Account) -> NetworkStats {
+    NetworkStats::try_deserialize(&mut &account.data[..]).expect("NetworkStats deserialize")
 }
 
 /// Replace or insert an account in a vec keyed by pubkey.
@@ -704,5 +718,249 @@ fn e18_set_treasury_to_default_fails() {
         &ix,
         &accounts,
         &[Check::err(ProgramError::Custom(INVALID_TREASURY))],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Stats: instruction builders + account builders
+// ---------------------------------------------------------------------------
+
+fn build_initialize_stats_ix(admin: Pubkey) -> Instruction {
+    let (config, _) = config_pda();
+    let (stats, _) = stats_pda();
+    let metas = ix_accounts::InitializeStats {
+        stats,
+        config,
+        admin,
+        system_program: system_program::ID,
+        event_authority: event_authority_pda(),
+        program: PROGRAM_ID,
+    }
+    .to_account_metas(None);
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: metas,
+        data: ix_args::InitializeStats {}.data(),
+    }
+}
+
+fn build_increment_stats_ix(amount: u64, is_native: bool) -> Instruction {
+    let (stats, _) = stats_pda();
+    let metas = ix_accounts::IncrementStats {
+        stats,
+        event_authority: event_authority_pda(),
+        program: PROGRAM_ID,
+    }
+    .to_account_metas(None);
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: metas,
+        data: ix_args::IncrementStats { amount, is_native }.data(),
+    }
+}
+
+fn initialize_stats_accounts(admin: Pubkey, config_account: Account) -> Vec<(Pubkey, Account)> {
+    let (config, _) = config_pda();
+    let (stats, _) = stats_pda();
+    let (system_pk, system_acc) = program::keyed_account_for_system_program();
+    vec![
+        (stats, empty_account()),
+        (config, config_account),
+        (admin, funded_account(PAYER_LAMPORTS)),
+        (system_pk, system_acc),
+        (event_authority_pda(), empty_account()),
+        (PROGRAM_ID, program::create_program_account_loader_v3(&PROGRAM_ID)),
+    ]
+}
+
+fn increment_stats_accounts(stats_account: Account) -> Vec<(Pubkey, Account)> {
+    let (stats, _) = stats_pda();
+    vec![
+        (stats, stats_account),
+        (event_authority_pda(), empty_account()),
+        (PROGRAM_ID, program::create_program_account_loader_v3(&PROGRAM_ID)),
+    ]
+}
+
+fn initialize_stats_for_test(
+    mollusk: &Mollusk,
+    admin: Pubkey,
+    config_account: Account,
+) -> Account {
+    let (stats_pk, _) = stats_pda();
+    let ix = build_initialize_stats_ix(admin);
+    let accounts = initialize_stats_accounts(admin, config_account);
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+    get_resulting(&result, stats_pk)
+}
+
+// ---------------------------------------------------------------------------
+// Stats: happy-path tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s1_initialize_stats_creates_zeroed_pda() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+    let stats = read_stats(&stats_account);
+
+    let (_, expected_bump) = stats_pda();
+    assert_eq!(stats.version, CURRENT_STATS_VERSION);
+    assert_eq!(stats.bump, expected_bump);
+    assert_eq!(stats.job_count, 0);
+    assert_eq!(stats.volume_native, 0);
+    assert_eq!(stats.volume_usdc, 0);
+    assert_eq!(stats._reserved, [0u8; 128]);
+}
+
+#[test]
+fn s2_increment_stats_native_updates_count_and_native_volume() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let stats_after_init = initialize_stats_for_test(&mollusk, admin, config_account);
+
+    let ix = build_increment_stats_ix(1_000_000_000, true);
+    let accounts = increment_stats_accounts(stats_after_init);
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+    let (stats_pk, _) = stats_pda();
+    let stats = read_stats(&get_resulting(&result, stats_pk));
+
+    assert_eq!(stats.job_count, 1);
+    assert_eq!(stats.volume_native, 1_000_000_000);
+    assert_eq!(stats.volume_usdc, 0);
+}
+
+#[test]
+fn s3_increment_stats_usdc_updates_count_and_usdc_volume() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let stats_after_init = initialize_stats_for_test(&mollusk, admin, config_account);
+
+    let ix = build_increment_stats_ix(50_000, false);
+    let accounts = increment_stats_accounts(stats_after_init);
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+    let (stats_pk, _) = stats_pda();
+    let stats = read_stats(&get_resulting(&result, stats_pk));
+
+    assert_eq!(stats.job_count, 1);
+    assert_eq!(stats.volume_native, 0);
+    assert_eq!(stats.volume_usdc, 50_000);
+}
+
+#[test]
+fn s4_multiple_increments_accumulate_per_asset() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let mut stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+    let (stats_pk, _) = stats_pda();
+
+    // 3x native increments + 2x USDC increments, threaded through resulting account.
+    let inputs: &[(u64, bool)] = &[
+        (1_000, true),
+        (2_500, true),
+        (10_000, false),
+        (500, true),
+        (40_000, false),
+    ];
+    for (amount, is_native) in inputs {
+        let ix = build_increment_stats_ix(*amount, *is_native);
+        let accounts = increment_stats_accounts(stats_account.clone());
+        let result =
+            mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+        stats_account = get_resulting(&result, stats_pk);
+    }
+
+    let stats = read_stats(&stats_account);
+    assert_eq!(stats.job_count, 5);
+    assert_eq!(stats.volume_native, 1_000 + 2_500 + 500);
+    assert_eq!(stats.volume_usdc, 10_000 + 40_000);
+}
+
+// ---------------------------------------------------------------------------
+// Stats: error-path tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s5_initialize_stats_called_twice_fails() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let stats_account = initialize_stats_for_test(&mollusk, admin, config_account.clone());
+
+    // Second init: PDA is allocated and owned by program → AccountAlreadyInUse.
+    let ix = build_initialize_stats_ix(admin);
+    let mut accounts = initialize_stats_accounts(admin, config_account);
+    let (stats_pk, _) = stats_pda();
+    upsert(&mut accounts, stats_pk, stats_account);
+    let _ = mollusk.process_and_validate_instruction(
+        &ix,
+        &accounts,
+        &[Check::err(ProgramError::Custom(ANCHOR_ACCOUNT_ALREADY_INITIALIZED))],
+    );
+}
+
+#[test]
+fn s6_initialize_stats_by_non_admin_fails() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let imposter = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+
+    let ix = build_initialize_stats_ix(imposter);
+    let accounts = initialize_stats_accounts(imposter, config_account);
+    let _ = mollusk.process_and_validate_instruction(
+        &ix,
+        &accounts,
+        &[Check::err(ProgramError::Custom(UNAUTHORIZED))],
+    );
+}
+
+#[test]
+fn s7_increment_stats_native_overflow_fails() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let mut stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+
+    // Force native volume to u128::MAX - 1 by tampering with the account data,
+    // then attempt to add 2 → overflow.
+    let mut stats = read_stats(&stats_account);
+    stats.volume_native = u128::MAX - 1;
+    let mut buf: Vec<u8> = Vec::with_capacity(8 + NetworkStats::INIT_SPACE);
+    stats.try_serialize(&mut buf).expect("serialize stats");
+    stats_account.data = buf;
+
+    let ix = build_increment_stats_ix(2, true);
+    let accounts = increment_stats_accounts(stats_account);
+    let _ = mollusk.process_and_validate_instruction(
+        &ix,
+        &accounts,
+        &[Check::err(ProgramError::Custom(STATS_OVERFLOW))],
     );
 }

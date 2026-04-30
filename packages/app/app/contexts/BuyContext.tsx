@@ -82,6 +82,7 @@ async function buildVersionedPaymentTransaction(
   const payerSigner = createNoopSigner(address(payerAddress));
   const instructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
     jobEventId,
+    programId: PROTOCOL_PROGRAM_ID,
   });
   const priorityFeeMicroLamports = await estimatePriorityFeeMicroLamports(kitRpc, {
     percentile: PRIORITY_FEE_PERCENTILE,

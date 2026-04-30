@@ -6,7 +6,7 @@ import { useTweenedNumber } from '~/hooks/useTweenedNumber';
 import { UsdcIcon } from './UsdcIcon';
 
 const ON_CHAIN_TOOLTIP_TEXT =
-  'Aggregated from every elisym payment transaction on Solana, indexed by the on-chain protocol tag attached to each transfer.';
+  'Live on-chain counter updated by the elisym client SDK alongside each payment.';
 
 const TOOLTIP_MAX_WIDTH = 240;
 const TOOLTIP_EDGE_MARGIN = 12;
