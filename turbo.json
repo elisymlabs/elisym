@@ -3,8 +3,7 @@
   "globalPassThroughEnv": ["GIT_AUTH_TOKEN", "GIT_CREDENTIALS"],
   "tasks": {
     "generate": {
-      "inputs": ["../../target/idl/*.json", "codama.config.mjs"],
-      "outputs": ["src/generated/**"]
+      "inputs": ["../../target/idl/*.json", "codama.config.mjs"]
     },
     "build": {
       "dependsOn": ["^build", "generate"],
