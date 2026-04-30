@@ -978,6 +978,319 @@ describe('AgentRuntime', () => {
     });
   });
 
+  describe('free-LLM rate limit', () => {
+    it('rejects 4th request to a free LLM skill within the default window', async () => {
+      const llmSkill: Skill = {
+        name: 'free-llm',
+        description: 'Free LLM',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        mode: 'llm',
+        execute: vi.fn().mockResolvedValue({ data: 'ok' }),
+      };
+      const registry = makeFakeRegistry(llmSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, maxQueueSize: 100 },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+
+      for (let i = 0; i < 5; i++) {
+        const job = makeJob(`free-llm-${i}`);
+        job.customerId = 'spammer';
+        triggerJob(job);
+      }
+
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      // Default cap: 3 per hour per (customer, skill). Skill must execute
+      // at most 3 times.
+      expect((llmSkill.execute as any).mock.calls.length).toBeLessThanOrEqual(3);
+
+      // 4th and 5th requests get rate-limit feedback.
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const rateLimitedJobs = feedbackCalls.filter(
+        (c: any) => c[1]?.type === 'error' && c[1]?.message?.includes('Rate limited'),
+      );
+      expect(rateLimitedJobs.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('does not apply free-LLM cap to paid LLM skills', async () => {
+      const paidLlmSkill: Skill = {
+        name: 'paid-llm',
+        description: 'Paid LLM',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'llm',
+        execute: vi.fn().mockResolvedValue({ data: 'ok' }),
+      };
+      const registry = makeFakeRegistry(paidLlmSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr', maxQueueSize: 100 },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+
+      for (let i = 0; i < 5; i++) {
+        const job = makeJob(`paid-${i}`);
+        job.customerId = 'paying-customer';
+        triggerJob(job);
+      }
+
+      await tick(400);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      // Paid skills bypass the free-LLM cap; only existing per-customer
+      // (20/10min) and global limits apply, and 5 < 20 so all 5 should
+      // proceed past the limiter (mocked payment verifies).
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const rateLimited = feedbackCalls.filter(
+        (c: any) => c[1]?.type === 'error' && c[1]?.message?.includes('Rate limited'),
+      );
+      expect(rateLimited.length).toBe(0);
+    });
+
+    it('respects per-skill rateLimit override from frontmatter', async () => {
+      const llmSkill: Skill = {
+        name: 'permissive-llm',
+        description: 'More permissive free LLM',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        mode: 'llm',
+        rateLimit: { perWindowMs: 3_600_000, maxPerWindow: 10 },
+        execute: vi.fn().mockResolvedValue({ data: 'ok' }),
+      };
+      const registry = makeFakeRegistry(llmSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, maxQueueSize: 100 },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+
+      for (let i = 0; i < 8; i++) {
+        const job = makeJob(`override-${i}`);
+        job.customerId = 'cust';
+        triggerJob(job);
+      }
+
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      // Override allows up to 10/hour, all 8 should execute.
+      expect((llmSkill.execute as any).mock.calls.length).toBe(8);
+    });
+
+    it('honors override window distinct from default (24h, cap 5)', async () => {
+      // Override sets a 24-hour window with cap 5. The default per-customer
+      // window is 1 hour with cap 3 - if the limiter store used the default
+      // window, the cap would silently reset every hour and 6+ requests
+      // could pass. The accessor must produce a per-skill limiter sized
+      // to the override.
+      const llmSkill: Skill = {
+        name: 'long-window-llm',
+        description: 'Long-window free LLM',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        mode: 'llm',
+        rateLimit: { perWindowMs: 24 * 60 * 60 * 1000, maxPerWindow: 5 },
+        execute: vi.fn().mockResolvedValue({ data: 'ok' }),
+      };
+      const registry = makeFakeRegistry(llmSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, maxQueueSize: 100 },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+
+      for (let i = 0; i < 8; i++) {
+        const job = makeJob(`long-${i}`);
+        job.customerId = 'long-cust';
+        triggerJob(job);
+      }
+
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      // Cap is 5 over 24h - exactly 5 should execute, the rest get
+      // rate-limited feedback.
+      expect((llmSkill.execute as any).mock.calls.length).toBe(5);
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const rateLimited = feedbackCalls.filter(
+        (c: any) => c[1]?.type === 'error' && c[1]?.message?.includes('Rate limited'),
+      );
+      expect(rateLimited.length).toBe(3);
+    });
+  });
+
+  describe('LLM health preflight gate', () => {
+    it('refuses LLM job when monitor.assertReady throws', async () => {
+      const llmSkill: Skill = {
+        name: 'gated-llm',
+        description: 'Gated LLM',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'llm',
+        resolvedTriple: { provider: 'anthropic', model: 'claude-haiku-4-5', maxTokens: 1024 },
+        execute: vi.fn().mockResolvedValue({ data: 'unreachable' }),
+      };
+      const registry = makeFakeRegistry(llmSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi.fn().mockRejectedValue(new Error('LLM anthropic/haiku billing: HTTP 402')),
+      } as any;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('gated-job'));
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      // Skill never executed; payment-required never sent; ledger pristine.
+      expect(llmSkill.execute).not.toHaveBeenCalled();
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const paymentRequired = feedbackCalls.find((c: any) => c[1]?.type === 'payment-required');
+      expect(paymentRequired).toBeUndefined();
+      const unavailable = feedbackCalls.find(
+        (c: any) =>
+          c[1]?.type === 'error' && c[1]?.message?.includes('Service temporarily unavailable'),
+      );
+      expect(unavailable).toBeDefined();
+      expect(ledger.getStatus('gated-job')).toBeUndefined();
+    });
+
+    it('lets the job through when assertReady resolves', async () => {
+      const llmSkill: Skill = {
+        name: 'healthy-llm',
+        description: 'Healthy LLM',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        mode: 'llm',
+        resolvedTriple: { provider: 'anthropic', model: 'claude-haiku-4-5', maxTokens: 1024 },
+        execute: vi.fn().mockResolvedValue({ data: 'all good' }),
+      };
+      const registry = makeFakeRegistry(llmSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('healthy-job'));
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(stubMonitor.assertReady).toHaveBeenCalledWith('anthropic', 'claude-haiku-4-5');
+      expect(llmSkill.execute).toHaveBeenCalledOnce();
+      expect(ledger.getStatus('healthy-job')).toBe('delivered');
+    });
+
+    it('skips preflight for non-LLM skills', async () => {
+      const staticSkill: Skill = {
+        name: 'static',
+        description: 'Static',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        mode: 'static-script',
+        execute: vi.fn().mockResolvedValue({ data: 'static result' }),
+      };
+      const registry = makeFakeRegistry(staticSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi.fn().mockRejectedValue(new Error('should not be called')),
+      } as any;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('static-job'));
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(stubMonitor.assertReady).not.toHaveBeenCalled();
+      expect(staticSkill.execute).toHaveBeenCalledOnce();
+    });
+  });
+
   describe('concurrent stress', () => {
     it('processes many jobs with limited concurrency', async () => {
       const skill = makeFakeSkill('test-skill', 'ok');

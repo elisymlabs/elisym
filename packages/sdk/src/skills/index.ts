@@ -40,3 +40,4 @@ export {
   validateSkillFrontmatter,
 } from './loader';
 export type { LoaderLogger, LoadSkillsOptions, ParsedSkill, SkillFrontmatter } from './loader';
+export type { SkillRateLimit } from '../llm-health/types';

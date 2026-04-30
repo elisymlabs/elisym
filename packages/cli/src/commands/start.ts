@@ -31,6 +31,7 @@ import {
   type LoadedAgent,
   type MediaCache,
 } from '@elisym/sdk/agent-store';
+import { LlmHealthMonitor, startLlmHeartbeat, type HeartbeatHandle } from '@elisym/sdk/llm-health';
 import { address, createSolanaRpc } from '@solana/kit';
 import { probeRelays } from '../diagnostics.js';
 import {
@@ -44,7 +45,7 @@ import { JobLedger } from '../ledger.js';
 import {
   createLlmClient,
   getLlmProvider,
-  verifyLlmApiKey,
+  verifyLlmApiKeyDeep,
   type LlmConfig,
   type LlmProvider,
 } from '../llm';
@@ -179,6 +180,7 @@ export async function cmdStart(
   const dependentSkillsByProvider = new Map<LlmProvider, string[]>();
   let agentDefaultCacheKey: string | undefined;
   const llmClientCache = new Map<string, LlmClient>();
+  const healthMonitor = new LlmHealthMonitor();
 
   if (llmSkills.length > 0) {
     const resolutionErrors: string[] = [];
@@ -195,6 +197,11 @@ export async function cmdStart(
       }
       const cacheKey = cacheKeyFor(result);
       triplesByKey.set(cacheKey, result);
+      skill.resolvedTriple = {
+        provider: result.provider,
+        model: result.model,
+        maxTokens: result.maxTokens,
+      };
       const list = dependentSkillsByProvider.get(result.provider) ?? [];
       list.push(skill.name);
       dependentSkillsByProvider.set(result.provider, list);
@@ -243,27 +250,53 @@ export async function cmdStart(
       process.exit(1);
     }
 
-    for (const provider of keyByProvider.keys()) {
-      const apiKey = keyByProvider.get(provider);
+    // Deep-verify each unique (provider, model) pair the agent will use.
+    // Deep verification consumes one billing token per probe (~$0.00001
+    // on Haiku) but distinguishes valid keys from billing-exhausted ones,
+    // which `/v1/models` cannot.
+    for (const [, triple] of triplesByKey) {
+      const apiKey = keyByProvider.get(triple.provider);
       if (!apiKey) {
         continue;
       }
-      const envVar = getLlmProvider(provider)?.envVar ?? `${provider.toUpperCase()}_API_KEY`;
-      process.stdout.write(`  Verifying ${provider} API key... `);
-      const verification = await verifyLlmApiKey(provider, apiKey);
+      const envVar =
+        getLlmProvider(triple.provider)?.envVar ?? `${triple.provider.toUpperCase()}_API_KEY`;
+      process.stdout.write(`  Verifying ${triple.provider} ${triple.model}... `);
+      const verification = await verifyLlmApiKeyDeep(triple.provider, apiKey, triple.model);
+      const descriptor = getLlmProvider(triple.provider);
+      const verifyFn = async (signal?: AbortSignal) =>
+        descriptor
+          ? descriptor.verifyKeyDeep(apiKey, triple.model, signal)
+          : { ok: false as const, reason: 'unavailable' as const, error: 'no descriptor' };
+      healthMonitor.register({
+        provider: triple.provider,
+        model: triple.model,
+        verifyFn,
+      });
+      healthMonitor.seed(triple.provider, triple.model, verification);
       if (verification.ok) {
         console.log('ok');
       } else if (verification.reason === 'invalid') {
         console.log('INVALID');
-        console.error(`  ! ${provider} rejected the API key (HTTP ${verification.status}).`);
+        console.error(`  ! ${triple.provider} rejected the API key (HTTP ${verification.status}).`);
         console.error(
           `    Update it via \`npx @elisym/cli profile ${agentName}\` or set ${envVar} to a valid key.\n`,
+        );
+        process.exit(1);
+      } else if (verification.reason === 'billing') {
+        console.log('BILLING');
+        const detail = verification.body ? ` ${verification.body.slice(0, 200)}` : '';
+        console.error(
+          `  ! ${triple.provider} reports a billing/quota issue for ${triple.model}.${detail}`,
+        );
+        console.error(
+          `    Top up the account at the provider console, or set ${envVar} to a key on a funded org.\n`,
         );
         process.exit(1);
       } else {
         console.log('unavailable');
         console.warn(
-          `  ! Could not verify ${provider} API key (${verification.error}). Continuing - jobs will fail if the key is invalid.\n`,
+          `  ! Could not verify ${triple.provider} ${triple.model} (${verification.error}). Continuing - jobs will fail if the key is invalid.\n`,
         );
       }
     }
@@ -531,26 +564,44 @@ export async function cmdStart(
     logger,
   });
 
-  const runtime = new AgentRuntime(transport, registry, skillCtx, runtimeConfig, ledger, {
-    onJobReceived: (job) => {
-      const cap = job.tags.find((t) => t !== 'elisym') ?? 'unknown';
-      // Never log job.input here - capability tag is the only descriptor needed.
-      process.stdout.write(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}\n`);
-      logger.info({ event: 'job_received', jobId: job.jobId, capability: cap });
+  let llmHeartbeat: HeartbeatHandle | undefined;
+  if (llmSkills.length > 0) {
+    llmHeartbeat = startLlmHeartbeat({
+      monitor: healthMonitor,
+      log: diagLog,
+    });
+    diagLog('LLM health monitor armed (10min TTL, 10min heartbeat).');
+  }
+
+  const runtime = new AgentRuntime(
+    transport,
+    registry,
+    skillCtx,
+    runtimeConfig,
+    ledger,
+    {
+      onJobReceived: (job) => {
+        const cap = job.tags.find((t) => t !== 'elisym') ?? 'unknown';
+        // Never log job.input here - capability tag is the only descriptor needed.
+        process.stdout.write(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}\n`);
+        logger.info({ event: 'job_received', jobId: job.jobId, capability: cap });
+      },
+      onJobCompleted: (jobId) => {
+        process.stdout.write(`  [job] ${jobId.slice(0, 16)} | delivered\n`);
+        logger.info({ event: 'job_delivered', jobId });
+      },
+      onJobError: (jobId, error) => {
+        process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${error}\n`);
+        logger.error({ event: 'job_error', jobId, error });
+      },
+      onLog: diagLog,
+      onStop: () => {
+        watchdog.stop();
+        llmHeartbeat?.stop();
+      },
     },
-    onJobCompleted: (jobId) => {
-      process.stdout.write(`  [job] ${jobId.slice(0, 16)} | delivered\n`);
-      logger.info({ event: 'job_delivered', jobId });
-    },
-    onJobError: (jobId, error) => {
-      process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${error}\n`);
-      logger.error({ event: 'job_error', jobId, error });
-    },
-    onLog: diagLog,
-    onStop: () => {
-      watchdog.stop();
-    },
-  });
+    healthMonitor,
+  );
 
   // -- Step 15: Run --
   console.log('  * Running. Press Ctrl+C to stop.\n');

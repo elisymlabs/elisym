@@ -1,6 +1,6 @@
 {
   "name": "@elisym/sdk",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "TypeScript SDK for elisym - AI agent discovery, marketplace, and payments on Nostr",
   "keywords": [
     "ai-agents",
@@ -82,6 +82,16 @@
       "require": {
         "types": "./dist/skills.d.cts",
         "default": "./dist/skills.cjs"
+      }
+    },
+    "./llm-health": {
+      "import": {
+        "types": "./dist/llm-health.d.ts",
+        "default": "./dist/llm-health.js"
+      },
+      "require": {
+        "types": "./dist/llm-health.d.cts",
+        "default": "./dist/llm-health.cjs"
       }
     }
   },

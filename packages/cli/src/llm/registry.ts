@@ -13,31 +13,12 @@
  * descriptor's runtime body runs.
  */
 
+import type { LlmKeyVerification } from '@elisym/sdk/llm-health';
 import type { LlmClient } from '@elisym/sdk/skills';
 import { ANTHROPIC_PROVIDER } from './providers/anthropic';
 import { OPENAI_PROVIDER } from './providers/openai';
 
-export interface LlmKeyVerificationOk {
-  ok: true;
-}
-
-export interface LlmKeyVerificationInvalid {
-  ok: false;
-  reason: 'invalid';
-  status: number;
-  body: string;
-}
-
-export interface LlmKeyVerificationUnavailable {
-  ok: false;
-  reason: 'unavailable';
-  error: string;
-}
-
-export type LlmKeyVerification =
-  | LlmKeyVerificationOk
-  | LlmKeyVerificationInvalid
-  | LlmKeyVerificationUnavailable;
+export type { LlmKeyVerification } from '@elisym/sdk/llm-health';
 
 /**
  * Config passed to a descriptor's `createClient`. Mirrors the SDK's
@@ -76,8 +57,22 @@ export interface LlmProviderDescriptor {
   fallbackModels: string[];
   /** Pull the live model list from the provider. Returns `fallbackModels` on failure. */
   fetchModels(apiKey: string, signal?: AbortSignal): Promise<string[]>;
-  /** Lightweight authenticated probe before the agent publishes capabilities. */
+  /**
+   * Lightweight authenticated probe before the agent publishes capabilities.
+   * Hits a metadata endpoint (e.g. `/v1/models`) so it does not consume
+   * billing credits. Used for UI commands and as a cheap liveness check.
+   */
   verifyKey(apiKey: string, signal?: AbortSignal): Promise<LlmKeyVerification>;
+  /**
+   * Authoritative deep probe that consumes a single token from the
+   * provider's billing account. Distinguishes invalid keys, billing/quota
+   * exhaustion, and transient unavailability. Used at agent startup,
+   * runtime preflight, and the LLM health heartbeat.
+   *
+   * Caller passes the model the skill will actually use - billing checks
+   * are scoped to that model since some orgs gate access per model.
+   */
+  verifyKeyDeep(apiKey: string, model: string, signal?: AbortSignal): Promise<LlmKeyVerification>;
   /** Build a fresh `LlmClient` for the given config (apiKey + model + maxTokens + logUsage). */
   createClient(config: CreateLlmClientConfig): LlmClient;
   /** True when the model uses provider-specific reasoning quirks (e.g. OpenAI o1/o3/gpt-5 family). */

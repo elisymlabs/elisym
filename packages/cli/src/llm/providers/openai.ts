@@ -252,6 +252,72 @@ async function verifyKey(apiKey: string, signal?: AbortSignal): Promise<LlmKeyVe
   }
 }
 
+const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient_quota', 'insufficient'];
+
+function bodyLooksLikeBilling(body: string): boolean {
+  const lower = body.toLowerCase();
+  return BILLING_BODY_MARKERS.some((marker) => lower.includes(marker));
+}
+
+/**
+ * Deep verification: actually invokes chat completions with
+ * max_tokens=1. Distinguishes billing-exhausted accounts from valid ones,
+ * including OpenAI's specific 429 + `insufficient_quota` body shape.
+ *
+ * Use this at startup, runtime preflight, and heartbeat. Use the cheap
+ * `verifyKey` only for UI commands where billing isn't relevant.
+ */
+async function verifyKeyDeep(
+  apiKey: string,
+  model: string,
+  signal?: AbortSignal,
+): Promise<LlmKeyVerification> {
+  try {
+    const reasoning = isOpenAIReasoningModel(model);
+    const response = await fetchWithTimeout(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          ...(reasoning ? { max_completion_tokens: 1 } : { max_tokens: 1 }),
+          messages: [{ role: 'user', content: '.' }],
+        }),
+      },
+      signal,
+    );
+    if (response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return { ok: true };
+    }
+    const body = (await response.text().catch(() => '')).slice(0, 500);
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, reason: 'invalid', status: response.status, body };
+    }
+    if (response.status === 402) {
+      return { ok: false, reason: 'billing', status: response.status, body };
+    }
+    if (response.status === 429 && bodyLooksLikeBilling(body)) {
+      return { ok: false, reason: 'billing', status: response.status, body };
+    }
+    if (response.status === 400 && bodyLooksLikeBilling(body)) {
+      return { ok: false, reason: 'billing', status: response.status, body };
+    }
+    return {
+      ok: false,
+      reason: 'unavailable',
+      error: `HTTP ${response.status}: ${body.slice(0, 200)}`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, reason: 'unavailable', error: message };
+  }
+}
+
 export const OPENAI_PROVIDER: LlmProviderDescriptor = {
   id: 'openai',
   displayName: 'OpenAI (GPT)',
@@ -260,6 +326,7 @@ export const OPENAI_PROVIDER: LlmProviderDescriptor = {
   fallbackModels: FALLBACK_MODELS,
   fetchModels,
   verifyKey,
+  verifyKeyDeep,
   createClient: (config) =>
     new OpenAIClient({
       apiKey: config.apiKey,

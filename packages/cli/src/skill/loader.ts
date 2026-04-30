@@ -20,9 +20,10 @@ import { ScriptSkill } from './script-skill.js';
 import type { Skill } from './index.js';
 
 function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
+  let skill: Skill;
   switch (parsed.mode) {
     case 'llm':
-      return new ScriptSkill(
+      skill = new ScriptSkill(
         parsed.name,
         parsed.description,
         parsed.capabilities,
@@ -36,6 +37,7 @@ function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
         parsed.maxToolRounds,
         parsed.llmOverride,
       );
+      break;
     case 'static-file': {
       if (parsed.outputFile === undefined) {
         throw new Error(
@@ -48,7 +50,7 @@ function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
           `SKILL.md "${parsed.name}": "output_file" must stay inside the skill directory`,
         );
       }
-      return new StaticFileSkill({
+      skill = new StaticFileSkill({
         name: parsed.name,
         description: parsed.description,
         capabilities: parsed.capabilities,
@@ -59,6 +61,7 @@ function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
         imageFile: parsed.imageFile,
         dir: entryPath,
       });
+      break;
     }
     case 'static-script':
     case 'dynamic-script': {
@@ -72,7 +75,7 @@ function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
         throw new Error(`SKILL.md "${parsed.name}": "script" must stay inside the skill directory`);
       }
       const Ctor = parsed.mode === 'static-script' ? StaticScriptSkill : DynamicScriptSkill;
-      return new Ctor({
+      skill = new Ctor({
         name: parsed.name,
         description: parsed.description,
         capabilities: parsed.capabilities,
@@ -85,8 +88,13 @@ function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
         imageFile: parsed.imageFile,
         dir: entryPath,
       });
+      break;
     }
   }
+  if (parsed.rateLimit) {
+    skill.rateLimit = parsed.rateLimit;
+  }
+  return skill;
 }
 
 export function loadSkillsFromDir(skillsDir: string): Skill[] {

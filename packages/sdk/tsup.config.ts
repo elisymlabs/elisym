@@ -7,6 +7,7 @@ export default defineConfig({
     'agent-store': 'src/agent-store/index.ts',
     runtime: 'src/runtime/index.ts',
     skills: 'src/skills/index.ts',
+    'llm-health': 'src/llm-health/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,

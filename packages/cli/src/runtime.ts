@@ -13,6 +13,13 @@ import {
   LIMITS,
 } from '@elisym/sdk';
 import type { Asset, ProtocolConfigInput, SlidingWindowLimiter } from '@elisym/sdk';
+import {
+  createFreeLlmLimiterSet,
+  FREE_LLM_GLOBAL_KEY,
+  freeLlmCustomerKey,
+  type FreeLlmLimiterSet,
+  type LlmHealthMonitor,
+} from '@elisym/sdk/llm-health';
 import { createSolanaRpc } from '@solana/kit';
 import pLimit from 'p-limit';
 import { getRpcUrl } from './helpers.js';
@@ -101,6 +108,13 @@ export class AgentRuntime {
     maxPerWindow: GLOBAL_MAX_JOBS_PER_WINDOW,
     maxKeys: 1,
   });
+  /**
+   * Two-tier limiter applied only to free LLM skills (mode='llm', price=0).
+   * Existing per-customer + global limiters above remain in effect for all
+   * jobs; this set adds tighter caps to prevent unpaid spam from draining
+   * the operator's API key.
+   */
+  private freeLlmLimiters: FreeLlmLimiterSet = createFreeLlmLimiterSet();
 
   constructor(
     private transport: NostrTransport,
@@ -109,6 +123,7 @@ export class AgentRuntime {
     private config: RuntimeConfig,
     private ledger: JobLedger,
     private callbacks: RuntimeCallbacks = {},
+    private healthMonitor?: LlmHealthMonitor,
   ) {
     this.limit = pLimit(config.maxConcurrentJobs);
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
@@ -196,9 +211,42 @@ export class AgentRuntime {
         return;
       }
 
-      // Both checks passed - record the hit against both limiters.
+      // Free-LLM extra protection: only applies when the matched skill
+      // is mode='llm' and price=0. Routes through skills.route once;
+      // result is reused below in `executeJob`. We `peek` first across
+      // all tiers and only `check` when every tier passes, so a denial
+      // in tier N never consumes a slot in tiers < N.
+      const matched = this.skills.route(job.tags);
+      const isFreeLlm = matched?.mode === 'llm' && matched.priceSubunits === 0;
+      let perCustomerLimiter: SlidingWindowLimiter | undefined;
+      let perSkillKey: string | undefined;
+      if (isFreeLlm && matched) {
+        if (!this.freeLlmLimiters.globalLimiter.peek(FREE_LLM_GLOBAL_KEY).allowed) {
+          this.transport
+            .sendFeedback(job, { type: 'error', message: 'Rate limited, try again later' })
+            .catch(() => {});
+          return;
+        }
+        perCustomerLimiter = this.freeLlmLimiters.getPerCustomerLimiter(
+          matched.name,
+          matched.rateLimit,
+        );
+        perSkillKey = freeLlmCustomerKey(job.customerId, matched.name);
+        if (!perCustomerLimiter.peek(perSkillKey).allowed) {
+          this.transport
+            .sendFeedback(job, { type: 'error', message: 'Rate limited, try again later' })
+            .catch(() => {});
+          return;
+        }
+      }
+
+      // All checks passed - record the hit against every active limiter.
       this.customerLimiter.check(job.customerId);
       this.globalLimiter.check(GLOBAL_LIMITER_KEY);
+      if (isFreeLlm && perCustomerLimiter && perSkillKey) {
+        this.freeLlmLimiters.globalLimiter.check(FREE_LLM_GLOBAL_KEY);
+        perCustomerLimiter.check(perSkillKey);
+      }
 
       this.callbacks.onJobReceived?.(job);
       this.inFlight.add(job.jobId);
@@ -237,10 +285,12 @@ export class AgentRuntime {
     });
   }
 
-  /** Drop expired hits from both sliding-window limiters. */
+  /** Drop expired hits from every sliding-window limiter. */
   private cleanupRateLimits(): void {
     this.customerLimiter.prune();
     this.globalLimiter.prune();
+    this.freeLlmLimiters.globalLimiter.prune();
+    this.freeLlmLimiters.prunePerCustomer();
   }
 
   stop(): void {
@@ -315,6 +365,32 @@ export class AgentRuntime {
     // W2: Validate input length before processing
     if (job.input.length > LIMITS.MAX_INPUT_LENGTH) {
       throw new Error(`Input too long: ${job.input.length} chars (max ${LIMITS.MAX_INPUT_LENGTH})`);
+    }
+
+    // ── Preflight: gate LLM jobs against the health monitor before
+    // sending payment-required. If the operator's API key has gone
+    // invalid/billing-exhausted since startup, refuse the job before
+    // the customer pays and before we record anything in the ledger.
+    // Customer-facing message stays generic to avoid leaking billing
+    // status; operator log carries the real reason via the throw.
+    const matched = this.skills.route(job.tags);
+    if (this.healthMonitor && matched && matched.mode === 'llm' && matched.resolvedTriple) {
+      try {
+        await this.healthMonitor.assertReady(
+          matched.resolvedTriple.provider,
+          matched.resolvedTriple.model,
+        );
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log(`[${job.jobId.slice(0, 8)}] LLM health gate refused job: ${detail}`);
+        await this.transport
+          .sendFeedback(job, {
+            type: 'error',
+            message: 'Service temporarily unavailable, try again later',
+          })
+          .catch(() => {});
+        return;
+      }
     }
 
     // ── Step 1: Resolve per-capability price and collect payment ──
