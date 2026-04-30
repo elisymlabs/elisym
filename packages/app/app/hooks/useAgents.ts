@@ -156,17 +156,28 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
           setStatus((prev) => (prev === 'enriched' ? prev : 'eose'));
         },
         onComplete: (sortedAgents) => {
-          // Upsert (don't clear) so capability events that arrived between
-          // the SDK's caps-EOSE snapshot and `onComplete` survive. The SDK's
-          // enrichment never removes agents from the snapshot, only mutates
-          // them in place, so a clear-and-replace would only ever discard
-          // legitimate live newcomers received during the enrichment window.
+          // Merge enrichment over prior (cached + streamed) data instead of
+          // replacing. Relay responses for the kind:6xxx result and kind:7000
+          // feedback queries are flaky; on a pass where they don't return for
+          // a given pubkey, the enriched agent has no `lastPaidJobAt` /
+          // `positiveCount` / `name` / `picture`. A naive replace would
+          // clobber the cached values and (via `setAgentProfiles` below)
+          // persist the loss to IDB. parseCapabilityEvent + runEnrichment
+          // omit keys they did not populate, so a spread cleanly preserves
+          // prior values for absent keys.
+          const mergedAgents: Agent[] = [];
           for (const agent of sortedAgents) {
-            agentMapRef.current.set(agent.pubkey, agent);
+            const prior = agentMapRef.current.get(agent.pubkey);
+            const next = prior ? { ...prior, ...agent } : agent;
+            if (prior && prior.lastSeen > next.lastSeen) {
+              next.lastSeen = prior.lastSeen;
+            }
+            agentMapRef.current.set(agent.pubkey, next);
+            mergedAgents.push(next);
           }
-          enrichedOrderRef.current = sortedAgents;
+          enrichedOrderRef.current = mergedAgents;
           enriched = true;
-          void setAgentProfiles(NETWORK, sortedAgents);
+          void setAgentProfiles(NETWORK, mergedAgents);
           setStatus('enriched');
           setVersion((prev) => prev + 1);
           // Cold-path first-paint: warm path already flipped `displayReady`,
@@ -175,7 +186,7 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
             return;
           }
           void preloadFirstBatchPictures(
-            sortedAgents,
+            mergedAgents,
             firstPaintBatchSize,
             PRELOAD_TIMEOUT_MS,
           ).then(() => {
