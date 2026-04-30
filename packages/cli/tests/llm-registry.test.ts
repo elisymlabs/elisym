@@ -11,10 +11,55 @@ import {
 
 describe('LLM provider registry', () => {
   describe('builtins', () => {
-    it('registers anthropic and openai by default', () => {
+    it('registers anthropic, openai, xai, google, and deepseek by default', () => {
       const ids = getRegisteredProviderIds();
       expect(ids).toContain('anthropic');
       expect(ids).toContain('openai');
+      expect(ids).toContain('xai');
+      expect(ids).toContain('google');
+      expect(ids).toContain('deepseek');
+    });
+
+    describe.each([
+      {
+        id: 'xai',
+        envVar: 'XAI_API_KEY',
+        displayName: 'xAI (Grok)',
+        defaultModelPrefix: 'grok-',
+      },
+      {
+        id: 'google',
+        envVar: 'GEMINI_API_KEY',
+        displayName: 'Google (Gemini)',
+        defaultModelPrefix: 'gemini-',
+      },
+      {
+        id: 'deepseek',
+        envVar: 'DEEPSEEK_API_KEY',
+        displayName: 'DeepSeek',
+        defaultModelPrefix: 'deepseek-',
+      },
+    ])('OpenAI-compatible descriptor: $id', ({ id, envVar, displayName, defaultModelPrefix }) => {
+      it('exposes the expected fields', () => {
+        const descriptor = getLlmProvider(id);
+        expect(descriptor).toBeDefined();
+        expect(descriptor?.envVar).toBe(envVar);
+        expect(descriptor?.displayName).toBe(displayName);
+        expect(descriptor?.defaultModel.startsWith(defaultModelPrefix)).toBe(true);
+        expect(descriptor?.fallbackModels.length).toBeGreaterThan(0);
+      });
+
+      it('createLlmClient returns a usable client', () => {
+        const client = createLlmClient({
+          provider: id,
+          apiKey: 'sk-test',
+          model: `${defaultModelPrefix}placeholder`,
+          maxTokens: 1,
+        });
+        expect(typeof client.complete).toBe('function');
+        expect(typeof client.completeWithTools).toBe('function');
+        expect(typeof client.formatToolResultMessages).toBe('function');
+      });
     });
 
     it('exposes Anthropic descriptor with the required fields', () => {

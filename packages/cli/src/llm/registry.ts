@@ -16,7 +16,10 @@
 import type { LlmKeyVerification } from '@elisym/sdk/llm-health';
 import type { LlmClient } from '@elisym/sdk/skills';
 import { ANTHROPIC_PROVIDER } from './providers/anthropic';
+import { DEEPSEEK_PROVIDER } from './providers/deepseek';
+import { GOOGLE_PROVIDER } from './providers/google';
 import { OPENAI_PROVIDER } from './providers/openai';
+import { XAI_PROVIDER } from './providers/xai';
 
 export type { LlmKeyVerification } from '@elisym/sdk/llm-health';
 
@@ -108,3 +111,6 @@ export function getRegisteredProviderIds(): string[] {
 // `listLlmProviders` and the order interactive prompts will offer.
 registerLlmProvider(ANTHROPIC_PROVIDER);
 registerLlmProvider(OPENAI_PROVIDER);
+registerLlmProvider(XAI_PROVIDER);
+registerLlmProvider(GOOGLE_PROVIDER);
+registerLlmProvider(DEEPSEEK_PROVIDER);

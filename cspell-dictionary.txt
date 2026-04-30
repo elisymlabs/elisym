@@ -19,6 +19,7 @@ clap
 crossterm
 damus
 dedup
+deepseek
 deduplicate
 deduplicated
 deduplicates
