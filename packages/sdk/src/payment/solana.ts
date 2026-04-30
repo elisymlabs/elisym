@@ -1,3 +1,8 @@
+import {
+  deriveEventAuthorityAddress,
+  deriveNetworkStatsAddress,
+  getIncrementStatsInstruction,
+} from '@elisym/config-client';
 import { getAddMemoInstruction } from '@solana-program/memo';
 import { getTransferSolInstruction } from '@solana-program/system';
 import {
@@ -26,7 +31,7 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { getProtocolConfig } from '../config/onchain';
-import { DEFAULTS, ELISYM_PROTOCOL_TAG, LIMITS } from '../constants';
+import { DEFAULTS, ELISYM_PROTOCOL_TAG, LIMITS, getProtocolProgramId } from '../constants';
 import type {
   PaymentAssetRef,
   PaymentRequestData,
@@ -301,6 +306,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     // round-trip that depends on them.
     const paymentInstructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
       jobEventId: options?.jobEventId,
+      programId: options?.programId,
     });
 
     const priorityFeeMicroLamports =
@@ -738,16 +744,30 @@ function waitMs(ms: number): Promise<void> {
 export async function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
   payerSigner: Signer,
-  options?: { jobEventId?: string },
+  options?: { jobEventId?: string; programId?: Address },
 ): Promise<readonly unknown[]> {
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);
   const protocolTag = address(ELISYM_PROTOCOL_TAG);
+  const programId = options?.programId ?? getProtocolProgramId('devnet');
   const feeAmount = paymentRequest.fee_amount ?? 0;
   const providerAmount =
     paymentRequest.fee_address && feeAmount > 0
       ? paymentRequest.amount - feeAmount
       : paymentRequest.amount;
+
+  const statsPda = await deriveNetworkStatsAddress(programId);
+  const eventAuthority = await deriveEventAuthorityAddress(programId);
+  const incrementStatsIx = getIncrementStatsInstruction(
+    {
+      stats: statsPda,
+      eventAuthority,
+      program: programId,
+      amount: BigInt(paymentRequest.amount),
+      isNative: !resolveAssetFromPaymentRequest(paymentRequest).mint,
+    },
+    { programAddress: programId },
+  );
 
   if (providerAmount <= 0) {
     throw new Error(
@@ -790,6 +810,7 @@ export async function buildPaymentInstructions(
         }),
       );
     }
+    instructions.push(incrementStatsIx);
     return instructions;
   }
 
@@ -875,6 +896,7 @@ export async function buildPaymentInstructions(
     );
   }
 
+  instructions.push(incrementStatsIx);
   return instructions;
 }
 

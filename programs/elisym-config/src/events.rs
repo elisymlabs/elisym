@@ -42,3 +42,17 @@ pub struct TreasuryUpdated {
     pub new_treasury: Pubkey,
     pub timestamp: i64,
 }
+
+#[event]
+pub struct StatsInitialized {
+    pub admin: Pubkey,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct StatsIncremented {
+    pub job_count: u64,
+    pub amount: u64,
+    pub is_native: bool,
+    pub timestamp: i64,
+}

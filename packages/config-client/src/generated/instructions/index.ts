@@ -8,7 +8,9 @@
 
 export * from './acceptAdmin';
 export * from './cancelPendingAdmin';
+export * from './incrementStats';
 export * from './initialize';
+export * from './initializeStats';
 export * from './proposeAdmin';
 export * from './setFeeBps';
 export * from './setTreasury';

@@ -16,4 +16,6 @@ pub enum ErrorCode {
     PendingAdminAlreadySet,
     #[msg("Unsupported config version")]
     UnsupportedVersion,
+    #[msg("Stats counter overflow")]
+    StatsOverflow,
 }

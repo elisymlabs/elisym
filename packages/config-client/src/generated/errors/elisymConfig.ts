@@ -28,6 +28,8 @@ export const ELISYM_CONFIG_ERROR__NO_PENDING_ADMIN = 0x1774; // 6004
 export const ELISYM_CONFIG_ERROR__PENDING_ADMIN_ALREADY_SET = 0x1775; // 6005
 /** UnsupportedVersion: Unsupported config version */
 export const ELISYM_CONFIG_ERROR__UNSUPPORTED_VERSION = 0x1776; // 6006
+/** StatsOverflow: Stats counter overflow */
+export const ELISYM_CONFIG_ERROR__STATS_OVERFLOW = 0x1777; // 6007
 
 export type ElisymConfigError =
   | typeof ELISYM_CONFIG_ERROR__FEE_TOO_HIGH
@@ -35,6 +37,7 @@ export type ElisymConfigError =
   | typeof ELISYM_CONFIG_ERROR__INVALID_TREASURY
   | typeof ELISYM_CONFIG_ERROR__NO_PENDING_ADMIN
   | typeof ELISYM_CONFIG_ERROR__PENDING_ADMIN_ALREADY_SET
+  | typeof ELISYM_CONFIG_ERROR__STATS_OVERFLOW
   | typeof ELISYM_CONFIG_ERROR__UNAUTHORIZED
   | typeof ELISYM_CONFIG_ERROR__UNSUPPORTED_VERSION;
 
@@ -46,6 +49,7 @@ if (process.env.NODE_ENV !== 'production') {
     [ELISYM_CONFIG_ERROR__INVALID_TREASURY]: `Treasury address cannot be default`,
     [ELISYM_CONFIG_ERROR__NO_PENDING_ADMIN]: `No pending admin transfer`,
     [ELISYM_CONFIG_ERROR__PENDING_ADMIN_ALREADY_SET]: `Pending admin already set`,
+    [ELISYM_CONFIG_ERROR__STATS_OVERFLOW]: `Stats counter overflow`,
     [ELISYM_CONFIG_ERROR__UNAUTHORIZED]: `Unauthorized`,
     [ELISYM_CONFIG_ERROR__UNSUPPORTED_VERSION]: `Unsupported config version`,
   };

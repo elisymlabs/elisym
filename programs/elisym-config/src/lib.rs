@@ -46,4 +46,16 @@ pub mod elisym_config {
     pub fn set_treasury(ctx: Context<AdminOnly>, new_treasury: Pubkey) -> Result<()> {
         instructions::set_treasury::handler(ctx, new_treasury)
     }
+
+    pub fn initialize_stats(ctx: Context<InitializeStats>) -> Result<()> {
+        instructions::initialize_stats::handler(ctx)
+    }
+
+    pub fn increment_stats(
+        ctx: Context<IncrementStats>,
+        amount: u64,
+        is_native: bool,
+    ) -> Result<()> {
+        instructions::increment_stats::handler(ctx, amount, is_native)
+    }
 }

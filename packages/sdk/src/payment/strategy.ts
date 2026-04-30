@@ -132,4 +132,10 @@ export interface BuildTransactionOptions {
    * attached either way.
    */
   jobEventId?: string;
+  /**
+   * elisym-config program ID. Used to derive the `NetworkStats` PDA targeted
+   * by the appended `increment_stats` instruction. Defaults to the devnet
+   * deployment when omitted.
+   */
+  programId?: Address;
 }
