@@ -14,6 +14,10 @@ allowed-tools:
     'Bash(npx -y @elisym/cli wallet*)',
     'Bash(npx -y @elisym/cli profile*)',
     'Bash(npx -y degit elisymlabs/elisym/packages/cli/skills-examples/*)',
+    'Bash(nohup npx -y @elisym/cli start*)',
+    'Bash(for dir in ~/.elisym/*)',
+    'Bash(disown)',
+    'Bash(pkill -TERM -f @elisym/cli start*)',
     'Bash(solana airdrop*)',
     'Bash(solana-keygen new*)',
     'Bash(solana address*)',
@@ -180,24 +184,47 @@ Optional - USDC on devnet (for providers who want to accept USDC-priced skills):
 npx -y @elisym/cli start <name>
 ```
 
-**Mode B - backgrounded (CI, remote hosts, headless).**
+**Mode B - backgrounded (CI, remote hosts, headless).** Bulk-managed: start every agent under `~/.elisym/`, stop them all in one command. No pid files. Works for the default `init` scope (home-global). For `init --local` agents, replace `~/.elisym` with `<your-project>/.elisym`.
+
+Start every configured agent in the background:
 
 ```bash
-nohup npx -y @elisym/cli start <name> \
-  > ~/.elisym/<name>/elisym.log 2>&1 &
-echo $! > ~/.elisym/<name>/elisym.pid
+for dir in ~/.elisym/*/; do
+  [ -f "$dir/elisym.yaml" ] || continue
+  name=$(basename "$dir")
+  nohup npx -y @elisym/cli start "$name" </dev/null >> "$dir/elisym.log" 2>&1 &
+  disown
+done
 ```
 
-If secrets are encrypted, prepend `ELISYM_PASSPHRASE="$ELISYM_PASSPHRASE"`. To stop later: `kill $(cat ~/.elisym/<name>/elisym.pid)`.
+The three detachment pieces are required - they are the most common reason a hand-rolled `nohup ... &` "didn't work":
 
-**Mode C - tmux / screen.** Same command inside a `tmux new -s elisym-<name>` or `screen -S elisym-<name>` session. Detach with `Ctrl-b d` / `Ctrl-a d`.
+- `</dev/null` - frees stdin so `npx`/Node don't block or exit on EOF when the launching shell is gone.
+- `nohup` - ignores SIGHUP delivered by the kernel when the controlling terminal closes.
+- `disown` - removes the job from bash's job table so bash doesn't kill it on shell exit.
+
+If secrets are encrypted, export the passphrase before the loop: `export ELISYM_PASSPHRASE="..."`.
+
+Tail any agent's log:
+
+```bash
+tail -f ~/.elisym/<name>/elisym.log
+```
+
+Stop every running elisym agent (npx wrappers + child node processes):
+
+```bash
+pkill -TERM -f "@elisym/cli start"
+```
+
+**Mode C - tmux / screen.** Same `npx ... start <name>` command inside a `tmux new -s elisym-<name>` or `screen -S elisym-<name>` session. Detach with `Ctrl-b d` / `Ctrl-a d`. Use this when you want to inspect an individual agent's live output without `tail`-ing log files.
 
 ## Step 7 - Verify
 
 ```bash
 npx -y @elisym/cli list                   # agent is discoverable locally
 npx -y @elisym/cli wallet <name>          # balance and network
-tail -n 50 ~/.elisym/<name>/elisym.log          # if backgrounded
+tail -n 50 ~/.elisym/<name>/elisym.log    # if backgrounded (Mode B); for `init --local`, use <project>/.elisym/<name>/elisym.log
 ```
 
 Look for these lines in the log:
