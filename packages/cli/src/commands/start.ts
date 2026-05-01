@@ -416,7 +416,7 @@ export async function cmdStart(
   try {
     await client.discovery.publishProfile(
       identity,
-      agentName,
+      loaded.yaml.display_name ?? agentName,
       loaded.yaml.description ?? '',
       pictureUrl,
       bannerUrl,
