@@ -17,8 +17,10 @@ export interface UseAgentResult {
  * Seeds from the IndexedDB profile cache for instant render, then issues a
  * targeted `fetchAgent` (kind:31990 + kind:0 + paid-job enrichment, scoped to
  * one author) and replaces the cached snapshot with the enriched result. If
- * the network has no capability cards for this pubkey, status flips to
- * `not-found` so the caller can route to NotFound.
+ * the relay returns nothing, the IDB cache is used as a fallback so a
+ * transient relay miss does not blank out an agent the user just saw on the
+ * previous page; status only flips to `not-found` when both the relay and
+ * the cache are empty.
  */
 export function useAgent(pubkey: string): UseAgentResult {
   const { client } = useElisymClient();
@@ -33,9 +35,11 @@ export function useAgent(pubkey: string): UseAgentResult {
     }
 
     let cancelled = false;
-    // Once the network has resolved (ready or not-found), a late IDB read
-    // must not resurrect a stale profile - otherwise an agent the network
-    // says is gone keeps rendering from cache forever.
+    // Once the relay has returned a fresh profile, a late IDB read must not
+    // overwrite the merged version with the older cached snapshot. When the
+    // relay returns nothing, the cache is used as a fallback (see the
+    // `!fresh` branch below) so a transient relay miss does not blank out
+    // an agent the user just saw on the previous page.
     let networkSettled = false;
     setAgent(undefined);
     setStatus('loading');
@@ -55,8 +59,17 @@ export function useAgent(pubkey: string): UseAgentResult {
         }
         networkSettled = true;
         if (!fresh) {
-          setAgent(undefined);
-          setStatus('not-found');
+          const cached = await getAgentProfile(NETWORK, pubkey);
+          if (cancelled) {
+            return;
+          }
+          if (cached) {
+            setAgent((prev) => prev ?? cached);
+            setStatus('ready');
+          } else {
+            setAgent(undefined);
+            setStatus('not-found');
+          }
           return;
         }
         setAgent((prev) => (prev ? { ...prev, ...fresh } : fresh));
