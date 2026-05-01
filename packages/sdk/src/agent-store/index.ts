@@ -57,8 +57,17 @@ export { loadAgent, loadResolvedAgent, readAgentPublic } from './loader';
 export type { LoadedAgent } from './loader';
 
 // --- Writer ---
-export { createAgentDir, writeYaml, writeSecrets, writeFileAtomic } from './writer';
+export {
+  createAgentDir,
+  writeYaml,
+  writeYamlInitial,
+  writeSecrets,
+  writeFileAtomic,
+} from './writer';
 export type { CreateAgentDirOptions, CreatedAgentDir } from './writer';
+
+// --- Template ---
+export { renderInitialYaml } from './template';
 
 // --- List ---
 export { listAgents } from './list';

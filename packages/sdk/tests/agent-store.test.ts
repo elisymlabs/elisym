@@ -14,7 +14,9 @@ import {
   listAgents,
   loadAgent,
   createAgentDir,
+  renderInitialYaml,
   writeYaml,
+  writeYamlInitial,
   writeSecrets,
   readMediaCache,
   writeMediaCache,
@@ -437,5 +439,87 @@ describe('YAML on-disk format', () => {
     const parsed = YAML.parse(raw);
     expect(parsed.description).toBe('hi');
     expect(parsed.relays).toEqual(['wss://relay.damus.io']);
+  });
+});
+
+describe('renderInitialYaml', () => {
+  it('emits commented-out examples for unset optional fields', () => {
+    const yaml = ElisymYamlSchema.parse({
+      description: 'hi',
+      relays: ['wss://relay.damus.io'],
+    });
+    const text = renderInitialYaml(yaml);
+
+    expect(text).toMatch(/^description: hi$/m);
+    expect(text).toMatch(/^# display_name:/m);
+    expect(text).toMatch(/^# picture:/m);
+    expect(text).toMatch(/^# banner:/m);
+    expect(text).toMatch(/^# payments:/m);
+    expect(text).toMatch(/^# llm:/m);
+  });
+
+  it('emits set fields uncommented', () => {
+    const yaml = ElisymYamlSchema.parse({
+      display_name: 'Bob',
+      description: 'hi',
+      picture: './a.png',
+      relays: ['wss://relay.damus.io'],
+      payments: [{ chain: 'solana', network: 'devnet', address: 'XYZ' }],
+      llm: { provider: 'anthropic', model: 'claude-sonnet-4-6', max_tokens: 4096 },
+    });
+    const text = renderInitialYaml(yaml);
+
+    expect(text).toMatch(/^display_name: Bob$/m);
+    expect(text).toMatch(/^picture: \.\/a\.png$/m);
+    expect(text).toMatch(/^payments:$/m);
+    expect(text).toMatch(/^llm:$/m);
+    expect(text).not.toMatch(/^# display_name:/m);
+    expect(text).not.toMatch(/^# picture:/m);
+    expect(text).not.toMatch(/^# llm:/m);
+    expect(text).not.toMatch(/^# payments:/m);
+  });
+
+  it('always writes both security flags with explicit booleans', () => {
+    const yaml = ElisymYamlSchema.parse({ description: 'hi' });
+    const text = renderInitialYaml(yaml);
+    expect(text).toContain('withdrawals_enabled: false');
+    expect(text).toContain('agent_switch_enabled: false');
+  });
+
+  it('round-trips through YAML.parse + ElisymYamlSchema (comments dropped)', () => {
+    const yaml = ElisymYamlSchema.parse({
+      description: 'hi',
+      relays: ['wss://relay.damus.io'],
+      payments: [{ chain: 'solana', network: 'devnet', address: 'AAA' }],
+    });
+    const text = renderInitialYaml(yaml);
+    const reparsed = ElisymYamlSchema.parse(YAML.parse(text));
+
+    expect(reparsed.description).toBe('hi');
+    expect(reparsed.payments[0]?.address).toBe('AAA');
+    expect(reparsed.display_name).toBeUndefined();
+    expect(reparsed.picture).toBeUndefined();
+    expect(reparsed.llm).toBeUndefined();
+  });
+});
+
+describe('writeYamlInitial', () => {
+  it('writes a yaml with descriptive comments at agent creation time', async () => {
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+    const yaml = ElisymYamlSchema.parse({
+      description: 'hi',
+      relays: ['wss://relay.damus.io'],
+    });
+    await writeYamlInitial(dir, yaml);
+
+    const raw = await readFile(join(dir, 'elisym.yaml'), 'utf-8');
+    expect(raw).toContain('description: hi');
+    expect(raw).toMatch(/^# llm:/m);
+    expect(raw).toMatch(/^# display_name:/m);
+
+    const reparsed = ElisymYamlSchema.parse(YAML.parse(raw));
+    expect(reparsed.description).toBe('hi');
+    expect(reparsed.llm).toBeUndefined();
+    expect(reparsed.display_name).toBeUndefined();
   });
 });

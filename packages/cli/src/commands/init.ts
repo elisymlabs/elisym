@@ -17,7 +17,7 @@ import {
   resolveInHome,
   resolveInProject,
   writeSecrets,
-  writeYaml,
+  writeYamlInitial,
   type AgentSource,
   type ElisymYaml,
 } from '@elisym/sdk/agent-store';
@@ -260,7 +260,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
     collectedKeys.set(yaml.llm.provider, defaultProviderKey);
   }
   const llmApiKeys = Object.fromEntries(collectedKeys);
-  await writeYaml(created.dir, yaml);
+  await writeYamlInitial(created.dir, yaml);
   await writeSecrets(
     created.dir,
     {

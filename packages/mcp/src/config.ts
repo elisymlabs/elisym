@@ -12,6 +12,7 @@ import {
   loadAgent,
   writeSecrets,
   writeYaml,
+  writeYamlInitial,
 } from '@elisym/sdk/agent-store';
 import type { AgentSecurityFlags, SolanaNetwork } from './context.js';
 
@@ -97,7 +98,7 @@ export async function saveAgentConfig(name: string, input: SaveAgentConfigInput)
   const created = await createAgentDir({ target: 'home', name, cwd: process.cwd() });
   const network = input.network ?? 'devnet';
 
-  await writeYaml(created.dir, {
+  await writeYamlInitial(created.dir, {
     display_name: undefined,
     description: input.description,
     picture: undefined,

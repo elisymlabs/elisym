@@ -4,15 +4,16 @@ import { describe, expect, it } from 'vitest';
 import { ElisymYamlSchema } from '../src/agent-store/schema';
 
 const SKILL_PATH = join(__dirname, '..', '..', '..', 'skills', 'elisym-config', 'SKILL.md');
+const README_PATH = join(__dirname, '..', 'README.md');
 const FIELDS_BEGIN = '<!-- fields:begin -->';
 const FIELDS_END = '<!-- fields:end -->';
 
-function extractDocumentedFields(markdown: string): string[] {
+function extractDocumentedFields(markdown: string, source: string): string[] {
   const beginIdx = markdown.indexOf(FIELDS_BEGIN);
   const endIdx = markdown.indexOf(FIELDS_END);
   if (beginIdx === -1 || endIdx === -1 || endIdx < beginIdx) {
     throw new Error(
-      `skills/elisym-config/SKILL.md is missing the "${FIELDS_BEGIN}" / "${FIELDS_END}" anchors around the field table`,
+      `${source} is missing the "${FIELDS_BEGIN}" / "${FIELDS_END}" anchors around the field table`,
     );
   }
   const block = markdown.slice(beginIdx + FIELDS_BEGIN.length, endIdx);
@@ -26,12 +27,18 @@ function extractDocumentedFields(markdown: string): string[] {
   return fields;
 }
 
-describe('elisym-config skill ↔ ElisymYamlSchema drift', () => {
-  it('documents exactly the top-level keys of ElisymYamlSchema', () => {
-    const markdown = readFileSync(SKILL_PATH, 'utf-8');
-    const documented = extractDocumentedFields(markdown).sort();
-    const schemaKeys = Object.keys(ElisymYamlSchema.shape).sort();
+describe('docs ↔ ElisymYamlSchema drift', () => {
+  const schemaKeys = Object.keys(ElisymYamlSchema.shape).sort();
 
+  it('skills/elisym-config/SKILL.md documents exactly the top-level keys', () => {
+    const markdown = readFileSync(SKILL_PATH, 'utf-8');
+    const documented = extractDocumentedFields(markdown, 'skills/elisym-config/SKILL.md').sort();
+    expect(documented).toEqual(schemaKeys);
+  });
+
+  it('packages/sdk/README.md documents exactly the top-level keys', () => {
+    const markdown = readFileSync(README_PATH, 'utf-8');
+    const documented = extractDocumentedFields(markdown, 'packages/sdk/README.md').sort();
     expect(documented).toEqual(schemaKeys);
   });
 });

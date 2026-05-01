@@ -10,6 +10,7 @@ import { encryptSecret, isEncrypted } from '../primitives/encryption';
 import { agentPaths, type AgentPaths } from './paths';
 import { elisymRootFor, type AgentSource } from './resolver';
 import { ElisymYamlSchema, SecretsSchema, type ElisymYaml, type Secrets } from './schema';
+import { renderInitialYaml } from './template';
 
 const GITIGNORE_CONTENT = [
   '# elisym private state - do not commit.',
@@ -83,6 +84,19 @@ export async function createAgentDir(options: CreateAgentDirOptions): Promise<Cr
 export async function writeYaml(agentDir: string, yaml: ElisymYaml): Promise<void> {
   const validated = ElisymYamlSchema.parse(yaml);
   const body = YAML.stringify(validated);
+  const target = agentPaths(agentDir).yaml;
+  await writeFileAtomic(target, body, 0o644);
+}
+
+/**
+ * Write a brand-new elisym.yaml with descriptive header comments and
+ * commented-out examples for unset optional fields. Use only at agent
+ * creation time (CLI `init`, MCP `create_agent`). Subsequent edits go
+ * through `writeYaml`, which discards comments.
+ */
+export async function writeYamlInitial(agentDir: string, yaml: ElisymYaml): Promise<void> {
+  const validated = ElisymYamlSchema.parse(yaml);
+  const body = renderInitialYaml(validated);
   const target = agentPaths(agentDir).yaml;
   await writeFileAtomic(target, body, 0o644);
 }

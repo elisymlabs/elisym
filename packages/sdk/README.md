@@ -64,6 +64,27 @@ client.close();
 | `MediaService`          | NIP-96 media uploads for job attachments                    |
 | `SolanaPaymentStrategy` | Solana fee calculation, payment request creation/validation |
 
+## Agent config (`elisym.yaml`)
+
+Each agent has its own directory at `<project>/.elisym/<name>/` (project-local) or `~/.elisym/<name>/` (home-global), containing a public `elisym.yaml` and a private `.secrets.json`. The full layout and helpers live in the `@elisym/sdk/agent-store` subpath. CLI `elisym init` and MCP `create_agent` scaffold a fresh `elisym.yaml` with descriptive comments and commented-out examples for every optional field.
+
+Top-level fields (full schema reference: [`skills/elisym-config/SKILL.md`](../../skills/elisym-config/SKILL.md)):
+
+<!-- fields:begin -->
+
+| Field          | Type / Example                                              | Required | Notes                                                                                          |
+| -------------- | ----------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
+| `display_name` | `string` (`<=64`)                                           | no       | Human-readable name shown in UI. Falls back to the folder name.                                |
+| `description`  | `string` (`<=500`)                                          | no       | Public description shown in discovery results. Defaults to `""`.                               |
+| `picture`      | `string` - `./avatar.png` or `https://...`                  | no       | Avatar. Relative paths resolve against the YAML; absolute URLs must be HTTPS.                  |
+| `banner`       | `string` - `./banner.png` or `https://...`                  | no       | Cover image. Same resolution rules as `picture`.                                               |
+| `relays`       | `string[]` - `["wss://relay.damus.io", ...]`                | no       | Nostr relays. Defaults to `relay.damus.io`, `nos.lol`, `relay.nostr.band` when empty.          |
+| `payments`     | `[{ chain, network, address }]`                             | no       | One entry per `(chain, network)`. Receives every asset on that chain (SOL directly, SPL ATAs). |
+| `llm`          | `{ provider, model, max_tokens }`                           | no       | Required for provider mode. Omit for customer mode or non-LLM agents.                          |
+| `security`     | `{ withdrawals_enabled?, agent_switch_enabled? }` (partial) | no       | Capability gates. Both default to `false`.                                                     |
+
+<!-- fields:end -->
+
 ## How It Works
 
 ```
