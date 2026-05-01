@@ -1,12 +1,210 @@
 import type { CapabilityCard } from '@elisym/sdk';
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { cn } from '~/lib/cn';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { ProductAvatar } from './ProductAvatar';
+
+const DESCRIPTION_TOOLTIP_MAX_WIDTH = 320;
+const DESCRIPTION_TOOLTIP_EDGE_MARGIN = 12;
+const DESCRIPTION_TOOLTIP_OFFSET = 8;
+
+type TooltipPlacement = 'above' | 'below';
 
 interface Props {
   card: CapabilityCard;
   selected: boolean;
   onClick: () => void;
+}
+
+interface TooltipPos {
+  tooltipLeft: number;
+  arrowLeft: number;
+  anchorTop: number;
+  anchorBottom: number;
+  placement: TooltipPlacement;
+}
+
+interface DescriptionProps {
+  text: string;
+  className?: string;
+}
+
+function ProductDescription({ text, className }: DescriptionProps) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const tipRef = useRef<HTMLSpanElement>(null);
+  const lastPointerWasTouch = useRef(false);
+  const placementAdjusted = useRef(false);
+  const [pos, setPos] = useState<TooltipPos | null>(null);
+
+  function openTooltip() {
+    const element = ref.current;
+    if (!element) {
+      return;
+    }
+    if (element.scrollHeight <= element.clientHeight) {
+      return;
+    }
+    const rect = element.getBoundingClientRect();
+    const anchorCenter = rect.left + rect.width / 2;
+    const viewportWidth = window.innerWidth;
+    const halfWidth = DESCRIPTION_TOOLTIP_MAX_WIDTH / 2;
+    const minCenter = halfWidth + DESCRIPTION_TOOLTIP_EDGE_MARGIN;
+    const maxCenter = viewportWidth - halfWidth - DESCRIPTION_TOOLTIP_EDGE_MARGIN;
+    const clampedCenter = Math.max(minCenter, Math.min(maxCenter, anchorCenter));
+    const tooltipLeft = clampedCenter - halfWidth;
+    placementAdjusted.current = false;
+    setPos({
+      tooltipLeft,
+      arrowLeft: anchorCenter - tooltipLeft,
+      anchorTop: rect.top,
+      anchorBottom: rect.bottom,
+      placement: 'above',
+    });
+  }
+
+  function closeTooltip() {
+    setPos(null);
+  }
+
+  useLayoutEffect(() => {
+    if (!pos) {
+      placementAdjusted.current = false;
+      return;
+    }
+    if (placementAdjusted.current) {
+      return;
+    }
+    placementAdjusted.current = true;
+    const tip = tipRef.current;
+    if (!tip) {
+      return;
+    }
+    const tipHeight = tip.scrollHeight;
+    const projectedTop = pos.anchorTop - DESCRIPTION_TOOLTIP_OFFSET - tipHeight;
+    if (projectedTop < DESCRIPTION_TOOLTIP_EDGE_MARGIN) {
+      const viewportHeight = window.innerHeight;
+      const spaceBelow =
+        viewportHeight -
+        pos.anchorBottom -
+        DESCRIPTION_TOOLTIP_OFFSET -
+        DESCRIPTION_TOOLTIP_EDGE_MARGIN;
+      if (spaceBelow > tipHeight) {
+        setPos({ ...pos, placement: 'below' });
+      }
+    }
+  }, [pos]);
+
+  useEffect(() => {
+    if (!pos) {
+      return;
+    }
+    function handleScroll() {
+      closeTooltip();
+    }
+    function handleClickOutside(event: globalThis.MouseEvent) {
+      const desc = ref.current;
+      const target = event.target;
+      if (!(target instanceof Node) || !desc) {
+        return;
+      }
+      if (desc.contains(target)) {
+        return;
+      }
+      closeTooltip();
+    }
+    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('resize', handleScroll);
+    document.addEventListener('click', handleClickOutside);
+    return () => {
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleScroll);
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, [pos]);
+
+  function handlePointerEnter(event: PointerEvent<HTMLParagraphElement>) {
+    if (event.pointerType === 'touch') {
+      lastPointerWasTouch.current = true;
+      return;
+    }
+    lastPointerWasTouch.current = false;
+    openTooltip();
+  }
+
+  function handlePointerLeave(event: PointerEvent<HTMLParagraphElement>) {
+    if (event.pointerType === 'touch') {
+      return;
+    }
+    closeTooltip();
+  }
+
+  function handleClick() {
+    if (!lastPointerWasTouch.current) {
+      return;
+    }
+    if (pos) {
+      closeTooltip();
+    } else {
+      openTooltip();
+    }
+  }
+
+  return (
+    <>
+      <p
+        ref={ref}
+        className={className}
+        onPointerEnter={handlePointerEnter}
+        onPointerLeave={handlePointerLeave}
+        onClick={handleClick}
+      >
+        {text}
+      </p>
+      {pos &&
+        createPortal(
+          <span
+            ref={tipRef}
+            style={{
+              left: pos.tooltipLeft,
+              top:
+                pos.placement === 'above'
+                  ? pos.anchorTop - DESCRIPTION_TOOLTIP_OFFSET
+                  : pos.anchorBottom + DESCRIPTION_TOOLTIP_OFFSET,
+              width: DESCRIPTION_TOOLTIP_MAX_WIDTH,
+            }}
+            className={cn(
+              'pointer-events-none fixed z-[9999]',
+              pos.placement === 'above' && '-translate-y-full',
+            )}
+          >
+            <span
+              className={cn(
+                'tooltip-in block rounded-2xl bg-surface px-16 py-12 text-[13px] leading-relaxed text-text-2 shadow-tooltip',
+                pos.placement === 'above' ? 'origin-bottom' : 'origin-top',
+              )}
+            >
+              {text}
+              <svg
+                aria-hidden
+                className={cn(
+                  'absolute -translate-x-1/2',
+                  pos.placement === 'above' ? 'top-full -mt-px' : 'bottom-full -mb-px rotate-180',
+                )}
+                style={{ left: pos.arrowLeft }}
+                width="14"
+                height="8"
+                viewBox="0 0 14 8"
+                fill="white"
+              >
+                <path d="M0 0 L5.5 6.4 Q7 7.8 8.5 6.4 L14 0 Z" />
+              </svg>
+            </span>
+          </span>,
+          document.body,
+        )}
+    </>
+  );
 }
 
 export function ProductCard({ card, selected, onClick }: Props) {
@@ -92,14 +290,13 @@ export function ProductCard({ card, selected, onClick }: Props) {
         </div>
 
         {card.description && (
-          <p
+          <ProductDescription
+            text={card.description}
             className={cn(
               'm-0 line-clamp-5 text-[13px] leading-relaxed text-text-2',
               card.image && '-mt-8',
             )}
-          >
-            {card.description}
-          </p>
+          />
         )}
 
         {card.capabilities.length > 0 && (
