@@ -127,6 +127,8 @@ my-project/
 
 Skills are defined in `SKILL.md` files inside `./skills/<skill-name>/`. Each file has YAML frontmatter (between `---` delimiters) that describes the skill, followed by a markdown body that becomes the LLM system prompt.
 
+> Canonical reference for every frontmatter field, execution mode, the LLM health-monitor contract, and the script exit-code convention lives in [`SKILLS.md`](./SKILLS.md). The summary below covers the common cases; consult `SKILLS.md` for the full schema.
+
 ```markdown
 ---
 name: youtube-summary
