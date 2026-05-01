@@ -71,6 +71,8 @@ export interface CliScriptSkillParams extends BaseParams {
   scriptPath: string;
   scriptArgs: string[];
   scriptTimeoutMs?: number;
+  /** Full env for the script. CLI builds this from `process.env` + decrypted secrets. */
+  scriptEnv?: NodeJS.ProcessEnv;
 }
 
 export class StaticScriptSkill implements Skill {
@@ -103,6 +105,7 @@ export class StaticScriptSkill implements Skill {
       scriptPath: params.scriptPath,
       scriptArgs: params.scriptArgs,
       scriptTimeoutMs: params.scriptTimeoutMs,
+      scriptEnv: params.scriptEnv,
       image: params.image,
       imageFile: params.imageFile,
     });
@@ -143,6 +146,7 @@ export class DynamicScriptSkill implements Skill {
       scriptPath: params.scriptPath,
       scriptArgs: params.scriptArgs,
       scriptTimeoutMs: params.scriptTimeoutMs,
+      scriptEnv: params.scriptEnv,
       image: params.image,
       imageFile: params.imageFile,
     });

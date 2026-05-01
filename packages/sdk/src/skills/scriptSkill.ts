@@ -43,6 +43,12 @@ export interface RunScriptOptions {
   timeoutMs?: number;
   /** Cap on stdout/stderr capture. Default `MAX_SCRIPT_OUTPUT`. */
   maxOutput?: number;
+  /**
+   * Full environment for the child. When omitted, the child inherits
+   * `process.env`. Caller is responsible for spreading `process.env`
+   * if PATH/HOME/etc. need to be preserved alongside extras.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface RunScriptResult {
@@ -74,6 +80,7 @@ export function runScript(
       timeout: timeoutMs,
       killSignal: 'SIGKILL',
       signal: opts.signal,
+      env: opts.env,
     });
 
     let stdout = '';

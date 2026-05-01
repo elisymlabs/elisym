@@ -19,7 +19,11 @@ import { DynamicScriptSkill, StaticFileSkill, StaticScriptSkill } from './non-ll
 import { ScriptSkill } from './script-skill.js';
 import type { Skill } from './index.js';
 
-function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
+function buildCliSkill(
+  parsed: ParsedSkill,
+  entryPath: string,
+  scriptEnv: NodeJS.ProcessEnv | undefined,
+): Skill {
   let skill: Skill;
   switch (parsed.mode) {
     case 'llm':
@@ -84,6 +88,7 @@ function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
         scriptPath,
         scriptArgs: parsed.scriptArgs,
         scriptTimeoutMs: parsed.scriptTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
+        scriptEnv,
         image: parsed.image,
         imageFile: parsed.imageFile,
         dir: entryPath,
@@ -97,7 +102,17 @@ function buildCliSkill(parsed: ParsedSkill, entryPath: string): Skill {
   return skill;
 }
 
-export function loadSkillsFromDir(skillsDir: string): Skill[] {
+export interface LoadSkillsOptions {
+  /**
+   * Env propagated into script-mode skills (`static-script`, `dynamic-script`).
+   * Typically `{ ...process.env, <PROVIDER_KEY>: <decrypted-secret>, ... }`
+   * built from the agent's encrypted secrets, so scripts get the same
+   * provider keys that LLM-mode skills already enjoy.
+   */
+  scriptEnv?: NodeJS.ProcessEnv;
+}
+
+export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions = {}): Skill[] {
   const skills: Skill[] = [];
 
   let entries: string[];
@@ -124,7 +139,7 @@ export function loadSkillsFromDir(skillsDir: string): Skill[] {
       const parsed = validateSkillFrontmatter(frontmatter, systemPrompt, {
         allowFreeSkills: true,
       });
-      skills.push(buildCliSkill(parsed, entryPath));
+      skills.push(buildCliSkill(parsed, entryPath, options.scriptEnv));
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       console.warn(`  ! Skipping skill "${entry}": ${message}`);

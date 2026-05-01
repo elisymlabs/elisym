@@ -15,6 +15,12 @@ export interface DynamicScriptSkillParams {
   scriptArgs: string[];
   /** Optional override of the default 60s timeout. */
   scriptTimeoutMs?: number;
+  /**
+   * Full environment for the script. When omitted, the script inherits
+   * `process.env`. Callers (typically the CLI loader) spread `process.env`
+   * and add narrowly-scoped secrets like provider API keys.
+   */
+  scriptEnv?: NodeJS.ProcessEnv;
   image?: string;
   imageFile?: string;
 }
@@ -37,6 +43,7 @@ export class DynamicScriptSkill implements Skill {
   private scriptPath: string;
   private scriptArgs: string[];
   private scriptTimeoutMs?: number;
+  private scriptEnv?: NodeJS.ProcessEnv;
 
   constructor(params: DynamicScriptSkillParams) {
     this.name = params.name;
@@ -49,6 +56,7 @@ export class DynamicScriptSkill implements Skill {
     this.scriptPath = params.scriptPath;
     this.scriptArgs = params.scriptArgs;
     this.scriptTimeoutMs = params.scriptTimeoutMs;
+    this.scriptEnv = params.scriptEnv;
   }
 
   async execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput> {
@@ -57,6 +65,7 @@ export class DynamicScriptSkill implements Skill {
       stdin: input.data,
       signal: ctx.signal,
       timeoutMs: this.scriptTimeoutMs,
+      env: this.scriptEnv,
     });
     if (result.spawnError) {
       throw new Error(`script spawn failed: ${result.spawnError.message}`);

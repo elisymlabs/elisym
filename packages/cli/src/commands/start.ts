@@ -45,6 +45,7 @@ import { JobLedger } from '../ledger.js';
 import {
   createLlmClient,
   getLlmProvider,
+  listLlmProviders,
   verifyLlmApiKeyDeep,
   type LlmConfig,
   type LlmProvider,
@@ -139,9 +140,23 @@ export async function cmdStart(
   // Skills load before the LLM check so a fully-non-LLM agent can start
   // without an API key. The LLM block below runs only when at least one
   // skill has `mode === 'llm'`.
+  //
+  // `scriptEnv` propagates decrypted per-provider keys (e.g. ANTHROPIC_API_KEY)
+  // into `dynamic-script` / `static-script` subprocesses, so script skills get
+  // the same secret access LLM-mode skills already have. Existing process.env
+  // values win when no per-agent secret is set, matching the priority used by
+  // resolveProviderApiKey for LLM-mode skills.
+  const scriptEnv: NodeJS.ProcessEnv = { ...process.env };
+  const llmKeys = loaded.secrets.llm_api_keys ?? {};
+  for (const descriptor of listLlmProviders()) {
+    const secretValue = llmKeys[descriptor.id];
+    if (typeof secretValue === 'string' && secretValue.length > 0) {
+      scriptEnv[descriptor.envVar] = secretValue;
+    }
+  }
   const paths = agentPaths(loaded.dir);
   const skillsDir = paths.skills;
-  const allSkills = loadSkillsFromDir(skillsDir);
+  const allSkills = loadSkillsFromDir(skillsDir, { scriptEnv });
 
   if (allSkills.length === 0) {
     console.error(`  ! No skills found in ${skillsDir}\n`);
