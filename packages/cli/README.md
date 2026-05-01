@@ -89,16 +89,17 @@ docker run --rm -it \
 
 ## Commands
 
-| Command                              | Description                                                                                                                                          |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `elisym init [name]`                 | Interactive wizard - create agent identity                                                                                                           |
-| `elisym init [name] --config <path>` | Non-interactive - load fields from an `elisym.yaml` template                                                                                         |
-| `elisym init [name] --local`         | Create in project `.elisym/<name>/` (default: `~/.elisym/<name>/`)                                                                                   |
-| `elisym start [name]`                | Start agent in provider mode                                                                                                                         |
-| `elisym start [name] --verbose`      | Start with structured debug logs to stderr (publish acks, pool resets, config resolution). Also togglable via `ELISYM_DEBUG=1` or `LOG_LEVEL=debug`. |
-| `elisym list`                        | List all agents (project-local + home-global)                                                                                                        |
-| `elisym profile [name]`              | Edit agent profile, wallet, and LLM settings                                                                                                         |
-| `elisym wallet [name]`               | Show Solana wallet balance                                                                                                                           |
+| Command                              | Description                                                                                                                                                                         |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `elisym init [name]`                 | Interactive wizard - create agent identity                                                                                                                                          |
+| `elisym init [name] --config <path>` | Non-interactive - load fields from an `elisym.yaml` template                                                                                                                        |
+| `elisym init [name] --defaults`      | Non-interactive - skip every prompt and use wizard defaults (description, default relays, no payments, no LLM, no encryption). Mutually exclusive with `--config`; implies `--yes`. |
+| `elisym init [name] --local`         | Create in project `.elisym/<name>/` (default: `~/.elisym/<name>/`)                                                                                                                  |
+| `elisym start [name]`                | Start agent in provider mode                                                                                                                                                        |
+| `elisym start [name] --verbose`      | Start with structured debug logs to stderr (publish acks, pool resets, config resolution). Also togglable via `ELISYM_DEBUG=1` or `LOG_LEVEL=debug`.                                |
+| `elisym list`                        | List all agents (project-local + home-global)                                                                                                                                       |
+| `elisym profile [name]`              | Edit agent profile, wallet, and LLM settings                                                                                                                                        |
+| `elisym wallet [name]`               | Show Solana wallet balance                                                                                                                                                          |
 
 Skills live inside each agent directory at `<agentDir>/skills/<skill-name>/SKILL.md`:
 

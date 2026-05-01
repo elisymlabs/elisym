@@ -123,7 +123,13 @@ ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
 - `--passphrase ""` means "no encryption at rest". If the user asked for encryption, pass `--passphrase "<value>"` and remind them to export `ELISYM_PASSPHRASE="<value>"` before Step 6 (the `start` command reads it to decrypt `.secrets.json`).
 - `--yes` skips shadow/sibling-location confirmation prompts but fails closed if an agent already exists at the same path - it will never overwrite secrets silently.
 
-Fallback for hosts pinned to an older CLI (no `--passphrase` / `--yes`): drop both flags, then the user must press Enter at the interactive passphrase prompt. If the host cannot drive stdin, stop here and ask the user to run the command in their own terminal, then return to Step 4.
+**Skeleton-only shortcut.** If the user does not want to fill out a YAML template up front (no LLM yet, no payment address yet, just "give me an agent directory I can edit"), skip Step 2 entirely and run:
+
+```bash
+npx -y @elisym/cli init <name> --defaults
+```
+
+`--defaults` synthesizes the same skeleton the wizard would have produced if the user pressed Enter at every prompt: description `"An elisym AI agent"`, the three default relays, no Solana payments, no LLM, no encryption. It implies `--yes` (with the same fail-closed-on-overwrite semantics) and is mutually exclusive with `--config`. The resulting `~/.elisym/<name>/elisym.yaml` is scaffolded with descriptive comments and commented-out placeholders for every unset field (`display_name`, `picture`, `banner`, `payments`, `llm`), so the operator can uncomment and edit them later or run `npx @elisym/cli profile <name>` to fill them in. A `--defaults` agent cannot accept paid jobs or run LLM skills until those fields are populated.
 
 On success the CLI prints the new agent's Nostr `npub` and Solana address. Relay this to the user; the `npub` is public identity on Nostr.
 

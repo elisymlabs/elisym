@@ -4,7 +4,7 @@ import { listAgents, loadAgent } from '@elisym/sdk/agent-store';
  * elisym CLI - agent runner for the elisym network.
  *
  * Commands:
- *   elisym init [name] [--config <path>] [--local]             Create a new agent
+ *   elisym init [name] [--config <path>] [--defaults] [--local]  Create a new agent
  *   elisym start [name]                                         Start agent in provider mode
  *   elisym list                                                 List all agents
  *   elisym profile [name]                                       Edit agent profile
@@ -44,6 +44,10 @@ program
   .command('init [name]')
   .description('Create a new agent')
   .option('-c, --config <path>', 'Load fields from an elisym.yaml template (non-interactive)')
+  .option(
+    '--defaults',
+    'Skip every prompt and use the same defaults the wizard would have suggested (description, default relays, no payments, no LLM, no encryption). Mutually exclusive with --config.',
+  )
   .option('--local', 'Create in project <project>/.elisym/<name>/ (default: ~/.elisym/<name>/)')
   .option(
     '--passphrase <value>',

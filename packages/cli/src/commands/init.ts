@@ -4,6 +4,11 @@
  * Usage:
  *   elisym init [name]                     Interactive wizard; creates in ~/.elisym/<name>/.
  *   elisym init [name] --config <path>     Non-interactive; loads YAML template.
+ *   elisym init [name] --defaults          Non-interactive; uses the same defaults the
+ *                                          wizard would have suggested (description =
+ *                                          "An elisym AI agent", default relays, no
+ *                                          payments, no LLM, no encryption). Combine with
+ *                                          --local / --passphrase to override pieces.
  *   elisym init [name] --local             Create in project <project>/.elisym/<name>/.
  *   elisym init [name] --passphrase <p>    Skip passphrase prompt ("" = no encryption).
  *   elisym init [name] --yes               Skip overwrite/shadow confirm prompts.
@@ -28,9 +33,19 @@ import { getLlmProvider, listLlmProviders } from '../llm';
 
 export interface InitOptions {
   config?: string;
+  defaults?: boolean;
   local?: boolean;
   passphrase?: string;
   yes?: boolean;
+}
+
+function buildDefaultYaml(): ElisymYaml {
+  return ElisymYamlSchema.parse({
+    description: 'An elisym AI agent',
+    relays: [...RELAYS],
+    payments: [],
+    security: {},
+  });
 }
 
 /**
@@ -63,13 +78,23 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
 
   console.log('\n  elisym agent setup\n');
 
-  // Step 1: YAML template (optional).
+  if (options.config && options.defaults) {
+    throw new Error('--config and --defaults are mutually exclusive; pick one.');
+  }
+
+  // --defaults means "no prompts" - imply --yes for shadow/overwrite confirms.
+  const skipConfirms = options.yes || options.defaults;
+
+  // Step 1: YAML template (optional) - from --config file or --defaults skeleton.
   let template: ElisymYaml | undefined;
   if (options.config) {
     const configPath = resolve(cwd, options.config);
     const raw = readFileSync(configPath, 'utf-8');
     template = ElisymYamlSchema.parse(YAML.parse(raw) ?? {});
     console.log(`  Loaded template from ${configPath}\n`);
+  } else if (options.defaults) {
+    template = buildDefaultYaml();
+    console.log('  Using default skeleton (no LLM, no payments). Edit later via `profile`.\n');
   }
 
   // Step 2: Agent name (arg > prompt).
@@ -82,9 +107,9 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   const sameLocation =
     target === 'home' ? resolveInHome(agentName) : resolveInProject(agentName, cwd);
   if (sameLocation) {
-    if (options.yes) {
+    if (skipConfirms) {
       throw new Error(
-        `Agent "${agentName}" already exists at ${sameLocation}. Refusing to overwrite secrets under --yes. Remove the directory first or choose a different name.`,
+        `Agent "${agentName}" already exists at ${sameLocation}. Refusing to overwrite secrets under --yes/--defaults. Remove the directory first or choose a different name.`,
       );
     }
     const { overwrite } = await inquirer.prompt([
@@ -100,7 +125,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
       return;
     }
   } else if (target === 'project' && resolveInHome(agentName)) {
-    if (!options.yes) {
+    if (!skipConfirms) {
       const { shadow } = await inquirer.prompt([
         {
           type: 'confirm',
@@ -115,7 +140,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
       }
     }
   } else if (target === 'home' && resolveInProject(agentName, cwd)) {
-    if (!options.yes) {
+    if (!skipConfirms) {
       const { proceed } = await inquirer.prompt([
         {
           type: 'confirm',
@@ -214,13 +239,16 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
 
   // Step 6: Passphrase for encrypting secrets. Flag wins over env var wins
   // over interactive prompt. Empty string ("") is an explicit opt-out from
-  // encryption, distinct from "flag not provided".
+  // encryption, distinct from "flag not provided". --defaults implies no
+  // encryption when neither flag nor env is set.
   let passphrase = '';
   const envPassphrase = process.env.ELISYM_PASSPHRASE;
   if (options.passphrase !== undefined) {
     passphrase = options.passphrase;
   } else if (envPassphrase !== undefined) {
     passphrase = envPassphrase;
+  } else if (options.defaults) {
+    passphrase = '';
   } else {
     const answer = await inquirer.prompt([
       {
