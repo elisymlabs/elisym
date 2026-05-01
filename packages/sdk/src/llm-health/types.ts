@@ -45,6 +45,33 @@ export class LlmHealthError extends Error {
 }
 
 /**
+ * Thrown by SDK script skills (`static-script`, `dynamic-script`) when the
+ * spawned process exits with `SCRIPT_EXIT_BILLING_EXHAUSTED` (= 42). The
+ * runtime catches this and calls `markUnhealthyFromJob` on the matching
+ * (provider, model) pair declared in SKILL.md, so subsequent jobs are
+ * gated until the lazy recovery loop re-probes the key. The exit code is
+ * the script-side equivalent of the LLM-mode 402 path.
+ *
+ * The error does NOT carry provider/model itself - the script doesn't
+ * know which pair the agent registered with the monitor; the runtime
+ * reads them from the matched skill's `llmOverride` declaration.
+ */
+export class ScriptBillingExhaustedError extends Error {
+  readonly exitCode: number;
+  readonly stderr: string;
+  readonly stdout: string;
+
+  constructor(exitCode: number, stdout: string, stderr: string) {
+    const detail = stderr.trim() || stdout.trim() || '(no output)';
+    super(`script exited with billing-exhausted code ${exitCode}: ${detail}`);
+    this.name = 'ScriptBillingExhaustedError';
+    this.exitCode = exitCode;
+    this.stdout = stdout;
+    this.stderr = stderr;
+  }
+}
+
+/**
  * Per-skill rate-limit declaration. Snake-case in SKILL.md frontmatter,
  * camelCase here. Applies to any skill mode but the framework adds a
  * default cap only for free LLM skills.

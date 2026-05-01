@@ -41,11 +41,16 @@ export interface SkillFrontmatter {
   image_file?: unknown;
   tools?: unknown;
   max_tool_rounds?: unknown;
-  /** Optional per-skill LLM provider override (e.g. 'anthropic', 'openai'). Pairs with `model`. */
+  /**
+   * LLM provider id. For `mode: 'llm'` this overrides the agent default for
+   * runtime LLM execution. For script modes, it declares the LLM the script
+   * depends on so the agent can health-monitor the API key (startup probe +
+   * reactive markUnhealthy + lazy recovery). Pairs with `model`.
+   */
   provider?: unknown;
-  /** Optional per-skill LLM model override. Pairs with `provider`. */
+  /** LLM model id. Same semantics as `provider`. Must be set together with `provider`. */
   model?: unknown;
-  /** Optional per-skill max_tokens override. Independent of provider/model. */
+  /** Per-skill max_tokens override. Only valid for `mode: 'llm'`. */
   max_tokens?: unknown;
   /** Execution mode. Default 'llm'. */
   mode?: unknown;
@@ -77,9 +82,13 @@ export interface ParsedSkill {
   tools: SkillToolDef[];
   maxToolRounds: number;
   /**
-   * Per-skill LLM override (only present when mode === 'llm' and the SKILL.md
-   * declared at least one of `provider`/`model`/`max_tokens`). Parse-time
-   * invariant: `provider` set iff `model` set.
+   * Per-skill LLM override / dependency. Present when SKILL.md declared at
+   * least one of `provider`/`model`/`max_tokens`. Parse-time invariant:
+   * `provider` set iff `model` set; `max_tokens` only when mode === 'llm'.
+   *
+   * For mode 'llm': the runtime uses these to construct the LLM client.
+   * For script modes: the (provider, model) pair declares the API key the
+   * script depends on so the agent can health-monitor it.
    */
   llmOverride?: SkillLlmOverride;
   image?: string;
@@ -282,14 +291,23 @@ function validateScriptArgs(skillName: string, raw: unknown): string[] {
 }
 
 /**
- * Parse the optional per-skill LLM override block. The all-or-nothing rule
- * applies to (`provider`, `model`); `max_tokens` is independent.
+ * Parse the optional per-skill LLM override / dependency block. The
+ * all-or-nothing rule applies to (`provider`, `model`); `max_tokens` is
+ * independent.
  *
- * Returns `undefined` when no LLM override fields are declared at all.
- * Throws on partial pair, invalid provider, empty model, or out-of-range
- * max_tokens.
+ * Semantics by mode:
+ * - `mode: 'llm'`: provider+model override the agent default for runtime
+ *   LLM execution. `max_tokens` overrides the agent default cap.
+ * - script modes (`static-script` / `dynamic-script` / `static-file`):
+ *   provider+model declare which LLM key the script depends on so the
+ *   agent runtime can health-monitor it (startup probe + reactive
+ *   markUnhealthy on `SCRIPT_EXIT_BILLING_EXHAUSTED` + lazy recovery).
+ *   `max_tokens` is rejected here - it has no runtime effect because
+ *   the script handles its own LLM call and token limits.
  *
- * Rejects all three fields when `mode !== 'llm'`.
+ * Returns `undefined` when no LLM fields are declared at all.
+ * Throws on partial pair, invalid provider, empty model, out-of-range
+ * max_tokens, or `max_tokens` declared on a non-llm mode.
  */
 function validateLlmOverride(
   skillName: string,
@@ -304,9 +322,9 @@ function validateLlmOverride(
     return undefined;
   }
 
-  if (mode !== 'llm') {
+  if (hasMaxTokens && mode !== 'llm') {
     throw new Error(
-      `SKILL.md "${skillName}": "provider"/"model"/"max_tokens" are only valid in mode 'llm' (got '${mode}')`,
+      `SKILL.md "${skillName}": "max_tokens" is only valid in mode 'llm' (got '${mode}'). For script modes, control token limits inside the script.`,
     );
   }
 
@@ -621,6 +639,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         outputFilePath,
         image: parsed.image,
         imageFile: parsed.imageFile,
+        llmOverride: parsed.llmOverride,
       });
     }
     case 'static-script':
@@ -646,6 +665,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         scriptTimeoutMs: parsed.scriptTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
         image: parsed.image,
         imageFile: parsed.imageFile,
+        llmOverride: parsed.llmOverride,
       });
     }
   }

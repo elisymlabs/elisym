@@ -31,7 +31,7 @@ import {
   type LoadedAgent,
   type MediaCache,
 } from '@elisym/sdk/agent-store';
-import { LlmHealthMonitor, startLlmHeartbeat, type HeartbeatHandle } from '@elisym/sdk/llm-health';
+import { LlmHealthMonitor, startLlmRecovery, type HeartbeatHandle } from '@elisym/sdk/llm-health';
 import { address, createSolanaRpc } from '@solana/kit';
 import { probeRelays } from '../diagnostics.js';
 import {
@@ -190,14 +190,29 @@ export async function cmdStart(
   // (provider, model, maxTokens) triple. Agent-level `llm` in elisym.yaml is
   // the fallback for skills that don't override; if every LLM skill overrides,
   // agent-level `llm` may be omitted entirely.
+  //
+  // Script-mode skills can also declare `provider` + `model` in SKILL.md to
+  // register a health-monitor probe for the API key the script uses under
+  // the hood. Those skills do NOT need an LlmClient (the script makes its
+  // own HTTP calls), but they DO need: an API key resolved + verified at
+  // startup, and a (provider, model) pair registered with the health
+  // monitor so reactive markUnhealthy + lazy recovery works.
   const llmSkills = allSkills.filter((skill) => skill.mode === 'llm');
+  const scriptDepSkills = allSkills.filter(
+    (skill) => skill.mode !== 'llm' && skill.llmOverride?.provider && skill.llmOverride?.model,
+  );
+  // Pairs to register with the health monitor (any mode + declared provider+model).
+  // Keyed by `provider::model`; deduplicated across skills so we don't probe
+  // the same key twice when several skills share the same LLM dependency.
+  const monitorPairs = new Map<string, { provider: LlmProvider; model: string }>();
+  // Triples to build LlmClient instances for (mode=llm only).
   const triplesByKey = new Map<string, ResolvedSkillLlm>();
   const dependentSkillsByProvider = new Map<LlmProvider, string[]>();
   let agentDefaultCacheKey: string | undefined;
   const llmClientCache = new Map<string, LlmClient>();
   const healthMonitor = new LlmHealthMonitor();
 
-  if (llmSkills.length > 0) {
+  if (llmSkills.length > 0 || scriptDepSkills.length > 0) {
     const resolutionErrors: string[] = [];
 
     for (const skill of llmSkills) {
@@ -212,6 +227,10 @@ export async function cmdStart(
       }
       const cacheKey = cacheKeyFor(result);
       triplesByKey.set(cacheKey, result);
+      monitorPairs.set(`${result.provider}::${result.model}`, {
+        provider: result.provider,
+        model: result.model,
+      });
       skill.resolvedTriple = {
         provider: result.provider,
         model: result.model,
@@ -220,6 +239,21 @@ export async function cmdStart(
       const list = dependentSkillsByProvider.get(result.provider) ?? [];
       list.push(skill.name);
       dependentSkillsByProvider.set(result.provider, list);
+    }
+
+    // Script-mode skills: register their declared (provider, model) for
+    // health monitoring. No LlmClient is built - the script does its own
+    // HTTP. The all-or-nothing parse invariant guarantees both `provider`
+    // and `model` are set when we reach this branch (validateLlmOverride).
+    for (const skill of scriptDepSkills) {
+      const provider = skill.llmOverride?.provider as LlmProvider;
+      const model = skill.llmOverride?.model as string;
+      monitorPairs.set(`${provider}::${model}`, { provider, model });
+      const list = dependentSkillsByProvider.get(provider) ?? [];
+      if (!list.includes(skill.name)) {
+        list.push(skill.name);
+      }
+      dependentSkillsByProvider.set(provider, list);
     }
 
     if (resolutionErrors.length > 0) {
@@ -268,32 +302,33 @@ export async function cmdStart(
     // Deep-verify each unique (provider, model) pair the agent will use.
     // Deep verification consumes one billing token per probe (~$0.00001
     // on Haiku) but distinguishes valid keys from billing-exhausted ones,
-    // which `/v1/models` cannot.
-    for (const [, triple] of triplesByKey) {
-      const apiKey = keyByProvider.get(triple.provider);
+    // which `/v1/models` cannot. Iterates `monitorPairs` so script-mode
+    // skills that declared `provider`+`model` are probed too.
+    for (const [, pair] of monitorPairs) {
+      const apiKey = keyByProvider.get(pair.provider);
       if (!apiKey) {
         continue;
       }
       const envVar =
-        getLlmProvider(triple.provider)?.envVar ?? `${triple.provider.toUpperCase()}_API_KEY`;
-      process.stdout.write(`  Verifying ${triple.provider} ${triple.model}... `);
-      const verification = await verifyLlmApiKeyDeep(triple.provider, apiKey, triple.model);
-      const descriptor = getLlmProvider(triple.provider);
+        getLlmProvider(pair.provider)?.envVar ?? `${pair.provider.toUpperCase()}_API_KEY`;
+      process.stdout.write(`  Verifying ${pair.provider} ${pair.model}... `);
+      const verification = await verifyLlmApiKeyDeep(pair.provider, apiKey, pair.model);
+      const descriptor = getLlmProvider(pair.provider);
       const verifyFn = async (signal?: AbortSignal) =>
         descriptor
-          ? descriptor.verifyKeyDeep(apiKey, triple.model, signal)
+          ? descriptor.verifyKeyDeep(apiKey, pair.model, signal)
           : { ok: false as const, reason: 'unavailable' as const, error: 'no descriptor' };
       healthMonitor.register({
-        provider: triple.provider,
-        model: triple.model,
+        provider: pair.provider,
+        model: pair.model,
         verifyFn,
       });
-      healthMonitor.seed(triple.provider, triple.model, verification);
+      healthMonitor.seed(pair.provider, pair.model, verification);
       if (verification.ok) {
         console.log('ok');
       } else if (verification.reason === 'invalid') {
         console.log('INVALID');
-        console.error(`  ! ${triple.provider} rejected the API key (HTTP ${verification.status}).`);
+        console.error(`  ! ${pair.provider} rejected the API key (HTTP ${verification.status}).`);
         console.error(
           `    Update it via \`npx @elisym/cli profile ${agentName}\` or set ${envVar} to a valid key.\n`,
         );
@@ -302,7 +337,7 @@ export async function cmdStart(
         console.log('BILLING');
         const detail = verification.body ? ` ${verification.body.slice(0, 200)}` : '';
         console.error(
-          `  ! ${triple.provider} reports a billing/quota issue for ${triple.model}.${detail}`,
+          `  ! ${pair.provider} reports a billing/quota issue for ${pair.model}.${detail}`,
         );
         console.error(
           `    Top up the account at the provider console, or set ${envVar} to a key on a funded org.\n`,
@@ -311,7 +346,7 @@ export async function cmdStart(
       } else {
         console.log('unavailable');
         console.warn(
-          `  ! Could not verify ${triple.provider} ${triple.model} (${verification.error}). Continuing - jobs will fail if the key is invalid.\n`,
+          `  ! Could not verify ${pair.provider} ${pair.model} (${verification.error}). Continuing - jobs will fail if the key is invalid.\n`,
         );
       }
     }
@@ -335,7 +370,7 @@ export async function cmdStart(
       llmClientCache.set(cacheKey, createLlmClient(config));
     }
   } else {
-    console.log('  No LLM skills loaded; skipping LLM key check.\n');
+    console.log('  No LLM-dependent skills loaded; skipping LLM key check.\n');
   }
 
   const agentDefaultClient =
@@ -580,12 +615,12 @@ export async function cmdStart(
   });
 
   let llmHeartbeat: HeartbeatHandle | undefined;
-  if (llmSkills.length > 0) {
-    llmHeartbeat = startLlmHeartbeat({
+  if (monitorPairs.size > 0) {
+    llmHeartbeat = startLlmRecovery({
       monitor: healthMonitor,
       log: diagLog,
     });
-    diagLog('LLM health monitor armed (10min TTL, 10min heartbeat).');
+    diagLog('LLM health monitor armed (lazy recovery, 5min interval).');
   }
 
   const runtime = new AgentRuntime(

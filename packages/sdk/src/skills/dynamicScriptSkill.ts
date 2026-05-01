@@ -1,7 +1,16 @@
 import { dirname } from 'node:path';
+import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
+import { ScriptBillingExhaustedError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
 import { runScript } from './scriptSkill';
-import type { Skill, SkillContext, SkillInput, SkillMode, SkillOutput } from './types';
+import type {
+  Skill,
+  SkillContext,
+  SkillInput,
+  SkillLlmOverride,
+  SkillMode,
+  SkillOutput,
+} from './types';
 
 export interface DynamicScriptSkillParams {
   name: string;
@@ -23,6 +32,13 @@ export interface DynamicScriptSkillParams {
   scriptEnv?: NodeJS.ProcessEnv;
   image?: string;
   imageFile?: string;
+  /**
+   * Declared LLM dependency. The (provider, model) pair tells the runtime
+   * which API key the script reaches under the hood so it can be
+   * health-monitored. Carried through from SKILL.md as-is; the script
+   * itself reads the key from its environment.
+   */
+  llmOverride?: SkillLlmOverride;
 }
 
 /**
@@ -40,6 +56,7 @@ export class DynamicScriptSkill implements Skill {
   mode: SkillMode = 'dynamic-script';
   image?: string;
   imageFile?: string;
+  llmOverride?: SkillLlmOverride;
   private scriptPath: string;
   private scriptArgs: string[];
   private scriptTimeoutMs?: number;
@@ -53,6 +70,7 @@ export class DynamicScriptSkill implements Skill {
     this.asset = params.asset;
     this.image = params.image;
     this.imageFile = params.imageFile;
+    this.llmOverride = params.llmOverride;
     this.scriptPath = params.scriptPath;
     this.scriptArgs = params.scriptArgs;
     this.scriptTimeoutMs = params.scriptTimeoutMs;
@@ -69,6 +87,9 @@ export class DynamicScriptSkill implements Skill {
     });
     if (result.spawnError) {
       throw new Error(`script spawn failed: ${result.spawnError.message}`);
+    }
+    if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {
+      throw new ScriptBillingExhaustedError(result.code, result.stdout, result.stderr);
     }
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';

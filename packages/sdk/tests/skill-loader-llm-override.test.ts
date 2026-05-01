@@ -140,19 +140,60 @@ prompt`),
     ).toThrow(/"max_tokens" must be a positive integer/);
   });
 
-  it('rejects llm override fields when mode is not llm', () => {
+  it('accepts provider+model on dynamic-script mode as a dependency declaration', () => {
+    const parsed = parseAndValidate(`---
+name: proxy-skill
+description: proxies a Claude call via curl
+capabilities: [text]
+price: 0.05
+token: usdc
+mode: dynamic-script
+script: ./proxy.sh
+provider: anthropic
+model: claude-haiku-4-5-20251001
+---
+ignored body for script modes`);
+    expect(parsed.mode).toBe('dynamic-script');
+    expect(parsed.llmOverride).toEqual({
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5-20251001',
+    });
+  });
+
+  it('accepts provider+model on static-script mode as a dependency declaration', () => {
+    const parsed = parseAndValidate(`---
+name: cron-skill
+description: runs a fixed Claude call at every job
+capabilities: [data]
+price: 0.05
+token: usdc
+mode: static-script
+script: ./run.sh
+provider: anthropic
+model: claude-haiku-4-5-20251001
+---
+ignored`);
+    expect(parsed.llmOverride).toEqual({
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5-20251001',
+    });
+  });
+
+  it('rejects max_tokens for non-llm modes', () => {
     expect(() =>
       parseAndValidate(`---
-name: file-skill
-description: file
+name: bad-script
+description: bad
 capabilities: [data]
-price: 0.001
-mode: static-file
-output_file: out.txt
-provider: openai
-model: gpt-5-mini
+price: 0.05
+token: usdc
+mode: dynamic-script
+script: ./run.sh
+provider: anthropic
+model: claude-haiku-4-5-20251001
+max_tokens: 1024
 ---
-prompt`),
-    ).toThrow(/"provider"\/"model"\/"max_tokens" are only valid in mode 'llm'/);
+ignored`),
+    ).toThrow(/"max_tokens" is only valid in mode 'llm'/);
   });
 });

@@ -1,6 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import type { Asset } from '../payment/assets';
-import type { Skill, SkillContext, SkillInput, SkillMode, SkillOutput } from './types';
+import type {
+  Skill,
+  SkillContext,
+  SkillInput,
+  SkillLlmOverride,
+  SkillMode,
+  SkillOutput,
+} from './types';
 
 /** Hard ceiling on result size for static-file skills. NIP-90 result events
  *  travel through relays that may reject very large payloads; cap at 256 KB
@@ -17,6 +24,13 @@ export interface StaticFileSkillParams {
   outputFilePath: string;
   image?: string;
   imageFile?: string;
+  /**
+   * Declared LLM dependency. The skill itself never calls an LLM, but if
+   * the file is produced by an external pipeline that depends on a key,
+   * operators can declare the (provider, model) pair so the runtime can
+   * health-monitor it. Carried through from SKILL.md as-is.
+   */
+  llmOverride?: SkillLlmOverride;
 }
 
 /**
@@ -32,6 +46,7 @@ export class StaticFileSkill implements Skill {
   mode: SkillMode = 'static-file';
   image?: string;
   imageFile?: string;
+  llmOverride?: SkillLlmOverride;
   private outputFilePath: string;
 
   constructor(params: StaticFileSkillParams) {
@@ -42,6 +57,7 @@ export class StaticFileSkill implements Skill {
     this.asset = params.asset;
     this.image = params.image;
     this.imageFile = params.imageFile;
+    this.llmOverride = params.llmOverride;
     this.outputFilePath = params.outputFilePath;
   }
 

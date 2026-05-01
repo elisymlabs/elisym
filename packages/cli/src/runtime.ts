@@ -17,6 +17,7 @@ import {
   createFreeLlmLimiterSet,
   FREE_LLM_GLOBAL_KEY,
   freeLlmCustomerKey,
+  ScriptBillingExhaustedError,
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
@@ -80,6 +81,53 @@ function resolveJobAsset(tags: string[], skills: SkillRegistry): Asset {
   return skill?.asset ?? NATIVE_SOL;
 }
 
+/**
+ * Markers that indicate an LLM provider's HTTP response body is about
+ * billing / quota exhaustion rather than something benign. Mirrors the
+ * marker sets in `cli/src/llm/providers/{anthropic,openai,openai-compatible}.ts`
+ * (kept as a permissive superset so any provider's billing language is
+ * detected when classifying mid-job errors). Refactoring to a single
+ * shared module is out of scope here - just keep this list in sync.
+ */
+const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient', 'insufficient_quota'];
+
+function bodyLooksLikeBilling(body: string): boolean {
+  const lower = body.toLowerCase();
+  return BILLING_BODY_MARKERS.some((marker) => lower.includes(marker));
+}
+
+/**
+ * Resolve the (provider, model) pair the matched skill depends on for
+ * health-monitor gating, or `null` if the skill is not LLM-dependent.
+ *
+ * For `mode: 'llm'` the pair comes from `resolvedTriple` (computed at
+ * startup with agent default + override). For script modes the pair
+ * comes from `llmOverride.provider`+`.model` declared in SKILL.md, which
+ * is the operator's signal that the script reaches an LLM API under
+ * the hood. Either source produces the same (provider, model) string
+ * pair the health monitor was registered with in `start.ts`.
+ */
+function resolveHealthPair(
+  skill: import('./skill').Skill | null,
+): { provider: string; model: string } | null {
+  if (!skill) {
+    return null;
+  }
+  if (skill.mode === 'llm' && skill.resolvedTriple) {
+    return {
+      provider: skill.resolvedTriple.provider,
+      model: skill.resolvedTriple.model,
+    };
+  }
+  if (skill.mode !== 'llm' && skill.llmOverride?.provider && skill.llmOverride?.model) {
+    return {
+      provider: skill.llmOverride.provider,
+      model: skill.llmOverride.model,
+    };
+  }
+  return null;
+}
+
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_JOBS_PER_CUSTOMER = 20;
 const GLOBAL_MAX_JOBS_PER_WINDOW = 200;
@@ -127,6 +175,88 @@ export class AgentRuntime {
   ) {
     this.limit = pLimit(config.maxConcurrentJobs);
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
+  }
+
+  /**
+   * Inspect an error thrown by `skill.execute()` and, when it carries a
+   * billing/invalid signal from the LLM provider, flip the matching
+   * (provider, model) pair to unhealthy via the health monitor. The next
+   * job hitting the same pair is then refused at the preflight gate
+   * before payment, so customers don't keep paying for jobs that will
+   * fail. Recovery happens through the lazy recovery loop.
+   *
+   * Two error shapes are recognized:
+   *
+   *   - `ScriptBillingExhaustedError` - thrown by SDK script skills when
+   *     the spawned process exits with `SCRIPT_EXIT_BILLING_EXHAUSTED`.
+   *     Pair comes from `skill.llmOverride` (operator-declared).
+   *
+   *   - LLM provider HTTP error from `mode: 'llm'` - bare `Error` whose
+   *     message starts with "<Provider> API error: <status> <body>" (the
+   *     format every CLI provider currently uses). We classify on status:
+   *     402 / 401 / 403 -> mark unhealthy. Body markers (`credit
+   *     balance`, `billing`, `insufficient`) catch the 400-on-billing case
+   *     Anthropic returns and the 429+`insufficient_quota` case OpenAI
+   *     and the openai-compatible providers (xAI/Google/DeepSeek) return.
+   *     Pair comes from `skill.resolvedTriple`.
+   *
+   * Anything else is a transient/skill error and does NOT touch health
+   * state - the recovery loop should not be poisoned by skill bugs.
+   */
+  private markHealthFromExecuteError(
+    skill: import('./skill').Skill,
+    err: unknown,
+    log: (msg: string) => void,
+    jobId: string,
+  ): void {
+    if (!this.healthMonitor) {
+      return;
+    }
+    const tag = `[${jobId.slice(0, 8)}]`;
+
+    if (err instanceof ScriptBillingExhaustedError) {
+      const provider = skill.llmOverride?.provider;
+      const model = skill.llmOverride?.model;
+      if (!provider || !model) {
+        // Script signaled billing exhaustion but the operator didn't
+        // declare which (provider, model) the script depends on - we
+        // can't mark anything unhealthy. Surface a hint in the operator
+        // log so they know to add provider/model to SKILL.md.
+        log(
+          `${tag} Script returned exit ${err.exitCode} (billing-exhausted) but skill "${skill.name}" did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+        );
+        return;
+      }
+      log(
+        `${tag} Script signaled billing-exhausted (exit ${err.exitCode}). Marking ${provider}/${model} unhealthy; future jobs against this pair will be refused until recovery probe succeeds.`,
+      );
+      this.healthMonitor.markUnhealthyFromJob(provider, model, 'billing', err.message);
+      return;
+    }
+
+    if (skill.mode === 'llm' && skill.resolvedTriple) {
+      const message = err instanceof Error ? err.message : String(err);
+      const match = /API error:\s*(\d{3})\b\s*(.*)/i.exec(message);
+      if (!match) {
+        return;
+      }
+      const status = Number(match[1]);
+      const body = (match[2] ?? '').slice(0, 200);
+      const isBillingStatus = status === 402;
+      const isAuthStatus = status === 401 || status === 403;
+      const isBilling400 = status === 400 && bodyLooksLikeBilling(body);
+      const isBilling429 = status === 429 && bodyLooksLikeBilling(body);
+      if (!isBillingStatus && !isAuthStatus && !isBilling400 && !isBilling429) {
+        return;
+      }
+      const reason: 'billing' | 'invalid' = isAuthStatus ? 'invalid' : 'billing';
+      const provider = skill.resolvedTriple.provider;
+      const model = skill.resolvedTriple.model;
+      log(
+        `${tag} LLM provider returned HTTP ${status} (${reason}). Marking ${provider}/${model} unhealthy; future jobs against this pair will be refused until recovery probe succeeds.`,
+      );
+      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, body);
+    }
   }
 
   /** Fetch on-chain protocol config (fee, treasury). Always fetches fresh to avoid stale treasury. */
@@ -367,19 +497,26 @@ export class AgentRuntime {
       throw new Error(`Input too long: ${job.input.length} chars (max ${LIMITS.MAX_INPUT_LENGTH})`);
     }
 
-    // ── Preflight: gate LLM jobs against the health monitor before
-    // sending payment-required. If the operator's API key has gone
-    // invalid/billing-exhausted since startup, refuse the job before
-    // the customer pays and before we record anything in the ledger.
+    // ── Preflight: gate LLM-dependent jobs against the health monitor
+    // before sending payment-required. If the operator's API key has gone
+    // invalid/billing-exhausted since startup, refuse the job before the
+    // customer pays and before we record anything in the ledger.
+    //
+    // Two paths feed the gate:
+    //   - mode === 'llm' uses `resolvedTriple` (provider + model + maxTokens)
+    //     resolved at startup from agent default + skill override.
+    //   - script modes use `llmOverride.provider`+`.model` declared in
+    //     SKILL.md to signal "this script depends on this API key"; the
+    //     runtime registers the same (provider, model) pair with the
+    //     health monitor in start.ts, so assertReady works identically.
+    //
     // Customer-facing message stays generic to avoid leaking billing
     // status; operator log carries the real reason via the throw.
     const matched = this.skills.route(job.tags);
-    if (this.healthMonitor && matched && matched.mode === 'llm' && matched.resolvedTriple) {
+    const healthPair = resolveHealthPair(matched);
+    if (this.healthMonitor && healthPair) {
       try {
-        await this.healthMonitor.assertReady(
-          matched.resolvedTriple.provider,
-          matched.resolvedTriple.model,
-        );
+        await this.healthMonitor.assertReady(healthPair.provider, healthPair.model);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         log(`[${job.jobId.slice(0, 8)}] LLM health gate refused job: ${detail}`);
@@ -439,15 +576,27 @@ export class AgentRuntime {
     log(`[${job.jobId.slice(0, 8)}] Executing skill: ${skill.name}`);
 
     // ── Step 4: Execute skill ──
-    const output = await skill.execute(
-      {
-        data: job.input,
-        inputType: job.inputType,
-        tags: job.tags,
-        jobId: job.jobId,
-      },
-      { ...this.skillCtx, signal },
-    );
+    // Wrapped so a billing/invalid signal surfaced *during* execution
+    // (script exit 42 or LLM 402/401) flips the matching health pair to
+    // unhealthy. The next job hitting the same pair will be refused at
+    // the preflight gate before payment, instead of sailing through and
+    // failing again. Recovery happens via the lazy recovery loop, which
+    // re-probes only while the pair is unhealthy.
+    let output;
+    try {
+      output = await skill.execute(
+        {
+          data: job.input,
+          inputType: job.inputType,
+          tags: job.tags,
+          jobId: job.jobId,
+        },
+        { ...this.skillCtx, signal },
+      );
+    } catch (err) {
+      this.markHealthFromExecuteError(skill, err, log, job.jobId);
+      throw err;
+    }
 
     // ── Step 5: Cache result in ledger ──
     // NOTE: At-least-once delivery. A crash between execute() return and markExecuted()

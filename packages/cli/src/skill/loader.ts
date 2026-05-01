@@ -64,6 +64,7 @@ function buildCliSkill(
         image: parsed.image,
         imageFile: parsed.imageFile,
         dir: entryPath,
+        llmOverride: parsed.llmOverride,
       });
       break;
     }
@@ -92,6 +93,7 @@ function buildCliSkill(
         image: parsed.image,
         imageFile: parsed.imageFile,
         dir: entryPath,
+        llmOverride: parsed.llmOverride,
       });
       break;
     }

@@ -94,6 +94,7 @@ untargeted
 microlamports
 refetches
 untrusted
+sysexits
 umami
 vitest
 vite

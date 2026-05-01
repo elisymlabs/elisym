@@ -109,9 +109,13 @@ export interface Skill {
   /** Execution mode. Default 'llm' for back-compat. */
   mode: SkillMode;
   /**
-   * Optional per-skill LLM config override (only set when mode === 'llm').
-   * Carried through from SKILL.md frontmatter so the runtime can route this
-   * skill to a non-default model/provider/max_tokens.
+   * Optional per-skill LLM config / dependency.
+   *
+   * For mode 'llm', this overrides the agent default model/provider/max_tokens.
+   * For script modes, the (provider, model) pair declares which LLM API key
+   * the script depends on so the agent runtime can health-monitor it
+   * (startup probe + reactive markUnhealthy + lazy recovery). `max_tokens`
+   * is forbidden in script modes (the script controls its own limits).
    */
   llmOverride?: SkillLlmOverride;
   image?: string;

@@ -21,6 +21,7 @@ import {
   createAgentDir,
   resolveInHome,
   resolveInProject,
+  writeExampleSkillTemplate,
   writeSecrets,
   writeYamlInitial,
   type AgentSource,
@@ -289,6 +290,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   }
   const llmApiKeys = Object.fromEntries(collectedKeys);
   await writeYamlInitial(created.dir, yaml);
+  await writeExampleSkillTemplate(created.dir);
   await writeSecrets(
     created.dir,
     {

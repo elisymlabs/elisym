@@ -103,7 +103,17 @@ export interface Skill {
   asset: Asset;
   /** Execution mode (`'llm'` for the historical LLM-orchestrated path). */
   mode: SkillMode;
-  /** Optional per-skill LLM override (only set when mode === 'llm'). */
+  /**
+   * Per-skill LLM override / dependency.
+   *
+   * For `mode: 'llm'`: overrides the agent default (provider/model/maxTokens)
+   * for runtime LLM execution. The runtime constructs the LLM client from this.
+   *
+   * For script modes: declares which LLM API key the script depends on so
+   * the runtime can health-monitor it (startup probe + reactive markUnhealthy
+   * on `SCRIPT_EXIT_BILLING_EXHAUSTED` + lazy recovery). Only `provider` and
+   * `model` are meaningful here; `maxTokens` is rejected at parse time.
+   */
   llmOverride?: SkillLlmOverride;
   /** Hero image URL. */
   image?: string;
@@ -112,9 +122,10 @@ export interface Skill {
   /** On-disk skill directory (e.g. `<agent>/skills/whois-lookup`). */
   dir?: string;
   /**
-   * Resolved (provider, model, maxTokens) for LLM-mode skills. Set once
-   * at startup; undefined for non-LLM skills. Read by the runtime to
-   * gate against the `LlmHealthMonitor` before sending `payment-required`.
+   * Resolved (provider, model, maxTokens) for `mode: 'llm'` skills. Set
+   * once at startup. Undefined for script modes - they use `llmOverride`
+   * directly when declared. Read by the runtime to gate against the
+   * `LlmHealthMonitor` before sending `payment-required`.
    */
   resolvedTriple?: ResolvedSkillTriple;
   /**

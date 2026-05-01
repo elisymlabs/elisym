@@ -63,6 +63,7 @@ export {
   writeYamlInitial,
   writeSecrets,
   writeFileAtomic,
+  writeExampleSkillTemplate,
 } from './writer';
 export type { CreateAgentDirOptions, CreatedAgentDir } from './writer';
 

@@ -10,6 +10,7 @@ import {
   homeElisymDir,
   listAgents as listStoreAgents,
   loadAgent,
+  writeExampleSkillTemplate,
   writeSecrets,
   writeYaml,
   writeYamlInitial,
@@ -110,6 +111,8 @@ export async function saveAgentConfig(name: string, input: SaveAgentConfigInput)
     llm: undefined,
     security: input.security ?? {},
   });
+
+  await writeExampleSkillTemplate(created.dir);
 
   await writeSecrets(
     created.dir,

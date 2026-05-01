@@ -6,10 +6,13 @@ export {
   DEFAULT_FREE_LLM_PER_CUSTOMER_WINDOW_MS,
   DEFAULT_HEALTH_TTL_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
+  LAZY_RECOVERY_INTERVAL_MS,
+  SCRIPT_EXIT_BILLING_EXHAUSTED,
   UNAVAILABLE_TOLERANCE,
 } from './constants';
 export {
   LlmHealthError,
+  ScriptBillingExhaustedError,
   type LlmHealthErrorReason,
   type LlmHealthSnapshotEntry,
   type LlmHealthStatus,
@@ -24,8 +27,10 @@ export {
 } from './monitor';
 export {
   startLlmHeartbeat,
+  startLlmRecovery,
   type HeartbeatHandle,
   type StartLlmHeartbeatOptions,
+  type StartLlmRecoveryOptions,
 } from './heartbeat';
 export {
   createFreeLlmLimiterSet,

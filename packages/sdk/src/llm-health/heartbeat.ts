@@ -1,13 +1,22 @@
 /**
- * Periodic LLM health probe. Stops on demand. Logs status transitions
- * (healthy <-> unhealthy) but does not log every successful tick to keep
- * the operator log quiet.
+ * Lazy LLM recovery probe. While every registered (provider, model) pair
+ * is healthy, ticks are no-ops: zero API traffic, zero billing tokens
+ * burned. The loop only does real work after a pair has flipped to
+ * unhealthy (via `markUnhealthyFromJob` from the runtime, or from a
+ * preflight probe that returned a non-ok verification): each tick
+ * re-probes only the unhealthy pairs and, on success, flips them back to
+ * healthy via the monitor's normal `applyVerification` path.
  *
- * The heartbeat pure-delegates to `monitor.refreshAll()`; both timing and
- * logging policy live here so the monitor stays a pure state-machine.
+ * The recovery loop is the only path back to `healthy` after a reactive
+ * markUnhealthy. Without it, the agent would stay locked out until
+ * restart even after the operator pops their billing back up.
+ *
+ * Logging policy lives here so the monitor stays a pure state-machine.
+ * Status transitions (healthy <-> unhealthy) are logged once per change;
+ * routine successful re-probes are not logged.
  */
 
-import { DEFAULT_HEARTBEAT_INTERVAL_MS } from './constants';
+import { LAZY_RECOVERY_INTERVAL_MS } from './constants';
 import type { LlmHealthMonitor } from './monitor';
 import type { LlmHealthSnapshotEntry, LlmHealthStatus } from './types';
 
@@ -15,13 +24,20 @@ export interface HeartbeatHandle {
   stop(): void;
 }
 
-export interface StartLlmHeartbeatOptions {
+export interface StartLlmRecoveryOptions {
   monitor: LlmHealthMonitor;
-  /** Defaults to 10 minutes. */
+  /** Defaults to {@link LAZY_RECOVERY_INTERVAL_MS} (5 minutes). */
   intervalMs?: number;
   /** Operator log sink. Defaults to no-op (silent). */
   log?: (msg: string) => void;
 }
+
+/**
+ * @deprecated Renamed to {@link StartLlmRecoveryOptions}. Kept as an alias
+ * so external consumers keep building during the rename. The semantics
+ * have changed (lazy, recovery-only) but the option surface is identical.
+ */
+export type StartLlmHeartbeatOptions = StartLlmRecoveryOptions;
 
 type IntervalHandle = ReturnType<typeof setInterval>;
 
@@ -47,13 +63,27 @@ function describeTransition(
   return `* LLM provider ${next.provider} model ${next.model} recovered.`;
 }
 
-export function startLlmHeartbeat(options: StartLlmHeartbeatOptions): HeartbeatHandle {
-  const intervalMs = options.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+/**
+ * Start the lazy recovery loop. Returns a handle whose `stop()` cancels
+ * the timer (idempotent). The loop ticks every `intervalMs` ms; each
+ * tick scans `monitor.snapshot()` and, if any pair is non-healthy, asks
+ * the monitor to re-probe just those non-healthy pairs via
+ * `refreshUnhealthy()`. Healthy pairs are never re-probed by the loop -
+ * those keep their cached `healthy` until TTL expiry forces a probe at
+ * the next `assertReady` call. When all pairs are healthy the tick is a
+ * single Map walk and no API calls are made.
+ *
+ * The function is named `startLlmRecovery` but the legacy export
+ * `startLlmHeartbeat` (below) is preserved as an alias so external
+ * code that already imports it keeps working unchanged.
+ */
+export function startLlmRecovery(options: StartLlmRecoveryOptions): HeartbeatHandle {
+  const intervalMs = options.intervalMs ?? LAZY_RECOVERY_INTERVAL_MS;
   const log = options.log ?? NOOP_LOG;
 
   let lastStatusByPair = new Map<string, LlmHealthStatus>();
   for (const entry of options.monitor.snapshot()) {
-    lastStatusByPair.set(`${entry.provider}|${entry.model}`, entry.status);
+    lastStatusByPair.set(`${entry.provider}::${entry.model}`, entry.status);
   }
 
   let stopped = false;
@@ -62,17 +92,27 @@ export function startLlmHeartbeat(options: StartLlmHeartbeatOptions): HeartbeatH
     if (stopped) {
       return;
     }
-    let snapshot: readonly LlmHealthSnapshotEntry[];
-    try {
-      snapshot = await options.monitor.refreshAll();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log(`! LLM heartbeat refreshAll failed: ${message}`);
+    const before = options.monitor.snapshot();
+    const anyUnhealthy = before.some((entry) => !isHealthyState(entry.status));
+    if (!anyUnhealthy) {
+      // Lazy: nothing to do. Refreshing healthy pairs would burn one
+      // billing-token per pair per tick for no benefit (the monitor's
+      // own TTL would re-probe at assertReady time anyway).
       return;
     }
+
+    let snapshot: readonly LlmHealthSnapshotEntry[];
+    try {
+      snapshot = await options.monitor.refreshUnhealthy();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`! LLM recovery probe failed: ${message}`);
+      return;
+    }
+
     const next = new Map<string, LlmHealthStatus>();
     for (const entry of snapshot) {
-      const key = `${entry.provider}|${entry.model}`;
+      const key = `${entry.provider}::${entry.model}`;
       const prev = lastStatusByPair.get(key) ?? 'unknown';
       const transitionMessage = describeTransition(prev, entry);
       if (transitionMessage) {
@@ -97,3 +137,12 @@ export function startLlmHeartbeat(options: StartLlmHeartbeatOptions): HeartbeatH
     },
   };
 }
+
+/**
+ * @deprecated Renamed to {@link startLlmRecovery}. The old name is
+ * preserved as an alias so existing imports keep working during the
+ * rename. Behavior changed materially: the new loop is lazy
+ * (no API calls while all pairs are healthy) and defaults to
+ * `LAZY_RECOVERY_INTERVAL_MS` (5 min) instead of 10 min.
+ */
+export const startLlmHeartbeat = startLlmRecovery;

@@ -9,6 +9,7 @@ import {
   DynamicScriptSkill as SdkDynamicScriptSkill,
   StaticFileSkill as SdkStaticFileSkill,
   StaticScriptSkill as SdkStaticScriptSkill,
+  type SkillLlmOverride,
   type SkillMode,
 } from '@elisym/sdk/skills';
 import type { Skill, SkillContext, SkillInput, SkillOutput } from './index.js';
@@ -23,6 +24,12 @@ interface BaseParams {
   imageFile?: string;
   /** On-disk skill directory. */
   dir: string;
+  /**
+   * For script modes: declared LLM dependency (provider+model). When set,
+   * the runtime registers the pair with the health monitor and gates jobs
+   * against it.
+   */
+  llmOverride?: SkillLlmOverride;
 }
 
 export interface CliStaticFileSkillParams extends BaseParams {
@@ -39,6 +46,7 @@ export class StaticFileSkill implements Skill {
   image?: string;
   imageFile?: string;
   dir: string;
+  llmOverride?: SkillLlmOverride;
   private inner: SdkStaticFileSkill;
 
   constructor(params: CliStaticFileSkillParams) {
@@ -50,6 +58,7 @@ export class StaticFileSkill implements Skill {
     this.image = params.image;
     this.imageFile = params.imageFile;
     this.dir = params.dir;
+    this.llmOverride = params.llmOverride;
     this.inner = new SdkStaticFileSkill({
       name: params.name,
       description: params.description,
@@ -85,6 +94,7 @@ export class StaticScriptSkill implements Skill {
   image?: string;
   imageFile?: string;
   dir: string;
+  llmOverride?: SkillLlmOverride;
   private inner: SdkStaticScriptSkill;
 
   constructor(params: CliScriptSkillParams) {
@@ -96,6 +106,7 @@ export class StaticScriptSkill implements Skill {
     this.image = params.image;
     this.imageFile = params.imageFile;
     this.dir = params.dir;
+    this.llmOverride = params.llmOverride;
     this.inner = new SdkStaticScriptSkill({
       name: params.name,
       description: params.description,
@@ -126,6 +137,7 @@ export class DynamicScriptSkill implements Skill {
   image?: string;
   imageFile?: string;
   dir: string;
+  llmOverride?: SkillLlmOverride;
   private inner: SdkDynamicScriptSkill;
 
   constructor(params: CliScriptSkillParams) {
@@ -137,6 +149,7 @@ export class DynamicScriptSkill implements Skill {
     this.image = params.image;
     this.imageFile = params.imageFile;
     this.dir = params.dir;
+    this.llmOverride = params.llmOverride;
     this.inner = new SdkDynamicScriptSkill({
       name: params.name,
       description: params.description,
