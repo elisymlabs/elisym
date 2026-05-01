@@ -1,11 +1,20 @@
 import type { CapabilityCard } from '@elisym/sdk';
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '~/lib/cn';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { ProductAvatar } from './ProductAvatar';
 
 const DESCRIPTION_TOOLTIP_MAX_WIDTH = 320;
+const DESCRIPTION_TOOLTIP_MAX_WIDTH_XS = 300;
+const DESCRIPTION_TOOLTIP_XS_BREAKPOINT = 380;
 const DESCRIPTION_TOOLTIP_EDGE_MARGIN = 12;
 const DESCRIPTION_TOOLTIP_OFFSET = 8;
 
@@ -19,6 +28,7 @@ interface Props {
 
 interface TooltipPos {
   tooltipLeft: number;
+  tooltipWidth: number;
   arrowLeft: number;
   anchorTop: number;
   anchorBottom: number;
@@ -30,35 +40,79 @@ interface DescriptionProps {
   className?: string;
 }
 
+const MORE_SUFFIX = ' more...';
+
 function ProductDescription({ text, className }: DescriptionProps) {
-  const ref = useRef<HTMLParagraphElement>(null);
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const measureRef = useRef<HTMLParagraphElement>(null);
+  const moreRef = useRef<HTMLButtonElement>(null);
   const tipRef = useRef<HTMLSpanElement>(null);
-  const lastPointerWasTouch = useRef(false);
   const placementAdjusted = useRef(false);
+  const [truncatedText, setTruncatedText] = useState<string | null>(null);
   const [pos, setPos] = useState<TooltipPos | null>(null);
 
+  useLayoutEffect(() => {
+    const visibleNode = textRef.current;
+    if (!visibleNode) {
+      return;
+    }
+    function measure() {
+      const node = measureRef.current;
+      if (!node) {
+        return;
+      }
+      node.textContent = text;
+      if (node.scrollHeight <= node.clientHeight + 1) {
+        setTruncatedText(null);
+        return;
+      }
+      let lo = 0;
+      let hi = text.length;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi + 1) / 2);
+        node.textContent = text.slice(0, mid).trimEnd() + MORE_SUFFIX;
+        if (node.scrollHeight <= node.clientHeight + 1) {
+          lo = mid;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      setTruncatedText(text.slice(0, lo).trimEnd());
+    }
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(visibleNode);
+    return () => observer.disconnect();
+  }, [text]);
+
   function openTooltip() {
-    const element = ref.current;
-    if (!element) {
+    const anchor = moreRef.current;
+    if (!anchor) {
       return;
     }
-    if (element.scrollHeight <= element.clientHeight) {
-      return;
-    }
-    const rect = element.getBoundingClientRect();
+    const rect = anchor.getBoundingClientRect();
     const anchorCenter = rect.left + rect.width / 2;
     const viewportWidth = window.innerWidth;
-    const halfWidth = DESCRIPTION_TOOLTIP_MAX_WIDTH / 2;
+    const baseMaxWidth =
+      viewportWidth < DESCRIPTION_TOOLTIP_XS_BREAKPOINT
+        ? DESCRIPTION_TOOLTIP_MAX_WIDTH_XS
+        : DESCRIPTION_TOOLTIP_MAX_WIDTH;
+    const tooltipWidth = Math.min(
+      baseMaxWidth,
+      viewportWidth - 2 * DESCRIPTION_TOOLTIP_EDGE_MARGIN,
+    );
+    const halfWidth = tooltipWidth / 2;
     const minCenter = halfWidth + DESCRIPTION_TOOLTIP_EDGE_MARGIN;
     const maxCenter = viewportWidth - halfWidth - DESCRIPTION_TOOLTIP_EDGE_MARGIN;
     const clampedCenter = Math.max(minCenter, Math.min(maxCenter, anchorCenter));
-    const tooltipLeft = clampedCenter - halfWidth;
+    const tooltipLeftViewport = clampedCenter - halfWidth;
     placementAdjusted.current = false;
     setPos({
-      tooltipLeft,
-      arrowLeft: anchorCenter - tooltipLeft,
-      anchorTop: rect.top,
-      anchorBottom: rect.bottom,
+      tooltipLeft: tooltipLeftViewport + window.scrollX,
+      tooltipWidth,
+      arrowLeft: anchorCenter - tooltipLeftViewport,
+      anchorTop: rect.top + window.scrollY,
+      anchorBottom: rect.bottom + window.scrollY,
       placement: 'above',
     });
   }
@@ -81,12 +135,14 @@ function ProductDescription({ text, className }: DescriptionProps) {
       return;
     }
     const tipHeight = tip.scrollHeight;
-    const projectedTop = pos.anchorTop - DESCRIPTION_TOOLTIP_OFFSET - tipHeight;
+    const anchorTopViewport = pos.anchorTop - window.scrollY;
+    const anchorBottomViewport = pos.anchorBottom - window.scrollY;
+    const projectedTop = anchorTopViewport - DESCRIPTION_TOOLTIP_OFFSET - tipHeight;
     if (projectedTop < DESCRIPTION_TOOLTIP_EDGE_MARGIN) {
       const viewportHeight = window.innerHeight;
       const spaceBelow =
         viewportHeight -
-        pos.anchorBottom -
+        anchorBottomViewport -
         DESCRIPTION_TOOLTIP_OFFSET -
         DESCRIPTION_TOOLTIP_EDGE_MARGIN;
       if (spaceBelow > tipHeight) {
@@ -99,50 +155,41 @@ function ProductDescription({ text, className }: DescriptionProps) {
     if (!pos) {
       return;
     }
-    function handleScroll() {
-      closeTooltip();
-    }
-    function handleClickOutside(event: globalThis.MouseEvent) {
-      const desc = ref.current;
+    function handlePointerDownOutside(event: globalThis.PointerEvent) {
       const target = event.target;
-      if (!(target instanceof Node) || !desc) {
+      if (!(target instanceof Node)) {
         return;
       }
-      if (desc.contains(target)) {
+      if (moreRef.current?.contains(target)) {
+        return;
+      }
+      if (tipRef.current?.contains(target)) {
         return;
       }
       closeTooltip();
     }
-    window.addEventListener('scroll', handleScroll, true);
-    window.addEventListener('resize', handleScroll);
-    document.addEventListener('click', handleClickOutside);
+    function handleResize() {
+      closeTooltip();
+    }
+    document.addEventListener('pointerdown', handlePointerDownOutside);
+    window.addEventListener('resize', handleResize);
     return () => {
-      window.removeEventListener('scroll', handleScroll, true);
-      window.removeEventListener('resize', handleScroll);
-      document.removeEventListener('click', handleClickOutside);
+      document.removeEventListener('pointerdown', handlePointerDownOutside);
+      window.removeEventListener('resize', handleResize);
     };
   }, [pos]);
 
-  function handlePointerEnter(event: PointerEvent<HTMLParagraphElement>) {
-    if (event.pointerType === 'touch') {
-      lastPointerWasTouch.current = true;
-      return;
-    }
-    lastPointerWasTouch.current = false;
-    openTooltip();
-  }
-
-  function handlePointerLeave(event: PointerEvent<HTMLParagraphElement>) {
+  function handleMorePointerEnter(event: PointerEvent<HTMLButtonElement>) {
     if (event.pointerType === 'touch') {
       return;
     }
-    closeTooltip();
+    if (!pos) {
+      openTooltip();
+    }
   }
 
-  function handleClick() {
-    if (!lastPointerWasTouch.current) {
-      return;
-    }
+  function handleMoreClick(event: ReactMouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
     if (pos) {
       closeTooltip();
     } else {
@@ -150,17 +197,34 @@ function ProductDescription({ text, className }: DescriptionProps) {
     }
   }
 
+  const isTruncated = truncatedText !== null;
+
   return (
-    <>
-      <p
-        ref={ref}
-        className={className}
-        onPointerEnter={handlePointerEnter}
-        onPointerLeave={handlePointerLeave}
-        onClick={handleClick}
-      >
-        {text}
+    <div className={cn('relative', className)}>
+      <p ref={textRef} className="m-0 line-clamp-5 text-[13px] leading-relaxed text-text-2">
+        {isTruncated ? (
+          <>
+            {truncatedText}{' '}
+            <button
+              ref={moreRef}
+              type="button"
+              onPointerEnter={handleMorePointerEnter}
+              onClick={handleMoreClick}
+              className="cursor-pointer underline underline-offset-2 hover:text-text"
+            >
+              more...
+            </button>
+          </>
+        ) : (
+          text
+        )}
       </p>
+      <p
+        ref={measureRef}
+        aria-hidden="true"
+        className="pointer-events-none invisible absolute top-0 right-0 left-0 m-0 line-clamp-5 text-[13px] leading-relaxed"
+      />
+
       {pos &&
         createPortal(
           <span
@@ -171,12 +235,9 @@ function ProductDescription({ text, className }: DescriptionProps) {
                 pos.placement === 'above'
                   ? pos.anchorTop - DESCRIPTION_TOOLTIP_OFFSET
                   : pos.anchorBottom + DESCRIPTION_TOOLTIP_OFFSET,
-              width: DESCRIPTION_TOOLTIP_MAX_WIDTH,
+              width: pos.tooltipWidth,
             }}
-            className={cn(
-              'pointer-events-none fixed z-[9999]',
-              pos.placement === 'above' && '-translate-y-full',
-            )}
+            className={cn('absolute z-[9999]', pos.placement === 'above' && '-translate-y-full')}
           >
             <span
               className={cn(
@@ -203,7 +264,7 @@ function ProductDescription({ text, className }: DescriptionProps) {
           </span>,
           document.body,
         )}
-    </>
+    </div>
   );
 }
 
@@ -290,13 +351,7 @@ export function ProductCard({ card, selected, onClick }: Props) {
         </div>
 
         {card.description && (
-          <ProductDescription
-            text={card.description}
-            className={cn(
-              'm-0 line-clamp-5 text-[13px] leading-relaxed text-text-2',
-              card.image && '-mt-8',
-            )}
-          />
+          <ProductDescription text={card.description} className={cn(card.image && '-mt-8')} />
         )}
 
         {card.capabilities.length > 0 && (
