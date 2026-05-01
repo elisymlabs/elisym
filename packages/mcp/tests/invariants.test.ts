@@ -9,7 +9,13 @@ import { customerTools } from '../src/tools/customer.js';
 import { discoveryTools } from '../src/tools/discovery.js';
 
 describe('broadcast is not reachable through any MCP tool', () => {
-  const JOB_SUBMITTING_TOOLS = ['create_job', 'submit_and_pay_job', 'buy_capability'];
+  const JOB_SUBMITTING_TOOLS = [
+    'create_job',
+    'submit_and_pay_job',
+    'submit_and_pay_job_from_file',
+    'submit_diff_review',
+    'buy_capability',
+  ];
 
   for (const toolName of JOB_SUBMITTING_TOOLS) {
     it(`${toolName} requires provider_npub in its Zod schema`, () => {
@@ -18,7 +24,7 @@ describe('broadcast is not reachable through any MCP tool', () => {
       // Parsing input without provider_npub must throw. If this ever becomes
       // optional, a caller could issue a broadcast job through MCP, which is
       // explicitly out of scope for the customer-mode server.
-      expect(() => tool!.schema.parse({ input: 'x', capability: 'y' })).toThrow(/provider_npub/);
+      expect(() => tool!.schema.parse({})).toThrow(/provider_npub/);
     });
   }
 });

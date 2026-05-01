@@ -26,6 +26,7 @@ import {
   rpcUrlFor,
   takeSpendWarnings,
 } from '../context.js';
+import { computeGitDiff, readJobInputFile } from '../job-input.js';
 import { logger } from '../logger.js';
 import {
   sanitizeUntrusted,
@@ -50,7 +51,7 @@ import {
   MAX_EVENT_ID_LEN,
   MAX_TIMEOUT_SECS,
 } from '../utils.js';
-import type { ToolDefinition } from './types.js';
+import type { ToolDefinition, ToolResult } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
 
 // Pre-ping budget before submit/buy. Short enough that an offline npub fails
@@ -119,6 +120,54 @@ const BuyCapabilitySchema = z.object({
   input: z.string().default(''),
   max_price_lamports: z.number().int().optional(),
   timeout_secs: z.number().int().min(1).max(600).default(120),
+});
+
+const SubmitAndPayJobFromFileSchema = z.object({
+  input_path: z
+    .string()
+    .min(1)
+    .max(4096)
+    .describe(
+      'Path to a regular file whose contents become the job input. Absolute or relative ' +
+        "to the MCP server's working directory.",
+    ),
+  provider_npub: z.string(),
+  capability: z.string().min(1).max(64).default('general'),
+  kind_offset: z.number().int().min(0).max(999).default(DEFAULT_KIND_OFFSET),
+  timeout_secs: z.number().int().min(1).max(600).default(300),
+  max_price_lamports: z.number().int().optional(),
+});
+
+const SubmitDiffReviewSchema = z.object({
+  provider_npub: z.string(),
+  capability: z
+    .string()
+    .min(1)
+    .max(64)
+    .default('review')
+    .describe('Capability tag advertised by the reviewer. Override if not "review".'),
+  repo_path: z
+    .string()
+    .min(1)
+    .max(4096)
+    .default('.')
+    .describe("Path to the git repo. Absolute or relative to the MCP server's working directory."),
+  base: z
+    .string()
+    .max(200)
+    .optional()
+    .describe(
+      'Optional base ref (branch, tag, SHA). When set, diffs ${base}...HEAD. When ' +
+        'omitted, auto-detects working-tree vs main/master/origin-HEAD.',
+    ),
+  prompt: z
+    .string()
+    .max(MAX_INPUT_LEN)
+    .default('')
+    .describe('Optional instructions prepended above the diff (e.g. "focus on auth flow").'),
+  kind_offset: z.number().int().min(0).max(999).default(DEFAULT_KIND_OFFSET),
+  timeout_secs: z.number().int().min(1).max(600).default(300),
+  max_price_lamports: z.number().int().optional(),
 });
 
 /**
@@ -517,6 +566,180 @@ export function makePaymentFeedbackHandler(opts: {
   return { onFeedback, onResultReceived };
 }
 
+/**
+ * Pre-resolved arguments for the shared submit + pay flow. All canonical
+ * forms (decoded providerPubkey, normalized dTag, ms timeout) are computed by
+ * the calling tool so the core flow can be reused unchanged across the inline
+ * `submit_and_pay_job`, the file-handle `submit_and_pay_job_from_file`, and the
+ * git-diff `submit_diff_review` tools.
+ */
+interface SubmitAndPayParams {
+  input: string;
+  providerNpub: string;
+  providerPubkey: string;
+  capability: string;
+  dTag: string;
+  kindOffset: number;
+  timeoutMs: number;
+  maxPriceLamports?: number;
+}
+
+/**
+ * Shared submit + pay + await + record flow used by every "submit a job and
+ * collect the result" customer tool. Split out so adding a new entry point
+ * (e.g. file-handle, git-diff) cannot drift from the canonical payment guards
+ * and history recording.
+ */
+async function executeSubmitAndPay(
+  ctx: AgentContext,
+  agent: AgentInstance,
+  params: SubmitAndPayParams,
+): Promise<ToolResult> {
+  // Pre-ping: refuse to submit to an unreachable provider. The 30s pong cache
+  // in PingService means that if the caller just ran search_agents, this is a
+  // free in-memory lookup. A hard error here avoids wasting a 120-300s timeout
+  // and, for paid jobs, avoids publishing a NIP-90 request that nobody will ever
+  // service.
+  const ping = await agent.client.ping.pingAgent(params.providerPubkey, PRE_PING_TIMEOUT_MS);
+  if (!ping.online) {
+    return errorResult(
+      `Provider ${params.providerNpub} is offline. ` +
+        `Run search_agents to find currently-online providers.`,
+    );
+  }
+
+  // resolve expected Solana recipient from the provider's capability card
+  // BEFORE submitting the job. If the provider is unknown on-network, fail fast.
+  const providers = await agent.client.discovery.fetchAgents(agent.network);
+  const provider = providers.find((a) => a.npub === params.providerNpub);
+
+  // if the provider is not in the current discovery snapshot, refuse
+  // to submit. Previously we fell through with `expectedRecipient = undefined`,
+  // which silently disabled the recipient-match check inside `validatePaymentRequest`
+  // and let a malicious actor redirect funds. Free providers without Solana payment
+  // are still allowed - the no-wallet path in makePaymentFeedbackHandler handles them.
+  if (!provider) {
+    return errorResult(
+      `Provider ${params.providerNpub} not found on ${agent.network}. ` +
+        `Refresh discovery (e.g. search_agents) or verify the npub is correct.`,
+    );
+  }
+  const expectedRecipient = providerSolanaAddress(provider, params.dTag);
+  if (agent.solanaKeypair && !expectedRecipient) {
+    // Customer has a wallet (intends to pay), but the provider advertised no Solana
+    // recipient for this capability. We cannot verify where funds would go - refuse.
+    return errorResult(
+      `Provider "${params.providerNpub}" has no Solana payment address for ` +
+        `capability "${params.capability}". Cannot verify payment recipient - refusing ` +
+        `to proceed. Ask the provider to publish a capability card with a payment address.`,
+    );
+  }
+
+  const buyerWallet = agent.solanaKeypair?.publicKey;
+  if (buyerWallet && expectedRecipient && buyerWallet === expectedRecipient) {
+    return errorResult(
+      `Cannot buy from yourself - your agent's Solana wallet (${buyerWallet}) ` +
+        `matches the provider's payment address. Use a different agent or provider.`,
+    );
+  }
+
+  const submittedAt = Date.now();
+  const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
+    input: params.input,
+    capability: params.dTag,
+    providerPubkey: params.providerPubkey,
+    kindOffset: params.kindOffset,
+  });
+
+  let paymentSig: string | undefined;
+  let paidAmountSubunits: bigint | undefined;
+  let paidAssetKey: string | undefined;
+  let paymentWarnings: string[] = [];
+  try {
+    const result = await awaitJobResult<string>(
+      agent,
+      {} as never,
+      ({ resolve, reject }) => {
+        const payHandler = makePaymentFeedbackHandler({
+          ctx,
+          agent,
+          jobId,
+          providerPubkey: params.providerPubkey,
+          expectedRecipient,
+          maxPriceLamports: params.maxPriceLamports,
+          resolveNoWallet: resolve,
+          resolveResult: resolve,
+          rejectPayment: reject,
+          onPaid: (sig, warnings, amount, assetKey) => {
+            paymentSig = sig;
+            paidAmountSubunits = amount;
+            paidAssetKey = assetKey;
+            paymentWarnings = warnings;
+            for (const line of warnings) {
+              logger.warn({ event: 'session_spend_threshold', agent: agent.name }, line);
+            }
+          },
+        });
+        return {
+          jobEventId: jobId,
+          providerPubkey: params.providerPubkey,
+          customerPublicKey: agent.identity.publicKey,
+          callbacks: {
+            onResult(content: string) {
+              const kind = isLikelyBase64(content) ? ('binary' as const) : ('text' as const);
+              const sanitized = sanitizeUntrusted(content, kind);
+              payHandler.onResultReceived(`Job completed.\n\n${sanitized.text}`);
+            },
+            onFeedback: payHandler.onFeedback,
+            onError(error: string) {
+              reject(new Error(`Job error: ${error}`));
+            },
+          },
+          timeoutMs: params.timeoutMs,
+          customerSecretKey: agent.identity.secretKey,
+        };
+      },
+      params.timeoutMs + 5_000,
+    );
+
+    await recordJobOutcome(agent, {
+      jobEventId: jobId,
+      capability: params.dTag,
+      providerPubkey: params.providerPubkey,
+      providerName: clipProviderName(provider.name),
+      paidAmountSubunits: paidAmountSubunits?.toString(),
+      assetKey: paidAssetKey,
+      status: 'completed',
+      submittedAt,
+      completedAt: Date.now(),
+      resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
+      paymentSig,
+    });
+    const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
+    const tip = buildJobCompletionTip(jobId, params.providerNpub);
+    return textResult(`${warningBlock}event_id=${jobId}\n${result}${tip}`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await recordJobOutcome(agent, {
+      jobEventId: jobId,
+      capability: params.dTag,
+      providerPubkey: params.providerPubkey,
+      providerName: clipProviderName(provider.name),
+      paidAmountSubunits: paidAmountSubunits?.toString(),
+      assetKey: paidAssetKey,
+      status: classifyJobFailure(msg),
+      submittedAt,
+      completedAt: Date.now(),
+      paymentSig,
+    });
+    const paid = paymentSig
+      ? ` Payment already sent (sig=${paymentSig}) - use get_job_result with event_id="${jobId}" to retrieve once ready.`
+      : '';
+    const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
+    return errorResult(`${warningBlock}Job ${jobId} failed: ${msg}.${paid}`);
+  }
+}
+
 /** Subscribe helper that guarantees cleanup. */
 function awaitJobResult<T>(
   agent: AgentInstance,
@@ -821,166 +1044,115 @@ export const customerTools: ToolDefinition[] = [
       'On timeout after submission, the job event ID is returned so the caller can ' +
       'follow up with get_job_result. Handles both free and paid providers automatically. ' +
       'If max_price_lamports is not set and provider requests payment, the job is rejected ' +
-      'with the price - set max_price_lamports to auto-approve payments up to that limit.',
+      'with the price - set max_price_lamports to auto-approve payments up to that limit. ' +
+      'COST: input is sent inline in the tool call, so a large input pays output tokens on ' +
+      'the calling LLM. For files or git diffs, prefer submit_and_pay_job_from_file or ' +
+      'submit_diff_review respectively.',
     schema: SubmitAndPayJobSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
       checkLen('input', input.input, MAX_INPUT_LEN);
       checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
-      const timeout = Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000;
 
       const agent = ctx.active();
-      const providerPubkey = decodeNpub(input.provider_npub);
-      // Normalize to canonical d-tag form so the published `t` tag matches what
-      // CLI/App publish on capability cards. Without this, names like
-      // "Opus 4.7" would publish as raw text and the provider's router (which
-      // compares against `toDTag(skill.name)`) would silently drop the job.
-      const dTag = toDTag(input.capability);
-
-      // Pre-ping: refuse to submit to an unreachable provider. The 30s pong cache
-      // in PingService means that if the caller just ran search_agents, this is a
-      // free in-memory lookup. A hard error here avoids wasting a 120-300s timeout
-      // and, for paid jobs, avoids publishing a NIP-90 request that nobody will ever
-      // service.
-      const ping = await agent.client.ping.pingAgent(providerPubkey, PRE_PING_TIMEOUT_MS);
-      if (!ping.online) {
-        return errorResult(
-          `Provider ${input.provider_npub} is offline. ` +
-            `Run search_agents to find currently-online providers.`,
-        );
-      }
-
-      // resolve expected Solana recipient from the provider's capability card
-      // BEFORE submitting the job. If the provider is unknown on-network, fail fast.
-      const providers = await agent.client.discovery.fetchAgents(agent.network);
-      const provider = providers.find((a) => a.npub === input.provider_npub);
-
-      // if the provider is not in the current discovery snapshot, refuse
-      // to submit. Previously we fell through with `expectedRecipient = undefined`,
-      // which silently disabled the recipient-match check inside `validatePaymentRequest`
-      // and let a malicious actor redirect funds. Free providers without Solana payment
-      // are still allowed - the no-wallet path in makePaymentFeedbackHandler handles them.
-      if (!provider) {
-        return errorResult(
-          `Provider ${input.provider_npub} not found on ${agent.network}. ` +
-            `Refresh discovery (e.g. search_agents) or verify the npub is correct.`,
-        );
-      }
-      const expectedRecipient = providerSolanaAddress(provider, dTag);
-      if (agent.solanaKeypair && !expectedRecipient) {
-        // Customer has a wallet (intends to pay), but the provider advertised no Solana
-        // recipient for this capability. We cannot verify where funds would go - refuse.
-        return errorResult(
-          `Provider "${input.provider_npub}" has no Solana payment address for ` +
-            `capability "${input.capability}". Cannot verify payment recipient - refusing ` +
-            `to proceed. Ask the provider to publish a capability card with a payment address.`,
-        );
-      }
-
-      const buyerWallet = agent.solanaKeypair?.publicKey;
-      if (buyerWallet && expectedRecipient && buyerWallet === expectedRecipient) {
-        return errorResult(
-          `Cannot buy from yourself - your agent's Solana wallet (${buyerWallet}) ` +
-            `matches the provider's payment address. Use a different agent or provider.`,
-        );
-      }
-
-      const submittedAt = Date.now();
-      const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
+      return executeSubmitAndPay(ctx, agent, {
         input: input.input,
-        capability: dTag,
-        providerPubkey,
+        providerNpub: input.provider_npub,
+        providerPubkey: decodeNpub(input.provider_npub),
+        capability: input.capability,
+        // Normalize to canonical d-tag form so the published `t` tag matches what
+        // CLI/App publish on capability cards. Without this, names like
+        // "Opus 4.7" would publish as raw text and the provider's router (which
+        // compares against `toDTag(skill.name)`) would silently drop the job.
+        dTag: toDTag(input.capability),
         kindOffset: input.kind_offset,
+        timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
+        maxPriceLamports: input.max_price_lamports,
       });
+    },
+  }),
 
-      // include jobId in every outcome so the caller can recover.
-      let paymentSig: string | undefined;
-      let paidAmountSubunits: bigint | undefined;
-      let paidAssetKey: string | undefined;
-      let paymentWarnings: string[] = [];
+  defineTool({
+    name: 'submit_and_pay_job_from_file',
+    description:
+      'Same as submit_and_pay_job, but the job input is read from a file on disk by the ' +
+      'MCP server instead of being passed inline by the LLM. Use this when the input is ' +
+      'large (logs, generated content, captured output) and the LLM only needs to forward ' +
+      "it - the file content never enters the model's output tokens. " +
+      "input_path may be absolute or relative to the MCP server's working directory. " +
+      'Max file size matches the inline limit.',
+    schema: SubmitAndPayJobFromFileSchema,
+    async handler(ctx, input) {
+      ctx.toolRateLimiter.check();
+      checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
+
+      let payload: string;
       try {
-        const result = await awaitJobResult<string>(
-          agent,
-          {} as never,
-          ({ resolve, reject }) => {
-            const payHandler = makePaymentFeedbackHandler({
-              ctx,
-              agent,
-              jobId,
-              providerPubkey,
-              expectedRecipient,
-              maxPriceLamports: input.max_price_lamports,
-              resolveNoWallet: resolve,
-              resolveResult: resolve,
-              rejectPayment: reject,
-              onPaid: (sig, warnings, amount, assetKey) => {
-                paymentSig = sig;
-                paidAmountSubunits = amount;
-                paidAssetKey = assetKey;
-                paymentWarnings = warnings;
-                for (const line of warnings) {
-                  logger.warn({ event: 'session_spend_threshold', agent: agent.name }, line);
-                }
-              },
-            });
-            return {
-              jobEventId: jobId,
-              providerPubkey,
-              customerPublicKey: agent.identity.publicKey,
-              callbacks: {
-                onResult(content: string) {
-                  const kind = isLikelyBase64(content) ? ('binary' as const) : ('text' as const);
-                  const sanitized = sanitizeUntrusted(content, kind);
-                  payHandler.onResultReceived(`Job completed.\n\n${sanitized.text}`);
-                },
-                onFeedback: payHandler.onFeedback,
-                onError(error: string) {
-                  reject(new Error(`Job error: ${error}`));
-                },
-              },
-              timeoutMs: timeout,
-              customerSecretKey: agent.identity.secretKey,
-            };
-          },
-          timeout + 5_000,
-        );
-
-        await recordJobOutcome(agent, {
-          jobEventId: jobId,
-          capability: dTag,
-          providerPubkey,
-          providerName: clipProviderName(provider.name),
-          paidAmountSubunits: paidAmountSubunits?.toString(),
-          assetKey: paidAssetKey,
-          status: 'completed',
-          submittedAt,
-          completedAt: Date.now(),
-          resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
-          paymentSig,
-        });
-        const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
-        const tip = buildJobCompletionTip(jobId, input.provider_npub);
-        return textResult(`${warningBlock}event_id=${jobId}\n${result}${tip}`);
+        payload = await readJobInputFile(input.input_path);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        await recordJobOutcome(agent, {
-          jobEventId: jobId,
-          capability: dTag,
-          providerPubkey,
-          providerName: clipProviderName(provider.name),
-          paidAmountSubunits: paidAmountSubunits?.toString(),
-          assetKey: paidAssetKey,
-          status: classifyJobFailure(msg),
-          submittedAt,
-          completedAt: Date.now(),
-          paymentSig,
-        });
-        const paid = paymentSig
-          ? ` Payment already sent (sig=${paymentSig}) - use get_job_result with event_id="${jobId}" to retrieve once ready.`
-          : '';
-        const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
-        return errorResult(`${warningBlock}Job ${jobId} failed: ${msg}.${paid}`);
+        return errorResult(e instanceof Error ? e.message : String(e));
       }
+
+      const agent = ctx.active();
+      return executeSubmitAndPay(ctx, agent, {
+        input: payload,
+        providerNpub: input.provider_npub,
+        providerPubkey: decodeNpub(input.provider_npub),
+        capability: input.capability,
+        dTag: toDTag(input.capability),
+        kindOffset: input.kind_offset,
+        timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
+        maxPriceLamports: input.max_price_lamports,
+      });
+    },
+  }),
+
+  defineTool({
+    name: 'submit_diff_review',
+    description:
+      'Send a code-review job: the MCP server runs `git diff` inside repo_path and forwards ' +
+      "the diff to the chosen provider. The diff content never appears in the LLM's output " +
+      'tokens, only the short tool call does. ' +
+      'When base is omitted, auto-detects: dirty working tree -> diff against HEAD; ' +
+      'clean tree with main/master/origin-HEAD found -> ${detected}...HEAD; otherwise ' +
+      'falls back to diff against HEAD. Pass base explicitly (e.g. "main", a tag, or a SHA) ' +
+      'to force a `${base}...HEAD` PR-style range. ' +
+      'Optional `prompt` is prepended above the diff so reviewers can scope the review. ' +
+      'Default capability is "review" - override if the provider advertises a different tag.',
+    schema: SubmitDiffReviewSchema,
+    async handler(ctx, input) {
+      ctx.toolRateLimiter.check();
+      checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
+
+      let diffResult;
+      try {
+        diffResult = await computeGitDiff(input.repo_path, input.base);
+      } catch (e) {
+        return errorResult(e instanceof Error ? e.message : String(e));
+      }
+
+      // Compose payload: optional prompt then a fenced diff block with the
+      // resolved range so the provider knows what was actually compared.
+      const promptBlock = input.prompt.trim().length > 0 ? `${input.prompt.trim()}\n\n` : '';
+      const payload = `${promptBlock}--- git diff (${diffResult.describedRange}) ---\n${diffResult.diff}`;
+      if (payload.length > MAX_INPUT_LEN) {
+        return errorResult(
+          `Combined prompt + diff is ${payload.length} chars (max ${MAX_INPUT_LEN}). ` +
+            `Shorten the prompt or pass a narrower base.`,
+        );
+      }
+
+      const agent = ctx.active();
+      return executeSubmitAndPay(ctx, agent, {
+        input: payload,
+        providerNpub: input.provider_npub,
+        providerPubkey: decodeNpub(input.provider_npub),
+        capability: input.capability,
+        dTag: toDTag(input.capability),
+        kindOffset: input.kind_offset,
+        timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
+        maxPriceLamports: input.max_price_lamports,
+      });
     },
   }),
 

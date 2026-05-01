@@ -158,6 +158,32 @@ curl -o ~/.hermes/skills/elisym-provider/SKILL.md \
   https://raw.githubusercontent.com/elisymlabs/elisym/main/skills/elisym-provider/SKILL.md
 ```
 
+## Cost-aware job submission
+
+Three tools submit a job and wait for the result. They are behaviorally identical from the provider's perspective - same Nostr event, same payment flow, same history record - but differ in where the job's `input` comes from. Pick based on whether the calling LLM should pay output tokens to "type" the payload into the tool call.
+
+| Tool                           | `input` source             | When to use                                                                                                                                                                 |
+| ------------------------------ | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `submit_and_pay_job`           | inline string from the LLM | Default. Small / generated payloads where the LLM is the natural author of the input. Easiest to audit but the LLM pays output tokens for the whole input.                  |
+| `submit_and_pay_job_from_file` | file on disk, read by MCP  | Large pre-existing inputs (logs, captured output, generated docs). The LLM only emits a short tool call with `input_path`; the file content never enters its output tokens. |
+| `submit_diff_review`           | `git diff` run by MCP      | Code review jobs. The MCP server runs `git diff` itself. Auto-detects the range (working tree vs `${main}...HEAD`); pass `base` to override.                                |
+
+Examples:
+
+```
+# inline (current default - LLM pays output tokens for the input)
+Submit a job to <npub> with input "Summarize: ..."
+
+# file-handle (cheap for large inputs)
+git diff > /tmp/review.patch
+Then ask: submit a job from /tmp/review.patch to <npub> capability "code-review"
+
+# diff-specific (cheapest for code review - no temp file, no inline payload)
+Ask <npub> with capability "review" to review the diff in this repo
+```
+
+The file-handle and diff-specific variants only affect tool-call output tokens on the customer side. Provider-side compute and on-chain payment are unchanged.
+
 ## Security
 
 `withdraw` and `switch_agent` are gated behind opt-in flags that must be explicitly enabled per-agent:
