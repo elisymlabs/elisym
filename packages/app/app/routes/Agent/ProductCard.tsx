@@ -42,6 +42,8 @@ interface DescriptionProps {
 
 const MORE_SUFFIX = ' more...';
 
+const openTooltipClosers = new Set<() => void>();
+
 function ProductDescription({ text, className }: DescriptionProps) {
   const textRef = useRef<HTMLParagraphElement>(null);
   const measureRef = useRef<HTMLParagraphElement>(null);
@@ -89,6 +91,9 @@ function ProductDescription({ text, className }: DescriptionProps) {
     const anchor = moreRef.current;
     if (!anchor) {
       return;
+    }
+    for (const close of openTooltipClosers) {
+      close();
     }
     const rect = anchor.getBoundingClientRect();
     const anchorCenter = rect.left + rect.width / 2;
@@ -155,6 +160,7 @@ function ProductDescription({ text, className }: DescriptionProps) {
     if (!pos) {
       return;
     }
+    openTooltipClosers.add(closeTooltip);
     function handlePointerDownOutside(event: globalThis.PointerEvent) {
       const target = event.target;
       if (!(target instanceof Node)) {
@@ -174,6 +180,7 @@ function ProductDescription({ text, className }: DescriptionProps) {
     document.addEventListener('pointerdown', handlePointerDownOutside);
     window.addEventListener('resize', handleResize);
     return () => {
+      openTooltipClosers.delete(closeTooltip);
       document.removeEventListener('pointerdown', handlePointerDownOutside);
       window.removeEventListener('resize', handleResize);
     };
