@@ -587,10 +587,15 @@ export const customerTools: ToolDefinition[] = [
 
       const agent = ctx.active();
       const providerPubkey = decodeNpub(input.provider_npub);
+      // Normalize to canonical d-tag form so the published `t` tag matches what
+      // CLI/App publish on capability cards. Without this, names like
+      // "Opus 4.7" would publish as raw text and the provider's router (which
+      // compares against `toDTag(skill.name)`) would silently drop the job.
+      const dTag = toDTag(input.capability);
 
       const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
         input: input.input,
-        capability: input.capability,
+        capability: dTag,
         providerPubkey,
         kindOffset: input.kind_offset,
       });
@@ -601,7 +606,7 @@ export const customerTools: ToolDefinition[] = [
           {
             event_id: jobId,
             created_at: Math.floor(Date.now() / 1000),
-            capability: input.capability,
+            capability: dTag,
             provider_npub: input.provider_npub,
           },
           null,
@@ -826,6 +831,11 @@ export const customerTools: ToolDefinition[] = [
 
       const agent = ctx.active();
       const providerPubkey = decodeNpub(input.provider_npub);
+      // Normalize to canonical d-tag form so the published `t` tag matches what
+      // CLI/App publish on capability cards. Without this, names like
+      // "Opus 4.7" would publish as raw text and the provider's router (which
+      // compares against `toDTag(skill.name)`) would silently drop the job.
+      const dTag = toDTag(input.capability);
 
       // Pre-ping: refuse to submit to an unreachable provider. The 30s pong cache
       // in PingService means that if the caller just ran search_agents, this is a
@@ -856,7 +866,7 @@ export const customerTools: ToolDefinition[] = [
             `Refresh discovery (e.g. search_agents) or verify the npub is correct.`,
         );
       }
-      const expectedRecipient = providerSolanaAddress(provider, toDTag(input.capability));
+      const expectedRecipient = providerSolanaAddress(provider, dTag);
       if (agent.solanaKeypair && !expectedRecipient) {
         // Customer has a wallet (intends to pay), but the provider advertised no Solana
         // recipient for this capability. We cannot verify where funds would go - refuse.
@@ -878,7 +888,7 @@ export const customerTools: ToolDefinition[] = [
       const submittedAt = Date.now();
       const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
         input: input.input,
-        capability: input.capability,
+        capability: dTag,
         providerPubkey,
         kindOffset: input.kind_offset,
       });
@@ -937,7 +947,7 @@ export const customerTools: ToolDefinition[] = [
 
         await recordJobOutcome(agent, {
           jobEventId: jobId,
-          capability: input.capability,
+          capability: dTag,
           providerPubkey,
           providerName: clipProviderName(provider.name),
           paidAmountSubunits: paidAmountSubunits?.toString(),
@@ -955,7 +965,7 @@ export const customerTools: ToolDefinition[] = [
         const msg = e instanceof Error ? e.message : String(e);
         await recordJobOutcome(agent, {
           jobEventId: jobId,
-          capability: input.capability,
+          capability: dTag,
           providerPubkey,
           providerName: clipProviderName(provider.name),
           paidAmountSubunits: paidAmountSubunits?.toString(),
