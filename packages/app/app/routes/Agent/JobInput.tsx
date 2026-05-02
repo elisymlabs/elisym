@@ -1,4 +1,4 @@
-import type { CapabilityCard } from '@elisym/sdk';
+import { classifyJobError, type CapabilityCard } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import Decimal from 'decimal.js-light';
@@ -70,7 +70,7 @@ function JobInputInner({
   const idCtx = useIdentity();
   const isOwn = idCtx.publicKey === agentPubkey;
 
-  const { buy, buying, error } = buyState;
+  const { buy, buying, error, paid } = buyState;
 
   const [input, setInput] = useState('');
   const isStatic = card.static === true;
@@ -230,9 +230,27 @@ function JobInputInner({
           )}
         </div>
       </div>
-      {error && <div className="px-20 pb-12 text-xs text-red-500">{error}</div>}
+      {error && <ErrorMessage error={error} paid={paid} />}
     </div>
   );
+}
+
+function ErrorMessage({ error, paid }: { error: string; paid: boolean }) {
+  const isAgentUnavailable = classifyJobError(error) === 'agent-unavailable';
+  if (isAgentUnavailable) {
+    return (
+      <div className="px-20 pb-12 text-xs text-red-500">
+        <div>Agent unavailable. Try again later.</div>
+        {paid && (
+          <div className="mt-4 text-text-2">
+            Your payment is held. Once the agent is back online, the job will be retried
+            automatically and the result delivered.
+          </div>
+        )}
+      </div>
+    );
+  }
+  return <div className="px-20 pb-12 text-xs text-red-500">{error}</div>;
 }
 
 export function JobInput({

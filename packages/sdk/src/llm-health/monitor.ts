@@ -105,6 +105,13 @@ export class LlmHealthMonitor {
    * the one captured at startup. Skips an extra probe on the first
    * `assertReady` call within the TTL window. No-op if the pair is not
    * registered.
+   *
+   * In production `seed` is only called from the CLI startup path, which
+   * itself `process.exit(1)`s on `invalid` / `billing` before any other
+   * pair is reached - so the cascade in `applyVerification` is benign at
+   * startup. In tests, seeding `invalid` / `billing` will cascade across
+   * sibling pairs of the same provider, which matches the production
+   * runtime behavior we want to assert.
    */
   seed(provider: string, model: string, verification: LlmKeyVerification): void {
     const entry = this.entries.get(keyOf(provider, model));
@@ -149,6 +156,12 @@ export class LlmHealthMonitor {
    * Force the next `assertReady` for this pair to re-probe regardless of
    * TTL. Used when a real LLM call surfaces 401/402 mid-job - the cached
    * `healthy` is stale and we want to catch the next request.
+   *
+   * NOTE: this method has no callers in the current production code
+   * (`packages/sdk/src` and `packages/cli/src` both prefer the explicit
+   * `markUnhealthyFromJob` below). It does NOT propagate to sibling
+   * pairs; if reintroduced, consider whether the cascade in
+   * `markUnhealthyFromJob` should also apply here.
    */
   markFailureFromJob(provider: string, model: string): void {
     const entry = this.entries.get(keyOf(provider, model));
@@ -167,9 +180,15 @@ export class LlmHealthMonitor {
    * lazy recovery loop notices on its own. No-op if the pair is not
    * registered.
    *
+   * For `invalid` / `billing` reasons this propagates to every sibling
+   * pair sharing the same `provider` via the cascade in
+   * `applyVerification` - they share the same API key, so a revoked or
+   * exhausted key affects all models. `unavailable` stays per-pair.
+   *
    * Recovery from this state happens through a successful probe (typically
    * fired by `startLlmRecovery`) which flips the pair back to healthy via
-   * `applyVerification`.
+   * `applyVerification`. The recovery cascade lifts sibling pairs at the
+   * same time so the gate doesn't stay half-broken.
    */
   markUnhealthyFromJob(
     provider: string,
@@ -224,13 +243,34 @@ export class LlmHealthMonitor {
    * loop so a billing outage on one provider does not trigger throwaway
    * probes on every other healthy pair the agent has registered.
    * Errors thrown by `verifyFn` are caught and recorded as `unavailable`.
+   *
+   * Provider-deduplicated for `invalid` / `billing`: every pair under
+   * the same provider shares the same API key, so a single probe per
+   * provider is enough - a successful result will cascade to siblings
+   * via the recovery cascade in `applyVerification`. Without this dedup,
+   * a 3-skill Anthropic agent in a billing outage would burn 3x the
+   * billing-token quota per recovery tick.
+   *
+   * `unavailable` entries probe individually because the failure is
+   * model-specific (e.g. one endpoint returning 5xx) and cascading the
+   * result would corrupt sibling state.
    */
   async refreshUnhealthy(): Promise<readonly LlmHealthSnapshotEntry[]> {
     const probes: Array<Promise<void>> = [];
+    const sharedKeyProviders = new Set<string>();
     for (const entry of this.entries.values()) {
       if (entry.status === 'healthy' || entry.status === 'unknown') {
         continue;
       }
+      if (entry.status === 'unavailable') {
+        probes.push(this.probe(entry).then(() => undefined));
+        continue;
+      }
+      // invalid / billing - probe one representative per provider only.
+      if (sharedKeyProviders.has(entry.provider)) {
+        continue;
+      }
+      sharedKeyProviders.add(entry.provider);
       probes.push(this.probe(entry).then(() => undefined));
     }
     await Promise.all(probes);
@@ -309,7 +349,73 @@ export class LlmHealthMonitor {
     return promise;
   }
 
+  /**
+   * Apply a verification to a single entry AND cascade across siblings
+   * sharing the same `provider`. Two symmetric cascades:
+   *
+   * - **Failure cascade** (`invalid` / `billing`): a revoked or
+   *   billing-exhausted API key affects every model the operator could
+   *   reach with that key. Structurally enforced by
+   *   `resolveProviderApiKey` in `packages/cli/src/llm/keys.ts:27`,
+   *   which returns at most one key per provider (no per-skill
+   *   injection). If a future change introduces per-skill keys, this
+   *   cascade must be revisited.
+   *
+   * - **Recovery cascade** (`ok: true`): when a healthy verification
+   *   arrives (typically from `refreshUnhealthy` after the operator
+   *   fixed the key), lift sibling pairs that were stuck `invalid` /
+   *   `billing` so the next `assertReady` for any model under this
+   *   provider stops refusing jobs. Without this, the gate would stay
+   *   half-broken until each sibling's own probe round-trips.
+   *
+   * `unavailable` does NOT cascade - it is treated as a transient,
+   * model-specific issue (e.g. specific endpoint returning 5xx).
+   *
+   * Cascaded sibling verifications are tagged with `(cascaded from
+   * <triggering-model>)` in their body so `snapshot()` and operator
+   * logs remain diagnosable.
+   */
   private applyVerification(entry: Entry, verification: LlmKeyVerification): void {
+    this.mutateEntry(entry, verification);
+
+    if (verification.ok) {
+      for (const sibling of this.entries.values()) {
+        if (sibling === entry) {
+          continue;
+        }
+        if (sibling.provider !== entry.provider) {
+          continue;
+        }
+        if (sibling.status !== 'invalid' && sibling.status !== 'billing') {
+          continue;
+        }
+        this.mutateEntry(sibling, { ok: true });
+      }
+      return;
+    }
+
+    if (verification.reason !== 'invalid' && verification.reason !== 'billing') {
+      return;
+    }
+
+    const cascaded = this.tagCascaded(verification, entry.model);
+    for (const sibling of this.entries.values()) {
+      if (sibling === entry) {
+        continue;
+      }
+      if (sibling.provider !== entry.provider) {
+        continue;
+      }
+      this.mutateEntry(sibling, cascaded);
+    }
+  }
+
+  /**
+   * Per-entry state transition. Used by `applyVerification` (which then
+   * orchestrates the cascade) and by the cascade loop itself for sibling
+   * entries (which must NOT trigger a recursive cascade).
+   */
+  private mutateEntry(entry: Entry, verification: LlmKeyVerification): void {
     entry.lastVerifiedAt = this.now();
     if (verification.ok) {
       entry.status = 'healthy';
@@ -325,5 +431,27 @@ export class LlmHealthMonitor {
     }
     entry.status = verification.reason;
     entry.consecutiveFailures = 0;
+  }
+
+  private tagCascaded(verification: LlmKeyVerification, fromModel: string): LlmKeyVerification {
+    const tag = `(cascaded from ${fromModel})`;
+    if (verification.ok) {
+      return verification;
+    }
+    if (verification.reason === 'invalid') {
+      return {
+        ok: false,
+        reason: 'invalid',
+        status: verification.status,
+        body: verification.body ? `${verification.body} ${tag}` : tag,
+      };
+    }
+    if (verification.reason === 'billing') {
+      const body = verification.body ? `${verification.body} ${tag}` : tag;
+      return verification.status !== undefined
+        ? { ok: false, reason: 'billing', status: verification.status, body }
+        : { ok: false, reason: 'billing', body };
+    }
+    return verification;
   }
 }

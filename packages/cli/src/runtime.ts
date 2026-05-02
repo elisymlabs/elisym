@@ -102,6 +102,41 @@ function resolveJobAsset(tags: string[], skills: SkillRegistry): Asset {
 const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient', 'insufficient_quota'];
 
 /**
+ * Markers that indicate a script-skill failure (non-zero exit, non-42)
+ * actually carried a billing / invalid-key signal in its stderr/stdout.
+ * Reserved for the case where the script author did not honor the
+ * `SCRIPT_EXIT_BILLING_EXHAUSTED = 42` contract - common with shell
+ * proxies that exit 1 on every error path and dump the provider's body
+ * verbatim ("Anthropic count_tokens error: invalid x-api-key" etc).
+ *
+ * Detecting these in the runtime means an operator's misbehaving script
+ * still flips the health pair to unhealthy, so the next customer is
+ * refused at the preflight gate (before payment) instead of paying for
+ * a job that will fail identically.
+ *
+ * Superset of `BILLING_BODY_MARKERS`: adds auth-language markers
+ * (`x-api-key`, `invalid api key`, `unauthorized`, ...) that are
+ * specific to the auth/invalid bucket rather than the billing bucket.
+ */
+const SCRIPT_BILLING_INVALID_MARKERS = [
+  'credit balance',
+  'billing',
+  'insufficient',
+  'insufficient_quota',
+  'x-api-key',
+  'invalid api key',
+  'invalid_api_key',
+  'authentication_error',
+  'unauthorized',
+  'unauthenticated',
+];
+
+function scriptMessageLooksLikeBillingOrInvalid(message: string): boolean {
+  const lower = message.toLowerCase();
+  return SCRIPT_BILLING_INVALID_MARKERS.some((marker) => lower.includes(marker));
+}
+
+/**
  * Customer-facing message for both the preflight gate (cached
  * billing/invalid signal) and the post-execute path (skill.execute
  * surfaced billing/invalid mid-job). Kept identical between the two so
@@ -237,6 +272,33 @@ export class AgentRuntime {
    * Anything else is a transient/skill error and does NOT touch health
    * state - the recovery loop should not be poisoned by skill bugs.
    */
+  /**
+   * Build a "and N other model(s) for the same provider" suffix for
+   * cascade-narrating log lines. The SDK monitor cascades `invalid` /
+   * `billing` flips across every sibling pair sharing the same provider
+   * (shared API key); this helper just narrates that to the operator log
+   * so they can see why unrelated skills are now refusing jobs.
+   */
+  private cascadeSuffix(provider: string, triggeringModel: string): string {
+    if (!this.healthMonitor) {
+      return '';
+    }
+    let siblings = 0;
+    for (const entry of this.healthMonitor.snapshot()) {
+      if (entry.provider !== provider) {
+        continue;
+      }
+      if (entry.model === triggeringModel) {
+        continue;
+      }
+      siblings += 1;
+    }
+    if (siblings === 0) {
+      return '';
+    }
+    return ` (cascading to ${siblings} other model(s) for ${provider} sharing the same API key)`;
+  }
+
   private markHealthFromExecuteError(
     skill: import('./skill').Skill,
     err: unknown,
@@ -262,7 +324,7 @@ export class AgentRuntime {
         return false;
       }
       log(
-        `${tag} Script signaled billing-exhausted (exit ${err.exitCode}). Marking ${provider}/${model} unhealthy; future jobs against this pair will be refused until recovery probe succeeds.`,
+        `${tag} Script signaled billing-exhausted (exit ${err.exitCode}). Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
       this.healthMonitor.markUnhealthyFromJob(provider, model, 'billing', err.message);
       return true;
@@ -287,9 +349,44 @@ export class AgentRuntime {
       const provider = skill.resolvedTriple.provider;
       const model = skill.resolvedTriple.model;
       log(
-        `${tag} LLM provider returned HTTP ${status} (${reason}). Marking ${provider}/${model} unhealthy; future jobs against this pair will be refused until recovery probe succeeds.`,
+        `${tag} LLM provider returned HTTP ${status} (${reason}). Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
       this.healthMonitor.markUnhealthyFromJob(provider, model, reason, body);
+      return true;
+    }
+
+    // Fallback for script-mode skills that did NOT use exit 42 but whose
+    // error text carries a billing/invalid signal (shell proxies that
+    // exit 1 for every error path and dump the provider's body in
+    // stderr - "Anthropic count_tokens error: invalid x-api-key" etc).
+    // Without this, a misbehaving operator script would leave the pair
+    // healthy and every subsequent customer would pay before the same
+    // failure repeats. Requires `llmOverride` so we know which pair to
+    // mark; if absent we surface a log hint and bail.
+    if (skill.mode !== 'llm') {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!scriptMessageLooksLikeBillingOrInvalid(message)) {
+        return false;
+      }
+      const provider = skill.llmOverride?.provider;
+      const model = skill.llmOverride?.model;
+      if (!provider || !model) {
+        log(
+          `${tag} Script failure looks like billing/invalid ("${message.slice(0, 120)}") but skill "${skill.name}" did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+        );
+        return false;
+      }
+      const lower = message.toLowerCase();
+      const reason: 'billing' | 'invalid' =
+        lower.includes('credit balance') ||
+        lower.includes('billing') ||
+        lower.includes('insufficient')
+          ? 'billing'
+          : 'invalid';
+      log(
+        `${tag} Script failure carries ${reason} signal in stderr. Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
+      );
+      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, message.slice(0, 200));
       return true;
     }
 
@@ -911,6 +1008,12 @@ export class AgentRuntime {
     // block the per-tick recovery iteration on a network probe.
     if (this.healthMonitor) {
       const snap = this.healthMonitor.snapshot();
+      // `unhealthyKeys` is a per-pair set, not deduplicated by provider:
+      // we use it only to decide whether to KICK refreshUnhealthy, not
+      // to issue probes ourselves. The provider-dedup of probes lives
+      // inside `refreshUnhealthy`. Don't re-collapse here - that would
+      // mask cases where one provider's pair is `unavailable` while
+      // another is `invalid`, which need different probe paths.
       const unhealthyKeys = new Set(
         snap
           .filter(
