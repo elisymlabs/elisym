@@ -223,6 +223,21 @@ export class MarketplaceService {
               } catch {
                 /* caller error - don't crash subscription */
               }
+              // For targeted jobs (`provPk` set) an `error` feedback from
+              // THE provider is terminal: surface the message via `onError`
+              // and close the subscription so the customer doesn't sit
+              // waiting until the global timeout. Broadcast jobs (no
+              // `provPk`) intentionally keep the subscription open - a
+              // single provider's rejection should not silence the others.
+              if (provPk && statusTag[1] === 'error' && !resolved) {
+                const errorMessage = ev.content?.trim() || 'Provider returned an error';
+                done();
+                try {
+                  cb.onError?.(errorMessage);
+                } catch {
+                  /* caller error - don't crash subscription */
+                }
+              }
             }
           },
         ),

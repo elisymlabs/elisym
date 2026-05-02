@@ -1205,8 +1205,7 @@ describe('AgentRuntime', () => {
       const paymentRequired = feedbackCalls.find((c: any) => c[1]?.type === 'payment-required');
       expect(paymentRequired).toBeUndefined();
       const unavailable = feedbackCalls.find(
-        (c: any) =>
-          c[1]?.type === 'error' && c[1]?.message?.includes('Service temporarily unavailable'),
+        (c: any) => c[1]?.type === 'error' && c[1]?.message === 'Agent temporarily unavailable',
       );
       expect(unavailable).toBeDefined();
       expect(ledger.getStatus('gated-job')).toBeUndefined();

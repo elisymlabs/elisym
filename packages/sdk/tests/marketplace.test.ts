@@ -467,6 +467,111 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
     expect(onResult).not.toHaveBeenCalled();
   });
 
+  it('calls onError and closes subs on error feedback for targeted job', () => {
+    const pool = createCallbackMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+    const onError = vi.fn();
+    const onFeedback = vi.fn();
+
+    svc.subscribeToJobUpdates({
+      jobEventId: 'job1',
+      providerPubkey: provider.publicKey,
+      customerPublicKey: customer.publicKey,
+      callbacks: { onError, onFeedback },
+    });
+
+    const errorEvent = finalizeEvent(
+      {
+        kind: KIND_JOB_FEEDBACK,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['e', 'job1'],
+          ['p', customer.publicKey],
+          ['status', 'error'],
+        ],
+        content: 'Agent temporarily unavailable',
+      },
+      provider.secretKey,
+    );
+
+    pool.subs[0]!.onEvent(errorEvent);
+
+    expect(onFeedback).toHaveBeenCalledWith('error', 0, undefined, provider.publicKey);
+    expect(onError).toHaveBeenCalledWith('Agent temporarily unavailable');
+    for (const sub of pool.subs) {
+      expect(sub.closeFn).toHaveBeenCalled();
+    }
+  });
+
+  it('falls back to a generic onError message when error feedback content is empty', () => {
+    const pool = createCallbackMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+    const onError = vi.fn();
+
+    svc.subscribeToJobUpdates({
+      jobEventId: 'job1',
+      providerPubkey: provider.publicKey,
+      customerPublicKey: customer.publicKey,
+      callbacks: { onError },
+    });
+
+    const errorEvent = finalizeEvent(
+      {
+        kind: KIND_JOB_FEEDBACK,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['e', 'job1'],
+          ['p', customer.publicKey],
+          ['status', 'error'],
+        ],
+        content: '',
+      },
+      provider.secretKey,
+    );
+
+    pool.subs[0]!.onEvent(errorEvent);
+    expect(onError).toHaveBeenCalledWith('Provider returned an error');
+  });
+
+  it('does not close broadcast subscriptions on a single provider error', () => {
+    const pool = createCallbackMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+    const onError = vi.fn();
+
+    svc.subscribeToJobUpdates({
+      jobEventId: 'job1',
+      customerPublicKey: customer.publicKey,
+      callbacks: { onError },
+    });
+
+    const errorEvent = finalizeEvent(
+      {
+        kind: KIND_JOB_FEEDBACK,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['e', 'job1'],
+          ['p', customer.publicKey],
+          ['status', 'error'],
+        ],
+        content: 'one provider failed',
+      },
+      provider.secretKey,
+    );
+
+    pool.subs[0]!.onEvent(errorEvent);
+    // Broadcast: a single provider's error must not silence the rest.
+    expect(onError).not.toHaveBeenCalled();
+    for (const sub of pool.subs) {
+      expect(sub.closeFn).not.toHaveBeenCalled();
+    }
+  });
+
   it('calls onError on timeout', async () => {
     const pool = createCallbackMockPool();
     const svc = new MarketplaceService(pool as any);

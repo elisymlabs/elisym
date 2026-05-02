@@ -91,6 +91,30 @@ function resolveJobAsset(tags: string[], skills: SkillRegistry): Asset {
  */
 const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient', 'insufficient_quota'];
 
+/**
+ * Customer-facing message for both the preflight gate (cached
+ * billing/invalid signal) and the post-execute path (skill.execute
+ * surfaced billing/invalid mid-job). Kept identical between the two so
+ * the customer sees a stable string regardless of which side of the
+ * health-monitor flip their request landed on. Consumed by the SDK
+ * subscription as the `onError` argument.
+ */
+const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
+
+/**
+ * Re-thrown by the post-execute catch when the underlying skill failure
+ * was a billing / invalid signal that just flipped the health pair to
+ * unhealthy. Lets `processJob`'s sanitizer surface a stable
+ * customer-facing message instead of the generic "Internal processing
+ * error" mask that otherwise hides every "API error: ..." string.
+ */
+class AgentUnavailableError extends Error {
+  constructor() {
+    super(AGENT_UNAVAILABLE_MESSAGE);
+    this.name = 'AgentUnavailableError';
+  }
+}
+
 function bodyLooksLikeBilling(body: string): boolean {
   const lower = body.toLowerCase();
   return BILLING_BODY_MARKERS.some((marker) => lower.includes(marker));
@@ -208,9 +232,9 @@ export class AgentRuntime {
     err: unknown,
     log: (msg: string) => void,
     jobId: string,
-  ): void {
+  ): boolean {
     if (!this.healthMonitor) {
-      return;
+      return false;
     }
     const tag = `[${jobId.slice(0, 8)}]`;
 
@@ -225,20 +249,20 @@ export class AgentRuntime {
         log(
           `${tag} Script returned exit ${err.exitCode} (billing-exhausted) but skill "${skill.name}" did not declare provider/model in SKILL.md - cannot gate future jobs.`,
         );
-        return;
+        return false;
       }
       log(
         `${tag} Script signaled billing-exhausted (exit ${err.exitCode}). Marking ${provider}/${model} unhealthy; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
       this.healthMonitor.markUnhealthyFromJob(provider, model, 'billing', err.message);
-      return;
+      return true;
     }
 
     if (skill.mode === 'llm' && skill.resolvedTriple) {
       const message = err instanceof Error ? err.message : String(err);
       const match = /API error:\s*(\d{3})\b\s*(.*)/i.exec(message);
       if (!match) {
-        return;
+        return false;
       }
       const status = Number(match[1]);
       const body = (match[2] ?? '').slice(0, 200);
@@ -247,7 +271,7 @@ export class AgentRuntime {
       const isBilling400 = status === 400 && bodyLooksLikeBilling(body);
       const isBilling429 = status === 429 && bodyLooksLikeBilling(body);
       if (!isBillingStatus && !isAuthStatus && !isBilling400 && !isBilling429) {
-        return;
+        return false;
       }
       const reason: 'billing' | 'invalid' = isAuthStatus ? 'invalid' : 'billing';
       const provider = skill.resolvedTriple.provider;
@@ -256,7 +280,10 @@ export class AgentRuntime {
         `${tag} LLM provider returned HTTP ${status} (${reason}). Marking ${provider}/${model} unhealthy; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
       this.healthMonitor.markUnhealthyFromJob(provider, model, reason, body);
+      return true;
     }
+
+    return false;
   }
 
   /** Fetch on-chain protocol config (fee, treasury). Always fetches fresh to avoid stale treasury. */
@@ -475,10 +502,20 @@ export class AgentRuntime {
       }
       this.callbacks.onJobError?.(job.jobId, e.message);
 
-      // W8: Sanitize error messages before sending to customer
-      const safeMessage = e.message?.includes('API')
-        ? 'Internal processing error'
-        : (e.message ?? 'Unknown error');
+      // W8: Sanitize error messages before sending to customer.
+      // `AgentUnavailableError` is the runtime's own marker for a
+      // billing/invalid health flip and carries the canonical
+      // customer-facing string - pass it through verbatim. Anything
+      // mentioning "API" otherwise is a leaky provider error and gets
+      // masked.
+      let safeMessage: string;
+      if (e instanceof AgentUnavailableError) {
+        safeMessage = e.message;
+      } else if (e.message?.includes('API')) {
+        safeMessage = 'Internal processing error';
+      } else {
+        safeMessage = e.message ?? 'Unknown error';
+      }
       await this.transport
         .sendFeedback(job, { type: 'error', message: safeMessage })
         .catch(() => {});
@@ -523,7 +560,7 @@ export class AgentRuntime {
         await this.transport
           .sendFeedback(job, {
             type: 'error',
-            message: 'Service temporarily unavailable, try again later',
+            message: AGENT_UNAVAILABLE_MESSAGE,
           })
           .catch(() => {});
         return;
@@ -594,7 +631,15 @@ export class AgentRuntime {
         { ...this.skillCtx, signal },
       );
     } catch (err) {
-      this.markHealthFromExecuteError(skill, err, log, job.jobId);
+      const flippedToUnhealthy = this.markHealthFromExecuteError(skill, err, log, job.jobId);
+      // When the skill failure was the trigger that flipped the health
+      // pair to unhealthy, surface a stable "agent unavailable" message
+      // to the customer rather than the sanitized "Internal processing
+      // error" string the leaky-API masker would otherwise produce.
+      // Recovery happens through the lazy recovery loop.
+      if (flippedToUnhealthy) {
+        throw new AgentUnavailableError();
+      }
       throw err;
     }
 
