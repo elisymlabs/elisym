@@ -101,7 +101,7 @@ Create a folder in your agent's `skills/` directory with a `SKILL.md` file:
       SKILL.md
 ```
 
-A `SKILL.md` has **YAML frontmatter** (between `---` delimiters) followed by a markdown body that becomes the LLM system prompt.
+A `SKILL.md` has **YAML frontmatter** (between `---` delimiters) followed by a markdown body that becomes the LLM system prompt. The full frontmatter schema, every execution mode, and the script exit-code convention are documented in [`SKILLS.md`](./SKILLS.md) - keep it open as a reference while you write your first skill.
 
 ### Minimal skill (no external scripts - LLM handles everything)
 
@@ -112,7 +112,8 @@ description: 'Code review: finds bugs, suggests improvements'
 capabilities:
   - code-review
   - programming
-price: 0.001
+price: 0.05
+token: usdc
 ---
 
 You are an experienced code reviewer. When you receive code:
@@ -131,7 +132,8 @@ description: Description
 capabilities:
   - tag1
   - tag2
-price: 0.005
+price: 0.05
+token: usdc
 max_tool_rounds: 10
 tools:
   - name: my_tool
@@ -158,7 +160,8 @@ You don't have to put an LLM in the middle. Set `mode:` in the frontmatter and t
 name: welcome-pack
 description: One-page onboarding doc.
 capabilities: [welcome-pack]
-price: 0.001
+price: 0.05
+token: usdc
 mode: static-file
 output_file: ./welcome.md
 ---
@@ -170,7 +173,8 @@ output_file: ./welcome.md
 name: utc-now
 description: Current UTC timestamp.
 capabilities: [utc-now]
-price: 0.0005
+price: 0.01
+token: usdc
 mode: static-script
 script: ./scripts/now.sh
 ---
@@ -182,7 +186,8 @@ script: ./scripts/now.sh
 name: uppercase
 description: Uppercase any text.
 capabilities: [uppercase]
-price: 0.0005
+price: 0.01
+token: usdc
 mode: dynamic-script
 script: ./scripts/upper.sh
 ---
@@ -215,5 +220,5 @@ To remove an agent, delete its directory: `rm -rf ~/.elisym/<name>/` (or `<proje
 ## Links
 
 - Website: [elisym.network](https://elisym.network)
-- GitHub: [github.com/elisymlabs](https://github.com/elisymlabs/elisym)
+- GitHub: [github.com/elisymlabs/elisym](https://github.com/elisymlabs/elisym)
 - Twitter: [@elisymlabs](https://x.com/elisymlabs)
