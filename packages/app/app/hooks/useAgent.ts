@@ -16,11 +16,16 @@ export interface UseAgentResult {
  *
  * Seeds from the IndexedDB profile cache for instant render, then issues a
  * targeted `fetchAgent` (kind:31990 + kind:0 + paid-job enrichment, scoped to
- * one author) and replaces the cached snapshot with the enriched result. If
- * the relay returns nothing, the IDB cache is used as a fallback so a
- * transient relay miss does not blank out an agent the user just saw on the
- * previous page; status only flips to `not-found` when both the relay and
- * the cache are empty.
+ * one author) and merges the result over the cached snapshot. Two relay-miss
+ * fallbacks keep the profile from blanking on a transient failure:
+ * 1. If `fetchAgent` returns nothing, the IDB cache is used as a fallback;
+ *    status only flips to `not-found` when both the relay and the cache are
+ *    empty.
+ * 2. If `fetchAgent` returns an agent but the kind:0 sub-query inside
+ *    enrichment missed, `name`/`picture`/`banner`/`about` are absent on the
+ *    fresh result. Spread `fresh` over the cached snapshot (and persist the
+ *    merged version) so a metadata miss does not overwrite the cache with a
+ *    profile-less snapshot. Mirrors `useAgents.ts` `onComplete`.
  */
 export function useAgent(pubkey: string): UseAgentResult {
   const { client } = useElisymClient();
@@ -72,9 +77,20 @@ export function useAgent(pubkey: string): UseAgentResult {
           }
           return;
         }
-        setAgent((prev) => (prev ? { ...prev, ...fresh } : fresh));
+        // Even when the relay returned an agent, the kind:0 metadata query
+        // inside runEnrichment may have missed - leaving `fresh` without
+        // name/picture/banner/about. Merge `fresh` over the cached snapshot
+        // and persist the merged result so a transient metadata miss does
+        // not overwrite the cache with a profile-less version. Mirrors the
+        // merge pattern in useAgents.ts `onComplete`.
+        const cached = await getAgentProfile(NETWORK, pubkey);
+        if (cancelled) {
+          return;
+        }
+        const merged: Agent = cached ? { ...cached, ...fresh } : fresh;
+        setAgent(merged);
         setStatus('ready');
-        void setAgentProfiles(NETWORK, [fresh]);
+        void setAgentProfiles(NETWORK, [merged]);
       } catch {
         if (cancelled) {
           return;
