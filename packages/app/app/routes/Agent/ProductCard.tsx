@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
-  type PointerEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '~/lib/cn';
@@ -186,15 +185,6 @@ function ProductDescription({ text, className }: DescriptionProps) {
     };
   }, [pos]);
 
-  function handleMorePointerEnter(event: PointerEvent<HTMLButtonElement>) {
-    if (event.pointerType === 'touch') {
-      return;
-    }
-    if (!pos) {
-      openTooltip();
-    }
-  }
-
   function handleMoreClick(event: ReactMouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
     if (pos) {
@@ -215,7 +205,6 @@ function ProductDescription({ text, className }: DescriptionProps) {
             <button
               ref={moreRef}
               type="button"
-              onPointerEnter={handleMorePointerEnter}
               onClick={handleMoreClick}
               className="cursor-pointer underline underline-offset-2 hover:text-text"
             >
