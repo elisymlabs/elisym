@@ -1,5 +1,6 @@
 import {
   buildPaymentInstructions,
+  classifyJobError,
   estimatePriorityFeeMicroLamports,
   getProtocolConfig,
   getProtocolProgramId,
@@ -117,6 +118,13 @@ export interface ActiveBuySession {
   buying: boolean;
   result: string | null;
   error: string | null;
+  /**
+   * `true` once the on-chain payment has been confirmed and the
+   * payment-completed feedback has been published. Stays `true` even after
+   * an error arrives so the UI can distinguish "paid + provider failed"
+   * (refundable / recoverable) from "never paid" (just retry).
+   */
+  paid: boolean;
   lastInput: string;
   rated: boolean;
 }
@@ -203,6 +211,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         buying: true,
         result: null,
         error: null,
+        paid: false,
         lastInput: input,
         rated: false,
       });
@@ -288,6 +297,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   paymentAmount: amount,
                   txHash: signature,
                 });
+                setSession((prev) => (sessionMatches(prev) ? { ...prev, paid: true } : prev));
 
                 toast.loading('Payment sent, waiting for result...', { id: toastId });
               } catch (err) {
@@ -298,7 +308,8 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 );
                 cleanupRef.current?.();
                 cleanupRef.current = null;
-                toast.error(msg, { id: toastId });
+                toast.dismiss(toastId);
+                toast.error(msg);
               }
             },
 
@@ -322,7 +333,17 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
               );
               cleanupRef.current = null;
-              toast.error(errMsg, { id: toastId });
+              const toastMsg =
+                classifyJobError(errMsg) === 'agent-unavailable'
+                  ? 'Agent unavailable. Try again later.'
+                  : errMsg;
+              // Sonner does not always swap a multi-step `toast.loading`
+              // chain to an error toast when given the same id (the
+              // spinner sticks). Dismiss explicitly, then raise a fresh
+              // error toast so the customer sees the same message that
+              // the inline ErrorMessage card is now displaying.
+              toast.dismiss(toastId);
+              toast.error(toastMsg);
             },
           },
           timeoutMs: 120_000,
@@ -336,7 +357,8 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
         );
         cleanupRef.current = null;
-        toast.error(msg, { id: toastId });
+        toast.dismiss(toastId);
+        toast.error(msg);
       }
     },
     [
@@ -402,6 +424,12 @@ export interface ScopedBuyState {
   buying: boolean;
   result: string | null;
   error: string | null;
+  /**
+   * Whether on-chain payment was completed for the current session before
+   * the terminal state was reached. Used by the error UI to surface a
+   * recovery hint when an "Agent unavailable" failure follows a paid job.
+   */
+  paid: boolean;
   jobId: string | null;
   rate: (positive: boolean) => Promise<void>;
   rated: boolean;
@@ -456,6 +484,7 @@ export function useBuyForCard(args: UseBuyForCardArgs): ScopedBuyState | null {
     buying: session?.buying ?? false,
     result: matches ? (session?.result ?? null) : null,
     error: matches ? (session?.error ?? null) : null,
+    paid: matches ? (session?.paid ?? false) : false,
     jobId: matches ? (session?.jobId ?? null) : null,
     rate,
     rated: matches ? (session?.rated ?? false) : false,

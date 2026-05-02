@@ -217,4 +217,116 @@ describe('LlmHealthMonitor', () => {
     expect(v1).toHaveBeenCalledTimes(0);
     expect(v2).toHaveBeenCalledTimes(1);
   });
+
+  describe('provider-wide cascade', () => {
+    function setupAnthropicTrioPlusOpenAI(): {
+      monitor: LlmHealthMonitor;
+      verifyByPair: Map<string, ReturnType<typeof vi.fn<LlmKeyVerifyFn>>>;
+    } {
+      const monitor = new LlmHealthMonitor();
+      const verifyByPair = new Map<string, ReturnType<typeof vi.fn<LlmKeyVerifyFn>>>();
+      const pairs: Array<[string, string]> = [
+        ['anthropic', 'opus'],
+        ['anthropic', 'sonnet'],
+        ['anthropic', 'haiku'],
+        ['openai', 'gpt-5'],
+      ];
+      for (const [provider, model] of pairs) {
+        const verify = vi.fn<LlmKeyVerifyFn>(async () => ok());
+        verifyByPair.set(`${provider}::${model}`, verify);
+        monitor.register({ provider, model, verifyFn: verify });
+      }
+      return { monitor, verifyByPair };
+    }
+
+    it('flips all sibling pairs of the same provider on invalid', () => {
+      const { monitor } = setupAnthropicTrioPlusOpenAI();
+      monitor.markUnhealthyFromJob('anthropic', 'opus', 'invalid', 'HTTP 401');
+      const snap = monitor.snapshot();
+      const byKey = new Map(snap.map((entry) => [`${entry.provider}::${entry.model}`, entry]));
+      expect(byKey.get('anthropic::opus')?.status).toBe('invalid');
+      expect(byKey.get('anthropic::sonnet')?.status).toBe('invalid');
+      expect(byKey.get('anthropic::haiku')?.status).toBe('invalid');
+      expect(byKey.get('openai::gpt-5')?.status).toBe('unknown');
+      expect(byKey.get('anthropic::sonnet')?.lastReason).toContain('cascaded from opus');
+      expect(byKey.get('anthropic::haiku')?.lastReason).toContain('cascaded from opus');
+      // Triggering pair's own reason is the original, not cascaded.
+      expect(byKey.get('anthropic::opus')?.lastReason).not.toContain('cascaded from');
+    });
+
+    it('flips all sibling pairs of the same provider on billing', () => {
+      const { monitor } = setupAnthropicTrioPlusOpenAI();
+      monitor.markUnhealthyFromJob('anthropic', 'sonnet', 'billing', 'credit balance is too low');
+      const snap = monitor.snapshot();
+      const byKey = new Map(snap.map((entry) => [`${entry.provider}::${entry.model}`, entry]));
+      expect(byKey.get('anthropic::opus')?.status).toBe('billing');
+      expect(byKey.get('anthropic::sonnet')?.status).toBe('billing');
+      expect(byKey.get('anthropic::haiku')?.status).toBe('billing');
+      expect(byKey.get('openai::gpt-5')?.status).toBe('unknown');
+      expect(byKey.get('anthropic::opus')?.lastReason).toContain('cascaded from sonnet');
+    });
+
+    it('does NOT cascade on unavailable (transient, model-specific)', () => {
+      const { monitor } = setupAnthropicTrioPlusOpenAI();
+      monitor.markUnhealthyFromJob('anthropic', 'opus', 'unavailable', 'fetch failed');
+      const snap = monitor.snapshot();
+      const byKey = new Map(snap.map((entry) => [`${entry.provider}::${entry.model}`, entry]));
+      expect(byKey.get('anthropic::opus')?.status).toBe('unavailable');
+      expect(byKey.get('anthropic::sonnet')?.status).toBe('unknown');
+      expect(byKey.get('anthropic::haiku')?.status).toBe('unknown');
+      expect(byKey.get('openai::gpt-5')?.status).toBe('unknown');
+    });
+
+    it('lifts sibling pairs back to healthy when a single recovery probe succeeds', async () => {
+      const { monitor, verifyByPair } = setupAnthropicTrioPlusOpenAI();
+      monitor.markUnhealthyFromJob('anthropic', 'opus', 'billing', 'oops');
+      // All Anthropic pairs are now `billing`. Flip every pair's verifyFn
+      // to return `ok()` so the recovery probe will succeed when invoked.
+      for (const verify of verifyByPair.values()) {
+        verify.mockImplementation(async () => ok());
+      }
+      await monitor.refreshUnhealthy();
+      const snap = monitor.snapshot();
+      const byKey = new Map(snap.map((entry) => [`${entry.provider}::${entry.model}`, entry]));
+      expect(byKey.get('anthropic::opus')?.status).toBe('healthy');
+      expect(byKey.get('anthropic::sonnet')?.status).toBe('healthy');
+      expect(byKey.get('anthropic::haiku')?.status).toBe('healthy');
+      // OpenAI was never unhealthy, never re-probed, never touched.
+      expect(byKey.get('openai::gpt-5')?.status).toBe('unknown');
+    });
+
+    it('refreshUnhealthy probes only ONE representative per provider', async () => {
+      const { monitor, verifyByPair } = setupAnthropicTrioPlusOpenAI();
+      monitor.markUnhealthyFromJob('anthropic', 'opus', 'billing', 'oops');
+      // After cascade, all three Anthropic pairs are `billing`. A naive
+      // refresh would burn 3x the billing-token budget. The dedup must
+      // collapse to a single probe per provider.
+      await monitor.refreshUnhealthy();
+      const anthropicProbes =
+        (verifyByPair.get('anthropic::opus')?.mock.calls.length ?? 0) +
+        (verifyByPair.get('anthropic::sonnet')?.mock.calls.length ?? 0) +
+        (verifyByPair.get('anthropic::haiku')?.mock.calls.length ?? 0);
+      expect(anthropicProbes).toBe(1);
+      // OpenAI was healthy, no probe expected.
+      expect(verifyByPair.get('openai::gpt-5')?.mock.calls.length ?? 0).toBe(0);
+    });
+
+    it('handles a second markUnhealthyFromJob for a different model under the same provider idempotently', () => {
+      const { monitor } = setupAnthropicTrioPlusOpenAI();
+      monitor.markUnhealthyFromJob('anthropic', 'opus', 'invalid', 'HTTP 401');
+      // All Anthropic pairs are `invalid`. A second mark for a sibling
+      // should leave them `invalid` (no transient flicker, no
+      // consecutiveFailures bump - cascade only applies to invalid /
+      // billing, both of which reset consecutiveFailures to 0).
+      monitor.markUnhealthyFromJob('anthropic', 'sonnet', 'invalid', 'HTTP 401 again');
+      const snap = monitor.snapshot();
+      for (const entry of snap) {
+        if (entry.provider !== 'anthropic') {
+          continue;
+        }
+        expect(entry.status).toBe('invalid');
+        expect(entry.consecutiveFailures).toBe(0);
+      }
+    });
+  });
 });

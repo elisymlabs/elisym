@@ -13,7 +13,12 @@
  *
  * Logging policy lives here so the monitor stays a pure state-machine.
  * Status transitions (healthy <-> unhealthy) are logged once per change;
- * routine successful re-probes are not logged.
+ * routine successful re-probes are not logged. When the monitor's
+ * provider-wide cascade (see `applyVerification` in `monitor.ts`)
+ * flips multiple sibling pairs at once, each pair still produces its
+ * own transition line here - intentional asymmetry vs. the runtime's
+ * single aggregated "marking unhealthy" line, since each sibling is
+ * separately observed by the snapshot diff.
  */
 
 import { LAZY_RECOVERY_INTERVAL_MS } from './constants';

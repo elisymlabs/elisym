@@ -1645,6 +1645,260 @@ describe('AgentRuntime', () => {
       expect(stubMonitor.refreshUnhealthy).toHaveBeenCalled();
       expect(llmSkill.execute).not.toHaveBeenCalled();
     });
+
+    it('marks pair unhealthy on script exit-1 carrying invalid-key signal in stderr', async () => {
+      // Script-skill that did NOT honor the exit-42 contract: it exited
+      // with 1 and dumped the provider's auth-error body in the message
+      // (real-world example - shell proxies that uniformly `exit 1` on
+      // every error path). The runtime's text-marker fallback should
+      // still flip the pair to unhealthy so the next customer is gated
+      // before payment instead of paying for the same failure again.
+      const leakySkill: Skill = {
+        name: 'leaky-script',
+        description: 'Script that leaks invalid-key body in stderr',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+        execute: vi
+          .fn()
+          .mockRejectedValue(
+            new Error('script failed (exit 1): Anthropic count_tokens error: invalid x-api-key'),
+          ),
+      };
+      const registry = makeFakeRegistry(leakySkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi.fn().mockResolvedValue(undefined),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      } as any;
+
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue('paid-sig');
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('leaky-job'));
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(leakySkill.execute).toHaveBeenCalledOnce();
+      expect(stubMonitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-sonnet-4-6',
+        'invalid',
+        expect.stringContaining('invalid x-api-key'),
+      );
+      // Status stays `paid` so recovery can re-execute once the operator
+      // restores the key, identical to the exit-42 contract path.
+      expect(ledger.getStatus('leaky-job')).toBe('paid');
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const errorFb = feedbackCalls.find(
+        (c: any) => c[1]?.type === 'error' && c[1]?.message === 'Agent temporarily unavailable',
+      );
+      expect(errorFb).toBeDefined();
+    });
+
+    it('does NOT flip health when script exit-1 carries no billing/invalid signal', async () => {
+      // Generic skill bug should be a transient error - health pair must
+      // stay healthy so subsequent customers can still be served.
+      const buggySkill: Skill = {
+        name: 'buggy-script',
+        description: 'Script that crashes for unrelated reasons',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+        execute: vi
+          .fn()
+          .mockRejectedValue(
+            new Error('script failed (exit 1): TypeError: undefined is not a function'),
+          ),
+      };
+      const registry = makeFakeRegistry(buggySkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi.fn().mockResolvedValue(undefined),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      } as any;
+
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue('paid-sig');
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('buggy-job'));
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(buggySkill.execute).toHaveBeenCalledOnce();
+      expect(stubMonitor.markUnhealthyFromJob).not.toHaveBeenCalled();
+    });
+
+    it('cascades unhealthy across same-provider siblings: 2nd-skill job is gated before payment', async () => {
+      // Real-world bug: agent registers Sonnet + Haiku, both Anthropic.
+      // Sonnet fails first (billing-exhausted). Without cascade, the
+      // separate Haiku pair stays healthy in the monitor, and a fresh
+      // job targeting Haiku passes preflight and sends payment-required.
+      // With cascade (this test), the Anthropic key being known-bad
+      // flips ALL Anthropic pairs and the Haiku job is refused at
+      // preflight WITHOUT any wallet popup.
+      //
+      // Uses the real `LlmHealthMonitor` from the SDK so the SDK
+      // cascade and the CLI's preflight integration are exercised
+      // together.
+      const { LlmHealthMonitor, ScriptBillingExhaustedError } =
+        await import('@elisym/sdk/llm-health');
+
+      const sonnetSkill: Skill = {
+        name: 'sonnet-skill',
+        description: 'Sonnet',
+        capabilities: ['sonnet'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+        execute: vi.fn().mockRejectedValue(new ScriptBillingExhaustedError(42, '', 'HTTP 401')),
+      };
+      const haikuSkill: Skill = {
+        name: 'haiku-skill',
+        description: 'Haiku',
+        capabilities: ['haiku'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+        execute: vi.fn().mockResolvedValue({ data: 'unreachable - should be gated' }),
+      };
+      // Tag-routing registry: the job carries a capability tag and we
+      // hand back the matching skill.
+      const registry: SkillRegistry = {
+        register: vi.fn(),
+        route: vi.fn((tags: string[]) => {
+          if (tags.includes('sonnet')) return sonnetSkill;
+          if (tags.includes('haiku')) return haikuSkill;
+          return null;
+        }),
+        allCapabilities: vi.fn().mockReturnValue(['sonnet', 'haiku']),
+      } as unknown as SkillRegistry;
+
+      const monitor = new LlmHealthMonitor();
+      const sonnetVerify = vi.fn(async () => ({ ok: true as const }));
+      const haikuVerify = vi.fn(async () => ({ ok: true as const }));
+      monitor.register({
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        verifyFn: sonnetVerify,
+      });
+      monitor.register({
+        provider: 'anthropic',
+        model: 'claude-haiku-4-5-20251001',
+        verifyFn: haikuVerify,
+      });
+      monitor.seed('anthropic', 'claude-sonnet-4-6', { ok: true });
+      monitor.seed('anthropic', 'claude-haiku-4-5-20251001', { ok: true });
+
+      const { transport, triggerJob } = makeFakeTransport();
+      // Customer's payment-completed feedback resolves immediately so
+      // the runtime proceeds to skill.execute in the first job.
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue('paid-sig');
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        monitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+
+      // Job 1: Sonnet. Pays, fails, flips the cascade.
+      const sonnetJob = makeJob('sonnet-job');
+      sonnetJob.tags = ['elisym', 'sonnet'];
+      sonnetJob.rawEvent.tags = [
+        ['t', 'elisym'],
+        ['t', 'sonnet'],
+      ];
+      triggerJob(sonnetJob);
+      await tick(200);
+
+      // Snapshot: both Anthropic pairs should now be billing.
+      const afterFirst = monitor.snapshot();
+      const sonnetEntry = afterFirst.find((e) => e.model === 'claude-sonnet-4-6');
+      const haikuEntry = afterFirst.find((e) => e.model === 'claude-haiku-4-5-20251001');
+      expect(sonnetEntry?.status).toBe('billing');
+      expect(haikuEntry?.status).toBe('billing');
+      // Customer paid and the payment-completed feedback is in the call
+      // log (this is the FIRST job, gate didn't apply yet).
+      const sendFeedback = (transport as any).sendFeedback as ReturnType<typeof vi.fn>;
+      const firstPaymentRequiredCalls = sendFeedback.mock.calls.filter(
+        (call: any) => call[0]?.jobId === 'sonnet-job' && call[1]?.type === 'payment-required',
+      );
+      expect(firstPaymentRequiredCalls.length).toBeGreaterThan(0);
+
+      // Job 2: Haiku. Should be refused at preflight - NO
+      // payment-required, only the error feedback "Agent temporarily
+      // unavailable".
+      sendFeedback.mockClear();
+      const haikuJob = makeJob('haiku-job');
+      haikuJob.tags = ['elisym', 'haiku'];
+      haikuJob.rawEvent.tags = [
+        ['t', 'elisym'],
+        ['t', 'haiku'],
+      ];
+      triggerJob(haikuJob);
+      await tick(200);
+
+      // Haiku skill must NOT have been executed (gate rejected before).
+      expect(haikuSkill.execute).not.toHaveBeenCalled();
+      // The only feedback for the haiku job should be the
+      // "Agent temporarily unavailable" error - never payment-required.
+      const haikuCalls = sendFeedback.mock.calls.filter(
+        (call: any) => call[0]?.jobId === 'haiku-job',
+      );
+      expect(haikuCalls.length).toBeGreaterThan(0);
+      for (const call of haikuCalls) {
+        expect(call[1]?.type).not.toBe('payment-required');
+      }
+      const errorCall = haikuCalls.find((call: any) => call[1]?.type === 'error');
+      expect(errorCall).toBeDefined();
+      expect(errorCall?.[1]?.message).toBe('Agent temporarily unavailable');
+
+      runtime.stop();
+      await runPromise.catch(() => {});
+    });
   });
 
   describe('concurrent stress', () => {
