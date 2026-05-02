@@ -17,6 +17,7 @@ import {
   createFreeLlmLimiterSet,
   FREE_LLM_GLOBAL_KEY,
   freeLlmCustomerKey,
+  LlmHealthError,
   ScriptBillingExhaustedError,
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
@@ -32,6 +33,15 @@ const payment = new SolanaPaymentStrategy();
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, mirrors plugin
 const TOTAL_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+/**
+ * Hard cutoff for `paid` jobs that the recovery loop is waiting to
+ * re-execute against an unhealthy LLM pair. After this age the customer
+ * is given up on, the entry is marked `failed`, and a final error
+ * feedback is fired. Without this, an operator who walks away from a
+ * billing-exhausted agent leaves the ledger and recovery loop spinning
+ * on a job nobody will ever deliver.
+ */
+const MAX_PAID_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 // How long the Nostr-feedback signature path waits for a `payment-completed`
 // before giving up. Solana confirmation + wallet signing is single-digit
 // seconds in the happy path, so 60s is generous; past that the customer is
@@ -495,10 +505,23 @@ export class AgentRuntime {
       const log = this.callbacks.onLog ?? console.log;
       log(`[${job.jobId.slice(0, 8)}] Error: ${e.message}`);
 
-      // Don't mark executed jobs as failed - recovery will re-deliver
+      // Status transitions on failure:
+      //   - `executed`: never markFailed - delivery recovery will retry.
+      //   - `paid` + `AgentUnavailableError`: keep as `paid` so the recovery
+      //     loop re-executes once the LLM pair flips back to healthy. The
+      //     customer paid, so abandoning the job to `failed` would lose
+      //     their funds with no path back. The recovery loop's gate-aware
+      //     check (assertReady) and 24h hard cutoff bound the wait.
+      //   - everything else: markFailed as before.
       const currentStatus = this.ledger.getStatus(job.jobId);
-      if (currentStatus !== 'executed') {
+      const keepPaidForRecovery = e instanceof AgentUnavailableError && currentStatus === 'paid';
+      if (currentStatus !== 'executed' && !keepPaidForRecovery) {
         this.ledger.markFailed(job.jobId);
+      }
+      if (keepPaidForRecovery) {
+        log(
+          `[${job.jobId.slice(0, 8)}] Keeping status=paid; recovery will re-execute when LLM pair recovers (24h cutoff).`,
+        );
       }
       this.callbacks.onJobError?.(job.jobId, e.message);
 
@@ -879,10 +902,51 @@ export class AgentRuntime {
     const log = this.callbacks.onLog ?? console.log;
     log(`Recovering ${pending.length} pending jobs...`);
 
+    // If any pending `paid` job is parked on an unhealthy LLM pair,
+    // fire a probe so the recovery loop's gate (assertReady in
+    // recoverSingleJob) sees fresh state on the next tick. The lazy
+    // health-recovery loop probes every 5 minutes by itself; we add
+    // this trigger so paid jobs don't sit idle for that long once the
+    // operator fixes their API key. Fire-and-forget: we don't want to
+    // block the per-tick recovery iteration on a network probe.
+    if (this.healthMonitor) {
+      const snap = this.healthMonitor.snapshot();
+      const unhealthyKeys = new Set(
+        snap
+          .filter(
+            (entry) =>
+              entry.status === 'invalid' ||
+              entry.status === 'billing' ||
+              entry.status === 'unavailable',
+          )
+          .map((entry) => `${entry.provider}::${entry.model}`),
+      );
+      if (unhealthyKeys.size > 0) {
+        const hasPaidOnUnhealthy = pending.some((entry) => {
+          if (entry.status !== 'paid') {
+            return false;
+          }
+          const skill = this.skills.route(entry.tags);
+          const pair = resolveHealthPair(skill);
+          return pair !== null && unhealthyKeys.has(`${pair.provider}::${pair.model}`);
+        });
+        if (hasPaidOnUnhealthy) {
+          void this.healthMonitor.refreshUnhealthy().catch(() => {
+            /* probe surfaces its own errors via the snapshot */
+          });
+        }
+      }
+    }
+
     for (const entry of pending) {
-      if (entry.retry_count >= this.config.recoveryMaxRetries) {
+      const ageMs = (Math.floor(Date.now() / 1000) - entry.created_at) * 1000;
+      const expired = ageMs > MAX_PAID_AGE_MS;
+      const exhaustedRetries = entry.retry_count >= this.config.recoveryMaxRetries;
+      if (expired || exhaustedRetries) {
         this.ledger.markFailed(entry.job_id);
-        // Notify customer of permanent failure
+        const reason = expired
+          ? 'Job permanently failed: agent did not recover within 24 hours'
+          : 'Job permanently failed after maximum retries';
         if (entry.raw_event_json) {
           try {
             const rawEvent = JSON.parse(entry.raw_event_json);
@@ -897,7 +961,7 @@ export class AgentRuntime {
                   encrypted: false,
                   rawEvent,
                 },
-                { type: 'error', message: 'Job permanently failed after maximum retries' },
+                { type: 'error', message: reason },
               )
               .catch(() => {});
           } catch {
@@ -941,7 +1005,6 @@ export class AgentRuntime {
     const timeout = setTimeout(() => recoveryAbort.abort(), TOTAL_JOB_TIMEOUT_MS);
 
     try {
-      this.ledger.incrementRetry(entry.job_id);
       const rawEvent = JSON.parse(entry.raw_event_json!);
       const fakeJob: IncomingJob = {
         jobId: entry.job_id,
@@ -954,7 +1017,8 @@ export class AgentRuntime {
       };
 
       if (entry.status === 'executed' && entry.result !== undefined) {
-        // Re-deliver only
+        // Re-deliver only - no LLM call, no gate check.
+        this.ledger.incrementRetry(entry.job_id);
         await this.transport.deliverResult(fakeJob, entry.result, entry.net_amount);
         this.ledger.markDelivered(entry.job_id);
         log(`[${entry.job_id.slice(0, 8)}] Recovery: re-delivered`);
@@ -965,6 +1029,32 @@ export class AgentRuntime {
           this.ledger.markFailed(entry.job_id);
           return;
         }
+
+        // Gate the retry against the LLM health monitor: if the pair is
+        // still unhealthy, skip THIS tick without burning a retry. The
+        // outer loop will re-schedule us; a successful probe (lazy
+        // recovery loop or explicit refreshUnhealthy) flips the pair
+        // back to healthy and the next tick proceeds. Without this
+        // check, every recovery tick during a billing outage would
+        // re-spawn the script, fail with exit 42, and consume one of
+        // the bounded retry slots even though the underlying problem
+        // (operator's API key) hasn't been touched yet.
+        const healthPair = resolveHealthPair(skill);
+        if (this.healthMonitor && healthPair) {
+          try {
+            await this.healthMonitor.assertReady(healthPair.provider, healthPair.model);
+          } catch (err) {
+            if (err instanceof LlmHealthError) {
+              log(
+                `[${entry.job_id.slice(0, 8)}] Recovery: pair ${healthPair.provider}/${healthPair.model} still unhealthy (${err.reason}); waiting for recovery probe.`,
+              );
+              return;
+            }
+            throw err;
+          }
+        }
+
+        this.ledger.incrementRetry(entry.job_id);
 
         // Re-verify payment if reference was stored but confirmation lost to crash
         if (skill.priceSubunits > 0 && !entry.net_amount) {

@@ -1290,6 +1290,363 @@ describe('AgentRuntime', () => {
     });
   });
 
+  describe('AgentUnavailableError + recovery contract', () => {
+    it('keeps job in paid state on AgentUnavailableError (not failed)', async () => {
+      // Skill that signals billing exhaustion mid-execution. The runtime
+      // should mark the (provider, model) pair unhealthy AND keep the
+      // ledger entry as `paid` so the recovery loop can re-execute when
+      // the operator's API key is restored.
+      const ScriptBillingExhaustedError = (await import('@elisym/sdk/llm-health'))
+        .ScriptBillingExhaustedError;
+      const billingSkill: Skill = {
+        name: 'billing-skill',
+        description: 'Skill that hits a billing-exhausted API',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+        execute: vi
+          .fn()
+          .mockRejectedValue(new ScriptBillingExhaustedError(42, '', 'HTTP 401 disabled')),
+      };
+      const registry = makeFakeRegistry(billingSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi.fn().mockResolvedValue(undefined),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      } as any;
+
+      // Customer pays out-of-band - signature path resolves immediately
+      // so the runtime proceeds to skill.execute() in this test.
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue('paid-sig');
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('paid-then-billing'));
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(billingSkill.execute).toHaveBeenCalledOnce();
+      expect(stubMonitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5-20251001',
+        'billing',
+        expect.any(String),
+      );
+      // Crucial: status stays `paid` - recovery picks it up later.
+      expect(ledger.getStatus('paid-then-billing')).toBe('paid');
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const errorFb = feedbackCalls.find(
+        (c: any) => c[1]?.type === 'error' && c[1]?.message === 'Agent temporarily unavailable',
+      );
+      expect(errorFb).toBeDefined();
+    });
+
+    it('recovery skips paid job when pair is unhealthy without burning retry', async () => {
+      const { LlmHealthError } = await import('@elisym/sdk/llm-health');
+      ledger.recordPaid({
+        job_id: 'parked-job',
+        input: 'parked input',
+        input_type: 'text',
+        tags: ['elisym', 'text-gen'],
+        customer_id: 'cust',
+        net_amount: 9_700_000,
+        raw_event_json: JSON.stringify({
+          id: 'parked-job',
+          pubkey: 'cust',
+          created_at: Math.floor(Date.now() / 1000),
+          kind: 5100,
+          tags: [
+            ['t', 'elisym'],
+            ['t', 'text-gen'],
+          ],
+          content: 'parked input',
+          sig: 'sig',
+        }),
+        created_at: Math.floor(Date.now() / 1000),
+      });
+
+      const llmSkill: Skill = {
+        name: 'parked-skill',
+        description: 'Parked skill',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+        execute: vi.fn().mockResolvedValue({ data: 'unreachable' }),
+      };
+      const registry = makeFakeRegistry(llmSkill);
+      const { transport } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi
+          .fn()
+          .mockRejectedValue(
+            new LlmHealthError('billing', 'anthropic', 'claude-haiku-4-5-20251001', 'cached'),
+          ),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([
+          {
+            provider: 'anthropic',
+            model: 'claude-haiku-4-5-20251001',
+            status: 'billing',
+            lastVerifiedAt: Date.now(),
+            lastReason: 'HTTP 402',
+            consecutiveFailures: 0,
+          },
+        ]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      } as any;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      // Skill never invoked - gate refused on stale-but-still-unhealthy pair.
+      expect(llmSkill.execute).not.toHaveBeenCalled();
+      // Status stays `paid`, retry_count NOT incremented (still 0).
+      expect(ledger.getStatus('parked-job')).toBe('paid');
+      const entry = ledger.pendingJobs().find((e) => e.job_id === 'parked-job');
+      expect(entry?.retry_count).toBe(0);
+    });
+
+    it('recovery delivers paid job once pair is healthy again', async () => {
+      ledger.recordPaid({
+        job_id: 'recovered-job',
+        input: 'will succeed',
+        input_type: 'text',
+        tags: ['elisym', 'text-gen'],
+        customer_id: 'cust',
+        net_amount: 9_700_000,
+        raw_event_json: JSON.stringify({
+          id: 'recovered-job',
+          pubkey: 'cust',
+          created_at: Math.floor(Date.now() / 1000),
+          kind: 5100,
+          tags: [
+            ['t', 'elisym'],
+            ['t', 'text-gen'],
+          ],
+          content: 'will succeed',
+          sig: 'sig',
+        }),
+        created_at: Math.floor(Date.now() / 1000),
+      });
+
+      const llmSkill: Skill = {
+        name: 'recovered-skill',
+        description: 'Recovered skill',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+        execute: vi.fn().mockResolvedValue({ data: 'late but delivered' }),
+      };
+      const registry = makeFakeRegistry(llmSkill);
+      const { transport } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi.fn().mockResolvedValue(undefined),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([
+          {
+            provider: 'anthropic',
+            model: 'claude-haiku-4-5-20251001',
+            status: 'healthy',
+            lastVerifiedAt: Date.now(),
+            lastReason: undefined,
+            consecutiveFailures: 0,
+          },
+        ]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      } as any;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(llmSkill.execute).toHaveBeenCalledOnce();
+      expect(ledger.getStatus('recovered-job')).toBe('delivered');
+      expect((transport as any).deliverResult).toHaveBeenCalled();
+    });
+
+    it('marks paid job failed after 24h cutoff with explicit feedback', async () => {
+      const now = Math.floor(Date.now() / 1000);
+      ledger.recordPaid({
+        job_id: 'expired-job',
+        input: 'too old',
+        input_type: 'text',
+        tags: ['elisym', 'text-gen'],
+        customer_id: 'cust',
+        net_amount: 9_700_000,
+        raw_event_json: JSON.stringify({
+          id: 'expired-job',
+          pubkey: 'cust',
+          created_at: now - 25 * 3600,
+          kind: 5100,
+          tags: [
+            ['t', 'elisym'],
+            ['t', 'text-gen'],
+          ],
+          content: 'too old',
+          sig: 'sig',
+        }),
+        created_at: now - 25 * 3600,
+      });
+
+      const llmSkill: Skill = {
+        name: 'expired-skill',
+        description: 'Expired skill',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+        execute: vi.fn().mockResolvedValue({ data: 'should not run' }),
+      };
+      const registry = makeFakeRegistry(llmSkill);
+      const { transport } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(llmSkill.execute).not.toHaveBeenCalled();
+      expect(ledger.getStatus('expired-job')).toBe('failed');
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const expiredFb = feedbackCalls.find(
+        (c: any) =>
+          c[1]?.type === 'error' && c[1]?.message?.includes('did not recover within 24 hours'),
+      );
+      expect(expiredFb).toBeDefined();
+    });
+
+    it('triggers refreshUnhealthy when paid jobs sit on an unhealthy pair', async () => {
+      ledger.recordPaid({
+        job_id: 'unhealthy-paid',
+        input: 'waiting',
+        input_type: 'text',
+        tags: ['elisym', 'text-gen'],
+        customer_id: 'cust',
+        net_amount: 9_700_000,
+        raw_event_json: JSON.stringify({
+          id: 'unhealthy-paid',
+          pubkey: 'cust',
+          created_at: Math.floor(Date.now() / 1000),
+          kind: 5100,
+          tags: [
+            ['t', 'elisym'],
+            ['t', 'text-gen'],
+          ],
+          content: 'waiting',
+          sig: 'sig',
+        }),
+        created_at: Math.floor(Date.now() / 1000),
+      });
+
+      const { LlmHealthError } = await import('@elisym/sdk/llm-health');
+      const llmSkill: Skill = {
+        name: 'waiting-skill',
+        description: 'Waiting skill',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+        execute: vi.fn().mockResolvedValue({ data: 'never' }),
+      };
+      const registry = makeFakeRegistry(llmSkill);
+      const { transport } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi
+          .fn()
+          .mockRejectedValue(
+            new LlmHealthError('billing', 'anthropic', 'claude-haiku-4-5-20251001', 'cached'),
+          ),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([
+          {
+            provider: 'anthropic',
+            model: 'claude-haiku-4-5-20251001',
+            status: 'billing',
+            lastVerifiedAt: Date.now() - 60_000,
+            lastReason: 'HTTP 402',
+            consecutiveFailures: 0,
+          },
+        ]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      } as any;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(stubMonitor.refreshUnhealthy).toHaveBeenCalled();
+      expect(llmSkill.execute).not.toHaveBeenCalled();
+    });
+  });
+
   describe('concurrent stress', () => {
     it('processes many jobs with limited concurrency', async () => {
       const skill = makeFakeSkill('test-skill', 'ok');
