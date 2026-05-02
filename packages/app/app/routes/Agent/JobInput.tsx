@@ -272,7 +272,6 @@ export function JobInput({
 
   return (
     <JobInputInner
-      key={card.name}
       card={card}
       agentPubkey={agentPubkey}
       agentName={agentName}

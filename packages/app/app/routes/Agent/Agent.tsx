@@ -3,7 +3,7 @@ import { nip19, type Event as NostrEvent } from 'nostr-tools';
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
-import { Link, useLocation, useParams } from 'wouter';
+import { Link, useLocation, useParams, useSearch } from 'wouter';
 import { MarbleAvatar } from '~/components/MarbleAvatar';
 import { VerifiedBadge } from '~/components/VerifiedBadge';
 import { useBuyForCard } from '~/contexts/BuyContext';
@@ -290,6 +290,7 @@ export default function AgentPage() {
   const params = useParams<{ pubkey: string }>();
   const pubkey = params.pubkey ?? '';
   const [, setLocation] = useLocation();
+  const search = useSearch();
 
   const { agent, status: agentStatus } = useAgent(pubkey);
   // `useAgent` exposes a single fetch for this author, so feedback can use
@@ -324,6 +325,7 @@ export default function AgentPage() {
     append: appendArtifact,
     update: updateArtifact,
   } = useArtifacts(pubkey);
+  const tabsContainerRef = useRef<HTMLDivElement | null>(null);
   const { artifacts: nostrArtifacts, loading: nostrArtifactsLoading } = useNostrArtifacts(pubkey);
   const nostrBanner = agent?.banner;
   const { client } = useElisymClient();
@@ -426,6 +428,23 @@ export default function AgentPage() {
     window.scrollTo({ top: 0, behavior: 'instant' });
     setSelectedCardIndex(0);
   }, [pubkey]);
+
+  // ?tab=history lands the user straight on the History tab. Used by the
+  // `Result received` toast's "View" action, which fires while the user is
+  // somewhere else in the app and needs the artifact view ready on arrival.
+  // The artifact may already be saved (e.g. they revisited after the first
+  // capture), so the ArtifactCapturer auto-switch alone is not enough.
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    if (params.get('tab') === 'history') {
+      setActiveTab('artifacts');
+      // Strip the param so a refresh / back-nav doesn't keep forcing the
+      // tab and the URL stays clean once the intent has been honored.
+      params.delete('tab');
+      const remaining = params.toString();
+      setLocation(`/agent/${pubkey}${remaining ? `?${remaining}` : ''}`, { replace: true });
+    }
+  }, [search, pubkey, setLocation]);
 
   const displayName = agentData?.name || (pubkey ? truncateKey(nip19.npubEncode(pubkey), 8) : '');
 
@@ -681,9 +700,10 @@ export default function AgentPage() {
           <div className="order-2 flex min-w-0 flex-col gap-16 lg:order-1">
             {/* Tabs + content */}
             <div
+              ref={tabsContainerRef}
               className={cn(
                 appearCls,
-                'rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
+                'scroll-mt-16 rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
               )}
             >
               <TabsBar activeTab={activeTab} onSelect={setActiveTab} />
@@ -765,6 +785,15 @@ export default function AgentPage() {
                 }
                 appendArtifact(artifact);
                 setActiveTab('artifacts');
+                // Defer to next frame so the History content has rendered
+                // before we scroll, otherwise the browser measures the
+                // outgoing Products height and lands the user mid-page.
+                requestAnimationFrame(() => {
+                  tabsContainerRef.current?.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'start',
+                  });
+                });
                 setNewArtifactIds((prev) => {
                   const next = new Set(prev);
                   next.add(artifact.id);

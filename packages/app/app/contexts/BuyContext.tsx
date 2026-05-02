@@ -42,6 +42,7 @@ import {
   type ReactNode,
 } from 'react';
 import { toast } from 'sonner';
+import { useLocation } from 'wouter';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useJobHistory } from '~/hooks/useJobHistory';
@@ -150,6 +151,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
   const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
   const wallet = publicKey?.toBase58() ?? '';
   const { saveJob, updateJob } = useJobHistory({ wallet });
 
@@ -324,7 +326,53 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 sessionMatches(prev) ? { ...prev, buying: false, result: content } : prev,
               );
               cleanupRef.current = null;
-              toast.success('Result received!', { id: toastId });
+              const agentPath = `/agent/${agentPubkey}`;
+              const alreadyOnAgentPage = window.location.pathname === agentPath;
+              toast.success(`Result received from ${agentName}`, {
+                id: toastId,
+                // Override the global 1500ms default so the user has time to
+                // notice the result and click through to the provider's page.
+                duration: 8000,
+                action: alreadyOnAgentPage
+                  ? undefined
+                  : {
+                      label: (
+                        <span className="inline-flex items-center gap-4">
+                          View
+                          <svg
+                            aria-hidden
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                            <polyline points="12 5 19 12 12 19" />
+                          </svg>
+                        </span>
+                      ),
+                      onClick: () => setLocation(`${agentPath}?tab=history`),
+                    },
+                // Sonner styles `[data-button]` directly with high specificity
+                // (4px radius, 24px height, dark-on-light by default), so we
+                // override via inline styles - className alone gets beaten.
+                actionButtonStyle: {
+                  background: '#ffffff',
+                  color: '#101012',
+                  height: '28px',
+                  paddingLeft: '12px',
+                  paddingRight: '12px',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '12px',
+                  letterSpacing: '0.01em',
+                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.18)',
+                },
+              });
             },
 
             onError: (errMsg: string) => {
@@ -371,6 +419,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       saveJob,
       updateJob,
       queryClient,
+      setLocation,
     ],
   );
 

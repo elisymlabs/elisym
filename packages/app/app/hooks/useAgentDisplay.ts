@@ -58,8 +58,15 @@ export interface AgentDisplayData {
   byCapability: CapabilityStatsMap;
 }
 
+// Sort cards deterministically so the agent page renders the same order
+// regardless of how relays interleave kind:31990 events. `name` is the
+// NIP-89 d-tag - unique per agent and the most meaningful display key.
+function sortCards(cards: CapabilityCard[]): CapabilityCard[] {
+  return [...cards].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function toDisplayData(agent: Agent, feedbackMap?: FeedbackMap): AgentDisplayData {
-  const cards = agent.cards;
+  const cards = sortCards(agent.cards);
   const firstCard = cards[0];
 
   // Use agent-level name/about from kind:0, fallback to truncated npub
