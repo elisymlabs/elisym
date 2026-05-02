@@ -9,10 +9,18 @@ export const RELAYS = [
 ];
 
 export const KIND_APP_HANDLER = 31990;
+export const KIND_LONG_FORM_ARTICLE = 30023;
 export const KIND_JOB_REQUEST_BASE = 5000;
 export const KIND_JOB_RESULT_BASE = 6000;
 export const KIND_JOB_FEEDBACK = 7000;
 export const DEFAULT_KIND_OFFSET = 100;
+
+/** Discovery tag attached to elisym agent policy events (kind 30023). */
+export const POLICY_T_TAG = 'elisym-policy';
+/** d-tag prefix for policy events: full d-tag = `<prefix><type>` (e.g. `elisym-policy-tos`). */
+export const POLICY_D_TAG_PREFIX = 'elisym-policy-';
+/** Validation regex for policy `type` slug. Lowercase ASCII + hyphen, 1-32 chars, no leading/trailing hyphen. */
+export const POLICY_TYPE_REGEX = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
 /** Default job request kind (5000 + 100). */
 export const KIND_JOB_REQUEST = KIND_JOB_REQUEST_BASE + DEFAULT_KIND_OFFSET;
@@ -106,4 +114,10 @@ export const LIMITS = {
   MAX_DESCRIPTION_LENGTH: 500,
   MAX_AGENT_NAME_LENGTH: 64,
   MAX_CAPABILITY_LENGTH: 64,
+  MAX_POLICY_CONTENT_LENGTH: 50_000,
+  MAX_POLICIES_PER_AGENT: 12,
+  MAX_POLICY_TYPE_LENGTH: 32,
+  MAX_POLICY_TITLE_LENGTH: 120,
+  MAX_POLICY_SUMMARY_LENGTH: 280,
+  MAX_POLICY_VERSION_LENGTH: 32,
 } as const;

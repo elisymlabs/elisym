@@ -2,7 +2,9 @@ accum
 acks
 agentskills
 antipattern
+autolinks
 auxe
+bech
 behaviour
 defence
 doesn
@@ -47,6 +49,7 @@ mainnet
 mgmt
 modelcontextprotocol
 monorepo
+naddr
 nevent
 njump
 nostr

@@ -4,7 +4,7 @@
  * processes jobs with per-capability pricing, caches uploaded media URLs.
  */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import {
   ElisymClient,
@@ -16,6 +16,9 @@ import {
   RELAYS,
   DEFAULTS,
   DEFAULT_KIND_OFFSET,
+  KIND_LONG_FORM_ARTICLE,
+  POLICY_D_TAG_PREFIX,
+  POLICY_T_TAG,
   jobRequestKind,
   toDTag,
   type CapabilityCard,
@@ -24,6 +27,7 @@ import {
   agentPaths,
   listAgents,
   loadAgent,
+  loadPoliciesFromDir,
   lookupCachedUrl,
   newCacheEntry,
   readMediaCache,
@@ -476,6 +480,69 @@ export async function cmdStart(
   } catch (e: any) {
     console.warn(`  ! Failed to publish profile: ${e.message}`);
     logger.warn({ event: 'publish_failed', kind: 0, error: e.message }, 'profile publish failed');
+  }
+
+  // -- Step 10.5: Publish agent policies (NIP-23 long-form articles, kind 30023) --
+  // `localPolicyDTags` is built from disk before the publish loop so a transient
+  // publish failure does not cause Step 10.6 to tombstone the prior good version
+  // still on the relay. Mirrors the kind:31990 cleanup in Step 12 which builds
+  // `skillDTags` upfront from `allSkills` - delete-on-disk = retract-from-relay,
+  // not "delete-on-failed-publish".
+  const policies = existsSync(paths.policies) ? loadPoliciesFromDir(paths.policies) : [];
+  const localPolicyDTags = new Set(
+    policies.map((policy) => `${POLICY_D_TAG_PREFIX}${policy.type}`),
+  );
+  for (const policy of policies) {
+    try {
+      const { naddr } = await client.policies.publishPolicy(identity, policy);
+      console.log(`  * Policy: ${policy.type}@${policy.version} -> ${naddr}`);
+      logger.debug(
+        { event: 'publish_ack', kind: KIND_LONG_FORM_ARTICLE, policy: policy.type, naddr },
+        'policy published',
+      );
+    } catch (e: any) {
+      console.warn(`  ! Failed to publish policy "${policy.type}": ${e.message}`);
+      logger.warn(
+        {
+          event: 'publish_failed',
+          kind: KIND_LONG_FORM_ARTICLE,
+          policy: policy.type,
+          error: e.message,
+        },
+        'policy publish failed',
+      );
+    }
+  }
+
+  // -- Step 10.6: Tombstone orphan policies (file removed from disk) --
+  try {
+    const existingPolicies = await client.pool.querySync({
+      kinds: [KIND_LONG_FORM_ARTICLE],
+      authors: [identity.publicKey],
+      '#t': [POLICY_T_TAG],
+    });
+    for (const event of existingPolicies) {
+      const dTag = event.tags.find((tag) => tag[0] === 'd')?.[1];
+      if (!dTag || localPolicyDTags.has(dTag)) {
+        continue;
+      }
+      // Skip already-tombstoned events (empty content) so we don't re-publish identical retractions every start.
+      if (!event.content) {
+        continue;
+      }
+      const type = event.tags.find((tag) => tag[0] === 'policy_type')?.[1];
+      if (!type) {
+        continue;
+      }
+      try {
+        await client.policies.deletePolicy(identity, type);
+        console.log(`  Removed stale policy: ${type}`);
+      } catch {
+        // non-fatal, will retry next start
+      }
+    }
+  } catch {
+    // non-fatal: stale policies stay on relay, agent still starts
   }
 
   // -- Step 11: Publish per-skill capability cards (kind:31990) --

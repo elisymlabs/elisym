@@ -5,6 +5,7 @@ import { DiscoveryService } from './services/discovery';
 import { MarketplaceService } from './services/marketplace';
 import { MediaService } from './services/media';
 import { PingService } from './services/ping';
+import { PoliciesService } from './services/policies';
 import { NostrPool } from './transport/pool';
 import type { ElisymClientConfig } from './types';
 
@@ -20,6 +21,7 @@ export class ElisymClient {
   readonly marketplace: MarketplaceService;
   readonly ping: PingService;
   readonly media: MediaService;
+  readonly policies: PoliciesService;
   readonly payment: PaymentStrategy;
 
   constructor(config: ElisymClientFullConfig = {}) {
@@ -28,6 +30,7 @@ export class ElisymClient {
     this.marketplace = new MarketplaceService(this.pool);
     this.ping = new PingService(this.pool);
     this.media = new MediaService(config.uploadUrl);
+    this.policies = new PoliciesService(this.pool);
     this.payment = config.payment ?? new SolanaPaymentStrategy();
   }
 

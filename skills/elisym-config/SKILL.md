@@ -96,7 +96,7 @@ The same address receives every supported asset on the chain: native SOL directl
 2. **Read the current YAML.** Use the host `Read` tool. Show the user the fields you plan to change - old value → new value - and ask for explicit confirmation before writing.
 3. **Edit with the host `Edit` tool.** Keep formatting consistent with what the writer produces (`yaml.stringify` output: 2-space indent, no quotes around plain scalars). Do not introduce top-level keys outside the Fields table above - the schema is strict and any unknown key will make `loadAgent` throw.
 4. **Verify.** Run `npx -y @elisym/cli list` from any directory - the command loads every agent through the Zod schema and prints the `npub` / Solana address on success. If the listing for the edited agent prints without a trailing `(encrypted)` or error hint but is missing the `npub`/address, re-read the file and look for a parse error.
-5. **Propagate if needed.** If the user changed `display_name`, description, picture, or banner and a provider process is running (`elisym start`), they need to restart it to republish the capability card.
+5. **Propagate if needed.** If the user changed `display_name`, description, picture, or banner and a provider process is running (`npx @elisym/cli start`), they need to restart it to republish the capability card.
 
 ## 4. Security-sensitive edits - always confirm
 
@@ -116,7 +116,7 @@ The MCP CLI also ships dedicated commands for this (`npx @elisym/mcp enable-with
 
 - `~/.elisym/<name>/.secrets.json` - Nostr secret key, optional Solana secret key, optional LLM API key. Encrypted at rest if `ELISYM_PASSPHRASE` was set during init. Read or write from this skill would leak or corrupt secrets.
 - `~/.elisym/<name>/.media-cache.json` - sha256-keyed upload cache. Managed by the SDK; do not hand-edit.
-- `~/.elisym/<name>/.jobs.json` - provider-side job ledger. Managed by `elisym start`.
+- `~/.elisym/<name>/.jobs.json` - provider-side job ledger. Managed by `npx @elisym/cli start`.
 - `~/.elisym/<name>/skills/` - provider skill definitions. Edit directly with the host `Edit` tool when the user asks, but that is a different workflow (see the `elisym-provider` skill for skill authoring).
 
 ## 6. Examples
@@ -147,7 +147,7 @@ llm:
   max_tokens: 4096
 ```
 
-Remind the user to export `OPENAI_API_KEY` in the shell that runs `elisym start`.
+Remind the user to export `OPENAI_API_KEY` in the shell that runs `npx @elisym/cli start`.
 
 **Switch the Solana payment address.** One entry per `(chain, network)`; adding a second devnet entry is not supported (the SDK takes the first match). Replace the existing one instead. The same address will continue to receive both SOL and USDC.
 

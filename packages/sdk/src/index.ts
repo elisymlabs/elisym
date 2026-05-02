@@ -25,6 +25,7 @@ export { classifyJobError } from './services/jobErrors';
 export type { JobErrorKind } from './services/jobErrors';
 export { MediaService } from './services/media';
 export { PingService } from './services/ping';
+export { PoliciesService } from './services/policies';
 
 // --- Payment ---
 export {
@@ -113,6 +114,7 @@ export {
 export {
   RELAYS,
   KIND_APP_HANDLER,
+  KIND_LONG_FORM_ARTICLE,
   KIND_JOB_REQUEST_BASE,
   KIND_JOB_RESULT_BASE,
   KIND_JOB_REQUEST,
@@ -123,6 +125,9 @@ export {
   jobResultKind,
   KIND_PING,
   KIND_PONG,
+  POLICY_T_TAG,
+  POLICY_D_TAG_PREFIX,
+  POLICY_TYPE_REGEX,
   LAMPORTS_PER_SOL,
   PROTOCOL_PROGRAM_ID_DEVNET,
   ELISYM_PROTOCOL_TAG,
@@ -138,6 +143,8 @@ export type {
   PaymentInfo,
   CapabilityCard,
   Agent,
+  AgentPolicy,
+  PolicyInput,
   Network,
   // Jobs
   JobStatus,

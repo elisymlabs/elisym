@@ -41,6 +41,7 @@ export {
   JOBS_FILENAME,
   GITIGNORE_FILENAME,
   SKILLS_DIRNAME,
+  POLICIES_DIRNAME,
   homeElisymDir,
   globalConfigPath,
   findProjectElisymDir,
@@ -82,3 +83,7 @@ export {
   lookupCachedUrl,
   newCacheEntry,
 } from './media-cache';
+
+// --- Policies (disk loader) ---
+export { loadPoliciesFromDir } from './policies';
+export type { LoadedPolicy } from './policies';

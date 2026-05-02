@@ -20,6 +20,7 @@ export const MEDIA_CACHE_FILENAME = '.media-cache.json';
 export const JOBS_FILENAME = '.jobs.json';
 export const GITIGNORE_FILENAME = '.gitignore';
 export const SKILLS_DIRNAME = 'skills';
+export const POLICIES_DIRNAME = 'policies';
 
 /** Max depth for walk-up search (safety guard against unbounded loops). */
 const MAX_WALK_UP_DEPTH = 64;
@@ -80,6 +81,7 @@ export interface AgentPaths {
   jobs: string;
   gitignore: string;
   skills: string;
+  policies: string;
 }
 
 /** Compute all file/dir paths for an agent given its root directory. */
@@ -92,6 +94,7 @@ export function agentPaths(agentDir: string): AgentPaths {
     jobs: join(agentDir, JOBS_FILENAME),
     gitignore: join(agentDir, GITIGNORE_FILENAME),
     skills: join(agentDir, SKILLS_DIRNAME),
+    policies: join(agentDir, POLICIES_DIRNAME),
   };
 }
 

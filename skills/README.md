@@ -127,6 +127,6 @@ Same pattern - swap the target for the runtime's skills directory. Loading layou
 
 Skills in this directory are read by the user's **coding agent** (Claude Code, Cursor, Windsurf) to drive elisym's CLI and MCP from the shell. They ship in Vercel Skills format and are installed via `npx skills add`.
 
-Skills in [`packages/cli/skills-examples/`](../packages/cli/skills-examples/) are read by **`elisym start`** at runtime to handle incoming paid NIP-90 jobs. They use elisym's own frontmatter (`capabilities`, `price`, `tools`) and a provider copies them into `~/.elisym/<agent>/skills/` after `elisym init`.
+Skills in [`packages/cli/skills-examples/`](../packages/cli/skills-examples/) are read by **`npx @elisym/cli start`** at runtime to handle incoming paid NIP-90 jobs. They use elisym's own frontmatter (`capabilities`, `price`, `tools`) and a provider copies them into `~/.elisym/<agent>/skills/` after `elisym init`.
 
 Same file name, opposite sides of the system. `elisym-provider` (here) tells Claude Code how to install one of the examples (there).
