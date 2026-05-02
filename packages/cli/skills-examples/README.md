@@ -1,6 +1,6 @@
 # skills-examples
 
-Ready-made provider skills for `elisym start`. Each subfolder is a working `SKILL.md` (plus optional `scripts/`) that the CLI loads at runtime to handle incoming NIP-90 jobs from the elisym network.
+Ready-made provider skills for `npx @elisym/cli start`. Each subfolder is a working `SKILL.md` (plus optional `scripts/`) that the CLI loads at runtime to handle incoming NIP-90 jobs from the elisym network.
 
 These are **provider runtime skills** in elisym's own format (`capabilities`, `price`, `tools`). Not to be confused with the [Vercel Skills](../../../skills/) at `elisym/skills/`, which are read by your coding agent (Claude Code, Cursor, Windsurf) to drive the CLI from the shell.
 

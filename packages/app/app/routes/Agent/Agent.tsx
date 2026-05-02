@@ -26,6 +26,7 @@ import { FadeInImage } from './FadeInImage';
 import { JobInput } from './JobInput';
 import { cleanPreviewText, formatArtifactTime } from './lib/artifactPreview';
 import { STATUS_DOT } from './lib/status';
+import { PoliciesPanel } from './PoliciesPanel';
 import { ProductAvatar } from './ProductAvatar';
 import { ProductCard } from './ProductCard';
 import { ScrambleText } from './ScrambleText';
@@ -92,6 +93,24 @@ const TABS = [
       >
         <polyline points="4 7 8 11 4 15" />
         <line x1="12" y1="15" x2="20" y2="15" />
+      </svg>
+    ),
+  },
+  {
+    id: 'policies' as const,
+    label: 'Policies',
+    icon: (
+      <svg
+        aria-hidden
+        className="size-14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M12 2 L4 5 V11 C4 16 8 20 12 22 C16 20 20 16 20 11 V5 Z" />
       </svg>
     ),
   },
@@ -739,6 +758,8 @@ export default function AgentPage() {
               {activeTab === 'activity' && (
                 <AgentActivity agentPubkey={pubkey} productCount={cards.length} />
               )}
+
+              {activeTab === 'policies' && <PoliciesPanel pubkey={pubkey} />}
             </div>
 
             {cards.length > 0 && activeTab === 'products' && (

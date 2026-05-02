@@ -144,14 +144,14 @@ describe('stdio MCP integration', () => {
     await rm(tmpHome, { recursive: true, force: true });
   });
 
-  it('initializes and exposes exactly 23 tools', async () => {
+  it('initializes and exposes exactly 24 tools', async () => {
     harness = new McpHarness(tmpHome);
     await harness.initialize();
 
     const response = await harness.send('tools/list', {});
     expect(response.error).toBeUndefined();
     const result = response.result as { tools: Array<{ name: string; inputSchema: unknown }> };
-    expect(result.tools).toHaveLength(23);
+    expect(result.tools).toHaveLength(24);
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toContain('withdraw');
     expect(names).toContain('get_identity');
@@ -162,6 +162,7 @@ describe('stdio MCP integration', () => {
     expect(names).toContain('list_contacts');
     expect(names).toContain('submit_and_pay_job_from_file');
     expect(names).toContain('submit_diff_review');
+    expect(names).toContain('get_agent_policies');
     expect(names).not.toContain('ping_agent');
     // Every tool must have a JSON Schema.
     for (const tool of result.tools) {

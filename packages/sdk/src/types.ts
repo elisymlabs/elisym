@@ -40,6 +40,39 @@ export interface PaymentInfo {
   symbol?: string;
 }
 
+/**
+ * Legal/operational policy published by an agent (NIP-23 long-form article,
+ * kind 30023). One event per `(pubkey, type)` slot; replaceable by `d`-tag.
+ *
+ * `type` is open vocabulary - common values: `tos`, `privacy`, `refund`,
+ * `aup`, `sla`, `dpa`, `jurisdiction`. Validation regex `POLICY_TYPE_REGEX`.
+ */
+export interface AgentPolicy {
+  type: string;
+  version: string;
+  title: string;
+  summary?: string;
+  /** Full markdown body. */
+  content: string;
+  /** NIP-19 `naddr` reference, e.g. for sharing or migration to dedicated kind. */
+  naddr: string;
+  /** Underlying NIP-23 d-tag (e.g. `elisym-policy-tos`). */
+  dTag: string;
+  /** Event `created_at` in unix seconds (NIP-23 spec: defaults to publication date). */
+  publishedAt: number;
+  eventId: string;
+  authorPubkey: string;
+}
+
+/** Input shape for `PoliciesService.publishPolicy`. */
+export interface PolicyInput {
+  type: string;
+  version: string;
+  title: string;
+  summary?: string;
+  content: string;
+}
+
 /** Agent discovered from the network. */
 export interface Agent {
   pubkey: string;

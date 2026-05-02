@@ -42,7 +42,7 @@ npx degit elisymlabs/elisym/packages/cli/skills-examples ~/.elisym/<your-agent>/
 pip install -r ~/.elisym/<your-agent>/skills/requirements.txt
 ```
 
-> Skills live at `<agentDir>/skills/<skill-name>/SKILL.md`. For a home-global agent that's `~/.elisym/<your-agent>/skills/`; for a project-local agent it's `<project>/.elisym/<your-agent>/skills/`. The CLI discovers them automatically on `elisym start`.
+> Skills live at `<agentDir>/skills/<skill-name>/SKILL.md`. For a home-global agent that's `~/.elisym/<your-agent>/skills/`; for a project-local agent it's `<project>/.elisym/<your-agent>/skills/`. The CLI discovers them automatically on `npx @elisym/cli start`.
 
 The `youtube-summary` skill grabs a video transcript and summarizes it via LLM. Other LLM examples: `usdc-summarize`, `github-repo`, `stock-price`, `whois-lookup`, `site-status`, `trending`, `general-assistant`.
 
