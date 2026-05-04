@@ -8,14 +8,14 @@ import { cn } from '~/lib/cn';
 const SWITCHER_TRACK_CLASSES =
   'relative flex shrink-0 items-center gap-2 rounded-full border border-white/60 bg-tag-bg p-3 backdrop-blur-md';
 const SWITCHER_PILL_CLASSES =
-  'relative z-10 cursor-pointer rounded-full border-none bg-transparent px-14 py-6 text-[13px] font-medium whitespace-nowrap transition-colors duration-200 sm:text-sm';
+  'relative z-10 cursor-pointer touch-manipulation rounded-full border-none bg-transparent px-14 py-6 text-[13px] font-medium whitespace-nowrap transition-colors duration-200 sm:text-sm';
 const SWITCHER_PILL_ACTIVE = 'text-text';
 const SWITCHER_PILL_INACTIVE = 'text-text-2 hover:text-text';
 const SWITCHER_INDICATOR_CLASSES =
   'pointer-events-none absolute top-3 bottom-3 left-0 rounded-full bg-white shadow-card transition-[transform,width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-[transform,width]';
 
 const TAG_CHIP_CLASSES =
-  'inline-flex h-28 shrink-0 cursor-pointer items-center rounded-full border px-14 font-mono text-[11px] leading-none font-medium tracking-wide whitespace-nowrap uppercase transition-[background-color,color,border-color,box-shadow] duration-200';
+  'inline-flex h-28 shrink-0 cursor-pointer touch-manipulation items-center rounded-full border px-14 font-mono text-[11px] leading-none font-medium tracking-wide whitespace-nowrap uppercase transition-[background-color,color,border-color,box-shadow] duration-200';
 const TAG_CHIP_ACTIVE = 'border-transparent bg-surface-dark text-white shadow-card';
 const TAG_CHIP_INACTIVE =
   'border-black/10 bg-transparent text-text-2 hover:border-black/20 hover:text-text';
