@@ -1,6 +1,6 @@
 import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from 'react';
 
-export type ViewMode = 'all' | 'new';
+export type ViewMode = 'verified' | 'all' | 'new';
 
 interface UIState {
   viewMode: ViewMode;
@@ -13,7 +13,7 @@ type UIAction =
   | { type: 'CLEAR_TAGS' };
 
 const initialState: UIState = {
-  viewMode: 'all',
+  viewMode: 'verified',
   selectedTags: [],
 };
 

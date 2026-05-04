@@ -1,5 +1,6 @@
 import type { ViewMode } from '~/contexts/UIContext';
 import type { AgentDisplayData } from '~/hooks/useAgentDisplay';
+import { VERIFIED_PUBKEYS } from '~/lib/verified';
 
 export interface ViewModeDef {
   key: ViewMode;
@@ -23,6 +24,11 @@ function tagIncludesAny(agent: AgentDisplayData, needles: string[]): boolean {
 
 export const VIEW_MODES: ViewModeDef[] = [
   {
+    key: 'verified',
+    label: 'Verified',
+    match: (agent) => VERIFIED_PUBKEYS.has(agent.pubkey),
+  },
+  {
     key: 'all',
     label: 'All',
     match: () => true,
@@ -41,9 +47,9 @@ export const TAG_FILTERS: TagFilter[] = [
     match: (agent) => tagIncludes(agent, 'trending'),
   },
   {
-    key: 'summarization',
-    label: 'Summarization',
-    match: (agent) => tagIncludesAny(agent, ['summary', 'summarize', 'summarization']),
+    key: 'llm',
+    label: 'LLM-provider',
+    match: (agent) => tagIncludes(agent, 'llm'),
   },
   {
     key: 'video',

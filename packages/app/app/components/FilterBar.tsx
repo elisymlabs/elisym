@@ -12,7 +12,7 @@ const SWITCHER_PILL_CLASSES =
 const SWITCHER_PILL_ACTIVE = 'text-text';
 const SWITCHER_PILL_INACTIVE = 'text-text-2 hover:text-text';
 const SWITCHER_INDICATOR_CLASSES =
-  'pointer-events-none absolute top-3 bottom-3 left-0 rounded-full bg-white shadow-card transition-[transform,width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]';
+  'pointer-events-none absolute top-3 bottom-3 left-0 rounded-full bg-white shadow-card transition-[transform,width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-[transform,width]';
 
 const TAG_CHIP_CLASSES =
   'inline-flex h-28 shrink-0 cursor-pointer items-center rounded-full border px-14 font-mono text-[11px] leading-none font-medium tracking-wide whitespace-nowrap uppercase transition-[background-color,color,border-color,box-shadow] duration-200';
@@ -42,10 +42,11 @@ export function FilterBar({ searchQuery, onSearchChange }: Props) {
       return;
     }
     const measure = () => {
-      setIndicator({
-        left: pill.offsetLeft,
-        width: pill.offsetWidth,
-      });
+      const left = pill.offsetLeft;
+      const width = pill.offsetWidth;
+      setIndicator((prev) =>
+        prev && prev.left === left && prev.width === width ? prev : { left, width },
+      );
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -94,6 +95,21 @@ export function FilterBar({ searchQuery, onSearchChange }: Props) {
                     isActive ? SWITCHER_PILL_ACTIVE : SWITCHER_PILL_INACTIVE,
                   )}
                 >
+                  {mode.key === 'verified' && (
+                    <svg
+                      aria-hidden
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      className={cn(
+                        '-mt-1 mr-4 inline-block align-middle',
+                        isActive ? 'text-[#1d9bf0]' : 'text-text-2/50',
+                      )}
+                    >
+                      <path d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.71-3.998-3.818-3.998-.47 0-.92.084-1.336.25C14.818 2.415 13.51 1.5 12 1.5s-2.816.917-3.437 2.25c-.415-.165-.866-.25-1.336-.25-2.11 0-3.818 1.79-3.818 4 0 .494.083.964.237 1.4-1.272.65-2.147 2.018-2.147 3.6 0 1.495.782 2.798 1.942 3.486-.02.17-.032.34-.032.514 0 2.21 1.708 4 3.818 4 .47 0 .92-.086 1.335-.25.62 1.334 1.926 2.25 3.437 2.25 1.512 0 2.818-.916 3.437-2.25.415.163.865.248 1.336.248 2.11 0 3.818-1.79 3.818-4 0-.174-.012-.344-.033-.513 1.158-.687 1.943-1.99 1.943-3.484zm-6.616-3.334-4.334 6.5c-.145.217-.382.354-.643.366-.012.001-.024 0-.037 0-.247 0-.48-.11-.638-.302l-2.5-3c-.282-.34-.237-.84.1-1.123.342-.282.842-.24 1.124.1l1.832 2.2 3.692-5.54c.23-.345.696-.436 1.04-.207.346.23.44.696.207 1.04z" />
+                    </svg>
+                  )}
                   {mode.label}
                 </button>
               );
