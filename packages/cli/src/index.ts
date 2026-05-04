@@ -77,8 +77,12 @@ program
     '-v, --verbose',
     'Enable debug logging (relay lifecycle, publish acks, subscription EOSE). Also togglable via ELISYM_DEBUG=1 or LOG_LEVEL=debug.',
   )
+  .option(
+    '--metrics-port <port>',
+    'Expose Prometheus metrics on http://127.0.0.1:<port>/metrics. Off by default. Override bind host with ELISYM_METRICS_HOST.',
+  )
   .action(
-    safe(async (name: string | undefined, options: { verbose?: boolean }) => {
+    safe(async (name: string | undefined, options: { verbose?: boolean; metricsPort?: string }) => {
       await cmdStart(name, options);
     }),
   );

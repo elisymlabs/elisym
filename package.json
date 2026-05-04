@@ -20,7 +20,12 @@
     "program:test": "cargo test --package elisym-config --test config -- --test-threads=1",
     "program:test:ts": "vitest run --config programs/elisym-config/vitest.config.ts",
     "program:deploy:devnet": "anchor deploy --provider.cluster devnet",
-    "program:idl:generate": "anchor build && cp target/idl/elisym_config.json packages/config-client/idl.json"
+    "program:idl:generate": "anchor build && cp target/idl/elisym_config.json packages/config-client/idl.json",
+    "perf:up": "bash packages/perf/scripts/stack-up.sh",
+    "perf:down": "bash packages/perf/scripts/stack-down.sh",
+    "perf:run": "bash packages/perf/scripts/run.sh",
+    "perf:bridge": "bun --hot --cwd packages/perf bridge/src/server.ts",
+    "perf:validator": "bash packages/perf/scripts/start-validator.sh"
   },
   "devDependencies": {
     "cspell": "~9.0.0",

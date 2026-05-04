@@ -17,6 +17,7 @@
  */
 
 import type { LlmClient } from '@elisym/sdk/skills';
+import { createMockLlmClient, isMockLlmEnabled } from './mock';
 import { getLlmProvider, getRegisteredProviderIds, type LlmKeyVerification } from './registry';
 
 export type { LlmKeyVerification, LlmProviderDescriptor, LlmUsage } from './registry';
@@ -44,6 +45,12 @@ export interface LlmConfig {
  * `provider:` override).
  */
 export function createLlmClient(config: LlmConfig): LlmClient {
+  // MOCK_LLM short-circuit for local capacity tests. Honours the same
+  // provider lookup so unknown providers still error consistently, but
+  // returns synthetic replies instead of hitting the network.
+  if (isMockLlmEnabled()) {
+    return createMockLlmClient();
+  }
   const descriptor = getLlmProvider(config.provider);
   if (!descriptor) {
     const known = getRegisteredProviderIds().join(', ') || '<none>';

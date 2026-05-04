@@ -246,6 +246,16 @@ export class AgentRuntime {
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
   }
 
+  /** Jobs currently being processed (executing or queued past p-limit). */
+  getInFlightCount(): number {
+    return this.inFlight.size;
+  }
+
+  /** Jobs queued past the p-limit concurrency gate. */
+  getPendingCount(): number {
+    return this.pending;
+  }
+
   /**
    * Inspect an error thrown by `skill.execute()` and, when it carries a
    * billing/invalid signal from the LLM provider, flip the matching

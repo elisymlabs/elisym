@@ -56,9 +56,18 @@ import {
 } from '../llm';
 import { cacheKeyFor, resolveTripleForOverride } from '../llm/cache.js';
 import { resolveProviderApiKey } from '../llm/keys.js';
+import { isMockLlmEnabled, refuseMockLlmInProduction } from '../llm/mock.js';
 import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
 import { createLogger } from '../logging.js';
-import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
+import {
+  createMetricsContext,
+  instrumentCallbacks,
+  parseMetricsPort,
+  serveMetrics,
+  startGaugePolling,
+  type MetricsServer,
+} from '../metrics.js';
+import { AgentRuntime, type RuntimeCallbacks, type RuntimeConfig } from '../runtime.js';
 import { SkillRegistry, type SkillContext, type SkillLlmOverride } from '../skill';
 import type { LlmClient } from '../skill/index.js';
 import { loadSkillsFromDir } from '../skill/loader.js';
@@ -67,12 +76,21 @@ import { startWatchdog } from '../watchdog.js';
 
 export interface StartOptions {
   verbose?: boolean;
+  metricsPort?: string;
 }
 
 export async function cmdStart(
   nameArg: string | undefined,
   options: StartOptions = {},
 ): Promise<void> {
+  // Refuse MOCK_LLM in production before any state mutates.
+  refuseMockLlmInProduction();
+  if (isMockLlmEnabled()) {
+    console.log(
+      '  ! MOCK_LLM=1 active - skill LLM calls return synthetic replies. NOT for production use.',
+    );
+  }
+
   const cwd = process.cwd();
 
   // -- Step 1: Resolve agent name --
@@ -690,35 +708,55 @@ export async function cmdStart(
     diagLog('LLM health monitor armed (lazy recovery, 5min interval).');
   }
 
+  // -- Step 14b: Optional Prometheus metrics exporter --
+  // Off by default; --metrics-port enables a tiny http server on loopback.
+  // Used by packages/perf for local capacity testing.
+  const metricsPort = parseMetricsPort(options.metricsPort);
+  const metricsCtx = metricsPort === undefined ? undefined : createMetricsContext();
+  let metricsServer: MetricsServer | undefined;
+  let stopMetricsPolling: (() => void) | undefined;
+
+  const userCallbacks: RuntimeCallbacks = {
+    onJobReceived: (job) => {
+      const cap = job.tags.find((t) => t !== 'elisym') ?? 'unknown';
+      // Never log job.input here - capability tag is the only descriptor needed.
+      process.stdout.write(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}\n`);
+      logger.info({ event: 'job_received', jobId: job.jobId, capability: cap });
+    },
+    onJobCompleted: (jobId) => {
+      process.stdout.write(`  [job] ${jobId.slice(0, 16)} | delivered\n`);
+      logger.info({ event: 'job_delivered', jobId });
+    },
+    onJobError: (jobId, error) => {
+      process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${error}\n`);
+      logger.error({ event: 'job_error', jobId, error });
+    },
+    onLog: diagLog,
+    onStop: () => {
+      watchdog.stop();
+      llmHeartbeat?.stop();
+      stopMetricsPolling?.();
+      if (metricsServer) {
+        void metricsServer.close();
+      }
+    },
+  };
+
   const runtime = new AgentRuntime(
     transport,
     registry,
     skillCtx,
     runtimeConfig,
     ledger,
-    {
-      onJobReceived: (job) => {
-        const cap = job.tags.find((t) => t !== 'elisym') ?? 'unknown';
-        // Never log job.input here - capability tag is the only descriptor needed.
-        process.stdout.write(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}\n`);
-        logger.info({ event: 'job_received', jobId: job.jobId, capability: cap });
-      },
-      onJobCompleted: (jobId) => {
-        process.stdout.write(`  [job] ${jobId.slice(0, 16)} | delivered\n`);
-        logger.info({ event: 'job_delivered', jobId });
-      },
-      onJobError: (jobId, error) => {
-        process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${error}\n`);
-        logger.error({ event: 'job_error', jobId, error });
-      },
-      onLog: diagLog,
-      onStop: () => {
-        watchdog.stop();
-        llmHeartbeat?.stop();
-      },
-    },
+    metricsCtx ? instrumentCallbacks(metricsCtx, userCallbacks) : userCallbacks,
     healthMonitor,
   );
+
+  if (metricsCtx && metricsPort !== undefined) {
+    stopMetricsPolling = startGaugePolling(metricsCtx, runtime, healthMonitor);
+    metricsServer = await serveMetrics(metricsCtx, metricsPort);
+    console.log(`  * Metrics: ${metricsServer.url}`);
+  }
 
   // -- Step 15: Run --
   console.log('  * Running. Press Ctrl+C to stop.\n');
