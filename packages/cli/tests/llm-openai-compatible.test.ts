@@ -204,14 +204,14 @@ describe('createOpenAICompatibleProvider verifyKeyDeep', () => {
     fallbackModels: ['mock-default'],
   });
 
-  it('200 → ok and probes /chat/completions with max_tokens=1', async () => {
+  it('200 → ok and probes /chat/completions with max_tokens=256', async () => {
     mockFetch({ status: 200, body: { choices: [] } });
     const result = await provider.verifyKeyDeep('sk', 'mock-default');
     expect(result).toEqual({ ok: true });
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[0]).toBe(`${TEST_BASE_URL}/chat/completions`);
     const body = JSON.parse(call[1].body);
-    expect(body.max_tokens).toBe(1);
+    expect(body.max_tokens).toBe(256);
     expect(body.model).toBe('mock-default');
   });
 

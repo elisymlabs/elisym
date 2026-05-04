@@ -119,7 +119,7 @@ describe('verifyLlmApiKeyDeep - OpenAI', () => {
     await verifyLlmApiKeyDeep('openai', 'sk-good', 'o1-preview');
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(call[1].body);
-    expect(body.max_completion_tokens).toBe(1);
+    expect(body.max_completion_tokens).toBe(256);
     expect(body.max_tokens).toBeUndefined();
   });
 
