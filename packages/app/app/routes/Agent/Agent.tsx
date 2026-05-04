@@ -318,8 +318,6 @@ export default function AgentPage() {
   // the feedback batch.
   const feedbackGate = agentStatus === 'ready' || agentStatus === 'not-found' ? 'eose' : 'idle';
   const { data: feedbackMap } = useAgentFeedback(pubkey ? [pubkey] : [], feedbackGate);
-  const isLoading = !agent && agentStatus === 'loading';
-
   const displayAgents = useAgentDisplay(agent ? [agent] : [], feedbackMap);
   const agentData = agent ? displayAgents[0] : undefined;
 
@@ -479,12 +477,11 @@ export default function AgentPage() {
     card: currentCard,
   });
 
-  if (isLoading && !agentData) {
+  if (!agentData) {
+    if (agentStatus === 'not-found') {
+      return <NotFound />;
+    }
     return <LoadingOverlay />;
-  }
-
-  if (!agent || !agentData) {
-    return <NotFound />;
   }
 
   const feedbackPct =
