@@ -441,11 +441,6 @@ export default function AgentPage() {
     [client, idCtx.identity, pubkey, ratedArtifacts],
   );
 
-  useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'instant' });
-    setSelectedCardIndex(0);
-  }, [pubkey]);
-
   // ?tab=history lands the user straight on the History tab. Used by the
   // `Result received` toast's "View" action, which fires while the user is
   // somewhere else in the app and needs the artifact view ready on arrival.
