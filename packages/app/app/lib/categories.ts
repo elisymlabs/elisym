@@ -18,10 +18,6 @@ function tagIncludes(agent: AgentDisplayData, needle: string): boolean {
   return agent.tags.some((tag) => tag.toLowerCase().includes(needle));
 }
 
-function tagIncludesAny(agent: AgentDisplayData, needles: string[]): boolean {
-  return needles.some((needle) => tagIncludes(agent, needle));
-}
-
 export const VIEW_MODES: ViewModeDef[] = [
   {
     key: 'verified',
