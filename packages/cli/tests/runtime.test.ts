@@ -1697,11 +1697,15 @@ describe('AgentRuntime', () => {
       await runPromise.catch(() => {});
 
       expect(leakySkill.execute).toHaveBeenCalledOnce();
+      // Stderr carries the shared-key signal ("invalid x-api-key"), so
+      // the failure is provider-wide: cascade across siblings of the
+      // same provider (they share the API key).
       expect(stubMonitor.markUnhealthyFromJob).toHaveBeenCalledWith(
         'anthropic',
         'claude-sonnet-4-6',
         'invalid',
         expect.stringContaining('invalid x-api-key'),
+        { cascade: true },
       );
       // Status stays `paid` so recovery can re-execute once the operator
       // restores the key, identical to the exit-42 contract path.
@@ -1713,9 +1717,13 @@ describe('AgentRuntime', () => {
       expect(errorFb).toBeDefined();
     });
 
-    it('does NOT flip health when script exit-1 carries no billing/invalid signal', async () => {
-      // Generic skill bug should be a transient error - health pair must
-      // stay healthy so subsequent customers can still be served.
+    it('flips health on generic script exit-1 (fail-fast circuit breaker)', async () => {
+      // Policy: ANY non-zero exit on a script-mode skill with declared
+      // (provider, model) flips the pair unhealthy immediately. Even when
+      // the error text carries no billing/invalid markers, subsequent
+      // customers must be gated at the preflight rather than paying for
+      // the same failure to repeat. Recovery happens through the lazy
+      // recovery probe (verifyKeyDeep) within the TTL window.
       const buggySkill: Skill = {
         name: 'buggy-script',
         description: 'Script that crashes for unrelated reasons',
@@ -1760,6 +1768,67 @@ describe('AgentRuntime', () => {
       await runPromise.catch(() => {});
 
       expect(buggySkill.execute).toHaveBeenCalledOnce();
+      // Generic exit with no shared-key signal in stderr: pair is
+      // flipped `invalid` but cascade is suppressed so sibling models
+      // (e.g. Haiku) stay available for buyers.
+      expect(stubMonitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-sonnet-4-6',
+        'invalid',
+        expect.stringContaining('TypeError'),
+        { cascade: false },
+      );
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const errorFb = feedbackCalls.find(
+        (c: any) => c[1]?.type === 'error' && c[1]?.message === 'Agent temporarily unavailable',
+      );
+      expect(errorFb).toBeDefined();
+    });
+
+    it('does NOT flip health when script-mode skill has no provider/model declared', async () => {
+      // Without `llmOverride`, the runtime has no (provider, model) pair
+      // to mark - it can only log a hint to the operator. Per-skill
+      // health gating for non-LLM scripts requires a separate mechanism
+      // not yet implemented.
+      const orphanSkill: Skill = {
+        name: 'orphan-script',
+        description: 'Script with no LLM override declared',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        execute: vi.fn().mockRejectedValue(new Error('script failed (exit 1): boom')),
+      };
+      const registry = makeFakeRegistry(orphanSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const stubMonitor = {
+        assertReady: vi.fn().mockResolvedValue(undefined),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      } as any;
+
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue('paid-sig');
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('orphan-job'));
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(orphanSkill.execute).toHaveBeenCalledOnce();
       expect(stubMonitor.markUnhealthyFromJob).not.toHaveBeenCalled();
     });
 
