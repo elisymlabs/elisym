@@ -30,7 +30,7 @@ export function App() {
           <main className="page-load flex-1">
             <Switch>
               <Route path="/" component={Home} />
-              <Route path="/agent/:pubkey" component={AgentPage} />
+              <Route path="/agent/:pubkey">{(params) => <AgentPage key={params?.pubkey} />}</Route>
               <Route path="/terms" component={Terms} />
               <Route>
                 <div className="flex min-h-[60vh] items-center justify-center">

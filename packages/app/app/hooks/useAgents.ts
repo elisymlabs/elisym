@@ -5,6 +5,7 @@ import {
   migrateLegacyListSnapshot,
   setAgentProfiles,
 } from '~/lib/agentProfileCache';
+import { setAgentSnapshot } from '~/lib/agentSnapshotCache';
 import { preloadFirstBatchPictures } from '~/lib/imagePreload';
 import { useElisymClient } from './useElisymClient';
 
@@ -59,6 +60,15 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
     // until the next enrichment finishes.
     let enriched = false;
 
+    // Mirror every agentMapRef mutation into the module-scope snapshot
+    // cache so `useAgent` can seed the detail page synchronously on
+    // Home -> detail navigation. Snapshot is invoked from effects only,
+    // never the render path.
+    const writeAgent = (agent: Agent) => {
+      agentMapRef.current.set(agent.pubkey, agent);
+      setAgentSnapshot(NETWORK, agent);
+    };
+
     const flush = () => {
       rafRef.current = null;
       const touchedPubkeys = new Set<string>();
@@ -73,7 +83,7 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
           if (prior && prior.lastSeen > next.lastSeen) {
             next.lastSeen = prior.lastSeen;
           }
-          agentMapRef.current.set(patch.agent.pubkey, next);
+          writeAgent(next);
           touchedPubkeys.add(patch.agent.pubkey);
         } else {
           const existing = agentMapRef.current.get(patch.pubkey);
@@ -88,7 +98,7 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
             !existing.lastPaidJobTx &&
             (!existing.lastPaidJobAt || patch.ts > existing.lastPaidJobAt)
           ) {
-            agentMapRef.current.set(patch.pubkey, { ...existing, lastPaidJobAt: patch.ts });
+            writeAgent({ ...existing, lastPaidJobAt: patch.ts });
             touchedPubkeys.add(patch.pubkey);
           }
         }
@@ -130,7 +140,7 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
       // Live data still wins for any field it sets.
       for (const agent of cached) {
         const live = agentMapRef.current.get(agent.pubkey);
-        agentMapRef.current.set(agent.pubkey, live ? { ...agent, ...live } : agent);
+        writeAgent(live ? { ...agent, ...live } : agent);
       }
       setStatus((prev) => (prev === 'idle' ? 'streaming' : prev));
       setVersion((prev) => prev + 1);
@@ -172,7 +182,7 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
             if (prior && prior.lastSeen > next.lastSeen) {
               next.lastSeen = prior.lastSeen;
             }
-            agentMapRef.current.set(agent.pubkey, next);
+            writeAgent(next);
             mergedAgents.push(next);
           }
           enrichedOrderRef.current = mergedAgents;

@@ -1,6 +1,7 @@
 import type { Agent } from '@elisym/sdk';
 import { useEffect, useState } from 'react';
 import { getAgentProfile, setAgentProfiles } from '~/lib/agentProfileCache';
+import { getAgentSnapshot, setAgentSnapshot } from '~/lib/agentSnapshotCache';
 import { NETWORK } from './useAgents';
 import { useElisymClient } from './useElisymClient';
 
@@ -11,26 +12,45 @@ export interface UseAgentResult {
   status: AgentFetchStatus;
 }
 
+const GRACE_MS = 1200;
+const RETRY_DELAY_MS = 800;
+const HARD_CEILING_MS = 12_000;
+const MAX_ATTEMPTS = 2;
+
 /**
  * Fetch a single agent by pubkey for the agent detail page.
  *
- * Seeds from the IndexedDB profile cache for instant render, then issues a
- * targeted `fetchAgent` (kind:31990 + kind:0 + paid-job enrichment, scoped to
- * one author) and merges the result over the cached snapshot. Two relay-miss
- * fallbacks keep the profile from blanking on a transient failure:
- * 1. If `fetchAgent` returns nothing, the IDB cache is used as a fallback;
- *    status only flips to `not-found` when both the relay and the cache are
- *    empty.
- * 2. If `fetchAgent` returns an agent but the kind:0 sub-query inside
- *    enrichment missed, `name`/`picture`/`banner`/`about` are absent on the
- *    fresh result. Spread `fresh` over the cached snapshot (and persist the
- *    merged version) so a metadata miss does not overwrite the cache with a
- *    profile-less snapshot. Mirrors `useAgents.ts` `onComplete`.
+ * Hydration cascade keeps the page from blanking on transient relay misses:
+ *   1. Synchronous read from `agentSnapshotCache` (Home/list page already
+ *      loaded this agent in-session) - first paint shows the agent
+ *      immediately, status `'ready'`.
+ *   2. Async IDB read from `agentProfileCache` (prior session) - merged in
+ *      if the snapshot was empty.
+ *   3. `discovery.fetchAgent` over relays.
+ *
+ * Network policy:
+ *   - Up to `MAX_ATTEMPTS` (initial + one retry) - a single empty response
+ *     is treated as ambiguous, not authoritative.
+ *   - `RETRY_DELAY_MS` between attempts.
+ *   - `GRACE_MS` floor on attempt-to-NotFound transition so even a fast
+ *     double-`null` waits before flashing NotFound.
+ *   - `HARD_CEILING_MS` absolute timeout from mount; flips NotFound only
+ *     after the snapshot/IDB fallbacks are also empty. Prevents an
+ *     infinite spinner on hung sockets.
+ *   - Network/relay errors stay silent (status pinned to `'loading'`)
+ *     until the ceiling fires. Mirrors commit 2a4515d.
  */
 export function useAgent(pubkey: string): UseAgentResult {
   const { client } = useElisymClient();
-  const [agent, setAgent] = useState<Agent | undefined>(undefined);
-  const [status, setStatus] = useState<AgentFetchStatus>('idle');
+  const [agent, setAgent] = useState<Agent | undefined>(() =>
+    pubkey ? getAgentSnapshot(NETWORK, pubkey) : undefined,
+  );
+  const [status, setStatus] = useState<AgentFetchStatus>(() => {
+    if (!pubkey) {
+      return 'idle';
+    }
+    return getAgentSnapshot(NETWORK, pubkey) ? 'ready' : 'loading';
+  });
 
   useEffect(() => {
     if (!pubkey) {
@@ -39,15 +59,28 @@ export function useAgent(pubkey: string): UseAgentResult {
       return;
     }
 
+    const initialSnapshot = getAgentSnapshot(NETWORK, pubkey);
+    setAgent(initialSnapshot);
+    setStatus(initialSnapshot ? 'ready' : 'loading');
+
     let cancelled = false;
-    // Once the relay has returned a fresh profile, a late IDB read must not
-    // overwrite the merged version with the older cached snapshot. When the
-    // relay returns nothing, the cache is used as a fallback (see the
-    // `!fresh` branch below) so a transient relay miss does not blank out
-    // an agent the user just saw on the previous page.
+    let resolved = initialSnapshot !== undefined;
     let networkSettled = false;
-    setAgent(undefined);
-    setStatus('loading');
+    let attemptCount = 0;
+    let attemptStartedAt = 0;
+    const mountedAt = performance.now();
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+
+    const setTimer = (fn: () => void, ms: number) => {
+      const handle = setTimeout(() => {
+        timers.delete(handle);
+        if (cancelled) {
+          return;
+        }
+        fn();
+      }, ms);
+      timers.add(handle);
+    };
 
     void getAgentProfile(NETWORK, pubkey).then((cached) => {
       if (cancelled || !cached || networkSettled) {
@@ -56,62 +89,134 @@ export function useAgent(pubkey: string): UseAgentResult {
       setAgent((prev) => prev ?? cached);
     });
 
-    const refetch = async () => {
+    const finishWithFreshAgent = async (fresh: Agent) => {
+      // Even when the relay returned an agent, the kind:0 metadata query
+      // inside runEnrichment may have missed - leaving `fresh` without
+      // name/picture/banner/about. Merge over the cached snapshot/IDB so
+      // a transient metadata miss does not overwrite the cache with a
+      // profile-less version. Mirrors the merge pattern in useAgents.ts
+      // `onComplete`.
+      const cached = await getAgentProfile(NETWORK, pubkey);
+      if (cancelled) {
+        return;
+      }
+      const merged: Agent = cached ? { ...cached, ...fresh } : fresh;
+      networkSettled = true;
+      resolved = true;
+      setAgent(merged);
+      setStatus('ready');
+      void setAgentProfiles(NETWORK, [merged]);
+      setAgentSnapshot(NETWORK, merged);
+    };
+
+    const flipNotFoundIfFinal = async () => {
+      const cached = await getAgentProfile(NETWORK, pubkey);
+      if (cancelled) {
+        return;
+      }
+      if (cached) {
+        resolved = true;
+        setAgent((prev) => prev ?? cached);
+        setStatus('ready');
+        return;
+      }
+      const snapshot = getAgentSnapshot(NETWORK, pubkey);
+      if (snapshot) {
+        resolved = true;
+        setAgent((prev) => prev ?? snapshot);
+        setStatus('ready');
+        return;
+      }
+      const elapsed = performance.now() - attemptStartedAt;
+      const remaining = Math.max(0, GRACE_MS - elapsed);
+      setTimer(() => {
+        if (resolved) {
+          return;
+        }
+        resolved = true;
+        setAgent(undefined);
+        setStatus('not-found');
+      }, remaining);
+    };
+
+    const attempt = async () => {
+      attemptCount += 1;
+      attemptStartedAt = performance.now();
       try {
         const fresh = await client.discovery.fetchAgent(NETWORK, pubkey);
         if (cancelled) {
           return;
         }
-        networkSettled = true;
         if (!fresh) {
-          const cached = await getAgentProfile(NETWORK, pubkey);
-          if (cancelled) {
+          if (attemptCount < MAX_ATTEMPTS) {
+            setTimer(() => {
+              void attempt();
+            }, RETRY_DELAY_MS);
             return;
           }
-          if (cached) {
-            setAgent((prev) => prev ?? cached);
-            setStatus('ready');
-          } else {
-            setAgent(undefined);
-            setStatus('not-found');
-          }
+          networkSettled = true;
+          await flipNotFoundIfFinal();
           return;
         }
-        // Even when the relay returned an agent, the kind:0 metadata query
-        // inside runEnrichment may have missed - leaving `fresh` without
-        // name/picture/banner/about. Merge `fresh` over the cached snapshot
-        // and persist the merged result so a transient metadata miss does
-        // not overwrite the cache with a profile-less version. Mirrors the
-        // merge pattern in useAgents.ts `onComplete`.
-        const cached = await getAgentProfile(NETWORK, pubkey);
-        if (cancelled) {
-          return;
-        }
-        const merged: Agent = cached ? { ...cached, ...fresh } : fresh;
-        setAgent(merged);
-        setStatus('ready');
-        void setAgentProfiles(NETWORK, [merged]);
+        await finishWithFreshAgent(fresh);
       } catch {
-        if (cancelled) {
-          return;
-        }
-        // Network/relay error - keep whatever the cache served and stay in
-        // `loading` so the UI does not flash NotFound on a transient failure.
+        // Network/relay error - keep whatever cache served and stay in
+        // `loading` so the UI does not flash NotFound on a transient
+        // failure. The hard-ceiling timer below is the last-resort exit.
       }
     };
 
-    void refetch();
+    void attempt();
 
-    const unregisterReset = client.pool.onReset(() => {
-      if (cancelled) {
+    const runCeilingFallback = async () => {
+      const cached = await getAgentProfile(NETWORK, pubkey);
+      if (cancelled || resolved) {
         return;
       }
-      setStatus('loading');
-      void refetch();
+      if (cached) {
+        resolved = true;
+        setAgent(cached);
+        setStatus('ready');
+        return;
+      }
+      const snapshot = getAgentSnapshot(NETWORK, pubkey);
+      if (snapshot) {
+        resolved = true;
+        setAgent(snapshot);
+        setStatus('ready');
+        return;
+      }
+      resolved = true;
+      setAgent(undefined);
+      setStatus('not-found');
+    };
+
+    setTimer(
+      () => {
+        if (resolved) {
+          return;
+        }
+        void runCeilingFallback();
+      },
+      Math.max(0, HARD_CEILING_MS - (performance.now() - mountedAt)),
+    );
+
+    const unregisterReset = client.pool.onReset(() => {
+      if (cancelled || resolved) {
+        return;
+      }
+      attemptCount = 0;
+      networkSettled = false;
+      setStatus((prev) => (prev === 'ready' ? prev : 'loading'));
+      void attempt();
     });
 
     return () => {
       cancelled = true;
+      for (const handle of timers) {
+        clearTimeout(handle);
+      }
+      timers.clear();
       unregisterReset();
     };
   }, [client, pubkey]);
