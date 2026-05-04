@@ -328,5 +328,26 @@ describe('LlmHealthMonitor', () => {
         expect(entry.consecutiveFailures).toBe(0);
       }
     });
+
+    it('cascade=false flips ONLY the triggering pair, leaves siblings healthy', () => {
+      // Skill-local failures (generic non-zero exit with no shared-key
+      // signal in stderr) must not punish innocent sibling models. Only
+      // the failing pair should be flipped; Sonnet and Haiku stay
+      // available so customers can still buy them.
+      const { monitor } = setupAnthropicTrioPlusOpenAI();
+      monitor.markUnhealthyFromJob(
+        'anthropic',
+        'opus',
+        'invalid',
+        'script failed (exit 1): TypeError: undefined is not a function',
+        { cascade: false },
+      );
+      const snap = monitor.snapshot();
+      const byKey = new Map(snap.map((entry) => [`${entry.provider}::${entry.model}`, entry]));
+      expect(byKey.get('anthropic::opus')?.status).toBe('invalid');
+      expect(byKey.get('anthropic::sonnet')?.status).toBe('unknown');
+      expect(byKey.get('anthropic::haiku')?.status).toBe('unknown');
+      expect(byKey.get('openai::gpt-5')?.status).toBe('unknown');
+    });
   });
 });

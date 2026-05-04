@@ -180,41 +180,58 @@ export class LlmHealthMonitor {
    * lazy recovery loop notices on its own. No-op if the pair is not
    * registered.
    *
-   * For `invalid` / `billing` reasons this propagates to every sibling
-   * pair sharing the same `provider` via the cascade in
+   * For `invalid` / `billing` reasons this defaults to propagating across
+   * every sibling pair sharing the same `provider` via the cascade in
    * `applyVerification` - they share the same API key, so a revoked or
-   * exhausted key affects all models. `unavailable` stays per-pair.
+   * exhausted key affects all models. Pass `options.cascade = false` to
+   * scope the flip to a single pair (used when the failure is
+   * skill-local, e.g. a generic non-zero script exit with no shared-key
+   * signal in stderr - flipping siblings would make innocent models
+   * collateral damage). `unavailable` stays per-pair regardless.
    *
    * Recovery from this state happens through a successful probe (typically
    * fired by `startLlmRecovery`) which flips the pair back to healthy via
    * `applyVerification`. The recovery cascade lifts sibling pairs at the
-   * same time so the gate doesn't stay half-broken.
+   * same time so the gate doesn't stay half-broken (this is intentional:
+   * a sibling marked via `cascade: false` was never causally linked, but
+   * if it was independently `invalid` it should still recover when the
+   * shared key proves healthy).
    */
   markUnhealthyFromJob(
     provider: string,
     model: string,
     reason: 'billing' | 'invalid' | 'unavailable',
     detail?: string,
+    options?: { cascade?: boolean },
   ): void {
     const entry = this.entries.get(keyOf(provider, model));
     if (!entry) {
       return;
     }
+    const cascade = options?.cascade ?? true;
     if (reason === 'invalid') {
-      this.applyVerification(entry, {
-        ok: false,
-        reason: 'invalid',
-        status: 0,
-        body: detail ?? 'reactive markUnhealthyFromJob',
-      });
+      this.applyVerification(
+        entry,
+        {
+          ok: false,
+          reason: 'invalid',
+          status: 0,
+          body: detail ?? 'reactive markUnhealthyFromJob',
+        },
+        { cascade },
+      );
       return;
     }
     if (reason === 'billing') {
-      this.applyVerification(entry, {
-        ok: false,
-        reason: 'billing',
-        body: detail ?? 'reactive markUnhealthyFromJob',
-      });
+      this.applyVerification(
+        entry,
+        {
+          ok: false,
+          reason: 'billing',
+          body: detail ?? 'reactive markUnhealthyFromJob',
+        },
+        { cascade },
+      );
       return;
     }
     this.applyVerification(entry, {
@@ -375,7 +392,11 @@ export class LlmHealthMonitor {
    * <triggering-model>)` in their body so `snapshot()` and operator
    * logs remain diagnosable.
    */
-  private applyVerification(entry: Entry, verification: LlmKeyVerification): void {
+  private applyVerification(
+    entry: Entry,
+    verification: LlmKeyVerification,
+    options?: { cascade?: boolean },
+  ): void {
     this.mutateEntry(entry, verification);
 
     if (verification.ok) {
@@ -395,6 +416,13 @@ export class LlmHealthMonitor {
     }
 
     if (verification.reason !== 'invalid' && verification.reason !== 'billing') {
+      return;
+    }
+
+    // Failure cascade is opt-out. Callers that know the failure is
+    // skill-local (no shared-key signal) pass `cascade: false` to keep
+    // sibling pairs healthy.
+    if (options?.cascade === false) {
       return;
     }
 

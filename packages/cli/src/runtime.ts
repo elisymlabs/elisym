@@ -355,38 +355,66 @@ export class AgentRuntime {
       return true;
     }
 
-    // Fallback for script-mode skills that did NOT use exit 42 but whose
-    // error text carries a billing/invalid signal (shell proxies that
-    // exit 1 for every error path and dump the provider's body in
-    // stderr - "Anthropic count_tokens error: invalid x-api-key" etc).
-    // Without this, a misbehaving operator script would leave the pair
-    // healthy and every subsequent customer would pay before the same
-    // failure repeats. Requires `llmOverride` so we know which pair to
-    // mark; if absent we surface a log hint and bail.
+    // Script-mode failure handling. Policy: fail-fast circuit breaker -
+    // ANY non-zero exit on a script-mode skill with a declared
+    // (provider, model) flips that pair unhealthy immediately. The next
+    // customer is refused at the preflight gate before payment, so a
+    // single failed buyer protects everyone behind them until the lazy
+    // recovery probe (verifyKeyDeep) confirms the pair is back up.
+    //
+    // Two flavors, distinguished by whether the failure is shared-key or
+    // skill-local:
+    //
+    //   1. Stderr matches billing/invalid markers ("credit balance",
+    //      "x-api-key", "unauthorized", ...) - the upstream API key is
+    //      the root cause, so every model under the same provider is
+    //      affected. Cascade across siblings.
+    //
+    //   2. Generic non-zero exit with no recognizable marker - most
+    //      likely a per-skill bug (missing env var, malformed response,
+    //      broken script). Other models for the same provider are
+    //      probably fine. Mark only this pair (`cascade: false`) so a
+    //      bug in Sonnet's proxy.sh does not take down Haiku as
+    //      collateral damage.
+    //
+    // Reason is `invalid` for generic exits because it requires operator
+    // action to resolve and cached-failure semantics in `probeIfNeeded`
+    // keep the gate closed until the lazy recovery loop's verifyKeyDeep
+    // probe succeeds. Recovery is API-key-scoped, not script-scoped: if
+    // the script bug persists, the next buyer triggers another flip,
+    // making the gate self-healing for transient skill bugs but
+    // self-flapping for chronic ones (acceptable - operator log makes
+    // this visible).
     if (skill.mode !== 'llm') {
       const message = err instanceof Error ? err.message : String(err);
-      if (!scriptMessageLooksLikeBillingOrInvalid(message)) {
-        return false;
-      }
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
         log(
-          `${tag} Script failure looks like billing/invalid ("${message.slice(0, 120)}") but skill "${skill.name}" did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+          `${tag} Script "${skill.name}" failed ("${message.slice(0, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
         );
         return false;
       }
       const lower = message.toLowerCase();
+      const looksBillingOrInvalid = scriptMessageLooksLikeBillingOrInvalid(message);
       const reason: 'billing' | 'invalid' =
-        lower.includes('credit balance') ||
-        lower.includes('billing') ||
-        lower.includes('insufficient')
+        looksBillingOrInvalid &&
+        (lower.includes('credit balance') ||
+          lower.includes('billing') ||
+          lower.includes('insufficient'))
           ? 'billing'
           : 'invalid';
+      const cascade = looksBillingOrInvalid;
+      const cascadeNote = cascade ? this.cascadeSuffix(provider, model) : ' (no cascade)';
+      const signalNote = looksBillingOrInvalid
+        ? `${reason} signal in stderr`
+        : `generic exit (no billing/invalid markers, classified as ${reason}, skill-local)`;
       log(
-        `${tag} Script failure carries ${reason} signal in stderr. Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
+        `${tag} Script failure (${signalNote}). Marking ${provider}/${model} unhealthy${cascadeNote}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, message.slice(0, 200));
+      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, message.slice(0, 200), {
+        cascade,
+      });
       return true;
     }
 
