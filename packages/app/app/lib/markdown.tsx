@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
+import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import { cn } from './cn';
 
@@ -8,21 +10,55 @@ interface Props {
   className?: string;
 }
 
+const ALLOWED_URL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+
+function isRelativeUrl(url: string): boolean {
+  return (
+    url.startsWith('#') || url.startsWith('/') || url.startsWith('./') || url.startsWith('../')
+  );
+}
+
+// Allowlist URL schemes for both <a href> and <img src>. Anything outside
+// http(s) / mailto (e.g. `javascript:`, `data:`, `vbscript:`, `file:`) is
+// stripped to an empty string so the renderer drops the attribute.
+function sanitizeUrl(url: string): string {
+  if (!url) {
+    return '';
+  }
+  if (isRelativeUrl(url)) {
+    return url;
+  }
+  try {
+    const protocol = new URL(url).protocol.toLowerCase();
+    return ALLOWED_URL_PROTOCOLS.has(protocol) ? url : '';
+  } catch {
+    return '';
+  }
+}
+
 /**
- * Markdown renderer for untrusted long-form content (e.g. agent policies).
+ * Markdown renderer for untrusted long-form content (agent policies, job
+ * results from remote providers).
  *
  * Safety:
- * - `skipHtml: true` blocks raw HTML inside markdown (XSS prevention)
- * - Custom anchor handler forces `target="_blank" rel="noopener noreferrer"`
- *   for every link so a malicious href cannot navigate the parent frame
- * - GFM plugin enables tables, strikethrough, task lists, and autolinks
+ * - `skipHtml` strips raw HTML at parse time
+ * - `rehypeSanitize` runs the GitHub schema as defense-in-depth on the hast tree
+ * - `urlTransform` allowlists http(s) and mailto, blocking `javascript:`, `data:`, etc.
+ * - `SafeLink` forces `target="_blank" rel="noopener noreferrer"`
+ *
+ * Formatting:
+ * - `remarkBreaks` turns single newlines into hard breaks so chat-style line
+ *   wrapping in agent output is preserved
+ * - `remarkGfm` enables tables, strikethrough, task lists, and autolinks
  */
 export function Markdown({ content, className }: Props) {
   return (
     <div className={cn('markdown-policy', className)}>
       <ReactMarkdown
         skipHtml
-        remarkPlugins={[remarkGfm]}
+        urlTransform={sanitizeUrl}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        rehypePlugins={[rehypeSanitize]}
         components={{
           a: SafeLink,
           h1: ({ children }) => (
