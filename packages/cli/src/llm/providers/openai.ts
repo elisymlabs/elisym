@@ -284,7 +284,17 @@ async function verifyKeyDeep(
         },
         body: JSON.stringify({
           model,
-          ...(reasoning ? { max_completion_tokens: 1 } : { max_tokens: 1 }),
+          // GPT-5 reasoning models count internal chain-of-thought tokens
+          // against `max_completion_tokens`. With a budget of 1 the model
+          // exhausts it on reasoning before producing any visible content
+          // and the API responds HTTP 400 ("max_tokens reached") - which
+          // would falsely flip the (provider, model) pair to unhealthy on
+          // an otherwise valid key. 256 covers a "." prompt's reasoning
+          // budget on every current GPT-5 variant we tested with margin;
+          // non-reasoning models still take max_tokens: 1 since they emit
+          // visible content directly. Probe cost stays sub-cent per
+          // startup probe (reasoning tokens are billed at output rates).
+          ...(reasoning ? { max_completion_tokens: 256 } : { max_tokens: 1 }),
           messages: [{ role: 'user', content: '.' }],
         }),
       },

@@ -271,7 +271,16 @@ export function createOpenAICompatibleProvider(
           },
           body: JSON.stringify({
             model,
-            max_tokens: 1,
+            // Some xAI / DeepSeek model variants are reasoning models that
+            // burn output tokens on internal chain-of-thought before any
+            // visible reply; with `max_tokens: 1` the API returns HTTP 400
+            // and we falsely flip the (provider, model) pair to unhealthy
+            // on a valid key. 256 leaves room for the minimum reasoning
+            // budget on every current variant; for non-reasoning models
+            // the probe still stops at the first natural token, so the
+            // extra ceiling does not change the per-probe cost in
+            // practice.
+            max_tokens: 256,
             messages: [{ role: 'user', content: '.' }],
           }),
         },
