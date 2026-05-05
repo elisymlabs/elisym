@@ -1,0 +1,123 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ms" } },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "k6_discover_call_ms{quantile=\"0.5\"}",
+          "legendFormat": "p50 fleet={{fleet_size}}",
+          "refId": "A"
+        },
+        {
+          "expr": "k6_discover_call_ms{quantile=\"0.95\"}",
+          "legendFormat": "p95 fleet={{fleet_size}}",
+          "refId": "B"
+        },
+        {
+          "expr": "k6_discover_call_ms{quantile=\"0.99\"}",
+          "legendFormat": "p99 fleet={{fleet_size}}",
+          "refId": "C"
+        }
+      ],
+      "title": "Discovery latency by fleet size (Q1)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ms" } },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
+      "id": 2,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "k6_discover_bridge_elapsed_ms{quantile=\"0.95\"}",
+          "legendFormat": "bridge p95 fleet={{fleet_size}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Bridge elapsed (sanity vs k6 wall-clock)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+      "id": 3,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "k6_discover_agents_returned{quantile=\"0.5\"}",
+          "legendFormat": "median agents returned fleet={{fleet_size}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Agents returned per call",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ops" } },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 18 },
+      "id": 4,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(elisym_bridge_calls_total{route=\"discover\"}[30s])) by (outcome)",
+          "legendFormat": "discover {{outcome}}/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(elisym_bridge_calls_total{route=\"fleet-resize\"}[30s])) by (outcome)",
+          "legendFormat": "fleet-resize {{outcome}}/s",
+          "refId": "B"
+        }
+      ],
+      "title": "Bridge call rate",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["elisym", "relay", "discovery"],
+  "templating": { "list": [] },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "elisym - relay & discovery",
+  "uid": "elisym-perf-relay",
+  "version": 1,
+  "weekStart": ""
+}

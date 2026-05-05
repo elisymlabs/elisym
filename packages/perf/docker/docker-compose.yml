@@ -1,0 +1,61 @@
+# Local-only perf stack. Pinned image versions to keep numbers comparable run-to-run.
+# Phase 1 brings up: strfry + prometheus + grafana.
+# Later phases add: solana-test-validator, anchor-deploy (one-shot), bridge, provider.
+name: elisym-perf
+
+services:
+  strfry:
+    image: dockurr/strfry:latest
+    container_name: elisym-perf-strfry
+    ports:
+      - '7777:7777'
+    volumes:
+      - ./strfry.conf:/etc/strfry.conf:ro
+      - strfry-data:/var/lib/strfry
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:7777/']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: elisym-perf-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=2d'
+      - '--web.enable-remote-write-receiver'
+      - '--enable-feature=native-histograms'
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: elisym-perf-grafana
+    ports:
+      - '3000:3000'
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: 'Viewer'
+      GF_AUTH_DISABLE_LOGIN_FORM: 'false'
+      GF_SECURITY_ADMIN_USER: 'admin'
+      GF_SECURITY_ADMIN_PASSWORD: 'admin'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  strfry-data:
+  prometheus-data:
+  grafana-data:

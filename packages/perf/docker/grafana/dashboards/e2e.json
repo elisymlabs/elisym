@@ -1,0 +1,139 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ops" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(elisym_jobs_received_total[1m]))",
+          "legendFormat": "provider receives/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(elisym_jobs_completed_total{result=\"ok\"}[1m]))",
+          "legendFormat": "provider completes/s",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(elisym_bridge_calls_total{route=\"discover\"}[1m]))",
+          "legendFormat": "bridge discover/s",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(elisym_bridge_calls_total{route=\"job-submit\"}[1m]))",
+          "legendFormat": "bridge job-submit/s",
+          "refId": "D"
+        }
+      ],
+      "title": "End-to-end throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ms" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "k6_discovery_call_ms{quantile=\"0.95\"}",
+          "legendFormat": "discovery p95",
+          "refId": "A"
+        },
+        {
+          "expr": "k6_job_submit_call_ms{quantile=\"0.95\"}",
+          "legendFormat": "job-submit p95",
+          "refId": "B"
+        }
+      ],
+      "title": "User-side latency p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        { "expr": "elisym_jobs_in_flight", "legendFormat": "in flight", "refId": "A" },
+        { "expr": "elisym_jobs_pending", "legendFormat": "pending", "refId": "B" }
+      ],
+      "title": "Provider queue",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(elisym_job_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "job duration p95",
+          "refId": "A"
+        }
+      ],
+      "title": "Provider job duration p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "percentunit" }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "id": 5,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "k6_discovery_success_rate",
+          "legendFormat": "discovery success rate",
+          "refId": "A"
+        },
+        {
+          "expr": "k6_job_submit_success_rate",
+          "legendFormat": "job-submit success rate",
+          "refId": "B"
+        }
+      ],
+      "title": "Success rates (drift = leak / regression)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["elisym", "e2e"],
+  "templating": { "list": [] },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "elisym - end-to-end steady state",
+  "uid": "elisym-perf-e2e",
+  "version": 1,
+  "weekStart": ""
+}

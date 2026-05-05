@@ -1,0 +1,4 @@
+k6/reports/*
+!k6/reports/.gitkeep
+.k6-bin/
+*.local.yml

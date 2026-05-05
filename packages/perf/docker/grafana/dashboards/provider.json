@@ -1,0 +1,142 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        { "expr": "elisym_jobs_in_flight", "legendFormat": "in flight", "refId": "A" },
+        { "expr": "elisym_jobs_pending", "legendFormat": "pending past p-limit", "refId": "B" }
+      ],
+      "title": "Provider queue depth (Q4)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ops" } },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(elisym_jobs_received_total[30s]))",
+          "legendFormat": "received/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(elisym_jobs_completed_total{result=\"ok\"}[30s]))",
+          "legendFormat": "completed ok/s",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(elisym_jobs_completed_total{result=\"error\"}[30s]))",
+          "legendFormat": "completed error/s",
+          "refId": "C"
+        }
+      ],
+      "title": "Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "s" } },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
+      "id": 3,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(elisym_job_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(elisym_job_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(elisym_job_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "title": "Job duration (provider-side)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" } },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 18 },
+      "id": 4,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "elisym_health_gate_state{status=\"healthy\"}",
+          "legendFormat": "healthy {{provider}}/{{model}}",
+          "refId": "A"
+        },
+        {
+          "expr": "elisym_health_gate_state{status=\"billing\"}",
+          "legendFormat": "billing {{provider}}/{{model}}",
+          "refId": "B"
+        },
+        {
+          "expr": "elisym_health_gate_state{status=\"invalid\"}",
+          "legendFormat": "invalid {{provider}}/{{model}}",
+          "refId": "C"
+        }
+      ],
+      "title": "LLM health gate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ops" } },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 18 },
+      "id": 5,
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(k6_submit_call_ms_count[30s]))",
+          "legendFormat": "k6 submit/s (load injector)",
+          "refId": "A"
+        }
+      ],
+      "title": "Load injector rate",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["elisym", "provider"],
+  "templating": { "list": [] },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "elisym - provider saturation",
+  "uid": "elisym-perf-provider",
+  "version": 1,
+  "weekStart": ""
+}
