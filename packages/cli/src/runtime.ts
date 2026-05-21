@@ -198,8 +198,19 @@ function resolveHealthPair(
 }
 
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-const MAX_JOBS_PER_CUSTOMER = 20;
-const GLOBAL_MAX_JOBS_PER_WINDOW = 200;
+// Free-skill caps: tight, because there is no economic deterrent against
+// loop/Sybil spam. With window == paymentTimeoutSecs (both 10 min by
+// default) these double as per-customer queue-depth caps for unpaid claims.
+const FREE_MAX_JOBS_PER_CUSTOMER = 20;
+const FREE_GLOBAL_MAX_JOBS_PER_WINDOW = 200;
+// Paid-skill caps: 10x looser. Payment is the economic deterrent against
+// loop abuse, but the sliding-window cap is still needed to bound the
+// "claim paid skill but never pay" queue-spam vector. 200 per customer
+// supports legitimate batch workloads (e.g. translating a 200-paragraph
+// document) without rejecting; 2000 global leaves room for ~10 concurrent
+// batch customers before saturation kicks in.
+const PAID_MAX_JOBS_PER_CUSTOMER = 200;
+const PAID_GLOBAL_MAX_JOBS_PER_WINDOW = 2000;
 const MAX_TRACKED_CUSTOMERS = 1000;
 const GLOBAL_LIMITER_KEY = '__global__';
 
@@ -213,16 +224,32 @@ export class AgentRuntime {
   private recoveryInterval: ReturnType<typeof setInterval> | null = null;
   private gcInterval: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
-  /** Per-customer sliding-window rate limiter (keyed on customer pubkey). */
-  private customerLimiter: SlidingWindowLimiter = createSlidingWindowLimiter({
+  /** Per-customer sliding-window rate limiter for free skills. */
+  private freeCustomerLimiter: SlidingWindowLimiter = createSlidingWindowLimiter({
     windowMs: RATE_LIMIT_WINDOW_MS,
-    maxPerWindow: MAX_JOBS_PER_CUSTOMER,
+    maxPerWindow: FREE_MAX_JOBS_PER_CUSTOMER,
     maxKeys: MAX_TRACKED_CUSTOMERS,
   });
-  /** Global sliding-window rate limiter (Sybil protection). */
-  private globalLimiter: SlidingWindowLimiter = createSlidingWindowLimiter({
+  /** Global sliding-window rate limiter for free skills (Sybil protection). */
+  private freeGlobalLimiter: SlidingWindowLimiter = createSlidingWindowLimiter({
     windowMs: RATE_LIMIT_WINDOW_MS,
-    maxPerWindow: GLOBAL_MAX_JOBS_PER_WINDOW,
+    maxPerWindow: FREE_GLOBAL_MAX_JOBS_PER_WINDOW,
+    maxKeys: 1,
+  });
+  /**
+   * Per-customer sliding-window limiter for paid skills (10x looser than free).
+   * Payment is the primary economic deterrent; this cap exists to bound the
+   * "claim paid skill but never pay" queue-spam vector.
+   */
+  private paidCustomerLimiter: SlidingWindowLimiter = createSlidingWindowLimiter({
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    maxPerWindow: PAID_MAX_JOBS_PER_CUSTOMER,
+    maxKeys: MAX_TRACKED_CUSTOMERS,
+  });
+  /** Global sliding-window limiter for paid skills (Sybil protection, 10x free). */
+  private paidGlobalLimiter: SlidingWindowLimiter = createSlidingWindowLimiter({
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    maxPerWindow: PAID_GLOBAL_MAX_JOBS_PER_WINDOW,
     maxKeys: 1,
   });
   /**
@@ -485,10 +512,21 @@ export class AgentRuntime {
         return;
       }
 
+      // Route the skill once; reused below for executeJob and to decide
+      // which rate-limit tier applies. Free skills (price=0) use the
+      // tight default tier; paid skills use the 10x-looser tier because
+      // payment is the primary economic deterrent against loop abuse.
+      // A missing skill match defaults to the free tier (safe fallback:
+      // an attacker cannot bypass tight limits by crafting unmatched tags).
+      const matched = this.skills.route(job.tags);
+      const isPaid = matched ? matched.priceSubunits > 0 : false;
+      const customerLimiter = isPaid ? this.paidCustomerLimiter : this.freeCustomerLimiter;
+      const globalLimiter = isPaid ? this.paidGlobalLimiter : this.freeGlobalLimiter;
+
       // Per-customer check first so a rate-limited customer does not
       // bump the global counter - otherwise a single abusive customer
       // could starve every other caller up to the global cap.
-      if (!this.customerLimiter.peek(job.customerId).allowed) {
+      if (!customerLimiter.peek(job.customerId).allowed) {
         this.transport
           .sendFeedback(job, { type: 'error', message: 'Rate limited, try again later' })
           .catch(() => {});
@@ -496,7 +534,7 @@ export class AgentRuntime {
       }
 
       // Global rate limiting (Sybil protection).
-      if (!this.globalLimiter.peek(GLOBAL_LIMITER_KEY).allowed) {
+      if (!globalLimiter.peek(GLOBAL_LIMITER_KEY).allowed) {
         this.transport
           .sendFeedback(job, { type: 'error', message: 'Server busy, try again later' })
           .catch(() => {});
@@ -504,11 +542,9 @@ export class AgentRuntime {
       }
 
       // Free-LLM extra protection: only applies when the matched skill
-      // is mode='llm' and price=0. Routes through skills.route once;
-      // result is reused below in `executeJob`. We `peek` first across
-      // all tiers and only `check` when every tier passes, so a denial
-      // in tier N never consumes a slot in tiers < N.
-      const matched = this.skills.route(job.tags);
+      // is mode='llm' and price=0. We `peek` first across all tiers and
+      // only `check` when every tier passes, so a denial in tier N
+      // never consumes a slot in tiers < N.
       const isFreeLlm = matched?.mode === 'llm' && matched.priceSubunits === 0;
       let perCustomerLimiter: SlidingWindowLimiter | undefined;
       let perSkillKey: string | undefined;
@@ -533,8 +569,8 @@ export class AgentRuntime {
       }
 
       // All checks passed - record the hit against every active limiter.
-      this.customerLimiter.check(job.customerId);
-      this.globalLimiter.check(GLOBAL_LIMITER_KEY);
+      customerLimiter.check(job.customerId);
+      globalLimiter.check(GLOBAL_LIMITER_KEY);
       if (isFreeLlm && perCustomerLimiter && perSkillKey) {
         this.freeLlmLimiters.globalLimiter.check(FREE_LLM_GLOBAL_KEY);
         perCustomerLimiter.check(perSkillKey);
@@ -579,8 +615,10 @@ export class AgentRuntime {
 
   /** Drop expired hits from every sliding-window limiter. */
   private cleanupRateLimits(): void {
-    this.customerLimiter.prune();
-    this.globalLimiter.prune();
+    this.freeCustomerLimiter.prune();
+    this.freeGlobalLimiter.prune();
+    this.paidCustomerLimiter.prune();
+    this.paidGlobalLimiter.prune();
     this.freeLlmLimiters.globalLimiter.prune();
     this.freeLlmLimiters.prunePerCustomer();
   }
