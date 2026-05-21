@@ -68,17 +68,17 @@
       },
       "targets": [
         {
-          "expr": "k6_http_req_duration{quantile=\"0.5\"}",
+          "expr": "k6_http_req_duration_p50",
           "legendFormat": "p50 {{scenario}}",
           "refId": "A"
         },
         {
-          "expr": "k6_http_req_duration{quantile=\"0.95\"}",
+          "expr": "k6_http_req_duration_p95",
           "legendFormat": "p95 {{scenario}}",
           "refId": "B"
         },
         {
-          "expr": "k6_http_req_duration{quantile=\"0.99\"}",
+          "expr": "k6_http_req_duration_p99",
           "legendFormat": "p99 {{scenario}}",
           "refId": "C"
         }
@@ -97,12 +97,12 @@
       },
       "targets": [
         {
-          "expr": "k6_ws_connecting{quantile=\"0.95\"}",
+          "expr": "k6_ws_connecting_p95",
           "legendFormat": "ws connect p95",
           "refId": "A"
         },
         {
-          "expr": "k6_ws_session_duration{quantile=\"0.95\"}",
+          "expr": "k6_ws_session_duration_p95",
           "legendFormat": "ws session p95",
           "refId": "B"
         }

@@ -5,10 +5,11 @@
 // Methodology:
 //   - Pre-signed fixture of N events (generated via packages/perf/scripts/generate-events.ts).
 //   - VUs ramp from 1 to TARGET_VUS over WARMUP_S, hold for HOLD_S, ramp down.
-//   - Each VU opens one ws connection, publishes events at MAX_VU_RATE evt/sec,
-//     measures the OK ack round-trip latency, records both accepted and rejected
-//     outcomes. Pre-signed events should all be accepted; rejection signals a bug
-//     in the fixture generator or strfry config drift.
+//   - Each VU opens one ws connection for ITER_DURATION_S, drives sends at
+//     MAX_VU_RATE evt/sec via socket.setInterval (non-blocking — leaves the
+//     k6 event loop free to dispatch OK frames). A single message handler
+//     installed via createOkRouter resolves each pending event when its OK
+//     arrives, recording accept/reject and round-trip latency.
 //
 // Knobs (env):
 //   STRFRY_WS=ws://localhost:7777   target relay
@@ -18,13 +19,15 @@
 //   HOLD_S=60
 //   COOLDOWN_S=10
 //   MAX_VU_RATE=20                  events per second per VU
+//   ITER_DURATION_S=5               seconds each iteration holds the socket
+//   OK_GRACE_MS=2000                grace window after send-stop for late OKs
 
-import { check, sleep } from 'k6';
+import { check } from 'k6';
 import { SharedArray } from 'k6/data';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import ws from 'k6/ws';
 import { STRFRY_WS, intEnv } from '../lib/env.js';
-import { publishEvent } from '../lib/nostr.js';
+import { createOkRouter } from '../lib/nostr.js';
 import { writeSummary } from '../lib/stats.js';
 
 // Path is resolved relative to THIS scenario file by k6's open(); the
@@ -35,6 +38,8 @@ const WARMUP_S = intEnv('WARMUP_S', 15);
 const HOLD_S = intEnv('HOLD_S', 60);
 const COOLDOWN_S = intEnv('COOLDOWN_S', 10);
 const MAX_VU_RATE = intEnv('MAX_VU_RATE', 20);
+const ITER_DURATION_S = intEnv('ITER_DURATION_S', 5);
+const OK_GRACE_MS = intEnv('OK_GRACE_MS', 2000);
 
 const events = new SharedArray('events', () => {
   const raw = open(FIXTURE);
@@ -50,6 +55,7 @@ const acks = new Counter('relay_acks_total');
 const rejects = new Counter('relay_rejects_total');
 const sent = new Counter('relay_sent_total');
 const errors = new Counter('relay_errors_total');
+const timeouts = new Counter('relay_timeouts_total');
 const acceptRate = new Rate('relay_accept_rate');
 
 export const options = {
@@ -79,22 +85,38 @@ export default function () {
 
   const res = ws.connect(STRFRY_WS, {}, (socket) => {
     socket.on('open', () => {
-      const tickerEnd = Date.now() + 1000;
-      while (Date.now() < tickerEnd) {
+      const router = createOkRouter(socket, {
+        okTrend: okLatency,
+        sentCounter: sent,
+        ackCounter: acks,
+        errorCounter: rejects,
+        onResolve: (_id, accepted) => {
+          acceptRate.add(accepted);
+        },
+      });
+
+      // k6/ws Socket has no clearInterval. Gate the interval body on a
+      // `stopped` flag so the send-loop becomes a no-op once we enter the
+      // grace window, then close the socket to terminate it for good.
+      let stopped = false;
+      socket.setInterval(() => {
+        if (stopped) return;
         const event = events[cursor];
         cursor = (cursor + 1) % events.length;
-        publishEvent(socket, event, {
-          okTrend: okLatency,
-          sentCounter: sent,
-          ackCounter: acks,
-          errorCounter: rejects,
-          onResolve: (_id, accepted) => {
-            acceptRate.add(accepted);
-          },
-        });
-        sleep(periodMs / 1000);
-      }
-      socket.close();
+        router.publish(event);
+      }, periodMs);
+
+      socket.setTimeout(() => {
+        stopped = true;
+        socket.setTimeout(() => {
+          const stillPending = router.flush('iteration-timeout');
+          if (stillPending > 0) {
+            timeouts.add(stillPending);
+            for (let i = 0; i < stillPending; i++) acceptRate.add(false);
+          }
+          socket.close();
+        }, OK_GRACE_MS);
+      }, ITER_DURATION_S * 1000);
     });
 
     socket.on('error', () => {

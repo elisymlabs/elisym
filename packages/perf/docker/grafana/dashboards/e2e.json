@@ -50,12 +50,12 @@
       },
       "targets": [
         {
-          "expr": "k6_discovery_call_ms{quantile=\"0.95\"}",
+          "expr": "k6_discovery_call_ms_p95",
           "legendFormat": "discovery p95",
           "refId": "A"
         },
         {
-          "expr": "k6_job_submit_call_ms{quantile=\"0.95\"}",
+          "expr": "k6_job_submit_call_ms_p95",
           "legendFormat": "job-submit p95",
           "refId": "B"
         }

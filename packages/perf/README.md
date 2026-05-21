@@ -234,10 +234,11 @@ The reports directory (`k6/reports/`) holds per-run JSON + a static HTML summary
 Filled in as runs land. Format: hardware + scenario + headline metric. Re-record after major SDK changes.
 
 ```
-2026-XX-XX  M1 Pro 32GB  agent_fleet_scale  knee at fleet=____ (p95 jumps from ____ms to ____ms)
-2026-XX-XX  M1 Pro 32GB  web_discovery_latency  ttf p95=____ms ttn(10) p95=____ms ttc p95=____ms (fleet=500)
-2026-XX-XX  M1 Pro 32GB  mcp_discovery_latency  mcp_call p95=____ms (fleet=500)
-2026-XX-XX  M1 Pro 32GB  provider_saturation  sustained ____ jobs/sec (mock LLM, jitter=200ms)
+2026-05-21  M3 Pro 18GB  relay_publish  accept=100% (53833/53833), ok_latency p50=1ms p95=2ms p99=2ms, peak ~1000 evt/s @ 50 VUs
+2026-05-21  M3 Pro 18GB  agent_fleet_scale  clean sweep, per-call by fleet: 0=0ms, 10=20ms, 100=100ms, 500=450ms, 1000=850ms, 2500=2.5s, 5000=5.5s; knee between 1000-2500, p99 across all=5.67s (limit=6000)
+2026-05-21  M3 Pro 18GB  web_discovery_latency  fleet=5000, 1 VU: ttf p50=3ms p95=4.6ms, ttn(10) p95=13ms, EOSE p95=4.23s, ttc(enrichment) p95=5.28s, success=100%. Production-grade UX at this scale
+2026-05-21  M3 Pro 18GB  mcp_discovery_latency  fleet sweep 0/50/500/2000: mcp_call p50=6.88s p95=8.82s p99=8.91s, success=100%. Flat floor ~6-7s regardless of fleet (enrichment+querySync timeout, not search itself); slow for chat UX, fix = lazy enrichment + pagination
+2026-05-21  M3 Pro 18GB  provider_saturation  MOCK_LLM jitter=200ms, rate-limits bypassed via env: sustained ~19 jobs/sec completed, 100% ok (2848/2848), 14% loss in Nostr publish/delivery path (3327 submitted, 2848 reached provider). Job duration incl. queue p50=250ms p95=1s p99=2s. Real LLM would cap at ~5-10 jobs/sec per provider
 ```
 
 ## Troubleshooting

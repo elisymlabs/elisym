@@ -28,17 +28,17 @@
       },
       "targets": [
         {
-          "expr": "k6_discover_call_ms{quantile=\"0.5\"}",
+          "expr": "k6_discover_call_ms_p50",
           "legendFormat": "p50 fleet={{fleet_size}}",
           "refId": "A"
         },
         {
-          "expr": "k6_discover_call_ms{quantile=\"0.95\"}",
+          "expr": "k6_discover_call_ms_p95",
           "legendFormat": "p95 fleet={{fleet_size}}",
           "refId": "B"
         },
         {
-          "expr": "k6_discover_call_ms{quantile=\"0.99\"}",
+          "expr": "k6_discover_call_ms_p99",
           "legendFormat": "p99 fleet={{fleet_size}}",
           "refId": "C"
         }
@@ -57,7 +57,7 @@
       },
       "targets": [
         {
-          "expr": "k6_discover_bridge_elapsed_ms{quantile=\"0.95\"}",
+          "expr": "k6_discover_bridge_elapsed_ms_p95",
           "legendFormat": "bridge p95 fleet={{fleet_size}}",
           "refId": "A"
         }
@@ -76,7 +76,7 @@
       },
       "targets": [
         {
-          "expr": "k6_discover_agents_returned{quantile=\"0.5\"}",
+          "expr": "k6_discover_agents_returned_p50",
           "legendFormat": "median agents returned fleet={{fleet_size}}",
           "refId": "A"
         }

@@ -3,8 +3,12 @@
 // Q4: how many concurrent jobs does one provider hold?
 //
 // Methodology:
-//   - Constant-arrival-rate flood of broadcast job requests via bridge
+//   - Constant-arrival-rate flood of targeted job requests via bridge
 //     /job/submit. Submission RPS ramps via stages so we observe the curve.
+//   - PROVIDER_PUBKEY env is REQUIRED. The SDK's `subscribeToJobRequests`
+//     only delivers events whose `p` tag matches the provider's own pubkey;
+//     untargeted broadcasts are filtered out by the relay. Pass the hex
+//     pubkey of the running provider (find via `elisym list`).
 //   - Provider runs separately on host with `MOCK_LLM=1 elisym start <name>
 //     --metrics-port 9464`. Prometheus scrapes its /metrics, so the answer
 //     reads off the provider.json Grafana dashboard, not k6 output.
@@ -27,6 +31,7 @@ const STAGE_RPS = (__ENV.STAGE_RPS || '1,5,15,30,60')
   .map((s) => Number.parseInt(s.trim(), 10))
   .filter((n) => Number.isInteger(n) && n > 0);
 const CAPABILITY = __ENV.CAPABILITY || 'translate';
+const PROVIDER_PUBKEY = __ENV.PROVIDER_PUBKEY || '';
 
 const submitLatency = new Trend('submit_call_ms', true);
 const submitErrors = new Counter('submit_errors_total');
@@ -62,6 +67,11 @@ export const options = {
 };
 
 export function setup() {
+  if (!PROVIDER_PUBKEY) {
+    throw new Error(
+      'PROVIDER_PUBKEY env is required (64-char hex). Find it via `./packages/cli/dist/index.js list`.',
+    );
+  }
   const probe = http.get(`${BRIDGE_URL}/healthz`, { timeout: '2s' });
   if (probe.status !== 200) {
     throw new Error(`bridge ${BRIDGE_URL} not healthy`);
@@ -70,10 +80,14 @@ export function setup() {
 
 export function submit() {
   const start = Date.now();
-  const res = http.post(`${BRIDGE_URL}/job/submit`, JSON.stringify({ capability: CAPABILITY }), {
-    headers: { 'Content-Type': 'application/json' },
-    timeout: '15s',
-  });
+  const res = http.post(
+    `${BRIDGE_URL}/job/submit`,
+    JSON.stringify({ capability: CAPABILITY, providerPubkey: PROVIDER_PUBKEY }),
+    {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: '15s',
+    },
+  );
   const elapsed = Date.now() - start;
   submitLatency.add(elapsed);
   const ok = res.status === 200;

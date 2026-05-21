@@ -112,7 +112,17 @@ export class FleetSimulator {
     }
     // Publish announcements first; pings after a small splay so the relay
     // doesn't see N synchronous pings every pingIntervalMs tick.
-    await Promise.all(fresh.map((m) => this.publishAnnounce(m)));
+    //
+    // Batch the publishes: firing 5000 publishAnnounce promises concurrently
+    // overwhelms the single WS connection inside SimplePool and loses ~70%
+    // of events silently (Promise.any resolves on socket.send-style ack
+    // before strfry's Ingester gets backpressure, so publishedAnnounceTotal
+    // lies). 100-wide batches with awaits in between preserve flow control.
+    const ANNOUNCE_BATCH = 100;
+    for (let i = 0; i < fresh.length; i += ANNOUNCE_BATCH) {
+      const batch = fresh.slice(i, i + ANNOUNCE_BATCH);
+      await Promise.all(batch.map((m) => this.publishAnnounce(m)));
+    }
     for (let i = 0; i < fresh.length; i++) {
       const member = fresh[i];
       const splay = Math.floor(Math.random() * this.config.pingIntervalMs);
@@ -182,6 +192,10 @@ export class FleetSimulator {
   }
 
   private makeAnnounce(member: FleetMember): Event {
+    // Must match @elisym/sdk's `parseCapabilityEvent` shape:
+    //   { name, description, capabilities: string[], payment?: { chain, network, address } }
+    // Missing description / capabilities => SDK silently drops the agent at
+    // parse time and discovery returns zero.
     return finalizeEvent(
       {
         kind: 31990,
@@ -194,8 +208,13 @@ export class FleetSimulator {
         ],
         content: JSON.stringify({
           name: `perf-agent-${member.pk.slice(0, 6)}`,
-          about: 'synthetic perf-test agent',
-          picture: '',
+          description: 'synthetic perf-test agent',
+          capabilities: [this.config.capability],
+          payment: {
+            chain: 'solana',
+            network: 'devnet',
+            address: member.pk,
+          },
         }),
       },
       member.sk,

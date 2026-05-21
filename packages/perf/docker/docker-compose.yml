@@ -14,7 +14,9 @@ services:
       - strfry-data:/var/lib/strfry
     restart: unless-stopped
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:7777/']
+      # strfry speaks pure WebSocket on 7777 - HTTP probes get refused. A bare
+      # TCP-port check is enough to know the listener is up.
+      test: ['CMD', 'nc', '-z', '127.0.0.1', '7777']
       interval: 5s
       timeout: 3s
       retries: 10

@@ -47,3 +47,10 @@ test-ledger/
 # Keypairs (NEVER commit)
 *-keypair.json
 !programs/**/id-*.json.example
+
+# Local agent state - contains nostr_secret_key (NEVER commit)
+.elisym/
+
+# @elisym/perf generated artifacts
+packages/perf/k6/fixtures/events-*.json
+packages/perf/k6/reports/

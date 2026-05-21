@@ -81,9 +81,15 @@ export function teardown() {
 }
 
 function discoverOnce(fleetSize) {
+  // The MCP tool is `search_agents` (see packages/mcp/src/tools/discovery.ts).
+  // Schema: { capabilities: string[], include_offline?: boolean, ... }. The
+  // active network is read from the agent's elisym.yaml, not from args.
+  // include_offline=true skips the live online probe so synthetic fleet
+  // members (which only publish kind:20200 every 30s) are not filtered out
+  // while pings are still warming up.
   const body = JSON.stringify({
-    tool: 'discover_agents',
-    args: { capability: CAPABILITY, limit: AGENT_LIMIT, network: NETWORK },
+    tool: 'search_agents',
+    args: { capabilities: [CAPABILITY], include_offline: true },
   });
   const res = http.post(`${BRIDGE_URL}/mcp/call`, body, {
     headers: { 'Content-Type': 'application/json' },

@@ -66,53 +66,58 @@ export function nowSecs() {
 }
 
 /**
- * Send an EVENT to the relay over an open ws and resolve with the OK frame.
+ * Install a single OK-frame router on a ws Socket and return a `publish(event)`
+ * binder. All pending sends share one `socket.on('message', ...)` handler — this
+ * matters for high-throughput scenarios where registering a fresh listener per
+ * event accumulates handlers and (worse) can race with k6's message dispatch.
  *
- * Returns a promise-like by using `socket.setTimeout` semantics: we install a
- * one-shot OK handler that records the outcome into the supplied trend metric
- * and calls onResolve(eventId, accepted, message).
- *
- * Caller is responsible for closing the socket after their iteration ends.
+ * Caller drives sending via `socket.setInterval` / `setTimeout` (non-blocking);
+ * the router resolves each event when its matching OK frame arrives. Pending
+ * sends still outstanding when the socket closes can be reaped via `flush()`.
  */
-export function publishEvent(
+export function createOkRouter(
   socket,
-  event,
   { okTrend, sentCounter, ackCounter, errorCounter, onResolve },
 ) {
-  const start = Date.now();
-  const sent = JSON.stringify(['EVENT', event]);
-  socket.send(sent);
-  if (sentCounter) sentCounter.add(1);
-
-  // k6's k6/ws Socket has no clearTimeout, so the 5s deadline always fires.
-  // Use a per-event flag so a late timeout can't double-count an OK that
-  // already arrived (would otherwise inflate errors and skew accept rate).
-  let resolved = false;
-
-  socket.setTimeout(() => {
-    if (resolved) return;
-    resolved = true;
-    if (errorCounter) errorCounter.add(1);
-    onResolve?.(event.id, false, 'timeout');
-  }, 5000);
+  const pending = new Map(); // id -> startMs
 
   socket.on('message', (raw) => {
-    if (resolved) return;
     let parsed;
     try {
       parsed = JSON.parse(raw);
     } catch (_err) {
       return;
     }
-    if (!Array.isArray(parsed) || parsed[0] !== 'OK' || parsed[1] !== event.id) return;
-    resolved = true;
+    if (!Array.isArray(parsed) || parsed[0] !== 'OK') return;
+    const id = parsed[1];
+    const start = pending.get(id);
+    if (start === undefined) return;
+    pending.delete(id);
     const accepted = parsed[2] === true;
     const elapsed = Date.now() - start;
     if (okTrend) okTrend.add(elapsed);
     if (accepted && ackCounter) ackCounter.add(1);
     if (!accepted && errorCounter) errorCounter.add(1);
-    onResolve?.(event.id, accepted, parsed[3] ?? '');
+    onResolve?.(id, accepted, parsed[3] ?? '');
   });
+
+  function publish(event) {
+    pending.set(event.id, Date.now());
+    if (sentCounter) sentCounter.add(1);
+    socket.send(JSON.stringify(['EVENT', event]));
+  }
+
+  function flush(reason = 'closed') {
+    for (const id of pending.keys()) {
+      if (errorCounter) errorCounter.add(1);
+      onResolve?.(id, false, reason);
+    }
+    const count = pending.size;
+    pending.clear();
+    return count;
+  }
+
+  return { publish, flush, pendingCount: () => pending.size };
 }
 
 /**
