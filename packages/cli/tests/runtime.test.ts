@@ -675,6 +675,139 @@ describe('AgentRuntime', () => {
       );
       expect(globalLimited).toBeUndefined();
     });
+
+    it('allows paid skills up to the 10x-looser per-customer cap (200)', async () => {
+      // Paid skill (priceSubunits=1000) uses the paid limiter tier; one
+      // customer can submit up to 200 jobs in the 10-min window before
+      // the 201st gets rejected.
+      const paidSkill = makeFakeSkill('paid-skill', 'result', 1000);
+      const registry = makeFakeRegistry(paidSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, maxQueueSize: 5000 },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+
+      // 21 paid jobs from same customer - all should pass the gate
+      // (free limit would reject after 20).
+      for (let i = 0; i < 21; i++) {
+        const job = makeJob(`paid-under-free-cap-${i}`);
+        job.customerId = 'paid-customer';
+        triggerJob(job);
+      }
+      await tick(150);
+
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const rateLimitedUnder = feedbackCalls.find(
+        (c: any) =>
+          c[0]?.jobId?.startsWith('paid-under-free-cap-') &&
+          c[1]?.type === 'error' &&
+          c[1]?.message?.includes('Rate limited'),
+      );
+      expect(rateLimitedUnder).toBeUndefined();
+
+      runtime.stop();
+      await runPromise.catch(() => {});
+    });
+
+    it('rejects paid jobs from same customer past the paid per-customer cap', async () => {
+      // Same paid skill; submit 201 jobs - 201st must be rate limited.
+      const paidSkill = makeFakeSkill('paid-skill', 'result', 1000);
+      const registry = makeFakeRegistry(paidSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, maxQueueSize: 5000 },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+
+      for (let i = 0; i < 201; i++) {
+        const job = makeJob(`paid-rate-${i}`);
+        job.customerId = 'spammer';
+        triggerJob(job);
+      }
+
+      await tick(500);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const rateLimited = feedbackCalls.find(
+        (c: any) => c[1]?.type === 'error' && c[1]?.message?.includes('Rate limited'),
+      );
+      expect(rateLimited).toBeDefined();
+    });
+
+    it('keeps paid and free counters independent', async () => {
+      // Same customer hits the paid limiter heavily, then submits a free
+      // job - the free job must NOT be rate-limited (its free counter
+      // is untouched by the paid usage).
+      const paidSkill = makeFakeSkill('paid-skill', 'paid', 1000);
+      const freeSkill = makeFakeSkill('free-skill', 'free', 0);
+      // Registry that routes by capability tag presence.
+      const registry = {
+        register: vi.fn(),
+        route: vi.fn((tags: string[]) => (tags.includes('paid') ? paidSkill : freeSkill)),
+        allCapabilities: vi.fn().mockReturnValue(['text-gen']),
+      } as unknown as SkillRegistry;
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, maxQueueSize: 1000 },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+
+      // 30 paid jobs - past the free-cap (20) but well under the paid-cap (200).
+      for (let i = 0; i < 30; i++) {
+        const job = makeJob(`mix-paid-${i}`);
+        job.customerId = 'mixed-user';
+        job.tags = ['paid'];
+        triggerJob(job);
+      }
+      await tick(150);
+
+      // Now a free job from the same customer - the free counter should
+      // still have full headroom (untouched by the paid burst above).
+      const freeJob = makeJob('mix-free-1');
+      freeJob.customerId = 'mixed-user';
+      freeJob.tags = [];
+      triggerJob(freeJob);
+      await tick(150);
+
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const freeRejected = feedbackCalls.find(
+        (c: any) =>
+          c[0]?.jobId === 'mix-free-1' &&
+          c[1]?.type === 'error' &&
+          c[1]?.message?.includes('Rate limited'),
+      );
+      expect(freeRejected).toBeUndefined();
+    });
   });
 
   describe('queue overflow', () => {
