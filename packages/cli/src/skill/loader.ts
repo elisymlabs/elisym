@@ -101,6 +101,9 @@ function buildCliSkill(
   if (parsed.rateLimit) {
     skill.rateLimit = parsed.rateLimit;
   }
+  if (parsed.executionTimeoutSecs !== undefined) {
+    skill.executionTimeoutSecs = parsed.executionTimeoutSecs;
+  }
   return skill;
 }
 

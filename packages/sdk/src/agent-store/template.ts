@@ -120,6 +120,15 @@ export function renderInitialYaml(yaml: ElisymYaml): string {
       value: security,
       placeholder: DEFAULT_SECURITY,
     },
+    {
+      description:
+        'Default execution budget (seconds) for skills without their own ' +
+        'max_execution_secs. 0 = unlimited. Omit for unlimited - the protocol ' +
+        'imposes no default, so this is operator-owned.',
+      key: 'execution_timeout_secs',
+      value: yaml.execution_timeout_secs,
+      placeholder: 1800,
+    },
   ];
 
   return blocks.map(renderBlock).join('\n\n') + '\n';

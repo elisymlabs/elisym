@@ -134,6 +134,12 @@ export interface Skill {
    * runtime treats free LLM skills as the primary use case.
    */
   rateLimit?: SkillRateLimit;
+  /**
+   * Per-skill execution budget in seconds, from SKILL.md `max_execution_secs`
+   * (any mode). `0` => explicitly unlimited. `undefined` => the runtime falls
+   * through to the agent-level `executionTimeoutSecs`, then to unlimited.
+   */
+  executionTimeoutSecs?: number;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;
 }
 

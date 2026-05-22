@@ -68,6 +68,12 @@ export interface SkillFrontmatter {
    * `rateLimit` on `ParsedSkill`.
    */
   rate_limit?: unknown;
+  /**
+   * Optional per-skill execution budget in seconds. Applies to any skill mode.
+   * `0` means unlimited. Omitted => the runtime falls through to the agent-level
+   * `execution_timeout_secs`, then to unlimited.
+   */
+  max_execution_secs?: unknown;
 }
 
 export interface ParsedSkill {
@@ -103,6 +109,12 @@ export interface ParsedSkill {
   scriptTimeoutMs?: number;
   /** Optional per-skill rate limit (any mode). */
   rateLimit?: SkillRateLimit;
+  /**
+   * Per-skill execution budget in seconds (any mode). `0` => explicitly
+   * unlimited. `undefined` => caller falls through to the agent-level default,
+   * then to unlimited.
+   */
+  executionTimeoutSecs?: number;
 }
 
 export interface LoaderLogger {
@@ -421,6 +433,20 @@ function validateScriptTimeoutMs(skillName: string, raw: unknown): number | unde
   return raw;
 }
 
+function validateMaxExecutionSecs(skillName: string, raw: unknown): number | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  // Mode-agnostic: applies to every skill mode. `0` is allowed and means
+  // "explicitly unlimited" (overrides any agent-level cap back to no limit).
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+    throw new Error(
+      `SKILL.md "${skillName}": "max_execution_secs" must be a non-negative integer (0 = unlimited)`,
+    );
+  }
+  return raw;
+}
+
 export function validateSkillFrontmatter(
   frontmatter: SkillFrontmatter,
   systemPrompt: string,
@@ -578,6 +604,10 @@ export function validateSkillFrontmatter(
 
   const llmOverride = validateLlmOverride(frontmatter.name, frontmatter, mode);
   const rateLimit = validateRateLimit(frontmatter.name, frontmatter.rate_limit);
+  const executionTimeoutSecs = validateMaxExecutionSecs(
+    frontmatter.name,
+    frontmatter.max_execution_secs,
+  );
 
   return {
     name: frontmatter.name,
@@ -597,6 +627,7 @@ export function validateSkillFrontmatter(
     scriptArgs,
     scriptTimeoutMs,
     rateLimit,
+    executionTimeoutSecs,
   };
 }
 

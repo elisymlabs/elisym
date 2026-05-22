@@ -645,6 +645,9 @@ export async function cmdStart(
     recoveryIntervalSecs: RECOVERY_INTERVAL_SECS,
     network: walletNetwork,
     solanaAddress,
+    // Agent-level default execution budget; per-skill `max_execution_secs`
+    // overrides it. Undefined => unlimited (operator-owned, no protocol default).
+    executionTimeoutSecs: loaded.yaml.execution_timeout_secs,
   };
 
   // Custom SOLANA_RPC_URL values (Helius, Alchemy, QuickNode) routinely

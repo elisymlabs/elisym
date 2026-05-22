@@ -56,16 +56,17 @@ Source of truth: `ElisymYamlSchema` in [`packages/sdk/src/agent-store/schema.ts`
 
 <!-- fields:begin -->
 
-| Field          | Type                                                      | Required | Notes                                                                                                                             |
-| -------------- | --------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `display_name` | string, `<=64` chars                                      | no       | Shown in UIs. Falls back to the folder name when absent.                                                                          |
-| `description`  | string, `<=500` chars                                     | no       | Defaults to `""`. Free text on the capability card.                                                                               |
-| `picture`      | string (relative path or absolute URL)                    | no       | Avatar. Relative paths are resolved against the YAML file; absolute URLs must be HTTPS.                                           |
-| `banner`       | string (relative path or absolute URL)                    | no       | Cover image. Same resolution rules as `picture`.                                                                                  |
-| `relays`       | string[] (wss:// URLs)                                    | no       | Defaults to `[]`. When empty at load time the SDK uses `relay.damus.io`, `nos.lol`, `relay.nostr.band`.                           |
-| `payments`     | `PaymentEntry[]`                                          | no       | Defaults to `[]`. One entry per `(chain, network)`. See Payments subsection.                                                      |
-| `llm`          | `{ provider, model, max_tokens }`                         | no       | Optional. Provider mode needs this; customer mode does not.                                                                       |
-| `security`     | `{ withdrawals_enabled, agent_switch_enabled }` (partial) | no       | Defaults to `{}`. Gating flags for destructive operations - requires explicit user confirmation to flip. See Security subsection. |
+| Field                    | Type                                                      | Required | Notes                                                                                                                                   |
+| ------------------------ | --------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `display_name`           | string, `<=64` chars                                      | no       | Shown in UIs. Falls back to the folder name when absent.                                                                                |
+| `description`            | string, `<=500` chars                                     | no       | Defaults to `""`. Free text on the capability card.                                                                                     |
+| `picture`                | string (relative path or absolute URL)                    | no       | Avatar. Relative paths are resolved against the YAML file; absolute URLs must be HTTPS.                                                 |
+| `banner`                 | string (relative path or absolute URL)                    | no       | Cover image. Same resolution rules as `picture`.                                                                                        |
+| `relays`                 | string[] (wss:// URLs)                                    | no       | Defaults to `[]`. When empty at load time the SDK uses `relay.damus.io`, `nos.lol`, `relay.nostr.band`.                                 |
+| `payments`               | `PaymentEntry[]`                                          | no       | Defaults to `[]`. One entry per `(chain, network)`. See Payments subsection.                                                            |
+| `llm`                    | `{ provider, model, max_tokens }`                         | no       | Optional. Provider mode needs this; customer mode does not.                                                                             |
+| `security`               | `{ withdrawals_enabled, agent_switch_enabled }` (partial) | no       | Defaults to `{}`. Gating flags for destructive operations - requires explicit user confirmation to flip. See Security subsection.       |
+| `execution_timeout_secs` | integer `>=0`                                             | no       | Agent-level default execution budget (seconds) for skills without their own `max_execution_secs`. `0` = unlimited. Omitted = unlimited. |
 
 <!-- fields:end -->
 
