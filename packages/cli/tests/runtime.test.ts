@@ -917,6 +917,79 @@ describe('AgentRuntime', () => {
     });
   });
 
+  describe('execution budget', () => {
+    const abortableSkill = (name: string, executionTimeoutSecs?: number): Skill => ({
+      name,
+      description: 'Exceeds its budget',
+      capabilities: ['text-gen'],
+      priceSubunits: 0,
+      asset: NATIVE_SOL,
+      executionTimeoutSecs,
+      execute: vi.fn().mockImplementation(
+        (_input: any, ctx: any) =>
+          new Promise((_resolve, reject) => {
+            ctx.signal?.addEventListener('abort', () =>
+              reject(new Error('The operation was aborted')),
+            );
+          }),
+      ),
+    });
+
+    it('aborts a job past its per-skill budget, marks it failed (not a health flip)', async () => {
+      // 50ms budget; the skill only settles when its signal aborts.
+      const registry = makeFakeRegistry(abortableSkill('slow', 0.05));
+      const { transport, triggerJob } = makeFakeTransport();
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+      );
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('budget-job'));
+      await tick(200);
+
+      const errorFeedback = (transport.sendFeedback as any).mock.calls.find(
+        (call: any[]) => call[1]?.type === 'error',
+      );
+      expect(errorFeedback?.[1]?.message).toMatch(/exceeded budget/i);
+      // Marked failed - a health-flip would keep it `paid` for recovery instead.
+      expect(ledger.getStatus('budget-job')).toBe('failed');
+
+      runtime.stop();
+      await runPromise.catch(() => {});
+    });
+
+    it('applies the agent-level executionTimeoutSecs when the skill sets none', async () => {
+      const registry = makeFakeRegistry(abortableSkill('slow-agent'));
+      const { transport, triggerJob } = makeFakeTransport();
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, executionTimeoutSecs: 0.05 },
+        ledger,
+        { onLog: vi.fn() },
+      );
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('agent-budget-job'));
+      await tick(200);
+
+      const errorFeedback = (transport.sendFeedback as any).mock.calls.find(
+        (call: any[]) => call[1]?.type === 'error',
+      );
+      expect(errorFeedback?.[1]?.message).toMatch(/exceeded budget/i);
+      expect(ledger.getStatus('agent-budget-job')).toBe('failed');
+
+      runtime.stop();
+      await runPromise.catch(() => {});
+    });
+  });
+
   describe('recovery payment re-verification', () => {
     it('re-verifies payment when request was stored but net_amount missing', async () => {
       ledger.recordPaid({

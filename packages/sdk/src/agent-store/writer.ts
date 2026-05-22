@@ -229,6 +229,12 @@ const EXAMPLE_SKILL_TEMPLATE = `# elisym skill template
 # #   max_per_window: 30
 #
 # # ---
+# # Per-skill execution budget (any mode) --------------------------
+# # Caps skill.execute (seconds). 0 = unlimited; omit to inherit the
+# # agent-level execution_timeout_secs (unlimited if that is unset too).
+# # max_execution_secs: 1800
+#
+# # ---
 # # Imagery ---------------------------------------------------------
 # # Either a local file path (uploaded on first start) or an absolute
 # # URL. Local paths must stay inside the skill directory.

@@ -114,6 +114,16 @@ rate_limit:
 
 Both fields are positive integers. `per_window_secs <= 86400`, `max_per_window <= 10000`. Rate limiting is per-customer, with a free-LLM global cap layered on top for `mode: 'llm'` + `price: 0`.
 
+## Per-skill execution budget
+
+Applies to **any** mode. Caps how long `skill.execute` may run before the runtime aborts it.
+
+```yaml
+max_execution_secs: 1800 # 30 min; 0 = unlimited
+```
+
+Non-negative integer. `0` means explicitly unlimited (and overrides any agent-level cap). When omitted, the runtime falls through to the agent's `execution_timeout_secs` (in `elisym.yaml`); if that is unset too, execution is unlimited - the protocol imposes no default, so the operator/author owns this. Only `skill.execute` is bounded - payment collection and result delivery run on their own timeouts. Exceeding the budget marks the job failed and sends an "execution exceeded budget" error to the customer.
+
 ## Imagery
 
 | Field        | Type   | Notes                                                                                  |

@@ -51,6 +51,14 @@ describe('customer-history', () => {
     expect(history).toEqual({ version: 1, jobs: [] });
   });
 
+  it('accepts the pending status (paid, result not yet delivered)', async () => {
+    const entry = makeEntry({ status: 'pending', paymentSig: 'sig-pending' });
+    await appendCustomerJob(agentDir, entry);
+    const stored = await findCustomerJob(agentDir, 'job-1');
+    expect(stored?.status).toBe('pending');
+    expect(stored?.paymentSig).toBe('sig-pending');
+  });
+
   it('round-trips a job through append + read', async () => {
     const entry = makeEntry({ paymentSig: 'sig-xyz', resultPreview: 'hi' });
     await appendCustomerJob(agentDir, entry);
