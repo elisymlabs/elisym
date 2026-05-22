@@ -513,7 +513,12 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             return;
           }
           const res = resultsByJob.get(job.jobEventId);
-          if (!res) {
+          // Skip a missing or undecryptable result (the latter surfaces as
+          // empty content + decryptionFailed) - the same as the live
+          // subscription, which skips undecryptable results rather than
+          // delivering them. Marking the paid job completed with an empty
+          // result here would falsely report success and stop polling.
+          if (!res || res.decryptionFailed) {
             continue;
           }
           updateJob(job.jobEventId, { status: 'completed', result: res.content });
