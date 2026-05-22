@@ -32,7 +32,6 @@ import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 const payment = new SolanaPaymentStrategy();
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, mirrors plugin
-const TOTAL_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /**
  * Hard cutoff for `paid` jobs that the recovery loop is waiting to
  * re-execute against an unhealthy LLM pair. After this age the customer
@@ -56,6 +55,13 @@ export interface RuntimeConfig {
   network: string;
   solanaAddress?: string;
   maxQueueSize?: number;
+  /**
+   * Agent-level default execution budget (seconds) applied to skills that do
+   * not set their own `max_execution_secs`. `0` or `undefined` => unlimited
+   * (the protocol imposes no default; the operator owns this). A per-skill
+   * `executionTimeoutSecs` takes precedence over this.
+   */
+  executionTimeoutSecs?: number;
 }
 
 export interface RuntimeCallbacks {
@@ -157,6 +163,21 @@ class AgentUnavailableError extends Error {
   constructor() {
     super(AGENT_UNAVAILABLE_MESSAGE);
     this.name = 'AgentUnavailableError';
+  }
+}
+
+/**
+ * Thrown by the execute wrapper when a job exceeds its resolved execution
+ * budget (`max_execution_secs` on the skill / `execution_timeout_secs` on the
+ * agent). Kept distinct from `AgentUnavailableError` so a budget abort is NOT
+ * misclassified as a health flip: the job is marked `failed` (not kept `paid`
+ * for recovery), and the message - free of the `API` substring - is forwarded
+ * verbatim past `processJob`'s leaky-error masker.
+ */
+class ExecutionBudgetExceededError extends Error {
+  constructor(budgetMs: number) {
+    super(`Execution exceeded budget (${Math.round(budgetMs / 1000)}s)`);
+    this.name = 'ExecutionBudgetExceededError';
   }
 }
 
@@ -649,21 +670,27 @@ export class AgentRuntime {
     this.transport.stop();
   }
 
-  /** Wrapper with total job timeout and error handling. */
+  /**
+   * Resolve a job's execution budget in milliseconds. Per-skill
+   * `executionTimeoutSecs` wins over the agent-level `config.executionTimeoutSecs`;
+   * `0` (explicit unlimited) and `undefined` both collapse to `0` => no timer.
+   */
+  private resolveExecutionBudgetMs(skill: import('./skill').Skill): number {
+    const secs = skill.executionTimeoutSecs ?? this.config.executionTimeoutSecs ?? 0;
+    return secs > 0 ? secs * 1000 : 0;
+  }
+
+  /**
+   * Wrapper with error handling. The execution budget (if any) is enforced
+   * around `skill.execute` inside `executeJob`, not here - payment collection
+   * and result delivery run on their own bounds. `jobAbort` is retained so
+   * `stop()` can still abort an in-flight job.
+   */
   private async processJob(job: IncomingJob): Promise<void> {
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const jobAbort = new AbortController();
     this.jobAbortControllers.add(jobAbort);
     try {
-      await Promise.race([
-        this.executeJob(job, jobAbort.signal),
-        new Promise<never>((_, reject) => {
-          timeoutId = setTimeout(() => {
-            jobAbort.abort();
-            reject(new Error('Job processing timeout'));
-          }, TOTAL_JOB_TIMEOUT_MS);
-        }),
-      ]);
+      await this.executeJob(job, jobAbort.signal);
     } catch (e: any) {
       const log = this.callbacks.onLog ?? console.log;
       log(`[${job.jobId.slice(0, 8)}] Error: ${e.message}`);
@@ -706,7 +733,6 @@ export class AgentRuntime {
         .sendFeedback(job, { type: 'error', message: safeMessage })
         .catch(() => {});
     } finally {
-      clearTimeout(timeoutId);
       this.jobAbortControllers.delete(jobAbort);
     }
   }
@@ -805,7 +831,31 @@ export class AgentRuntime {
     // the preflight gate before payment, instead of sailing through and
     // failing again. Recovery happens via the lazy recovery loop, which
     // re-probes only while the pair is unhealthy.
+    // Execution budget (if any) is scoped to `skill.execute` only - payment
+    // collection above and delivery below run on their own bounds. The budget
+    // timer aborts a dedicated `execAbort` chained to the incoming `signal`
+    // (so `stop()` still propagates), and sets `budgetExceeded` so the catch
+    // can tell a budget abort apart from a real skill failure - the latter
+    // would otherwise flip the health pair via `markHealthFromExecuteError`.
     let output;
+    const budgetMs = this.resolveExecutionBudgetMs(skill);
+    let budgetExceeded = false;
+    const execAbort = new AbortController();
+    const onOuterAbort = (): void => execAbort.abort();
+    if (signal) {
+      if (signal.aborted) {
+        execAbort.abort();
+      } else {
+        signal.addEventListener('abort', onOuterAbort);
+      }
+    }
+    const budgetTimer =
+      budgetMs > 0
+        ? setTimeout(() => {
+            budgetExceeded = true;
+            execAbort.abort();
+          }, budgetMs)
+        : undefined;
     try {
       output = await skill.execute(
         {
@@ -814,9 +864,15 @@ export class AgentRuntime {
           tags: job.tags,
           jobId: job.jobId,
         },
-        { ...this.skillCtx, signal },
+        { ...this.skillCtx, signal: execAbort.signal },
       );
     } catch (err) {
+      // A budget abort is a clean operator/author limit, not a provider fault:
+      // mark it distinctly so it never trips the health monitor.
+      if (budgetExceeded) {
+        log(`[${job.jobId.slice(0, 8)}] Execution exceeded budget (${budgetMs / 1000}s)`);
+        throw new ExecutionBudgetExceededError(budgetMs);
+      }
       const flippedToUnhealthy = this.markHealthFromExecuteError(skill, err, log, job.jobId);
       // When the skill failure was the trigger that flipped the health
       // pair to unhealthy, surface a stable "agent unavailable" message
@@ -827,6 +883,13 @@ export class AgentRuntime {
         throw new AgentUnavailableError();
       }
       throw err;
+    } finally {
+      if (budgetTimer) {
+        clearTimeout(budgetTimer);
+      }
+      if (signal) {
+        signal.removeEventListener('abort', onOuterAbort);
+      }
     }
 
     // ── Step 5: Cache result in ledger ──
@@ -1171,7 +1234,6 @@ export class AgentRuntime {
   ): Promise<void> {
     const recoveryAbort = new AbortController();
     this.jobAbortControllers.add(recoveryAbort);
-    const timeout = setTimeout(() => recoveryAbort.abort(), TOTAL_JOB_TIMEOUT_MS);
 
     try {
       const rawEvent = JSON.parse(entry.raw_event_json!);
@@ -1245,15 +1307,30 @@ export class AgentRuntime {
           }
         }
 
-        const output = await skill.execute(
-          {
-            data: entry.input,
-            inputType: entry.input_type,
-            tags: entry.tags,
-            jobId: entry.job_id,
-          },
-          { ...this.skillCtx, signal: recoveryAbort.signal },
-        );
+        // Same per-skill execution budget as the primary path. Recovery has
+        // no health-flip catch, so no `budgetExceeded` guard is needed - a
+        // budget abort simply propagates out as an abort error.
+        const recoveryBudgetMs = this.resolveExecutionBudgetMs(skill);
+        const budgetTimer =
+          recoveryBudgetMs > 0
+            ? setTimeout(() => recoveryAbort.abort(), recoveryBudgetMs)
+            : undefined;
+        let output;
+        try {
+          output = await skill.execute(
+            {
+              data: entry.input,
+              inputType: entry.input_type,
+              tags: entry.tags,
+              jobId: entry.job_id,
+            },
+            { ...this.skillCtx, signal: recoveryAbort.signal },
+          );
+        } finally {
+          if (budgetTimer) {
+            clearTimeout(budgetTimer);
+          }
+        }
 
         this.ledger.markExecuted(entry.job_id, output.data);
         await this.transport.deliverResult(fakeJob, output.data, entry.net_amount);
@@ -1261,7 +1338,6 @@ export class AgentRuntime {
         log(`[${entry.job_id.slice(0, 8)}] Recovery: re-executed and delivered`);
       }
     } finally {
-      clearTimeout(timeout);
       this.jobAbortControllers.delete(recoveryAbort);
     }
   }

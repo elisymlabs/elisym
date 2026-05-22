@@ -5,7 +5,25 @@
  * provider does not re-derive timeout/abort plumbing.
  */
 
-const LLM_TIMEOUT_MS = 120_000;
+// Per-HTTP-request timeout for LLM calls. This is a backstop against a hung
+// socket, not the job's execution ceiling - the per-job AbortSignal (driven by
+// the skill/agent execution budget) is wired into every fetch and is the real
+// limit. Default is generous so one large single-shot generation is not cut
+// off; operators with heavier skills raise it via `ELISYM_LLM_TIMEOUT_MS`. Kept
+// modest enough that `max_tool_rounds x LLM_TIMEOUT_MS` stays a sane implicit
+// ceiling when a skill runs with no execution budget (unlimited).
+const DEFAULT_LLM_TIMEOUT_MS = 600_000; // 10 minutes
+
+function resolveLlmTimeoutMs(): number {
+  const raw = process.env.ELISYM_LLM_TIMEOUT_MS;
+  if (raw === undefined) {
+    return DEFAULT_LLM_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_LLM_TIMEOUT_MS;
+}
+
+const LLM_TIMEOUT_MS = resolveLlmTimeoutMs();
 const MAX_RETRIES = 2;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
