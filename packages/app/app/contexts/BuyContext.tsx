@@ -410,7 +410,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               if (paidLocally && /timed out/i.test(errMsg)) {
                 snapshotUpdateJob(jobEventId, { status: 'pending' });
                 setSession((prev) =>
-                  sessionMatches(prev) ? { ...prev, buying: false, pending: true } : prev,
+                  // Do not clobber a result the background poller may have
+                  // already delivered while this subscription was still open.
+                  sessionMatches(prev) && !prev.result
+                    ? { ...prev, buying: false, pending: true }
+                    : prev,
                 );
                 cleanupRef.current = null;
                 toast.dismiss(toastId);
@@ -482,39 +486,50 @@ export function BuyProvider({ children }: { children: ReactNode }) {
     }
     const identity = idCtx.identity;
     const now = Date.now();
-    const pendingIds = jobs
-      .filter(
-        (job) =>
-          RESUMABLE_PENDING_STATUSES.has(job.status) &&
-          !job.result &&
-          now - job.createdAt < PENDING_POLL_MAX_MS,
-      )
-      .map((job) => job.jobEventId);
-    if (pendingIds.length === 0) {
+    const pendingJobs = jobs.filter(
+      (job) =>
+        RESUMABLE_PENDING_STATUSES.has(job.status) &&
+        !job.result &&
+        now - job.createdAt < PENDING_POLL_MAX_MS,
+    );
+    if (pendingJobs.length === 0) {
       return;
     }
     let cancelled = false;
     const poll = async () => {
-      try {
-        const resultsByJob = await client.marketplace.queryJobResults(identity, pendingIds);
-        if (cancelled) {
-          return;
-        }
-        for (const [jobEventId, res] of resultsByJob) {
-          updateJob(jobEventId, { status: 'completed', result: res.content });
-          cacheSet(`purchase:${jobEventId}`, {
+      for (const job of pendingJobs) {
+        try {
+          // Filter by the provider we paid (4th arg) - the same authenticity
+          // check the live subscription does. Without it, a forged kind-6100
+          // event tagging this request id from any other pubkey could be
+          // delivered as the result.
+          const resultsByJob = await client.marketplace.queryJobResults(
+            identity,
+            [job.jobEventId],
+            undefined,
+            job.agentPubkey,
+          );
+          if (cancelled) {
+            return;
+          }
+          const res = resultsByJob.get(job.jobEventId);
+          if (!res) {
+            continue;
+          }
+          updateJob(job.jobEventId, { status: 'completed', result: res.content });
+          cacheSet(`purchase:${job.jobEventId}`, {
             result: res.content,
-            eventId: jobEventId,
+            eventId: job.jobEventId,
             receivedAt: Date.now(),
           });
           setSession((prev) =>
-            prev && prev.jobId === jobEventId
+            prev && prev.jobId === job.jobEventId
               ? { ...prev, buying: false, pending: false, result: res.content }
               : prev,
           );
+        } catch {
+          // transient relay error - keep polling on the next tick
         }
-      } catch {
-        // transient relay error - keep polling on the next tick
       }
     };
     void poll();
