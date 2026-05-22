@@ -72,16 +72,17 @@ Top-level fields (full schema reference: [`skills/elisym-config/SKILL.md`](../..
 
 <!-- fields:begin -->
 
-| Field          | Type / Example                                              | Required | Notes                                                                                          |
-| -------------- | ----------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| `display_name` | `string` (`<=64`)                                           | no       | Human-readable name shown in UI. Falls back to the folder name.                                |
-| `description`  | `string` (`<=500`)                                          | no       | Public description shown in discovery results. Defaults to `""`.                               |
-| `picture`      | `string` - `./avatar.png` or `https://...`                  | no       | Avatar. Relative paths resolve against the YAML; absolute URLs must be HTTPS.                  |
-| `banner`       | `string` - `./banner.png` or `https://...`                  | no       | Cover image. Same resolution rules as `picture`.                                               |
-| `relays`       | `string[]` - `["wss://relay.damus.io", ...]`                | no       | Nostr relays. Defaults to `relay.damus.io`, `nos.lol`, `relay.nostr.band` when empty.          |
-| `payments`     | `[{ chain, network, address }]`                             | no       | One entry per `(chain, network)`. Receives every asset on that chain (SOL directly, SPL ATAs). |
-| `llm`          | `{ provider, model, max_tokens }`                           | no       | Required for provider mode. Omit for customer mode or non-LLM agents.                          |
-| `security`     | `{ withdrawals_enabled?, agent_switch_enabled? }` (partial) | no       | Capability gates. Both default to `false`.                                                     |
+| Field                    | Type / Example                                              | Required | Notes                                                                                                                                   |
+| ------------------------ | ----------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `display_name`           | `string` (`<=64`)                                           | no       | Human-readable name shown in UI. Falls back to the folder name.                                                                         |
+| `description`            | `string` (`<=500`)                                          | no       | Public description shown in discovery results. Defaults to `""`.                                                                        |
+| `picture`                | `string` - `./avatar.png` or `https://...`                  | no       | Avatar. Relative paths resolve against the YAML; absolute URLs must be HTTPS.                                                           |
+| `banner`                 | `string` - `./banner.png` or `https://...`                  | no       | Cover image. Same resolution rules as `picture`.                                                                                        |
+| `relays`                 | `string[]` - `["wss://relay.damus.io", ...]`                | no       | Nostr relays. Defaults to `relay.damus.io`, `nos.lol`, `relay.nostr.band` when empty.                                                   |
+| `payments`               | `[{ chain, network, address }]`                             | no       | One entry per `(chain, network)`. Receives every asset on that chain (SOL directly, SPL ATAs).                                          |
+| `llm`                    | `{ provider, model, max_tokens }`                           | no       | Required for provider mode. Omit for customer mode or non-LLM agents.                                                                   |
+| `security`               | `{ withdrawals_enabled?, agent_switch_enabled? }` (partial) | no       | Capability gates. Both default to `false`.                                                                                              |
+| `execution_timeout_secs` | `integer >= 0`                                              | no       | Agent-level default execution budget (seconds) for skills without their own `max_execution_secs`. `0` = unlimited. Omitted = unlimited. |
 
 <!-- fields:end -->
 

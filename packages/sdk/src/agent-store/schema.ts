@@ -59,6 +59,12 @@ export const ElisymYamlSchema = z
     payments: z.array(PaymentSchema).default([]),
     llm: LlmSchema.optional(),
     security: SecurityFlagsSchema.partial().default({}),
+    /**
+     * Agent-level default execution budget in seconds for every skill that does
+     * not set its own `max_execution_secs`. `0` => unlimited. Omitted =>
+     * unlimited (the operator owns this; the protocol imposes no default).
+     */
+    execution_timeout_secs: z.number().int().min(0).optional(),
   })
   .strict();
 
