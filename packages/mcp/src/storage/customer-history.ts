@@ -19,7 +19,10 @@ export const CUSTOMER_HISTORY_FILENAME = '.customer-history.json';
 export const MAX_HISTORY_ENTRIES = 500;
 export const RESULT_PREVIEW_MAX_LEN = 10000;
 
-const StatusSchema = z.enum(['completed', 'failed', 'timeout']);
+// `pending`: paid, but the result had not arrived within the sync wait window.
+// Not a failure - the provider may still be working and the result (kind 6100)
+// persists on the relays, recoverable later via get_job_result.
+const StatusSchema = z.enum(['completed', 'failed', 'timeout', 'pending']);
 const FeedbackSchema = z.enum(['positive', 'negative']);
 
 export const CustomerJobEntrySchema = z

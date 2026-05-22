@@ -57,6 +57,17 @@ const PROTOCOL_PROGRAM_ID = getProtocolProgramId(SDK_CLUSTER);
 const kitRpc = createSolanaRpc(SOLANA_RPC_URL);
 const payment = new SolanaPaymentStrategy();
 
+// Sync subscription window before a paid job flips to background polling.
+// Matches the MCP 10-min cap; the result (kind 6100) persists on the relays.
+const JOB_WAIT_TIMEOUT_MS = 600_000;
+// Cadence for re-polling the relays for a paid-but-not-yet-delivered result.
+const PENDING_POLL_INTERVAL_MS = 120_000;
+// Stop polling a pending job after this age (mirrors the provider MAX_PAID_AGE).
+const PENDING_POLL_MAX_MS = 24 * 60 * 60 * 1000;
+// History statuses worth re-polling: `pending` (sync window elapsed) and
+// `payment-completed` (tab closed after paying, before the result arrived).
+const RESUMABLE_PENDING_STATUSES = new Set(['pending', 'payment-completed']);
+
 async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -126,6 +137,13 @@ export interface ActiveBuySession {
    * (refundable / recoverable) from "never paid" (just retry).
    */
   paid: boolean;
+  /**
+   * `true` when payment succeeded but the result has not arrived within the
+   * sync window. NOT an error - the provider may still be working and the
+   * result persists on the relays. Background polling flips this back to a
+   * `result` once it lands.
+   */
+  pending: boolean;
   lastInput: string;
   rated: boolean;
 }
@@ -153,7 +171,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const wallet = publicKey?.toBase58() ?? '';
-  const { saveJob, updateJob } = useJobHistory({ wallet });
+  const { jobs, saveJob, updateJob } = useJobHistory({ wallet });
 
   const [session, setSession] = useState<ActiveBuySession | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -214,6 +232,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         result: null,
         error: null,
         paid: false,
+        pending: false,
         lastInput: input,
         rated: false,
       });
@@ -242,6 +261,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         });
 
         toast.loading('Waiting for provider...', { id: toastId });
+
+        // Tracks whether on-chain payment settled, so a later subscription
+        // timeout is treated as "still processing" (pending) rather than an
+        // error. Closure-local so it survives across the async callbacks.
+        let paidLocally = false;
 
         const cleanup = client.marketplace.subscribeToJobUpdates({
           jobEventId,
@@ -299,6 +323,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   paymentAmount: amount,
                   txHash: signature,
                 });
+                paidLocally = true;
                 setSession((prev) => (sessionMatches(prev) ? { ...prev, paid: true } : prev));
 
                 toast.loading('Payment sent, waiting for result...', { id: toastId });
@@ -323,7 +348,9 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 receivedAt: Date.now(),
               });
               setSession((prev) =>
-                sessionMatches(prev) ? { ...prev, buying: false, result: content } : prev,
+                sessionMatches(prev)
+                  ? { ...prev, buying: false, pending: false, result: content }
+                  : prev,
               );
               cleanupRef.current = null;
               const agentPath = `/agent/${agentPubkey}`;
@@ -376,6 +403,25 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             },
 
             onError: (errMsg: string) => {
+              // A timeout after payment is NOT a failure: the provider may run
+              // longer than the sync window and the result persists on the
+              // relays. Flip to `pending` and let the background poller pick it
+              // up (also resumes after a reload via the persisted status).
+              if (paidLocally && /timed out/i.test(errMsg)) {
+                snapshotUpdateJob(jobEventId, { status: 'pending' });
+                setSession((prev) =>
+                  sessionMatches(prev) ? { ...prev, buying: false, pending: true } : prev,
+                );
+                cleanupRef.current = null;
+                toast.dismiss(toastId);
+                toast.info(
+                  `Still processing - we'll keep checking for the result from ${agentName}.`,
+                  {
+                    duration: 8000,
+                  },
+                );
+                return;
+              }
               snapshotUpdateJob(jobEventId, { status: 'error' });
               setSession((prev) =>
                 sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
@@ -394,7 +440,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               toast.error(toastMsg);
             },
           },
-          timeoutMs: 120_000,
+          timeoutMs: JOB_WAIT_TIMEOUT_MS,
           customerSecretKey: identity.secretKey,
         });
 
@@ -422,6 +468,62 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       setLocation,
     ],
   );
+
+  // Background recovery for paid jobs whose result did not arrive within the
+  // sync window (status `pending`) or whose tab closed after paying but before
+  // the result landed (`payment-completed`). The result (kind 6100) persists on
+  // the relays, so we re-poll on an interval and deliver whatever arrives. The
+  // statuses live in localStorage (useJobHistory), so this also resumes polling
+  // after a page reload. Found results update history and, if the job is still
+  // the active session, flip it from pending to a result in the UI.
+  useEffect(() => {
+    if (!wallet) {
+      return;
+    }
+    const identity = idCtx.identity;
+    const now = Date.now();
+    const pendingIds = jobs
+      .filter(
+        (job) =>
+          RESUMABLE_PENDING_STATUSES.has(job.status) &&
+          !job.result &&
+          now - job.createdAt < PENDING_POLL_MAX_MS,
+      )
+      .map((job) => job.jobEventId);
+    if (pendingIds.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const resultsByJob = await client.marketplace.queryJobResults(identity, pendingIds);
+        if (cancelled) {
+          return;
+        }
+        for (const [jobEventId, res] of resultsByJob) {
+          updateJob(jobEventId, { status: 'completed', result: res.content });
+          cacheSet(`purchase:${jobEventId}`, {
+            result: res.content,
+            eventId: jobEventId,
+            receivedAt: Date.now(),
+          });
+          setSession((prev) =>
+            prev && prev.jobId === jobEventId
+              ? { ...prev, buying: false, pending: false, result: res.content }
+              : prev,
+          );
+        }
+      } catch {
+        // transient relay error - keep polling on the next tick
+      }
+    };
+    void poll();
+    const interval = setInterval(() => void poll(), PENDING_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [wallet, jobs, idCtx.identity, client, updateJob]);
 
   const rate = useCallback(
     async (positive: boolean) => {
@@ -479,6 +581,12 @@ export interface ScopedBuyState {
    * recovery hint when an "Agent unavailable" failure follows a paid job.
    */
   paid: boolean;
+  /**
+   * `true` when payment succeeded but the result has not arrived yet and is
+   * being polled in the background. The UI shows a "still processing" state
+   * rather than an error.
+   */
+  pending: boolean;
   jobId: string | null;
   rate: (positive: boolean) => Promise<void>;
   rated: boolean;
@@ -534,6 +642,7 @@ export function useBuyForCard(args: UseBuyForCardArgs): ScopedBuyState | null {
     result: matches ? (session?.result ?? null) : null,
     error: matches ? (session?.error ?? null) : null,
     paid: matches ? (session?.paid ?? false) : false,
+    pending: matches ? (session?.pending ?? false) : false,
     jobId: matches ? (session?.jobId ?? null) : null,
     rate,
     rated: matches ? (session?.rated ?? false) : false,
