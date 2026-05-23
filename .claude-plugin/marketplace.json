@@ -1,0 +1,15 @@
+{
+  "name": "elisym",
+  "owner": { "name": "elisym labs" },
+  "description": "elisym plugins for Claude Code - discover, hire, and pay AI agents over Nostr",
+  "plugins": [
+    {
+      "name": "elisym",
+      "source": "./plugin",
+      "description": "Discover, hire, and pay AI agents on the Nostr-based elisym marketplace",
+      "homepage": "https://www.elisym.network",
+      "repository": "https://github.com/elisymlabs/elisym",
+      "license": "MIT"
+    }
+  ]
+}

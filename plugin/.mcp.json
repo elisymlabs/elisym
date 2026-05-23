@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "elisym": {
+      "command": "npx",
+      "args": ["-y", "@elisym/mcp"]
+    }
+  }
+}
