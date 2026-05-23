@@ -403,29 +403,6 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             },
 
             onError: (errMsg: string) => {
-              // A timeout after payment is NOT a failure: the provider may run
-              // longer than the sync window and the result persists on the
-              // relays. Flip to `pending` and let the background poller pick it
-              // up (also resumes after a reload via the persisted status).
-              if (paidLocally && /timed out/i.test(errMsg)) {
-                snapshotUpdateJob(jobEventId, { status: 'pending' });
-                setSession((prev) =>
-                  // Do not clobber a result the background poller may have
-                  // already delivered while this subscription was still open.
-                  sessionMatches(prev) && !prev.result
-                    ? { ...prev, buying: false, pending: true }
-                    : prev,
-                );
-                cleanupRef.current = null;
-                toast.dismiss(toastId);
-                toast.info(
-                  `Still processing - we'll keep checking for the result from ${agentName}.`,
-                  {
-                    duration: 8000,
-                  },
-                );
-                return;
-              }
               snapshotUpdateJob(jobEventId, { status: 'error' });
               setSession((prev) =>
                 sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
@@ -442,6 +419,40 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // the inline ErrorMessage card is now displaying.
               toast.dismiss(toastId);
               toast.error(toastMsg);
+            },
+
+            onTimeout: () => {
+              // After payment, a wait-window timeout is not a failure: the
+              // provider may run longer than the sync window and the result
+              // persists on the relays. Flip to `pending` and let the
+              // background poller pick it up. A timeout before payment means
+              // nothing settled - surface it as an error.
+              if (!paidLocally) {
+                snapshotUpdateJob(jobEventId, { status: 'error' });
+                setSession((prev) =>
+                  sessionMatches(prev)
+                    ? { ...prev, buying: false, error: 'Timed out waiting for the provider' }
+                    : prev,
+                );
+                cleanupRef.current = null;
+                toast.dismiss(toastId);
+                toast.error('Timed out waiting for the provider');
+                return;
+              }
+              snapshotUpdateJob(jobEventId, { status: 'pending' });
+              setSession((prev) =>
+                // Do not clobber a result the background poller may have
+                // already delivered while this subscription was still open.
+                sessionMatches(prev) && !prev.result
+                  ? { ...prev, buying: false, pending: true }
+                  : prev,
+              );
+              cleanupRef.current = null;
+              toast.dismiss(toastId);
+              toast.info(
+                `Still processing - we'll keep checking for the result from ${agentName}.`,
+                { duration: 8000 },
+              );
             },
           },
           timeoutMs: JOB_WAIT_TIMEOUT_MS,
@@ -473,6 +484,16 @@ export function BuyProvider({ children }: { children: ReactNode }) {
     ],
   );
 
+  // The poller reads the latest jobs from a ref so its interval lifecycle does
+  // not depend on the `jobs` array identity. Otherwise every history write
+  // (including the poller's own `updateJob`) would change `jobs`, tear down the
+  // interval and immediately re-poll - breaking the 120s cadence and risking
+  // overlapping polls.
+  const jobsRef = useRef(jobs);
+  useEffect(() => {
+    jobsRef.current = jobs;
+  }, [jobs]);
+
   // Background recovery for paid jobs whose result did not arrive within the
   // sync window (status `pending`) or whose tab closed after paying but before
   // the result landed (`payment-completed`). The result (kind 6100) persists on
@@ -485,56 +506,73 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       return;
     }
     const identity = idCtx.identity;
-    const now = Date.now();
-    const pendingJobs = jobs.filter(
-      (job) =>
-        RESUMABLE_PENDING_STATUSES.has(job.status) &&
-        !job.result &&
-        now - job.createdAt < PENDING_POLL_MAX_MS,
-    );
-    if (pendingJobs.length === 0) {
-      return;
-    }
     let cancelled = false;
+    let inFlight = false;
     const poll = async () => {
-      for (const job of pendingJobs) {
-        try {
-          // Filter by the provider we paid (4th arg) - the same authenticity
-          // check the live subscription does. Without it, a forged kind-6100
-          // event tagging this request id from any other pubkey could be
-          // delivered as the result.
-          const resultsByJob = await client.marketplace.queryJobResults(
-            identity,
-            [job.jobEventId],
-            undefined,
-            job.agentPubkey,
-          );
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        // Recompute eligibility each tick from the latest jobs with a fresh
+        // `now`, so the 24h cutoff is honored even on a long-lived tab.
+        const now = Date.now();
+        const pendingJobs = jobsRef.current.filter(
+          (job) =>
+            RESUMABLE_PENDING_STATUSES.has(job.status) &&
+            !job.result &&
+            now - job.createdAt < PENDING_POLL_MAX_MS,
+        );
+        for (const job of pendingJobs) {
           if (cancelled) {
             return;
           }
-          const res = resultsByJob.get(job.jobEventId);
-          // Skip a missing or undecryptable result (the latter surfaces as
-          // empty content + decryptionFailed) - the same as the live
-          // subscription, which skips undecryptable results rather than
-          // delivering them. Marking the paid job completed with an empty
-          // result here would falsely report success and stop polling.
-          if (!res || res.decryptionFailed) {
-            continue;
+          try {
+            // Filter by the provider we paid (4th arg) - the same authenticity
+            // check the live subscription does. Without it, a forged kind-6100
+            // event tagging this request id from any other pubkey could be
+            // delivered as the result.
+            const resultsByJob = await client.marketplace.queryJobResults(
+              identity,
+              [job.jobEventId],
+              undefined,
+              job.agentPubkey,
+            );
+            if (cancelled) {
+              return;
+            }
+            // Don't revert a result the live subscription may have delivered
+            // while this query was in flight.
+            const current = jobsRef.current.find((j) => j.jobEventId === job.jobEventId);
+            if (current?.result || current?.status === 'completed') {
+              continue;
+            }
+            const res = resultsByJob.get(job.jobEventId);
+            // Skip a missing or undecryptable result (the latter surfaces as
+            // empty content + decryptionFailed) - the same as the live
+            // subscription, which skips undecryptable results rather than
+            // delivering them. Marking the paid job completed with an empty
+            // result here would falsely report success and stop polling.
+            if (!res || res.decryptionFailed) {
+              continue;
+            }
+            updateJob(job.jobEventId, { status: 'completed', result: res.content });
+            cacheSet(`purchase:${job.jobEventId}`, {
+              result: res.content,
+              eventId: job.jobEventId,
+              receivedAt: Date.now(),
+            });
+            setSession((prev) =>
+              prev && prev.jobId === job.jobEventId
+                ? { ...prev, buying: false, pending: false, result: res.content }
+                : prev,
+            );
+          } catch {
+            // transient relay error - keep polling on the next tick
           }
-          updateJob(job.jobEventId, { status: 'completed', result: res.content });
-          cacheSet(`purchase:${job.jobEventId}`, {
-            result: res.content,
-            eventId: job.jobEventId,
-            receivedAt: Date.now(),
-          });
-          setSession((prev) =>
-            prev && prev.jobId === job.jobEventId
-              ? { ...prev, buying: false, pending: false, result: res.content }
-              : prev,
-          );
-        } catch {
-          // transient relay error - keep polling on the next tick
         }
+      } finally {
+        inFlight = false;
       }
     };
     void poll();
@@ -543,7 +581,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [wallet, jobs, idCtx.identity, client, updateJob]);
+  }, [wallet, idCtx.identity, client, updateJob]);
 
   const rate = useCallback(
     async (positive: boolean) => {

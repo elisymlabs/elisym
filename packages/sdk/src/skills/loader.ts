@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
-import { LAMPORTS_PER_SOL } from '../constants';
+import { LAMPORTS_PER_SOL, LIMITS } from '../constants';
 import type { SkillRateLimit } from '../llm-health/types';
 import {
   type Asset,
@@ -442,6 +442,11 @@ function validateMaxExecutionSecs(skillName: string, raw: unknown): number | und
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
     throw new Error(
       `SKILL.md "${skillName}": "max_execution_secs" must be a non-negative integer (0 = unlimited)`,
+    );
+  }
+  if (raw > LIMITS.MAX_EXECUTION_SECS) {
+    throw new Error(
+      `SKILL.md "${skillName}": "max_execution_secs" must be <= ${LIMITS.MAX_EXECUTION_SECS} (larger values overflow setTimeout)`,
     );
   }
   return raw;

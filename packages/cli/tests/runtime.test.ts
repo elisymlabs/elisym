@@ -988,6 +988,44 @@ describe('AgentRuntime', () => {
       runtime.stop();
       await runPromise.catch(() => {});
     });
+
+    it('enforces the budget on a non-cooperative skill that ignores its abort signal', async () => {
+      // This skill never settles and never listens to the abort signal. The
+      // budget (50ms) must reject via the race rather than waiting for the
+      // skill, so the job is marked failed within the test window.
+      const nonCooperative: Skill = {
+        name: 'stubborn',
+        description: 'ignores abort, never settles',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        executionTimeoutSecs: 0.05,
+        execute: vi.fn().mockImplementation(() => new Promise<never>(() => {})),
+      };
+      const registry = makeFakeRegistry(nonCooperative);
+      const { transport, triggerJob } = makeFakeTransport();
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+      );
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('stubborn-job'));
+      await tick(300);
+
+      const errorFeedback = (transport.sendFeedback as any).mock.calls.find(
+        (call: any[]) => call[1]?.type === 'error',
+      );
+      expect(errorFeedback?.[1]?.message).toMatch(/exceeded budget/i);
+      expect(ledger.getStatus('stubborn-job')).toBe('failed');
+
+      runtime.stop();
+      await runPromise.catch(() => {});
+    });
   });
 
   describe('recovery payment re-verification', () => {

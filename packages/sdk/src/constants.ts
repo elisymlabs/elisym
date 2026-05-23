@@ -110,6 +110,11 @@ export const DEFAULTS = {
 export const LIMITS = {
   MAX_INPUT_LENGTH: 100_000,
   MAX_TIMEOUT_SECS: 600,
+  // Upper bound for execution budgets (`max_execution_secs` / `execution_timeout_secs`).
+  // Distinct from MAX_TIMEOUT_SECS (the result-wait cap): execution budgets may be
+  // hours, so this exists only to keep `secs * 1000` within Node's setTimeout limit
+  // (2_147_483_647 ms) - a larger value overflows and fires the timer immediately.
+  MAX_EXECUTION_SECS: 2_147_483,
   MAX_CAPABILITIES: 20,
   MAX_DESCRIPTION_LENGTH: 500,
   MAX_AGENT_NAME_LENGTH: 64,

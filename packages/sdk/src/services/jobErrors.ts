@@ -61,3 +61,22 @@ export function classifyJobError(message: string): JobErrorKind {
   }
   return 'unknown';
 }
+
+/**
+ * Signalled via `JobUpdateCallbacks.onTimeout` (and thrown by helpers that
+ * await a result) when the wait window expires without a result. This is a
+ * distinct, structured signal from a genuine provider/transport error, so
+ * callers can branch on the type instead of substring-matching "timed out"
+ * on a free-form error message (which masks real errors that happen to
+ * mention a timeout).
+ */
+export class JobWaitTimeoutError extends Error {
+  constructor(timeoutMs?: number) {
+    super(
+      timeoutMs === undefined
+        ? 'Timed out waiting for job result'
+        : `Timed out waiting for job result (${Math.round(timeoutMs / 1000)}s)`,
+    );
+    this.name = 'JobWaitTimeoutError';
+  }
+}

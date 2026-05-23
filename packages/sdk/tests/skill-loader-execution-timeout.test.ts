@@ -60,4 +60,13 @@ describe('validateSkillFrontmatter max_execution_secs', () => {
       validateSkillFrontmatter({ ...baseFrontmatter, max_execution_secs: '600' }, 'system prompt'),
     ).toThrow(/max_execution_secs/);
   });
+
+  it('throws on a value above the setTimeout overflow cap', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        { ...baseFrontmatter, max_execution_secs: 2_147_484 },
+        'system prompt',
+      ),
+    ).toThrow(/max_execution_secs.*<=/);
+  });
 });

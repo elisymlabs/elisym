@@ -21,7 +21,7 @@ export {
 } from './services/discovery';
 export type { RankKey } from './services/discovery';
 export { MarketplaceService } from './services/marketplace';
-export { classifyJobError } from './services/jobErrors';
+export { classifyJobError, JobWaitTimeoutError } from './services/jobErrors';
 export type { JobErrorKind } from './services/jobErrors';
 export { MediaService } from './services/media';
 export { PingService } from './services/ping';

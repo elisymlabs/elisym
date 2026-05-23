@@ -276,7 +276,14 @@ export class MarketplaceService {
       if (!resolved) {
         done();
         try {
-          cb.onError?.(`Timed out waiting for response (${timeoutMs / 1000}s).`);
+          // Prefer the structured `onTimeout` signal; fall back to the
+          // legacy `onError` string so callers that predate `onTimeout`
+          // (and the external agent `hire.ts` scripts) keep working.
+          if (cb.onTimeout) {
+            cb.onTimeout(timeoutMs);
+          } else {
+            cb.onError?.(`Timed out waiting for response (${timeoutMs / 1000}s).`);
+          }
         } catch {
           /* caller error - don't crash subscription */
         }

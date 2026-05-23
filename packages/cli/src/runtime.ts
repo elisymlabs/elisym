@@ -849,15 +849,9 @@ export class AgentRuntime {
         signal.addEventListener('abort', onOuterAbort);
       }
     }
-    const budgetTimer =
-      budgetMs > 0
-        ? setTimeout(() => {
-            budgetExceeded = true;
-            execAbort.abort();
-          }, budgetMs)
-        : undefined;
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      output = await skill.execute(
+      const execPromise = skill.execute(
         {
           data: job.input,
           inputType: job.inputType,
@@ -866,6 +860,29 @@ export class AgentRuntime {
         },
         { ...this.skillCtx, signal: execAbort.signal },
       );
+      // If the budget race rejects first, the skill may settle later; a no-op
+      // handler keeps that late settlement from surfacing as an unhandled
+      // rejection.
+      execPromise.catch(() => {});
+      if (budgetMs > 0) {
+        // Race the skill against its budget so a skill that ignores the abort
+        // signal (or is stuck on a non-abortable await) cannot run past the
+        // budget and hold the job slot. `abort()` still asks it to stop
+        // (SIGKILL for scripts, next-round check for LLM skills); the race only
+        // bounds how long we wait.
+        output = await Promise.race([
+          execPromise,
+          new Promise<never>((_resolve, reject) => {
+            budgetTimer = setTimeout(() => {
+              budgetExceeded = true;
+              execAbort.abort();
+              reject(new ExecutionBudgetExceededError(budgetMs));
+            }, budgetMs);
+          }),
+        ]);
+      } else {
+        output = await execPromise;
+      }
     } catch (err) {
       // A budget abort is a clean operator/author limit, not a provider fault:
       // mark it distinctly so it never trips the health monitor.
@@ -1307,17 +1324,16 @@ export class AgentRuntime {
           }
         }
 
-        // Same per-skill execution budget as the primary path. Recovery has
-        // no health-flip catch, so no `budgetExceeded` guard is needed - a
-        // budget abort simply propagates out as an abort error.
+        // Same per-skill execution budget as the primary path, enforced as a
+        // race so a non-cooperative skill can't stall recovery past its budget.
+        // On budget the race rejects with ExecutionBudgetExceededError, which
+        // recoverPendingJobs logs; the entry stays paid/executed and retries on
+        // the next sweep (each attempt now bounded by the budget).
         const recoveryBudgetMs = this.resolveExecutionBudgetMs(skill);
-        const budgetTimer =
-          recoveryBudgetMs > 0
-            ? setTimeout(() => recoveryAbort.abort(), recoveryBudgetMs)
-            : undefined;
+        let budgetTimer: ReturnType<typeof setTimeout> | undefined;
         let output;
         try {
-          output = await skill.execute(
+          const execPromise = skill.execute(
             {
               data: entry.input,
               inputType: entry.input_type,
@@ -1326,6 +1342,20 @@ export class AgentRuntime {
             },
             { ...this.skillCtx, signal: recoveryAbort.signal },
           );
+          execPromise.catch(() => {});
+          if (recoveryBudgetMs > 0) {
+            output = await Promise.race([
+              execPromise,
+              new Promise<never>((_resolve, reject) => {
+                budgetTimer = setTimeout(() => {
+                  recoveryAbort.abort();
+                  reject(new ExecutionBudgetExceededError(recoveryBudgetMs));
+                }, recoveryBudgetMs);
+              }),
+            ]);
+          } else {
+            output = await execPromise;
+          }
         } finally {
           if (budgetTimer) {
             clearTimeout(budgetTimer);
