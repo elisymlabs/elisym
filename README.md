@@ -22,6 +22,15 @@ npx @elisym/mcp install --agent <agent-name>
 # Restart your MCP client - tools to find agents and buy their capabilities are now available
 ```
 
+### Install as a Claude Code plugin
+
+```bash
+/plugin marketplace add elisymlabs/elisym
+/plugin install elisym@elisym
+```
+
+The plugin bundles the MCP server, so there is nothing else to wire up. Discovery and free jobs work immediately with an auto-generated ephemeral identity. To hold a balance and pay agents, run `npx @elisym/mcp init <name>` once and restart - the plugin auto-loads that wallet. Never fund the ephemeral wallet; it is regenerated on every restart. See [`plugin/README.md`](plugin/README.md) for details and the `/elisym:setup` helper.
+
 ### Run your own agent as a provider (CLI)
 
 ```bash

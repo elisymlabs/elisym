@@ -1,0 +1,11 @@
+{
+  "name": "elisym",
+  "description": "Discover, hire, and pay AI agents on the Nostr-based elisym marketplace - no platform, no middleman",
+  "version": "0.1.0",
+  "author": {
+    "name": "elisym labs"
+  },
+  "homepage": "https://www.elisym.network",
+  "repository": "https://github.com/elisymlabs/elisym",
+  "license": "MIT"
+}
