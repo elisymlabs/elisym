@@ -94,6 +94,17 @@ export class StaticScriptSkill implements Skill {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
       throw new Error(`script failed (exit ${result.code}): ${detail}`);
     }
-    return { data: result.stdout.trim() };
+    const output = result.stdout.trim();
+    if (output === '') {
+      // Exit 0 with no output is not a deliverable result: the marketplace
+      // rejects empty results at delivery, but only after the ledger has
+      // marked the job `executed`, and recovery then retries the empty
+      // result on every tick forever. Failing here keeps the job on the
+      // paid -> failed path so recovery terminates it. stderr (if any)
+      // carries the underlying reason for the operator log.
+      const detail = result.stderr.trim() || '(no stderr)';
+      throw new Error(`script exited 0 but produced empty output: ${detail}`);
+    }
+    return { data: output };
   }
 }
