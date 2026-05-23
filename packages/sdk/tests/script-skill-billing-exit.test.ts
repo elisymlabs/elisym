@@ -100,6 +100,80 @@ describe('script skills surface billing-exhausted exit', () => {
   });
 });
 
+describe('script skills reject empty output on exit 0', () => {
+  let fixture: ScriptFixture | null = null;
+
+  afterEach(() => {
+    if (fixture) {
+      teardown(fixture);
+    }
+  });
+
+  it('DynamicScriptSkill throws on exit 0 with empty stdout', async () => {
+    fixture = setupScript('#!/bin/sh\nexit 0\n');
+    const skill = new DynamicScriptSkill({
+      name: 'empty',
+      description: 'empty',
+      capabilities: ['empty'],
+      priceSubunits: 1n,
+      asset: NATIVE_SOL,
+      scriptPath: fixture.scriptPath,
+      scriptArgs: [],
+    });
+    const error = await skill.execute(MINIMAL_INPUT, MINIMAL_CTX).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(ScriptBillingExhaustedError);
+    expect(error.message).toMatch(/empty output/);
+  });
+
+  it('StaticScriptSkill throws on exit 0 with empty stdout', async () => {
+    fixture = setupScript('#!/bin/sh\nexit 0\n');
+    const skill = new StaticScriptSkill({
+      name: 'empty',
+      description: 'empty',
+      capabilities: ['empty'],
+      priceSubunits: 1n,
+      asset: NATIVE_SOL,
+      scriptPath: fixture.scriptPath,
+      scriptArgs: [],
+    });
+    const error = await skill.execute(MINIMAL_INPUT, MINIMAL_CTX).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/empty output/);
+  });
+
+  it('treats whitespace-only output as empty', async () => {
+    fixture = setupScript('#!/bin/sh\nprintf "   \\n"\n');
+    const skill = new DynamicScriptSkill({
+      name: 'blank',
+      description: 'blank',
+      capabilities: ['blank'],
+      priceSubunits: 1n,
+      asset: NATIVE_SOL,
+      scriptPath: fixture.scriptPath,
+      scriptArgs: [],
+    });
+    const error = await skill.execute(MINIMAL_INPUT, MINIMAL_CTX).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/empty output/);
+  });
+
+  it('still returns non-empty output unchanged', async () => {
+    fixture = setupScript('#!/bin/sh\necho "ok"\n');
+    const skill = new DynamicScriptSkill({
+      name: 'ok',
+      description: 'ok',
+      capabilities: ['ok'],
+      priceSubunits: 1n,
+      asset: NATIVE_SOL,
+      scriptPath: fixture.scriptPath,
+      scriptArgs: [],
+    });
+    const output = await skill.execute(MINIMAL_INPUT, MINIMAL_CTX);
+    expect(output.data).toBe('ok');
+  });
+});
+
 describe('SCRIPT_EXIT_BILLING_EXHAUSTED', () => {
   it('is the agreed convention value 42', () => {
     expect(SCRIPT_EXIT_BILLING_EXHAUSTED).toBe(42);
