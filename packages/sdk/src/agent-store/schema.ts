@@ -64,7 +64,7 @@ export const ElisymYamlSchema = z
      * not set its own `max_execution_secs`. `0` => unlimited. Omitted =>
      * unlimited (the operator owns this; the protocol imposes no default).
      */
-    execution_timeout_secs: z.number().int().min(0).optional(),
+    execution_timeout_secs: z.number().int().min(0).max(LIMITS.MAX_EXECUTION_SECS).optional(),
   })
   .strict();
 

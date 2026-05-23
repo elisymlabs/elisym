@@ -5,6 +5,7 @@ import {
   formatNetworkBaseline,
   toDTag,
   DEFAULT_KIND_OFFSET,
+  JobWaitTimeoutError,
   SolanaPaymentStrategy,
 } from '@elisym/sdk';
 import type { Agent as ProviderAgent, Asset, PaymentRequestData } from '@elisym/sdk';
@@ -235,11 +236,6 @@ function buildJobCompletionTip(jobId: string, providerNpub: string): string {
     `(job_event_id="${jobId}", rating="positive"|"negative"), ` +
     `or save them with add_contact (npub="${providerNpub}").`
   );
-}
-
-/** Map an awaitJobResult error message to one of our local-history statuses. */
-function classifyJobFailure(message: string): 'timeout' | 'failed' {
-  return /timed out/i.test(message) ? 'timeout' : 'failed';
 }
 
 /**
@@ -717,6 +713,9 @@ async function executeSubmitAndPay(
             onError(error: string) {
               reject(new Error(`Job error: ${error}`));
             },
+            onTimeout(timeoutMs: number) {
+              reject(new JobWaitTimeoutError(timeoutMs));
+            },
           },
           timeoutMs: params.timeoutMs,
           customerSecretKey: agent.identity.secretKey,
@@ -743,8 +742,9 @@ async function executeSubmitAndPay(
     return textResult(`${warningBlock}event_id=${jobId}\n${result}${tip}`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    const failure = classifyJobFailure(msg);
-    const pending = failure === 'timeout' && paymentSig !== undefined;
+    const isTimeout = e instanceof JobWaitTimeoutError;
+    const failure = isTimeout ? 'timeout' : 'failed';
+    const pending = isTimeout && paymentSig !== undefined;
     await recordJobOutcome(agent, {
       jobEventId: jobId,
       capability: params.dTag,
@@ -816,10 +816,7 @@ function awaitJobResult<T>(
     const resolvedOptions = fn({ resolve: safeResolve, reject: safeReject });
     closeFn = agent.client.marketplace.subscribeToJobUpdates(resolvedOptions);
     if (safetyTimeoutMs) {
-      safetyTimer = setTimeout(
-        () => safeReject(new Error('Subscription timed out (safety fallback).')),
-        safetyTimeoutMs,
-      );
+      safetyTimer = setTimeout(() => safeReject(new JobWaitTimeoutError()), safetyTimeoutMs);
     }
   });
 }
@@ -913,6 +910,9 @@ export const customerTools: ToolDefinition[] = [
               onError(error: string) {
                 reject(new Error(`Job error: ${error}`));
               },
+              onTimeout(timeoutMs: number) {
+                reject(new JobWaitTimeoutError(timeoutMs));
+              },
             },
             timeoutMs: timeout,
             customerSecretKey: agent.identity.secretKey,
@@ -926,7 +926,7 @@ export const customerTools: ToolDefinition[] = [
         // A timeout here means "not ready yet", not a failure: the result
         // (kind 6100) persists on the relays, so a later re-poll can still
         // find it. Anything else (provider error feedback) stays an error.
-        if (classifyJobFailure(msg) === 'timeout') {
+        if (e instanceof JobWaitTimeoutError) {
           return textResult(
             `event_id="${input.job_event_id}": result not ready yet (nothing within ${timeout / 1000}s). ` +
               `This is NOT an error - the provider may still be working. Retry get_job_result later ` +
@@ -1355,6 +1355,9 @@ export const customerTools: ToolDefinition[] = [
                 onError(error: string) {
                   reject(new Error(`Job error: ${error}`));
                 },
+                onTimeout(timeoutMs: number) {
+                  reject(new JobWaitTimeoutError(timeoutMs));
+                },
               },
               timeoutMs: timeout,
               customerSecretKey: agent.identity.secretKey,
@@ -1381,8 +1384,9 @@ export const customerTools: ToolDefinition[] = [
         return textResult(`${warningBlock}event_id=${jobId}\n${result}${tip}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        const failure = classifyJobFailure(msg);
-        const pending = failure === 'timeout' && paymentSig !== undefined;
+        const isTimeout = e instanceof JobWaitTimeoutError;
+        const failure = isTimeout ? 'timeout' : 'failed';
+        const pending = isTimeout && paymentSig !== undefined;
         await recordJobOutcome(agent, {
           jobEventId: jobId,
           capability: dTag,

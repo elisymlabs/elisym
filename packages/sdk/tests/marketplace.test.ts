@@ -590,6 +590,25 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
     expect(onError).toHaveBeenCalledWith(expect.stringContaining('Timed out'));
   });
 
+  it('calls onTimeout (not onError) when an onTimeout handler is provided', async () => {
+    const pool = createCallbackMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const onError = vi.fn();
+    const onTimeout = vi.fn();
+
+    svc.subscribeToJobUpdates({
+      jobEventId: 'job1',
+      customerPublicKey: customer.publicKey,
+      callbacks: { onError, onTimeout },
+      timeoutMs: 50,
+    });
+
+    await new Promise((r) => setTimeout(r, 100));
+    expect(onTimeout).toHaveBeenCalledWith(50);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it('cleanup function closes all subscriptions', () => {
     const pool = createCallbackMockPool();
     const svc = new MarketplaceService(pool as any);

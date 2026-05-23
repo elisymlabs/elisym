@@ -156,6 +156,13 @@ export interface JobUpdateCallbacks {
   ) => void;
   onResult?: (content: string, eventId: string) => void;
   onError?: (error: string) => void;
+  /**
+   * Fired when the result wait window expires without a result - a distinct,
+   * structured signal from `onError`. When omitted, the timeout is delivered
+   * through `onError` as a "Timed out waiting..." string for backwards
+   * compatibility.
+   */
+  onTimeout?: (timeoutMs: number) => void;
 }
 
 export interface JobSubscriptionOptions {
