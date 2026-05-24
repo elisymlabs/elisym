@@ -9,14 +9,21 @@ describe('stripRpcSecrets', () => {
   it('masks an embedded query-string API key (Helius style)', () => {
     const scrubbed = stripRpcSecrets('https://rpc.helius.xyz?api-key=hunter2');
     expect(scrubbed).not.toContain('hunter2');
-    expect(scrubbed).toContain('?***');
+    // Third-party host: path + query dropped, host-only with a marker.
+    expect(scrubbed).toBe('https://rpc.helius.xyz/***');
   });
 
   it('masks multiple query params atomically', () => {
     const scrubbed = stripRpcSecrets('https://api.example/rpc?token=XXX&network=mainnet');
     expect(scrubbed).not.toContain('XXX');
     expect(scrubbed).not.toContain('mainnet');
-    expect(scrubbed).toContain('?***');
+    expect(scrubbed).toBe('https://api.example/***');
+  });
+
+  it('strips a path-embedded API key (Alchemy/QuickNode style)', () => {
+    const scrubbed = stripRpcSecrets('https://solana-mainnet.g.alchemy.com/v2/SECRETKEY123');
+    expect(scrubbed).not.toContain('SECRETKEY123');
+    expect(scrubbed).toBe('https://solana-mainnet.g.alchemy.com/***');
   });
 
   it('strips userinfo credentials (http basic auth style)', () => {

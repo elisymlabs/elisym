@@ -36,50 +36,6 @@ export function getRpcUrl(_network: string): string {
   return 'https://api.devnet.solana.com';
 }
 
-// --- SOL formatting (number only, no " SOL" suffix - use SDK's formatSol for display) ---
-
-export function formatLamports(lamports: number): string {
-  const whole = Math.floor(lamports / 1_000_000_000);
-  const frac = lamports % 1_000_000_000;
-  return `${whole}.${String(frac).padStart(9, '0')}`;
-}
-
-// --- SOL parsing ---
-
-export function parseSolToLamports(s: string): number | null {
-  const trimmed = s.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const dotPos = trimmed.indexOf('.');
-  if (dotPos === -1) {
-    const whole = parseInt(trimmed, 10);
-    if (isNaN(whole) || whole < 0) {
-      return null;
-    }
-    return whole * 1_000_000_000;
-  }
-
-  const wholePart = dotPos === 0 ? 0 : parseInt(trimmed.slice(0, dotPos), 10);
-  if (isNaN(wholePart)) {
-    return null;
-  }
-
-  const fracStr = trimmed.slice(dotPos + 1);
-  if (fracStr.length === 0 || fracStr.length > 9) {
-    return null;
-  }
-
-  const padded = fracStr.padEnd(9, '0');
-  const frac = parseInt(padded, 10);
-  if (isNaN(frac)) {
-    return null;
-  }
-
-  return wholePart * 1_000_000_000 + frac;
-}
-
 // --- USDC balance ---
 
 /**

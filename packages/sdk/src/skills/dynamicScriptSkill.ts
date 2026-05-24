@@ -1,6 +1,6 @@
 import { dirname } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
-import { ScriptBillingExhaustedError } from '../llm-health/types';
+import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
 import { runScript } from './scriptSkill';
 import type {
@@ -86,14 +86,20 @@ export class DynamicScriptSkill implements Skill {
       env: this.scriptEnv,
     });
     if (result.spawnError) {
-      throw new Error(`script spawn failed: ${result.spawnError.message}`);
+      throw new ScriptExecutionError(
+        null,
+        result.spawnError.message,
+        'script could not be started',
+      );
     }
     if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {
       throw new ScriptBillingExhaustedError(result.code, result.stdout, result.stderr);
     }
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
-      throw new Error(`script failed (exit ${result.code}): ${detail}`);
+      // Generic message reaches the customer; raw stderr/stdout stays on `detail`
+      // for the operator log and health-monitor classification only.
+      throw new ScriptExecutionError(result.code, detail);
     }
     const output = result.stdout.trim();
     if (output === '') {
@@ -104,7 +110,7 @@ export class DynamicScriptSkill implements Skill {
       // paid -> failed path so recovery terminates it. stderr (if any)
       // carries the underlying reason for the operator log.
       const detail = result.stderr.trim() || '(no stderr)';
-      throw new Error(`script exited 0 but produced empty output: ${detail}`);
+      throw new ScriptExecutionError(result.code, detail, 'script produced empty output');
     }
     return { data: output };
   }

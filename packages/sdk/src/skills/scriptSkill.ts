@@ -128,6 +128,19 @@ export function runScript(
   });
 }
 
+// Env vars that carry agent/operator secrets and must not leak into skill tool
+// subprocesses. The child still inherits the rest of the environment (PATH,
+// HOME, locale, etc.) so legitimate tool scripts keep working.
+const SECRET_ENV_VARS: readonly string[] = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'];
+
+function scopedToolEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of SECRET_ENV_VARS) {
+    delete env[key];
+  }
+  return env;
+}
+
 export interface ScriptSkillParams {
   name: string;
   description: string;
@@ -291,14 +304,28 @@ export class ScriptSkill implements Skill {
       if (value === undefined) {
         continue;
       }
+      const stringValue = String(value);
+      // Reject values beginning with `-` so an LLM-supplied argument can never be
+      // parsed as an option/flag by the target script (argument injection, #25). We
+      // deliberately do NOT insert a `--` end-of-options sentinel: many tool scripts
+      // read positionals directly ($1) and would receive the literal `--` as input.
+      if (stringValue.startsWith('-')) {
+        return `Error: tool "${toolDef.name}" argument "${param.name}" must not begin with "-".`;
+      }
       if (param.required && index === 0) {
-        args.push(String(value));
+        args.push(stringValue);
       } else {
-        args.push(`--${param.name}`, String(value));
+        args.push(`--${param.name}`, stringValue);
       }
     }
 
-    const result = await runScript(cmd, args, { cwd: this.skillDir, signal });
+    // Scoped env: strip operator secrets (LLM API keys) so an untrusted tool
+    // script cannot read them out of its environment.
+    const result = await runScript(cmd, args, {
+      cwd: this.skillDir,
+      signal,
+      env: scopedToolEnv(),
+    });
 
     if (result.spawnError) {
       return `Error: ${result.spawnError.message}`;

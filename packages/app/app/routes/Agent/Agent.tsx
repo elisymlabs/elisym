@@ -39,6 +39,11 @@ const THANKS_VISIBLE_MS = 3000;
 const THANKS_MOUNT_MS = 3700;
 const MAX_DISPLAY_NAME = 60;
 
+// A Nostr pubkey is a 32-byte ed25519 key rendered as 64 lowercase hex chars.
+// The route param is user-controlled, so a malformed value would otherwise
+// reach `nip19.npubEncode` and throw, crashing render. Route those to NotFound.
+const HEX_PUBKEY_RE = /^[0-9a-f]{64}$/;
+
 const TABS = [
   {
     id: 'products' as const,
@@ -308,6 +313,7 @@ function useHydrateArtifacts(
 export default function AgentPage() {
   const params = useParams<{ pubkey: string }>();
   const pubkey = params.pubkey ?? '';
+  const isValidPubkey = HEX_PUBKEY_RE.test(pubkey);
   const [, setLocation] = useLocation();
   const search = useSearch();
 
@@ -458,7 +464,8 @@ export default function AgentPage() {
     }
   }, [search, pubkey, setLocation]);
 
-  const displayName = agentData?.name || (pubkey ? truncateKey(nip19.npubEncode(pubkey), 8) : '');
+  const displayName =
+    agentData?.name || (isValidPubkey ? truncateKey(nip19.npubEncode(pubkey), 8) : '');
 
   // Hoisted above early returns: useBuyForCard is a hook and must run on
   // every render, including the loading / not-found branches.
@@ -471,6 +478,12 @@ export default function AgentPage() {
     agentPicture: agentData?.picture,
     card: currentCard,
   });
+
+  // A malformed pubkey can never resolve to an agent and would crash the
+  // `nip19.npubEncode` paths below, so route it straight to NotFound.
+  if (!isValidPubkey) {
+    return <NotFound />;
+  }
 
   if (!agentData) {
     if (agentStatus === 'not-found') {

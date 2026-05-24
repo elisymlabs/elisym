@@ -6,7 +6,8 @@ import { useTweenedNumber } from '~/hooks/useTweenedNumber';
 import { UsdcIcon } from './UsdcIcon';
 
 const ON_CHAIN_TOOLTIP_TEXT =
-  'Live on-chain counter updated by the elisym client SDK alongside each payment.';
+  'Approximate. A self-reported on-chain counter bumped by clients alongside each ' +
+  'payment - not independently verified against actual token transfers.';
 
 const TOOLTIP_MAX_WIDTH = 240;
 const TOOLTIP_EDGE_MARGIN = 12;
@@ -286,6 +287,10 @@ export function StatsBar() {
           </div>
         </div>
       </div>
+
+      <p className="mt-10 text-center font-mono text-[10px] tracking-[0.08em] text-white/30 uppercase">
+        Approximate - self-reported, not verified
+      </p>
     </div>
   );
 }

@@ -30,12 +30,14 @@ describe('global config roundtrip', () => {
     expect(cfg).toEqual({});
   });
 
-  it('roundtrips a SOL entry', async () => {
+  it('roundtrips a SOL entry (legacy numeric amount normalized to string)', async () => {
     await writeGlobalConfig(globalConfigPath(), {
       session_spend_limits: [{ chain: 'solana', token: 'sol', amount: 0.5 }],
     });
     const cfg = await loadGlobalConfig(globalConfigPath());
-    expect(cfg.session_spend_limits).toEqual([{ chain: 'solana', token: 'sol', amount: 0.5 }]);
+    // The schema now stores amount as a string (preserving exact decimal text);
+    // a legacy numeric value is accepted and normalized to its string form.
+    expect(cfg.session_spend_limits).toEqual([{ chain: 'solana', token: 'sol', amount: '0.5' }]);
   });
 
   it('throws on malformed YAML', async () => {

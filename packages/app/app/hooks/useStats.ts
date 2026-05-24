@@ -6,8 +6,15 @@ import { useLocalQuery } from './useLocalQuery';
 /**
  * Stats sourced from the on-chain `NetworkStats` PDA maintained by the
  * elisym-config program. One `getAccountInfo` per refetch - no signature
- * scans, no per-tx aggregation, no watermark heuristics. Source is monotonic
- * and authoritative by construction.
+ * scans, no per-tx aggregation, no watermark heuristics.
+ *
+ * IMPORTANT: this is a best-effort, self-reported counter, NOT an authoritative
+ * figure. The PDA is bumped by clients alongside payments; nothing verifies the
+ * increments against the real token transfers, so the counter can be inflated
+ * by a misbehaving or malicious client. Treat these numbers as approximate and
+ * label them as such in the UI. A verified figure would require aggregating
+ * actual on-chain transfers (see `aggregateNetworkStats`), which is far too slow
+ * for this view.
  */
 export interface UiNetworkStats {
   jobCount: number;

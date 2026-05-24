@@ -17,7 +17,15 @@ export const SessionSpendLimitEntrySchema = z
       .max(16)
       .regex(/^[a-z0-9]+$/, 'token must be lowercase alphanumeric'),
     mint: z.string().min(1).max(64).optional(),
-    amount: z.number().positive().finite(),
+    // Stored as a string to preserve the operator's exact decimal text (avoids
+    // Number round-tripping to scientific notation). Legacy configs persisted a
+    // number; accept both and normalize to a positive-decimal string.
+    amount: z
+      .union([z.string(), z.number()])
+      .transform((value) => (typeof value === 'number' ? String(value) : value.trim()))
+      .refine((value) => /^\d+(?:\.\d+)?$/.test(value) && /[1-9]/.test(value), {
+        message: 'amount must be a positive decimal (e.g. "0.5", "1")',
+      }),
   })
   .strict();
 

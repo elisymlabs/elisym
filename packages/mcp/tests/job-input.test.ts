@@ -46,34 +46,64 @@ describe('readJobInputFile', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  // The temp files live outside the package cwd, so pass allowOutsideCwd to
+  // exercise the underlying read behavior; confinement is covered separately below.
   it('reads a regular file as utf-8', async () => {
     const p = join(dir, 'in.txt');
     await writeFile(p, 'hello world');
-    expect(await readJobInputFile(p)).toBe('hello world');
+    expect(await readJobInputFile(p, { allowOutsideCwd: true })).toBe('hello world');
   });
 
   it('rejects a missing file with a path-bearing message', async () => {
     const p = join(dir, 'does-not-exist.txt');
-    await expect(readJobInputFile(p)).rejects.toThrow(/does not exist/);
+    await expect(readJobInputFile(p, { allowOutsideCwd: true })).rejects.toThrow(/does not exist/);
   });
 
   it('rejects a directory path (not a regular file)', async () => {
     const sub = join(dir, 'sub');
     await mkdir(sub);
-    await expect(readJobInputFile(sub)).rejects.toThrow(/not a regular file/);
+    await expect(readJobInputFile(sub, { allowOutsideCwd: true })).rejects.toThrow(
+      /not a regular file/,
+    );
   });
 
   it('rejects oversize content via stat()', async () => {
     const p = join(dir, 'big.txt');
     // 1 byte over the 100_000 limit.
     await writeFile(p, 'a'.repeat(100_001));
-    await expect(readJobInputFile(p)).rejects.toThrow(/too large/);
+    await expect(readJobInputFile(p, { allowOutsideCwd: true })).rejects.toThrow(/too large/);
   });
 
   it('rejects an excessively long path argument before touching the FS', async () => {
     // Construct a path string longer than MAX_INPUT_PATH_LEN (4096).
     const huge = 'x'.repeat(5000);
     await expect(readJobInputFile(huge)).rejects.toThrow(/too long/);
+  });
+
+  it('refuses a path outside the working directory unless allow_outside_cwd is set', async () => {
+    const p = join(dir, 'outside.txt');
+    await writeFile(p, 'data');
+    // Default: confined to cwd subtree (the temp dir is outside it).
+    await expect(readJobInputFile(p)).rejects.toThrow(/outside the working directory/);
+  });
+
+  it('always refuses sensitive files even with allow_outside_cwd', async () => {
+    const secret = join(dir, '.secrets.json');
+    await writeFile(secret, '{"nostr_secret_key":"x"}');
+    await expect(readJobInputFile(secret, { allowOutsideCwd: true })).rejects.toThrow(
+      /sensitive file/,
+    );
+  });
+
+  it('reads a file inside the working directory by default', async () => {
+    // A file under process.cwd() is allowed without the opt-in.
+    const p = join(process.cwd(), `elisym-jobinput-test-${Date.now()}.txt`);
+    await writeFile(p, 'inside cwd');
+    try {
+      expect(await readJobInputFile(p)).toBe('inside cwd');
+    } finally {
+      await rm(p, { force: true });
+    }
   });
 });
 

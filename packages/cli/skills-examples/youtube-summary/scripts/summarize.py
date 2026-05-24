@@ -12,17 +12,95 @@ Long transcripts are split into chunks for LLM processing.
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import parse_qs, urlparse
 
 CHUNK_SIZE = 30_000  # ~7500 tokens, safe for rate limits
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(SCRIPT_DIR, ".cache")
 COOKIES_FILE = os.path.join(os.path.dirname(SCRIPT_DIR), "cookies.txt")
+
+# Strict allowlist of YouTube hosts. Anything else (or any IP/metadata host) is rejected.
+ALLOWED_YOUTUBE_HOSTS = frozenset({
+    "www.youtube.com",
+    "youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+})
+# YouTube video ids are exactly 11 chars from this charset.
+VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _is_blocked_ip_host(hostname: str) -> bool:
+    """True if the hostname is an IP literal in a private/loopback/link-local/metadata range."""
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _host_is_allowed(hostname: str | None) -> bool:
+    """Exact-match allowlist check, plus a strict .youtube.com suffix (never a substring match)."""
+    if not hostname:
+        return False
+    host = hostname.lower()
+    if _is_blocked_ip_host(host):
+        return False
+    if host in ALLOWED_YOUTUBE_HOSTS:
+        return True
+    return host.endswith(".youtube.com")
+
+
+def extract_video_id(parsed) -> str | None:
+    """Extract the 11-char YouTube video id from a parsed URL, or None."""
+    host = (parsed.hostname or "").lower()
+    if host == "youtu.be" or host.endswith(".youtu.be"):
+        candidate = parsed.path.lstrip("/").split("/", 1)[0]
+        return candidate if VIDEO_ID_RE.match(candidate) else None
+    query_id = parse_qs(parsed.query).get("v", [None])[0]
+    if query_id and VIDEO_ID_RE.match(query_id):
+        return query_id
+    for prefix in ("/embed/", "/shorts/", "/v/"):
+        if parsed.path.startswith(prefix):
+            candidate = parsed.path[len(prefix):].split("/", 1)[0]
+            return candidate if VIDEO_ID_RE.match(candidate) else None
+    return None
+
+
+def canonicalize_youtube_url(url: str) -> str | None:
+    """Validate a YouTube URL and return a host-controlled canonical URL.
+
+    Prefers extracting the 11-char video id and rebuilding a canonical
+    https://www.youtube.com/watch?v=<id> URL so the attacker never controls
+    the host yt-dlp connects to. Falls back to the validated original URL when
+    no id can be extracted but the host passed strict validation. Returns None
+    if the URL fails scheme/host validation.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if not _host_is_allowed(parsed.hostname):
+        return None
+    video_id = extract_video_id(parsed)
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return url
 
 
 def _cookies_args() -> list[str]:
@@ -234,13 +312,14 @@ def main():
     parser.add_argument("--chunk", type=int, default=None, help="Return specific chunk (0-indexed)")
     args = parser.parse_args()
 
-    if not re.search(r"(youtube\.com|youtu\.be)", args.url):
+    safe_url = canonicalize_youtube_url(args.url)
+    if safe_url is None:
         print("Error: not a valid YouTube URL", file=sys.stderr)
         sys.exit(1)
 
     # If requesting a specific chunk, read from cache
     if args.chunk is not None:
-        cached = load_cache(args.url)
+        cached = load_cache(safe_url)
         if not cached:
             print("Error: no cached transcript. Call without --chunk first.", file=sys.stderr)
             sys.exit(1)
@@ -259,7 +338,7 @@ def main():
 
     # Fetch transcript
     print("Fetching video info...", file=sys.stderr)
-    video_info = get_video_info(args.url)
+    video_info = get_video_info(safe_url)
     print(f"Video: {video_info['title']} ({video_info['duration'] // 60} min)", file=sys.stderr)
 
     if args.lang == "auto":
@@ -269,12 +348,12 @@ def main():
         lang = args.lang
 
     print(f"Fetching subtitles (lang={lang})...", file=sys.stderr)
-    transcript = fetch_subtitles(args.url, lang)
+    transcript = fetch_subtitles(safe_url, lang)
 
     if not transcript:
         print("No subtitles found, trying Whisper transcription...", file=sys.stderr)
         try:
-            transcript = transcribe_audio(args.url)
+            transcript = transcribe_audio(safe_url)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -287,7 +366,7 @@ def main():
     print(f"Transcript: {len(transcript)} chars, {len(chunks)} chunk(s)", file=sys.stderr)
 
     # Cache for chunk retrieval
-    save_cache(args.url, {
+    save_cache(safe_url, {
         "title": video_info["title"],
         "channel": video_info["channel"],
         "duration_min": video_info["duration"] // 60,

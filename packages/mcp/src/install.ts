@@ -75,6 +75,12 @@ export async function safeRewriteJson(
         `Close the MCP client and re-run.`,
     );
   }
+  // Known, ACCEPTED residual TOCTOU: a concurrent writer could still land
+  // between this recheck and the rename(2) below. The recheck converts the
+  // common case (client rewrote the file while we were mutating it) into a
+  // visible "modified during update" error instead of silent data loss; a
+  // complete fix would require advisory file locking (proper-lockfile / flock),
+  // a dependency we intentionally do not add here.
   await writeJsonAtomic(path, newConfig);
 }
 

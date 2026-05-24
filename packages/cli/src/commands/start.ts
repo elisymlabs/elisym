@@ -126,7 +126,9 @@ export async function cmdStart(
       console.log(`     Network  ${walletNetwork}`);
       console.log(`     Address  ${solanaAddress}`);
       if (process.env.SOLANA_RPC_URL) {
-        console.log(`     RPC      ${process.env.SOLANA_RPC_URL} (custom)`);
+        // FIX #10: a custom SOLANA_RPC_URL routinely carries an API key in its
+        // userinfo / query / path - redact before printing to the banner.
+        console.log(`     RPC      ${stripRpcSecrets(process.env.SOLANA_RPC_URL)} (custom)`);
       }
       console.log(`     SOL      ${formatSol(balance)} (${balance} lamports)`);
       console.log(`     USDC     ${formatAssetAmount(USDC_SOLANA_DEVNET, usdcBalance)}`);
@@ -729,16 +731,37 @@ export async function cmdStart(
 }
 
 /**
- * Return a log-safe representation of an RPC URL. Strips any userinfo
- * and query string so credentials embedded by third-party RPC
- * providers (Helius/Alchemy/QuickNode style `?api-key=...`) never land
- * in verbose stderr output.
+ * Public Solana RPC hosts whose URL path carries no secret. For these the
+ * path is safe to keep; every other host is treated as a third-party RPC
+ * (Helius/Alchemy/QuickNode) whose path may embed an API key.
+ */
+const PUBLIC_SOLANA_RPC_HOSTS = new Set([
+  'api.devnet.solana.com',
+  'api.mainnet-beta.solana.com',
+  'api.testnet.solana.com',
+]);
+
+/**
+ * Return a log-safe representation of an RPC URL. Strips any userinfo and
+ * query string so credentials embedded by third-party RPC providers
+ * (Helius/Alchemy/QuickNode style `?api-key=...`) never land in verbose
+ * stderr output or the startup banner.
+ *
+ * FIX #11: Alchemy/QuickNode embed the API key in the URL *path* (e.g.
+ * `https://solana-mainnet.g.alchemy.com/v2/<APIKEY>`), so stripping only the
+ * userinfo + query still leaks the key. For any host that is not a public
+ * `api.*.solana.com` endpoint we therefore redact the path too, returning just
+ * `protocol//host/***`. Public Solana hosts keep their (secret-free) path.
  */
 export function stripRpcSecrets(raw: string): string {
   try {
     const parsed = new URL(raw);
     parsed.username = '';
     parsed.password = '';
+    if (!PUBLIC_SOLANA_RPC_HOSTS.has(parsed.hostname)) {
+      // Third-party RPC: the path may carry an API key - drop it entirely.
+      return `${parsed.protocol}//${parsed.host}/***`;
+    }
     const marker = parsed.search.length > 0 ? '?***' : '';
     parsed.search = '';
     return `${parsed.toString()}${marker}`;

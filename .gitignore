@@ -36,6 +36,9 @@ CLAUDE.md
 .mcpregistry_github_token
 .mcpregistry_registry_token
 
+# deepsec security scanner (scaffold, local findings data, and .env.local with keys)
+.deepsec/
+
 # Anchor / Solana
 target/
 .anchor/

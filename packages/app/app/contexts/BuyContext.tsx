@@ -49,6 +49,7 @@ import { useJobHistory } from '~/hooks/useJobHistory';
 import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
 import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
+import { formatCardPrice } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
@@ -285,12 +286,39 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               }
 
               try {
+                // Refuse to pay a card whose recipient we cannot verify: no
+                // advertised address, or a chain we don't settle on. Mirrors
+                // the MCP "Cannot verify payment recipient" guard - without a
+                // known recipient a provider could redirect funds anywhere.
+                const recipientAddress = card.payment?.address;
+                if (!recipientAddress) {
+                  throw new Error(
+                    'Cannot verify payment recipient - the provider published no payment ' +
+                      'address for this product. Refusing to proceed.',
+                  );
+                }
+                if (card.payment?.chain !== 'solana') {
+                  throw new Error(
+                    `Unsupported payment chain "${card.payment?.chain ?? 'unknown'}" - ` +
+                      'only Solana payments are supported. Refusing to proceed.',
+                  );
+                }
+
                 const protocolConfig = await getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID);
+
+                // Bound the charge to the advertised price (subunits). Without
+                // this a malicious provider can inflate `paymentRequest.amount`
+                // after the customer committed (bait-and-switch). `job_price` is
+                // an integer subunit value; coerce via BigInt with no float math.
+                const advertisedPrice = card.payment?.job_price;
+                const maxAmountLamports =
+                  advertisedPrice === undefined ? undefined : BigInt(advertisedPrice);
 
                 const validationError = payment.validatePaymentRequest(
                   paymentRequestJson,
                   { feeBps: protocolConfig.feeBps, treasury: protocolConfig.treasury },
-                  card.payment?.address,
+                  recipientAddress,
+                  { maxAmountLamports },
                 );
                 if (validationError) {
                   throw new Error(validationError.message);
@@ -298,7 +326,21 @@ export function BuyProvider({ children }: { children: ReactNode }) {
 
                 const paymentRequest: PaymentRequestData = JSON.parse(paymentRequestJson);
 
-                toast.loading('Approve the transaction in your wallet...', { id: toastId });
+                // The `amount` tag on the payment-required feedback is what the
+                // provider claims to charge; `paymentRequest.amount` is what the
+                // signed request will actually move. They must agree, otherwise
+                // the feedback understated the real charge - abort.
+                if (amount !== undefined && amount !== paymentRequest.amount) {
+                  throw new Error(
+                    `Payment amount mismatch: feedback advertised ${amount} but the signed ` +
+                      `request charges ${paymentRequest.amount}. Refusing to proceed.`,
+                  );
+                }
+
+                const amountLabel = formatCardPrice(card.payment, paymentRequest.amount);
+                toast.loading(`Approve the ${amountLabel} payment in your wallet...`, {
+                  id: toastId,
+                });
 
                 const versionedTx = await buildVersionedPaymentTransaction(
                   paymentRequest,

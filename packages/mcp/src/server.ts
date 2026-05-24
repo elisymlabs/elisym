@@ -62,6 +62,20 @@ if (toolMap.size !== allTools.length) {
 export const registeredTools: readonly ToolDefinition[] = allTools;
 
 /**
+ * Scrub secret/key shapes from a string before it is returned to the LLM:
+ * Nostr `nsec` bech32 keys, Anthropic/OpenAI `sk-` API keys, 64-char hex
+ * (private-key/seed shape), and long base58 (secret-key length). Public 32-44
+ * char base58 addresses are intentionally left alone.
+ */
+function redactSecrets(text: string): string {
+  return text
+    .replace(/\bnsec1[02-9ac-hj-np-z]{20,}\b/gi, '[REDACTED]')
+    .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g, '[REDACTED]')
+    .replace(/\b[0-9a-fA-F]{64}\b/g, '[REDACTED]')
+    .replace(/\b[1-9A-HJ-NP-Za-km-z]{80,}\b/g, '[REDACTED]');
+}
+
+/**
  * turn any thrown value into a short, LLM-friendly message. Full stack and
  * original error go to stderr for operator debugging; the LLM only sees a one-line
  * summary so we don't leak internal paths / stack traces into the model context.
@@ -90,7 +104,10 @@ export function safeError(context: string, e: unknown): CallToolResult {
   }
 
   return {
-    content: [{ type: 'text' as const, text: msg }],
+    // pino redact does not cover error-message string contents, so scrub key/secret
+    // shapes from the LLM-facing message itself (e.g. a JSON parse error that echoes
+    // a secrets file, or an RPC error embedding a key).
+    content: [{ type: 'text' as const, text: redactSecrets(msg) }],
     isError: true,
   };
 }
@@ -219,7 +236,8 @@ export async function startServer(ctx: AgentContext): Promise<void> {
       const { value: balanceLamports } = await rpc
         .getBalance(address(agent.solanaKeypair.publicKey))
         .send();
-      const balance = Number(balanceLamports);
+      // balanceLamports is a bigint from the RPC - keep it bigint (no Number
+      // round-trip, which would lose precision on large balances).
       return {
         contents: [
           {
@@ -229,8 +247,8 @@ export async function startServer(ctx: AgentContext): Promise<void> {
               {
                 address: agent.solanaKeypair.publicKey,
                 network: agent.network,
-                balance_lamports: balance,
-                balance_sol: formatSolNumeric(BigInt(balance)),
+                balance_lamports: balanceLamports.toString(),
+                balance_sol: formatSolNumeric(balanceLamports),
                 chain: 'solana',
               },
               null,

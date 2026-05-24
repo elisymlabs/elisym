@@ -13,6 +13,7 @@ export {
 export {
   LlmHealthError,
   ScriptBillingExhaustedError,
+  ScriptExecutionError,
   type LlmHealthErrorReason,
   type LlmHealthSnapshotEntry,
   type LlmHealthStatus,

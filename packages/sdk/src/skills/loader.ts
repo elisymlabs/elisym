@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
-import { LAMPORTS_PER_SOL, LIMITS } from '../constants';
+import { LIMITS } from '../constants';
 import type { SkillRateLimit } from '../llm-health/types';
 import {
   type Asset,
@@ -133,11 +133,18 @@ export interface LoadSkillsOptions {
 }
 
 function solToLamports(sol: string | number): bigint {
-  const asNumber = typeof sol === 'string' ? Number(sol) : sol;
-  if (!Number.isFinite(asNumber) || asNumber < 0) {
+  const asString = (typeof sol === 'string' ? sol : String(sol)).trim();
+  // Free skills declare price 0; `parseAssetAmount` rejects non-positive amounts,
+  // so the zero case is handled here. Everything else goes through the exact
+  // integer/string parser - no floating-point multiply (see money-math rule).
+  if (/^0+(?:\.0+)?$/.test(asString)) {
+    return 0n;
+  }
+  try {
+    return parseAssetAmount(NATIVE_SOL, asString);
+  } catch {
     throw new Error(`Invalid SOL amount: ${sol}`);
   }
-  return BigInt(Math.round(asNumber * LAMPORTS_PER_SOL));
 }
 
 /**
@@ -495,11 +502,10 @@ export function validateSkillFrontmatter(
     }
     const priceString = typeof priceRaw === 'number' ? String(priceRaw) : priceRaw;
     if (asset === NATIVE_SOL) {
-      // Preserve historical rounding behaviour: number * LAMPORTS_PER_SOL +
-      // Math.round. `parseAssetAmount` would reject non-positive inputs before
-      // we could check `allowFreeSkills`, so we keep the legacy path for SOL
-      // and introduce the strict parser only for new token types.
-      priceSubunits = solToLamports(priceRaw);
+      // SOL prices route through `solToLamports`, which uses the same exact
+      // integer parser as other assets but tolerates a 0 price so the
+      // `allowFreeSkills` check below can run (parseAssetAmount rejects 0).
+      priceSubunits = solToLamports(priceString);
     } else {
       try {
         priceSubunits = parseAssetAmount(asset, priceString);
@@ -637,6 +643,18 @@ export function validateSkillFrontmatter(
 }
 
 function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: LoaderLogger): Skill {
+  // Containment for `image_file`, matching `script`/`output_file` (which throw).
+  // The image is decorative, so an out-of-dir path is dropped with a warning
+  // rather than failing the load. Without this, `image_file: ../../.secrets.json`
+  // would be read and uploaded to a public media host at startup (exfiltration).
+  let imageFile = parsed.imageFile;
+  if (imageFile !== undefined && resolveInsidePath(skillDir, imageFile) === null) {
+    logger.warn?.(
+      { skill: parsed.name, imageFile },
+      'SKILL.md "image_file" escapes the skill directory; ignoring it',
+    );
+    imageFile = undefined;
+  }
   switch (parsed.mode) {
     case 'llm':
       return new ScriptSkill({
@@ -651,7 +669,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         maxToolRounds: parsed.maxToolRounds,
         llmOverride: parsed.llmOverride,
         image: parsed.image,
-        imageFile: parsed.imageFile,
+        imageFile,
         logger,
       });
     case 'static-file': {
@@ -674,7 +692,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         asset: parsed.asset,
         outputFilePath,
         image: parsed.image,
-        imageFile: parsed.imageFile,
+        imageFile,
         llmOverride: parsed.llmOverride,
       });
     }
@@ -700,7 +718,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         scriptArgs: parsed.scriptArgs,
         scriptTimeoutMs: parsed.scriptTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
         image: parsed.image,
-        imageFile: parsed.imageFile,
+        imageFile,
         llmOverride: parsed.llmOverride,
       });
     }

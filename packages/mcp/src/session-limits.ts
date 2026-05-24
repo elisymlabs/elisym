@@ -70,7 +70,11 @@ export async function buildEffectiveLimits(): Promise<Map<string, bigint>> {
       throw new Error(`Duplicate session_spend_limit entry in ${globalConfigPath()}: ${key}`);
     }
     seen.add(key);
-    map.set(key, parseAssetAmount(asset, entry.amount.toString()));
+    // `entry.amount` is already a positive-decimal string (the global-schema
+    // field transforms string|number into a string), so it feeds straight into
+    // parseAssetAmount's integer math - no Number() coercion, no scientific-
+    // notation round-trip.
+    map.set(key, parseAssetAmount(asset, entry.amount));
   }
   return map;
 }
