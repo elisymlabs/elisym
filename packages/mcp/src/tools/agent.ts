@@ -10,7 +10,7 @@ import {
 import { generateSecretKey, nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import { listAgentNames, loadAgentConfig, saveAgentConfig } from '../config.js';
-import type { AgentInstance, AgentSecurityFlags, SolanaNetwork } from '../context.js';
+import type { AgentContext, AgentInstance, AgentSecurityFlags, SolanaNetwork } from '../context.js';
 import { logger } from '../logger.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, errorResult, textResult } from './types.js';
@@ -119,6 +119,21 @@ export async function buildAgentInstance(
     security: config.security ?? {},
     agentDir: resolved?.dir,
   };
+}
+
+/**
+ * Tear down an agent: close its relay client, zero its Solana secret key bytes,
+ * scrub the Nostr identity, and drop it from the registry. The agent will be
+ * reloaded from disk if switched back to later. Shared by `switch_agent` and
+ * `stop_agent`.
+ */
+function scrubAgent(ctx: AgentContext, agent: AgentInstance): void {
+  agent.client.close();
+  if (agent.solanaKeypair) {
+    agent.solanaKeypair.secretKey.fill(0);
+  }
+  agent.identity.scrub();
+  ctx.registry.delete(agent.name);
 }
 
 export const agentTools: ToolDefinition[] = [
@@ -244,43 +259,48 @@ export const agentTools: ToolDefinition[] = [
         // No active agent yet - allow the switch
       }
 
-      // scrub and close the old agent before switching so secret key bytes
-      // don't linger in memory. The old agent is removed from the registry and
-      // will be reloaded from disk if switched back to later.
+      // Resolve the OLD agent up front (if any) but do NOT tear it down yet. The
+      // target must be loaded and validated FIRST so a bad target name leaves the
+      // current session fully intact. Only after the target is ready do we scrub
+      // and close the old agent so its secret key bytes don't linger in memory.
+      let old: AgentInstance | undefined;
       try {
-        const old = ctx.active();
-        if (old.name !== input.name) {
-          old.client.close();
-          if (old.solanaKeypair) {
-            old.solanaKeypair.secretKey.fill(0);
-          }
-          old.identity.scrub();
-          ctx.registry.delete(old.name);
-        }
+        old = ctx.active();
       } catch {
-        // No active agent - nothing to scrub
+        // No active agent - nothing to scrub later.
       }
 
-      // Check if already loaded
+      // Fast path: target already loaded in the registry. No disk load needed,
+      // so there is nothing to fail - flip the active pointer and scrub the old.
       if (ctx.registry.has(input.name)) {
+        if (old && old.name !== input.name) {
+          scrubAgent(ctx, old);
+        }
         ctx.activeAgentName = input.name;
         const agent = ctx.active();
         const npub = agent.identity.npub;
         return textResult(`Switched to agent "${input.name}" (${npub}).`);
       }
 
-      // Load from disk
+      // Load + build the target from disk FIRST. On any failure here the current
+      // agent is untouched and we surface the error.
+      let instance: AgentInstance;
       try {
         const config = await loadAgentConfig(input.name);
-        const instance = await buildAgentInstance(input.name, config);
-        ctx.register(instance, true);
-
-        const npub = instance.identity.npub;
-        return textResult(`Loaded and switched to agent "${input.name}" (${npub}).`);
+        instance = await buildAgentInstance(input.name, config);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return errorResult(`Failed to load agent "${input.name}": ${msg}`);
       }
+
+      // Target is ready - now it is safe to tear down the old agent.
+      if (old && old.name !== input.name) {
+        scrubAgent(ctx, old);
+      }
+      ctx.register(instance, true);
+
+      const npub = instance.identity.npub;
+      return textResult(`Loaded and switched to agent "${input.name}" (${npub}).`);
     },
   }),
 
@@ -352,13 +372,8 @@ export const agentTools: ToolDefinition[] = [
         return errorResult(`Agent "${input.name}" is not loaded.`);
       }
 
-      agent.client.close();
-      // best-effort scrub of secret key bytes before dropping the agent.
-      if (agent.solanaKeypair) {
-        agent.solanaKeypair.secretKey.fill(0);
-      }
-      agent.identity.scrub();
-      ctx.registry.delete(input.name);
+      // Close the client, zero secret key bytes, scrub identity, drop from registry.
+      scrubAgent(ctx, agent);
 
       return textResult(`Agent "${input.name}" stopped and removed.`);
     },

@@ -19,6 +19,7 @@ import {
   freeLlmCustomerKey,
   LlmHealthError,
   ScriptBillingExhaustedError,
+  ScriptExecutionError,
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
@@ -179,6 +180,37 @@ class ExecutionBudgetExceededError extends Error {
     super(`Execution exceeded budget (${Math.round(budgetMs / 1000)}s)`);
     this.name = 'ExecutionBudgetExceededError';
   }
+}
+
+// Allowlist of safe, informative messages the runtime itself produces and may
+// forward verbatim to a remote customer. Everything not matched here (raw script
+// stderr, provider internals, unexpected errors) collapses to a fixed generic
+// string; full detail is kept in the operator log only.
+const CUSTOMER_SAFE_MESSAGE_PREFIXES = ['Input too long', 'No skill matched', 'Payment timeout'];
+
+/**
+ * Resolve the error message that is safe to send to a remote customer. Inverts
+ * the old leaky denylist (forward-unless-contains-"API") into an allowlist so
+ * raw subprocess output or provider error bodies can never leak.
+ */
+function customerSafeMessage(error: unknown): string {
+  if (error instanceof AgentUnavailableError || error instanceof ExecutionBudgetExceededError) {
+    return error.message;
+  }
+  if (error instanceof ScriptExecutionError) {
+    // Generic summary only - `error.detail` (raw stderr/stdout) stays operator-side.
+    return error.message;
+  }
+  if (error instanceof ScriptBillingExhaustedError) {
+    return AGENT_UNAVAILABLE_MESSAGE;
+  }
+  if (
+    error instanceof Error &&
+    CUSTOMER_SAFE_MESSAGE_PREFIXES.some((prefix) => error.message.startsWith(prefix))
+  ) {
+    return error.message;
+  }
+  return 'Internal processing error';
 }
 
 function bodyLooksLikeBilling(body: string): boolean {
@@ -434,7 +466,16 @@ export class AgentRuntime {
     // self-flapping for chronic ones (acceptable - operator log makes
     // this visible).
     if (skill.mode !== 'llm') {
-      const message = err instanceof Error ? err.message : String(err);
+      // Use the raw stderr/stdout (`detail`) for billing/invalid marker scanning
+      // and the operator log - the generic `.message` no longer carries it.
+      let message: string;
+      if (err instanceof ScriptExecutionError) {
+        message = err.detail;
+      } else if (err instanceof Error) {
+        message = err.message;
+      } else {
+        message = String(err);
+      }
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
@@ -713,22 +754,18 @@ export class AgentRuntime {
           `[${job.jobId.slice(0, 8)}] Keeping status=paid; recovery will re-execute when LLM pair recovers (24h cutoff).`,
         );
       }
-      this.callbacks.onJobError?.(job.jobId, e.message);
+      // Operator log keeps the full detail (including raw script stderr from a
+      // ScriptExecutionError); the customer only ever receives an allowlisted,
+      // generic message via `customerSafeMessage`.
+      const operatorMessage =
+        e instanceof ScriptExecutionError
+          ? `${e.message}: ${e.detail}`
+          : (e.message ?? 'Unknown error');
+      this.callbacks.onJobError?.(job.jobId, operatorMessage);
 
-      // W8: Sanitize error messages before sending to customer.
-      // `AgentUnavailableError` is the runtime's own marker for a
-      // billing/invalid health flip and carries the canonical
-      // customer-facing string - pass it through verbatim. Anything
-      // mentioning "API" otherwise is a leaky provider error and gets
-      // masked.
-      let safeMessage: string;
-      if (e instanceof AgentUnavailableError) {
-        safeMessage = e.message;
-      } else if (e.message?.includes('API')) {
-        safeMessage = 'Internal processing error';
-      } else {
-        safeMessage = e.message ?? 'Unknown error';
-      }
+      // W8: only forward known-safe messages to the customer; everything else is
+      // masked to a fixed generic string so subprocess/provider internals never leak.
+      const safeMessage = customerSafeMessage(e);
       await this.transport
         .sendFeedback(job, { type: 'error', message: safeMessage })
         .catch(() => {});

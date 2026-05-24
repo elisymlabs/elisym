@@ -186,7 +186,11 @@ export const feedbackContactsTools: ToolDefinition[] = [
         contact.name ? `  name: ${contact.name}` : null,
         contact.lastCapability ? `  last capability: ${contact.lastCapability}` : null,
       ].filter((line): line is string => line !== null);
-      return textResult(lines.join('\n'));
+      // contact.name originates from remote discovery data; even though it is
+      // sanitizeField'd above, wrap the response in the untrusted boundary so the
+      // injection scan + markers apply, matching list_contacts (#18).
+      const { text } = sanitizeUntrusted(lines.join('\n'), 'text');
+      return textResult(text);
     },
   }),
 

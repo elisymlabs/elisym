@@ -300,7 +300,12 @@ describe('DiscoveryService.streamAgents', () => {
     const jobEventId = 'real-job-id';
     const ts = Math.floor(Date.now() / 1000);
 
-    queryBatched.mockResolvedValueOnce([makeResultEvent(provider, jobEventId, { createdAt: ts })]);
+    // Real result events tag the customer (requestEvent.pubkey) in `p`; the
+    // discovery ranking binds the feedback author to that customer, so the
+    // fixture must include it for the legit "customer rated their own job" path.
+    queryBatched.mockResolvedValueOnce([
+      makeResultEvent(provider, jobEventId, { createdAt: ts, tags: [['p', customer.publicKey]] }),
+    ]);
     queryBatchedByTag.mockResolvedValueOnce([
       makeFeedbackEvent(customer, provider.publicKey, {
         status: 'payment-completed',

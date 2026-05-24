@@ -367,13 +367,14 @@ async function setSessionLimit(
   mint: string | undefined,
 ): Promise<void> {
   const asset = resolveAssetOrThrow(chain, token, mint);
-  // Validate the amount format strictly — uses the same BigInt integer math
-  // that enforcement applies at runtime.
-  parseAssetAmount(asset, amount);
-  const parsedAmount = Number(amount);
-  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-    throw new Error(`amount "${amount}" must be a positive decimal`);
-  }
+  // Validate the amount format strictly using the same integer math that
+  // enforcement applies at runtime. parseAssetAmount rejects non-positive,
+  // scientific-notation, and otherwise malformed inputs, so it is the sole
+  // validation gate - we then store the trimmed decimal STRING as-is (the
+  // schema field is a positive-decimal string; routing money through Number
+  // would lose precision and risk scientific-notation round-trips).
+  const trimmedAmount = amount.trim();
+  parseAssetAmount(asset, trimmedAmount);
 
   const path = globalConfigPath();
   const cfg = await loadGlobalConfig(path);
@@ -388,7 +389,7 @@ async function setSessionLimit(
     chain: asset.chain,
     token: asset.token,
     mint: asset.mint,
-    amount: parsedAmount,
+    amount: trimmedAmount,
   };
   if (idx >= 0) {
     entries[idx] = newEntry;
@@ -397,7 +398,7 @@ async function setSessionLimit(
   }
   await writeGlobalConfig(path, { session_spend_limits: entries });
   console.log(
-    `Session spend limit set to ${amount} ${asset.symbol} (process-wide). ` +
+    `Session spend limit set to ${trimmedAmount} ${asset.symbol} (process-wide). ` +
       `Restart the MCP server to apply.`,
   );
 }

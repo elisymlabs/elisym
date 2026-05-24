@@ -673,12 +673,19 @@ script: ./fail.sh
     chmodSync(scriptPath, 0o755);
 
     const skills = loadSkillsFromDir(tmpDir);
-    await expect(
-      skills[0]!.execute(
+    let thrown: unknown;
+    try {
+      await skills[0]!.execute(
         { data: '', inputType: 'text', tags: ['fail'], jobId: 'j3' },
         { agentName: 't', agentDescription: '' },
-      ),
-    ).rejects.toThrow(/exit 7.*boom/);
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    // The thrown message is generic and customer-safe ("script failed (exit 7)");
+    // the raw stderr ("boom") lives only on the operator-side `detail` field.
+    expect((thrown as Error).message).toMatch(/script failed \(exit 7\)/);
+    expect((thrown as { detail?: string }).detail).toContain('boom');
   });
 
   it('loads a dynamic-script skill and execute pipes stdin to stdout', async () => {

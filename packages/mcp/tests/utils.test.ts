@@ -45,6 +45,14 @@ describe('formatSolShort', () => {
   it('formats whole SOL', () => {
     expect(formatSolShort(1_000_000_000n)).toBe('1.0000 SOL');
   });
+
+  it('formats negative lamports with a leading minus sign', () => {
+    expect(formatSolShort(-1_500_000_000n)).toBe('-1.5000 SOL');
+  });
+
+  it('formats a small negative amount', () => {
+    expect(formatSolShort(-10_000_000n)).toBe('-0.0100 SOL');
+  });
 });
 
 describe('parseSolToLamports', () => {

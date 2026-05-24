@@ -21,7 +21,16 @@ export type QuickVerifyReason =
   | 'invalid_input';
 
 export interface QuickVerifyResult {
-  verified: boolean;
+  /**
+   * True when the recipient address received funds in this transaction.
+   *
+   * NOTE: this is NOT proof of a valid elisym job payment. It does not check
+   * the payment `reference` key or that the amount matches the job price - it
+   * is a best-effort signal for the fast discovery-ranking path, where the
+   * original payment request is unavailable. For an authoritative check
+   * (amount + reference) use `SolanaPaymentStrategy.verifyPayment`.
+   */
+  receivedFunds: boolean;
   txSignature: string;
   reason?: QuickVerifyReason;
 }
@@ -32,6 +41,8 @@ interface VerifyCacheEntry {
 }
 
 const NEGATIVE_CACHE_TTL_MS = 60_000;
+// Cap so a long-running process cannot grow the cache without bound (#44).
+const MAX_CACHE_ENTRIES = 5_000;
 
 const verifyCache = new Map<string, VerifyCacheEntry>();
 
@@ -45,24 +56,33 @@ export async function verifyJobPaymentQuick(
   expectedRecipient: Address,
 ): Promise<QuickVerifyResult> {
   if (!txSignature) {
-    return { verified: false, txSignature: '', reason: 'invalid_input' };
+    return { receivedFunds: false, txSignature: '', reason: 'invalid_input' };
   }
   if (!expectedRecipient || !isAddress(expectedRecipient as string)) {
-    return { verified: false, txSignature, reason: 'invalid_input' };
+    return { receivedFunds: false, txSignature, reason: 'invalid_input' };
   }
 
   const cacheKey = `${txSignature}:${expectedRecipient}`;
   const cached = verifyCache.get(cacheKey);
   if (cached) {
-    if (cached.result.verified) {
+    if (cached.result.receivedFunds) {
       return cached.result;
     }
     if (Date.now() - cached.cachedAt < NEGATIVE_CACHE_TTL_MS) {
       return cached.result;
     }
+    // Expired negative result - drop it so re-verification can refresh.
+    verifyCache.delete(cacheKey);
   }
 
   const result = await doVerifyOnce(rpc, txSignature as Signature, expectedRecipient);
+  // Map preserves insertion order, so evicting the first key is LRU-ish.
+  if (verifyCache.size >= MAX_CACHE_ENTRIES) {
+    const oldest = verifyCache.keys().next().value;
+    if (oldest !== undefined) {
+      verifyCache.delete(oldest);
+    }
+  }
   verifyCache.set(cacheKey, { result, cachedAt: Date.now() });
   return result;
 }
@@ -82,7 +102,7 @@ async function doVerifyOnce(
   const sigStr = txSignature as string;
 
   if (!rpc || typeof (rpc as { getTransaction?: unknown }).getTransaction !== 'function') {
-    return { verified: false, txSignature: sigStr, reason: 'rpc_error' };
+    return { receivedFunds: false, txSignature: sigStr, reason: 'rpc_error' };
   }
 
   let tx: Awaited<ReturnType<ReturnType<Rpc<SolanaRpcApi>['getTransaction']>['send']>>;
@@ -95,14 +115,14 @@ async function doVerifyOnce(
       })
       .send();
   } catch {
-    return { verified: false, txSignature: sigStr, reason: 'rpc_error' };
+    return { receivedFunds: false, txSignature: sigStr, reason: 'rpc_error' };
   }
 
   if (!tx) {
-    return { verified: false, txSignature: sigStr, reason: 'not_found' };
+    return { receivedFunds: false, txSignature: sigStr, reason: 'not_found' };
   }
   if (!tx.meta || tx.meta.err) {
-    return { verified: false, txSignature: sigStr, reason: 'tx_failed' };
+    return { receivedFunds: false, txSignature: sigStr, reason: 'tx_failed' };
   }
 
   const accountKeys = tx.transaction.message.accountKeys as readonly string[];
@@ -118,7 +138,7 @@ async function doVerifyOnce(
       if (pre !== undefined && post !== undefined) {
         const delta = BigInt(post) - BigInt(pre);
         if (delta > 0n) {
-          return { verified: true, txSignature: sigStr };
+          return { receivedFunds: true, txSignature: sigStr };
         }
       }
     }
@@ -137,10 +157,10 @@ async function doVerifyOnce(
       const preAmount = pre ? BigInt(pre.uiTokenAmount.amount) : 0n;
       const postAmount = BigInt(post.uiTokenAmount.amount);
       if (postAmount > preAmount) {
-        return { verified: true, txSignature: sigStr };
+        return { receivedFunds: true, txSignature: sigStr };
       }
     }
   }
 
-  return { verified: false, txSignature: sigStr, reason: 'recipient_mismatch' };
+  return { receivedFunds: false, txSignature: sigStr, reason: 'recipient_mismatch' };
 }

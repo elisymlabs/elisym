@@ -65,7 +65,7 @@ describe('verifyJobPaymentQuick', () => {
     }));
 
     const result = await verifyJobPaymentQuick(rpc, 'sig1', recipient);
-    expect(result.verified).toBe(true);
+    expect(result.receivedFunds).toBe(true);
     expect(result.txSignature).toBe('sig1');
   });
 
@@ -87,8 +87,8 @@ describe('verifyJobPaymentQuick', () => {
     const first = await verifyJobPaymentQuick(rpc, 'cached-sig', recipient);
     const second = await verifyJobPaymentQuick(rpc, 'cached-sig', recipient);
 
-    expect(first.verified).toBe(true);
-    expect(second.verified).toBe(true);
+    expect(first.receivedFunds).toBe(true);
+    expect(second.receivedFunds).toBe(true);
     expect(getTx).toHaveBeenCalledTimes(1);
   });
 
@@ -97,7 +97,7 @@ describe('verifyJobPaymentQuick', () => {
     const rpc = createMockRpc(() => ({ send: () => Promise.resolve(null) }));
 
     const result = await verifyJobPaymentQuick(rpc, 'missing-sig', recipient);
-    expect(result.verified).toBe(false);
+    expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('not_found');
   });
 
@@ -117,7 +117,7 @@ describe('verifyJobPaymentQuick', () => {
     }));
 
     const result = await verifyJobPaymentQuick(rpc, 'sig-other', recipient);
-    expect(result.verified).toBe(false);
+    expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('recipient_mismatch');
   });
 
@@ -137,7 +137,7 @@ describe('verifyJobPaymentQuick', () => {
     }));
 
     const result = await verifyJobPaymentQuick(rpc, 'sig-failed', recipient);
-    expect(result.verified).toBe(false);
+    expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('tx_failed');
   });
 
@@ -148,7 +148,7 @@ describe('verifyJobPaymentQuick', () => {
     }));
 
     const result = await verifyJobPaymentQuick(rpc, 'sig-throw', recipient);
-    expect(result.verified).toBe(false);
+    expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('rpc_error');
   });
 
@@ -158,21 +158,21 @@ describe('verifyJobPaymentQuick', () => {
       'sig-bad-rpc',
       makeAddress(),
     );
-    expect(result.verified).toBe(false);
+    expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('rpc_error');
   });
 
   it('rejects empty signature with invalid_input', async () => {
     const rpc = createMockRpc(() => ({ send: () => Promise.resolve(null) }));
     const result = await verifyJobPaymentQuick(rpc, '', makeAddress());
-    expect(result.verified).toBe(false);
+    expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('invalid_input');
   });
 
   it('rejects malformed recipient with invalid_input', async () => {
     const rpc = createMockRpc(() => ({ send: () => Promise.resolve(null) }));
     const result = await verifyJobPaymentQuick(rpc, 'sig', 'not-a-real-address' as Address);
-    expect(result.verified).toBe(false);
+    expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('invalid_input');
   });
 
@@ -202,7 +202,7 @@ describe('verifyJobPaymentQuick', () => {
     }));
 
     const result = await verifyJobPaymentQuick(rpc, 'spl-sig', recipient);
-    expect(result.verified).toBe(true);
+    expect(result.receivedFunds).toBe(true);
   });
 
   it('negative cache expires after TTL so second call hits RPC again', async () => {
@@ -225,18 +225,18 @@ describe('verifyJobPaymentQuick', () => {
       const rpc = createMockRpc(getTx);
 
       const first = await verifyJobPaymentQuick(rpc, 'expiring-sig', recipient);
-      expect(first.verified).toBe(false);
+      expect(first.receivedFunds).toBe(false);
       expect(first.reason).toBe('not_found');
 
       // Within TTL: cached negative
       const second = await verifyJobPaymentQuick(rpc, 'expiring-sig', recipient);
-      expect(second.verified).toBe(false);
+      expect(second.receivedFunds).toBe(false);
       expect(getTx).toHaveBeenCalledTimes(1);
 
       // Past TTL: re-queries
       vi.advanceTimersByTime(61_000);
       const third = await verifyJobPaymentQuick(rpc, 'expiring-sig', recipient);
-      expect(third.verified).toBe(true);
+      expect(third.receivedFunds).toBe(true);
       expect(getTx).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();

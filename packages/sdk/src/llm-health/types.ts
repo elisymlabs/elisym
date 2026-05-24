@@ -72,6 +72,25 @@ export class ScriptBillingExhaustedError extends Error {
 }
 
 /**
+ * Thrown by the SDK script skills when a tool/script fails (non-zero exit, spawn
+ * error, or exit 0 with empty output). `message` is a generic, stable summary
+ * that is SAFE to forward to a remote customer. The raw stderr/stdout lives on
+ * `detail` for the operator log and health-monitor classification ONLY - it must
+ * never be sent across the trust boundary to a customer.
+ */
+export class ScriptExecutionError extends Error {
+  readonly exitCode: number | null;
+  readonly detail: string;
+
+  constructor(exitCode: number | null, detail: string, summary?: string) {
+    super(summary ?? `script failed (exit ${exitCode ?? 'unknown'})`);
+    this.name = 'ScriptExecutionError';
+    this.exitCode = exitCode;
+    this.detail = detail;
+  }
+}
+
+/**
  * Per-skill rate-limit declaration. Snake-case in SKILL.md frontmatter,
  * camelCase here. Applies to any skill mode but the framework adds a
  * default cap only for free LLM skills.

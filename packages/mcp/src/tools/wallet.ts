@@ -209,8 +209,9 @@ export const walletTools: ToolDefinition[] = [
 
       const rpc = rpcFor(agent);
       const walletAddress = address(agent.solanaKeypair.publicKey);
+      // balanceLamports is a bigint; keep it bigint end-to-end. Routing it
+      // through Number() would lose precision past 2^53 lamports (money rule).
       const { value: balanceLamports } = await rpc.getBalance(walletAddress).send();
-      const balance = Number(balanceLamports);
 
       const usdcBalanceRaw = await fetchUsdcBalance(rpc, walletAddress);
       const usdcLine = `USDC balance: ${formatAssetAmount(USDC_SOLANA_DEVNET, usdcBalanceRaw)}`;
@@ -221,7 +222,7 @@ export const walletTools: ToolDefinition[] = [
       return textResult(
         `Address: ${agent.solanaKeypair.publicKey}\n` +
           `Network: ${agent.network}\n` +
-          `Balance: ${formatSol(BigInt(balance))} (${balance} lamports)\n` +
+          `Balance: ${formatSol(balanceLamports)} (${balanceLamports.toString()} lamports)\n` +
           usdcLine +
           sessionBlock,
       );
@@ -354,9 +355,24 @@ export const walletTools: ToolDefinition[] = [
         throw e;
       }
 
-      const { value: balanceLamports } = await rpc
-        .getBalance(address(agent.solanaKeypair.publicKey))
-        .send();
+      // The payment already committed on-chain above. A failing balance fetch
+      // here (RPC hiccup, rate limit) must NOT make send_payment report failure -
+      // the funds have moved. Best-effort: report the remaining balance when we
+      // can fetch it, otherwise omit that line.
+      let remainingBalanceLine = '';
+      try {
+        const { value: balanceLamports } = await rpc
+          .getBalance(address(agent.solanaKeypair.publicKey))
+          .send();
+        remainingBalanceLine = `  Remaining SOL balance: ${formatSol(balanceLamports)}\n`;
+      } catch (e) {
+        logger.warn(
+          { event: 'post_payment_balance_fetch_failed', agent: agent.name },
+          `Payment succeeded but the post-confirmation balance fetch failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
 
       // One-shot 50% / 80% warnings fire only after successful on-chain commit.
       const warnings = takeSpendWarnings(ctx, sendAsset);
@@ -371,7 +387,7 @@ export const walletTools: ToolDefinition[] = [
           `  Signature: ${signature}\n` +
           `  Amount: ${formatAssetAmount(paidAsset, BigInt(requestData.amount))}\n` +
           `  Recipient: ${requestData.recipient}\n` +
-          `  Remaining SOL balance: ${formatSol(balanceLamports)}\n` +
+          remainingBalanceLine +
           `  Explorer: ${explorerUrl(agent, signature)}`,
       );
     },

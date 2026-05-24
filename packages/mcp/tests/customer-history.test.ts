@@ -8,6 +8,7 @@ import {
   appendCustomerJob,
   findCustomerJob,
   findCustomerJobsByProvider,
+  pendingWriteLockCount,
   readCustomerHistory,
   updateCustomerJob,
   type CustomerJobEntry,
@@ -155,6 +156,29 @@ describe('customer-history', () => {
     );
     const results = await findCustomerJobsByProvider(agentDir, PROVIDER_A);
     expect(results.map((entry) => entry.jobEventId)).toEqual(['new', 'old']);
+  });
+
+  // The lock entry is removed inside a `.finally` that runs as a microtask after
+  // the append promise settles, so we flush the microtask/macrotask queue with a
+  // setTimeout(0) before asserting the map is empty.
+  function flushTasks(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it('releases the write lock after an append resolves (no map leak)', async () => {
+    await appendCustomerJob(agentDir, makeEntry());
+    await flushTasks();
+    expect(pendingWriteLockCount()).toBe(0);
+  });
+
+  it('releases all write locks after concurrent appends settle', async () => {
+    await Promise.all(
+      Array.from({ length: 10 }, (_, index) =>
+        appendCustomerJob(agentDir, makeEntry({ jobEventId: `leak-${index}` })),
+      ),
+    );
+    await flushTasks();
+    expect(pendingWriteLockCount()).toBe(0);
   });
 
   it('returns an empty history when the file is corrupt', async () => {

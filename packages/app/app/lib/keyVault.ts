@@ -116,15 +116,47 @@ export async function loadIdentities(): Promise<LoadIdentitiesResult> {
     return { identities: [], vaultLost: false };
   }
 
+  // Ask the browser to mark our origin storage as persistent so the CryptoKey
+  // in IndexedDB is less likely to be evicted under storage pressure (eviction
+  // is the main way the vault becomes unrecoverable). Best-effort and guarded -
+  // not all browsers expose `navigator.storage.persist`.
+  await requestPersistentStorage();
+
+  // Key acquisition and JSON parsing live OUTSIDE the decrypt try. A transient
+  // IndexedDB failure here (or a missing CryptoKey) must NOT evict the vault -
+  // we rethrow so the caller can retry on the next mount with the blob intact.
+  // Only a genuine decrypt failure (wrong key / corrupt ciphertext) relocates
+  // the blob below.
+  const blob: EncryptedBlob = JSON.parse(raw);
+  const key = await getOrCreateKey();
+
   try {
-    const blob: EncryptedBlob = JSON.parse(raw);
-    const key = await getOrCreateKey();
     const json = await decrypt(key, blob);
     return { identities: JSON.parse(json) as StoredIdentity[], vaultLost: false };
   } catch {
     localStorage.setItem(VAULT_LOST_KEY, raw);
     localStorage.removeItem(VAULT_KEY);
     return { identities: [], vaultLost: true };
+  }
+}
+
+/**
+ * Read the most recently relocated vault blob (raw, still-encrypted JSON) from
+ * the lost slot, or null if none exists. Lets a power user who restored the
+ * matching CryptoKey in IndexedDB recover the otherwise-orphaned blob - without
+ * this, the relocation in `loadIdentities` would be write-only.
+ */
+export function readLostVault(): string | null {
+  return localStorage.getItem(VAULT_LOST_KEY);
+}
+
+async function requestPersistentStorage(): Promise<void> {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
+      await navigator.storage.persist();
+    }
+  } catch {
+    // Persistence is advisory - ignore failures and proceed with the load.
   }
 }
 

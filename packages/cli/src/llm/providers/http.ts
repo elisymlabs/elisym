@@ -5,6 +5,10 @@
  * provider does not re-derive timeout/abort plumbing.
  */
 
+// `ReadableStream` is a runtime global in Bun/Node but is not declared by this
+// package's TS lib; import the typed constructor from node:stream/web.
+import { ReadableStream } from 'node:stream/web';
+
 // Per-HTTP-request timeout for LLM calls. This is a backstop against a hung
 // socket, not the job's execution ceiling - the per-job AbortSignal (driven by
 // the skill/agent execution budget) is wired into every fetch and is the real
@@ -69,12 +73,76 @@ export async function fetchWithTimeout(
   const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
   const onAbort = (): void => controller.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
+  let toreDown = false;
+  const teardown = (): void => {
+    if (toreDown) {
+      return;
+    }
+    toreDown = true;
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
+  };
+
+  let response: Response;
+  try {
+    response = await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    // Headers phase failed or was aborted - nothing more to cover.
+    teardown();
+    throw error;
   }
+
+  // FIX #31: the timeout/abort wiring (`timer` + parent `signal`) must stay
+  // armed across the body read, not be torn down the moment `fetch()` resolves
+  // the headers. Callers consume the body right after this returns
+  // (`response.json()` / `.text()`), which still streams over the same socket;
+  // tearing the wiring down in a `finally` here left that phase unbounded.
+  //
+  // The returned `Response`'s body methods are read-only, so instead of
+  // patching them we tap the underlying body stream and rebuild the `Response`
+  // over a stream we control. Teardown runs when the body is fully read
+  // (reader reports `done`), when the read errors, or when the consumer
+  // cancels the body (`response.body?.cancel()`) - covering every body-phase
+  // exit. `controller.signal` still backs the original stream, so a stall
+  // mid-body trips `timer`, which aborts the read and rejects the pull. The
+  // new `Response` preserves status / statusText / headers and all
+  // body-consuming methods, so there are no call-site changes. A 204/no-body
+  // response has nothing to wait on, so teardown is immediate.
+  const body = response.body;
+  // No readable stream to bound (204/no-body, or a non-stream body e.g. in tests):
+  // nothing to keep the wiring armed for, so tear down and return as-is.
+  if (!body || typeof body.getReader !== 'function') {
+    teardown();
+    return response;
+  }
+
+  const reader = body.getReader();
+  const tappedStream = new ReadableStream<Uint8Array>({
+    async pull(streamController) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          teardown();
+          streamController.close();
+          return;
+        }
+        streamController.enqueue(value);
+      } catch (error) {
+        teardown();
+        streamController.error(error);
+      }
+    },
+    cancel(reason) {
+      teardown();
+      return reader.cancel(reason);
+    },
+  });
+
+  return new Response(tappedStream, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 export async function fetchWithRetry(

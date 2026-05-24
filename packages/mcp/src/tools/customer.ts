@@ -137,6 +137,15 @@ const SubmitAndPayJobFromFileSchema = z.object({
   kind_offset: z.number().int().min(0).max(999).default(DEFAULT_KIND_OFFSET),
   timeout_secs: z.number().int().min(1).max(600).default(300),
   max_price_lamports: z.number().int().optional(),
+  allow_outside_cwd: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Allow reading a file outside the MCP server working directory. Off by default - ' +
+        'the file content is forwarded to the provider before payment and is invisible in ' +
+        'the transcript, so reads are confined to the working dir unless this is set. ' +
+        'Sensitive files (secret keys, .env, SSH/keypair, ~/.elisym, /proc) are always refused.',
+    ),
 });
 
 const SubmitDiffReviewSchema = z.object({
@@ -1137,7 +1146,9 @@ export const customerTools: ToolDefinition[] = [
 
       let payload: string;
       try {
-        payload = await readJobInputFile(input.input_path);
+        payload = await readJobInputFile(input.input_path, {
+          allowOutsideCwd: input.allow_outside_cwd,
+        });
       } catch (e) {
         return errorResult(e instanceof Error ? e.message : String(e));
       }
@@ -1249,12 +1260,21 @@ export const customerTools: ToolDefinition[] = [
         card = provider.cards[0];
       }
       if (!card) {
+        // provider.cards.* is attacker-controlled NIP-89 content - sanitize each
+        // field and wrap the whole payload in the untrusted boundary (#5).
         const available = provider.cards
-          .map((c) => `${c.name} (${c.capabilities?.join(', ')})`)
+          .map(
+            (providerCard) =>
+              `${sanitizeField(providerCard.name ?? '', 64)} (${(providerCard.capabilities ?? [])
+                .map((capability) => sanitizeField(capability, 64))
+                .join(', ')})`,
+          )
           .join('; ');
-        return errorResult(
+        const { text } = sanitizeUntrusted(
           `No capability "${input.capability}" found for provider. Available: ${available}`,
+          'text',
         );
+        return errorResult(text);
       }
 
       const price = card.payment?.job_price ?? 0;
@@ -1270,15 +1290,21 @@ export const customerTools: ToolDefinition[] = [
       // estimate is appended best-effort - RPC failures degrade silently.
       if (price > 0 && input.max_price_lamports === undefined) {
         const gasLine = await gasHintForCardAsset(agent, cardAsset);
+        // provider.name is attacker-controlled kind:0 metadata - sanitize it and
+        // wrap the whole confirmation in the untrusted boundary (#5).
+        const safeProviderName = sanitizeField(provider.name || input.provider_npub, 64);
+        const { text } = sanitizeUntrusted(
+          `Capability "${input.capability}" from "${safeProviderName}" ` +
+            `costs ${formatAssetAmount(cardAsset, BigInt(price))}.${gasLine}\n\n` +
+            `To confirm, call buy_capability again with max_price_lamports set ` +
+            `(e.g. ${price} or higher).`,
+          'text',
+        );
         return {
           content: [
             {
               type: 'text' as const,
-              text:
-                `Capability "${input.capability}" from "${provider.name || input.provider_npub}" ` +
-                `costs ${formatAssetAmount(cardAsset, BigInt(price))}.${gasLine}\n\n` +
-                `To confirm, call buy_capability again with max_price_lamports set ` +
-                `(e.g. ${price} or higher).`,
+              text,
             },
           ],
         };

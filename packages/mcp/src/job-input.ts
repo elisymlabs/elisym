@@ -7,7 +7,7 @@
  */
 import { execFile } from 'node:child_process';
 import { stat, readFile } from 'node:fs/promises';
-import { isAbsolute, resolve as resolvePath } from 'node:path';
+import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
 import { MAX_INPUT_LEN } from './utils.js';
 
@@ -15,6 +15,26 @@ const execFileP = promisify(execFile);
 
 /** Hard ceiling on input file paths so we never call `stat` on a multi-MB string. */
 export const MAX_INPUT_PATH_LEN = 4096;
+
+/**
+ * Files that are never a legitimate job input and are the prime exfiltration
+ * target (threat #1: secret-key / API-key theft). Matched on the resolved path;
+ * always refused regardless of the allow-outside-cwd opt-in.
+ */
+const SENSITIVE_NAME_RE =
+  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*-keypair\.json|.*\.pem|.*\.key)$/i;
+const SENSITIVE_DIR_SEGMENTS = new Set(['.elisym', '.ssh', '.aws', '.gnupg']);
+
+function isSensitiveInputPath(absPath: string): boolean {
+  if (SENSITIVE_NAME_RE.test(absPath)) {
+    return true;
+  }
+  if (absPath === '/proc' || absPath.startsWith('/proc/')) {
+    return true;
+  }
+  const segments = absPath.split(/[/\\]+/);
+  return segments.some((segment) => SENSITIVE_DIR_SEGMENTS.has(segment.toLowerCase()));
+}
 
 /** Wall-clock cap on each `git` invocation. Diffs of in-tree work are sub-second. */
 const GIT_TIMEOUT_MS = 30_000;
@@ -27,17 +47,73 @@ const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = MAX_INPUT_LEN * 2;
 
 /**
+ * Config overrides injected before every git subcommand. git honors a repo-local
+ * `.git/config` for the work tree it runs in, and `diff.external` / `core.fsmonitor`
+ * / hooks are arbitrary-command-execution vectors - so reviewing an untrusted repo
+ * could run attacker code with the MCP server's privileges (in-memory secret keys).
+ * These `-c` overrides neutralize those keys; `GIT_CONFIG_NOSYSTEM=1` (set in env)
+ * additionally ignores /etc/gitconfig. `safe.directory` does NOT cover this - it only
+ * blocks differently-owned repos, not a user-owned malicious clone/tarball.
+ */
+const GIT_SAFETY_ARGS = [
+  '-c',
+  'core.fsmonitor=',
+  '-c',
+  'diff.external=',
+  '-c',
+  'core.hooksPath=/dev/null',
+];
+
+/** Strict ref validation for the user-supplied diff `base` (no leading `-`, no `..` ranges). */
+function isValidGitRef(ref: string): boolean {
+  if (ref.length === 0 || ref.length > 256) {
+    return false;
+  }
+  if (ref.startsWith('-') || ref.includes('..')) {
+    return false;
+  }
+  return /^[A-Za-z0-9._/@~^-]+$/.test(ref);
+}
+
+/**
  * Read a job input from a regular file on disk, with size and decoding guards.
  * Relative paths resolve against `process.cwd()` (the MCP server's working dir,
  * which for stdio clients is the dir the client was launched from).
  *
  * Throws a user-facing Error on missing file, non-file path, or oversize content.
  */
-export async function readJobInputFile(inputPath: string): Promise<string> {
+export async function readJobInputFile(
+  inputPath: string,
+  options?: { allowOutsideCwd?: boolean },
+): Promise<string> {
   if (inputPath.length > MAX_INPUT_PATH_LEN) {
     throw new Error(`input_path too long: ${inputPath.length} chars (max ${MAX_INPUT_PATH_LEN}).`);
   }
-  const absPath = isAbsolute(inputPath) ? inputPath : resolvePath(process.cwd(), inputPath);
+  const cwd = resolvePath(process.cwd());
+  const absPath = isAbsolute(inputPath) ? resolvePath(inputPath) : resolvePath(cwd, inputPath);
+
+  // Always refuse known-sensitive files (secret keys, .env, SSH/keypair, ~/.elisym,
+  // /proc). This forwards the file content to a remote provider before any payment
+  // and is invisible in the transcript, so an injected path must never reach a secret.
+  if (isSensitiveInputPath(absPath)) {
+    throw new Error(
+      `Refusing to read a sensitive file as job input: ${absPath}. ` +
+        `Secret keys, .env, SSH/keypair files, ~/.elisym and /proc are blocked.`,
+    );
+  }
+  // By default confine reads to the server's working-directory subtree. Reading
+  // elsewhere requires the explicit allow_outside_cwd opt-in (still subject to the
+  // sensitive-file block above).
+  if (!options?.allowOutsideCwd) {
+    const rel = relative(cwd, absPath);
+    const insideCwd = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+    if (!insideCwd) {
+      throw new Error(
+        `input_path "${absPath}" resolves outside the working directory (${cwd}). ` +
+          `Move the file under the working directory or pass allow_outside_cwd: true.`,
+      );
+    }
+  }
 
   let stats;
   try {
@@ -78,11 +154,11 @@ export async function readJobInputFile(inputPath: string): Promise<string> {
  */
 async function execGit(repoPath: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await execFileP('git', args, {
+    const { stdout } = await execFileP('git', [...GIT_SAFETY_ARGS, ...args], {
       cwd: repoPath,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1' },
     });
     return stdout;
   } catch (e) {
@@ -169,18 +245,26 @@ export async function computeGitDiff(repoPath: string, base?: string): Promise<G
   let args: string[];
   let describedRange: string;
   if (base) {
-    args = ['diff', `${base}...HEAD`];
+    // Validate the user-supplied ref and place it after `--end-of-options` so a
+    // value like `--output=/etc/passwd` can never be parsed as a git flag (#14).
+    if (!isValidGitRef(base)) {
+      throw new Error(
+        `Invalid "base": ${base}. Use a branch/tag/commit ref (letters, digits, ` +
+          `". _ / @ ~ ^ -", no leading "-", no "..").`,
+      );
+    }
+    args = ['diff', '--no-ext-diff', '--end-of-options', `${base}...HEAD`];
     describedRange = `${base}...HEAD`;
   } else if (await isDirty(absRepo)) {
-    args = ['diff', 'HEAD'];
+    args = ['diff', '--no-ext-diff', 'HEAD'];
     describedRange = 'HEAD (working tree, uncommitted changes)';
   } else {
     const detected = await detectDefaultBase(absRepo);
     if (detected) {
-      args = ['diff', `${detected}...HEAD`];
+      args = ['diff', '--no-ext-diff', '--end-of-options', `${detected}...HEAD`];
       describedRange = `${detected}...HEAD`;
     } else {
-      args = ['diff', 'HEAD'];
+      args = ['diff', '--no-ext-diff', 'HEAD'];
       describedRange = 'HEAD (no main/master detected)';
     }
   }

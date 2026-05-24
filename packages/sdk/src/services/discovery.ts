@@ -449,6 +449,10 @@ export class DiscoveryService {
     // an unmatched feedback means the provider never delivered (or never
     // existed at the time), so it must not count as a verified paid job.
     const deliveredJobsByProvider = new Map<string, Set<string>>();
+    // jobEventId -> the customer pubkey the provider addressed the result to
+    // (the result's `p` tag is `requestEvent.pubkey`, see submitJobResult). Used
+    // to bind feedback/rating authorship to the job's actual customer below.
+    const customerByJob = new Map<string, string>();
     for (const ev of resultEvents) {
       if (!verifyEvent(ev)) {
         continue;
@@ -468,13 +472,22 @@ export class DiscoveryService {
           deliveredJobsByProvider.set(ev.pubkey, delivered);
         }
         delivered.add(jobEventId);
+        const customerPubkey = ev.tags.find((tag) => tag[0] === 'p')?.[1];
+        if (customerPubkey) {
+          customerByJob.set(jobEventId, customerPubkey);
+        }
       }
     }
 
     // Feedback events: written by the *customer*, target agent in the `p` tag.
     // Tally rating counters and pick the newest `payment-completed` feedback
-    // per agent as `lastPaidJobAt` / `lastPaidJobTx`, but only when the same
-    // job has a matching kind:6xxx result from the provider.
+    // per agent as `lastPaidJobAt` / `lastPaidJobTx`. A feedback only counts
+    // when (a) it references a job (`e` tag) that has a matching kind:6xxx
+    // result from the provider, and (b) its author is the customer that result
+    // was addressed to. This blocks unauthenticated third parties from inflating
+    // ratings / minting paid-job timestamps. Provider-vs-sock-puppet collusion
+    // still needs on-chain payment verification (roadmap).
+    const countedRatings = new Set<string>();
     for (const ev of feedbackEvents) {
       if (!verifyEvent(ev)) {
         continue;
@@ -491,26 +504,36 @@ export class DiscoveryService {
         agent.lastSeen = ev.created_at;
       }
 
+      const jobEventId = ev.tags.find((tag) => tag[0] === 'e')?.[1];
+      const hasDeliveredResult =
+        jobEventId !== undefined &&
+        deliveredJobsByProvider.get(targetPubkey)?.has(jobEventId) === true;
+      // Was this feedback authored by the job's actual customer?
+      const jobCustomer = jobEventId !== undefined ? customerByJob.get(jobEventId) : undefined;
+      const authoredByCustomer = jobCustomer !== undefined && ev.pubkey === jobCustomer;
+
       const rating = ev.tags.find((tag) => tag[0] === 'rating')?.[1];
-      if (rating === '1' || rating === '0') {
-        agent.totalRatingCount = (agent.totalRatingCount ?? 0) + 1;
-        if (rating === '1') {
-          agent.positiveCount = (agent.positiveCount ?? 0) + 1;
+      if ((rating === '1' || rating === '0') && hasDeliveredResult && authoredByCustomer) {
+        // Dedupe: at most one rating per (customer, job).
+        const ratingKey = `${ev.pubkey}:${jobEventId}`;
+        if (!countedRatings.has(ratingKey)) {
+          countedRatings.add(ratingKey);
+          agent.totalRatingCount = (agent.totalRatingCount ?? 0) + 1;
+          if (rating === '1') {
+            agent.positiveCount = (agent.positiveCount ?? 0) + 1;
+          }
         }
       }
 
       const status = ev.tags.find((tag) => tag[0] === 'status')?.[1];
       const txTag = ev.tags.find((tag) => tag[0] === 'tx');
       const txSignature = txTag?.[1];
-      const jobEventId = ev.tags.find((tag) => tag[0] === 'e')?.[1];
-      const hasDeliveredResult =
-        jobEventId !== undefined &&
-        deliveredJobsByProvider.get(targetPubkey)?.has(jobEventId) === true;
       if (
         status === 'payment-completed' &&
         typeof txSignature === 'string' &&
         txSignature &&
-        hasDeliveredResult
+        hasDeliveredResult &&
+        authoredByCustomer
       ) {
         if (!agent.lastPaidJobAt || ev.created_at > agent.lastPaidJobAt) {
           agent.lastPaidJobAt = ev.created_at;

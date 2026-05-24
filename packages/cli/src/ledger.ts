@@ -1,8 +1,14 @@
 /**
  * Job recovery ledger - persistent JSON storage for crash recovery.
  */
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
+
+// Ledger files hold customer-confidential job content (inputs, results). Lock
+// the directory and files down to owner-only, matching the rest of the agent
+// store, so other local users cannot read them.
+const LEDGER_DIR_MODE = 0o700;
+const LEDGER_FILE_MODE = 0o600;
 
 export type LedgerStatus = 'paid' | 'executed' | 'delivered' | 'failed';
 
@@ -55,7 +61,11 @@ export class JobLedger {
       if (e?.code !== 'ENOENT') {
         console.warn(`  ! Ledger load warning: ${e?.message ?? 'unknown error'}`);
         try {
-          renameSync(this.path, this.path + '.corrupt.' + Date.now());
+          const backupPath = this.path + '.corrupt.' + Date.now();
+          renameSync(this.path, backupPath);
+          // The backup inherits the original (possibly world-readable) perms,
+          // so tighten it to owner-only - it still holds job content.
+          chmodSync(backupPath, LEDGER_FILE_MODE);
         } catch {
           /* best effort backup */
         }
@@ -65,11 +75,14 @@ export class JobLedger {
 
   flush(): void {
     const dir = dirname(this.path);
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: LEDGER_DIR_MODE });
     const obj = Object.fromEntries(this.entries);
     const tmp = this.path + '.tmp';
-    writeFileSync(tmp, JSON.stringify(obj, null, 2));
+    writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: LEDGER_FILE_MODE });
     renameSync(tmp, this.path);
+    // writeFileSync's `mode` is masked by the process umask, so an explicit
+    // chmod after the rename guarantees owner-only perms regardless of umask.
+    chmodSync(this.path, LEDGER_FILE_MODE);
   }
 
   recordPaid(entry: Omit<LedgerEntry, 'status' | 'retry_count'>): void {

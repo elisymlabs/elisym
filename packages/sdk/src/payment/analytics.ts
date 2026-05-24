@@ -181,6 +181,12 @@ function accumulateNativeDeltas(
  * Returns `null` when the PDA has not been initialized yet (admin must call
  * `initialize_stats` once after program upgrade).
  */
+/**
+ * Best-effort network counters read from the on-chain PDA. These are NOT bound
+ * to verified transfers and can be inflated by a malicious caller, so present
+ * them as approximate/unverified, never as authoritative proof of activity. For
+ * a transfer-derived figure use `aggregateNetworkStats`.
+ */
 export interface OnchainNetworkStats {
   jobCount: number;
   volumeNative: bigint;

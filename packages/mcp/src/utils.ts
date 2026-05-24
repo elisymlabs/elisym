@@ -49,9 +49,11 @@ export function formatSolNumeric(lamports: bigint): string {
 
 /** Format lamports as "X.XXXX SOL" (4 decimal places, truncated). */
 export function formatSolShort(lamports: bigint): string {
-  const whole = lamports / LAMPORTS_PER_SOL;
-  const frac = (lamports % LAMPORTS_PER_SOL) / 100_000n;
-  return `${whole}.${frac.toString().padStart(4, '0')} SOL`;
+  const sign = lamports < 0n ? '-' : '';
+  const abs = lamports < 0n ? -lamports : lamports;
+  const whole = abs / LAMPORTS_PER_SOL;
+  const frac = (abs % LAMPORTS_PER_SOL) / 100_000n;
+  return `${sign}${whole}.${frac.toString().padStart(4, '0')} SOL`;
 }
 
 /**

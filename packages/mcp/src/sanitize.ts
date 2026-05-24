@@ -150,8 +150,11 @@ function stripDangerousUnicode(text: string): string {
   // C0 controls except \n and \t, C1 controls, bidi overrides, bidi isolates,
   // zero-width chars, tag chars, replacement char
   return text.replace(
+    // C0 (minus \n,\t) + C1 controls; bidi marks/overrides/isolates (061C, 200E-200F,
+    // 202A-202E, 2066-2069); zero-width + word-joiner + invisible-operator format chars
+    // (200B-200D, 2060-2064, 180E, FEFF); tag chars; replacement char.
     // eslint-disable-next-line no-control-regex
-    /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u202A-\u202E\u2066-\u2069\u200B-\u200D\uFEFF\uFFFD]|[\uDB40][\uDC01-\uDC7F]/g,
+    /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\uFFFD]|[\uDB40][\uDC01-\uDC7F]/g,
     '',
   );
 }
@@ -181,10 +184,20 @@ function detectInjections(text: string, includeNoisy: boolean): boolean {
   if (normalized.length <= INJECTION_SCAN_BUDGET) {
     return patterns.some((p) => p.pattern.test(normalized));
   }
-  // Scan both head and tail so an attacker cannot pad 8k of benign text before the payload.
-  const head = normalized.slice(0, INJECTION_SCAN_BUDGET);
-  const tail = normalized.slice(-INJECTION_SCAN_BUDGET);
-  return patterns.some((p) => p.pattern.test(head) || p.pattern.test(tail));
+  // Scan the FULL text in bounded, overlapping windows. Head/tail-only scanning
+  // let an attacker bury the payload in the middle (between the first and last 8k);
+  // windowing keeps each regex run bounded (no pathological backtracking on huge
+  // input) while covering everything. The overlap catches a match straddling a
+  // window boundary (injection patterns match well within OVERLAP chars).
+  const OVERLAP = 256;
+  const step = INJECTION_SCAN_BUDGET - OVERLAP;
+  for (let start = 0; start < normalized.length; start += step) {
+    const window = normalized.slice(start, start + INJECTION_SCAN_BUDGET);
+    if (patterns.some((p) => p.pattern.test(window))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -214,8 +227,15 @@ export function isLikelyBase64(s: string): boolean {
   if (s.length < 64) {
     return false;
   }
-  const base64Chars = s.replace(/[A-Za-z0-9+/=\s]/g, '');
-  return base64Chars.length / s.length < 0.05;
+  // Real base64 contains no internal whitespace. Allowing \s previously let plain
+  // prose ("ignore all previous instructions ...") - only letters, digits, spaces -
+  // score as base64 and skip the injection scan. Reject any whitespace and require a
+  // very high base64-alphabet ratio so only genuine encoded blobs are treated as binary.
+  if (/\s/.test(s)) {
+    return false;
+  }
+  const nonBase64Chars = s.replace(/[A-Za-z0-9+/=]/g, '');
+  return nonBase64Chars.length / s.length < 0.02;
 }
 
 export interface SanitizeResult {

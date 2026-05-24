@@ -562,11 +562,17 @@ function makeResultEvent(
     createdAt: number;
     kind?: number;
     jobEventId?: string;
+    customerPubkey?: string;
   } = { createdAt: Math.floor(Date.now() / 1000) },
 ): Event {
   const tags: string[][] = [];
   if (opts.jobEventId) {
     tags.push(['e', opts.jobEventId]);
+  }
+  // Real result events tag the customer (requestEvent.pubkey) in `p`; discovery
+  // ranking binds rating/payment feedback authorship to this customer.
+  if (opts.customerPubkey) {
+    tags.push(['p', opts.customerPubkey]);
   }
   return finalizeEvent(
     {
@@ -577,6 +583,39 @@ function makeResultEvent(
     },
     agent.secretKey,
   );
+}
+
+/**
+ * Build a feedback + matching result event for one delivered, customer-rated job.
+ * The result is tagged to the customer (`p`) so the rating/payment counts under the
+ * authorship binding; each call uses a distinct jobEventId so ratings dedupe correctly.
+ */
+function ratedJob(
+  provider: ElisymIdentity,
+  customer: ElisymIdentity,
+  jobEventId: string,
+  opts: {
+    feedbackAt: number;
+    resultAt: number;
+    rating?: '0' | '1';
+    status?: string;
+    txSignature?: string;
+  },
+): { feedback: Event; result: Event } {
+  return {
+    feedback: makeFeedbackEvent(customer, provider.publicKey, {
+      createdAt: opts.feedbackAt,
+      jobEventId,
+      rating: opts.rating,
+      status: opts.status,
+      txSignature: opts.txSignature,
+    }),
+    result: makeResultEvent(provider, {
+      createdAt: opts.resultAt,
+      jobEventId,
+      customerPubkey: customer.publicKey,
+    }),
+  };
 }
 
 interface RoutedPool extends NostrPool {
@@ -639,31 +678,51 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       }),
     );
 
-    const jobA1 = 'job-a1';
-    const jobA2 = 'job-a2';
-    const feedbacks = [
-      makeFeedbackEvent(customer, a1.publicKey, {
-        createdAt: now - 10,
+    // Each rating/payment is its own delivered, customer-bound job (the ranking
+    // now only counts feedback authored by the job's actual customer).
+    const jobs = [
+      // a1: paid + ratings [1, 0, 0] -> 1/3 positive.
+      ratedJob(a1, customer, 'job-a1-paid', {
+        feedbackAt: now - 10,
+        resultAt: now - 11,
         status: 'payment-completed',
         txSignature: 'sig-a1',
-        jobEventId: jobA1,
       }),
-      makeFeedbackEvent(customer, a1.publicKey, { createdAt: now - 50, rating: '1' }),
-      makeFeedbackEvent(customer, a1.publicKey, { createdAt: now - 51, rating: '0' }),
-      makeFeedbackEvent(customer, a1.publicKey, { createdAt: now - 52, rating: '0' }),
-      makeFeedbackEvent(customer, a2.publicKey, {
-        createdAt: now - 15,
+      ratedJob(a1, customer, 'job-a1-r0', {
+        feedbackAt: now - 50,
+        resultAt: now - 51,
+        rating: '1',
+      }),
+      ratedJob(a1, customer, 'job-a1-r1', {
+        feedbackAt: now - 51,
+        resultAt: now - 52,
+        rating: '0',
+      }),
+      ratedJob(a1, customer, 'job-a1-r2', {
+        feedbackAt: now - 52,
+        resultAt: now - 53,
+        rating: '0',
+      }),
+      // a2: paid + ratings [1, 1] -> 2/2 positive.
+      ratedJob(a2, customer, 'job-a2-paid', {
+        feedbackAt: now - 15,
+        resultAt: now - 16,
         status: 'payment-completed',
         txSignature: 'sig-a2',
-        jobEventId: jobA2,
       }),
-      makeFeedbackEvent(customer, a2.publicKey, { createdAt: now - 60, rating: '1' }),
-      makeFeedbackEvent(customer, a2.publicKey, { createdAt: now - 61, rating: '1' }),
+      ratedJob(a2, customer, 'job-a2-r0', {
+        feedbackAt: now - 60,
+        resultAt: now - 61,
+        rating: '1',
+      }),
+      ratedJob(a2, customer, 'job-a2-r1', {
+        feedbackAt: now - 61,
+        resultAt: now - 62,
+        rating: '1',
+      }),
     ];
-    const results = [
-      makeResultEvent(a1, { createdAt: now - 11, jobEventId: jobA1 }),
-      makeResultEvent(a2, { createdAt: now - 16, jobEventId: jobA2 }),
-    ];
+    const feedbacks = jobs.map((job) => job.feedback);
+    const results = jobs.map((job) => job.result);
 
     const pool = setupRoutedPool({
       capabilityEvents: [cap1, cap2],
@@ -704,30 +763,34 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       }),
     );
 
-    const jobFresh = 'job-fresh';
-    const jobStale = 'job-stale';
-    const feedbacks = [
-      // fresh: paid 30s ago, no ratings
-      makeFeedbackEvent(customer, aFresh.publicKey, {
-        createdAt: now - 30,
+    const jobs = [
+      // fresh: paid 30s ago, no ratings.
+      ratedJob(aFresh, customer, 'job-fresh', {
+        feedbackAt: now - 30,
+        resultAt: now - 31,
         status: 'payment-completed',
         txSignature: 'sig-fresh',
-        jobEventId: jobFresh,
       }),
-      // stale: paid 10 minutes ago, perfect rating
-      makeFeedbackEvent(customer, aStale.publicKey, {
-        createdAt: now - 600,
+      // stale: paid 10 minutes ago, perfect rating (2/2).
+      ratedJob(aStale, customer, 'job-stale-paid', {
+        feedbackAt: now - 600,
+        resultAt: now - 601,
         status: 'payment-completed',
         txSignature: 'sig-stale',
-        jobEventId: jobStale,
       }),
-      makeFeedbackEvent(customer, aStale.publicKey, { createdAt: now - 601, rating: '1' }),
-      makeFeedbackEvent(customer, aStale.publicKey, { createdAt: now - 602, rating: '1' }),
+      ratedJob(aStale, customer, 'job-stale-r0', {
+        feedbackAt: now - 601,
+        resultAt: now - 602,
+        rating: '1',
+      }),
+      ratedJob(aStale, customer, 'job-stale-r1', {
+        feedbackAt: now - 602,
+        resultAt: now - 603,
+        rating: '1',
+      }),
     ];
-    const results = [
-      makeResultEvent(aFresh, { createdAt: now - 31, jobEventId: jobFresh }),
-      makeResultEvent(aStale, { createdAt: now - 601, jobEventId: jobStale }),
-    ];
+    const feedbacks = jobs.map((job) => job.feedback);
+    const results = jobs.map((job) => job.result);
 
     const pool = setupRoutedPool({
       capabilityEvents: [capFresh, capStale],
@@ -784,7 +847,13 @@ describe('DiscoveryService.fetchAgents ranking', () => {
         jobEventId: jobPaid,
       }),
     ];
-    const results = [makeResultEvent(aPaid, { createdAt: now - 201, jobEventId: jobPaid })];
+    const results = [
+      makeResultEvent(aPaid, {
+        createdAt: now - 201,
+        jobEventId: jobPaid,
+        customerPubkey: customer.publicKey,
+      }),
+    ];
 
     const pool = setupRoutedPool({
       capabilityEvents: [capPaid, capColdNew, capColdOld],
@@ -817,17 +886,30 @@ describe('DiscoveryService.fetchAgents ranking', () => {
         payment: { chain: 'solana', network: 'devnet', address: SOL_ADDRESS_A },
       }),
     );
-    // Customer authors all feedback events tagging the agent.
-    const feedbacks = [
-      makeFeedbackEvent(customer, agent.publicKey, { createdAt: now - 10, rating: '1' }),
-      makeFeedbackEvent(customer, agent.publicKey, { createdAt: now - 20, rating: '1' }),
-      makeFeedbackEvent(customer, agent.publicKey, { createdAt: now - 30, rating: '0' }),
+    // Each rating is tied to a delivered job whose result is addressed to the
+    // customer (`p` tag); only customer-authored ratings on delivered jobs count.
+    const jobs = [
+      ratedJob(agent, customer, 'job-r0', {
+        feedbackAt: now - 10,
+        resultAt: now - 11,
+        rating: '1',
+      }),
+      ratedJob(agent, customer, 'job-r1', {
+        feedbackAt: now - 20,
+        resultAt: now - 21,
+        rating: '1',
+      }),
+      ratedJob(agent, customer, 'job-r2', {
+        feedbackAt: now - 30,
+        resultAt: now - 31,
+        rating: '0',
+      }),
     ];
 
     const pool = setupRoutedPool({
       capabilityEvents: [cap],
-      resultEvents: [],
-      feedbackEvents: feedbacks,
+      resultEvents: jobs.map((job) => job.result),
+      feedbackEvents: jobs.map((job) => job.feedback),
     });
 
     const svc = new DiscoveryService(pool as any);
@@ -924,7 +1006,11 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       }),
     ];
     const results = [
-      makeResultEvent(verifiedAgent, { createdAt: now - 601, jobEventId: jobVerified }),
+      makeResultEvent(verifiedAgent, {
+        createdAt: now - 601,
+        jobEventId: jobVerified,
+        customerPubkey: customer.publicKey,
+      }),
     ];
 
     const pool = setupRoutedPool({
