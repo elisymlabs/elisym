@@ -28,6 +28,15 @@ function isEncrypted(event: Event): boolean {
   return event.tags.some((t) => t[0] === 'encrypted' && t[1] === 'nip44');
 }
 
+/** Parse a customer-supplied `bid` tag, returning undefined on a non-numeric value. */
+function parseBidTag(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 const HEALTH_CHECK_IDLE_MS = 30 * 60 * 1000; // 30 minutes
 
 export class NostrTransport {
@@ -68,8 +77,14 @@ export class NostrTransport {
           return;
         }
 
-        // Extract tags
-        const tags = event.tags.filter((t) => t[0] === 't').map((t) => t[1]!);
+        // Extract `t` tags. A Nostr tag may legally be a single-element array
+        // (`['t']`) and still pass verifyEvent, so drop entries with no value
+        // rather than asserting one is present (which would inject `undefined`
+        // into the declared `string[]`).
+        const tags = event.tags
+          .filter((tag) => tag[0] === 't')
+          .map((tag) => tag[1])
+          .filter((value): value is string => typeof value === 'string');
         const bidTag = event.tags.find((t) => t[0] === 'bid');
         const encrypted = isEncrypted(event);
 
@@ -100,7 +115,7 @@ export class NostrTransport {
           inputType,
           tags,
           customerId: event.pubkey,
-          bid: bidTag?.[1] ? parseInt(bidTag[1], 10) : undefined,
+          bid: parseBidTag(bidTag?.[1]),
           encrypted,
           rawEvent: event,
           attachment,
@@ -160,6 +175,15 @@ export class NostrTransport {
           return;
         }
         if (!verifyEvent(event)) {
+          return;
+        }
+        // Relays are untrusted and may return events from any author despite the
+        // `authors` filter; verifyEvent only proves the event is self-signed, not
+        // that it came from the expected customer. Match the author-equality check
+        // used everywhere else (e.g. marketplace handleResult) so a spoofed
+        // payment-completed cannot feed an attacker-chosen tx signature into the
+        // fast verification path.
+        if (event.pubkey !== customerPubkey) {
           return;
         }
         const status = event.tags.find((t) => t[0] === 'status')?.[1];

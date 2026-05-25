@@ -48,6 +48,7 @@ interface IrohBlobs {
   ): Promise<void>;
   export(hash: string, destination: string, format: string, mode: string): Promise<void>;
   readToBytes(hash: string): Promise<number[]>;
+  size(hash: string): Promise<bigint>;
   deleteBlob(hash: string): Promise<void>;
 }
 
@@ -266,6 +267,16 @@ export function createIrohTransport(options: CreateIrohTransportOptions): IrohBl
       throw error;
     } finally {
       timeout.cancel();
+    }
+    // Re-check the verified size against the cap. The progress-callback guard
+    // above only fires while bytes transfer; a blob ALREADY resident in the local
+    // store completes via `allDone` alone (no `found`/`progress`), so without this
+    // an oversized resident blob would slip past the cap before `readToBytes`
+    // pulls it into memory. `blobs.size` reports the BLAKE3-verified total.
+    const verifiedSize = Number(await node.blobs.size(hash));
+    if (verifiedSize > maxBytes) {
+      await node.blobs.deleteBlob(hash).catch(() => {});
+      throw new Error(`file exceeds MAX_FILE_SIZE: ${verifiedSize} > ${maxBytes} bytes`);
     }
     return { node, hash };
   };

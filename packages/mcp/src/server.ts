@@ -69,11 +69,17 @@ export const registeredTools: readonly ToolDefinition[] = allTools;
  * char base58 addresses are intentionally left alone.
  */
 function redactSecrets(text: string): string {
-  return text
-    .replace(/\bnsec1[02-9ac-hj-np-z]{20,}\b/gi, '[REDACTED]')
-    .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g, '[REDACTED]')
-    .replace(/\b[0-9a-fA-F]{64}\b/g, '[REDACTED]')
-    .replace(/\b[1-9A-HJ-NP-Za-km-z]{80,}\b/g, '[REDACTED]');
+  return (
+    text
+      .replace(/\bnsec1[02-9ac-hj-np-z]{20,}\b/gi, '[REDACTED]')
+      .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g, '[REDACTED]')
+      .replace(/\b[0-9a-fA-F]{64}\b/g, '[REDACTED]')
+      .replace(/\b[1-9A-HJ-NP-Za-km-z]{80,}\b/g, '[REDACTED]')
+      // Raw secret-key bytes serialized as a JSON array (Nostr=32, Solana=64): a
+      // run of 32+ comma-separated 0-255 ints. Catches an error that echoes a
+      // decoded keypair, which the hex/base58 shapes above would miss.
+      .replace(/\[\s*(?:\d{1,3}\s*,\s*){31,}\d{1,3}\s*\]/g, '[REDACTED]')
+  );
 }
 
 /**
@@ -98,10 +104,12 @@ export function safeError(context: string, e: unknown): CallToolResult {
     msg = `Invalid arguments: ${parts.join('; ')}`;
   } else if (e instanceof Error) {
     // Single-line, bounded length so a giant Solana RPC simulation log doesn't dump
-    // program IDs and account keys into the LLM context.
-    msg = e.message.split('\n')[0]!.slice(0, 300);
+    // program IDs and account keys into the LLM context. Redact BEFORE slicing: a
+    // secret straddling the 300-char cut would otherwise be truncated below the
+    // redaction regex's minimum match length and leak a fragment.
+    msg = redactSecrets(e.message).split('\n')[0]!.slice(0, 300);
   } else {
-    msg = String(e).slice(0, 300);
+    msg = redactSecrets(String(e)).split('\n')[0]!.slice(0, 300);
   }
 
   return {

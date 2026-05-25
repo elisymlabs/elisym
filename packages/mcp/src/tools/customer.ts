@@ -110,6 +110,14 @@ const FetchJobFileSchema = z.object({
     .min(1)
     .max(4096)
     .describe('Local path to write the downloaded result file to.'),
+  allow_outside_cwd: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Allow writing outside the MCP server working directory. Off by default: the ' +
+        'bytes come from an untrusted provider, so writes are confined to the working ' +
+        'directory subtree (and never to a secret/auto-run path) unless this is set.',
+    ),
   provider_npub: z.string().optional(),
   kind_offset: z.number().int().min(0).max(999).default(DEFAULT_KIND_OFFSET),
   timeout_secs: z.number().int().min(1).max(600).default(300),
@@ -651,11 +659,17 @@ interface SubmitAndPayParams {
 function formatFileResultMetadata(jobId: string, attachment: FileAttachment): string {
   const name = sanitizeField(attachment.name, 200);
   const mime = sanitizeField(attachment.mime, 100);
+  // name/mime are attacker-controlled. sanitizeField strips dangerous Unicode and
+  // truncates, but unlike every other remote-content path this metadata otherwise
+  // reaches the LLM with no trust boundary or injection scan - so wrap the
+  // untrusted fields in the same `--- [UNTRUSTED ...] ---` markers (plus injection
+  // warning). The static framing and the trusted jobId stay outside the boundary.
+  const details = sanitizeUntrusted(
+    `name: ${name}\nsize: ${attachment.size} bytes\ntype: ${mime}`,
+    'text',
+  ).text;
   return (
-    `Job completed. The result is a FILE (not inlined here):\n` +
-    `  name: ${name}\n` +
-    `  size: ${attachment.size} bytes\n` +
-    `  type: ${mime}\n` +
+    `Job completed. The result is a FILE (not inlined here):\n${details}\n` +
     `Download it with fetch_job_file(job_event_id="${jobId}", output_path="<local path>").`
   );
 }
@@ -1084,7 +1098,9 @@ export const customerTools: ToolDefinition[] = [
       // write-side mirror of readJobInputFile's sensitive-path block.
       let outputPath: string;
       try {
-        outputPath = resolveOutputPath(input.output_path);
+        outputPath = await resolveOutputPath(input.output_path, {
+          allowOutsideCwd: input.allow_outside_cwd,
+        });
       } catch (error) {
         return errorResult(error instanceof Error ? error.message : String(error));
       }

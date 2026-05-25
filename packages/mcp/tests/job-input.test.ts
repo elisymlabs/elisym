@@ -5,7 +5,7 @@
  * mode produces a clean Error message instead of a low-level fs/git error.
  */
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
@@ -111,6 +111,20 @@ describe('readJobInputFile', () => {
       await rm(p, { force: true });
     }
   });
+
+  it('rejects an in-cwd symlink whose target escapes the working directory', async () => {
+    // The link sits inside cwd (so the logical-path confinement check would pass),
+    // but realpath resolves it to a file outside cwd - which must be refused.
+    const outsideTarget = join(dir, 'target.txt');
+    await writeFile(outsideTarget, 'data');
+    const link = join(process.cwd(), `elisym-symlink-test-${Date.now()}.txt`);
+    await symlink(outsideTarget, link);
+    try {
+      await expect(readJobInputFile(link)).rejects.toThrow(/outside the working directory/);
+    } finally {
+      await rm(link, { force: true });
+    }
+  });
 });
 
 describe('prepareFileInput', () => {
@@ -138,7 +152,8 @@ describe('prepareFileInput', () => {
     const result = await prepareFileInput(p, { allowOutsideCwd: true });
     expect(result.mode).toBe('file');
     if (result.mode === 'file') {
-      expect(result.absPath).toBe(p);
+      // absPath is the symlink-resolved real path (macOS canonicalizes /var).
+      expect(result.absPath).toBe(await realpath(p));
       expect(result.size).toBe(150_000);
       expect(result.name).toBe('big.bin');
     }
@@ -168,27 +183,52 @@ describe('prepareFileInput', () => {
 });
 
 describe('resolveOutputPath', () => {
-  it('returns the normalized absolute path for a normal destination', () => {
-    const abs = join(tmpdir(), 'result-out.bin');
-    expect(resolveOutputPath(abs)).toBe(abs);
+  it('returns the absolute path for an in-cwd destination', async () => {
+    // Parent dir does not exist, so realpath falls back to the logical path - the
+    // returned value is deterministic (no /var -> /private/var canonicalization).
+    const abs = join(process.cwd(), 'elisym-out-test', 'result-out.bin');
+    expect(await resolveOutputPath(abs)).toBe(abs);
   });
 
-  it('resolves a relative destination against the working directory', () => {
-    expect(resolveOutputPath('out/result.bin')).toBe(resolvePath(process.cwd(), 'out/result.bin'));
+  it('resolves a relative destination against the working directory', async () => {
+    expect(await resolveOutputPath('out/result.bin')).toBe(
+      resolvePath(process.cwd(), 'out/result.bin'),
+    );
   });
 
-  it('refuses a secret-like filename (.secrets.json)', () => {
-    expect(() => resolveOutputPath(join(tmpdir(), '.secrets.json'))).toThrow(/sensitive path/);
+  it('confines writes to cwd by default, allowing outside only with the opt-in', async () => {
+    const outside = join(tmpdir(), `elisym-out-${Date.now()}.bin`);
+    await expect(resolveOutputPath(outside)).rejects.toThrow(/outside the working directory/);
+    const resolved = await resolveOutputPath(outside, { allowOutsideCwd: true });
+    expect(resolved.endsWith('.bin')).toBe(true);
   });
 
-  it('refuses a path inside a sensitive directory (.ssh)', () => {
-    expect(() => resolveOutputPath(join(tmpdir(), '.ssh', 'authorized_keys'))).toThrow(
+  it('refuses a secret-like filename (.secrets.json)', async () => {
+    await expect(resolveOutputPath(join(tmpdir(), '.secrets.json'))).rejects.toThrow(
       /sensitive path/,
     );
   });
 
-  it('refuses a path inside the agent store (.elisym)', () => {
-    expect(() => resolveOutputPath(join(tmpdir(), '.elisym', 'agent', 'out.bin'))).toThrow(
+  it('refuses an auto-run file (.zshrc) even inside cwd', async () => {
+    await expect(resolveOutputPath(join(process.cwd(), '.zshrc'))).rejects.toThrow(
+      /sensitive path/,
+    );
+  });
+
+  it('refuses a path inside the git dir (hooks are auto-run)', async () => {
+    await expect(
+      resolveOutputPath(join(process.cwd(), '.git', 'hooks', 'pre-commit')),
+    ).rejects.toThrow(/sensitive path/);
+  });
+
+  it('refuses a path inside a sensitive directory (.ssh)', async () => {
+    await expect(resolveOutputPath(join(tmpdir(), '.ssh', 'authorized_keys'))).rejects.toThrow(
+      /sensitive path/,
+    );
+  });
+
+  it('refuses a path inside the agent store (.elisym)', async () => {
+    await expect(resolveOutputPath(join(tmpdir(), '.elisym', 'agent', 'out.bin'))).rejects.toThrow(
       /sensitive path/,
     );
   });

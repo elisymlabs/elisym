@@ -1,5 +1,6 @@
+import { KIND_JOB_FEEDBACK } from '@elisym/sdk';
 import type { ElisymClient, ElisymIdentity, SubCloser } from '@elisym/sdk';
-import type { Event } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey, getPublicKey, type Event } from 'nostr-tools';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NostrTransport } from '../src/transport/nostr.js';
 import type { IncomingJob } from '../src/transport/nostr.js';
@@ -219,6 +220,52 @@ describe('NostrTransport', () => {
       const job: IncomingJob = onJob.mock.calls[0][0];
       expect(job.bid).toBe(500_000);
     });
+
+    it('drops a valueless `t` tag instead of injecting undefined into job.tags', () => {
+      const transport = new NostrTransport(
+        mockClient as unknown as ElisymClient,
+        mockIdentity as unknown as ElisymIdentity,
+        [100],
+      );
+      const onJob = vi.fn();
+      transport.start(onJob);
+
+      // A single-element tag (`['t']`) is legal Nostr and passes verifyEvent.
+      capturedCallback!(
+        makeEvent({
+          id: 'bare-tag-test',
+          tags: [['i', 'test', 'text'], ['t', 'elisym'], ['t'], ['t', 'text-gen']],
+        }),
+      );
+
+      const job: IncomingJob = onJob.mock.calls[0][0];
+      expect(job.tags).toEqual(['elisym', 'text-gen']);
+      expect(job.tags).not.toContain(undefined);
+    });
+
+    it('yields undefined bid for a non-numeric bid tag (no NaN)', () => {
+      const transport = new NostrTransport(
+        mockClient as unknown as ElisymClient,
+        mockIdentity as unknown as ElisymIdentity,
+        [100],
+      );
+      const onJob = vi.fn();
+      transport.start(onJob);
+
+      capturedCallback!(
+        makeEvent({
+          id: 'bad-bid-test',
+          tags: [
+            ['i', 'test', 'text'],
+            ['t', 'elisym'],
+            ['bid', 'not-a-number'],
+          ],
+        }),
+      );
+
+      const job: IncomingJob = onJob.mock.calls[0][0];
+      expect(job.bid).toBeUndefined();
+    });
   });
 
   describe('sendFeedback', () => {
@@ -411,6 +458,58 @@ describe('NostrTransport', () => {
       );
       transport.restart();
       expect(mockClient.marketplace.subscribeToJobRequests).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('waitForPaymentSignature author validation', () => {
+    function paymentCompleted(sig: string): Parameters<typeof finalizeEvent>[0] {
+      return {
+        kind: KIND_JOB_FEEDBACK,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['e', 'job-1'],
+          ['status', 'payment-completed'],
+          ['tx', sig, 'solana'],
+          ['t', 'elisym'],
+        ],
+        content: '',
+      };
+    }
+
+    it('ignores a spoofed payment-completed from another author and accepts the customer event', async () => {
+      const customerSk = generateSecretKey();
+      const customerPk = getPublicKey(customerSk);
+      const attackerSk = generateSecretKey();
+
+      let poolCb: ((event: Event) => void) | null = null;
+      const client = {
+        pool: {
+          subscribe: vi.fn((_filter: unknown, cb: (event: Event) => void) => {
+            poolCb = cb;
+            return { close: vi.fn() };
+          }),
+        },
+      };
+      const transport = new NostrTransport(
+        client as unknown as ElisymClient,
+        mockIdentity as unknown as ElisymIdentity,
+        [100],
+      );
+
+      const controller = new AbortController();
+      const resultPromise = transport.waitForPaymentSignature(
+        'job-1',
+        customerPk,
+        controller.signal,
+      );
+
+      // Validly signed, but by the attacker - relays can return it despite the
+      // `authors` filter, so it must be rejected on the pubkey-equality check.
+      poolCb!(finalizeEvent(paymentCompleted('SPOOFED_SIG'), attackerSk));
+      // The genuine customer event carries the signature we must return.
+      poolCb!(finalizeEvent(paymentCompleted('REAL_SIG'), customerSk));
+
+      expect(await resultPromise).toBe('REAL_SIG');
     });
   });
 });

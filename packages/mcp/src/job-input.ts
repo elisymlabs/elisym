@@ -6,8 +6,8 @@
  * the provider over Nostr.
  */
 import { execFile } from 'node:child_process';
-import { stat, readFile } from 'node:fs/promises';
-import { basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
+import { realpath, stat, readFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
 import { LIMITS, utf8ByteLength } from '@elisym/sdk';
 import { MAX_INPUT_LEN } from './utils.js';
@@ -22,9 +22,13 @@ export const MAX_INPUT_PATH_LEN = 4096;
  * target (threat #1: secret-key / API-key theft). Matched on the resolved path;
  * always refused regardless of the allow-outside-cwd opt-in.
  */
+// Secret/key files plus shell-init and other auto-run files (a write target here
+// comes from an untrusted provider, so overwriting ~/.zshrc, ~/.gitconfig, etc.
+// is a code-execution vector, not just a secret leak).
 const SENSITIVE_NAME_RE =
-  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*-keypair\.json|.*\.pem|.*\.key)$/i;
-const SENSITIVE_DIR_SEGMENTS = new Set(['.elisym', '.ssh', '.aws', '.gnupg']);
+  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*-keypair\.json|.*\.pem|.*\.key|\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.bash_aliases|\.profile|\.zshrc|\.zprofile|\.zshenv|\.zlogin|\.zlogout|config\.fish|\.gitconfig|\.npmrc|\.netrc)$/i;
+// `.git` blocks the repo-internal config + hooks dir (hooks are auto-run on git ops).
+const SENSITIVE_DIR_SEGMENTS = new Set(['.elisym', '.ssh', '.aws', '.gnupg', '.git']);
 
 function isSensitiveInputPath(absPath: string): boolean {
   if (SENSITIVE_NAME_RE.test(absPath)) {
@@ -39,26 +43,51 @@ function isSensitiveInputPath(absPath: string): boolean {
 
 /**
  * Resolve and safety-check a destination path for a downloaded job result. The
- * write-side mirror of `readJobInputFile`'s sensitive-path guard: the bytes
- * written here come from an untrusted remote provider, so an injected/confused
- * `output_path` must never overwrite a secret (key, .env, ~/.elisym, SSH/cloud
- * credentials). Relative paths resolve against the MCP server's working directory.
- * Throws a user-facing Error; returns the absolute path to write to.
+ * write-side mirror of `validateInputPath`'s guards: the bytes written here come
+ * from an untrusted remote provider, so an injected/confused `output_path` must
+ * never overwrite a secret or auto-run file (key, .env, ~/.elisym, SSH/cloud
+ * credentials, ~/.zshrc, .git/hooks). Writes are confined to the working-directory
+ * subtree unless `allowOutsideCwd` is set, and the real parent dir is resolved so a
+ * symlink cannot redirect the write past these checks. Relative paths resolve
+ * against the MCP server's working directory. Throws a user-facing Error; returns
+ * the absolute path to write to.
  */
-export function resolveOutputPath(outputPath: string): string {
+export async function resolveOutputPath(
+  outputPath: string,
+  options?: { allowOutsideCwd?: boolean },
+): Promise<string> {
   if (outputPath.length > MAX_INPUT_PATH_LEN) {
     throw new Error(
       `output_path too long: ${outputPath.length} chars (max ${MAX_INPUT_PATH_LEN}).`,
     );
   }
-  const absPath = isAbsolute(outputPath)
+  const cwd = resolvePath(process.cwd());
+  const logicalPath = isAbsolute(outputPath)
     ? resolvePath(outputPath)
-    : resolvePath(process.cwd(), outputPath);
-  if (isSensitiveInputPath(absPath)) {
+    : resolvePath(cwd, outputPath);
+  // The destination usually does not exist yet, so resolve the REAL parent dir and
+  // re-join the basename - a symlinked parent (or symlink at the destination) then
+  // cannot redirect the write past the guards below. Falls back to the logical
+  // parent when it does not exist yet.
+  const realParent = await realpath(dirname(logicalPath)).catch(() => dirname(logicalPath));
+  const absPath = resolvePath(realParent, basename(logicalPath));
+
+  if (isSensitiveInputPath(absPath) || isSensitiveInputPath(logicalPath)) {
     throw new Error(
       `Refusing to write a job result to a sensitive path: ${absPath}. ` +
-        `Choose a destination outside secret/config locations.`,
+        `Choose a destination outside secret/config/auto-run locations.`,
     );
+  }
+  if (!options?.allowOutsideCwd) {
+    const realCwd = await realpath(cwd).catch(() => cwd);
+    const rel = relative(realCwd, absPath);
+    const insideCwd = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+    if (!insideCwd) {
+      throw new Error(
+        `output_path "${absPath}" resolves outside the working directory (${realCwd}). ` +
+          `Choose a destination under the working directory or pass allow_outside_cwd: true.`,
+      );
+    }
   }
   return absPath;
 }
@@ -82,7 +111,10 @@ const GIT_MAX_BUFFER = LIMITS.MAX_REINLINE_TEXT_BYTES + MAX_INPUT_LEN;
  * could run attacker code with the MCP server's privileges (in-memory secret keys).
  * These `-c` overrides neutralize those keys; `GIT_CONFIG_NOSYSTEM=1` (set in env)
  * additionally ignores /etc/gitconfig. `safe.directory` does NOT cover this - it only
- * blocks differently-owned repos, not a user-owned malicious clone/tarball.
+ * blocks differently-owned repos, not a user-owned malicious clone/tarball. A repo's
+ * `textconv` diff driver (mapped via `.gitattributes`) is a further command-execution
+ * vector, so every `git diff` invocation also passes `--no-textconv` (alongside
+ * `--no-ext-diff`); `git diff` does not run clean/smudge filters.
  */
 const GIT_SAFETY_ARGS = [
   '-c',
@@ -142,12 +174,29 @@ async function validateInputPath(
     throw new Error(`input_path too long: ${inputPath.length} chars (max ${MAX_INPUT_PATH_LEN}).`);
   }
   const cwd = resolvePath(process.cwd());
-  const absPath = isAbsolute(inputPath) ? resolvePath(inputPath) : resolvePath(cwd, inputPath);
+  const logicalPath = isAbsolute(inputPath) ? resolvePath(inputPath) : resolvePath(cwd, inputPath);
+
+  // Resolve symlinks so every guard below runs on the REAL target, not a logical
+  // path a symlink could redirect (a benign-looking name -> ~/.ssh/id_rsa, or a
+  // symlinked parent dir pointing outside cwd). Without this, the sensitive-file
+  // and cwd-confinement checks operate on the link path and a symlink defeats both.
+  let absPath: string;
+  try {
+    absPath = await realpath(logicalPath);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      throw new Error(`input_path does not exist: ${logicalPath}`);
+    }
+    throw new Error(`Cannot resolve input_path "${logicalPath}": ${(e as Error).message}`);
+  }
 
   // Always refuse known-sensitive files (secret keys, .env, SSH/keypair, ~/.elisym,
   // /proc). This forwards the file to a remote provider before any payment and is
   // invisible in the transcript, so an injected path must never reach a secret.
-  if (isSensitiveInputPath(absPath)) {
+  // Checked on both the real target and the link path so neither a link to a
+  // sensitive file nor a sensitively-named symlink slips through.
+  if (isSensitiveInputPath(absPath) || isSensitiveInputPath(logicalPath)) {
     throw new Error(
       `Refusing to read a sensitive file as job input: ${absPath}. ` +
         `Secret keys, .env, SSH/keypair files, ~/.elisym and /proc are blocked.`,
@@ -155,13 +204,15 @@ async function validateInputPath(
   }
   // By default confine reads to the server's working-directory subtree. Reading
   // elsewhere requires the explicit allow_outside_cwd opt-in (still subject to the
-  // sensitive-file block above).
+  // sensitive-file block above). Compared on real paths so a symlinked cwd (e.g.
+  // macOS /tmp -> /private/tmp) does not false-negative a legitimate in-tree file.
   if (!options?.allowOutsideCwd) {
-    const rel = relative(cwd, absPath);
+    const realCwd = await realpath(cwd).catch(() => cwd);
+    const rel = relative(realCwd, absPath);
     const insideCwd = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
     if (!insideCwd) {
       throw new Error(
-        `input_path "${absPath}" resolves outside the working directory (${cwd}). ` +
+        `input_path "${absPath}" resolves outside the working directory (${realCwd}). ` +
           `Move the file under the working directory or pass allow_outside_cwd: true.`,
       );
     }
@@ -325,18 +376,18 @@ export async function computeGitDiff(repoPath: string, base?: string): Promise<G
           `". _ / @ ~ ^ -", no leading "-", no "..").`,
       );
     }
-    args = ['diff', '--no-ext-diff', '--end-of-options', `${base}...HEAD`];
+    args = ['diff', '--no-ext-diff', '--no-textconv', '--end-of-options', `${base}...HEAD`];
     describedRange = `${base}...HEAD`;
   } else if (await isDirty(absRepo)) {
-    args = ['diff', '--no-ext-diff', 'HEAD'];
+    args = ['diff', '--no-ext-diff', '--no-textconv', 'HEAD'];
     describedRange = 'HEAD (working tree, uncommitted changes)';
   } else {
     const detected = await detectDefaultBase(absRepo);
     if (detected) {
-      args = ['diff', '--no-ext-diff', '--end-of-options', `${detected}...HEAD`];
+      args = ['diff', '--no-ext-diff', '--no-textconv', '--end-of-options', `${detected}...HEAD`];
       describedRange = `${detected}...HEAD`;
     } else {
-      args = ['diff', '--no-ext-diff', 'HEAD'];
+      args = ['diff', '--no-ext-diff', '--no-textconv', 'HEAD'];
       describedRange = 'HEAD (no main/master detected)';
     }
   }

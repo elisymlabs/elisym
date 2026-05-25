@@ -24,6 +24,19 @@ function buildCliSkill(
   entryPath: string,
   scriptEnv: NodeJS.ProcessEnv | undefined,
 ): Skill {
+  // Confine image_file to the skill directory, mirroring the SDK loader's guard. A
+  // third-party SKILL.md is untrusted; without this a traversing image_file (e.g.
+  // ../../.secrets.json) would be read and uploaded to a public media host on
+  // `start`. Drop a traversing value rather than fail the whole skill - the image
+  // is cosmetic, the way output_file/script (load-bearing) hard-fail instead.
+  let safeImageFile = parsed.imageFile;
+  if (safeImageFile !== undefined && resolveInsidePath(entryPath, safeImageFile) === null) {
+    console.warn(
+      `SKILL.md "${parsed.name}": ignoring "image_file" that resolves outside the skill directory: ${safeImageFile}`,
+    );
+    safeImageFile = undefined;
+  }
+
   let skill: Skill;
   switch (parsed.mode) {
     case 'llm':
@@ -34,7 +47,7 @@ function buildCliSkill(
         Number(parsed.priceSubunits),
         parsed.asset,
         parsed.image,
-        parsed.imageFile,
+        safeImageFile,
         entryPath,
         parsed.systemPrompt,
         parsed.tools,
@@ -62,7 +75,7 @@ function buildCliSkill(
         asset: parsed.asset,
         outputFilePath,
         image: parsed.image,
-        imageFile: parsed.imageFile,
+        imageFile: safeImageFile,
         dir: entryPath,
         llmOverride: parsed.llmOverride,
       });
@@ -91,7 +104,7 @@ function buildCliSkill(
         scriptTimeoutMs: parsed.scriptTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
         scriptEnv,
         image: parsed.image,
-        imageFile: parsed.imageFile,
+        imageFile: safeImageFile,
         dir: entryPath,
         llmOverride: parsed.llmOverride,
       });

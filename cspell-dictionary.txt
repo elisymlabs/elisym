@@ -115,3 +115,5 @@ toctou
 iroh
 napi
 reinline
+netrc
+textconv
