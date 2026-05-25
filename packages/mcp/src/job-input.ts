@@ -66,30 +66,38 @@ export async function resolveOutputPath(
     ? resolvePath(outputPath)
     : resolvePath(cwd, outputPath);
   // The destination usually does not exist yet, so resolve the REAL parent dir and
-  // re-join the basename - a symlinked parent (or symlink at the destination) then
-  // cannot redirect the write past the guards below. Falls back to the logical
-  // parent when it does not exist yet.
+  // re-join the basename - a symlinked PARENT then cannot redirect the write past
+  // the guards below. Falls back to the logical parent when it does not exist yet.
   const realParent = await realpath(dirname(logicalPath)).catch(() => dirname(logicalPath));
   const absPath = resolvePath(realParent, basename(logicalPath));
+  // Resolving only the parent leaves a symlink AT the destination itself
+  // unresolved (e.g. ./out.bin -> ~/.ssh/authorized_keys): `blobs.export` follows
+  // it and would overwrite the link target with untrusted provider bytes. When the
+  // destination already exists, resolve its real target so the guards below (and
+  // the write itself) operate on it, mirroring the read-side `validateInputPath`.
+  const realDest = await realpath(logicalPath).catch(() => undefined);
+  const writeTarget = realDest ?? absPath;
+  const sensitiveCandidates =
+    realDest !== undefined ? [absPath, logicalPath, realDest] : [absPath, logicalPath];
 
-  if (isSensitiveInputPath(absPath) || isSensitiveInputPath(logicalPath)) {
+  if (sensitiveCandidates.some((candidate) => isSensitiveInputPath(candidate))) {
     throw new Error(
-      `Refusing to write a job result to a sensitive path: ${absPath}. ` +
+      `Refusing to write a job result to a sensitive path: ${writeTarget}. ` +
         `Choose a destination outside secret/config/auto-run locations.`,
     );
   }
   if (!options?.allowOutsideCwd) {
     const realCwd = await realpath(cwd).catch(() => cwd);
-    const rel = relative(realCwd, absPath);
+    const rel = relative(realCwd, writeTarget);
     const insideCwd = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
     if (!insideCwd) {
       throw new Error(
-        `output_path "${absPath}" resolves outside the working directory (${realCwd}). ` +
+        `output_path "${writeTarget}" resolves outside the working directory (${realCwd}). ` +
           `Choose a destination under the working directory or pass allow_outside_cwd: true.`,
       );
     }
   }
-  return absPath;
+  return writeTarget;
 }
 
 /** Wall-clock cap on each `git` invocation. Diffs of in-tree work are sub-second. */

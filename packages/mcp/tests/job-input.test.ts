@@ -232,6 +232,23 @@ describe('resolveOutputPath', () => {
       /sensitive path/,
     );
   });
+
+  it('rejects an in-cwd destination symlink whose target escapes the working directory', async () => {
+    // The link sits inside cwd (so the logical-path confinement check passes), but
+    // its target is outside cwd: blobs.export would follow the link and overwrite
+    // the out-of-tree target, so resolveOutputPath must resolve and refuse it.
+    const outsideDir = await mkdtemp(join(tmpdir(), 'elisym-out-link-'));
+    const outsideTarget = join(outsideDir, 'target.bin');
+    await writeFile(outsideTarget, 'data');
+    const link = join(process.cwd(), `elisym-out-symlink-${Date.now()}.bin`);
+    await symlink(outsideTarget, link);
+    try {
+      await expect(resolveOutputPath(link)).rejects.toThrow(/outside the working directory/);
+    } finally {
+      await rm(link, { force: true });
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('computeGitDiff', () => {
