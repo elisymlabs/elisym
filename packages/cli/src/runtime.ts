@@ -1032,20 +1032,30 @@ export class AgentRuntime {
     output: SkillOutput,
   ): Promise<{ attachment: FileAttachment | undefined; deliveredContent: string }> {
     if (output.filePath !== undefined) {
-      if (!this.irohTransport) {
-        throw new Error('Skill produced a file result but iroh transport is unavailable.');
+      // seedPath copies the bytes into the persistent iroh store, so the producer's
+      // temp file is no longer needed once seeding has been attempted (recovery
+      // re-shares from the store, never the temp file). Release it whether seeding
+      // succeeds or throws - including the no-transport case below - so a failure
+      // (job stays `paid`, recovery re-executes into a fresh temp file) does not
+      // leave the temp dir behind on every retry.
+      try {
+        if (!this.irohTransport) {
+          throw new Error('Skill produced a file result but iroh transport is unavailable.');
+        }
+        const seeded = await this.irohTransport.seedPath(output.filePath);
+        const attachment: FileAttachment = {
+          name: basename(output.filePath),
+          size: seeded.size,
+          mime: output.outputMime ?? 'application/octet-stream',
+          transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+        };
+        this.ledger.recordAttachment(jobId, { resultAttachment: JSON.stringify(attachment) });
+        // A file result's `output.data` is a small note, delivered inline alongside
+        // the ticket - unchanged from the original file-transfer behavior.
+        return { attachment, deliveredContent: output.data };
+      } finally {
+        await output.cleanup?.().catch(() => {});
       }
-      const seeded = await this.irohTransport.seedPath(output.filePath);
-      const attachment: FileAttachment = {
-        name: basename(output.filePath),
-        size: seeded.size,
-        mime: output.outputMime ?? 'application/octet-stream',
-        transports: [{ kind: 'iroh', ticket: seeded.ticket }],
-      };
-      this.ledger.recordAttachment(jobId, { resultAttachment: JSON.stringify(attachment) });
-      // A file result's `output.data` is a small note, delivered inline alongside
-      // the ticket - unchanged from the original file-transfer behavior.
-      return { attachment, deliveredContent: output.data };
     }
 
     // Large text result: spill it to iroh and deliver EMPTY content + a text/plain

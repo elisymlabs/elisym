@@ -11,7 +11,7 @@
  *           reads it back -> bytes match.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NATIVE_SOL, encodeJobPayload, type FileAttachment } from '@elisym/sdk';
@@ -21,6 +21,7 @@ import { JobLedger } from '../src/ledger.js';
 import { AgentRuntime, type RuntimeConfig } from '../src/runtime.js';
 import { SkillRegistry } from '../src/skill';
 import type { Skill } from '../src/skill';
+import { DynamicScriptSkill } from '../src/skill/non-llm-skills.js';
 import type { IncomingJob, NostrTransport } from '../src/transport/nostr.js';
 
 let mockVerifyResult: { verified: boolean; txSignature?: string } = {
@@ -493,6 +494,105 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
       9_700_000,
       undefined,
     );
+  }, 60_000);
+
+  it('INPUT->OUTPUT (dynamic-script): provider fetches a file input, a script writes a file output, customer fetches it', async () => {
+    const providerTransport = newTransport();
+    const customerTransport = newTransport();
+
+    // A REAL dynamic-script skill: read the fetched input from ELISYM_INPUT_FILE,
+    // write a transformed result to ELISYM_OUTPUT_FILE (copy + marker), emit a note
+    // on stdout. Exercises the file-in -> script -> file-out wiring end to end (the
+    // same path the rembg remove-bg skill uses, minus the model).
+    const scriptPath = join(work, 'transform.sh');
+    writeFileSync(
+      scriptPath,
+      '#!/usr/bin/env bash\nset -euo pipefail\n' +
+        'cat "$ELISYM_INPUT_FILE" > "$ELISYM_OUTPUT_FILE"\n' +
+        'printf -- "-PROCESSED" >> "$ELISYM_OUTPUT_FILE"\n' +
+        'echo "processed"\n',
+    );
+    chmodSync(scriptPath, 0o755);
+
+    // Customer seeds a binary input (application/octet-stream => streamed to disk,
+    // handed to the script as ELISYM_INPUT_FILE rather than re-inlined).
+    const inputBytes = randomBytes(32 * 1024);
+    const inputFile = join(work, 'input.bin');
+    writeFileSync(inputFile, inputBytes);
+    const seeded = await customerTransport.seedPath(inputFile);
+    const attachment: FileAttachment = {
+      name: 'input.bin',
+      size: seeded.size,
+      mime: 'application/octet-stream',
+      transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+    };
+
+    const skill = new DynamicScriptSkill({
+      name: 'transform',
+      description: 'reads a file input and writes a file output',
+      capabilities: ['text-gen'],
+      priceSubunits: 100_000,
+      asset: NATIVE_SOL,
+      scriptPath,
+      scriptArgs: [],
+      dir: work,
+      outputMime: 'image/png',
+    });
+
+    const ledger = new JobLedger(join(work, '.jobs.json'));
+    const rawEvent = {
+      id: 'transform-job',
+      pubkey: 'cust',
+      created_at: Math.floor(Date.now() / 1000),
+      kind: 5100,
+      tags: [
+        ['t', 'elisym'],
+        ['t', 'text-gen'],
+      ],
+      content: encodeJobPayload({ attachment }),
+      sig: 'sig',
+    };
+    ledger.recordPaid({
+      job_id: 'transform-job',
+      input: '',
+      input_type: 'text',
+      tags: ['elisym', 'text-gen'],
+      customer_id: 'cust',
+      net_amount: 9_700_000,
+      raw_event_json: JSON.stringify(rawEvent),
+      created_at: Math.floor(Date.now() / 1000),
+    });
+
+    const { transport, deliverResult } = makeTransport();
+    const runtime = new AgentRuntime(
+      transport,
+      makeRegistry(skill),
+      { llm: null as never, agentName: 'p', agentDescription: '' },
+      config,
+      ledger,
+      { onLog: vi.fn() },
+      undefined,
+      providerTransport,
+    );
+
+    const runPromise = runtime.run();
+    await tick(2500); // recovery: fetch input -> run script -> seed output -> deliver
+    runtime.stop();
+    await runPromise.catch(() => {});
+
+    // Delivered with a file attachment carrying the script's output; the inline
+    // note is the script's stdout, and the mime comes from the skill's output_mime.
+    expect(deliverResult).toHaveBeenCalledTimes(1);
+    expect(deliverResult.mock.calls[0]![1]).toBe('processed');
+    const resultAttachment = deliverResult.mock.calls[0]![3] as FileAttachment | undefined;
+    expect(resultAttachment?.mime).toBe('image/png');
+    const ticket = resultAttachment!.transports.find((t) => t.kind === 'iroh')?.ticket;
+
+    // The customer fetches the result and gets the transformed input bytes back.
+    const dest = join(work, 'result.bin');
+    await customerTransport.fetchToPath(ticket!, dest);
+    const expected = Buffer.concat([inputBytes, Buffer.from('-PROCESSED')]);
+    expect(sha256(readFileSync(dest))).toBe(sha256(expected));
   }, 60_000);
 });
 

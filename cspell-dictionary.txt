@@ -117,3 +117,5 @@ napi
 reinline
 netrc
 textconv
+rembg
+pipx

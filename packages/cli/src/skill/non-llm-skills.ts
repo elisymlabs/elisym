@@ -82,6 +82,8 @@ export interface CliScriptSkillParams extends BaseParams {
   scriptTimeoutMs?: number;
   /** Full env for the script. CLI builds this from `process.env` + decrypted secrets. */
   scriptEnv?: NodeJS.ProcessEnv;
+  /** MIME for a file result (dynamic-script only); forwarded to the SDK runner. */
+  outputMime?: string;
 }
 
 export class StaticScriptSkill implements Skill {
@@ -162,6 +164,7 @@ export class DynamicScriptSkill implements Skill {
       scriptEnv: params.scriptEnv,
       image: params.image,
       imageFile: params.imageFile,
+      outputMime: params.outputMime,
     });
   }
 

@@ -92,8 +92,7 @@ function buildCliSkill(
       if (!scriptPath) {
         throw new Error(`SKILL.md "${parsed.name}": "script" must stay inside the skill directory`);
       }
-      const Ctor = parsed.mode === 'static-script' ? StaticScriptSkill : DynamicScriptSkill;
-      skill = new Ctor({
+      const scriptParams = {
         name: parsed.name,
         description: parsed.description,
         capabilities: parsed.capabilities,
@@ -107,7 +106,13 @@ function buildCliSkill(
         imageFile: safeImageFile,
         dir: entryPath,
         llmOverride: parsed.llmOverride,
-      });
+      };
+      // Only dynamic-script can emit a file result, so `outputMime` is threaded
+      // only there (the static-script wrapper has no such param).
+      skill =
+        parsed.mode === 'dynamic-script'
+          ? new DynamicScriptSkill({ ...scriptParams, outputMime: parsed.outputMime })
+          : new StaticScriptSkill(scriptParams);
       break;
     }
   }

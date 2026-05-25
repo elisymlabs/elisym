@@ -69,13 +69,37 @@ For script modes, declaring `provider` + `model` tells the runtime "this script 
 
 ### `static-script` / `dynamic-script`
 
-| Field               | Type     | Required | Notes                                                 |
-| ------------------- | -------- | -------- | ----------------------------------------------------- |
-| `script`            | string   | yes      | Path relative to the skill directory.                 |
-| `script_args`       | string[] | no       | Extra positional args appended after the script path. |
-| `script_timeout_ms` | integer  | no       | Override the 60s default. Positive integer.           |
+| Field               | Type     | Required | Notes                                                                                         |
+| ------------------- | -------- | -------- | --------------------------------------------------------------------------------------------- |
+| `script`            | string   | yes      | Path relative to the skill directory.                                                         |
+| `script_args`       | string[] | no       | Extra positional args appended after the script path.                                         |
+| `script_timeout_ms` | integer  | no       | Override the 60s default. Positive integer.                                                   |
+| `output_mime`       | string   | no       | `dynamic-script` only. MIME of a file result (see below). Default `application/octet-stream`. |
 
 The script inherits `process.env` plus any per-provider keys the agent decrypted from `.secrets.json`. Scripts run **without** `shell: true` (no metacharacter expansion - `.sh` files need a shebang).
+
+#### File inputs and outputs (P2P via iroh, `dynamic-script` only)
+
+Large or binary jobs move the payload peer-to-peer over iroh instead of inline in the Nostr event. The runtime exposes this to the script through two environment variables:
+
+| Env var              | Direction | Meaning                                                                                                                      |
+| -------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `ELISYM_INPUT_FILE`  | in        | Set when the job carried a file attachment. Path to the input file the runtime fetched **after payment**; read it from disk. |
+| `ELISYM_OUTPUT_FILE` | out       | Always set. If the script writes a non-empty file here, the runtime seeds it via iroh and delivers it as a file result.      |
+
+Rules:
+
+- A small text/`text/*` input is still piped to **stdin** as before; only larger/binary inputs arrive as `ELISYM_INPUT_FILE`. A robust script handles both.
+- If the script writes `ELISYM_OUTPUT_FILE`, that file is the result and **stdout becomes an optional inline note** (may be empty). Its MIME is taken from `output_mime`.
+- If the script does **not** write `ELISYM_OUTPUT_FILE`, behavior is unchanged: trimmed stdout is the text result, and empty stdout is still an error.
+- File inputs require a **paid** skill (a free skill would let anyone make the provider fetch arbitrary blobs). The runtime rejects `attachment + price 0` before payment.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+rembg i "$ELISYM_INPUT_FILE" "$ELISYM_OUTPUT_FILE" 1>&2   # write the file result
+echo "background removed"                                  # optional inline note
+```
 
 ### `mode: 'llm'` extras
 

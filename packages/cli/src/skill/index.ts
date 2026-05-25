@@ -42,6 +42,13 @@ export interface SkillOutput {
    * `outputMime` is reused as the attachment's mime.
    */
   filePath?: string;
+  /**
+   * Releases the resources backing `filePath` (e.g. a temp dir). The runtime
+   * calls it once it has seeded the file - or failed to - since seeding happens
+   * after `execute()` returns and the producer cannot release the file itself.
+   * Mirrors the input-side cleanup callback in the runtime's `resolveInputFile`.
+   */
+  cleanup?: () => Promise<void>;
 }
 
 export interface SkillContext {
