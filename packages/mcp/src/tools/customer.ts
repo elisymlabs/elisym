@@ -1470,9 +1470,22 @@ export const customerTools: ToolDefinition[] = [
       const promptBlock = input.prompt.trim().length > 0 ? `${input.prompt.trim()}\n\n` : '';
       const payload = `${promptBlock}--- git diff (${diffResult.describedRange}) ---\n${diffResult.diff}`;
 
+      // computeGitDiff bounds only the diff at MAX_REINLINE_TEXT_BYTES; the prompt
+      // and framing line are added on top, so the combined payload can exceed it.
+      // A spilled text/plain attachment over this ceiling is NOT re-inlined by the
+      // provider (it streams to a file, leaving an LLM reviewer with empty input),
+      // so bound the combined payload here - mirroring submit_and_pay_job.
+      const payloadBytes = utf8ByteLength(payload);
+      if (payloadBytes > LIMITS.MAX_REINLINE_TEXT_BYTES) {
+        return errorResult(
+          `Combined prompt + diff is ${payloadBytes} bytes (max ${LIMITS.MAX_REINLINE_TEXT_BYTES}). ` +
+            `Pass a narrower "base" or shorten the prompt.`,
+        );
+      }
+
       const agent = ctx.active();
-      // computeGitDiff already bounds the diff to MAX_REINLINE_TEXT_BYTES; a large
-      // combined payload spills to iroh transparently instead of being rejected.
+      // Within the re-inline ceiling: a payload over the inline budget spills to
+      // iroh transparently (the provider restores it inline) instead of being rejected.
       const prepared = await prepareTextInput(agent, payload);
       if ('error' in prepared) {
         return errorResult(prepared.error);
