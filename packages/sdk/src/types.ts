@@ -1,4 +1,5 @@
 import type { ElisymIdentity } from './primitives/identity';
+import type { FileAttachment } from './transport/attachment';
 
 // --- Pool ---
 
@@ -138,13 +139,22 @@ export interface Job {
 }
 
 export interface SubmitJobOptions {
-  /** Job input text. Sent unencrypted if providerPubkey is not set. */
+  /**
+   * Job input text. Sent unencrypted if providerPubkey is not set. May be empty
+   * when `attachment` is set (a file-only job carries no text note).
+   */
   input: string;
   capability: string;
   /** Target provider pubkey. If omitted, job is broadcast unencrypted and visible to all relays. */
   providerPubkey?: string;
   /** Kind offset (default 100 - kind 5100). */
   kindOffset?: number;
+  /**
+   * Optional file attachment. When set, `input` (as the text note) and the
+   * attachment are wrapped in a job-payload envelope before encryption. The file
+   * itself travels out-of-band (P2P via iroh), not in the Nostr event.
+   */
+  attachment?: FileAttachment;
 }
 
 export interface JobUpdateCallbacks {
@@ -154,7 +164,13 @@ export interface JobUpdateCallbacks {
     paymentRequest?: string,
     senderPubkey?: string,
   ) => void;
-  onResult?: (content: string, eventId: string) => void;
+  /**
+   * Fired on a job result. `content` is the result text (for a file result, the
+   * envelope's text note, or `''`); `attachment` is the file descriptor when the
+   * result carries a file. The file is fetched separately (P2P via iroh), never
+   * inlined here.
+   */
+  onResult?: (content: string, eventId: string, attachment?: FileAttachment) => void;
   onError?: (error: string) => void;
   /**
    * Fired when the result wait window expires without a result - a distinct,

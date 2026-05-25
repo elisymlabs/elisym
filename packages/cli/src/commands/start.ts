@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
   ElisymClient,
   ElisymIdentity,
@@ -25,6 +25,7 @@ import {
 } from '@elisym/sdk';
 import {
   agentPaths,
+  ensureGitignoreHasIrohEntry,
   listAgents,
   loadAgent,
   loadPoliciesFromDir,
@@ -36,6 +37,7 @@ import {
   type MediaCache,
 } from '@elisym/sdk/agent-store';
 import { LlmHealthMonitor, startLlmRecovery, type HeartbeatHandle } from '@elisym/sdk/llm-health';
+import { createIrohTransport } from '@elisym/sdk/node';
 import { address, createSolanaRpc } from '@solana/kit';
 import { probeRelays } from '../diagnostics.js';
 import {
@@ -639,6 +641,12 @@ export async function cmdStart(
   // -- Step 14: Build transport + ledger + runtime --
   const transport = new NostrTransport(client, identity, [DEFAULT_KIND_OFFSET]);
   const ledger = new JobLedger(paths.jobs);
+  // iroh blob transport for file results, bound to a persistent fs-store at
+  // <agent-dir>/.iroh/ (the node is created lazily on the first transfer).
+  const irohTransport = createIrohTransport({ storePath: join(loaded.dir, '.iroh') });
+  // Migration: ensure a project-local .gitignore created before `.iroh/` became a
+  // default ignore entry still excludes the (cleartext) blob store.
+  await ensureGitignoreHasIrohEntry(dirname(loaded.dir));
 
   const runtimeConfig: RuntimeConfig = {
     paymentTimeoutSecs: DEFAULTS.PAYMENT_EXPIRY_SECS,
@@ -723,6 +731,7 @@ export async function cmdStart(
       },
     },
     healthMonitor,
+    irohTransport,
   );
 
   // -- Step 15: Run --

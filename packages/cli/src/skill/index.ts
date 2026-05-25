@@ -25,11 +25,23 @@ export interface SkillInput {
   inputType: string;
   tags: string[];
   jobId: string;
+  /**
+   * Local path to a file input fetched out-of-band (P2P via iroh), when the job
+   * carried a file attachment. The runtime fetches it after payment and removes
+   * it after execution; the skill reads from disk rather than from `data`.
+   */
+  filePath?: string;
 }
 
 export interface SkillOutput {
   data: string;
   outputMime?: string;
+  /**
+   * Local path to a file result. When set, the runtime seeds the file via iroh
+   * and the customer fetches it out-of-band; `data` carries any text note (or '').
+   * `outputMime` is reused as the attachment's mime.
+   */
+  filePath?: string;
 }
 
 export interface SkillContext {

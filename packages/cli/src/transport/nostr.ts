@@ -2,8 +2,8 @@
  * NostrTransport - listens for targeted jobs on Nostr relays, delivers results.
  * Handles NIP-44 decryption, dedup, and retried delivery.
  */
-import { BoundedSet, KIND_JOB_FEEDBACK, jobRequestKind } from '@elisym/sdk';
-import type { ElisymClient, ElisymIdentity, SubCloser } from '@elisym/sdk';
+import { BoundedSet, KIND_JOB_FEEDBACK, decodeJobPayload, jobRequestKind } from '@elisym/sdk';
+import type { ElisymClient, ElisymIdentity, FileAttachment, SubCloser } from '@elisym/sdk';
 import { verifyEvent, type Event, type Filter } from 'nostr-tools';
 
 export interface IncomingJob {
@@ -15,6 +15,8 @@ export interface IncomingJob {
   bid?: number;
   encrypted: boolean;
   rawEvent: Event;
+  /** File attachment descriptor, decoded from the job-payload envelope (if any). */
+  attachment?: FileAttachment;
 }
 
 export type JobFeedbackStatus =
@@ -77,7 +79,20 @@ export class NostrTransport {
         if (iTag?.[2]) {
           inputType = iTag[2];
         }
-        const input = encrypted ? event.content : (iTag?.[1] ?? event.content);
+        const rawInput = encrypted ? event.content : (iTag?.[1] ?? event.content);
+
+        // Decode the job-payload envelope: a file job carries `{ text, attachment }`,
+        // a plain-text job decodes to its text unchanged. A malformed/unknown-version
+        // envelope is skipped (the provider can't process it).
+        let input: string;
+        let attachment: FileAttachment | undefined;
+        try {
+          const decoded = decodeJobPayload(rawInput);
+          input = decoded.text ?? '';
+          attachment = decoded.attachment;
+        } catch {
+          return;
+        }
 
         onJob({
           jobId: event.id,
@@ -88,6 +103,7 @@ export class NostrTransport {
           bid: bidTag?.[1] ? parseInt(bidTag[1], 10) : undefined,
           encrypted,
           rawEvent: event,
+          attachment,
         });
       },
     );
@@ -201,6 +217,7 @@ export class NostrTransport {
     job: IncomingJob,
     content: string,
     amount?: number,
+    attachment?: FileAttachment,
     retries = 3,
   ): Promise<string> {
     return this.client.marketplace.submitJobResultWithRetry(
@@ -209,6 +226,8 @@ export class NostrTransport {
       content,
       amount,
       retries,
+      undefined,
+      attachment,
     );
   }
 

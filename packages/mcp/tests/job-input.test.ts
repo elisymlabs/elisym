@@ -7,10 +7,16 @@
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
+import { LIMITS } from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { computeGitDiff, readJobInputFile } from '../src/job-input.js';
+import {
+  computeGitDiff,
+  prepareFileInput,
+  readJobInputFile,
+  resolveOutputPath,
+} from '../src/job-input.js';
 
 const execFileP = promisify(execFile);
 
@@ -104,6 +110,87 @@ describe('readJobInputFile', () => {
     } finally {
       await rm(p, { force: true });
     }
+  });
+});
+
+describe('prepareFileInput', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'elisym-prepfile-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('returns inline mode + content for a file within the inline limit', async () => {
+    const p = join(dir, 'small.txt');
+    await writeFile(p, 'hello world');
+    const result = await prepareFileInput(p, { allowOutsideCwd: true });
+    expect(result.mode).toBe('inline');
+    if (result.mode === 'inline') {
+      expect(result.content).toBe('hello world');
+    }
+  });
+
+  it('returns file mode + path for a file over the inline limit (seeded via iroh)', async () => {
+    const p = join(dir, 'big.bin');
+    await writeFile(p, 'a'.repeat(150_000)); // > MAX_INPUT_LEN (100_000)
+    const result = await prepareFileInput(p, { allowOutsideCwd: true });
+    expect(result.mode).toBe('file');
+    if (result.mode === 'file') {
+      expect(result.absPath).toBe(p);
+      expect(result.size).toBe(150_000);
+      expect(result.name).toBe('big.bin');
+    }
+  });
+
+  it('spills a file over the encrypted-inline budget but under MAX_INPUT_LEN (targeted jobs are NIP-44 capped)', async () => {
+    // 70k bytes: > MAX_ENCRYPTED_INLINE_BYTES (60k) but < MAX_INPUT_LEN (100k).
+    // Must be file mode (seeded via iroh): inlining it would exceed the NIP-44
+    // 65_535-byte plaintext cap and throw at submit instead of transferring P2P.
+    const p = join(dir, 'midsize.bin');
+    const size = LIMITS.MAX_ENCRYPTED_INLINE_BYTES + 10_000;
+    await writeFile(p, 'a'.repeat(size));
+    const result = await prepareFileInput(p, { allowOutsideCwd: true });
+    expect(result.mode).toBe('file');
+    if (result.mode === 'file') {
+      expect(result.size).toBe(size);
+    }
+  });
+
+  it('still refuses sensitive files', async () => {
+    const secret = join(dir, '.secrets.json');
+    await writeFile(secret, '{"nostr_secret_key":"x"}');
+    await expect(prepareFileInput(secret, { allowOutsideCwd: true })).rejects.toThrow(
+      /sensitive file/,
+    );
+  });
+});
+
+describe('resolveOutputPath', () => {
+  it('returns the normalized absolute path for a normal destination', () => {
+    const abs = join(tmpdir(), 'result-out.bin');
+    expect(resolveOutputPath(abs)).toBe(abs);
+  });
+
+  it('resolves a relative destination against the working directory', () => {
+    expect(resolveOutputPath('out/result.bin')).toBe(resolvePath(process.cwd(), 'out/result.bin'));
+  });
+
+  it('refuses a secret-like filename (.secrets.json)', () => {
+    expect(() => resolveOutputPath(join(tmpdir(), '.secrets.json'))).toThrow(/sensitive path/);
+  });
+
+  it('refuses a path inside a sensitive directory (.ssh)', () => {
+    expect(() => resolveOutputPath(join(tmpdir(), '.ssh', 'authorized_keys'))).toThrow(
+      /sensitive path/,
+    );
+  });
+
+  it('refuses a path inside the agent store (.elisym)', () => {
+    expect(() => resolveOutputPath(join(tmpdir(), '.elisym', 'agent', 'out.bin'))).toThrow(
+      /sensitive path/,
+    );
   });
 });
 

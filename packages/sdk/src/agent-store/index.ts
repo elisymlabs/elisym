@@ -65,6 +65,7 @@ export {
   writeSecrets,
   writeFileAtomic,
   writeExampleSkillTemplate,
+  ensureGitignoreHasIrohEntry,
 } from './writer';
 export type { CreateAgentDirOptions, CreatedAgentDir } from './writer';
 

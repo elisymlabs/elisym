@@ -8,7 +8,15 @@
  */
 import { LIMITS } from '@elisym/sdk';
 import { describe, it, expect } from 'vitest';
-import { MAX_CAPABILITIES, MAX_INPUT_LEN, MAX_TIMEOUT_SECS, checkLen } from '../src/utils.js';
+import {
+  MAX_CAPABILITIES,
+  MAX_ENCRYPTED_INLINE_BYTES,
+  MAX_INPUT_LEN,
+  MAX_REINLINE_TEXT_BYTES,
+  MAX_TIMEOUT_SECS,
+  NIP44_MAX_PLAINTEXT_BYTES,
+  checkLen,
+} from '../src/utils.js';
 
 describe('MCP limits aligned with @elisym/sdk LIMITS', () => {
   it('MAX_INPUT_LEN matches SDK MAX_INPUT_LENGTH', () => {
@@ -22,6 +30,15 @@ describe('MCP limits aligned with @elisym/sdk LIMITS', () => {
 
   it('MAX_TIMEOUT_SECS matches SDK MAX_TIMEOUT_SECS', () => {
     expect(MAX_TIMEOUT_SECS).toBe(LIMITS.MAX_TIMEOUT_SECS);
+  });
+
+  it('encrypted-content byte limits match the SDK', () => {
+    expect(NIP44_MAX_PLAINTEXT_BYTES).toBe(LIMITS.NIP44_MAX_PLAINTEXT_BYTES);
+    expect(NIP44_MAX_PLAINTEXT_BYTES).toBe(65_535);
+    expect(MAX_ENCRYPTED_INLINE_BYTES).toBe(LIMITS.MAX_ENCRYPTED_INLINE_BYTES);
+    expect(MAX_REINLINE_TEXT_BYTES).toBe(LIMITS.MAX_REINLINE_TEXT_BYTES);
+    // The spill threshold must stay under the hard NIP-44 cap.
+    expect(MAX_ENCRYPTED_INLINE_BYTES).toBeLessThan(NIP44_MAX_PLAINTEXT_BYTES);
   });
 
   it('checkLen on input above MAX_INPUT_LEN fails at the MCP layer (not leaked to SDK)', () => {

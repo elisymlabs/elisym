@@ -10,10 +10,18 @@
  * `client.marketplace.submitJobRequest`, then call the real `submit_and_pay_job` handler.
  * The fail-fast branch runs before `submitJobRequest`, so we can assert the call count.
  */
+import { LIMITS } from '@elisym/sdk';
 import { nip19 } from 'nostr-tools';
 import { describe, it, expect, vi } from 'vitest';
 import { AgentContext, type AgentInstance } from '../src/context.js';
 import { customerTools } from '../src/tools/customer.js';
+
+// Mock the (node-only) iroh transport so the large-text spill path can seed
+// without the native addon. seedBytes returns a deterministic ticket/size.
+const mockSeedBytes = vi.fn(async () => ({ ticket: 'blobticket-spill', size: 70_000 }));
+vi.mock('../src/iroh.js', () => ({
+  ensureIrohTransport: vi.fn(() => ({ seedBytes: mockSeedBytes })),
+}));
 
 function findTool(name: string) {
   const tool = customerTools.find((t) => t.name === name);
@@ -28,6 +36,8 @@ function buildStubAgent(opts: {
   hasSolana?: boolean;
   /** Provider ping result. Defaults to online=true so the pre-ping guard passes. */
   pingAgent?: ReturnType<typeof vi.fn>;
+  /** Set to mark the agent persistent (eligible to seed a spilled input). */
+  agentDir?: string;
 }): AgentInstance {
   const submitJobRequest = opts.submitJobRequest ?? vi.fn();
   const pingAgent = opts.pingAgent ?? vi.fn(async () => ({ online: true, identity: null }));
@@ -50,6 +60,7 @@ function buildStubAgent(opts: {
     name: 'stub',
     network: 'devnet',
     security: {},
+    agentDir: opts.agentDir,
     solanaKeypair:
       (opts.hasSolana ?? true)
         ? { publicKey: 'sol-pub', secretKey: new Uint8Array(64) }
@@ -173,6 +184,70 @@ describe('submit_and_pay_job expected-recipient fail-fast', () => {
     expect(submitJobRequest).toHaveBeenCalledTimes(1);
     // Resolve the dangling promise via an explicit subscription-close path is not trivial
     // here; we simply ignore the hanging promise - vitest will clean up after the test.
+    void resultPromise;
+  });
+});
+
+describe('submit_and_pay_job large-text spill', () => {
+  const largeInput = 'x'.repeat(LIMITS.MAX_ENCRYPTED_INLINE_BYTES + 10_000);
+
+  it('rejects a large input on an ephemeral agent with a clean error (no crash, no publish)', async () => {
+    mockSeedBytes.mockClear();
+    const fetchAgents = vi.fn(async () => []);
+    const submitJobRequest = vi.fn();
+    // No agentDir => ephemeral => cannot seed a spill.
+    const agent = buildStubAgent({ fetchAgents, submitJobRequest });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('submit_and_pay_job');
+    const input = tool.schema.parse({ input: largeInput, provider_npub: VALID_PROVIDER_NPUB });
+    const result = await tool.handler(ctx, input);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/requires a persistent agent/i);
+    // The spill decision runs before discovery/publish, so nothing leaks out.
+    expect(mockSeedBytes).not.toHaveBeenCalled();
+    expect(fetchAgents).not.toHaveBeenCalled();
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('seeds a large input via iroh and submits an empty inline body + text/plain attachment', async () => {
+    mockSeedBytes.mockClear();
+    const providerEvent = {
+      npub: VALID_PROVIDER_NPUB,
+      cards: [
+        { name: 'general', description: 'free', capabilities: ['general'], payment: undefined },
+      ],
+    };
+    const fetchAgents = vi.fn(async () => [providerEvent]);
+    const submitJobRequest = vi.fn(async () => 'job-event-id');
+    // Persistent (agentDir set) + free provider + no wallet => reaches submitJobRequest.
+    const agent = buildStubAgent({
+      fetchAgents,
+      submitJobRequest,
+      hasSolana: false,
+      agentDir: '/tmp/stub-agent',
+    });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('submit_and_pay_job');
+    const input = tool.schema.parse({
+      input: largeInput,
+      provider_npub: VALID_PROVIDER_NPUB,
+      timeout_secs: 1,
+    });
+    const resultPromise = tool.handler(ctx, input);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockSeedBytes).toHaveBeenCalledTimes(1);
+    expect(submitJobRequest).toHaveBeenCalledTimes(1);
+    const submitArgs = submitJobRequest.mock.calls[0]![1] as {
+      input: string;
+      attachment?: { mime: string; transports: { kind: string; ticket: string }[] };
+    };
+    expect(submitArgs.input).toBe('');
+    expect(submitArgs.attachment?.mime).toBe('text/plain');
+    expect(submitArgs.attachment?.transports[0]?.ticket).toBe('blobticket-spill');
     void resultPromise;
   });
 });

@@ -189,4 +189,25 @@ describe('customer-history', () => {
     const history = await readCustomerHistory(agentDir);
     expect(history.jobs).toHaveLength(0);
   });
+
+  it('round-trips the iroh file-result fields without wiping history', async () => {
+    // The strict schema must accept the new optional fields; a missed addition
+    // would silently wipe the whole document on the next read.
+    const attachmentJson = JSON.stringify({
+      name: 'out.bin',
+      size: 4096,
+      mime: 'application/octet-stream',
+      transports: [{ kind: 'iroh', ticket: 'blobaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }],
+    });
+    await appendCustomerJob(agentDir, makeEntry({ attachmentJson }));
+    await updateCustomerJob(agentDir, 'job-1', {
+      resultFilePath: '/tmp/out.bin',
+      fetchedAt: 1_700_000_002_000,
+    });
+    const history = await readCustomerHistory(agentDir);
+    expect(history.jobs).toHaveLength(1);
+    expect(history.jobs[0]!.attachmentJson).toBe(attachmentJson);
+    expect(history.jobs[0]!.resultFilePath).toBe('/tmp/out.bin');
+    expect(history.jobs[0]!.fetchedAt).toBe(1_700_000_002_000);
+  });
 });

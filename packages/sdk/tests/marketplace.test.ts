@@ -10,6 +10,11 @@ import {
 import { nip44Encrypt, nip44Decrypt } from '../src/primitives/crypto';
 import { ElisymIdentity } from '../src/primitives/identity';
 import { MarketplaceService } from '../src/services/marketplace';
+import {
+  encodeJobPayload,
+  decodeJobPayload,
+  type FileAttachment,
+} from '../src/transport/attachment';
 import type { NostrPool } from '../src/transport/pool';
 import type { SubCloser } from '../src/types';
 
@@ -97,6 +102,37 @@ describe('MarketplaceService.submitJobRequest', () => {
     expect(decrypted).toBe('test prompt');
   });
 
+  it('wraps a file attachment in an encrypted envelope, i tag unchanged', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+    const attachment: FileAttachment = {
+      name: 'in.bin',
+      size: 8192,
+      mime: 'application/octet-stream',
+      transports: [{ kind: 'iroh', ticket: 'blobaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }],
+    };
+
+    // Empty input is allowed for a file-only job.
+    await svc.submitJobRequest(customer, {
+      input: '',
+      capability: 'text-gen',
+      providerPubkey: provider.publicKey,
+      attachment,
+    });
+
+    const ev = pool.published[0]!;
+    // No new transport tag; the i tag is the unchanged 'encrypted' marker.
+    expect(ev.tags.find((t) => t[0] === 'i')?.[1]).toBe('encrypted');
+    expect(ev.tags.find((t) => t[0] === 'transport')).toBeUndefined();
+
+    const decrypted = nip44Decrypt(ev.content, provider.secretKey, customer.publicKey);
+    const decoded = decodeJobPayload(decrypted);
+    expect(decoded.attachment).toEqual(attachment);
+    expect(decoded.text).toBeUndefined();
+  });
+
   it('creates broadcast event without encryption', async () => {
     const pool = createMockPool();
     const svc = new MarketplaceService(pool as any);
@@ -126,6 +162,86 @@ describe('MarketplaceService.submitJobRequest', () => {
     await expect(
       svc.submitJobRequest(customer, { input: '', capability: 'text-gen' }),
     ).rejects.toThrow('Job input must not be empty');
+  });
+});
+
+describe('MarketplaceService NIP-44 byte backstop', () => {
+  // A 2-byte char repeated: under the MAX_INPUT_LENGTH char cap but over the
+  // 65_535-BYTE NIP-44 cap, proving the guard measures bytes (not String.length).
+  const multibyteOverByteCapUnderCharCap = 'ä'.repeat(40_000); // 40k chars, 80k bytes
+
+  it('rejects a targeted input whose UTF-8 byte length exceeds the cap (chars under it)', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+
+    expect(multibyteOverByteCapUnderCharCap.length).toBeLessThan(LIMITS.MAX_INPUT_LENGTH);
+    await expect(
+      svc.submitJobRequest(customer, {
+        input: multibyteOverByteCapUnderCharCap,
+        capability: 'text-gen',
+        providerPubkey: provider.publicKey,
+      }),
+    ).rejects.toThrow(/Encrypted job input too large: 80000 bytes/);
+    expect(pool.published.length).toBe(0);
+  });
+
+  it('allows the same large input on the broadcast (unencrypted) path - no byte guard', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+
+    await svc.submitJobRequest(customer, {
+      input: multibyteOverByteCapUnderCharCap,
+      capability: 'text-gen',
+    });
+    expect(pool.published.length).toBe(1);
+    expect(pool.published[0]!.content).toBe(multibyteOverByteCapUnderCharCap);
+  });
+
+  it('encrypts a targeted input exactly at the byte cap but rejects one byte over', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+
+    await svc.submitJobRequest(customer, {
+      input: 'a'.repeat(LIMITS.NIP44_MAX_PLAINTEXT_BYTES),
+      capability: 'text-gen',
+      providerPubkey: provider.publicKey,
+    });
+    expect(pool.published.length).toBe(1);
+
+    await expect(
+      svc.submitJobRequest(customer, {
+        input: 'a'.repeat(LIMITS.NIP44_MAX_PLAINTEXT_BYTES + 1),
+        capability: 'text-gen',
+        providerPubkey: provider.publicKey,
+      }),
+    ).rejects.toThrow(/Encrypted job input too large/);
+  });
+
+  it('rejects an oversized ENCRYPTED result before nip44Encrypt (no cryptic crash)', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const provider = ElisymIdentity.generate();
+    const customer = ElisymIdentity.generate();
+
+    const requestEvent = finalizeEvent(
+      {
+        kind: KIND_JOB_REQUEST,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['encrypted', 'nip44']],
+        content: nip44Encrypt('request', customer.secretKey, provider.publicKey),
+      },
+      customer.secretKey,
+    );
+
+    await expect(svc.submitJobResult(provider, requestEvent, 'a'.repeat(70_000))).rejects.toThrow(
+      /Encrypted job result too large: 70000 bytes/,
+    );
+    expect(pool.published.length).toBe(0);
   });
 });
 
@@ -395,7 +511,8 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
 
     // Fire through result subscription handler (index 1)
     pool.subs[1]!.onEvent(resultEvent);
-    expect(onResult).toHaveBeenCalledWith('Here is your result', resultEvent.id);
+    // Plain-text result: no attachment descriptor (3rd arg undefined).
+    expect(onResult).toHaveBeenCalledWith('Here is your result', resultEvent.id, undefined);
   });
 
   it('decrypts encrypted result events', () => {
@@ -429,7 +546,45 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
     );
 
     pool.subs[1]!.onEvent(resultEvent);
-    expect(onResult).toHaveBeenCalledWith('secret result', resultEvent.id);
+    expect(onResult).toHaveBeenCalledWith('secret result', resultEvent.id, undefined);
+  });
+
+  it('surfaces the attachment from a file-result envelope', () => {
+    const pool = createCallbackMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+    const onResult = vi.fn();
+
+    svc.subscribeToJobUpdates({
+      jobEventId: 'job1',
+      providerPubkey: provider.publicKey,
+      customerPublicKey: customer.publicKey,
+      callbacks: { onResult },
+    });
+
+    const attachment: FileAttachment = {
+      name: 'out.bin',
+      size: 4096,
+      mime: 'application/octet-stream',
+      transports: [{ kind: 'iroh', ticket: 'blobaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }],
+    };
+    const resultEvent = finalizeEvent(
+      {
+        kind: KIND_JOB_RESULT,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['e', 'job1'],
+          ['p', customer.publicKey],
+        ],
+        content: encodeJobPayload({ text: 'done', attachment }),
+      },
+      provider.secretKey,
+    );
+
+    pool.subs[1]!.onEvent(resultEvent);
+    // The text note rides in arg 1; the file descriptor in arg 3 (never inlined).
+    expect(onResult).toHaveBeenCalledWith('done', resultEvent.id, attachment);
   });
 
   it('skips undecryptable results (DoS protection)', () => {

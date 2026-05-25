@@ -1,4 +1,4 @@
-import { classifyJobError, type CapabilityCard } from '@elisym/sdk';
+import { classifyJobError, LIMITS, utf8ByteLength, type CapabilityCard } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import Decimal from 'decimal.js-light';
@@ -116,11 +116,17 @@ function JobInputInner({
     return isFree ? 'Get' : 'Buy';
   }
 
+  // The browser submits encrypted jobs and cannot spill large input to iroh
+  // (node-only transport), so cap the input at the NIP-44 inline byte budget and
+  // point large inputs at the CLI. Measured in BYTES - the cap is a byte cap.
+  const inputTooLarge = !isStatic && utf8ByteLength(input) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
+
   const isDisabled =
     buying ||
     !relaysConnected ||
     ((!!publicKey || isFree) && !isStatic && !input.trim()) ||
     ((!!publicKey || isFree) && pingStatus !== 'online') ||
+    inputTooLarge ||
     !selfPayment.ok ||
     !affordability.ok;
 
@@ -132,6 +138,8 @@ function JobInputInner({
       tip = 'Checking if the agent is available…';
     } else if ((!!publicKey || isFree) && pingStatus !== 'online') {
       tip = "This agent is offline right now, so you can't place an order. Try again later.";
+    } else if (inputTooLarge) {
+      tip = 'Input is too large for the web app - use the elisym CLI for large inputs.';
     } else if (!selfPayment.ok) {
       tip = selfPayment.tooltip;
     } else if (!affordability.ok) {

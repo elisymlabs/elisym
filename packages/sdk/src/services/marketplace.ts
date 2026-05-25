@@ -8,11 +8,13 @@ import {
   LIMITS,
   jobRequestKind,
   jobResultKind,
+  utf8ByteLength,
 } from '../constants';
 import { assertLamports } from '../payment/fee';
 import { parsePaymentRequest } from '../payment/schema';
 import { nip44Encrypt, nip44Decrypt } from '../primitives/crypto';
 import type { ElisymIdentity } from '../primitives/identity';
+import { encodeJobPayload, decodeJobPayload, type FileAttachment } from '../transport/attachment';
 import type { NostrPool } from '../transport/pool';
 import type {
   Job,
@@ -57,7 +59,8 @@ export class MarketplaceService {
 
   /** Submit a job request with NIP-44 encrypted input. Returns the event ID. */
   async submitJobRequest(identity: ElisymIdentity, options: SubmitJobOptions): Promise<string> {
-    if (!options.input) {
+    const hasAttachment = options.attachment !== undefined;
+    if (!options.input && !hasAttachment) {
       throw new Error('Job input must not be empty.');
     }
     if (options.input.length > LIMITS.MAX_INPUT_LENGTH) {
@@ -71,7 +74,22 @@ export class MarketplaceService {
     if (options.providerPubkey && !/^[0-9a-f]{64}$/.test(options.providerPubkey)) {
       throw new Error('Invalid provider pubkey: expected 64 hex characters.');
     }
-    const plaintext = options.input;
+    // A file job wraps the (optional) text note + attachment in an envelope; a
+    // plain-text job sends its text directly. The `i` tag is unchanged either way.
+    const plaintext = hasAttachment
+      ? encodeJobPayload({ text: options.input || undefined, attachment: options.attachment })
+      : options.input;
+    // NIP-44 backstop: the plaintext (post-envelope, the exact string handed to
+    // nip44Encrypt) must fit the 65_535-byte cap or nip44Encrypt throws cryptically.
+    // Large text should have been spilled to an attachment by the caller before here.
+    if (options.providerPubkey) {
+      const plaintextBytes = utf8ByteLength(plaintext);
+      if (plaintextBytes > LIMITS.NIP44_MAX_PLAINTEXT_BYTES) {
+        throw new Error(
+          `Encrypted job input too large: ${plaintextBytes} bytes (max ${LIMITS.NIP44_MAX_PLAINTEXT_BYTES}). Send large input as a file/iroh attachment instead.`,
+        );
+      }
+    }
     const encrypted = options.providerPubkey
       ? nip44Encrypt(plaintext, identity.secretKey, options.providerPubkey)
       : plaintext;
@@ -180,9 +198,19 @@ export class MarketplaceService {
         // killing the subscription would be a DoS vector.
         return;
       }
+      let decoded;
+      try {
+        decoded = decodeJobPayload(content);
+      } catch {
+        // Malformed/unknown-version envelope - skip like an undecryptable result
+        // rather than crashing the subscription.
+        return;
+      }
       resultDelivered = true;
       try {
-        cb.onResult?.(content, ev.id);
+        // For a file result, surface the text note (or '') plus the attachment
+        // descriptor; the file is fetched separately, never inlined here.
+        cb.onResult?.(decoded.text ?? '', ev.id, decoded.attachment);
       } catch {
         /* caller error - don't crash subscription */
       } finally {
@@ -396,8 +424,10 @@ export class MarketplaceService {
     requestEvent: Event,
     content: string,
     amount?: number,
+    attachment?: FileAttachment,
   ): Promise<string> {
-    if (!content) {
+    const hasAttachment = attachment !== undefined;
+    if (!content && !hasAttachment) {
       throw new Error('Job result content must not be empty.');
     }
     if (!Number.isInteger(requestEvent.kind)) {
@@ -410,9 +440,25 @@ export class MarketplaceService {
       );
     }
     const shouldEncrypt = isEncrypted(requestEvent);
-    const resultContent = shouldEncrypt
-      ? nip44Encrypt(content, identity.secretKey, requestEvent.pubkey)
+    // A file result wraps the (optional) text + attachment in an envelope so the
+    // recovery/empty-content path always has non-empty content to deliver.
+    const payload = hasAttachment
+      ? encodeJobPayload({ text: content || undefined, attachment })
       : content;
+    // NIP-44 backstop (same as submitJobRequest): the post-envelope payload must
+    // fit the 65_535-byte cap. A large text result should have been spilled to a
+    // text/plain attachment by the provider, leaving only the small ticket here.
+    if (shouldEncrypt) {
+      const payloadBytes = utf8ByteLength(payload);
+      if (payloadBytes > LIMITS.NIP44_MAX_PLAINTEXT_BYTES) {
+        throw new Error(
+          `Encrypted job result too large: ${payloadBytes} bytes (max ${LIMITS.NIP44_MAX_PLAINTEXT_BYTES}). Deliver large results as a file/iroh attachment instead.`,
+        );
+      }
+    }
+    const resultContent = shouldEncrypt
+      ? nip44Encrypt(payload, identity.secretKey, requestEvent.pubkey)
+      : payload;
     const resultKind = KIND_JOB_RESULT_BASE + offset;
 
     const tags: string[][] = [
@@ -456,11 +502,12 @@ export class MarketplaceService {
     amount?: number,
     maxAttempts: number = DEFAULTS.RESULT_RETRY_COUNT,
     baseDelayMs: number = DEFAULTS.RESULT_RETRY_BASE_MS,
+    attachment?: FileAttachment,
   ): Promise<string> {
     const attempts = Math.max(1, maxAttempts);
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
-        return await this.submitJobResult(identity, requestEvent, content, amount);
+        return await this.submitJobResult(identity, requestEvent, content, amount, attachment);
       } catch (e: unknown) {
         if (attempt >= attempts - 1) {
           throw e;

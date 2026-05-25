@@ -39,6 +39,9 @@ CLAUDE.md
 # deepsec security scanner (scaffold, local findings data, and .env.local with keys)
 .deepsec/
 
+# throwaway spikes (local-only experiments, e.g. iroh Phase 0); not part of the workspace
+/spikes
+
 # Anchor / Solana
 target/
 .anchor/

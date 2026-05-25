@@ -14,6 +14,7 @@ import { address, createSolanaRpc } from '@solana/kit';
 import { ZodError } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AgentContext, rpcUrlFor } from './context.js';
+import { shutdownIrohTransport } from './iroh.js';
 import { logger } from './logger.js';
 import { buildEffectiveLimits } from './session-limits.js';
 import { agentTools } from './tools/agent.js';
@@ -271,6 +272,9 @@ export async function startServer(ctx: AgentContext): Promise<void> {
     shuttingDown = true;
     logger.info({ event: 'shutdown', reason }, 'shutting down');
     for (const agent of ctx.registry.values()) {
+      // Release the iroh fs-store lock (and remove an ephemeral tmpdir store)
+      // before exit so a restart is not wedged by a stale lock.
+      await shutdownIrohTransport(agent);
       try {
         agent.client.close();
       } catch (e) {

@@ -14,6 +14,7 @@ import {
   listAgents,
   loadAgent,
   createAgentDir,
+  ensureGitignoreHasIrohEntry,
   renderInitialYaml,
   writeYaml,
   writeYamlInitial,
@@ -221,6 +222,8 @@ describe('createAgentDir', () => {
     expect(gitignore).toContain('.secrets.json');
     expect(gitignore).toContain('.media-cache.json');
     expect(gitignore).toContain('.jobs.json');
+    // The iroh blob store holds cleartext job payloads - must be ignored.
+    expect(gitignore).toContain('.iroh/');
   });
 
   it('reuses existing .elisym dir when creating additional agent', async () => {
@@ -232,6 +235,41 @@ describe('createAgentDir', () => {
       projectRoot: work,
     });
     expect(second.createdNewElisymRoot).toBe(false);
+  });
+});
+
+describe('ensureGitignoreHasIrohEntry', () => {
+  it('appends .iroh/ to an existing .gitignore that lacks it (migration)', async () => {
+    const root = join(work, '.elisym');
+    mkdirSync(root, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, '.secrets.json\n.jobs.json\n');
+
+    await ensureGitignoreHasIrohEntry(root);
+
+    const updated = await readFile(gitignorePath, 'utf-8');
+    expect(updated).toContain('.iroh/');
+    // Existing entries preserved.
+    expect(updated).toContain('.secrets.json');
+  });
+
+  it('is idempotent and does not duplicate the entry', async () => {
+    const root = join(work, '.elisym');
+    mkdirSync(root, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, '.secrets.json\n.iroh/\n');
+
+    await ensureGitignoreHasIrohEntry(root);
+
+    const updated = await readFile(gitignorePath, 'utf-8');
+    expect(updated.split('\n').filter((line) => line.trim() === '.iroh/').length).toBe(1);
+  });
+
+  it('is a no-op when no .gitignore exists (e.g. home-global)', async () => {
+    const root = join(work, '.elisym');
+    mkdirSync(root, { recursive: true });
+    await ensureGitignoreHasIrohEntry(root);
+    expect(existsSync(join(root, '.gitignore'))).toBe(false);
   });
 });
 

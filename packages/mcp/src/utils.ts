@@ -174,6 +174,10 @@ export function checkLen(field: string, value: string, max: number): void {
 export const MAX_INPUT_LEN = LIMITS.MAX_INPUT_LENGTH;
 export const MAX_CAPABILITIES = LIMITS.MAX_CAPABILITIES;
 export const MAX_TIMEOUT_SECS = LIMITS.MAX_TIMEOUT_SECS;
+// Encrypted-content byte limits used by the text-spill path (large input -> iroh).
+export const NIP44_MAX_PLAINTEXT_BYTES = LIMITS.NIP44_MAX_PLAINTEXT_BYTES;
+export const MAX_ENCRYPTED_INLINE_BYTES = LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
+export const MAX_REINLINE_TEXT_BYTES = LIMITS.MAX_REINLINE_TEXT_BYTES;
 
 // MCP-specific limits that have no SDK counterpart.
 export const MAX_NPUB_LEN = 128;

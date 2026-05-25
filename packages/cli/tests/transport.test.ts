@@ -329,6 +329,8 @@ describe('NostrTransport', () => {
         'result text',
         100_000,
         3,
+        undefined, // baseDelayMs (default)
+        undefined, // attachment (text result)
       );
     });
   });

@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NATIVE_SOL } from '@elisym/sdk';
+import type { IrohBlobTransport } from '@elisym/sdk/node';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { AgentRuntime, type RuntimeConfig } from '../src/runtime.js';
@@ -175,9 +176,55 @@ describe('AgentRuntime', () => {
         expect.objectContaining({ jobId: 'free-job-1' }),
         'hello world',
         undefined,
+        undefined, // attachment (text result)
       );
       expect(onCompleted).toHaveBeenCalledWith('free-job-1', 'hello world');
       expect(ledger.getStatus('free-job-1')).toBe('delivered');
+    });
+  });
+
+  describe('result spill (large text)', () => {
+    it('fails cleanly without delivering when seeding the spilled result fails', async () => {
+      // > MAX_ENCRYPTED_INLINE_BYTES (60_000), so the result must spill to iroh.
+      const largeText = 'x'.repeat(70_000);
+      const skill = makeFakeSkill('big-skill', largeText, 0);
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      // A transport whose seedBytes fails. The seed runs BEFORE markExecuted, so
+      // the job is still 'paid' when the error is caught -> marked 'failed' with
+      // NO delivery. (If the seed ran AFTER markExecuted, the job would be stuck
+      // 'executed' and recovery would re-deliver a dead, tickless result - the
+      // bug the reorder fixes; this asserts 'failed', not 'executed'.)
+      const failingIroh = {
+        seedPath: vi.fn(),
+        seedBytes: vi.fn().mockRejectedValue(new Error('seed failed')),
+        fetchToPath: vi.fn(),
+        fetchToBytes: vi.fn(),
+        reShare: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as IrohBlobTransport;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+        undefined,
+        failingIroh,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('spill-fail-job'));
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(failingIroh.seedBytes).toHaveBeenCalledTimes(1);
+      expect(ledger.getStatus('spill-fail-job')).toBe('failed');
+      expect((transport as any).deliverResult).not.toHaveBeenCalled();
     });
   });
 
@@ -585,6 +632,7 @@ describe('AgentRuntime', () => {
         expect.objectContaining({ jobId: 'empty-result-job' }),
         '',
         undefined,
+        undefined, // attachment (text result, no result_attachment stored)
       );
       expect(ledger.getStatus('empty-result-job')).toBe('delivered');
       // Skill should NOT have been called (re-deliver only)

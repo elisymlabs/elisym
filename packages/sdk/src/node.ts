@@ -5,3 +5,10 @@
  */
 export { encryptSecret, decryptSecret, isEncrypted } from './primitives/encryption';
 export { loadGlobalConfig, writeGlobalConfig } from './config/global';
+export { createIrohTransport } from './transport/iroh';
+export type {
+  IrohBlobTransport,
+  CreateIrohTransportOptions,
+  SeedResult,
+  FetchOptions,
+} from './transport/iroh';

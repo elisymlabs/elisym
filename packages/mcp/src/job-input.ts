@@ -7,8 +7,9 @@
  */
 import { execFile } from 'node:child_process';
 import { stat, readFile } from 'node:fs/promises';
-import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
+import { basename, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
+import { LIMITS, utf8ByteLength } from '@elisym/sdk';
 import { MAX_INPUT_LEN } from './utils.js';
 
 const execFileP = promisify(execFile);
@@ -36,15 +37,43 @@ function isSensitiveInputPath(absPath: string): boolean {
   return segments.some((segment) => SENSITIVE_DIR_SEGMENTS.has(segment.toLowerCase()));
 }
 
+/**
+ * Resolve and safety-check a destination path for a downloaded job result. The
+ * write-side mirror of `readJobInputFile`'s sensitive-path guard: the bytes
+ * written here come from an untrusted remote provider, so an injected/confused
+ * `output_path` must never overwrite a secret (key, .env, ~/.elisym, SSH/cloud
+ * credentials). Relative paths resolve against the MCP server's working directory.
+ * Throws a user-facing Error; returns the absolute path to write to.
+ */
+export function resolveOutputPath(outputPath: string): string {
+  if (outputPath.length > MAX_INPUT_PATH_LEN) {
+    throw new Error(
+      `output_path too long: ${outputPath.length} chars (max ${MAX_INPUT_PATH_LEN}).`,
+    );
+  }
+  const absPath = isAbsolute(outputPath)
+    ? resolvePath(outputPath)
+    : resolvePath(process.cwd(), outputPath);
+  if (isSensitiveInputPath(absPath)) {
+    throw new Error(
+      `Refusing to write a job result to a sensitive path: ${absPath}. ` +
+        `Choose a destination outside secret/config locations.`,
+    );
+  }
+  return absPath;
+}
+
 /** Wall-clock cap on each `git` invocation. Diffs of in-tree work are sub-second. */
 const GIT_TIMEOUT_MS = 30_000;
 
 /**
- * Buffer for git stdout. Slightly larger than MAX_INPUT_LEN so an oversize
- * diff is still readable for the size-error message instead of failing with
- * a confusing ENOBUFS.
+ * Buffer for git stdout. Kept slightly ABOVE the diff ceiling (not equal) so a
+ * marginally-oversize diff still buffers and surfaces the friendly size-error
+ * below, instead of failing with a confusing ENOBUFS. The ceiling itself bounds
+ * the in-memory buffer (a git diff is buffered whole by execFile) against a
+ * memory-DoS on an untrusted/huge repo.
  */
-const GIT_MAX_BUFFER = MAX_INPUT_LEN * 2;
+const GIT_MAX_BUFFER = LIMITS.MAX_REINLINE_TEXT_BYTES + MAX_INPUT_LEN;
 
 /**
  * Config overrides injected before every git subcommand. git honors a repo-local
@@ -86,6 +115,29 @@ export async function readJobInputFile(
   inputPath: string,
   options?: { allowOutsideCwd?: boolean },
 ): Promise<string> {
+  const { absPath, size } = await validateInputPath(inputPath, options);
+  if (size > MAX_INPUT_LEN) {
+    throw new Error(
+      `input_path too large: ${size} bytes (max ${MAX_INPUT_LEN}). ` +
+        `Trim the file or split the job.`,
+    );
+  }
+  const content = await readFile(absPath, 'utf-8');
+  if (content.length > MAX_INPUT_LEN) {
+    // utf-8 multi-byte chars can push the decoded length past the byte size check.
+    throw new Error(
+      `input_path content too long after decoding: ${content.length} chars ` +
+        `(max ${MAX_INPUT_LEN}).`,
+    );
+  }
+  return content;
+}
+
+/** Shared path validation: length, sensitive-file block, cwd confinement, stat, isFile. */
+async function validateInputPath(
+  inputPath: string,
+  options?: { allowOutsideCwd?: boolean },
+): Promise<{ absPath: string; size: number }> {
   if (inputPath.length > MAX_INPUT_PATH_LEN) {
     throw new Error(`input_path too long: ${inputPath.length} chars (max ${MAX_INPUT_PATH_LEN}).`);
   }
@@ -93,8 +145,8 @@ export async function readJobInputFile(
   const absPath = isAbsolute(inputPath) ? resolvePath(inputPath) : resolvePath(cwd, inputPath);
 
   // Always refuse known-sensitive files (secret keys, .env, SSH/keypair, ~/.elisym,
-  // /proc). This forwards the file content to a remote provider before any payment
-  // and is invisible in the transcript, so an injected path must never reach a secret.
+  // /proc). This forwards the file to a remote provider before any payment and is
+  // invisible in the transcript, so an injected path must never reach a secret.
   if (isSensitiveInputPath(absPath)) {
     throw new Error(
       `Refusing to read a sensitive file as job input: ${absPath}. ` +
@@ -125,26 +177,46 @@ export async function readJobInputFile(
     }
     throw new Error(`Cannot stat input_path "${absPath}": ${(e as Error).message}`);
   }
-
   if (!stats.isFile()) {
     throw new Error(`input_path is not a regular file: ${absPath}`);
   }
-  if (stats.size > MAX_INPUT_LEN) {
-    throw new Error(
-      `input_path too large: ${stats.size} bytes (max ${MAX_INPUT_LEN}). ` +
-        `Trim the file or split the job.`,
-    );
-  }
+  return { absPath, size: stats.size };
+}
 
-  const content = await readFile(absPath, 'utf-8');
-  if (content.length > MAX_INPUT_LEN) {
-    // utf-8 multi-byte chars can push the decoded length past the byte size check.
+/**
+ * Prepare a file job input, applying the same guards as `readJobInputFile`.
+ * A file that fits the inline text cap is read and returned for the existing
+ * Nostr-text path; a larger file (up to `MAX_FILE_SIZE`) is returned by path for
+ * the caller to seed via iroh (so large/binary inputs no longer hit the 100k wall).
+ */
+export type PreparedFileInput =
+  | { mode: 'inline'; content: string }
+  | { mode: 'file'; absPath: string; size: number; name: string };
+
+export async function prepareFileInput(
+  inputPath: string,
+  options?: { allowOutsideCwd?: boolean },
+): Promise<PreparedFileInput> {
+  const { absPath, size } = await validateInputPath(inputPath, options);
+  // Encrypted (targeted) jobs cap inline plaintext at the NIP-44 budget, so the
+  // inline cutoff is the encrypted-inline byte limit (mirrors prepareTextInput);
+  // larger files spill to iroh. Using MAX_INPUT_LEN here would inline files that
+  // then exceed the NIP-44 cap and throw at submit instead of transferring P2P.
+  if (size <= LIMITS.MAX_ENCRYPTED_INLINE_BYTES) {
+    const content = await readFile(absPath, 'utf-8');
+    if (content.length > MAX_INPUT_LEN) {
+      throw new Error(
+        `input_path content too long after decoding: ${content.length} chars (max ${MAX_INPUT_LEN}).`,
+      );
+    }
+    return { mode: 'inline', content };
+  }
+  if (size > LIMITS.MAX_FILE_SIZE) {
     throw new Error(
-      `input_path content too long after decoding: ${content.length} chars ` +
-        `(max ${MAX_INPUT_LEN}).`,
+      `input_path too large: ${size} bytes (max ${LIMITS.MAX_FILE_SIZE} for a file transfer).`,
     );
   }
-  return content;
+  return { mode: 'file', absPath, size, name: basename(absPath) };
 }
 
 /**
@@ -276,9 +348,10 @@ export async function computeGitDiff(repoPath: string, base?: string): Promise<G
         `pass an explicit "base", or check the repo path.`,
     );
   }
-  if (diff.length > MAX_INPUT_LEN) {
+  const diffBytes = utf8ByteLength(diff);
+  if (diffBytes > LIMITS.MAX_REINLINE_TEXT_BYTES) {
     throw new Error(
-      `Diff for range ${describedRange} is ${diff.length} chars (max ${MAX_INPUT_LEN}). ` +
+      `Diff for range ${describedRange} is ${diffBytes} bytes (max ${LIMITS.MAX_REINLINE_TEXT_BYTES}). ` +
         `Pass a narrower "base" or split the review.`,
     );
   }

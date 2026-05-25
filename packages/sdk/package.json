@@ -131,6 +131,9 @@
     "decimal.js-light": "~2.5.0",
     "nostr-tools": "~2.23.0"
   },
+  "optionalDependencies": {
+    "@number0/iroh": "~0.35.0"
+  },
   "engines": {
     "node": ">=20"
   }
