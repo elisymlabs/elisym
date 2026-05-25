@@ -1335,6 +1335,18 @@ export const customerTools: ToolDefinition[] = [
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
       checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
+      // Inline input is buffered and (when large) seeded into iroh in memory, so
+      // bound it: above MAX_REINLINE_TEXT_BYTES the provider streams a text/plain
+      // attachment to a file rather than re-inlining it to stdin (breaking a
+      // stdin-expecting skill), and an unbounded body would allocate without limit
+      // here. Large files/diffs have their own streamed entry points.
+      const inputBytes = utf8ByteLength(input.input);
+      if (inputBytes > LIMITS.MAX_REINLINE_TEXT_BYTES) {
+        return errorResult(
+          `Input is ${inputBytes} bytes (max ${LIMITS.MAX_REINLINE_TEXT_BYTES} for an inline job). ` +
+            `Send a large file with submit_and_pay_job_from_file.`,
+        );
+      }
 
       const agent = ctx.active();
       // Large input spills to iroh transparently; small input stays inline.
