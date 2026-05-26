@@ -184,9 +184,9 @@ describe('submit_and_pay_job expected-recipient fail-fast', () => {
     // promise won't resolve on its own. We only care that `submitJobRequest` was called,
     // which is the invariant we assert. Race with a short timeout to avoid hanging.
     const resultPromise = tool.handler(ctx, input);
-    // Give the handler a tick to reach the submitJobRequest call.
-    await new Promise((r) => setTimeout(r, 10));
-    expect(submitJobRequest).toHaveBeenCalledTimes(1);
+    // Wait for the submitJobRequest call instead of a fixed tick, so a slow CI
+    // runner can't assert before the handler reaches it.
+    await vi.waitFor(() => expect(submitJobRequest).toHaveBeenCalledTimes(1));
     // Resolve the dangling promise via an explicit subscription-close path is not trivial
     // here; we simply ignore the hanging promise - vitest will clean up after the test.
     void resultPromise;
@@ -242,10 +242,12 @@ describe('submit_and_pay_job large-text spill', () => {
       timeout_secs: 1,
     });
     const resultPromise = tool.handler(ctx, input);
-    await new Promise((r) => setTimeout(r, 10));
+    // submitJobRequest fires only after the input is seeded, so waiting for that
+    // call (instead of a fixed sleep) deterministically proves seeding ran first
+    // and avoids a flaky race on a loaded CI runner.
+    await vi.waitFor(() => expect(submitJobRequest).toHaveBeenCalledTimes(1));
 
     expect(mockSeedBytes).toHaveBeenCalledTimes(1);
-    expect(submitJobRequest).toHaveBeenCalledTimes(1);
     const submitArgs = submitJobRequest.mock.calls[0]![1] as {
       input: string;
       attachment?: { mime: string; transports: { kind: string; ticket: string }[] };
@@ -308,11 +310,12 @@ describe('submit_and_pay_job_from_file always seeds via iroh (never inline)', ()
     const { agent, submitJobRequest } = freeProviderSetup();
 
     const resultPromise = runFromFile(agent, p);
-    await new Promise((r) => setTimeout(r, 10));
+    // Wait for submitJobRequest (which fires only after seedPath) rather than a
+    // fixed sleep, so a slow CI runner can't lose the race before seeding lands.
+    await vi.waitFor(() => expect(submitJobRequest).toHaveBeenCalledTimes(1));
 
     expect(mockSeedPath).toHaveBeenCalledTimes(1);
     expect(mockSeedBytes).not.toHaveBeenCalled();
-    expect(submitJobRequest).toHaveBeenCalledTimes(1);
     const submitArgs = submitJobRequest.mock.calls[0]![1] as {
       input: string;
       attachment?: { mime: string; transports: { kind: string; ticket: string }[] };
@@ -329,7 +332,7 @@ describe('submit_and_pay_job_from_file always seeds via iroh (never inline)', ()
     const { agent, submitJobRequest } = freeProviderSetup();
 
     const resultPromise = runFromFile(agent, p);
-    await new Promise((r) => setTimeout(r, 10));
+    await vi.waitFor(() => expect(submitJobRequest).toHaveBeenCalledTimes(1));
 
     expect(mockSeedPath).toHaveBeenCalledTimes(1);
     const submitArgs = submitJobRequest.mock.calls[0]![1] as {
