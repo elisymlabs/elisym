@@ -24,11 +24,35 @@ export const MAX_INPUT_PATH_LEN = 4096;
  */
 // Secret/key files plus shell-init and other auto-run files (a write target here
 // comes from an untrusted provider, so overwriting ~/.zshrc, ~/.gitconfig, etc.
-// is a code-execution vector, not just a secret leak).
+// is a code-execution vector, not just a secret leak). Also blocks system auto-run
+// filenames (/etc/crontab, /etc/sudoers, /etc/bash.bashrc) and unit/desktop-entry
+// extensions (systemd `.service`, freedesktop `.desktop` autostart entries).
 const SENSITIVE_NAME_RE =
-  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*-keypair\.json|.*\.pem|.*\.key|\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.bash_aliases|\.profile|\.zshrc|\.zprofile|\.zshenv|\.zlogin|\.zlogout|config\.fish|\.gitconfig|\.npmrc|\.netrc)$/i;
+  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*-keypair\.json|.*\.pem|.*\.key|\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.bash_aliases|\.profile|\.zshrc|\.zprofile|\.zshenv|\.zlogin|\.zlogout|config\.fish|\.gitconfig|\.npmrc|\.netrc|crontab|sudoers|bash\.bashrc|.*\.service|.*\.desktop)$/i;
 // `.git` blocks the repo-internal config + hooks dir (hooks are auto-run on git ops).
-const SENSITIVE_DIR_SEGMENTS = new Set(['.elisym', '.ssh', '.aws', '.gnupg', '.git']);
+// The remaining segments are OS auto-run / privilege-escalation dirs whose contents
+// execute on login or schedule: macOS Launch{Agents,Daemons}, freedesktop autostart,
+// systemd unit trees, cron drop-in dirs, sudoers.d, profile.d, and SysV init.d.
+const SENSITIVE_DIR_SEGMENTS = new Set([
+  '.elisym',
+  '.ssh',
+  '.aws',
+  '.gnupg',
+  '.git',
+  'launchagents',
+  'launchdaemons',
+  'autostart',
+  'systemd',
+  'sudoers.d',
+  'cron.d',
+  'cron.daily',
+  'cron.hourly',
+  'cron.weekly',
+  'cron.monthly',
+  'crontabs',
+  'profile.d',
+  'init.d',
+]);
 
 function isSensitiveInputPath(absPath: string): boolean {
   if (SENSITIVE_NAME_RE.test(absPath)) {

@@ -221,6 +221,24 @@ describe('resolveOutputPath', () => {
     ).rejects.toThrow(/sensitive path/);
   });
 
+  it('refuses a macOS auto-run path (Library/LaunchAgents)', async () => {
+    await expect(
+      resolveOutputPath(join(process.cwd(), 'Library', 'LaunchAgents', 'evil.plist')),
+    ).rejects.toThrow(/sensitive path/);
+  });
+
+  it('refuses a systemd unit file by extension (.service)', async () => {
+    await expect(resolveOutputPath(join(process.cwd(), 'evil.service'))).rejects.toThrow(
+      /sensitive path/,
+    );
+  });
+
+  it('refuses a system privilege/auto-run file by name (sudoers)', async () => {
+    await expect(
+      resolveOutputPath(join(tmpdir(), 'sudoers'), { allowOutsideCwd: true }),
+    ).rejects.toThrow(/sensitive path/);
+  });
+
   it('refuses a path inside a sensitive directory (.ssh)', async () => {
     await expect(resolveOutputPath(join(tmpdir(), '.ssh', 'authorized_keys'))).rejects.toThrow(
       /sensitive path/,

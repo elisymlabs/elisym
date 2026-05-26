@@ -88,12 +88,20 @@ function redactSecrets(text: string): string {
  * summary so we don't leak internal paths / stack traces into the model context.
  */
 export function safeError(context: string, e: unknown): CallToolResult {
-  // Log full details to stderr for the operator. Routed through pino
-  // so SDK redact paths catch any secret / user-input fields embedded
-  // in the error object before it hits stderr.
+  // Log full details to stderr for the operator. pino's redact paths censor named
+  // secret FIELDS, but `err`/`stack` are free-text strings that path-redaction does
+  // not scan, so scrub key/secret shapes out of them explicitly before they hit stderr.
   const message = e instanceof Error ? e.message : String(e);
   const stack = e instanceof Error ? e.stack : undefined;
-  logger.error({ event: 'tool_error', context, err: message, stack }, 'tool call failed');
+  logger.error(
+    {
+      event: 'tool_error',
+      context,
+      err: redactSecrets(message),
+      stack: stack !== undefined ? redactSecrets(stack) : undefined,
+    },
+    'tool call failed',
+  );
 
   let msg: string;
   if (e instanceof ZodError) {

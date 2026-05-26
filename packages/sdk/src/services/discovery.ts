@@ -124,6 +124,17 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     return null;
   }
 
+  // Optional token/symbol/mint must be strings when present: a non-string slips
+  // through to display code (`payment.token.toUpperCase()`) and throws at render.
+  if (
+    card.payment &&
+    ((card.payment.token !== undefined && typeof card.payment.token !== 'string') ||
+      (card.payment.symbol !== undefined && typeof card.payment.symbol !== 'string') ||
+      (card.payment.mint !== undefined && typeof card.payment.mint !== 'string'))
+  ) {
+    return null;
+  }
+
   if (
     card.payment?.job_price !== null &&
     card.payment?.job_price !== undefined &&

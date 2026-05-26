@@ -267,6 +267,42 @@ describe('DiscoveryService.fetchAgentsPage', () => {
     expect(agents.length).toBe(0);
   });
 
+  it('skips a card whose payment.token is not a string', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    // A non-string token would reach `payment.token.toUpperCase()` in display code
+    // and throw at render; the parser must reject it up front.
+    const ev = finalizeEvent(
+      {
+        kind: KIND_APP_HANDLER,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['d', 'test'],
+          ['t', 'elisym'],
+          ['t', 'text-gen'],
+        ],
+        content: JSON.stringify({
+          name: 'test',
+          description: 'desc',
+          capabilities: ['text-gen'],
+          payment: {
+            chain: 'solana',
+            network: 'devnet',
+            address: '11111111111111111111111111111111',
+            token: 123,
+          },
+        }),
+      },
+      agent.secretKey,
+    );
+
+    (pool.querySync as any).mockResolvedValue([ev]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(0);
+  });
+
   it('returns empty for no events', async () => {
     const pool = createMockPool();
     const svc = new DiscoveryService(pool as any);

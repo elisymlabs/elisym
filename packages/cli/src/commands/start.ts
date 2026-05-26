@@ -59,7 +59,7 @@ import {
 import { cacheKeyFor, resolveTripleForOverride } from '../llm/cache.js';
 import { resolveProviderApiKey } from '../llm/keys.js';
 import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
-import { createLogger } from '../logging.js';
+import { createLogger, sanitizeForTerminal } from '../logging.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SkillRegistry, type SkillContext, type SkillLlmOverride } from '../skill';
 import type { LlmClient } from '../skill/index.js';
@@ -711,8 +711,10 @@ export async function cmdStart(
     ledger,
     {
       onJobReceived: (job) => {
-        const cap = job.tags.find((t) => t !== 'elisym') ?? 'unknown';
-        // Never log job.input here - capability tag is the only descriptor needed.
+        // The capability tag is an attacker-controlled Nostr tag value; strip terminal
+        // control chars before it reaches stdout. Never log job.input here - the
+        // capability tag is the only descriptor needed.
+        const cap = sanitizeForTerminal(job.tags.find((t) => t !== 'elisym') ?? 'unknown');
         process.stdout.write(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}\n`);
         logger.info({ event: 'job_received', jobId: job.jobId, capability: cap });
       },
@@ -721,8 +723,9 @@ export async function cmdStart(
         logger.info({ event: 'job_delivered', jobId });
       },
       onJobError: (jobId, error) => {
-        process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${error}\n`);
-        logger.error({ event: 'job_error', jobId, error });
+        const safeError = sanitizeForTerminal(error);
+        process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${safeError}\n`);
+        logger.error({ event: 'job_error', jobId, error: safeError });
       },
       onLog: diagLog,
       onStop: () => {

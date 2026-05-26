@@ -311,11 +311,12 @@ export function BuyProvider({ children }: { children: ReactNode }) {
 
                 // Bound the charge to the advertised price (subunits). Without
                 // this a malicious provider can inflate `paymentRequest.amount`
-                // after the customer committed (bait-and-switch). `job_price` is
-                // an integer subunit value; coerce via BigInt with no float math.
-                const advertisedPrice = card.payment?.job_price;
-                const maxAmountLamports =
-                  advertisedPrice === undefined ? undefined : BigInt(advertisedPrice);
+                // after the customer committed (bait-and-switch). A card with no
+                // advertised price (free, or a `payment` block lacking `job_price`)
+                // is bounded to 0 - so a "free" card that then demands payment is
+                // rejected rather than left unbounded. `job_price` is an integer
+                // subunit value; coerce via BigInt with no float math.
+                const maxAmountLamports = BigInt(card.payment?.job_price ?? 0);
 
                 const validationError = payment.validatePaymentRequest(
                   paymentRequestJson,

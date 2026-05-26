@@ -610,11 +610,15 @@ export class AgentRuntime {
         return;
       }
 
-      // Free-LLM extra protection: only applies when the matched skill
-      // is mode='llm' and price=0. We `peek` first across all tiers and
-      // only `check` when every tier passes, so a denial in tier N
-      // never consumes a slot in tiers < N.
-      const isFreeLlm = matched?.mode === 'llm' && matched.priceSubunits === 0;
+      // Free-LLM extra protection: applies to any FREE skill that reaches an LLM -
+      // every mode='llm' skill, plus script-mode skills that declare a provider+model
+      // via llmOverride (resolveHealthPair returns the pair for those). Gating only on
+      // mode==='llm' let a free script skill calling an LLM drain the operator's key
+      // uncapped. We `peek` first across all tiers and only `check` when every tier
+      // passes, so a denial in tier N never consumes a slot in tiers < N.
+      const isFreeLlm =
+        matched?.priceSubunits === 0 &&
+        (matched.mode === 'llm' || resolveHealthPair(matched) !== null);
       let perCustomerLimiter: SlidingWindowLimiter | undefined;
       let perSkillKey: string | undefined;
       if (isFreeLlm && matched) {

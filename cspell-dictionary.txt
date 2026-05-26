@@ -119,3 +119,6 @@ netrc
 textconv
 rembg
 pipx
+launchagents
+launchdaemons
+crontabs

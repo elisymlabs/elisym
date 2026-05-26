@@ -565,10 +565,12 @@ export function makePaymentFeedbackHandler(opts: {
       return;
     }
     if (!opts.agent.solanaKeypair) {
+      // `paymentRequest` is raw provider-supplied JSON; wrap it in the untrusted-
+      // content boundary before it reaches the LLM, matching the onResult path.
       opts.resolveNoWallet(
         `Payment required but no Solana wallet configured.\n` +
           `Amount: ${signedAmount !== undefined ? formatAssetAmount(asset, BigInt(signedAmount)) : 'unknown'}\n` +
-          `Payment request: ${paymentRequest}`,
+          `Payment request: ${sanitizeUntrusted(paymentRequest, 'structured').text}`,
       );
       return;
     }
@@ -849,7 +851,10 @@ async function executeSubmitAndPay(
             },
             onFeedback: payHandler.onFeedback,
             onError(error: string) {
-              reject(new Error(`Job error: ${error}`));
+              // Provider error-feedback content is attacker-controlled free text;
+              // wrap it in the untrusted-content boundary (like the onResult path
+              // above) before it propagates into an LLM-facing errorResult.
+              reject(new Error(`Job error: ${sanitizeUntrusted(error, 'text').text}`));
             },
             onTimeout(timeoutMs: number) {
               reject(new JobWaitTimeoutError(timeoutMs));
