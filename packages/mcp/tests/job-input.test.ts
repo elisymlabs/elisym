@@ -11,12 +11,7 @@ import { join, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
 import { LIMITS } from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  computeGitDiff,
-  prepareFileInput,
-  readJobInputFile,
-  resolveOutputPath,
-} from '../src/job-input.js';
+import { computeGitDiff, prepareFileInput, resolveOutputPath } from '../src/job-input.js';
 
 const execFileP = promisify(execFile);
 
@@ -43,90 +38,6 @@ async function makeRepo(): Promise<string> {
   return dir;
 }
 
-describe('readJobInputFile', () => {
-  let dir: string;
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'elisym-readinput-'));
-  });
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  // The temp files live outside the package cwd, so pass allowOutsideCwd to
-  // exercise the underlying read behavior; confinement is covered separately below.
-  it('reads a regular file as utf-8', async () => {
-    const p = join(dir, 'in.txt');
-    await writeFile(p, 'hello world');
-    expect(await readJobInputFile(p, { allowOutsideCwd: true })).toBe('hello world');
-  });
-
-  it('rejects a missing file with a path-bearing message', async () => {
-    const p = join(dir, 'does-not-exist.txt');
-    await expect(readJobInputFile(p, { allowOutsideCwd: true })).rejects.toThrow(/does not exist/);
-  });
-
-  it('rejects a directory path (not a regular file)', async () => {
-    const sub = join(dir, 'sub');
-    await mkdir(sub);
-    await expect(readJobInputFile(sub, { allowOutsideCwd: true })).rejects.toThrow(
-      /not a regular file/,
-    );
-  });
-
-  it('rejects oversize content via stat()', async () => {
-    const p = join(dir, 'big.txt');
-    // 1 byte over the 100_000 limit.
-    await writeFile(p, 'a'.repeat(100_001));
-    await expect(readJobInputFile(p, { allowOutsideCwd: true })).rejects.toThrow(/too large/);
-  });
-
-  it('rejects an excessively long path argument before touching the FS', async () => {
-    // Construct a path string longer than MAX_INPUT_PATH_LEN (4096).
-    const huge = 'x'.repeat(5000);
-    await expect(readJobInputFile(huge)).rejects.toThrow(/too long/);
-  });
-
-  it('refuses a path outside the working directory unless allow_outside_cwd is set', async () => {
-    const p = join(dir, 'outside.txt');
-    await writeFile(p, 'data');
-    // Default: confined to cwd subtree (the temp dir is outside it).
-    await expect(readJobInputFile(p)).rejects.toThrow(/outside the working directory/);
-  });
-
-  it('always refuses sensitive files even with allow_outside_cwd', async () => {
-    const secret = join(dir, '.secrets.json');
-    await writeFile(secret, '{"nostr_secret_key":"x"}');
-    await expect(readJobInputFile(secret, { allowOutsideCwd: true })).rejects.toThrow(
-      /sensitive file/,
-    );
-  });
-
-  it('reads a file inside the working directory by default', async () => {
-    // A file under process.cwd() is allowed without the opt-in.
-    const p = join(process.cwd(), `elisym-jobinput-test-${Date.now()}.txt`);
-    await writeFile(p, 'inside cwd');
-    try {
-      expect(await readJobInputFile(p)).toBe('inside cwd');
-    } finally {
-      await rm(p, { force: true });
-    }
-  });
-
-  it('rejects an in-cwd symlink whose target escapes the working directory', async () => {
-    // The link sits inside cwd (so the logical-path confinement check would pass),
-    // but realpath resolves it to a file outside cwd - which must be refused.
-    const outsideTarget = join(dir, 'target.txt');
-    await writeFile(outsideTarget, 'data');
-    const link = join(process.cwd(), `elisym-symlink-test-${Date.now()}.txt`);
-    await symlink(outsideTarget, link);
-    try {
-      await expect(readJobInputFile(link)).rejects.toThrow(/outside the working directory/);
-    } finally {
-      await rm(link, { force: true });
-    }
-  });
-});
-
 describe('prepareFileInput', () => {
   let dir: string;
   beforeEach(async () => {
@@ -136,41 +47,84 @@ describe('prepareFileInput', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('returns inline mode + content for a file within the inline limit', async () => {
+  // --- MIME classification: every file is seeded via iroh; mime drives delivery
+  // (text/plain -> re-inlined to stdin, anything else -> ELISYM_INPUT_FILE). ---
+
+  it('classifies a small valid-UTF-8 text file as text/plain', async () => {
     const p = join(dir, 'small.txt');
     await writeFile(p, 'hello world');
     const result = await prepareFileInput(p, { allowOutsideCwd: true });
-    expect(result.mode).toBe('inline');
-    if (result.mode === 'inline') {
-      expect(result.content).toBe('hello world');
-    }
+    expect(result.mime).toBe('text/plain');
+    expect(result.name).toBe('small.txt');
+    // absPath is the symlink-resolved real path (macOS canonicalizes /var).
+    expect(result.absPath).toBe(await realpath(p));
+    expect(result.size).toBe('hello world'.length);
   });
 
-  it('returns file mode + path for a file over the inline limit (seeded via iroh)', async () => {
-    const p = join(dir, 'big.bin');
-    await writeFile(p, 'a'.repeat(150_000)); // > MAX_INPUT_LEN (100_000)
+  it('classifies a small binary file (fake JPEG header with a NUL) as octet-stream', async () => {
+    // The regression test: a small binary file must NOT be treated as inline text.
+    const p = join(dir, 'tiny.jpg');
+    await writeFile(p, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x01, 0x02, 0x03]));
     const result = await prepareFileInput(p, { allowOutsideCwd: true });
-    expect(result.mode).toBe('file');
-    if (result.mode === 'file') {
-      // absPath is the symlink-resolved real path (macOS canonicalizes /var).
-      expect(result.absPath).toBe(await realpath(p));
-      expect(result.size).toBe(150_000);
-      expect(result.name).toBe('big.bin');
-    }
+    expect(result.mime).toBe('application/octet-stream');
   });
 
-  it('spills a file over the encrypted-inline budget but under MAX_INPUT_LEN (targeted jobs are NIP-44 capped)', async () => {
-    // 70k bytes: > MAX_ENCRYPTED_INLINE_BYTES (60k) but < MAX_INPUT_LEN (100k).
-    // Must be file mode (seeded via iroh): inlining it would exceed the NIP-44
-    // 65_535-byte plaintext cap and throw at submit instead of transferring P2P.
-    const p = join(dir, 'midsize.bin');
-    const size = LIMITS.MAX_ENCRYPTED_INLINE_BYTES + 10_000;
+  it('classifies invalid UTF-8 (no NUL) as octet-stream (fatal-decode branch)', async () => {
+    // 0xff 0xfe is not a valid UTF-8 sequence and contains no NUL.
+    const p = join(dir, 'latin1.bin');
+    await writeFile(p, Buffer.from([0xff, 0xfe, 0x41, 0x42]));
+    const result = await prepareFileInput(p, { allowOutsideCwd: true });
+    expect(result.mime).toBe('application/octet-stream');
+  });
+
+  it('classifies ASCII-with-a-NUL as octet-stream (NUL passes fatal decode, so the explicit check matters)', async () => {
+    const p = join(dir, 'has-nul.txt');
+    await writeFile(p, Buffer.from([0x68, 0x69, 0x00, 0x62, 0x79, 0x65]));
+    const result = await prepareFileInput(p, { allowOutsideCwd: true });
+    expect(result.mime).toBe('application/octet-stream');
+  });
+
+  it('classifies a file over the re-inline ceiling as octet-stream via the no-read fast path', async () => {
+    // > MAX_REINLINE_TEXT_BYTES: even pure ASCII is never re-inlined, so it is
+    // classed binary without reading the whole file.
+    const p = join(dir, 'huge.txt');
+    const size = LIMITS.MAX_REINLINE_TEXT_BYTES + 1;
     await writeFile(p, 'a'.repeat(size));
     const result = await prepareFileInput(p, { allowOutsideCwd: true });
-    expect(result.mode).toBe('file');
-    if (result.mode === 'file') {
-      expect(result.size).toBe(size);
-    }
+    expect(result.mime).toBe('application/octet-stream');
+    expect(result.size).toBe(size);
+  });
+
+  it('rejects an empty file before seeding (would otherwise be paid for + deliver nothing)', async () => {
+    const p = join(dir, 'empty.bin');
+    await writeFile(p, '');
+    await expect(prepareFileInput(p, { allowOutsideCwd: true })).rejects.toThrow(/empty file/);
+  });
+
+  // --- path guards (validateInputPath, formerly exercised via readJobInputFile) ---
+
+  it('rejects a missing file with a path-bearing message', async () => {
+    await expect(
+      prepareFileInput(join(dir, 'nope.txt'), { allowOutsideCwd: true }),
+    ).rejects.toThrow(/does not exist/);
+  });
+
+  it('rejects a directory path (not a regular file)', async () => {
+    const sub = join(dir, 'sub');
+    await mkdir(sub);
+    await expect(prepareFileInput(sub, { allowOutsideCwd: true })).rejects.toThrow(
+      /not a regular file/,
+    );
+  });
+
+  it('rejects an excessively long path argument before touching the FS', async () => {
+    await expect(prepareFileInput('x'.repeat(5000))).rejects.toThrow(/too long/);
+  });
+
+  it('refuses a path outside the working directory unless allow_outside_cwd is set', async () => {
+    const p = join(dir, 'outside.txt');
+    await writeFile(p, 'data');
+    await expect(prepareFileInput(p)).rejects.toThrow(/outside the working directory/);
   });
 
   it('still refuses sensitive files', async () => {
@@ -179,6 +133,30 @@ describe('prepareFileInput', () => {
     await expect(prepareFileInput(secret, { allowOutsideCwd: true })).rejects.toThrow(
       /sensitive file/,
     );
+  });
+
+  it('rejects an in-cwd symlink whose target escapes the working directory', async () => {
+    const outsideTarget = join(dir, 'target.txt');
+    await writeFile(outsideTarget, 'data');
+    const link = join(process.cwd(), `elisym-symlink-test-${Date.now()}.txt`);
+    await symlink(outsideTarget, link);
+    try {
+      await expect(prepareFileInput(link)).rejects.toThrow(/outside the working directory/);
+    } finally {
+      await rm(link, { force: true });
+    }
+  });
+
+  it('accepts a file inside the working directory by default', async () => {
+    const p = join(process.cwd(), `elisym-prepfile-test-${Date.now()}.txt`);
+    await writeFile(p, 'inside cwd');
+    try {
+      const result = await prepareFileInput(p);
+      expect(result.mime).toBe('text/plain');
+      expect(result.size).toBe('inside cwd'.length);
+    } finally {
+      await rm(p, { force: true });
+    }
   });
 });
 

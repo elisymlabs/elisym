@@ -168,35 +168,6 @@ function isValidGitRef(ref: string): boolean {
   return /^[A-Za-z0-9._/@~^-]+$/.test(ref);
 }
 
-/**
- * Read a job input from a regular file on disk, with size and decoding guards.
- * Relative paths resolve against `process.cwd()` (the MCP server's working dir,
- * which for stdio clients is the dir the client was launched from).
- *
- * Throws a user-facing Error on missing file, non-file path, or oversize content.
- */
-export async function readJobInputFile(
-  inputPath: string,
-  options?: { allowOutsideCwd?: boolean },
-): Promise<string> {
-  const { absPath, size } = await validateInputPath(inputPath, options);
-  if (size > MAX_INPUT_LEN) {
-    throw new Error(
-      `input_path too large: ${size} bytes (max ${MAX_INPUT_LEN}). ` +
-        `Trim the file or split the job.`,
-    );
-  }
-  const content = await readFile(absPath, 'utf-8');
-  if (content.length > MAX_INPUT_LEN) {
-    // utf-8 multi-byte chars can push the decoded length past the byte size check.
-    throw new Error(
-      `input_path content too long after decoding: ${content.length} chars ` +
-        `(max ${MAX_INPUT_LEN}).`,
-    );
-  }
-  return content;
-}
-
 /** Shared path validation: length, sensitive-file block, cwd confinement, stat, isFile. */
 async function validateInputPath(
   inputPath: string,
@@ -267,39 +238,63 @@ async function validateInputPath(
 }
 
 /**
- * Prepare a file job input, applying the same guards as `readJobInputFile`.
- * A file that fits the inline text cap is read and returned for the existing
- * Nostr-text path; a larger file (up to `MAX_FILE_SIZE`) is returned by path for
- * the caller to seed via iroh (so large/binary inputs no longer hit the 100k wall).
+ * Conservative text/binary classifier for a file input. Biased to BINARY: returns
+ * `true` only when the bytes are confidently UTF-8 text, because a false "text"
+ * verdict makes the provider re-inline (decode as UTF-8) and corrupt a binary blob.
+ * A file larger than the provider's re-inline ceiling is never re-inlined anyway,
+ * so it is classed binary without reading. NUL is valid UTF-8, so a fatal decoder
+ * does not reject it - check for NUL explicitly.
  */
-export type PreparedFileInput =
-  | { mode: 'inline'; content: string }
-  | { mode: 'file'; absPath: string; size: number; name: string };
+async function isProbablyText(absPath: string, size: number): Promise<boolean> {
+  if (size > LIMITS.MAX_REINLINE_TEXT_BYTES) {
+    return false;
+  }
+  const bytes = await readFile(absPath);
+  if (bytes.includes(0)) {
+    return false;
+  }
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    decoder.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prepare a file job input. Every file is transferred P2P via iroh (never inline),
+ * so the caller seeds `absPath`; the returned `mime` decides how the provider
+ * delivers it - `text/plain` is re-inlined to the skill's stdin (within the
+ * re-inline ceiling), anything else is streamed to `ELISYM_INPUT_FILE`. The MIME
+ * is sniffed from the content (see `isProbablyText`); the untrusted file
+ * name/extension is never trusted for this.
+ */
+export interface PreparedFileInput {
+  absPath: string;
+  size: number;
+  name: string;
+  mime: string;
+}
 
 export async function prepareFileInput(
   inputPath: string,
   options?: { allowOutsideCwd?: boolean },
 ): Promise<PreparedFileInput> {
   const { absPath, size } = await validateInputPath(inputPath, options);
-  // Encrypted (targeted) jobs cap inline plaintext at the NIP-44 budget, so the
-  // inline cutoff is the encrypted-inline byte limit (mirrors prepareTextInput);
-  // larger files spill to iroh. Using MAX_INPUT_LEN here would inline files that
-  // then exceed the NIP-44 cap and throw at submit instead of transferring P2P.
-  if (size <= LIMITS.MAX_ENCRYPTED_INLINE_BYTES) {
-    const content = await readFile(absPath, 'utf-8');
-    if (content.length > MAX_INPUT_LEN) {
-      throw new Error(
-        `input_path content too long after decoding: ${content.length} chars (max ${MAX_INPUT_LEN}).`,
-      );
-    }
-    return { mode: 'inline', content };
+  // Reject early: an empty file is not a deliverable input (it would otherwise be
+  // seeded and paid for, then deliver nothing). The submit path also rejects an
+  // empty body, so failing here is consistent and gives a clearer message.
+  if (size === 0) {
+    throw new Error('input_path is an empty file - nothing to send.');
   }
   if (size > LIMITS.MAX_FILE_SIZE) {
     throw new Error(
       `input_path too large: ${size} bytes (max ${LIMITS.MAX_FILE_SIZE} for a file transfer).`,
     );
   }
-  return { mode: 'file', absPath, size, name: basename(absPath) };
+  const mime = (await isProbablyText(absPath, size)) ? 'text/plain' : 'application/octet-stream';
+  return { absPath, size, name: basename(absPath), mime };
 }
 
 /**

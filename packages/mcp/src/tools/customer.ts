@@ -1100,7 +1100,7 @@ export const customerTools: ToolDefinition[] = [
       checkLen('job_event_id', input.job_event_id, MAX_EVENT_ID_LEN);
       // Validate the destination up front (before any relay/iroh work): the bytes
       // come from an untrusted provider, so refuse a sensitive output_path - the
-      // write-side mirror of readJobInputFile's sensitive-path block.
+      // write-side mirror of validateInputPath's sensitive-path block.
       let outputPath: string;
       try {
         outputPath = await resolveOutputPath(input.output_path, {
@@ -1382,16 +1382,19 @@ export const customerTools: ToolDefinition[] = [
     description:
       'Same as submit_and_pay_job, but the job input is read from a file on disk by the ' +
       'MCP server instead of being passed inline by the LLM. Use this when the input is ' +
-      'large (logs, generated content, captured output) and the LLM only needs to forward ' +
+      'large or binary (images, logs, captured output) and the LLM only needs to forward ' +
       "it - the file content never enters the model's output tokens. " +
       "input_path may be absolute or relative to the MCP server's working directory. " +
-      'Files within the inline limit are sent in the Nostr event; larger files (up to the ' +
-      'max file size) are transferred P2P via iroh and require a persistent agent.',
+      'The file is ALWAYS transferred peer-to-peer via iroh, so this needs: a persistent ' +
+      'agent, a PAID provider skill (free skills reject file inputs), and the iroh addon. ' +
+      'Text files reach the skill on stdin; binary files via ELISYM_INPUT_FILE.',
     schema: SubmitAndPayJobFromFileSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
       checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
 
+      // Validate + classify first, so a bad/sensitive/missing path gives a specific
+      // error rather than the persistent-agent message below.
       let prepared;
       try {
         prepared = await prepareFileInput(input.input_path, {
@@ -1402,38 +1405,40 @@ export const customerTools: ToolDefinition[] = [
       }
 
       const agent = ctx.active();
-
-      let jobInput = '';
-      let attachment: FileAttachment | undefined;
-      if (prepared.mode === 'inline') {
-        jobInput = prepared.content;
-      } else {
-        // Large/binary file -> P2P via iroh. Requires a persistent agent: an
-        // ephemeral seeder cannot reliably outlive the request window.
-        if (agent.agentDir === undefined) {
-          return errorResult(
-            `File "${prepared.name}" (${prepared.size} bytes) exceeds the inline limit and must ` +
-              `be sent via P2P transfer, which requires a persistent agent (this is an ` +
-              `ephemeral session).`,
-          );
-        }
-        try {
-          const seeded = await ensureIrohTransport(agent).seedPath(prepared.absPath);
-          attachment = {
-            name: prepared.name,
-            size: seeded.size,
-            mime: 'application/octet-stream',
-            transports: [{ kind: 'iroh', ticket: seeded.ticket }],
-          };
-        } catch (e) {
-          return errorResult(
-            `Failed to seed file for transfer: ${e instanceof Error ? e.message : String(e)}`,
-          );
-        }
+      // Every file travels P2P via iroh, which requires a persistent agent to seed:
+      // an ephemeral session cannot reliably outlive the request window.
+      if (agent.agentDir === undefined) {
+        return errorResult(
+          `Sending a file requires a persistent agent (this is an ephemeral session). ` +
+            `Files are always transferred P2P via iroh, never inline.`,
+        );
       }
 
+      let attachment: FileAttachment;
+      try {
+        const seeded = await ensureIrohTransport(agent).seedPath(prepared.absPath);
+        attachment = {
+          name: prepared.name,
+          size: seeded.size,
+          mime: prepared.mime,
+          transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // The iroh addon is an optional native dependency; surface an install hint
+        // rather than the opaque seed error when it is simply not installed.
+        if (/@number0\/iroh|iroh file transfer is unavailable/i.test(msg)) {
+          return errorResult(
+            `File transfer is unavailable: the optional @number0/iroh addon is not installed. ` +
+              `Install it (e.g. \`bun add @number0/iroh\`) to send files.`,
+          );
+        }
+        return errorResult(`Failed to seed file for transfer: ${msg}`);
+      }
+
+      // The file body always rides the attachment; the inline input is empty.
       return executeSubmitAndPay(ctx, agent, {
-        input: jobInput,
+        input: '',
         attachment,
         providerNpub: input.provider_npub,
         providerPubkey: decodeNpub(input.provider_npub),

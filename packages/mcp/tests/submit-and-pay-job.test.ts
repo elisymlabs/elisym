@@ -10,17 +10,22 @@
  * `client.marketplace.submitJobRequest`, then call the real `submit_and_pay_job` handler.
  * The fail-fast branch runs before `submitJobRequest`, so we can assert the call count.
  */
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { LIMITS } from '@elisym/sdk';
 import { nip19 } from 'nostr-tools';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { AgentContext, type AgentInstance } from '../src/context.js';
 import { customerTools } from '../src/tools/customer.js';
 
-// Mock the (node-only) iroh transport so the large-text spill path can seed
-// without the native addon. seedBytes returns a deterministic ticket/size.
+// Mock the (node-only) iroh transport so the seed paths run without the native
+// addon. Both methods are exposed: seedBytes (large-text spill) and seedPath
+// (submit_and_pay_job_from_file). Each returns a deterministic ticket/size.
 const mockSeedBytes = vi.fn(async () => ({ ticket: 'blobticket-spill', size: 70_000 }));
+const mockSeedPath = vi.fn(async () => ({ ticket: 'blobticket-file', size: 1234 }));
 vi.mock('../src/iroh.js', () => ({
-  ensureIrohTransport: vi.fn(() => ({ seedBytes: mockSeedBytes })),
+  ensureIrohTransport: vi.fn(() => ({ seedBytes: mockSeedBytes, seedPath: mockSeedPath })),
 }));
 
 function findTool(name: string) {
@@ -249,5 +254,104 @@ describe('submit_and_pay_job large-text spill', () => {
     expect(submitArgs.attachment?.mime).toBe('text/plain');
     expect(submitArgs.attachment?.transports[0]?.ticket).toBe('blobticket-spill');
     void resultPromise;
+  });
+});
+
+describe('submit_and_pay_job_from_file always seeds via iroh (never inline)', () => {
+  // The handler runs the REAL prepareFileInput/validateInputPath/isProbablyText
+  // (fs is not mocked), so each case writes a real temp file and passes
+  // allow_outside_cwd: true (the temp file is outside the package cwd).
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'elisym-fromfile-'));
+    mockSeedBytes.mockClear();
+    mockSeedPath.mockClear();
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function freeProviderSetup(): {
+    agent: AgentInstance;
+    submitJobRequest: ReturnType<typeof vi.fn>;
+  } {
+    const providerEvent = {
+      npub: VALID_PROVIDER_NPUB,
+      cards: [
+        { name: 'general', description: 'free', capabilities: ['general'], payment: undefined },
+      ],
+    };
+    const submitJobRequest = vi.fn(async () => 'job-event-id');
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerEvent]),
+      submitJobRequest,
+      hasSolana: false,
+      agentDir: '/tmp/stub-agent',
+    });
+    return { agent, submitJobRequest };
+  }
+
+  async function runFromFile(agent: AgentInstance, filePath: string) {
+    const tool = findTool('submit_and_pay_job_from_file');
+    const input = tool.schema.parse({
+      input_path: filePath,
+      provider_npub: VALID_PROVIDER_NPUB,
+      allow_outside_cwd: true,
+      timeout_secs: 1,
+    });
+    return tool.handler(ctxWith(agent), input);
+  }
+
+  it('seeds a binary file as application/octet-stream with an empty inline body', async () => {
+    const p = join(dir, 'tiny.jpg');
+    await writeFile(p, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x01, 0x02, 0x03]));
+    const { agent, submitJobRequest } = freeProviderSetup();
+
+    const resultPromise = runFromFile(agent, p);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockSeedPath).toHaveBeenCalledTimes(1);
+    expect(mockSeedBytes).not.toHaveBeenCalled();
+    expect(submitJobRequest).toHaveBeenCalledTimes(1);
+    const submitArgs = submitJobRequest.mock.calls[0]![1] as {
+      input: string;
+      attachment?: { mime: string; transports: { kind: string; ticket: string }[] };
+    };
+    expect(submitArgs.input).toBe('');
+    expect(submitArgs.attachment?.mime).toBe('application/octet-stream');
+    expect(submitArgs.attachment?.transports[0]?.ticket).toBe('blobticket-file');
+    void resultPromise;
+  });
+
+  it('seeds a text file as text/plain (provider re-inlines to stdin)', async () => {
+    const p = join(dir, 'notes.txt');
+    await writeFile(p, 'hello world');
+    const { agent, submitJobRequest } = freeProviderSetup();
+
+    const resultPromise = runFromFile(agent, p);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockSeedPath).toHaveBeenCalledTimes(1);
+    const submitArgs = submitJobRequest.mock.calls[0]![1] as {
+      input: string;
+      attachment?: { mime: string };
+    };
+    expect(submitArgs.input).toBe('');
+    expect(submitArgs.attachment?.mime).toBe('text/plain');
+    void resultPromise;
+  });
+
+  it('rejects on an ephemeral agent (no agentDir) without seeding or publishing', async () => {
+    const p = join(dir, 'tiny.bin');
+    await writeFile(p, Buffer.from([0xff, 0x00, 0x01]));
+    const submitJobRequest = vi.fn();
+    const agent = buildStubAgent({ fetchAgents: vi.fn(async () => []), submitJobRequest });
+
+    const result = await runFromFile(agent, p);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/requires a persistent agent/i);
+    expect(mockSeedPath).not.toHaveBeenCalled();
+    expect(submitJobRequest).not.toHaveBeenCalled();
   });
 });
