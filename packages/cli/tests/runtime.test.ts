@@ -10,8 +10,12 @@ import { SkillRegistry } from '../src/skill';
 import type { Skill } from '../src/skill';
 import type { NostrTransport, IncomingJob } from '../src/transport/nostr.js';
 
-// Configurable mock for verifyPayment - reset in beforeEach
+// Configurable mocks for verifyPayment - reset in beforeEach. The runtime calls
+// verifyPayment twice: with a `txSignature` (signature path) and without (reference
+// path, also used by crash-recovery reVerifyPayment). Split so a test can drive the two
+// paths to different outcomes; `mockVerifyResult` remains the reference/recovery result.
 let mockVerifyResult: any = { verified: true, txSignature: 'tx123' };
+let mockSigVerifyResult: any = { verified: true, txSignature: 'tx123' };
 
 // Mock SolanaPaymentStrategy and Connection
 vi.mock('@elisym/sdk', async (importOriginal) => {
@@ -26,7 +30,12 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
         created_at: Math.floor(Date.now() / 1000),
         expiry_secs: 600,
       }),
-      verifyPayment: vi.fn().mockImplementation(() => Promise.resolve(mockVerifyResult)),
+      verifyPayment: vi
+        .fn()
+        .mockImplementation(
+          (_rpc: unknown, _req: unknown, _cfg: unknown, options?: { txSignature?: string }) =>
+            Promise.resolve(options?.txSignature ? mockSigVerifyResult : mockVerifyResult),
+        ),
     })),
     calculateProtocolFee: actual.calculateProtocolFee,
     getProtocolConfig: vi.fn().mockResolvedValue({
@@ -139,6 +148,7 @@ const freeConfig: RuntimeConfig = {
 
 beforeEach(() => {
   mockVerifyResult = { verified: true, txSignature: 'tx123' };
+  mockSigVerifyResult = { verified: true, txSignature: 'tx123' };
   agentDir = mkdtempSync(join(tmpdir(), 'elisym-runtime-test-'));
   ledger = new JobLedger(join(agentDir, '.jobs.json'));
 });
@@ -2296,5 +2306,111 @@ describe('AgentRuntime', () => {
         expect(ledger.getStatus(`stress-${i}`)).toBe('delivered');
       }
     });
+  });
+});
+
+describe('AgentRuntime paid-mode payment-timeout messaging', () => {
+  async function drivePaidJobToTimeout(
+    logs: string[],
+    configureTransport: (transport: NostrTransport) => void,
+  ): Promise<string> {
+    const skill = makeFakeSkill('paid-skill', 'done', 100_000);
+    const registry = makeFakeRegistry(skill);
+    const { transport, triggerJob } = makeFakeTransport();
+    configureTransport(transport);
+
+    const errors: string[] = [];
+    const runtime = new AgentRuntime(
+      transport,
+      registry,
+      { llm: null as any, agentName: 'test', agentDescription: '' },
+      { ...freeConfig, solanaAddress: 'addr', paymentTimeoutSecs: 2 },
+      ledger,
+      {
+        onLog: (message: string) => logs.push(message),
+        onJobError: (_jobId: string, error: string) => errors.push(error),
+      },
+    );
+
+    const runPromise = runtime.run();
+    await tick();
+    triggerJob(makeJob('paid-timeout-job'));
+    await tick(200);
+    runtime.stop();
+    await runPromise.catch(() => {});
+    return errors[0] ?? '';
+  }
+
+  it('logs a calm "abandoned" message (no WARNING) when the customer simply never paid', async () => {
+    // Reference scan ran clean and found nothing; no signature ever asserted.
+    mockVerifyResult = {
+      verified: false,
+      error: 'No matching transaction found for reference key',
+    };
+    const logs: string[] = [];
+    const error = await drivePaidJobToTimeout(logs, (transport) => {
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue(null);
+    });
+
+    expect(logs.some((line) => /abandoned by customer/.test(line))).toBe(true);
+    expect(logs.some((line) => /WARNING:/.test(line))).toBe(false);
+    expect(error).toBe('Payment timeout');
+  });
+
+  it('logs a loud WARNING when the reference scan failed with an RPC error', async () => {
+    mockVerifyResult = { verified: false, error: 'Verification failed: RPC 429' };
+    const logs: string[] = [];
+    await drivePaidJobToTimeout(logs, (transport) => {
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue(null);
+    });
+
+    expect(logs.some((line) => /WARNING:/.test(line) && /Check address/.test(line))).toBe(true);
+    expect(logs.some((line) => /abandoned by customer/.test(line))).toBe(false);
+  });
+
+  it('logs a loud WARNING when the customer asserted a signature we could not verify', async () => {
+    // Reference scan is definitive-no-pay, but the customer published a payment-completed
+    // signature that fails on-chain verification -> loud, because they claim to have paid.
+    mockVerifyResult = {
+      verified: false,
+      error: 'No matching transaction found for reference key',
+    };
+    mockSigVerifyResult = { verified: false, error: 'Transaction not found' };
+    const logs: string[] = [];
+    await drivePaidJobToTimeout(logs, (transport) => {
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue('sig-bad');
+    });
+
+    expect(logs.some((line) => /WARNING:/.test(line))).toBe(true);
+    expect(logs.some((line) => /abandoned by customer/.test(line))).toBe(false);
+  });
+
+  it('emits no timeout message and runs the skill when payment verifies', async () => {
+    const skill = makeFakeSkill('paid-skill', 'done', 100_000);
+    const registry = makeFakeRegistry(skill);
+    const { transport, triggerJob } = makeFakeTransport();
+    (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue('paid-sig');
+    mockSigVerifyResult = { verified: true, txSignature: 'tx' };
+
+    const logs: string[] = [];
+    const runtime = new AgentRuntime(
+      transport,
+      registry,
+      { llm: null as any, agentName: 'test', agentDescription: '' },
+      { ...freeConfig, solanaAddress: 'addr' },
+      ledger,
+      { onLog: (message: string) => logs.push(message) },
+    );
+
+    const runPromise = runtime.run();
+    await tick();
+    triggerJob(makeJob('paid-ok-job'));
+    await tick(200);
+    runtime.stop();
+    await runPromise.catch(() => {});
+
+    expect(skill.execute).toHaveBeenCalledOnce();
+    expect(logs.some((line) => /WARNING:/.test(line))).toBe(false);
+    expect(logs.some((line) => /abandoned by customer/.test(line))).toBe(false);
   });
 });

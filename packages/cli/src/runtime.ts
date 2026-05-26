@@ -1231,6 +1231,12 @@ export class AgentRuntime {
     const deadlineMs = this.config.paymentTimeoutSecs * 1000;
     const sigPathTimeoutMs = Math.min(deadlineMs, SIG_PATH_TIMEOUT_MS);
 
+    // Per-path failure outcomes, captured for the timeout-classification below. Declared
+    // at method scope (not inside the executor) because the WARNING site reads them after
+    // the Promise resolves. `sigOutcome.gotSignature` distinguishes "customer asserted a
+    // payment we could not confirm" (loud) from "customer never paid" (calm).
+    let sigOutcome: { gotSignature: boolean; error?: string } | undefined;
+    let refOutcome: { error?: string } | undefined;
     let result: { verified: boolean };
     try {
       result = await new Promise<{ verified: boolean }>((resolve, reject) => {
@@ -1269,6 +1275,7 @@ export class AgentRuntime {
               return;
             }
             if (!sig) {
+              sigOutcome = { gotSignature: false };
               lose({ verified: false }, 'sig path: no payment-completed feedback');
               return;
             }
@@ -1281,21 +1288,20 @@ export class AgentRuntime {
                 win(verified);
               } else {
                 const reason = (verified as { error?: string }).error ?? 'unknown';
+                sigOutcome = { gotSignature: true, error: reason };
                 lose(verified, `sig path: not verified (${reason})`);
               }
             } catch (err) {
-              lose(
-                { verified: false },
-                `sig path error: ${err instanceof Error ? err.message : String(err)}`,
-              );
+              const message = err instanceof Error ? err.message : String(err);
+              sigOutcome = { gotSignature: true, error: message };
+              lose({ verified: false }, `sig path error: ${message}`);
             }
           })
-          .catch((err) =>
-            lose(
-              { verified: false },
-              `sig path error: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          );
+          .catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            sigOutcome = { gotSignature: false, error: message };
+            lose({ verified: false }, `sig path error: ${message}`);
+          });
 
         // Path (b) - reference path
         payment
@@ -1305,15 +1311,15 @@ export class AgentRuntime {
               win(verified);
             } else {
               const reason = (verified as { error?: string }).error ?? 'unknown';
+              refOutcome = { error: reason };
               lose(verified, `ref path: not verified (${reason})`);
             }
           })
-          .catch((err) =>
-            lose(
-              { verified: false },
-              `ref path error: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          );
+          .catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            refOutcome = { error: message };
+            lose({ verified: false }, `ref path error: ${message}`);
+          });
 
         // Hard deadline backstop - guarantees we never hang past paymentTimeoutSecs
         const deadline = setTimeout(() => {
@@ -1360,11 +1366,27 @@ export class AgentRuntime {
       return { netAmount, paymentRequest: requestJson };
     }
 
-    // Timeout - customer may have paid on-chain but verification failed
-    log(
-      `[${job.jobId.slice(0, 8)}] WARNING: Payment verification timed out. ` +
-        `Customer may have paid on-chain. Check address ${this.config.solanaAddress} manually.`,
-    );
+    // Timeout. Distinguish "customer simply never paid" (calm) from genuine uncertainty
+    // (loud "check manually"). Calm only when the reference scan ran clean and conclusively
+    // found nothing AND the customer never asserted a payment signature over Nostr. Only the
+    // exact "No matching transaction found for reference key" literal is definitive-no-pay;
+    // RPC/inconclusive errors and any asserted-but-unverifiable signature fall through to loud.
+    const refDefinitiveNoPay =
+      refOutcome?.error === 'No matching transaction found for reference key';
+    const sigGotSignature = sigOutcome?.gotSignature === true;
+    const customerAbandoned = !sigGotSignature && refDefinitiveNoPay;
+
+    if (customerAbandoned) {
+      log(
+        `[${job.jobId.slice(0, 8)}] Payment not received; on-chain scan found no ` +
+          `matching transaction - job abandoned by customer.`,
+      );
+    } else {
+      log(
+        `[${job.jobId.slice(0, 8)}] WARNING: Payment verification timed out. ` +
+          `Customer may have paid on-chain. Check address ${this.config.solanaAddress} manually.`,
+      );
+    }
     await this.transport
       .sendFeedback(job, { type: 'error', message: 'payment timeout' })
       .catch(() => {});

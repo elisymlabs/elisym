@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
 import { LIMITS } from '@elisym/sdk';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeGitDiff, prepareFileInput, resolveOutputPath } from '../src/job-input.js';
 
 const execFileP = promisify(execFile);
@@ -259,15 +259,48 @@ describe('computeGitDiff', () => {
   it('rejects a non-git path with a clean message', async () => {
     const notRepo = await mkdtemp(join(tmpdir(), 'elisym-notrepo-'));
     try {
-      await expect(computeGitDiff(notRepo)).rejects.toThrow(/not inside a git work tree/);
+      // allowOutsideCwd so the path clears the cwd-confinement floor and reaches
+      // the git-repo check (the temp dir lives outside the test process cwd).
+      await expect(computeGitDiff(notRepo, undefined, { allowOutsideCwd: true })).rejects.toThrow(
+        /not inside a git work tree/,
+      );
     } finally {
       await rm(notRepo, { recursive: true, force: true });
     }
   });
 
+  it('refuses a repo outside the working directory unless allow_outside_cwd is set', async () => {
+    await writeFile(join(repo, 'README.md'), '# changed\n');
+    // repo lives in tmpdir (outside the test process cwd); without the opt-in the
+    // confinement floor rejects it before any git command runs.
+    await expect(computeGitDiff(repo)).rejects.toThrow(/outside the working directory/);
+  });
+
+  it('refuses a repo under a sensitive directory even with allow_outside_cwd', async () => {
+    const sensitive = join(repo, '.ssh');
+    await mkdir(sensitive);
+    await expect(computeGitDiff(sensitive, undefined, { allowOutsideCwd: true })).rejects.toThrow(
+      /sensitive path/,
+    );
+  });
+
+  it('accepts the working directory itself (schema default repo_path ".")', async () => {
+    // The default repo_path is '.', which resolves to the cwd: relative(cwd, cwd) is '',
+    // and that must count as INSIDE the working dir (the common "review the current repo"
+    // case), not outside. Spy cwd onto the temp repo so allowOutsideCwd:false is exercised.
+    await writeFile(join(repo, 'README.md'), '# changed\n');
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(repo);
+    try {
+      const result = await computeGitDiff('.');
+      expect(result.diff).toMatch(/^diff --git/m);
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
   it('returns working-tree diff when tree is dirty (auto-detect)', async () => {
     await writeFile(join(repo, 'README.md'), '# changed\n');
-    const result = await computeGitDiff(repo);
+    const result = await computeGitDiff(repo, undefined, { allowOutsideCwd: true });
     expect(result.describedRange).toMatch(/working tree/);
     expect(result.diff).toMatch(/^diff --git/m);
     expect(result.diff).toMatch(/-# initial/);
@@ -279,7 +312,7 @@ describe('computeGitDiff', () => {
     await writeFile(join(repo, 'feature.txt'), 'new file\n');
     await git(repo, ['add', '.']);
     await git(repo, ['commit', '-q', '-m', 'feature commit']);
-    const result = await computeGitDiff(repo);
+    const result = await computeGitDiff(repo, undefined, { allowOutsideCwd: true });
     expect(result.describedRange).toBe('main...HEAD');
     expect(result.diff).toMatch(/feature\.txt/);
     expect(result.diff).toMatch(/\+new file/);
@@ -292,17 +325,21 @@ describe('computeGitDiff', () => {
     await git(repo, ['add', '.']);
     await git(repo, ['commit', '-q', '-m', 'second']);
 
-    const result = await computeGitDiff(repo, 'HEAD~1');
+    const result = await computeGitDiff(repo, 'HEAD~1', { allowOutsideCwd: true });
     expect(result.describedRange).toBe('HEAD~1...HEAD');
     expect(result.diff).toMatch(/second\.txt/);
   });
 
   it('throws on unknown base ref', async () => {
-    await expect(computeGitDiff(repo, 'nonexistent-ref-xyz')).rejects.toThrow(/git diff/);
+    await expect(
+      computeGitDiff(repo, 'nonexistent-ref-xyz', { allowOutsideCwd: true }),
+    ).rejects.toThrow(/git diff/);
   });
 
   it('throws when the diff is empty (clean tree, no diverging branch)', async () => {
     // Clean tree on main, no other branch. main...HEAD is empty.
-    await expect(computeGitDiff(repo)).rejects.toThrow(/No changes/);
+    await expect(computeGitDiff(repo, undefined, { allowOutsideCwd: true })).rejects.toThrow(
+      /No changes/,
+    );
   });
 });
