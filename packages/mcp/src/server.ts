@@ -14,6 +14,7 @@ import { address, createSolanaRpc } from '@solana/kit';
 import { ZodError } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AgentContext, rpcUrlFor } from './context.js';
+import { shutdownIrohTransport } from './iroh.js';
 import { logger } from './logger.js';
 import { buildEffectiveLimits } from './session-limits.js';
 import { agentTools } from './tools/agent.js';
@@ -68,11 +69,17 @@ export const registeredTools: readonly ToolDefinition[] = allTools;
  * char base58 addresses are intentionally left alone.
  */
 function redactSecrets(text: string): string {
-  return text
-    .replace(/\bnsec1[02-9ac-hj-np-z]{20,}\b/gi, '[REDACTED]')
-    .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g, '[REDACTED]')
-    .replace(/\b[0-9a-fA-F]{64}\b/g, '[REDACTED]')
-    .replace(/\b[1-9A-HJ-NP-Za-km-z]{80,}\b/g, '[REDACTED]');
+  return (
+    text
+      .replace(/\bnsec1[02-9ac-hj-np-z]{20,}\b/gi, '[REDACTED]')
+      .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g, '[REDACTED]')
+      .replace(/\b[0-9a-fA-F]{64}\b/g, '[REDACTED]')
+      .replace(/\b[1-9A-HJ-NP-Za-km-z]{80,}\b/g, '[REDACTED]')
+      // Raw secret-key bytes serialized as a JSON array (Nostr=32, Solana=64): a
+      // run of 32+ comma-separated 0-255 ints. Catches an error that echoes a
+      // decoded keypair, which the hex/base58 shapes above would miss.
+      .replace(/\[\s*(?:\d{1,3}\s*,\s*){31,}\d{1,3}\s*\]/g, '[REDACTED]')
+  );
 }
 
 /**
@@ -81,12 +88,20 @@ function redactSecrets(text: string): string {
  * summary so we don't leak internal paths / stack traces into the model context.
  */
 export function safeError(context: string, e: unknown): CallToolResult {
-  // Log full details to stderr for the operator. Routed through pino
-  // so SDK redact paths catch any secret / user-input fields embedded
-  // in the error object before it hits stderr.
+  // Log full details to stderr for the operator. pino's redact paths censor named
+  // secret FIELDS, but `err`/`stack` are free-text strings that path-redaction does
+  // not scan, so scrub key/secret shapes out of them explicitly before they hit stderr.
   const message = e instanceof Error ? e.message : String(e);
   const stack = e instanceof Error ? e.stack : undefined;
-  logger.error({ event: 'tool_error', context, err: message, stack }, 'tool call failed');
+  logger.error(
+    {
+      event: 'tool_error',
+      context,
+      err: redactSecrets(message),
+      stack: stack !== undefined ? redactSecrets(stack) : undefined,
+    },
+    'tool call failed',
+  );
 
   let msg: string;
   if (e instanceof ZodError) {
@@ -97,10 +112,12 @@ export function safeError(context: string, e: unknown): CallToolResult {
     msg = `Invalid arguments: ${parts.join('; ')}`;
   } else if (e instanceof Error) {
     // Single-line, bounded length so a giant Solana RPC simulation log doesn't dump
-    // program IDs and account keys into the LLM context.
-    msg = e.message.split('\n')[0]!.slice(0, 300);
+    // program IDs and account keys into the LLM context. Redact BEFORE slicing: a
+    // secret straddling the 300-char cut would otherwise be truncated below the
+    // redaction regex's minimum match length and leak a fragment.
+    msg = redactSecrets(e.message).split('\n')[0]!.slice(0, 300);
   } else {
-    msg = String(e).slice(0, 300);
+    msg = redactSecrets(String(e)).split('\n')[0]!.slice(0, 300);
   }
 
   return {
@@ -271,6 +288,9 @@ export async function startServer(ctx: AgentContext): Promise<void> {
     shuttingDown = true;
     logger.info({ event: 'shutdown', reason }, 'shutting down');
     for (const agent of ctx.registry.values()) {
+      // Release the iroh fs-store lock (and remove an ephemeral tmpdir store)
+      // before exit so a restart is not wedged by a stale lock.
+      await shutdownIrohTransport(agent);
       try {
         agent.client.close();
       } catch (e) {

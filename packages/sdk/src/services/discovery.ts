@@ -124,6 +124,29 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     return null;
   }
 
+  // Optional token/symbol/mint must be strings when present: a non-string slips
+  // through to display code (`payment.token.toUpperCase()`) and throws at render.
+  if (
+    card.payment &&
+    ((card.payment.token !== undefined && typeof card.payment.token !== 'string') ||
+      (card.payment.symbol !== undefined && typeof card.payment.symbol !== 'string') ||
+      (card.payment.mint !== undefined && typeof card.payment.mint !== 'string'))
+  ) {
+    return null;
+  }
+
+  // Optional file-MIME hints must be bounded strings when present. This is
+  // untrusted remote data; the cap (matching the loader's) keeps an unbounded
+  // string out of client state. Clients gate on presence, not the value.
+  if (
+    (card.inputMime !== undefined &&
+      (typeof card.inputMime !== 'string' || card.inputMime.length > 255)) ||
+    (card.outputMime !== undefined &&
+      (typeof card.outputMime !== 'string' || card.outputMime.length > 255))
+  ) {
+    return null;
+  }
+
   if (
     card.payment?.job_price !== null &&
     card.payment?.job_price !== undefined &&

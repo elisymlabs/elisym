@@ -1,12 +1,14 @@
 import {
   buildPaymentInstructions,
   classifyJobError,
+  decodeJobPayload,
   estimatePriorityFeeMicroLamports,
   getProtocolConfig,
   getProtocolProgramId,
   SolanaPaymentStrategy,
   toDTag,
   type CapabilityCard,
+  type FileAttachment,
   type PaymentRequestData,
 } from '@elisym/sdk';
 import {
@@ -51,6 +53,7 @@ import { track } from '~/lib/analytics';
 import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
+import { tooLargeResultNotice } from '~/lib/resultPayload';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
 const PRIORITY_FEE_PERCENTILE = 75;
@@ -308,11 +311,12 @@ export function BuyProvider({ children }: { children: ReactNode }) {
 
                 // Bound the charge to the advertised price (subunits). Without
                 // this a malicious provider can inflate `paymentRequest.amount`
-                // after the customer committed (bait-and-switch). `job_price` is
-                // an integer subunit value; coerce via BigInt with no float math.
-                const advertisedPrice = card.payment?.job_price;
-                const maxAmountLamports =
-                  advertisedPrice === undefined ? undefined : BigInt(advertisedPrice);
+                // after the customer committed (bait-and-switch). A card with no
+                // advertised price (free, or a `payment` block lacking `job_price`)
+                // is bounded to 0 - so a "free" card that then demands payment is
+                // rejected rather than left unbounded. `job_price` is an integer
+                // subunit value; coerce via BigInt with no float math.
+                const maxAmountLamports = BigInt(card.payment?.job_price ?? 0);
 
                 const validationError = payment.validatePaymentRequest(
                   paymentRequestJson,
@@ -382,17 +386,18 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               }
             },
 
-            onResult: (content: string, eventId: string) => {
-              snapshotUpdateJob(jobEventId, { status: 'completed', result: content });
+            onResult: (content: string, eventId: string, attachment?: FileAttachment) => {
+              // A spilled result arrives as empty content + an attachment; show a
+              // notice (the browser cannot fetch the iroh blob) rather than blank.
+              const result = attachment ? tooLargeResultNotice(attachment) : content;
+              snapshotUpdateJob(jobEventId, { status: 'completed', result });
               cacheSet(`purchase:${jobEventId}`, {
-                result: content,
+                result,
                 eventId,
                 receivedAt: Date.now(),
               });
               setSession((prev) =>
-                sessionMatches(prev)
-                  ? { ...prev, buying: false, pending: false, result: content }
-                  : prev,
+                sessionMatches(prev) ? { ...prev, buying: false, pending: false, result } : prev,
               );
               cleanupRef.current = null;
               const agentPath = `/agent/${agentPubkey}`;
@@ -598,15 +603,23 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             if (!res || res.decryptionFailed) {
               continue;
             }
-            updateJob(job.jobEventId, { status: 'completed', result: res.content });
+            // queryJobResults returns the raw decrypted content (no envelope
+            // decode), so decode here - mirroring the live subscription. A spilled
+            // result surfaces as a notice (the browser can't fetch the iroh blob);
+            // a normal result yields its inline text.
+            const decoded = decodeJobPayload(res.content);
+            const result = decoded.attachment
+              ? tooLargeResultNotice(decoded.attachment)
+              : (decoded.text ?? res.content);
+            updateJob(job.jobEventId, { status: 'completed', result });
             cacheSet(`purchase:${job.jobEventId}`, {
-              result: res.content,
+              result,
               eventId: job.jobEventId,
               receivedAt: Date.now(),
             });
             setSession((prev) =>
               prev && prev.jobId === job.jobEventId
-                ? { ...prev, buying: false, pending: false, result: res.content }
+                ? { ...prev, buying: false, pending: false, result }
                 : prev,
             );
           } catch {

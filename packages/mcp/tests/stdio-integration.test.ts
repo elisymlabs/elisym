@@ -144,15 +144,16 @@ describe('stdio MCP integration', () => {
     await rm(tmpHome, { recursive: true, force: true });
   });
 
-  it('initializes and exposes exactly 24 tools', async () => {
+  it('initializes and exposes exactly 25 tools', async () => {
     harness = new McpHarness(tmpHome);
     await harness.initialize();
 
     const response = await harness.send('tools/list', {});
     expect(response.error).toBeUndefined();
     const result = response.result as { tools: Array<{ name: string; inputSchema: unknown }> };
-    expect(result.tools).toHaveLength(24);
+    expect(result.tools).toHaveLength(25);
     const names = result.tools.map((t) => t.name).sort();
+    expect(names).toContain('fetch_job_file');
     expect(names).toContain('withdraw');
     expect(names).toContain('get_identity');
     expect(names).toContain('estimate_payment_cost');

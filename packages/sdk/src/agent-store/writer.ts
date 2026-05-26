@@ -3,7 +3,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import YAML from 'yaml';
 import { encryptSecret, isEncrypted } from '../primitives/encryption';
@@ -11,6 +11,9 @@ import { agentPaths, type AgentPaths } from './paths';
 import { elisymRootFor, type AgentSource } from './resolver';
 import { ElisymYamlSchema, SecretsSchema, type ElisymYaml, type Secrets } from './schema';
 import { renderInitialYaml } from './template';
+
+/** Bare per-agent `.iroh/` store dir; ignored at any depth under `.elisym/`. */
+const IROH_GITIGNORE_ENTRY = '.iroh/';
 
 const GITIGNORE_CONTENT = [
   '# elisym private state - do not commit.',
@@ -20,8 +23,34 @@ const GITIGNORE_CONTENT = [
   '.jobs.json.corrupt.*',
   '.customer-history.json',
   '.contacts.json',
+  IROH_GITIGNORE_ENTRY,
   '',
 ].join('\n');
+
+/**
+ * Ensure the project-local `.elisym/.gitignore` ignores the iroh blob store.
+ * Idempotent migration for agents created before `.iroh/` was added to the
+ * default ignore list; a no-op when no `.gitignore` exists (e.g. home-global,
+ * which relies on directory permissions instead). The iroh store holds job
+ * payloads in cleartext, so it must never be committed.
+ */
+export async function ensureGitignoreHasIrohEntry(elisymRoot: string): Promise<void> {
+  const gitignorePath = join(elisymRoot, '.gitignore');
+  let current: string;
+  try {
+    current = await readFile(gitignorePath, 'utf-8');
+  } catch {
+    return;
+  }
+  const hasEntry = current.split('\n').some((line) => line.trim() === IROH_GITIGNORE_ENTRY);
+  if (hasEntry) {
+    return;
+  }
+  const separator = current.length === 0 || current.endsWith('\n') ? '' : '\n';
+  await writeFile(gitignorePath, `${current}${separator}${IROH_GITIGNORE_ENTRY}\n`, {
+    mode: 0o644,
+  });
+}
 
 export interface CreateAgentDirOptions {
   target: AgentSource;

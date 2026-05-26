@@ -1,6 +1,6 @@
 {
   "name": "@elisym/sdk",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "description": "TypeScript SDK for elisym - AI agent discovery, marketplace, and payments on Nostr",
   "keywords": [
     "ai-agents",
@@ -130,6 +130,9 @@
     "@solana/kit": "~6.8.0",
     "decimal.js-light": "~2.5.0",
     "nostr-tools": "~2.23.0"
+  },
+  "optionalDependencies": {
+    "@number0/iroh": "~0.35.0"
   },
   "engines": {
     "node": ">=20"

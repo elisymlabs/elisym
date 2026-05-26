@@ -2,8 +2,8 @@
  * NostrTransport - listens for targeted jobs on Nostr relays, delivers results.
  * Handles NIP-44 decryption, dedup, and retried delivery.
  */
-import { BoundedSet, KIND_JOB_FEEDBACK, jobRequestKind } from '@elisym/sdk';
-import type { ElisymClient, ElisymIdentity, SubCloser } from '@elisym/sdk';
+import { BoundedSet, KIND_JOB_FEEDBACK, decodeJobPayload, jobRequestKind } from '@elisym/sdk';
+import type { ElisymClient, ElisymIdentity, FileAttachment, SubCloser } from '@elisym/sdk';
 import { verifyEvent, type Event, type Filter } from 'nostr-tools';
 
 export interface IncomingJob {
@@ -15,6 +15,8 @@ export interface IncomingJob {
   bid?: number;
   encrypted: boolean;
   rawEvent: Event;
+  /** File attachment descriptor, decoded from the job-payload envelope (if any). */
+  attachment?: FileAttachment;
 }
 
 export type JobFeedbackStatus =
@@ -24,6 +26,15 @@ export type JobFeedbackStatus =
 
 function isEncrypted(event: Event): boolean {
   return event.tags.some((t) => t[0] === 'encrypted' && t[1] === 'nip44');
+}
+
+/** Parse a customer-supplied `bid` tag, returning undefined on a non-numeric value. */
+function parseBidTag(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 const HEALTH_CHECK_IDLE_MS = 30 * 60 * 1000; // 30 minutes
@@ -66,8 +77,14 @@ export class NostrTransport {
           return;
         }
 
-        // Extract tags
-        const tags = event.tags.filter((t) => t[0] === 't').map((t) => t[1]!);
+        // Extract `t` tags. A Nostr tag may legally be a single-element array
+        // (`['t']`) and still pass verifyEvent, so drop entries with no value
+        // rather than asserting one is present (which would inject `undefined`
+        // into the declared `string[]`).
+        const tags = event.tags
+          .filter((tag) => tag[0] === 't')
+          .map((tag) => tag[1])
+          .filter((value): value is string => typeof value === 'string');
         const bidTag = event.tags.find((t) => t[0] === 'bid');
         const encrypted = isEncrypted(event);
 
@@ -77,7 +94,20 @@ export class NostrTransport {
         if (iTag?.[2]) {
           inputType = iTag[2];
         }
-        const input = encrypted ? event.content : (iTag?.[1] ?? event.content);
+        const rawInput = encrypted ? event.content : (iTag?.[1] ?? event.content);
+
+        // Decode the job-payload envelope: a file job carries `{ text, attachment }`,
+        // a plain-text job decodes to its text unchanged. A malformed/unknown-version
+        // envelope is skipped (the provider can't process it).
+        let input: string;
+        let attachment: FileAttachment | undefined;
+        try {
+          const decoded = decodeJobPayload(rawInput);
+          input = decoded.text ?? '';
+          attachment = decoded.attachment;
+        } catch {
+          return;
+        }
 
         onJob({
           jobId: event.id,
@@ -85,9 +115,10 @@ export class NostrTransport {
           inputType,
           tags,
           customerId: event.pubkey,
-          bid: bidTag?.[1] ? parseInt(bidTag[1], 10) : undefined,
+          bid: parseBidTag(bidTag?.[1]),
           encrypted,
           rawEvent: event,
+          attachment,
         });
       },
     );
@@ -146,6 +177,15 @@ export class NostrTransport {
         if (!verifyEvent(event)) {
           return;
         }
+        // Relays are untrusted and may return events from any author despite the
+        // `authors` filter; verifyEvent only proves the event is self-signed, not
+        // that it came from the expected customer. Match the author-equality check
+        // used everywhere else (e.g. marketplace handleResult) so a spoofed
+        // payment-completed cannot feed an attacker-chosen tx signature into the
+        // fast verification path.
+        if (event.pubkey !== customerPubkey) {
+          return;
+        }
         const status = event.tags.find((t) => t[0] === 'status')?.[1];
         if (status !== 'payment-completed') {
           return;
@@ -201,6 +241,7 @@ export class NostrTransport {
     job: IncomingJob,
     content: string,
     amount?: number,
+    attachment?: FileAttachment,
     retries = 3,
   ): Promise<string> {
     return this.client.marketplace.submitJobResultWithRetry(
@@ -209,6 +250,8 @@ export class NostrTransport {
       content,
       amount,
       retries,
+      undefined,
+      attachment,
     );
   }
 

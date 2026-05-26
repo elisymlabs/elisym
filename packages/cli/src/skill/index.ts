@@ -25,11 +25,30 @@ export interface SkillInput {
   inputType: string;
   tags: string[];
   jobId: string;
+  /**
+   * Local path to a file input fetched out-of-band (P2P via iroh), when the job
+   * carried a file attachment. The runtime fetches it after payment and removes
+   * it after execution; the skill reads from disk rather than from `data`.
+   */
+  filePath?: string;
 }
 
 export interface SkillOutput {
   data: string;
   outputMime?: string;
+  /**
+   * Local path to a file result. When set, the runtime seeds the file via iroh
+   * and the customer fetches it out-of-band; `data` carries any text note (or '').
+   * `outputMime` is reused as the attachment's mime.
+   */
+  filePath?: string;
+  /**
+   * Releases the resources backing `filePath` (e.g. a temp dir). The runtime
+   * calls it once it has seeded the file - or failed to - since seeding happens
+   * after `execute()` returns and the producer cannot release the file itself.
+   * Mirrors the input-side cleanup callback in the runtime's `resolveInputFile`.
+   */
+  cleanup?: () => Promise<void>;
 }
 
 export interface SkillContext {
@@ -140,6 +159,14 @@ export interface Skill {
    * through to the agent-level `executionTimeoutSecs`, then to unlimited.
    */
   executionTimeoutSecs?: number;
+  /**
+   * MIME the skill expects as a file input (`input_mime`, dynamic-script only).
+   * Discovery hint published in the capability card; not enforced at runtime.
+   * Presence signals the capability needs a file input (clients gate on it).
+   */
+  inputMime?: string;
+  /** MIME of a file result (`output_mime`, dynamic-script only). */
+  outputMime?: string;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;
 }
 

@@ -12,6 +12,7 @@ import {
   resolveAssetFromPaymentRequest as sdkResolveAssetFromPaymentRequest,
 } from '@elisym/sdk';
 import type { Asset, PaymentRequestData, ProtocolConfigInput } from '@elisym/sdk';
+import type { IrohBlobTransport } from '@elisym/sdk/node';
 import { createSolanaRpc } from '@solana/kit';
 
 /**
@@ -90,6 +91,17 @@ export interface AgentInstance {
    * `.customer-history.json` or `.contacts.json` MUST gate on this field.
    */
   agentDir?: string;
+  /**
+   * Lazily-created iroh blob transport for file transfer, bound to this agent's
+   * fs-store. Created on first file transfer via `ensureIrohTransport`, shut down
+   * on server teardown. See `src/iroh.ts`.
+   */
+  irohTransport?: IrohBlobTransport;
+  /**
+   * Set only for an ephemeral agent (no `agentDir`): the `os.tmpdir()` store path,
+   * removed on shutdown. Identity-backed agents store at `<agentDir>/.iroh/`.
+   */
+  irohStoreDir?: string;
 }
 
 /** Pending withdrawal preview. A call without nonce produces one of these. */

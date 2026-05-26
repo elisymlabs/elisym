@@ -1,4 +1,5 @@
 import {
+  decodeJobPayload,
   KIND_JOB_FEEDBACK,
   KIND_JOB_REQUEST,
   nip44Decrypt,
@@ -9,6 +10,7 @@ import type { Event as NostrEvent } from 'nostr-tools';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
+import { tooLargeResultNotice } from '~/lib/resultPayload';
 import type { Artifact } from './types';
 
 const STALE_TIME_MS = 1000 * 30;
@@ -94,10 +96,25 @@ export function useNostrArtifacts(agentPubkey: string) {
           // decryption failed, leave prompt undefined
         }
 
+        // queryJobResults returns the raw decrypted content (no envelope decode),
+        // so decode here - mirroring the BuyContext poll path. A spilled/file
+        // result surfaces as a notice (the browser can't fetch the iroh blob); a
+        // normal result yields its inline text; a malformed envelope falls back to
+        // the raw content rather than dropping the artifact.
+        let resultText = result.content;
+        try {
+          const decoded = decodeJobPayload(result.content);
+          resultText = decoded.attachment
+            ? tooLargeResultNotice(decoded.attachment)
+            : (decoded.text ?? result.content);
+        } catch {
+          // malformed envelope from a provider - keep the raw content
+        }
+
         out.push({
           id: req.id,
           capability,
-          result: result.content,
+          result: resultText,
           createdAt: req.created_at * 1000,
           priceLamports: result.amount,
           asset: assetByJobId.get(req.id),

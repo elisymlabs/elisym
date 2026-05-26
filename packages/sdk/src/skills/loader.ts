@@ -63,6 +63,20 @@ export interface SkillFrontmatter {
   /** Optional override of `DEFAULT_SCRIPT_TIMEOUT_MS`. */
   script_timeout_ms?: unknown;
   /**
+   * MIME type for a file result. Only valid in mode 'dynamic-script' (the only
+   * mode that can emit a file via `ELISYM_OUTPUT_FILE`). Becomes the iroh
+   * attachment's mime; defaults to `application/octet-stream` when omitted.
+   */
+  output_mime?: unknown;
+  /**
+   * MIME the skill expects as a file input. Only valid in mode 'dynamic-script'
+   * (the only mode that receives a file via `ELISYM_INPUT_FILE`). Discovery hint
+   * only - the runtime still content-sniffs the actual file and does not enforce
+   * this. Convention: `*` = any file, `image/*` = any image, `image/png` =
+   * exact. Its presence signals "this capability needs a file input".
+   */
+  input_mime?: unknown;
+  /**
    * Optional per-skill rate limit. Applies to any skill mode. Snake-case
    * keys here match the YAML frontmatter convention; parsed into camelCase
    * `rateLimit` on `ParsedSkill`.
@@ -107,6 +121,14 @@ export interface ParsedSkill {
   scriptArgs: string[];
   /** Undefined => caller uses `DEFAULT_SCRIPT_TIMEOUT_MS`. */
   scriptTimeoutMs?: number;
+  /** MIME for a file result (mode 'dynamic-script' only). */
+  outputMime?: string;
+  /**
+   * MIME the skill expects as a file input (mode 'dynamic-script' only).
+   * Discovery hint only; not enforced at runtime. Presence signals the
+   * capability needs a file input (clients gate file-only flows on it).
+   */
+  inputMime?: string;
   /** Optional per-skill rate limit (any mode). */
   rateLimit?: SkillRateLimit;
   /**
@@ -440,6 +462,42 @@ function validateScriptTimeoutMs(skillName: string, raw: unknown): number | unde
   return raw;
 }
 
+// Friendly parse-time check for `output_mime`. The on-wire FileAttachment schema
+// independently caps mime at 255 bytes; this just keeps a malformed value out of
+// the skill instance with a clear message.
+function validateOutputMime(skillName: string, raw: unknown): string | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (typeof raw !== 'string' || raw.length === 0) {
+    throw new Error(
+      `SKILL.md "${skillName}": "output_mime" must be a non-empty string (e.g. "image/png")`,
+    );
+  }
+  if (raw.length > 255) {
+    throw new Error(`SKILL.md "${skillName}": "output_mime" too long (max 255 chars)`);
+  }
+  return raw;
+}
+
+// Parse-time check for `input_mime`. Discovery hint only (the runtime sniffs the
+// real file); no MIME-grammar validation so the `*`/`image/*` convention passes.
+// Capped at 255 chars to match the read-side guard in `parseCapabilityEvent`.
+function validateInputMime(skillName: string, raw: unknown): string | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (typeof raw !== 'string' || raw.length === 0) {
+    throw new Error(
+      `SKILL.md "${skillName}": "input_mime" must be a non-empty string (e.g. "image/png" or "*")`,
+    );
+  }
+  if (raw.length > 255) {
+    throw new Error(`SKILL.md "${skillName}": "input_mime" too long (max 255 chars)`);
+  }
+  return raw;
+}
+
 function validateMaxExecutionSecs(skillName: string, raw: unknown): number | undefined {
   if (raw === undefined || raw === null) {
     return undefined;
@@ -562,6 +620,8 @@ export function validateSkillFrontmatter(
   let script: string | undefined;
   let scriptArgs: string[] = [];
   let scriptTimeoutMs: number | undefined;
+  let outputMime: string | undefined;
+  let inputMime: string | undefined;
 
   if (mode === 'static-file') {
     if (typeof frontmatter.output_file !== 'string' || frontmatter.output_file.length === 0) {
@@ -572,6 +632,16 @@ export function validateSkillFrontmatter(
     if (frontmatter.script !== undefined) {
       throw new Error(
         `SKILL.md "${frontmatter.name}": "script" is not valid in mode 'static-file'`,
+      );
+    }
+    if (frontmatter.output_mime !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "output_mime" is only valid in mode 'dynamic-script'`,
+      );
+    }
+    if (frontmatter.input_mime !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "input_mime" is only valid in mode 'dynamic-script'`,
       );
     }
     outputFile = frontmatter.output_file;
@@ -587,6 +657,22 @@ export function validateSkillFrontmatter(
     script = frontmatter.script;
     scriptArgs = validateScriptArgs(frontmatter.name, frontmatter.script_args);
     scriptTimeoutMs = validateScriptTimeoutMs(frontmatter.name, frontmatter.script_timeout_ms);
+    // Only dynamic-script can exchange files (via ELISYM_OUTPUT_FILE / ELISYM_INPUT_FILE).
+    if (mode === 'dynamic-script') {
+      outputMime = validateOutputMime(frontmatter.name, frontmatter.output_mime);
+      inputMime = validateInputMime(frontmatter.name, frontmatter.input_mime);
+    } else {
+      if (frontmatter.output_mime !== undefined) {
+        throw new Error(
+          `SKILL.md "${frontmatter.name}": "output_mime" is only valid in mode 'dynamic-script'`,
+        );
+      }
+      if (frontmatter.input_mime !== undefined) {
+        throw new Error(
+          `SKILL.md "${frontmatter.name}": "input_mime" is only valid in mode 'dynamic-script'`,
+        );
+      }
+    }
   } else {
     if (frontmatter.output_file !== undefined) {
       throw new Error(
@@ -606,6 +692,16 @@ export function validateSkillFrontmatter(
     if (frontmatter.script_timeout_ms !== undefined) {
       throw new Error(
         `SKILL.md "${frontmatter.name}": "script_timeout_ms" is only valid in script modes`,
+      );
+    }
+    if (frontmatter.output_mime !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "output_mime" is only valid in mode 'dynamic-script'`,
+      );
+    }
+    if (frontmatter.input_mime !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "input_mime" is only valid in mode 'dynamic-script'`,
       );
     }
   }
@@ -637,6 +733,8 @@ export function validateSkillFrontmatter(
     script,
     scriptArgs,
     scriptTimeoutMs,
+    outputMime,
+    inputMime,
     rateLimit,
     executionTimeoutSecs,
   };
@@ -707,8 +805,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
       if (!scriptPath) {
         throw new Error(`SKILL.md "${parsed.name}": "script" must stay inside the skill directory`);
       }
-      const Ctor = parsed.mode === 'static-script' ? StaticScriptSkill : DynamicScriptSkill;
-      return new Ctor({
+      const scriptParams = {
         name: parsed.name,
         description: parsed.description,
         capabilities: parsed.capabilities,
@@ -720,7 +817,12 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         image: parsed.image,
         imageFile,
         llmOverride: parsed.llmOverride,
-      });
+      };
+      // Only dynamic-script supports a file result, so `outputMime` is threaded
+      // only there (StaticScriptSkill has no such param).
+      return parsed.mode === 'dynamic-script'
+        ? new DynamicScriptSkill({ ...scriptParams, outputMime: parsed.outputMime })
+        : new StaticScriptSkill(scriptParams);
     }
   }
 }

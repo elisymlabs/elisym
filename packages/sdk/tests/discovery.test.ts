@@ -113,6 +113,47 @@ describe('DiscoveryService.fetchAgentsPage', () => {
     expect(agents[0]!.cards[0]!.name).toBe('test-agent');
   });
 
+  it('round-trips inputMime / outputMime on the parsed card', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    const card = makeCard({ inputMime: 'image/*', outputMime: 'image/png' });
+    const ev = makeCapabilityEvent(agent, card);
+
+    (pool.querySync as any).mockResolvedValue([ev]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(1);
+    expect(agents[0]!.cards[0]!.inputMime).toBe('image/*');
+    expect(agents[0]!.cards[0]!.outputMime).toBe('image/png');
+  });
+
+  it('drops a card whose inputMime is not a string', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    const card = makeCard({ inputMime: 123 as any });
+    const ev = makeCapabilityEvent(agent, card);
+
+    (pool.querySync as any).mockResolvedValue([ev]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(0);
+  });
+
+  it('drops a card whose inputMime exceeds the 255-char cap', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    const card = makeCard({ inputMime: 'x'.repeat(256) });
+    const ev = makeCapabilityEvent(agent, card);
+
+    (pool.querySync as any).mockResolvedValue([ev]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(0);
+  });
+
   it('filters by network - excludes mainnet agents from devnet query', async () => {
     const pool = createMockPool();
     const agent = ElisymIdentity.generate();
@@ -256,6 +297,42 @@ describe('DiscoveryService.fetchAgentsPage', () => {
           ['t', 'elisym'],
         ],
         content: JSON.stringify({ name: 'test', description: 'desc' }),
+      },
+      agent.secretKey,
+    );
+
+    (pool.querySync as any).mockResolvedValue([ev]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(0);
+  });
+
+  it('skips a card whose payment.token is not a string', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    // A non-string token would reach `payment.token.toUpperCase()` in display code
+    // and throw at render; the parser must reject it up front.
+    const ev = finalizeEvent(
+      {
+        kind: KIND_APP_HANDLER,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['d', 'test'],
+          ['t', 'elisym'],
+          ['t', 'text-gen'],
+        ],
+        content: JSON.stringify({
+          name: 'test',
+          description: 'desc',
+          capabilities: ['text-gen'],
+          payment: {
+            chain: 'solana',
+            network: 'devnet',
+            address: '11111111111111111111111111111111',
+            token: 123,
+          },
+        }),
       },
       agent.secretKey,
     );

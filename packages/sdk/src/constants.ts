@@ -104,11 +104,35 @@ export const DEFAULTS = {
   RESULT_RETRY_BASE_MS: 1_000,
   QUERY_MAX_CONCURRENCY: 6,
   VERIFY_SIGNATURE_LIMIT: 25,
+  // Default ceiling for a single iroh file transfer (seed/fetch). A tunable
+  // default, not a protocol constant - the transfer is resumable and its own
+  // budget, decoupled from the result-wait window.
+  IROH_FETCH_TIMEOUT_MS: 300_000,
 } as const;
 
 /** Protocol limits for input validation. */
 export const LIMITS = {
   MAX_INPUT_LENGTH: 100_000,
+  // NIP-44 v2 hard cap on encrypted plaintext: the pad() length prefix is a u16,
+  // so the plaintext can be at most 65_535 BYTES (not chars). Encrypting anything
+  // larger throws `invalid plaintext size` inside nip44Encrypt. This is the binding
+  // limit for TARGETED (encrypted) jobs - lower than every relay's NIP-11 cap.
+  NIP44_MAX_PLAINTEXT_BYTES: 65_535,
+  // Spill threshold for encrypted content: above this many UTF-8 bytes, callers
+  // route the text through iroh out-of-band instead of inlining it. A non-spilled
+  // job is encrypted RAW (no envelope - see marketplace.submitJobRequest), so a
+  // 60_000-byte input is a 60_000-byte plaintext; the ~5.5KB gap under the hard cap
+  // is plain slack, and NIP44_MAX_PLAINTEXT_BYTES is the SDK backstop.
+  MAX_ENCRYPTED_INLINE_BYTES: 60_000,
+  // Ceiling above which a text/* attachment is NOT materialized back into a string
+  // (re-inlined into SkillInput.data) - the consumer gets a filePath / explicit
+  // fetch instead. Also bounds the in-memory git-diff buffer (memory-DoS guard).
+  MAX_REINLINE_TEXT_BYTES: 4_194_304, // 4 MiB
+  // Hard safety cap on a single file transferred via iroh, enforced on the
+  // actual streamed bytes (never the sender-declared `size`). A tunable default;
+  // providers may lower it per deployment.
+  MAX_FILE_SIZE: 1_073_741_824, // 1 GiB
+
   MAX_TIMEOUT_SECS: 600,
   // Upper bound for execution budgets (`max_execution_secs` / `execution_timeout_secs`).
   // Distinct from MAX_TIMEOUT_SECS (the result-wait cap): execution budgets may be
@@ -126,3 +150,14 @@ export const LIMITS = {
   MAX_POLICY_SUMMARY_LENGTH: 280,
   MAX_POLICY_VERSION_LENGTH: 32,
 } as const;
+
+const UTF8_ENCODER = new TextEncoder();
+
+/**
+ * UTF-8 byte length of a string. All size guards on encrypted content measure
+ * BYTES, not `String.length` (UTF-16 code units): NIP-44's plaintext cap is a
+ * byte cap, so a multibyte string under the char cap can still exceed it.
+ */
+export function utf8ByteLength(value: string): number {
+  return UTF8_ENCODER.encode(value).length;
+}

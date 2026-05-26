@@ -23,6 +23,9 @@ export default defineConfig({
     'decimal.js-light',
     'yaml',
     'zod',
+    // Native napi addon, optionalDependency, loaded via dynamic import in
+    // transport/iroh.ts (node-only). Never bundle it.
+    '@number0/iroh',
     'node:crypto',
     'node:buffer',
     'node:fs',

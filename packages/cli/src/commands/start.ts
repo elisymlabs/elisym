@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
   ElisymClient,
   ElisymIdentity,
@@ -25,6 +25,7 @@ import {
 } from '@elisym/sdk';
 import {
   agentPaths,
+  ensureGitignoreHasIrohEntry,
   listAgents,
   loadAgent,
   loadPoliciesFromDir,
@@ -36,6 +37,7 @@ import {
   type MediaCache,
 } from '@elisym/sdk/agent-store';
 import { LlmHealthMonitor, startLlmRecovery, type HeartbeatHandle } from '@elisym/sdk/llm-health';
+import { createIrohTransport } from '@elisym/sdk/node';
 import { address, createSolanaRpc } from '@solana/kit';
 import { probeRelays } from '../diagnostics.js';
 import {
@@ -57,7 +59,7 @@ import {
 import { cacheKeyFor, resolveTripleForOverride } from '../llm/cache.js';
 import { resolveProviderApiKey } from '../llm/keys.js';
 import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
-import { createLogger } from '../logging.js';
+import { createLogger, sanitizeForTerminal } from '../logging.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SkillRegistry, type SkillContext, type SkillLlmOverride } from '../skill';
 import type { LlmClient } from '../skill/index.js';
@@ -558,6 +560,10 @@ export async function cmdStart(
       capabilities: skill.capabilities,
       image: skill.image,
       ...(isStatic ? { static: true } : {}),
+      // File-exchange hints (dynamic-script only). `inputMime` lets clients that
+      // cannot send files (the web app) gate the Buy button before payment.
+      ...(skill.inputMime ? { inputMime: skill.inputMime } : {}),
+      ...(skill.outputMime ? { outputMime: skill.outputMime } : {}),
       payment: solanaAddress
         ? {
             chain: 'solana',
@@ -639,6 +645,12 @@ export async function cmdStart(
   // -- Step 14: Build transport + ledger + runtime --
   const transport = new NostrTransport(client, identity, [DEFAULT_KIND_OFFSET]);
   const ledger = new JobLedger(paths.jobs);
+  // iroh blob transport for file results, bound to a persistent fs-store at
+  // <agent-dir>/.iroh/ (the node is created lazily on the first transfer).
+  const irohTransport = createIrohTransport({ storePath: join(loaded.dir, '.iroh') });
+  // Migration: ensure a project-local .gitignore created before `.iroh/` became a
+  // default ignore entry still excludes the (cleartext) blob store.
+  await ensureGitignoreHasIrohEntry(dirname(loaded.dir));
 
   const runtimeConfig: RuntimeConfig = {
     paymentTimeoutSecs: DEFAULTS.PAYMENT_EXPIRY_SECS,
@@ -703,8 +715,10 @@ export async function cmdStart(
     ledger,
     {
       onJobReceived: (job) => {
-        const cap = job.tags.find((t) => t !== 'elisym') ?? 'unknown';
-        // Never log job.input here - capability tag is the only descriptor needed.
+        // The capability tag is an attacker-controlled Nostr tag value; strip terminal
+        // control chars before it reaches stdout. Never log job.input here - the
+        // capability tag is the only descriptor needed.
+        const cap = sanitizeForTerminal(job.tags.find((t) => t !== 'elisym') ?? 'unknown');
         process.stdout.write(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}\n`);
         logger.info({ event: 'job_received', jobId: job.jobId, capability: cap });
       },
@@ -713,8 +727,9 @@ export async function cmdStart(
         logger.info({ event: 'job_delivered', jobId });
       },
       onJobError: (jobId, error) => {
-        process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${error}\n`);
-        logger.error({ event: 'job_error', jobId, error });
+        const safeError = sanitizeForTerminal(error);
+        process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${safeError}\n`);
+        logger.error({ event: 'job_error', jobId, error: safeError });
       },
       onLog: diagLog,
       onStop: () => {
@@ -723,6 +738,7 @@ export async function cmdStart(
       },
     },
     healthMonitor,
+    irohTransport,
   );
 
   // -- Step 15: Run --

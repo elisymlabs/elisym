@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 /**
  * AgentRuntime - main job processing loop with concurrency, payment, and recovery.
  * Supports per-capability pricing: each capability can have a different price.
@@ -7,12 +10,14 @@ import {
   SolanaPaymentStrategy,
   calculateProtocolFee,
   createSlidingWindowLimiter,
+  decodeJobPayload,
   formatAssetAmount,
   getProtocolConfig,
   getProtocolProgramId,
   LIMITS,
+  utf8ByteLength,
 } from '@elisym/sdk';
-import type { Asset, ProtocolConfigInput, SlidingWindowLimiter } from '@elisym/sdk';
+import type { Asset, FileAttachment, ProtocolConfigInput, SlidingWindowLimiter } from '@elisym/sdk';
 import {
   createFreeLlmLimiterSet,
   FREE_LLM_GLOBAL_KEY,
@@ -23,11 +28,12 @@ import {
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
+import type { IrohBlobTransport } from '@elisym/sdk/node';
 import { createSolanaRpc } from '@solana/kit';
 import pLimit from 'p-limit';
 import { getRpcUrl } from './helpers.js';
 import { JobLedger } from './ledger.js';
-import type { SkillRegistry, SkillContext } from './skill';
+import type { SkillRegistry, SkillContext, SkillOutput } from './skill';
 import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 
 const payment = new SolanaPaymentStrategy();
@@ -321,6 +327,7 @@ export class AgentRuntime {
     private ledger: JobLedger,
     private callbacks: RuntimeCallbacks = {},
     private healthMonitor?: LlmHealthMonitor,
+    private irohTransport?: IrohBlobTransport,
   ) {
     this.limit = pLimit(config.maxConcurrentJobs);
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
@@ -603,11 +610,15 @@ export class AgentRuntime {
         return;
       }
 
-      // Free-LLM extra protection: only applies when the matched skill
-      // is mode='llm' and price=0. We `peek` first across all tiers and
-      // only `check` when every tier passes, so a denial in tier N
-      // never consumes a slot in tiers < N.
-      const isFreeLlm = matched?.mode === 'llm' && matched.priceSubunits === 0;
+      // Free-LLM extra protection: applies to any FREE skill that reaches an LLM -
+      // every mode='llm' skill, plus script-mode skills that declare a provider+model
+      // via llmOverride (resolveHealthPair returns the pair for those). Gating only on
+      // mode==='llm' let a free script skill calling an LLM drain the operator's key
+      // uncapped. We `peek` first across all tiers and only `check` when every tier
+      // passes, so a denial in tier N never consumes a slot in tiers < N.
+      const isFreeLlm =
+        matched?.priceSubunits === 0 &&
+        (matched.mode === 'llm' || resolveHealthPair(matched) !== null);
       let perCustomerLimiter: SlidingWindowLimiter | undefined;
       let perSkillKey: string | undefined;
       if (isFreeLlm && matched) {
@@ -668,6 +679,14 @@ export class AgentRuntime {
         shuttingDown = true;
         log('Shutting down...');
         this.stop();
+        // `stop()` is synchronous (aborts in-flight jobs); the iroh node shutdown
+        // is async and must release the fs-store lock before exit, so await it
+        // here and exit once done. The unref'd 3s timer is the hard-kill fallback.
+        const shutdownNode = this.irohTransport?.shutdown() ?? Promise.resolve();
+        void shutdownNode.then(
+          () => process.exit(0),
+          () => process.exit(0),
+        );
         setTimeout(() => process.exit(0), 3000).unref();
       };
       process.on('SIGINT', onSignal);
@@ -778,9 +797,12 @@ export class AgentRuntime {
   private async executeJob(job: IncomingJob, signal?: AbortSignal): Promise<void> {
     const log = this.callbacks.onLog ?? console.log;
 
-    // W2: Validate input length before processing
-    if (job.input.length > LIMITS.MAX_INPUT_LENGTH) {
-      throw new Error(`Input too long: ${job.input.length} chars (max ${LIMITS.MAX_INPUT_LENGTH})`);
+    // W2: Validate input length before processing. Byte-based, as defense in depth
+    // (the SDK already caps at submit). A spilled job's inline text is '' (the real
+    // text rides the attachment), so this only ever fires on a malformed/forged event.
+    const inputBytes = utf8ByteLength(job.input);
+    if (inputBytes > LIMITS.MAX_INPUT_LENGTH) {
+      throw new Error(`Input too long: ${inputBytes} bytes (max ${LIMITS.MAX_INPUT_LENGTH})`);
     }
 
     // ── Preflight: gate LLM-dependent jobs against the health monitor
@@ -816,6 +838,18 @@ export class AgentRuntime {
       }
     }
 
+    // File inputs require a PAID skill in Phase 1: a free skill would let an
+    // attacker make the provider fetch arbitrary blobs with no payment gate.
+    // Rejected here, before `recordPaid`, so the job never enters the ledger
+    // and the recovery path cannot re-fetch it.
+    if (job.attachment !== undefined && resolveJobPrice(job.tags, this.skills) === 0) {
+      log(`[${job.jobId.slice(0, 8)}] Rejecting file input on a free skill`);
+      await this.transport
+        .sendFeedback(job, { type: 'error', message: 'File inputs require a paid skill.' })
+        .catch(() => {});
+      return;
+    }
+
     // ── Step 1: Resolve per-capability price and collect payment ──
     const jobPrice = resolveJobPrice(job.tags, this.skills);
     const jobAsset = resolveJobAsset(job.tags, this.skills);
@@ -849,6 +883,10 @@ export class AgentRuntime {
       );
       this.callbacks.onPaymentReceived?.(job.jobId, netAmount);
     }
+
+    // Fetch a file input (if any) AFTER payment is confirmed - never before, so an
+    // unpaid request can't make the provider download attacker-hosted data.
+    const inputFile = await this.resolveInputFile(job.attachment);
 
     // ── Step 2: Send Processing feedback ──
     await this.transport.sendFeedback(job, { type: 'processing' }).catch(() => {});
@@ -890,10 +928,11 @@ export class AgentRuntime {
     try {
       const execPromise = skill.execute(
         {
-          data: job.input,
+          data: inputFile?.inlineText ?? job.input,
           inputType: job.inputType,
           tags: job.tags,
           jobId: job.jobId,
+          filePath: inputFile?.filePath,
         },
         { ...this.skillCtx, signal: execAbort.signal },
       );
@@ -944,21 +983,180 @@ export class AgentRuntime {
       if (signal) {
         signal.removeEventListener('abort', onOuterAbort);
       }
+      // Remove the fetched input file (and its temp dir) once execution is done.
+      if (inputFile) {
+        await inputFile.cleanup().catch(() => {});
+      }
     }
 
-    // ── Step 5: Cache result in ledger ──
+    // ── Step 5: Seed any spilled payload (file or large text), THEN cache ──
+    // buildResultAttachment runs before markExecuted: a seed failure leaves the
+    // job `paid` so recovery re-executes. `deliveredContent` is empty whenever the
+    // payload was spilled to iroh, so the result event carries only the ticket.
+    const { attachment, deliveredContent } = await this.buildResultAttachment(job.jobId, output);
+
     // NOTE: At-least-once delivery. A crash between execute() return and markExecuted()
     // flush leaves the job as 'paid' - recovery will re-execute. Skills must be idempotent
     // or tolerant of re-execution.
-    this.ledger.markExecuted(job.jobId, output.data);
+    this.ledger.markExecuted(job.jobId, deliveredContent);
+
     log(`[${job.jobId.slice(0, 8)}] Skill completed, delivering result`);
 
     // ── Step 6: Deliver result ──
-    const eventId = await this.transport.deliverResult(job, output.data, netAmount);
+    const eventId = await this.transport.deliverResult(
+      job,
+      deliveredContent,
+      netAmount,
+      attachment,
+    );
     this.ledger.markDelivered(job.jobId);
 
     log(`[${job.jobId.slice(0, 8)}] Delivered: ${eventId.slice(0, 16)}...`);
+    // onJobCompleted is local-only (TUI/dashboard), never encrypted or delivered,
+    // so it keeps the full `output.data` for operator visibility.
     this.callbacks.onJobCompleted?.(job.jobId, output.data);
+  }
+
+  /**
+   * Decide how a skill's result travels: inline text, a seeded file, or seeded
+   * large text. Returns the attachment descriptor (if any) PLUS the content to
+   * deliver on the wire - which is the EMPTY string whenever the payload was
+   * spilled to iroh (file or large text), so the encrypted result event carries
+   * only the ticket and never re-trips the NIP-44 byte cap. The single
+   * `deliveredContent` value must drive `markExecuted`, `deliverResult`, and the
+   * recovery re-delivery alike (so a crash-recovered spill re-delivers empty too).
+   * Persists the descriptor so recovery can re-share + re-deliver.
+   *
+   * Must run BEFORE `markExecuted` so a seed failure leaves the job `paid` and
+   * recovery re-executes (rather than re-delivering a dead ticket). Runs after the
+   * `skill.execute` budget window, so a slow seed never trips `max_execution_secs`.
+   */
+  private async buildResultAttachment(
+    jobId: string,
+    output: SkillOutput,
+  ): Promise<{ attachment: FileAttachment | undefined; deliveredContent: string }> {
+    if (output.filePath !== undefined) {
+      // seedPath copies the bytes into the persistent iroh store, so the producer's
+      // temp file is no longer needed once seeding has been attempted (recovery
+      // re-shares from the store, never the temp file). Release it whether seeding
+      // succeeds or throws - including the no-transport case below - so a failure
+      // (job stays `paid`, recovery re-executes into a fresh temp file) does not
+      // leave the temp dir behind on every retry.
+      try {
+        if (!this.irohTransport) {
+          throw new Error('Skill produced a file result but iroh transport is unavailable.');
+        }
+        const seeded = await this.irohTransport.seedPath(output.filePath);
+        const attachment: FileAttachment = {
+          name: basename(output.filePath),
+          size: seeded.size,
+          mime: output.outputMime ?? 'application/octet-stream',
+          transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+        };
+        this.ledger.recordAttachment(jobId, { resultAttachment: JSON.stringify(attachment) });
+        // A file result's `output.data` is a small note, delivered inline alongside
+        // the ticket - unchanged from the original file-transfer behavior.
+        return { attachment, deliveredContent: output.data };
+      } finally {
+        await output.cleanup?.().catch(() => {});
+      }
+    }
+
+    // Large text result: spill it to iroh and deliver EMPTY content + a text/plain
+    // attachment, so the customer fetches it via fetch_job_file (same as a file).
+    if (utf8ByteLength(output.data) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES) {
+      if (!this.irohTransport) {
+        throw new Error('Result is too large to deliver inline and iroh transport is unavailable.');
+      }
+      const seeded = await this.irohTransport.seedBytes(Buffer.from(output.data, 'utf8'));
+      const attachment: FileAttachment = {
+        name: 'result.txt',
+        size: seeded.size,
+        mime: 'text/plain',
+        transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+      };
+      this.ledger.recordAttachment(jobId, { resultAttachment: JSON.stringify(attachment) });
+      return { attachment, deliveredContent: '' };
+    }
+
+    return { attachment: undefined, deliveredContent: output.data };
+  }
+
+  /**
+   * Rebuild a file-result attachment for crash-recovery re-delivery: re-share the
+   * blob from the persistent store to mint a fresh ticket (the original ticket's
+   * direct addresses go stale across a restart). Returns undefined for a text
+   * result; throws if the blob is gone (caller marks the job failed).
+   */
+  private async reShareResultAttachment(
+    resultAttachmentJson: string | undefined,
+  ): Promise<FileAttachment | undefined> {
+    if (resultAttachmentJson === undefined) {
+      return undefined;
+    }
+    if (!this.irohTransport) {
+      throw new Error('Cannot recover a file result: iroh transport is unavailable.');
+    }
+    const stored = JSON.parse(resultAttachmentJson) as FileAttachment;
+    const irohTransport = stored.transports.find((transport) => transport.kind === 'iroh');
+    if (!irohTransport) {
+      throw new Error('Stored result attachment has no iroh transport.');
+    }
+    const freshTicket = await this.irohTransport.reShare(irohTransport.ticket);
+    return { ...stored, transports: [{ kind: 'iroh', ticket: freshTicket }] };
+  }
+
+  /**
+   * Resolve a job's file/large-text input (when it carries an attachment) via iroh.
+   * Only called post-payment - free + attachment is rejected in the `executeJob`
+   * preflight. Two outcomes, both with a `cleanup` callback:
+   *   - `text/*` within `MAX_REINLINE_TEXT_BYTES`: fetched into memory and returned
+   *     as `inlineText`, transparently re-inlined into `SkillInput.data` so skills
+   *     are unchanged (cleanup is a no-op - nothing on disk).
+   *   - binary, or text over the ceiling: streamed to a fixed `input` name inside a
+   *     unique `mkdtemp` dir (the untrusted attachment `name` never touches the path),
+   *     returned as `filePath`.
+   * `fetchToBytes`/`fetchToPath` enforce the real cap on the BLAKE3-verified size, so
+   * an incorrect declared `size` cannot exceed the in-memory ceiling.
+   */
+  private async resolveInputFile(
+    attachment: FileAttachment | undefined,
+  ): Promise<{ inlineText?: string; filePath?: string; cleanup: () => Promise<void> } | undefined> {
+    if (attachment === undefined) {
+      return undefined;
+    }
+    if (!this.irohTransport) {
+      throw new Error('Job carries a file input but iroh transport is unavailable.');
+    }
+    const irohTransport = attachment.transports.find((transport) => transport.kind === 'iroh');
+    if (!irohTransport) {
+      throw new Error('File input has no iroh transport.');
+    }
+
+    if (attachment.mime.startsWith('text/') && attachment.size <= LIMITS.MAX_REINLINE_TEXT_BYTES) {
+      const bytes = await this.irohTransport.fetchToBytes(irohTransport.ticket, {
+        maxBytes: LIMITS.MAX_REINLINE_TEXT_BYTES,
+      });
+      return {
+        inlineText: Buffer.from(bytes).toString('utf8'),
+        cleanup: async () => {},
+      };
+    }
+
+    const dir = await mkdtemp(join(tmpdir(), 'elisym-job-'));
+    const filePath = join(dir, 'input');
+    try {
+      await this.irohTransport.fetchToPath(irohTransport.ticket, filePath);
+    } catch (error) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+    return {
+      filePath,
+      cleanup: async () => {
+        await rm(dir, { recursive: true, force: true });
+      },
+    };
   }
 
   /**
@@ -1290,7 +1488,10 @@ export class AgentRuntime {
     this.jobAbortControllers.add(recoveryAbort);
 
     try {
-      const rawEvent = JSON.parse(entry.raw_event_json!);
+      if (entry.raw_event_json === undefined) {
+        return;
+      }
+      const rawEvent = JSON.parse(entry.raw_event_json);
       const fakeJob: IncomingJob = {
         jobId: entry.job_id,
         input: entry.input,
@@ -1302,9 +1503,20 @@ export class AgentRuntime {
       };
 
       if (entry.status === 'executed' && entry.result !== undefined) {
-        // Re-deliver only - no LLM call, no gate check.
+        // Re-deliver only - no LLM call, no gate check. For a file result, re-share
+        // the blob from the persistent store for a fresh ticket (the stored ticket's
+        // addresses go stale across a restart); if the blob is gone, fail cleanly
+        // rather than deliver a dead ticket.
         this.ledger.incrementRetry(entry.job_id);
-        await this.transport.deliverResult(fakeJob, entry.result, entry.net_amount);
+        let attachment;
+        try {
+          attachment = await this.reShareResultAttachment(entry.result_attachment);
+        } catch {
+          log(`[${entry.job_id.slice(0, 8)}] Recovery: result blob unavailable, marking failed`);
+          this.ledger.markFailed(entry.job_id);
+          return;
+        }
+        await this.transport.deliverResult(fakeJob, entry.result, entry.net_amount, attachment);
         this.ledger.markDelivered(entry.job_id);
         log(`[${entry.job_id.slice(0, 8)}] Recovery: re-delivered`);
       } else if (entry.status === 'paid') {
@@ -1361,6 +1573,20 @@ export class AgentRuntime {
           }
         }
 
+        // Re-fetch the file input (if any) for the recovery re-execution, decoding
+        // the descriptor from the persisted (decrypted) raw event. Without this the
+        // recovery skill.execute would run without its file.
+        let recoveryInputFile;
+        try {
+          recoveryInputFile = await this.resolveInputFile(
+            decodeJobPayload(rawEvent.content).attachment,
+          );
+        } catch {
+          log(`[${entry.job_id.slice(0, 8)}] Recovery: input file unavailable, marking failed`);
+          this.ledger.markFailed(entry.job_id);
+          return;
+        }
+
         // Same per-skill execution budget as the primary path, enforced as a
         // race so a non-cooperative skill can't stall recovery past its budget.
         // On budget the race rejects with ExecutionBudgetExceededError, which
@@ -1372,10 +1598,11 @@ export class AgentRuntime {
         try {
           const execPromise = skill.execute(
             {
-              data: entry.input,
+              data: recoveryInputFile?.inlineText ?? entry.input,
               inputType: entry.input_type,
               tags: entry.tags,
               jobId: entry.job_id,
+              filePath: recoveryInputFile?.filePath,
             },
             { ...this.skillCtx, signal: recoveryAbort.signal },
           );
@@ -1397,10 +1624,25 @@ export class AgentRuntime {
           if (budgetTimer) {
             clearTimeout(budgetTimer);
           }
+          if (recoveryInputFile) {
+            await recoveryInputFile.cleanup().catch(() => {});
+          }
         }
 
-        this.ledger.markExecuted(entry.job_id, output.data);
-        await this.transport.deliverResult(fakeJob, output.data, entry.net_amount);
+        // Symmetric with the primary path: seed any spilled payload (file or large
+        // text) BEFORE markExecuted, and deliver `deliveredContent` (empty when
+        // spilled) so a re-executed result never re-trips the NIP-44 byte cap.
+        const { attachment: resultAttachment, deliveredContent } = await this.buildResultAttachment(
+          entry.job_id,
+          output,
+        );
+        this.ledger.markExecuted(entry.job_id, deliveredContent);
+        await this.transport.deliverResult(
+          fakeJob,
+          deliveredContent,
+          entry.net_amount,
+          resultAttachment,
+        );
         this.ledger.markDelivered(entry.job_id);
         log(`[${entry.job_id.slice(0, 8)}] Recovery: re-executed and delivered`);
       }

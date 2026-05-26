@@ -30,6 +30,17 @@ export interface CliLogger {
   bannerLog(line: string): void;
 }
 
+/**
+ * Strip terminal control characters before writing remote-derived content to the
+ * operator's terminal. Nostr tag values and provider error strings are attacker-
+ * controlled; raw ANSI escapes (`\x1b`), carriage returns, and other C0/C1 controls
+ * could spoof output, hide text, or overwrite earlier lines. Keeps tab and newline.
+ */
+export function sanitizeForTerminal(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+}
+
 function resolveLevel(options: CreateLoggerOptions): string {
   if (options.level) {
     return options.level;
@@ -72,7 +83,7 @@ export function createLogger(options: CreateLoggerOptions = {}): CliLogger {
   }
 
   function logWithIndent(line: string): void {
-    process.stdout.write(`  ${line}\n`);
+    process.stdout.write(`  ${sanitizeForTerminal(line)}\n`);
   }
 
   return {

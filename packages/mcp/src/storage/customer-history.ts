@@ -39,6 +39,12 @@ export const CustomerJobEntrySchema = z
     resultPreview: z.string().max(RESULT_PREVIEW_MAX_LEN).optional(),
     paymentSig: z.string().max(128).optional(),
     customerFeedback: FeedbackSchema.optional(),
+    /** JSON-serialized FileAttachment when the result is a file (fetched via fetch_job_file). */
+    attachmentJson: z.string().max(8192).optional(),
+    /** Local path the result file was downloaded to (set by fetch_job_file). */
+    resultFilePath: z.string().max(4096).optional(),
+    /** Unix ms when the result file was downloaded. */
+    fetchedAt: z.number().int().nonnegative().optional(),
   })
   .strict();
 

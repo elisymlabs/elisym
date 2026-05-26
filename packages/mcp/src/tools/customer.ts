@@ -1,14 +1,22 @@
 import {
   assetKey,
+  decodeJobPayload,
   estimateNetworkBaseline,
   formatAssetAmount,
   formatNetworkBaseline,
   toDTag,
   DEFAULT_KIND_OFFSET,
   JobWaitTimeoutError,
+  LIMITS,
   SolanaPaymentStrategy,
+  utf8ByteLength,
 } from '@elisym/sdk';
-import type { Agent as ProviderAgent, Asset, PaymentRequestData } from '@elisym/sdk';
+import type {
+  Agent as ProviderAgent,
+  Asset,
+  FileAttachment,
+  PaymentRequestData,
+} from '@elisym/sdk';
 import {
   createKeyPairSignerFromBytes,
   createSolanaRpc,
@@ -27,7 +35,8 @@ import {
   rpcUrlFor,
   takeSpendWarnings,
 } from '../context.js';
-import { computeGitDiff, readJobInputFile } from '../job-input.js';
+import { ensureIrohTransport } from '../iroh.js';
+import { computeGitDiff, prepareFileInput, resolveOutputPath } from '../job-input.js';
 import { logger } from '../logger.js';
 import {
   sanitizeUntrusted,
@@ -38,7 +47,9 @@ import {
 } from '../sanitize.js';
 import {
   appendCustomerJob,
+  findCustomerJob,
   readCustomerHistory,
+  updateCustomerJob,
   RESULT_PREVIEW_MAX_LEN,
   type CustomerJobEntry,
 } from '../storage/customer-history.js';
@@ -90,6 +101,26 @@ const GetJobResultSchema = z.object({
     .max(7 * 24 * 3600)
     .default(24 * 3600)
     .describe('How far back to search for the result. Defaults to 24h.'),
+});
+
+const FetchJobFileSchema = z.object({
+  job_event_id: z.string(),
+  output_path: z
+    .string()
+    .min(1)
+    .max(4096)
+    .describe('Local path to write the downloaded result file to.'),
+  allow_outside_cwd: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Allow writing outside the MCP server working directory. Off by default: the ' +
+        'bytes come from an untrusted provider, so writes are confined to the working ' +
+        'directory subtree (and never to a secret/auto-run path) unless this is set.',
+    ),
+  provider_npub: z.string().optional(),
+  kind_offset: z.number().int().min(0).max(999).default(DEFAULT_KIND_OFFSET),
+  timeout_secs: z.number().int().min(1).max(600).default(300),
 });
 
 const ListMyJobsSchema = z.object({
@@ -534,10 +565,12 @@ export function makePaymentFeedbackHandler(opts: {
       return;
     }
     if (!opts.agent.solanaKeypair) {
+      // `paymentRequest` is raw provider-supplied JSON; wrap it in the untrusted-
+      // content boundary before it reaches the LLM, matching the onResult path.
       opts.resolveNoWallet(
         `Payment required but no Solana wallet configured.\n` +
           `Amount: ${signedAmount !== undefined ? formatAssetAmount(asset, BigInt(signedAmount)) : 'unknown'}\n` +
-          `Payment request: ${paymentRequest}`,
+          `Payment request: ${sanitizeUntrusted(paymentRequest, 'structured').text}`,
       );
       return;
     }
@@ -610,6 +643,8 @@ interface SubmitAndPayParams {
   kindOffset: number;
   timeoutMs: number;
   maxPriceLamports?: number;
+  /** File attachment (seeded via iroh) for a file-input job; `input` is then the note. */
+  attachment?: FileAttachment;
 }
 
 /**
@@ -618,6 +653,91 @@ interface SubmitAndPayParams {
  * (e.g. file-handle, git-diff) cannot drift from the canonical payment guards
  * and history recording.
  */
+/**
+ * Human-readable metadata for a file result. The file is NOT inlined - the
+ * untrusted `name`/`mime` are field-sanitized and the caller is told to download
+ * the file with fetch_job_file.
+ */
+function formatFileResultMetadata(jobId: string, attachment: FileAttachment): string {
+  const name = sanitizeField(attachment.name, 200);
+  const mime = sanitizeField(attachment.mime, 100);
+  // name/mime are attacker-controlled. sanitizeField strips dangerous Unicode and
+  // truncates, but unlike every other remote-content path this metadata otherwise
+  // reaches the LLM with no trust boundary or injection scan - so wrap the
+  // untrusted fields in the same `--- [UNTRUSTED ...] ---` markers (plus injection
+  // warning). The static framing and the trusted jobId stay outside the boundary.
+  const details = sanitizeUntrusted(
+    `name: ${name}\nsize: ${attachment.size} bytes\ntype: ${mime}`,
+    'text',
+  ).text;
+  return (
+    `Job completed. The result is a FILE (not inlined here):\n${details}\n` +
+    `Download it with fetch_job_file(job_event_id="${jobId}", output_path="<local path>").`
+  );
+}
+
+/**
+ * Decode a raw decrypted result body for a list preview. `queryJobResults` returns
+ * content without an envelope decode, so a file/spilled result is raw envelope JSON;
+ * collapse it to a short notice rather than surfacing the envelope (and its ticket).
+ * A normal result yields its inline text; a malformed envelope falls back to raw.
+ * The returned string is still passed through `sanitizeInner` by the caller.
+ */
+function decodeResultPreview(rawContent: string): string {
+  try {
+    const decoded = decodeJobPayload(rawContent);
+    if (decoded.attachment) {
+      return `[file result: ${decoded.attachment.name} (${decoded.attachment.size} bytes). Download with fetch_job_file.]`;
+    }
+    return decoded.text ?? rawContent;
+  } catch {
+    return rawContent;
+  }
+}
+
+/**
+ * Decide how a text input reaches the provider: inline in the (encrypted) Nostr
+ * event, or - when it exceeds the NIP-44 inline budget - spilled to iroh as a
+ * text/plain attachment with empty inline input (the provider transparently
+ * restores it inline for its skill). Spilling requires a persistent agent: an
+ * ephemeral seeder cannot reliably outlive the request window, matching the
+ * file-input gate in submit_and_pay_job_from_file. Returns the prepared
+ * input/attachment, or an error message for the caller to surface.
+ */
+async function prepareTextInput(
+  agent: AgentInstance,
+  text: string,
+): Promise<{ input: string; attachment?: FileAttachment } | { error: string }> {
+  if (utf8ByteLength(text) <= LIMITS.MAX_ENCRYPTED_INLINE_BYTES) {
+    return { input: text };
+  }
+  const byteLength = utf8ByteLength(text);
+  if (agent.agentDir === undefined) {
+    return {
+      error:
+        `Input is ${byteLength} bytes, over the ${LIMITS.MAX_ENCRYPTED_INLINE_BYTES}-byte inline ` +
+        `limit, so it must be sent via P2P transfer - which requires a persistent agent (this is ` +
+        `an ephemeral session).`,
+    };
+  }
+  try {
+    const seeded = await ensureIrohTransport(agent).seedBytes(Buffer.from(text, 'utf8'));
+    return {
+      input: '',
+      attachment: {
+        name: 'input.txt',
+        size: seeded.size,
+        mime: 'text/plain',
+        transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+      },
+    };
+  } catch (e) {
+    return {
+      error: `Failed to seed input for transfer: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
 async function executeSubmitAndPay(
   ctx: AgentContext,
   agent: AgentInstance,
@@ -677,12 +797,16 @@ async function executeSubmitAndPay(
     capability: params.dTag,
     providerPubkey: params.providerPubkey,
     kindOffset: params.kindOffset,
+    attachment: params.attachment,
   });
 
   let paymentSig: string | undefined;
   let paidAmountSubunits: bigint | undefined;
   let paidAssetKey: string | undefined;
   let paymentWarnings: string[] = [];
+  // Captured (not threaded through the string result buffer) when the result is
+  // a file; surfaced as metadata and persisted for a later fetch_job_file.
+  let resultAttachment: FileAttachment | undefined;
   try {
     const result = await awaitJobResult<string>(
       agent,
@@ -713,14 +837,24 @@ async function executeSubmitAndPay(
           providerPubkey: params.providerPubkey,
           customerPublicKey: agent.identity.publicKey,
           callbacks: {
-            onResult(content: string) {
+            onResult(content: string, _eventId: string, attachment?: FileAttachment) {
+              if (attachment) {
+                // File result: surface metadata only (never inline the file); the
+                // user downloads it explicitly via fetch_job_file.
+                resultAttachment = attachment;
+                payHandler.onResultReceived(formatFileResultMetadata(jobId, attachment));
+                return;
+              }
               const kind = isLikelyBase64(content) ? ('binary' as const) : ('text' as const);
               const sanitized = sanitizeUntrusted(content, kind);
               payHandler.onResultReceived(`Job completed.\n\n${sanitized.text}`);
             },
             onFeedback: payHandler.onFeedback,
             onError(error: string) {
-              reject(new Error(`Job error: ${error}`));
+              // Provider error-feedback content is attacker-controlled free text;
+              // wrap it in the untrusted-content boundary (like the onResult path
+              // above) before it propagates into an LLM-facing errorResult.
+              reject(new Error(`Job error: ${sanitizeUntrusted(error, 'text').text}`));
             },
             onTimeout(timeoutMs: number) {
               reject(new JobWaitTimeoutError(timeoutMs));
@@ -745,6 +879,7 @@ async function executeSubmitAndPay(
       completedAt: Date.now(),
       resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
       paymentSig,
+      attachmentJson: resultAttachment ? JSON.stringify(resultAttachment) : undefined,
     });
     const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
     const tip = buildJobCompletionTip(jobId, params.providerNpub);
@@ -906,7 +1041,11 @@ export const customerTools: ToolDefinition[] = [
             providerPubkey,
             customerPublicKey: agent.identity.publicKey,
             callbacks: {
-              onResult(content: string, _eventId: string) {
+              onResult(content: string, _eventId: string, attachment?: FileAttachment) {
+                if (attachment) {
+                  resolve(formatFileResultMetadata(input.job_event_id, attachment));
+                  return;
+                }
                 const kind = isLikelyBase64(content) ? ('binary' as const) : ('text' as const);
                 const sanitized = sanitizeUntrusted(content, kind);
                 resolve(sanitized.text);
@@ -946,6 +1085,97 @@ export const customerTools: ToolDefinition[] = [
       }
 
       return textResult(result);
+    },
+  }),
+
+  defineTool({
+    name: 'fetch_job_file',
+    description:
+      'Download a job result that was delivered as a FILE (transferred P2P via iroh) ' +
+      'to a local path. Use this after submit_and_pay_job or get_job_result reports a ' +
+      'file result. Resumable and bounded by a max file size; the bytes are written to ' +
+      'disk, never returned to you inline.',
+    schema: FetchJobFileSchema,
+    async handler(ctx, input): Promise<ToolResult> {
+      checkLen('job_event_id', input.job_event_id, MAX_EVENT_ID_LEN);
+      // Validate the destination up front (before any relay/iroh work): the bytes
+      // come from an untrusted provider, so refuse a sensitive output_path - the
+      // write-side mirror of validateInputPath's sensitive-path block.
+      let outputPath: string;
+      try {
+        outputPath = await resolveOutputPath(input.output_path, {
+          allowOutsideCwd: input.allow_outside_cwd,
+        });
+      } catch (error) {
+        return errorResult(error instanceof Error ? error.message : String(error));
+      }
+      const agent = ctx.active();
+
+      // Resolve the attachment descriptor: local history first (survives relay
+      // expiry; identity-backed agents only), then a relay re-fetch + decode -
+      // the path for ephemeral agents that keep no persisted history.
+      let attachment: FileAttachment | undefined;
+      if (agent.agentDir !== undefined) {
+        const entry = await findCustomerJob(agent.agentDir, input.job_event_id);
+        if (entry?.attachmentJson !== undefined) {
+          try {
+            attachment = JSON.parse(entry.attachmentJson) as FileAttachment;
+          } catch {
+            /* corrupt cache - fall through to a relay re-fetch */
+          }
+        }
+      }
+      if (attachment === undefined) {
+        try {
+          const results = await agent.client.marketplace.queryJobResults(
+            agent.identity,
+            [input.job_event_id],
+            [input.kind_offset],
+          );
+          const resultEntry = results.get(input.job_event_id);
+          if (resultEntry !== undefined && !resultEntry.decryptionFailed) {
+            attachment = decodeJobPayload(resultEntry.content).attachment;
+          }
+        } catch (error) {
+          logger.warn(
+            { event: 'fetch_job_file_query_failed', err: String(error) },
+            'relay re-fetch of result failed',
+          );
+        }
+      }
+      if (attachment === undefined) {
+        return errorResult(
+          `No file result found for event_id="${input.job_event_id}". It may be a text ` +
+            `result, not yet delivered, or expired from the relays.`,
+        );
+      }
+
+      const irohTransport = attachment.transports.find((transport) => transport.kind === 'iroh');
+      if (irohTransport === undefined) {
+        return errorResult('Result attachment has no supported transport (iroh).');
+      }
+
+      try {
+        await ensureIrohTransport(agent).fetchToPath(irohTransport.ticket, outputPath, {
+          maxBytes: LIMITS.MAX_FILE_SIZE,
+          timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return errorResult(
+          `Failed to download the file for event_id="${input.job_event_id}": ${msg}. ` +
+            `The provider may be offline or no longer seeding it.`,
+        );
+      }
+
+      if (agent.agentDir !== undefined) {
+        await updateCustomerJob(agent.agentDir, input.job_event_id, {
+          resultFilePath: outputPath,
+          fetchedAt: Date.now(),
+        }).catch(() => {});
+      }
+
+      return textResult(`Downloaded result file to ${outputPath}.`);
     },
   }),
 
@@ -1036,14 +1266,14 @@ export const customerTools: ToolDefinition[] = [
             if (decrypted.decryptionFailed) {
               resultText = '[decryption failed - targeted result not for this agent]';
             } else {
-              const cleaned = sanitizeInner(decrypted.content);
+              const cleaned = sanitizeInner(decodeResultPreview(decrypted.content));
               if (scanForInjections(cleaned, 'full')) {
                 freetextSuspicious = true;
               }
               resultText = cleaned;
             }
           } else if (nostr.result) {
-            const cleaned = sanitizeInner(nostr.result);
+            const cleaned = sanitizeInner(decodeResultPreview(nostr.result));
             if (scanForInjections(cleaned, 'full')) {
               freetextSuspicious = true;
             }
@@ -1109,12 +1339,29 @@ export const customerTools: ToolDefinition[] = [
     schema: SubmitAndPayJobSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
-      checkLen('input', input.input, MAX_INPUT_LEN);
       checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
+      // Inline input is buffered and (when large) seeded into iroh in memory, so
+      // bound it: above MAX_REINLINE_TEXT_BYTES the provider streams a text/plain
+      // attachment to a file rather than re-inlining it to stdin (breaking a
+      // stdin-expecting skill), and an unbounded body would allocate without limit
+      // here. Large files/diffs have their own streamed entry points.
+      const inputBytes = utf8ByteLength(input.input);
+      if (inputBytes > LIMITS.MAX_REINLINE_TEXT_BYTES) {
+        return errorResult(
+          `Input is ${inputBytes} bytes (max ${LIMITS.MAX_REINLINE_TEXT_BYTES} for an inline job). ` +
+            `Send a large file with submit_and_pay_job_from_file.`,
+        );
+      }
 
       const agent = ctx.active();
+      // Large input spills to iroh transparently; small input stays inline.
+      const prepared = await prepareTextInput(agent, input.input);
+      if ('error' in prepared) {
+        return errorResult(prepared.error);
+      }
       return executeSubmitAndPay(ctx, agent, {
-        input: input.input,
+        input: prepared.input,
+        attachment: prepared.attachment,
         providerNpub: input.provider_npub,
         providerPubkey: decodeNpub(input.provider_npub),
         capability: input.capability,
@@ -1135,18 +1382,22 @@ export const customerTools: ToolDefinition[] = [
     description:
       'Same as submit_and_pay_job, but the job input is read from a file on disk by the ' +
       'MCP server instead of being passed inline by the LLM. Use this when the input is ' +
-      'large (logs, generated content, captured output) and the LLM only needs to forward ' +
+      'large or binary (images, logs, captured output) and the LLM only needs to forward ' +
       "it - the file content never enters the model's output tokens. " +
       "input_path may be absolute or relative to the MCP server's working directory. " +
-      'Max file size matches the inline limit.',
+      'The file is ALWAYS transferred peer-to-peer via iroh, so this needs: a persistent ' +
+      'agent, a PAID provider skill (free skills reject file inputs), and the iroh addon. ' +
+      'Text files reach the skill on stdin; binary files via ELISYM_INPUT_FILE.',
     schema: SubmitAndPayJobFromFileSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
       checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
 
-      let payload: string;
+      // Validate + classify first, so a bad/sensitive/missing path gives a specific
+      // error rather than the persistent-agent message below.
+      let prepared;
       try {
-        payload = await readJobInputFile(input.input_path, {
+        prepared = await prepareFileInput(input.input_path, {
           allowOutsideCwd: input.allow_outside_cwd,
         });
       } catch (e) {
@@ -1154,8 +1405,41 @@ export const customerTools: ToolDefinition[] = [
       }
 
       const agent = ctx.active();
+      // Every file travels P2P via iroh, which requires a persistent agent to seed:
+      // an ephemeral session cannot reliably outlive the request window.
+      if (agent.agentDir === undefined) {
+        return errorResult(
+          `Sending a file requires a persistent agent (this is an ephemeral session). ` +
+            `Files are always transferred P2P via iroh, never inline.`,
+        );
+      }
+
+      let attachment: FileAttachment;
+      try {
+        const seeded = await ensureIrohTransport(agent).seedPath(prepared.absPath);
+        attachment = {
+          name: prepared.name,
+          size: seeded.size,
+          mime: prepared.mime,
+          transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // The iroh addon is an optional native dependency; surface an install hint
+        // rather than the opaque seed error when it is simply not installed.
+        if (/@number0\/iroh|iroh file transfer is unavailable/i.test(msg)) {
+          return errorResult(
+            `File transfer is unavailable: the optional @number0/iroh addon is not installed. ` +
+              `Install it (e.g. \`bun add @number0/iroh\`) to send files.`,
+          );
+        }
+        return errorResult(`Failed to seed file for transfer: ${msg}`);
+      }
+
+      // The file body always rides the attachment; the inline input is empty.
       return executeSubmitAndPay(ctx, agent, {
-        input: payload,
+        input: '',
+        attachment,
         providerNpub: input.provider_npub,
         providerPubkey: decodeNpub(input.provider_npub),
         capability: input.capability,
@@ -1195,16 +1479,30 @@ export const customerTools: ToolDefinition[] = [
       // resolved range so the provider knows what was actually compared.
       const promptBlock = input.prompt.trim().length > 0 ? `${input.prompt.trim()}\n\n` : '';
       const payload = `${promptBlock}--- git diff (${diffResult.describedRange}) ---\n${diffResult.diff}`;
-      if (payload.length > MAX_INPUT_LEN) {
+
+      // computeGitDiff bounds only the diff at MAX_REINLINE_TEXT_BYTES; the prompt
+      // and framing line are added on top, so the combined payload can exceed it.
+      // A spilled text/plain attachment over this ceiling is NOT re-inlined by the
+      // provider (it streams to a file, leaving an LLM reviewer with empty input),
+      // so bound the combined payload here - mirroring submit_and_pay_job.
+      const payloadBytes = utf8ByteLength(payload);
+      if (payloadBytes > LIMITS.MAX_REINLINE_TEXT_BYTES) {
         return errorResult(
-          `Combined prompt + diff is ${payload.length} chars (max ${MAX_INPUT_LEN}). ` +
-            `Shorten the prompt or pass a narrower base.`,
+          `Combined prompt + diff is ${payloadBytes} bytes (max ${LIMITS.MAX_REINLINE_TEXT_BYTES}). ` +
+            `Pass a narrower "base" or shorten the prompt.`,
         );
       }
 
       const agent = ctx.active();
+      // Within the re-inline ceiling: a payload over the inline budget spills to
+      // iroh transparently (the provider restores it inline) instead of being rejected.
+      const prepared = await prepareTextInput(agent, payload);
+      if ('error' in prepared) {
+        return errorResult(prepared.error);
+      }
       return executeSubmitAndPay(ctx, agent, {
-        input: payload,
+        input: prepared.input,
+        attachment: prepared.attachment,
         providerNpub: input.provider_npub,
         providerPubkey: decodeNpub(input.provider_npub),
         capability: input.capability,
@@ -1370,7 +1668,11 @@ export const customerTools: ToolDefinition[] = [
               providerPubkey,
               customerPublicKey: agent.identity.publicKey,
               callbacks: {
-                onResult(content: string) {
+                onResult(content: string, _eventId: string, attachment?: FileAttachment) {
+                  if (attachment) {
+                    payHandler.onResultReceived(formatFileResultMetadata(jobId, attachment));
+                    return;
+                  }
                   const kind = isLikelyBase64(content) ? ('binary' as const) : ('text' as const);
                   const sanitized = sanitizeUntrusted(content, kind);
                   payHandler.onResultReceived(

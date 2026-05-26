@@ -11,6 +11,13 @@ export type { ElisymClientFullConfig } from './client';
 
 // --- Transport ---
 export { NostrPool } from './transport/pool';
+export { encodeJobPayload, decodeJobPayload, ENVELOPE_VERSION } from './transport/attachment';
+export type {
+  FileAttachment,
+  FileTransport,
+  JobPayloadEnvelope,
+  DecodedJobPayload,
+} from './transport/attachment';
 
 // --- Services ---
 export {
@@ -134,6 +141,7 @@ export {
   getProtocolProgramId,
   DEFAULTS,
   LIMITS,
+  utf8ByteLength,
 } from './constants';
 export type { ProtocolCluster } from './constants';
 

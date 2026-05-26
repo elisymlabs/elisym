@@ -6,9 +6,10 @@
  * the provider over Nostr.
  */
 import { execFile } from 'node:child_process';
-import { stat, readFile } from 'node:fs/promises';
-import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
+import { realpath, stat, readFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
+import { LIMITS, utf8ByteLength } from '@elisym/sdk';
 import { MAX_INPUT_LEN } from './utils.js';
 
 const execFileP = promisify(execFile);
@@ -21,9 +22,37 @@ export const MAX_INPUT_PATH_LEN = 4096;
  * target (threat #1: secret-key / API-key theft). Matched on the resolved path;
  * always refused regardless of the allow-outside-cwd opt-in.
  */
+// Secret/key files plus shell-init and other auto-run files (a write target here
+// comes from an untrusted provider, so overwriting ~/.zshrc, ~/.gitconfig, etc.
+// is a code-execution vector, not just a secret leak). Also blocks system auto-run
+// filenames (/etc/crontab, /etc/sudoers, /etc/bash.bashrc) and unit/desktop-entry
+// extensions (systemd `.service`, freedesktop `.desktop` autostart entries).
 const SENSITIVE_NAME_RE =
-  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*-keypair\.json|.*\.pem|.*\.key)$/i;
-const SENSITIVE_DIR_SEGMENTS = new Set(['.elisym', '.ssh', '.aws', '.gnupg']);
+  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*-keypair\.json|.*\.pem|.*\.key|\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.bash_aliases|\.profile|\.zshrc|\.zprofile|\.zshenv|\.zlogin|\.zlogout|config\.fish|\.gitconfig|\.npmrc|\.netrc|crontab|sudoers|bash\.bashrc|.*\.service|.*\.desktop)$/i;
+// `.git` blocks the repo-internal config + hooks dir (hooks are auto-run on git ops).
+// The remaining segments are OS auto-run / privilege-escalation dirs whose contents
+// execute on login or schedule: macOS Launch{Agents,Daemons}, freedesktop autostart,
+// systemd unit trees, cron drop-in dirs, sudoers.d, profile.d, and SysV init.d.
+const SENSITIVE_DIR_SEGMENTS = new Set([
+  '.elisym',
+  '.ssh',
+  '.aws',
+  '.gnupg',
+  '.git',
+  'launchagents',
+  'launchdaemons',
+  'autostart',
+  'systemd',
+  'sudoers.d',
+  'cron.d',
+  'cron.daily',
+  'cron.hourly',
+  'cron.weekly',
+  'cron.monthly',
+  'crontabs',
+  'profile.d',
+  'init.d',
+]);
 
 function isSensitiveInputPath(absPath: string): boolean {
   if (SENSITIVE_NAME_RE.test(absPath)) {
@@ -36,15 +65,76 @@ function isSensitiveInputPath(absPath: string): boolean {
   return segments.some((segment) => SENSITIVE_DIR_SEGMENTS.has(segment.toLowerCase()));
 }
 
+/**
+ * Resolve and safety-check a destination path for a downloaded job result. The
+ * write-side mirror of `validateInputPath`'s guards: the bytes written here come
+ * from an untrusted remote provider, so an injected/confused `output_path` must
+ * never overwrite a secret or auto-run file (key, .env, ~/.elisym, SSH/cloud
+ * credentials, ~/.zshrc, .git/hooks). Writes are confined to the working-directory
+ * subtree unless `allowOutsideCwd` is set, and the real parent dir is resolved so a
+ * symlink cannot redirect the write past these checks. Relative paths resolve
+ * against the MCP server's working directory. Throws a user-facing Error; returns
+ * the absolute path to write to.
+ */
+export async function resolveOutputPath(
+  outputPath: string,
+  options?: { allowOutsideCwd?: boolean },
+): Promise<string> {
+  if (outputPath.length > MAX_INPUT_PATH_LEN) {
+    throw new Error(
+      `output_path too long: ${outputPath.length} chars (max ${MAX_INPUT_PATH_LEN}).`,
+    );
+  }
+  const cwd = resolvePath(process.cwd());
+  const logicalPath = isAbsolute(outputPath)
+    ? resolvePath(outputPath)
+    : resolvePath(cwd, outputPath);
+  // The destination usually does not exist yet, so resolve the REAL parent dir and
+  // re-join the basename - a symlinked PARENT then cannot redirect the write past
+  // the guards below. Falls back to the logical parent when it does not exist yet.
+  const realParent = await realpath(dirname(logicalPath)).catch(() => dirname(logicalPath));
+  const absPath = resolvePath(realParent, basename(logicalPath));
+  // Resolving only the parent leaves a symlink AT the destination itself
+  // unresolved (e.g. ./out.bin -> ~/.ssh/authorized_keys): `blobs.export` follows
+  // it and would overwrite the link target with untrusted provider bytes. When the
+  // destination already exists, resolve its real target so the guards below (and
+  // the write itself) operate on it, mirroring the read-side `validateInputPath`.
+  const realDest = await realpath(logicalPath).catch(() => undefined);
+  const writeTarget = realDest ?? absPath;
+  const sensitiveCandidates =
+    realDest !== undefined ? [absPath, logicalPath, realDest] : [absPath, logicalPath];
+
+  if (sensitiveCandidates.some((candidate) => isSensitiveInputPath(candidate))) {
+    throw new Error(
+      `Refusing to write a job result to a sensitive path: ${writeTarget}. ` +
+        `Choose a destination outside secret/config/auto-run locations.`,
+    );
+  }
+  if (!options?.allowOutsideCwd) {
+    const realCwd = await realpath(cwd).catch(() => cwd);
+    const rel = relative(realCwd, writeTarget);
+    const insideCwd = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+    if (!insideCwd) {
+      throw new Error(
+        `output_path "${writeTarget}" resolves outside the working directory (${realCwd}). ` +
+          `Choose a destination under the working directory or pass allow_outside_cwd: true.`,
+      );
+    }
+  }
+  return writeTarget;
+}
+
 /** Wall-clock cap on each `git` invocation. Diffs of in-tree work are sub-second. */
 const GIT_TIMEOUT_MS = 30_000;
 
 /**
- * Buffer for git stdout. Slightly larger than MAX_INPUT_LEN so an oversize
- * diff is still readable for the size-error message instead of failing with
- * a confusing ENOBUFS.
+ * Buffer for git stdout. Kept slightly ABOVE the diff ceiling (not equal) so a
+ * marginally-oversize diff still buffers and surfaces the friendly size-error
+ * below, instead of failing with a confusing ENOBUFS. The ceiling itself bounds
+ * the in-memory buffer (a git diff is buffered whole by execFile) against a
+ * memory-DoS on an untrusted/huge repo.
  */
-const GIT_MAX_BUFFER = MAX_INPUT_LEN * 2;
+const GIT_MAX_BUFFER = LIMITS.MAX_REINLINE_TEXT_BYTES + MAX_INPUT_LEN;
 
 /**
  * Config overrides injected before every git subcommand. git honors a repo-local
@@ -53,7 +143,10 @@ const GIT_MAX_BUFFER = MAX_INPUT_LEN * 2;
  * could run attacker code with the MCP server's privileges (in-memory secret keys).
  * These `-c` overrides neutralize those keys; `GIT_CONFIG_NOSYSTEM=1` (set in env)
  * additionally ignores /etc/gitconfig. `safe.directory` does NOT cover this - it only
- * blocks differently-owned repos, not a user-owned malicious clone/tarball.
+ * blocks differently-owned repos, not a user-owned malicious clone/tarball. A repo's
+ * `textconv` diff driver (mapped via `.gitattributes`) is a further command-execution
+ * vector, so every `git diff` invocation also passes `--no-textconv` (alongside
+ * `--no-ext-diff`); `git diff` does not run clean/smudge filters.
  */
 const GIT_SAFETY_ARGS = [
   '-c',
@@ -75,27 +168,38 @@ function isValidGitRef(ref: string): boolean {
   return /^[A-Za-z0-9._/@~^-]+$/.test(ref);
 }
 
-/**
- * Read a job input from a regular file on disk, with size and decoding guards.
- * Relative paths resolve against `process.cwd()` (the MCP server's working dir,
- * which for stdio clients is the dir the client was launched from).
- *
- * Throws a user-facing Error on missing file, non-file path, or oversize content.
- */
-export async function readJobInputFile(
+/** Shared path validation: length, sensitive-file block, cwd confinement, stat, isFile. */
+async function validateInputPath(
   inputPath: string,
   options?: { allowOutsideCwd?: boolean },
-): Promise<string> {
+): Promise<{ absPath: string; size: number }> {
   if (inputPath.length > MAX_INPUT_PATH_LEN) {
     throw new Error(`input_path too long: ${inputPath.length} chars (max ${MAX_INPUT_PATH_LEN}).`);
   }
   const cwd = resolvePath(process.cwd());
-  const absPath = isAbsolute(inputPath) ? resolvePath(inputPath) : resolvePath(cwd, inputPath);
+  const logicalPath = isAbsolute(inputPath) ? resolvePath(inputPath) : resolvePath(cwd, inputPath);
+
+  // Resolve symlinks so every guard below runs on the REAL target, not a logical
+  // path a symlink could redirect (a benign-looking name -> ~/.ssh/id_rsa, or a
+  // symlinked parent dir pointing outside cwd). Without this, the sensitive-file
+  // and cwd-confinement checks operate on the link path and a symlink defeats both.
+  let absPath: string;
+  try {
+    absPath = await realpath(logicalPath);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      throw new Error(`input_path does not exist: ${logicalPath}`);
+    }
+    throw new Error(`Cannot resolve input_path "${logicalPath}": ${(e as Error).message}`);
+  }
 
   // Always refuse known-sensitive files (secret keys, .env, SSH/keypair, ~/.elisym,
-  // /proc). This forwards the file content to a remote provider before any payment
-  // and is invisible in the transcript, so an injected path must never reach a secret.
-  if (isSensitiveInputPath(absPath)) {
+  // /proc). This forwards the file to a remote provider before any payment and is
+  // invisible in the transcript, so an injected path must never reach a secret.
+  // Checked on both the real target and the link path so neither a link to a
+  // sensitive file nor a sensitively-named symlink slips through.
+  if (isSensitiveInputPath(absPath) || isSensitiveInputPath(logicalPath)) {
     throw new Error(
       `Refusing to read a sensitive file as job input: ${absPath}. ` +
         `Secret keys, .env, SSH/keypair files, ~/.elisym and /proc are blocked.`,
@@ -103,13 +207,15 @@ export async function readJobInputFile(
   }
   // By default confine reads to the server's working-directory subtree. Reading
   // elsewhere requires the explicit allow_outside_cwd opt-in (still subject to the
-  // sensitive-file block above).
+  // sensitive-file block above). Compared on real paths so a symlinked cwd (e.g.
+  // macOS /tmp -> /private/tmp) does not false-negative a legitimate in-tree file.
   if (!options?.allowOutsideCwd) {
-    const rel = relative(cwd, absPath);
+    const realCwd = await realpath(cwd).catch(() => cwd);
+    const rel = relative(realCwd, absPath);
     const insideCwd = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
     if (!insideCwd) {
       throw new Error(
-        `input_path "${absPath}" resolves outside the working directory (${cwd}). ` +
+        `input_path "${absPath}" resolves outside the working directory (${realCwd}). ` +
           `Move the file under the working directory or pass allow_outside_cwd: true.`,
       );
     }
@@ -125,26 +231,70 @@ export async function readJobInputFile(
     }
     throw new Error(`Cannot stat input_path "${absPath}": ${(e as Error).message}`);
   }
-
   if (!stats.isFile()) {
     throw new Error(`input_path is not a regular file: ${absPath}`);
   }
-  if (stats.size > MAX_INPUT_LEN) {
-    throw new Error(
-      `input_path too large: ${stats.size} bytes (max ${MAX_INPUT_LEN}). ` +
-        `Trim the file or split the job.`,
-    );
-  }
+  return { absPath, size: stats.size };
+}
 
-  const content = await readFile(absPath, 'utf-8');
-  if (content.length > MAX_INPUT_LEN) {
-    // utf-8 multi-byte chars can push the decoded length past the byte size check.
+/**
+ * Conservative text/binary classifier for a file input. Biased to BINARY: returns
+ * `true` only when the bytes are confidently UTF-8 text, because a false "text"
+ * verdict makes the provider re-inline (decode as UTF-8) and corrupt a binary blob.
+ * A file larger than the provider's re-inline ceiling is never re-inlined anyway,
+ * so it is classed binary without reading. NUL is valid UTF-8, so a fatal decoder
+ * does not reject it - check for NUL explicitly.
+ */
+async function isProbablyText(absPath: string, size: number): Promise<boolean> {
+  if (size > LIMITS.MAX_REINLINE_TEXT_BYTES) {
+    return false;
+  }
+  const bytes = await readFile(absPath);
+  if (bytes.includes(0)) {
+    return false;
+  }
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    decoder.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prepare a file job input. Every file is transferred P2P via iroh (never inline),
+ * so the caller seeds `absPath`; the returned `mime` decides how the provider
+ * delivers it - `text/plain` is re-inlined to the skill's stdin (within the
+ * re-inline ceiling), anything else is streamed to `ELISYM_INPUT_FILE`. The MIME
+ * is sniffed from the content (see `isProbablyText`); the untrusted file
+ * name/extension is never trusted for this.
+ */
+export interface PreparedFileInput {
+  absPath: string;
+  size: number;
+  name: string;
+  mime: string;
+}
+
+export async function prepareFileInput(
+  inputPath: string,
+  options?: { allowOutsideCwd?: boolean },
+): Promise<PreparedFileInput> {
+  const { absPath, size } = await validateInputPath(inputPath, options);
+  // Reject early: an empty file is not a deliverable input (it would otherwise be
+  // seeded and paid for, then deliver nothing). The submit path also rejects an
+  // empty body, so failing here is consistent and gives a clearer message.
+  if (size === 0) {
+    throw new Error('input_path is an empty file - nothing to send.');
+  }
+  if (size > LIMITS.MAX_FILE_SIZE) {
     throw new Error(
-      `input_path content too long after decoding: ${content.length} chars ` +
-        `(max ${MAX_INPUT_LEN}).`,
+      `input_path too large: ${size} bytes (max ${LIMITS.MAX_FILE_SIZE} for a file transfer).`,
     );
   }
-  return content;
+  const mime = (await isProbablyText(absPath, size)) ? 'text/plain' : 'application/octet-stream';
+  return { absPath, size, name: basename(absPath), mime };
 }
 
 /**
@@ -253,18 +403,18 @@ export async function computeGitDiff(repoPath: string, base?: string): Promise<G
           `". _ / @ ~ ^ -", no leading "-", no "..").`,
       );
     }
-    args = ['diff', '--no-ext-diff', '--end-of-options', `${base}...HEAD`];
+    args = ['diff', '--no-ext-diff', '--no-textconv', '--end-of-options', `${base}...HEAD`];
     describedRange = `${base}...HEAD`;
   } else if (await isDirty(absRepo)) {
-    args = ['diff', '--no-ext-diff', 'HEAD'];
+    args = ['diff', '--no-ext-diff', '--no-textconv', 'HEAD'];
     describedRange = 'HEAD (working tree, uncommitted changes)';
   } else {
     const detected = await detectDefaultBase(absRepo);
     if (detected) {
-      args = ['diff', '--no-ext-diff', '--end-of-options', `${detected}...HEAD`];
+      args = ['diff', '--no-ext-diff', '--no-textconv', '--end-of-options', `${detected}...HEAD`];
       describedRange = `${detected}...HEAD`;
     } else {
-      args = ['diff', '--no-ext-diff', 'HEAD'];
+      args = ['diff', '--no-ext-diff', '--no-textconv', 'HEAD'];
       describedRange = 'HEAD (no main/master detected)';
     }
   }
@@ -276,9 +426,10 @@ export async function computeGitDiff(repoPath: string, base?: string): Promise<G
         `pass an explicit "base", or check the repo path.`,
     );
   }
-  if (diff.length > MAX_INPUT_LEN) {
+  const diffBytes = utf8ByteLength(diff);
+  if (diffBytes > LIMITS.MAX_REINLINE_TEXT_BYTES) {
     throw new Error(
-      `Diff for range ${describedRange} is ${diff.length} chars (max ${MAX_INPUT_LEN}). ` +
+      `Diff for range ${describedRange} is ${diffBytes} bytes (max ${LIMITS.MAX_REINLINE_TEXT_BYTES}). ` +
         `Pass a narrower "base" or split the review.`,
     );
   }

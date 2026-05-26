@@ -24,6 +24,15 @@ export interface LedgerEntry {
   net_amount?: number;
   result?: string;
   raw_event_json?: string;
+  /**
+   * JSON-serialized `FileAttachment` for a file result. Persisted so crash
+   * recovery can rebuild the descriptor and re-share the blob for a fresh ticket.
+   * Unlike `result`, this is NOT nulled by `markDelivered`/`markFailed` - the
+   * provider keeps seeding the result blob through the retention window, and
+   * recovery needs the descriptor to re-deliver. (A file INPUT's descriptor is
+   * recovered from the persisted decrypted `raw_event_json`, not stored here.)
+   */
+  result_attachment?: string;
   created_at: number;
   retry_count: number;
 }
@@ -125,6 +134,21 @@ export class JobLedger {
       entry.result = result;
       this.flush();
     }
+  }
+
+  /**
+   * Record the JSON-serialized file-result descriptor. Survives later
+   * `markDelivered`/`markFailed` (which only null `result`).
+   */
+  recordAttachment(jobId: string, fields: { resultAttachment?: string }): void {
+    const entry = this.entries.get(jobId);
+    if (!entry) {
+      return;
+    }
+    if (fields.resultAttachment !== undefined) {
+      entry.result_attachment = fields.resultAttachment;
+    }
+    this.flush();
   }
 
   markDelivered(jobId: string): void {
