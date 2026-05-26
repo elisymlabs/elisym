@@ -375,6 +375,60 @@ export interface GitDiffResult {
 }
 
 /**
+ * Path policy for a diff-review `repo_path`, the directory-shaped mirror of
+ * `validateInputPath`: resolve symlinks, always refuse sensitive paths, and confine
+ * to the working-directory subtree unless `allowOutsideCwd`. The resulting `git diff`
+ * is forwarded to a remote provider before any payment and never shows in the
+ * transcript, so an injected/confused repo_path must not silently exfiltrate a repo
+ * outside the working area. Shares the sensitive-path floor (`isSensitiveInputPath`)
+ * with the file-input guard so the two cannot drift. Returns the realpath'd repo dir.
+ */
+async function validateRepoPath(
+  repoPath: string,
+  options?: { allowOutsideCwd?: boolean },
+): Promise<string> {
+  if (repoPath.length > MAX_INPUT_PATH_LEN) {
+    throw new Error(`repo_path too long: ${repoPath.length} chars (max ${MAX_INPUT_PATH_LEN}).`);
+  }
+  const cwd = resolvePath(process.cwd());
+  const logicalPath = isAbsolute(repoPath) ? resolvePath(repoPath) : resolvePath(cwd, repoPath);
+  let absPath: string;
+  try {
+    absPath = await realpath(logicalPath);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      throw new Error(`repo_path does not exist: ${logicalPath}`);
+    }
+    throw new Error(`Cannot resolve repo_path "${logicalPath}": ${(e as Error).message}`);
+  }
+  if (isSensitiveInputPath(absPath) || isSensitiveInputPath(logicalPath)) {
+    throw new Error(
+      `Refusing to review a sensitive path: ${absPath}. ` +
+        `Secret keys, .env, SSH/keypair files, ~/.elisym and /proc are blocked.`,
+    );
+  }
+  if (!options?.allowOutsideCwd) {
+    const realCwd = await realpath(cwd).catch(() => cwd);
+    const rel = relative(realCwd, absPath);
+    // `rel === ''` means the repo path IS the cwd - the default `repo_path: '.'` case,
+    // and the most common one (review the current repo). That is inside, not outside.
+    const insideCwd = rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+    if (!insideCwd) {
+      throw new Error(
+        `repo_path "${absPath}" resolves outside the working directory (${realCwd}). ` +
+          `Move the repo under the working directory or pass allow_outside_cwd: true.`,
+      );
+    }
+  }
+  const stats = await stat(absPath);
+  if (!stats.isDirectory()) {
+    throw new Error(`repo_path is not a directory: ${absPath}`);
+  }
+  return absPath;
+}
+
+/**
  * Compute a git diff suitable for a code-review job.
  *
  * If `base` is provided, always diffs `${base}...HEAD` (PR-style merge-base).
@@ -385,11 +439,12 @@ export interface GitDiffResult {
  *
  * Throws on unknown ref, non-repo path, oversize output, or empty diff.
  */
-export async function computeGitDiff(repoPath: string, base?: string): Promise<GitDiffResult> {
-  if (repoPath.length > MAX_INPUT_PATH_LEN) {
-    throw new Error(`repo_path too long: ${repoPath.length} chars (max ${MAX_INPUT_PATH_LEN}).`);
-  }
-  const absRepo = isAbsolute(repoPath) ? repoPath : resolvePath(process.cwd(), repoPath);
+export async function computeGitDiff(
+  repoPath: string,
+  base?: string,
+  options?: { allowOutsideCwd?: boolean },
+): Promise<GitDiffResult> {
+  const absRepo = await validateRepoPath(repoPath, options);
   await assertGitRepo(absRepo);
 
   let args: string[];

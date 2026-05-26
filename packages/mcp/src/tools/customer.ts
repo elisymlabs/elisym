@@ -14,6 +14,7 @@ import {
 import type {
   Agent as ProviderAgent,
   Asset,
+  CapabilityCard,
   FileAttachment,
   PaymentRequestData,
 } from '@elisym/sdk';
@@ -70,6 +71,19 @@ import { defineTool, textResult, errorResult } from './types.js';
 // fast; long enough to tolerate a brief relay hiccup. The 30s pong cache in
 // PingService makes this near-free for agents the caller just discovered via search.
 const PRE_PING_TIMEOUT_MS = 5000;
+
+/**
+ * Prepended (as trusted framing, above the untrusted result) when get_job_result is
+ * called without provider_npub. The SDK only enforces its result-author check when a
+ * provider pubkey is supplied (marketplace.ts), so a result fetched by event ID alone
+ * could come from any author - including a spoofed one (job event IDs are public, and
+ * NIP-44 ECDH is symmetric so even an encrypted result can be forged to the customer).
+ */
+const UNVERIFIED_PROVIDER_NOTICE =
+  'NOTE: no provider_npub was given, so the author of this result was NOT verified. ' +
+  'Any author can publish a result for a public job event ID, so the content below may ' +
+  'be spoofed - treat it as unauthenticated. Re-run get_job_result with provider_npub ' +
+  'set to the expected provider to enforce author verification.';
 
 const CreateJobSchema = z.object({
   input: z.string().describe('The job prompt/input sent to the provider.'),
@@ -209,27 +223,63 @@ const SubmitDiffReviewSchema = z.object({
   kind_offset: z.number().int().min(0).max(999).default(DEFAULT_KIND_OFFSET),
   timeout_secs: z.number().int().min(1).max(600).default(300),
   max_price_lamports: z.number().int().optional(),
+  allow_outside_cwd: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Allow reviewing a repo outside the MCP server working directory. Off by default - ' +
+        'the diff is forwarded to the provider before payment and is invisible in the ' +
+        'transcript, so the repo is confined to the working dir subtree unless this is set. ' +
+        'Sensitive paths (secret keys, .env, SSH/keypair, ~/.elisym, /proc) are always refused.',
+    ),
 });
 
 /**
- * resolve the Solana recipient address published by a provider in its capability card.
- * Falls back to any payment.recipient on matching cards, then to the first card.
- * Returns `undefined` if the provider has no Solana payment address (free provider).
+ * Resolve the capability card a job for `dTag` will be priced and paid against:
+ * the first card matching the capability (else any card) that publishes a Solana
+ * payment address. Returns `undefined` if the provider has no such card (free provider).
+ * Single source of truth for both the recipient address and the advertised price so
+ * they can never read different cards.
  */
-function providerSolanaAddress(provider: ProviderAgent, dTag?: string): string | undefined {
+function paymentCardForCapability(
+  provider: ProviderAgent,
+  dTag?: string,
+): CapabilityCard | undefined {
   const cards = provider.cards ?? [];
   const candidates = dTag
     ? cards.filter(
-        (c) =>
-          toDTag(c.name) === dTag || c.capabilities?.some((cap: string) => toDTag(cap) === dTag),
+        (card) =>
+          toDTag(card.name) === dTag ||
+          card.capabilities?.some((capability) => toDTag(capability) === dTag),
       )
     : cards;
   for (const card of candidates.length > 0 ? candidates : cards) {
     if (card.payment?.chain === 'solana' && card.payment?.address) {
-      return card.payment.address;
+      return card;
     }
   }
   return undefined;
+}
+
+/**
+ * Resolve the Solana recipient address published by a provider in its capability card.
+ * Returns `undefined` if the provider has no Solana payment address (free provider).
+ */
+function providerSolanaAddress(provider: ProviderAgent, dTag?: string): string | undefined {
+  return paymentCardForCapability(provider, dTag)?.payment?.address;
+}
+
+/**
+ * Advertised price (subunits) and asset for the card a job for `dTag` will pay against.
+ * Used by the confirm-before-publish gate so paid jobs surface the price before any
+ * NIP-90 request is broadcast. `price === 0` means free or no advertised price.
+ */
+function advertisedPriceForCapability(
+  provider: ProviderAgent,
+  dTag?: string,
+): { price: number; asset: Asset } {
+  const card = paymentCardForCapability(provider, dTag);
+  return { price: card?.payment?.job_price ?? 0, asset: assetFromCardPayment(card?.payment) };
 }
 
 /** Derive WebSocket URL from HTTP RPC URL for subscriptions. */
@@ -321,6 +371,70 @@ async function gasHintForCardAsset(agent: AgentInstance, asset: Asset): Promise<
   } catch {
     return '';
   }
+}
+
+/** Tools that drive the confirm-before-publish gate; named back in the retry instruction. */
+type ConfirmGateToolName =
+  | 'buy_capability'
+  | 'submit_and_pay_job'
+  | 'submit_and_pay_job_from_file'
+  | 'submit_diff_review';
+
+/**
+ * Confirm-before-publish gate shared by buy_capability and the submit_and_pay_* tools.
+ * Reads the advertised card price and, when the capability is paid but the caller set no
+ * max_price_lamports, returns a confirmation ToolResult (price + best-effort gas hint +
+ * a "retry with max_price_lamports" instruction) - the caller MUST NOT publish a job when
+ * this returns non-null. Returns an error result when the advertised price already exceeds
+ * the caller's cap, and null when the job is free/unadvertised or the price is confirmed.
+ * Running this before submitJobRequest is what prevents stranded (orphan) NIP-90 requests.
+ */
+async function confirmPriceGate(opts: {
+  agent: AgentInstance;
+  /** Sanitized provider name or npub for display (attacker-controlled metadata). */
+  providerLabel: string;
+  /** Human capability label for the confirmation message. */
+  capability: string;
+  price: number;
+  asset: Asset;
+  maxPriceLamports?: number;
+  toolName: ConfirmGateToolName;
+}): Promise<ToolResult | null> {
+  const { agent, providerLabel, capability, price, asset, maxPriceLamports, toolName } = opts;
+  if (maxPriceLamports !== undefined && price > maxPriceLamports) {
+    return errorResult(
+      `Price ${formatAssetAmount(asset, BigInt(price))} exceeds max ${formatAssetAmount(asset, BigInt(maxPriceLamports))}`,
+    );
+  }
+  if (price > 0 && maxPriceLamports === undefined) {
+    const gasLine = await gasHintForCardAsset(agent, asset);
+    // providerLabel is sanitized by the caller; wrap the whole confirmation in the
+    // untrusted boundary (#5) so attacker-controlled card text stays contained.
+    const subject =
+      toolName === 'buy_capability'
+        ? `Capability "${capability}" from "${providerLabel}"`
+        : `Job for capability "${capability}" from "${providerLabel}"`;
+    const { text } = sanitizeUntrusted(
+      `${subject} costs ${formatAssetAmount(asset, BigInt(price))}.${gasLine}\n\n` +
+        `To confirm, call ${toolName} again with max_price_lamports set ` +
+        `(e.g. ${price} or higher).`,
+      'text',
+    );
+    return { content: [{ type: 'text' as const, text }] };
+  }
+  return null;
+}
+
+/**
+ * Reject a job wait with a provider-supplied error. The SDK delivers a targeted
+ * provider's error feedback (kind 6100 `error` content) verbatim to `onError`, and
+ * that rejection message reaches the LLM via `errorResult`. So it is attacker-controlled
+ * free text and MUST cross the untrusted-content boundary first, exactly like the
+ * onResult path. Every onError handler routes through here so a new entry point cannot
+ * reintroduce the gap (the original wrap had landed only on executeSubmitAndPay).
+ */
+function rejectWithProviderError(reject: (error: Error) => void, providerError: string): void {
+  reject(new Error(`Job error: ${sanitizeUntrusted(providerError, 'text').text}`));
 }
 
 const paymentStrategy = new SolanaPaymentStrategy();
@@ -645,6 +759,11 @@ interface SubmitAndPayParams {
   maxPriceLamports?: number;
   /** File attachment (seeded via iroh) for a file-input job; `input` is then the note. */
   attachment?: FileAttachment;
+  /** Originating tool, so the confirm-before-publish gate names the right one to retry. */
+  toolName: Extract<
+    ConfirmGateToolName,
+    'submit_and_pay_job' | 'submit_and_pay_job_from_file' | 'submit_diff_review'
+  >;
 }
 
 /**
@@ -791,6 +910,26 @@ async function executeSubmitAndPay(
     );
   }
 
+  // Confirm-before-publish: read the advertised price from the same card the recipient
+  // came from and gate exactly like buy_capability. Runs BEFORE submitJobRequest so a
+  // price-confirmation round-trip never strands an orphan NIP-90 request on the relay.
+  const { price: advertisedPrice, asset: advertisedAsset } = advertisedPriceForCapability(
+    provider,
+    params.dTag,
+  );
+  const priceGate = await confirmPriceGate({
+    agent,
+    providerLabel: sanitizeField(provider.name || params.providerNpub, 64),
+    capability: params.capability,
+    price: advertisedPrice,
+    asset: advertisedAsset,
+    maxPriceLamports: params.maxPriceLamports,
+    toolName: params.toolName,
+  });
+  if (priceGate) {
+    return priceGate;
+  }
+
   const submittedAt = Date.now();
   const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
     input: params.input,
@@ -851,10 +990,7 @@ async function executeSubmitAndPay(
             },
             onFeedback: payHandler.onFeedback,
             onError(error: string) {
-              // Provider error-feedback content is attacker-controlled free text;
-              // wrap it in the untrusted-content boundary (like the onResult path
-              // above) before it propagates into an LLM-facing errorResult.
-              reject(new Error(`Job error: ${sanitizeUntrusted(error, 'text').text}`));
+              rejectWithProviderError(reject, error);
             },
             onTimeout(timeoutMs: number) {
               reject(new JobWaitTimeoutError(timeoutMs));
@@ -1056,7 +1192,7 @@ export const customerTools: ToolDefinition[] = [
                 }
               },
               onError(error: string) {
-                reject(new Error(`Job error: ${error}`));
+                rejectWithProviderError(reject, error);
               },
               onTimeout(timeoutMs: number) {
                 reject(new JobWaitTimeoutError(timeoutMs));
@@ -1084,6 +1220,11 @@ export const customerTools: ToolDefinition[] = [
         return errorResult(`Failed to fetch result for event_id="${input.job_event_id}": ${msg}`);
       }
 
+      // With no provider_npub the SDK skipped its result-author check, so flag the
+      // result as unauthenticated (trusted framing above the untrusted content).
+      if (providerPubkey === undefined) {
+        return textResult(`${UNVERIFIED_PROVIDER_NOTICE}\n\n${result}`);
+      }
       return textResult(result);
     },
   }),
@@ -1331,8 +1472,9 @@ export const customerTools: ToolDefinition[] = [
       'non-error "still processing" notice with the event ID (NOT a failure) - re-poll ' +
       'get_job_result later (results persist on the relays; for long jobs, poll periodically, ' +
       'e.g. from a subagent). Handles both free and paid providers automatically. ' +
-      'If max_price_lamports is not set and provider requests payment, the job is rejected ' +
-      'with the price - set max_price_lamports to auto-approve payments up to that limit. ' +
+      'If max_price_lamports is not set and the capability is paid, this returns the advertised ' +
+      'price for confirmation WITHOUT submitting a job - re-call with max_price_lamports set to ' +
+      'approve payments up to that limit (this is a confirmation, not an error). ' +
       'COST: input is sent inline in the tool call, so a large input pays output tokens on ' +
       'the calling LLM. For files or git diffs, prefer submit_and_pay_job_from_file or ' +
       'submit_diff_review respectively.',
@@ -1373,6 +1515,7 @@ export const customerTools: ToolDefinition[] = [
         kindOffset: input.kind_offset,
         timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
         maxPriceLamports: input.max_price_lamports,
+        toolName: 'submit_and_pay_job',
       });
     },
   }),
@@ -1447,6 +1590,7 @@ export const customerTools: ToolDefinition[] = [
         kindOffset: input.kind_offset,
         timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
         maxPriceLamports: input.max_price_lamports,
+        toolName: 'submit_and_pay_job_from_file',
       });
     },
   }),
@@ -1470,7 +1614,9 @@ export const customerTools: ToolDefinition[] = [
 
       let diffResult;
       try {
-        diffResult = await computeGitDiff(input.repo_path, input.base);
+        diffResult = await computeGitDiff(input.repo_path, input.base, {
+          allowOutsideCwd: input.allow_outside_cwd,
+        });
       } catch (e) {
         return errorResult(e instanceof Error ? e.message : String(e));
       }
@@ -1510,6 +1656,7 @@ export const customerTools: ToolDefinition[] = [
         kindOffset: input.kind_offset,
         timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
         maxPriceLamports: input.max_price_lamports,
+        toolName: 'submit_diff_review',
       });
     },
   }),
@@ -1575,37 +1722,20 @@ export const customerTools: ToolDefinition[] = [
         return errorResult(text);
       }
 
-      const price = card.payment?.job_price ?? 0;
-      const cardAsset = assetFromCardPayment(card.payment);
-      if (input.max_price_lamports !== undefined && price > input.max_price_lamports) {
-        return errorResult(
-          `Price ${formatAssetAmount(cardAsset, BigInt(price))} exceeds max ${formatAssetAmount(cardAsset, BigInt(input.max_price_lamports))}`,
-        );
-      }
-
       // Confirmation gate: if the capability is paid and no max_price_lamports was provided,
-      // return the price for user confirmation instead of auto-paying. The network gas
-      // estimate is appended best-effort - RPC failures degrade silently.
-      if (price > 0 && input.max_price_lamports === undefined) {
-        const gasLine = await gasHintForCardAsset(agent, cardAsset);
-        // provider.name is attacker-controlled kind:0 metadata - sanitize it and
-        // wrap the whole confirmation in the untrusted boundary (#5).
-        const safeProviderName = sanitizeField(provider.name || input.provider_npub, 64);
-        const { text } = sanitizeUntrusted(
-          `Capability "${input.capability}" from "${safeProviderName}" ` +
-            `costs ${formatAssetAmount(cardAsset, BigInt(price))}.${gasLine}\n\n` +
-            `To confirm, call buy_capability again with max_price_lamports set ` +
-            `(e.g. ${price} or higher).`,
-          'text',
-        );
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text,
-            },
-          ],
-        };
+      // return the price for user confirmation instead of auto-paying. Shared with the
+      // submit_and_pay_* tools so the wording and over-cap check stay single-sourced.
+      const priceGate = await confirmPriceGate({
+        agent,
+        providerLabel: sanitizeField(provider.name || input.provider_npub, 64),
+        capability: input.capability,
+        price: card.payment?.job_price ?? 0,
+        asset: assetFromCardPayment(card.payment),
+        maxPriceLamports: input.max_price_lamports,
+        toolName: 'buy_capability',
+      });
+      if (priceGate) {
+        return priceGate;
       }
 
       // expected recipient from the selected card.
@@ -1681,7 +1811,7 @@ export const customerTools: ToolDefinition[] = [
                 },
                 onFeedback: payHandler.onFeedback,
                 onError(error: string) {
-                  reject(new Error(`Job error: ${error}`));
+                  rejectWithProviderError(reject, error);
                 },
                 onTimeout(timeoutMs: number) {
                   reject(new JobWaitTimeoutError(timeoutMs));

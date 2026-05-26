@@ -193,6 +193,114 @@ describe('submit_and_pay_job expected-recipient fail-fast', () => {
   });
 });
 
+// Paid provider card whose recipient differs from the stub buyer wallet ('sol-pub').
+function paidProviderEvent(jobPrice: number) {
+  return {
+    npub: VALID_PROVIDER_NPUB,
+    name: 'Test Provider',
+    cards: [
+      {
+        name: 'do-thing',
+        description: 'paid capability',
+        capabilities: ['do-thing'],
+        payment: {
+          chain: 'solana' as const,
+          address: 'provider-wallet-addr',
+          token: 'usdc' as const,
+          job_price: jobPrice,
+        },
+      },
+    ],
+  };
+}
+
+describe('confirm-before-publish gate', () => {
+  it('returns a price confirmation (not an error) and publishes NO job when max_price_lamports is unset', async () => {
+    const fetchAgents = vi.fn(async () => [paidProviderEvent(500_000)]);
+    const submitJobRequest = vi.fn(async () => 'job-event-id');
+    // hasSolana:false keeps gasHintForCardAsset hermetic (it short-circuits to '' with no
+    // wallet, so the confirmation is built without a live RPC call). The gate itself is
+    // wallet-independent, so this still exercises the confirm-before-publish path.
+    const agent = buildStubAgent({ fetchAgents, submitJobRequest, hasSolana: false });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('submit_and_pay_job');
+    const input = tool.schema.parse({
+      input: 'remove bg',
+      provider_npub: VALID_PROVIDER_NPUB,
+      capability: 'do-thing',
+    });
+    const result = await tool.handler(ctx, input);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]?.text).toMatch(/costs/);
+    expect(result.content[0]?.text).toMatch(/max_price_lamports/);
+    // The core orphan regression: no NIP-90 request is broadcast before confirmation.
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('publishes exactly one job when max_price_lamports >= advertised price', async () => {
+    const fetchAgents = vi.fn(async () => [paidProviderEvent(500_000)]);
+    const submitJobRequest = vi.fn(async () => 'job-event-id');
+    const agent = buildStubAgent({ fetchAgents, submitJobRequest, hasSolana: true });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('submit_and_pay_job');
+    const input = tool.schema.parse({
+      input: 'remove bg',
+      provider_npub: VALID_PROVIDER_NPUB,
+      capability: 'do-thing',
+      max_price_lamports: 500_000,
+      timeout_secs: 1,
+    });
+
+    const resultPromise = tool.handler(ctx, input);
+    await vi.waitFor(() => expect(submitJobRequest).toHaveBeenCalledTimes(1));
+    void resultPromise;
+  });
+
+  it('rejects with an over-cap error and publishes NO job when max_price_lamports < price', async () => {
+    const fetchAgents = vi.fn(async () => [paidProviderEvent(500_000)]);
+    const submitJobRequest = vi.fn(async () => 'job-event-id');
+    const agent = buildStubAgent({ fetchAgents, submitJobRequest, hasSolana: true });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('submit_and_pay_job');
+    const input = tool.schema.parse({
+      input: 'remove bg',
+      provider_npub: VALID_PROVIDER_NPUB,
+      capability: 'do-thing',
+      max_price_lamports: 100_000,
+    });
+    const result = await tool.handler(ctx, input);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/exceeds max/);
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('buy_capability keeps its confirmation wording after the shared-gate refactor', async () => {
+    const fetchAgents = vi.fn(async () => [paidProviderEvent(500_000)]);
+    const submitJobRequest = vi.fn(async () => 'job-event-id');
+    const agent = buildStubAgent({ fetchAgents, submitJobRequest, hasSolana: false });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('buy_capability');
+    const input = tool.schema.parse({
+      provider_npub: VALID_PROVIDER_NPUB,
+      capability: 'do-thing',
+    });
+    const result = await tool.handler(ctx, input);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]?.text).toMatch(/Capability "do-thing" from "Test Provider" costs/);
+    expect(result.content[0]?.text).toMatch(
+      /call buy_capability again with max_price_lamports set/,
+    );
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+});
+
 describe('submit_and_pay_job large-text spill', () => {
   const largeInput = 'x'.repeat(LIMITS.MAX_ENCRYPTED_INLINE_BYTES + 10_000);
 

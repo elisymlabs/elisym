@@ -121,6 +121,10 @@ describe('submit_and_pay_job self-payment guard', () => {
       input: 'normal buy',
       provider_npub: VALID_PROVIDER_NPUB,
       capability: 'do-thing',
+      // Paid card (job_price 1000): set the cap so the confirm-before-publish gate is
+      // satisfied and the job actually publishes - this test asserts the self-pay guard
+      // lets a normal buy through, not the price-confirmation flow.
+      max_price_lamports: 1000,
       timeout_secs: 1,
     });
 
