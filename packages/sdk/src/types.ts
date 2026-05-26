@@ -17,6 +17,16 @@ export interface CapabilityCard {
   payment?: PaymentInfo;
   image?: string;
   static?: boolean;
+  /**
+   * MIME the capability expects as a file input (from a dynamic-script skill's
+   * `input_mime`). Discovery hint only; the provider still content-sniffs the
+   * actual file. Its presence means the capability needs a file input - which
+   * the web app cannot send (no iroh transport), so the web app blocks the Buy
+   * button. `*` = any file, `image/*` = any image, `image/png` = exact.
+   */
+  inputMime?: string;
+  /** MIME of a file result the capability produces (from `output_mime`). */
+  outputMime?: string;
 }
 
 /** Payment info embedded in capability card (legacy format for on-network events). */

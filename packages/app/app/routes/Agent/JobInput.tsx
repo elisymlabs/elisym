@@ -74,6 +74,11 @@ function JobInputInner({
 
   const [input, setInput] = useState('');
   const isStatic = card.static === true;
+  // Capabilities that take a file input declare `inputMime`. The browser has no
+  // iroh transport and no file-upload UI, so it cannot satisfy these - block the
+  // purchase and point the user at the MCP/CLI. We gate on presence only and
+  // never render the (untrusted) value.
+  const needsFileInput = typeof card.inputMime === 'string' && card.inputMime.length > 0;
   const price = card.payment?.job_price ?? 0;
   const isFree = price === 0;
   const gasFeeLamports = useSolGasFeeEstimate(card);
@@ -123,6 +128,7 @@ function JobInputInner({
 
   const isDisabled =
     buying ||
+    needsFileInput ||
     !relaysConnected ||
     ((!!publicKey || isFree) && !isStatic && !input.trim()) ||
     ((!!publicKey || isFree) && pingStatus !== 'online') ||
@@ -149,7 +155,7 @@ function JobInputInner({
 
   return (
     <div className="rounded-3xl border border-black/7 bg-surface shadow-[0_1px_8px_rgba(0,0,0,0.05)]">
-      {!isStatic && (
+      {!isStatic && !needsFileInput && (
         <textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
@@ -238,6 +244,12 @@ function JobInputInner({
           )}
         </div>
       </div>
+      {needsFileInput && (
+        <div className="px-20 pb-12 text-xs text-text-2">
+          This capability needs a file input. The web app does not support file jobs yet - use the
+          elisym MCP or CLI to send files.
+        </div>
+      )}
       {error && <ErrorMessage error={error} paid={paid} />}
     </div>
   );

@@ -159,6 +159,14 @@ export interface Skill {
    * through to the agent-level `executionTimeoutSecs`, then to unlimited.
    */
   executionTimeoutSecs?: number;
+  /**
+   * MIME the skill expects as a file input (`input_mime`, dynamic-script only).
+   * Discovery hint published in the capability card; not enforced at runtime.
+   * Presence signals the capability needs a file input (clients gate on it).
+   */
+  inputMime?: string;
+  /** MIME of a file result (`output_mime`, dynamic-script only). */
+  outputMime?: string;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;
 }
 

@@ -84,6 +84,11 @@ export interface CliScriptSkillParams extends BaseParams {
   scriptEnv?: NodeJS.ProcessEnv;
   /** MIME for a file result (dynamic-script only); forwarded to the SDK runner. */
   outputMime?: string;
+  /**
+   * MIME the skill expects as a file input (dynamic-script only). Discovery hint
+   * surfaced in the published capability card; not used by the runner.
+   */
+  inputMime?: string;
 }
 
 export class StaticScriptSkill implements Skill {
@@ -140,6 +145,11 @@ export class DynamicScriptSkill implements Skill {
   imageFile?: string;
   dir: string;
   llmOverride?: SkillLlmOverride;
+  // Discovery hints surfaced in the published capability card (buildCard).
+  // `outputMime` is also forwarded to the inner SDK runner (it labels the file
+  // result); `inputMime` is publish-time metadata only.
+  inputMime?: string;
+  outputMime?: string;
   private inner: SdkDynamicScriptSkill;
 
   constructor(params: CliScriptSkillParams) {
@@ -152,6 +162,8 @@ export class DynamicScriptSkill implements Skill {
     this.imageFile = params.imageFile;
     this.dir = params.dir;
     this.llmOverride = params.llmOverride;
+    this.inputMime = params.inputMime;
+    this.outputMime = params.outputMime;
     this.inner = new SdkDynamicScriptSkill({
       name: params.name,
       description: params.description,

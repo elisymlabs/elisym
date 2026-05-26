@@ -107,11 +107,15 @@ function buildCliSkill(
         dir: entryPath,
         llmOverride: parsed.llmOverride,
       };
-      // Only dynamic-script can emit a file result, so `outputMime` is threaded
-      // only there (the static-script wrapper has no such param).
+      // Only dynamic-script can exchange files, so the MIME hints are threaded
+      // only there (the static-script wrapper has no such params).
       skill =
         parsed.mode === 'dynamic-script'
-          ? new DynamicScriptSkill({ ...scriptParams, outputMime: parsed.outputMime })
+          ? new DynamicScriptSkill({
+              ...scriptParams,
+              outputMime: parsed.outputMime,
+              inputMime: parsed.inputMime,
+            })
           : new StaticScriptSkill(scriptParams);
       break;
     }

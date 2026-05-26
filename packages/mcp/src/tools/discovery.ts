@@ -373,6 +373,12 @@ export const discoveryTools: ToolDefinition[] = [
               chain: card.payment?.chain,
               network: card.payment?.network,
               network_fee_estimate_sol: gasEstimate,
+              // File-exchange hints (dynamic-script). Informational: the MCP/CLI
+              // CAN send files via submit_and_pay_job_from_file, so this does not
+              // gate anything - it just tells the caller a file input is expected.
+              // Already length-bounded by parseCapabilityEvent.
+              ...(card.inputMime ? { input_mime: card.inputMime } : {}),
+              ...(card.outputMime ? { output_mime: card.outputMime } : {}),
             };
           }),
           supported_kinds: a.supportedKinds,
