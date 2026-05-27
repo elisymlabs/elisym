@@ -247,7 +247,7 @@ function JobInputInner({
       {needsFileInput && (
         <div className="px-20 pb-12 text-xs text-text-2">
           This capability needs a file input. The web app does not support file jobs yet - use the
-          elisym MCP or CLI to send files.
+          elisym MCP to send files.
         </div>
       )}
       {error && <ErrorMessage error={error} paid={paid} />}

@@ -88,6 +88,15 @@ describe('verifyLlmApiKeyDeep - Anthropic', () => {
     expect(result).toMatchObject({ ok: false, reason: 'unavailable' });
   });
 
+  it('classifies 404 (model retired) as unavailable carrying status 404', async () => {
+    mockFetch({
+      status: 404,
+      body: { error: { message: 'model claude-x is no longer available' } },
+    });
+    const result = await verifyLlmApiKeyDeep('anthropic', 'sk-good', 'claude-x-retired');
+    expect(result).toMatchObject({ ok: false, reason: 'unavailable', status: 404 });
+  });
+
   it('classifies network throw as unavailable', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('ENOTFOUND api.anthropic.com'));
     const result = await verifyLlmApiKeyDeep('anthropic', 'sk-good', 'claude-haiku-4-5-20251001');
@@ -114,6 +123,12 @@ describe('verifyLlmApiKeyDeep - OpenAI', () => {
     expect(result).toMatchObject({ ok: false, reason: 'unavailable' });
   });
 
+  it('classifies 404 (model retired) as unavailable carrying status 404', async () => {
+    mockFetch({ status: 404, body: { error: { message: 'The model `gpt-x` does not exist' } } });
+    const result = await verifyLlmApiKeyDeep('openai', 'sk-good', 'gpt-x-retired');
+    expect(result).toMatchObject({ ok: false, reason: 'unavailable', status: 404 });
+  });
+
   it('uses max_completion_tokens for reasoning models', async () => {
     mockFetch({ status: 200, body: { choices: [] } });
     await verifyLlmApiKeyDeep('openai', 'sk-good', 'o1-preview');
@@ -129,6 +144,17 @@ describe('verifyLlmApiKeyDeep - OpenAI', () => {
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(call[1].body);
     expect(body.max_tokens).toBe(1);
+  });
+});
+
+describe('verifyLlmApiKeyDeep - Google (openai-compatible)', () => {
+  it('classifies 404 (model retired) as unavailable carrying status 404', async () => {
+    mockFetch({
+      status: 404,
+      body: { error: { message: 'models/gemini-x is no longer available' } },
+    });
+    const result = await verifyLlmApiKeyDeep('google', 'key', 'gemini-x-retired');
+    expect(result).toMatchObject({ ok: false, reason: 'unavailable', status: 404 });
   });
 });
 
