@@ -252,7 +252,10 @@ program
 program
   .command('install')
   .description('Install elisym MCP server into client configs')
-  .option('--client <name>', 'Specific client (claude-desktop, claude-code, cursor, windsurf)')
+  .option(
+    '--client <name>',
+    'Specific client (claude-desktop, claude-code, cursor, codex, windsurf)',
+  )
   .option('--agent <name>', 'Bind to specific agent')
   .option('--list', 'List detected clients')
   .action(
@@ -271,7 +274,10 @@ program
 program
   .command('update')
   .description('Refresh the elisym MCP entry in installed client configs')
-  .option('--client <name>', 'Specific client (claude-desktop, claude-code, cursor, windsurf)')
+  .option(
+    '--client <name>',
+    'Specific client (claude-desktop, claude-code, cursor, codex, windsurf)',
+  )
   .option('--agent <name>', 'Override the agent binding')
   .action(
     safe(async (options) => {

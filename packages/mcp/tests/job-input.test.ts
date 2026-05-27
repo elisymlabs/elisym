@@ -24,6 +24,9 @@ async function git(repoPath: string, args: string[]): Promise<string> {
       GIT_AUTHOR_EMAIL: 'test@example.com',
       GIT_COMMITTER_NAME: 'test',
       GIT_COMMITTER_EMAIL: 'test@example.com',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'commit.gpgsign',
+      GIT_CONFIG_VALUE_0: 'false',
     },
   });
   return stdout;
@@ -253,7 +256,9 @@ describe('computeGitDiff', () => {
     repo = await makeRepo();
   });
   afterEach(async () => {
-    await rm(repo, { recursive: true, force: true });
+    if (repo) {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   it('rejects a non-git path with a clean message', async () => {

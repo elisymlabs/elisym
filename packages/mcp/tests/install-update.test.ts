@@ -15,7 +15,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runInstall, runUpdate, safeRewriteJson } from '../src/install.js';
+import { runInstall, runUninstall, runUpdate, safeRewriteJson } from '../src/install.js';
 import { PACKAGE_VERSION } from '../src/utils.js';
 
 describe('runUpdate', () => {
@@ -406,6 +406,19 @@ describe('runInstall', () => {
     expect(after.mcpServers.elisym.args).toEqual(['-y', `@elisym/mcp@~${PACKAGE_VERSION}`]);
   });
 
+  it('creates a fresh Codex TOML config when none exists', async () => {
+    const codexPath = join(dir, '.codex', 'config.toml');
+
+    await runInstall({ client: 'codex', agent: 'alice' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain('[mcp_servers.elisym]');
+    expect(after).toContain('command = "npx"');
+    expect(after).toContain(`args = ["-y", "@elisym/mcp@~${PACKAGE_VERSION}"]`);
+    expect(after).toContain('[mcp_servers.elisym.env]');
+    expect(after).toContain('ELISYM_AGENT = "alice"');
+  });
+
   // Adding into an existing config must preserve sibling MCP servers and other
   // top-level keys (the rich-claude-json shape).
   it('adds elisym alongside other mcp servers without disturbing siblings', async () => {
@@ -446,6 +459,68 @@ describe('runInstall', () => {
     expect(entry.env.ELISYM_PASSPHRASE).toBe('secret');
     const calls = logSpy.mock.calls.map((c) => c.join(' '));
     expect(calls.some((s) => s.includes('Rebound cursor') && s.includes('"bob"'))).toBe(true);
+  });
+
+  it('rebinds an existing Codex entry and preserves sibling env', async () => {
+    const codexPath = join(dir, '.codex', 'config.toml');
+    await mkdir(join(dir, '.codex'), { recursive: true });
+    await writeFile(
+      codexPath,
+      [
+        '[projects."/repo"]',
+        'trust_level = "trusted"',
+        '',
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        `args = ["-y", "@elisym/mcp@~${PACKAGE_VERSION}"]`,
+        '',
+        '[mcp_servers.elisym.env]',
+        'ELISYM_AGENT = "alice"',
+        'ELISYM_PASSPHRASE = "secret"',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runInstall({ client: 'codex', agent: 'bob' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain('[projects."/repo"]');
+    expect(after).toContain('ELISYM_AGENT = "bob"');
+    expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
+    const calls = logSpy.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((s) => s.includes('Rebound codex') && s.includes('"bob"'))).toBe(true);
+  });
+
+  it('rebinds an existing Codex entry without clobbering custom fields', async () => {
+    const codexPath = join(dir, '.codex', 'config.toml');
+    await mkdir(join(dir, '.codex'), { recursive: true });
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "/opt/bin/custom-runner"',
+        'args = ["--quiet", "-y", "@elisym/mcp@~0.0.1", "--trace"]',
+        'cwd = "/repo"',
+        '',
+        '[mcp_servers.elisym.env]',
+        'ELISYM_AGENT = "alice"',
+        'ELISYM_PASSPHRASE = "secret"',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runInstall({ client: 'codex', agent: 'bob' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain('command = "/opt/bin/custom-runner"');
+    expect(after).toContain(
+      `args = ["--quiet", "-y", "@elisym/mcp@~${PACKAGE_VERSION}", "--trace"]`,
+    );
+    expect(after).toContain('cwd = "/repo"');
+    expect(after).toContain('ELISYM_AGENT = "bob"');
+    expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
   });
 
   it('sets ELISYM_AGENT on an existing entry that had no env block', async () => {
@@ -531,6 +606,343 @@ describe('runInstall', () => {
     expect(calls.some((s) => s.includes('Multiple agents found') && s.includes('--agent'))).toBe(
       true,
     );
+  });
+});
+
+describe('runUpdate for Codex', () => {
+  let dir: string;
+  let originalHome: string | undefined;
+  let codexPath: string;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'elisym-codex-update-'));
+    originalHome = process.env.HOME;
+    process.env.HOME = dir;
+    codexPath = join(dir, '.codex', 'config.toml');
+    await mkdir(join(dir, '.codex'), { recursive: true });
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    logSpy.mockRestore();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('updates Codex version pin and preserves unrelated config plus env', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[projects."/repo"]',
+        'trust_level = "trusted"',
+        '',
+        '[mcp_servers.other]',
+        'command = "other"',
+        '',
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = ["-y", "@elisym/mcp@~0.0.1"]',
+        '',
+        '[mcp_servers.elisym.env]',
+        'ELISYM_AGENT = "alice"',
+        'ELISYM_PASSPHRASE = "secret"',
+        '',
+        '[features]',
+        'terminal_resize_reflow = true',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runUpdate({ client: 'codex' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain('[projects."/repo"]');
+    expect(after).toContain('[mcp_servers.other]');
+    expect(after).toContain('[features]');
+    expect(after).toContain(`args = ["-y", "@elisym/mcp@~${PACKAGE_VERSION}"]`);
+    expect(after).toContain('ELISYM_AGENT = "alice"');
+    expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Updated codex'));
+  });
+
+  it('updates Codex version pin without clobbering custom fields', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "/opt/bin/custom-runner"',
+        'args = ["--quiet", "-y", "@elisym/mcp@~0.0.1", "--trace"]',
+        'cwd = "/repo"',
+        'startup_timeout_ms = 30000',
+        '',
+        '[mcp_servers.elisym.env]',
+        'ELISYM_AGENT = "alice"',
+        'ELISYM_PASSPHRASE = "secret"',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runUpdate({ client: 'codex' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain('command = "/opt/bin/custom-runner"');
+    expect(after).toContain(
+      `args = ["--quiet", "-y", "@elisym/mcp@~${PACKAGE_VERSION}", "--trace"]`,
+    );
+    expect(after).toContain('cwd = "/repo"');
+    expect(after).toContain('startup_timeout_ms = 30000');
+    expect(after).toContain('ELISYM_AGENT = "alice"');
+    expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
+  });
+
+  it('updates Codex version pin in multiline args arrays', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = [',
+        '  "--quiet",',
+        '  "-y",',
+        '  "@elisym/mcp@~0.0.1",',
+        '  "--trace",',
+        ']',
+        '',
+        '[mcp_servers.elisym.env]',
+        'ELISYM_AGENT = "alice"',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runUpdate({ client: 'codex' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain('args = [');
+    expect(after).toContain(`  "@elisym/mcp@~${PACKAGE_VERSION}",`);
+    expect(after).toContain('  "--trace",');
+    expect(after).toContain(']');
+    expect(after).toContain('ELISYM_AGENT = "alice"');
+  });
+
+  it('replaces the full Codex multiline args array when the package pin is missing', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = [',
+        '  "--stale",',
+        '  "--trace",',
+        ']',
+        'cwd = "/repo"',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runUpdate({ client: 'codex' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain(`args = ["-y", "@elisym/mcp@~${PACKAGE_VERSION}"]`);
+    expect(after).not.toContain('"--stale"');
+    expect(after).not.toContain('"--trace"');
+    expect(after).toContain('cwd = "/repo"');
+  });
+
+  it('preserves inline Codex env table values during update', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = ["-y", "@elisym/mcp@~0.0.1"]',
+        'env = { ELISYM_AGENT = "alice", ELISYM_PASSPHRASE = "secret" }',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runUpdate({ client: 'codex' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain(`args = ["-y", "@elisym/mcp@~${PACKAGE_VERSION}"]`);
+    expect(after).toContain('env = { ELISYM_AGENT = "alice", ELISYM_PASSPHRASE = "secret" }');
+    expect(after).toContain('ELISYM_AGENT = "alice"');
+    expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
+  });
+
+  it('treats commented Codex env headers as part of the elisym block when rebinding', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = ["-y", "@elisym/mcp@~0.0.1"]',
+        '',
+        '[mcp_servers.elisym.env] # secrets',
+        'ELISYM_AGENT = "alice"',
+        'ELISYM_PASSPHRASE = "secret"',
+        '',
+        '[features]',
+        'terminal_resize_reflow = true',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runInstall({ client: 'codex', agent: 'bob' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after.match(/\[mcp_servers\.elisym\.env\]/g)).toHaveLength(1);
+    expect(after).toContain('ELISYM_AGENT = "bob"');
+    expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
+    expect(after).toContain('[features]');
+  });
+
+  it('rebinds a non-contiguous Codex env table without duplicating it', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = ["-y", "@elisym/mcp@~0.0.1"]',
+        '',
+        '[features]',
+        'terminal_resize_reflow = true',
+        '',
+        '[mcp_servers.elisym.env]',
+        'ELISYM_AGENT = "alice"',
+        'ELISYM_PASSPHRASE = "secret"',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runInstall({ client: 'codex', agent: 'bob' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after.match(/\[mcp_servers\.elisym\.env\]/g)).toHaveLength(1);
+    expect(after).toContain('[features]');
+    expect(after).toContain('ELISYM_AGENT = "bob"');
+    expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
+  });
+
+  it('preserves literal-string Codex env entries while rebinding', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = ["-y", "@elisym/mcp@~0.0.1"]',
+        '',
+        '[mcp_servers.elisym.env]',
+        'ELISYM_AGENT = "alice"',
+        "ELISYM_PASSPHRASE = 'secret'",
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runInstall({ client: 'codex', agent: 'bob' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain('ELISYM_AGENT = "bob"');
+    expect(after).toContain("ELISYM_PASSPHRASE = 'secret'");
+  });
+
+  it('removes only the Codex elisym block on uninstall', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.other]',
+        'command = "other"',
+        '',
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = ["-y", "@elisym/mcp@~0.0.1"]',
+        '',
+        '[mcp_servers.elisym.env]',
+        'ELISYM_AGENT = "alice"',
+        '',
+        '[features]',
+        'terminal_resize_reflow = true',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runUninstall({ client: 'codex' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).toContain('[mcp_servers.other]');
+    expect(after).not.toContain('[mcp_servers.elisym]');
+    expect(after).not.toContain('[mcp_servers.elisym.env]');
+    expect(after).toContain('[features]');
+  });
+
+  it('removes commented Codex env headers during uninstall', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = ["-y", "@elisym/mcp@~0.0.1"]',
+        '',
+        '[mcp_servers.elisym.env] # secrets',
+        'ELISYM_AGENT = "alice"',
+        '',
+        '[features]',
+        'terminal_resize_reflow = true',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runUninstall({ client: 'codex' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).not.toContain('[mcp_servers.elisym]');
+    expect(after).not.toContain('[mcp_servers.elisym.env]');
+    expect(after).not.toContain('ELISYM_AGENT = "alice"');
+    expect(after).toContain('[features]');
+  });
+
+  it('removes non-contiguous Codex elisym tables during uninstall', async () => {
+    await writeFile(
+      codexPath,
+      [
+        '[mcp_servers.elisym]',
+        'command = "npx"',
+        'args = ["-y", "@elisym/mcp@~0.0.1"]',
+        '',
+        '[features]',
+        'terminal_resize_reflow = true',
+        '',
+        '[mcp_servers.elisym.env]',
+        'ELISYM_AGENT = "alice"',
+        '',
+        '[projects."/repo"]',
+        'trust_level = "trusted"',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    await runUninstall({ client: 'codex' });
+
+    const after = await readFile(codexPath, 'utf-8');
+    expect(after).not.toContain('[mcp_servers.elisym]');
+    expect(after).not.toContain('[mcp_servers.elisym.env]');
+    expect(after).toContain('[features]');
+    expect(after).toContain('[projects."/repo"]');
   });
 });
 
