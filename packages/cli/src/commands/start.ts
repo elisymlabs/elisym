@@ -213,6 +213,11 @@ export async function cmdStart(
   // Keyed by `provider::model`; deduplicated across skills so we don't probe
   // the same key twice when several skills share the same LLM dependency.
   const monitorPairs = new Map<string, { provider: LlmProvider; model: string }>();
+  // `provider::model` keys whose model returned HTTP 404 at deep-verify (the
+  // provider retired it). Skills bound to these are not advertised (Step 11) so
+  // the gateway keeps serving its other models instead of offering a capability
+  // that can never be fulfilled.
+  const retiredModels = new Set<string>();
   // Triples to build LlmClient instances for (mode=llm only).
   const triplesByKey = new Map<string, ResolvedSkillLlm>();
   const dependentSkillsByProvider = new Map<LlmProvider, string[]>();
@@ -331,7 +336,14 @@ export async function cmdStart(
         model: pair.model,
         verifyFn,
       });
-      healthMonitor.seed(pair.provider, pair.model, verification);
+      // A retired model (HTTP 404) is permanent and per-model. Do NOT seed it:
+      // its skills are not advertised below, and seeding would only add a
+      // misleading "temporarily unavailable" gate for any stale-card job.
+      const modelRetired =
+        !verification.ok && verification.reason === 'unavailable' && verification.status === 404;
+      if (!modelRetired) {
+        healthMonitor.seed(pair.provider, pair.model, verification);
+      }
       if (verification.ok) {
         console.log('ok');
       } else if (verification.reason === 'invalid') {
@@ -351,6 +363,13 @@ export async function cmdStart(
           `    Top up the account at the provider console, or set ${envVar} to a key on a funded org.\n`,
         );
         process.exit(1);
+      } else if (verification.status === 404) {
+        console.log('retired');
+        console.error(
+          `  ! ${pair.provider} model "${pair.model}" no longer exists (HTTP 404). ` +
+            `Update its model: in the SKILL.md / elisym.yaml. Skills using it will not be advertised.\n`,
+        );
+        retiredModels.add(`${pair.provider}::${pair.model}`);
       } else {
         console.log('unavailable');
         console.warn(
@@ -579,8 +598,27 @@ export async function cmdStart(
     };
   }
 
+  function retiredModelKeyForSkill(skill: (typeof allSkills)[0]): string | undefined {
+    if (skill.resolvedTriple) {
+      return `${skill.resolvedTriple.provider}::${skill.resolvedTriple.model}`;
+    }
+    if (skill.llmOverride?.provider && skill.llmOverride?.model) {
+      return `${skill.llmOverride.provider}::${skill.llmOverride.model}`;
+    }
+    return undefined;
+  }
+
   let cardsPublished = 0;
   for (const skill of allSkills) {
+    const modelKey = retiredModelKeyForSkill(skill);
+    if (modelKey && retiredModels.has(modelKey)) {
+      console.warn(`  ! Not advertising "${skill.name}" - its model was retired (HTTP 404).`);
+      logger.warn(
+        { event: 'publish_skipped_retired', kind: 31990, skill: skill.name, model: modelKey },
+        'capability not advertised - model retired',
+      );
+      continue;
+    }
     try {
       await client.discovery.publishCapability(identity, buildCard(skill), kinds);
       cardsPublished += 1;

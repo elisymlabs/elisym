@@ -276,6 +276,7 @@ async function verifyKeyDeep(
     return {
       ok: false,
       reason: 'unavailable',
+      status: response.status,
       error: `HTTP ${response.status}: ${body.slice(0, 200)}`,
     };
   } catch (error) {

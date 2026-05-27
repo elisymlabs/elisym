@@ -15,13 +15,17 @@ export type LlmHealthStatus = 'unknown' | 'healthy' | 'invalid' | 'billing' | 'u
  * - `billing`: HTTP 402, or 400 with credit/billing/insufficient marker,
  *   or OpenAI's 429 with `insufficient_quota`. Operator out of credits.
  * - `unavailable`: transient (HTTP 429 without quota marker, 5xx, network
- *   error). May resolve on retry.
+ *   error). May resolve on retry. `status` carries the HTTP status when the
+ *   failure was an HTTP response (absent for a network throw), letting callers
+ *   distinguish a transient 5xx/429 from a permanent 404 "model no longer
+ *   exists" without re-parsing `error`. Unlike `invalid`/`billing`,
+ *   `unavailable` is per-model and never cascades to sibling models.
  */
 export type LlmKeyVerification =
   | { ok: true }
   | { ok: false; reason: 'invalid'; status: number; body: string }
   | { ok: false; reason: 'billing'; status?: number; body?: string }
-  | { ok: false; reason: 'unavailable'; error: string };
+  | { ok: false; reason: 'unavailable'; status?: number; error: string };
 
 export type LlmHealthErrorReason = 'invalid' | 'billing' | 'unavailable';
 
