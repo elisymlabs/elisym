@@ -25,9 +25,13 @@ export const POLICIES_DIRNAME = 'policies';
 /** Max depth for walk-up search (safety guard against unbounded loops). */
 const MAX_WALK_UP_DEPTH = 64;
 
+function userHome(): string {
+  return process.env.HOME ?? homedir();
+}
+
 /** ~/.elisym/ */
 export function homeElisymDir(): string {
-  return join(homedir(), ELISYM_DIRNAME);
+  return join(userHome(), ELISYM_DIRNAME);
 }
 
 /** ~/.elisym/config.yaml — global (not per-agent) config file. */
@@ -41,7 +45,7 @@ export function globalConfigPath(): string {
  * or (d) MAX_WALK_UP_DEPTH iterations. Returns absolute path or null.
  */
 export function findProjectElisymDir(startDir: string): string | null {
-  const home = homedir();
+  const home = userHome();
   let current = resolve(startDir);
   let previous: string | null = null;
 

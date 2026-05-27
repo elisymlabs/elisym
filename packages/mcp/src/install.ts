@@ -1,9 +1,9 @@
 /**
- * Auto-install elisym MCP server into Claude Desktop, Cursor, Windsurf configs.
+ * Auto-install elisym MCP server into MCP client configs.
  */
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { validateAgentName } from '@elisym/sdk';
 import { listAgents } from '@elisym/sdk/agent-store';
 import { writeFileAtomic } from './atomic-write.js';
@@ -20,7 +20,12 @@ function elisymPackageArgs(): string[] {
 
 interface McpClient {
   name: string;
+  format: 'json' | 'codex-toml';
   configPath: () => string | null;
+}
+
+function userHome(): string {
+  return process.env.HOME ?? homedir();
 }
 
 /**
@@ -87,8 +92,9 @@ export async function safeRewriteJson(
 const CLIENTS: McpClient[] = [
   {
     name: 'claude-desktop',
+    format: 'json',
     configPath() {
-      const home = homedir();
+      const home = userHome();
       switch (platform()) {
         case 'darwin':
           return join(home, 'Library/Application Support/Claude/claude_desktop_config.json');
@@ -103,21 +109,29 @@ const CLIENTS: McpClient[] = [
   },
   {
     name: 'claude-code',
+    format: 'json',
     // Claude Code CLI keeps user-scope MCP servers under `mcpServers` at the top
     // level of `~/.claude.json`. Project-scope (`.mcp.json` in cwd) and local-scope
     // (`projects.<path>.mcpServers` inside the same file) are deliberately not
     // touched here - this installer only writes user scope so the server is
     // available across all projects.
-    configPath: () => join(homedir(), '.claude.json'),
+    configPath: () => join(userHome(), '.claude.json'),
   },
   {
     name: 'cursor',
-    configPath: () => join(homedir(), '.cursor/mcp.json'),
+    format: 'json',
+    configPath: () => join(userHome(), '.cursor/mcp.json'),
+  },
+  {
+    name: 'codex',
+    format: 'codex-toml',
+    configPath: () => join(userHome(), '.codex/config.toml'),
   },
   {
     name: 'windsurf',
+    format: 'json',
     configPath() {
-      const home = homedir();
+      const home = userHome();
       if (platform() === 'darwin') {
         return join(home, 'Library/Application Support/Windsurf/mcp.json');
       }
@@ -193,7 +207,10 @@ export async function runInstall(options: {
     }
 
     try {
-      const result = await installToConfig(path, entry, effectiveAgent);
+      const result =
+        client.format === 'codex-toml'
+          ? await installToCodexConfig(path, entry, options.agent)
+          : await installToConfig(path, entry, options.agent);
       if (result === 'installed') {
         console.log(`Installed to ${client.name}: ${path}`);
         installed++;
@@ -219,7 +236,7 @@ type DefaultAgentResolution =
   | { kind: 'ambiguous'; names: string[] };
 
 async function resolveDefaultAgent(): Promise<DefaultAgentResolution> {
-  const agents = await listAgents(process.cwd());
+  const agents = await listAgents(userHome());
   const [first, second] = agents;
   if (!first) {
     return { kind: 'none' };
@@ -251,6 +268,21 @@ export async function runUpdate(options: { client?: string; agent?: string }): P
     // Distinguish ENOENT (client not installed - silent skip) from other read
     // errors (EACCES, EISDIR - surface to user) and from JSON parse failures
     // (likely a hand-edited config - warn and skip without modifying the file).
+    if (client.format === 'codex-toml') {
+      try {
+        const result = await updateCodexConfig(path, options.agent);
+        if (result === 'updated') {
+          console.log(`Updated ${client.name}: ${path} -> @elisym/mcp@~${PACKAGE_VERSION}`);
+          updated++;
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.log(`Skipped ${client.name}: ${(err as Error).message}`);
+        }
+      }
+      continue;
+    }
+
     let raw: string;
     try {
       raw = await readFile(path, 'utf-8');
@@ -318,6 +350,10 @@ export async function runUpdate(options: { client?: string; agent?: string }): P
     // left intact.
     const entry = existing as Record<string, any>;
     const newArgs = elisymPackageArgs();
+    const packageArg = newArgs[1];
+    if (packageArg === undefined) {
+      throw new Error('Internal error: missing package argument for elisym MCP install.');
+    }
     if (Array.isArray(entry.args)) {
       // Find the existing `@elisym/mcp@...` token and replace it in place so
       // any user-added flags around it survive. If for some reason it's not
@@ -327,7 +363,7 @@ export async function runUpdate(options: { client?: string; agent?: string }): P
         (a: unknown) => typeof a === 'string' && a.startsWith('@elisym/mcp@'),
       );
       if (idx >= 0) {
-        entry.args[idx] = newArgs[1]!;
+        entry.args[idx] = packageArg;
       } else {
         entry.args = newArgs;
       }
@@ -365,6 +401,18 @@ export async function runUninstall(options: { client?: string }): Promise<void> 
 
     const path = client.configPath();
     if (!path) {
+      continue;
+    }
+
+    if (client.format === 'codex-toml') {
+      try {
+        const result = await uninstallFromCodexConfig(path);
+        if (result === 'removed') {
+          console.log(`Removed from ${client.name}: ${path}`);
+        }
+      } catch {
+        // Keep uninstall quiet for missing or unreadable clients, matching JSON clients.
+      }
       continue;
     }
 
@@ -409,8 +457,10 @@ export async function runList(): Promise<void> {
 
     try {
       const raw = await readFile(path, 'utf-8');
-      const config = JSON.parse(raw);
-      const installed = !!config.mcpServers?.elisym;
+      const installed =
+        client.format === 'codex-toml'
+          ? findCodexElisymBlock(raw) !== null
+          : !!JSON.parse(raw).mcpServers?.elisym;
       console.log(`${client.name}: ${installed ? 'installed' : 'available'} (${path})`);
     } catch {
       console.log(`${client.name}: not found`);
@@ -492,4 +542,553 @@ async function installToConfig(
   // clobber. The outer try/catch in runInstall surfaces this as a Skipped log.
   await safeRewriteJson(path, raw, config);
   return 'installed';
+}
+
+type CodexUpdateResult = 'updated' | 'unchanged';
+type CodexUninstallResult = 'removed' | 'unchanged';
+
+interface CodexBlock {
+  start: number;
+  end: number;
+  body: string;
+}
+
+interface TomlTableRange {
+  start: number;
+  end: number;
+  path: string;
+}
+
+function findCodexElisymBlock(raw: string): CodexBlock | null {
+  const table = findTomlTableRange(raw, 'mcp_servers.elisym');
+  if (!table) {
+    return null;
+  }
+  return { start: table.start, end: table.end, body: raw.slice(table.start, table.end) };
+}
+
+function findTomlTableRange(raw: string, path: string): TomlTableRange | null {
+  return findTomlTableRanges(raw).find((table) => table.path === path) ?? null;
+}
+
+function findTomlTableRanges(raw: string): TomlTableRange[] {
+  const lines = raw.match(/^.*(?:\n|$)/gm) ?? [];
+  const offsets: number[] = [];
+  let offset = 0;
+
+  for (const line of lines) {
+    offsets.push(offset);
+    offset += line.length;
+  }
+
+  const ranges: TomlTableRange[] = [];
+  for (const [lineIndex, line] of lines.entries()) {
+    const path = parseTomlTableHeader(line);
+    if (!path) {
+      continue;
+    }
+
+    let end = raw.length;
+    for (let nextLineIndex = lineIndex + 1; nextLineIndex < lines.length; nextLineIndex++) {
+      if (parseTomlTableHeader(lines[nextLineIndex] ?? '')) {
+        end = offsets[nextLineIndex] ?? raw.length;
+        break;
+      }
+    }
+    ranges.push({ start: offsets[lineIndex] ?? 0, end, path });
+  }
+
+  return ranges;
+}
+
+function parseTomlTableHeader(line: string): string | null {
+  const match = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/.exec(line.trimEnd());
+  return match ? match[1] : null;
+}
+
+function parseCodexEnv(block: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  let section: 'elisym' | 'env' | 'other' = 'other';
+
+  for (const line of block.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[')) {
+      if (/^\[mcp_servers\.elisym\]\s*(?:#.*)?$/.test(trimmed)) {
+        section = 'elisym';
+      } else if (/^\[mcp_servers\.elisym\.env\]\s*(?:#.*)?$/.test(trimmed)) {
+        section = 'env';
+      } else {
+        section = 'other';
+      }
+      continue;
+    }
+    if (trimmed === '' || trimmed.startsWith('#')) {
+      continue;
+    }
+    if (section === 'elisym') {
+      Object.assign(env, parseCodexInlineEnv(trimmed));
+    } else if (section === 'env') {
+      const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*(?:#.*)?$/.exec(trimmed);
+      if (!match) {
+        continue;
+      }
+      const [, key, rawValue] = match;
+      const value = parseTomlString(rawValue);
+      if (value !== undefined) {
+        env[key] = value;
+      }
+    }
+  }
+
+  return env;
+}
+
+function parseCodexInlineEnv(line: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  const match = /^env\s*=\s*\{(.*)\}\s*(?:#.*)?$/.exec(line);
+  if (!match) {
+    return env;
+  }
+
+  const [, body] = match;
+  for (const entry of splitInlineTableEntries(body)) {
+    const entryMatch = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/.exec(entry);
+    if (!entryMatch) {
+      continue;
+    }
+    const [, key, rawValue] = entryMatch;
+    const value = parseTomlString(rawValue);
+    if (value !== undefined) {
+      env[key] = value;
+    }
+  }
+
+  return env;
+}
+
+function splitInlineTableEntries(body: string): string[] {
+  const entries: string[] = [];
+  let current = '';
+  let inString = false;
+  let escaped = false;
+
+  for (const char of body) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && inString) {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      current += char;
+      inString = !inString;
+      continue;
+    }
+    if (char === ',' && !inString) {
+      entries.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim() !== '') {
+    entries.push(current);
+  }
+
+  return entries;
+}
+
+function parseTomlString(rawValue: string): string | undefined {
+  if (rawValue.startsWith("'") && rawValue.endsWith("'")) {
+    return rawValue.slice(1, -1);
+  }
+  try {
+    return JSON.parse(rawValue) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+function quoteTomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function renderTomlStringArray(values: string[]): string {
+  return `[${values.map((value) => quoteTomlString(value)).join(', ')}]`;
+}
+
+function renderCodexTomlBlock(entry: Record<string, any>): string {
+  const lines = [
+    '[mcp_servers.elisym]',
+    `command = ${quoteTomlString(String(entry.command ?? 'npx'))}`,
+    `args = ${renderTomlStringArray(Array.isArray(entry.args) ? entry.args.map(String) : [])}`,
+  ];
+
+  const env =
+    entry.env && typeof entry.env === 'object' && !Array.isArray(entry.env)
+      ? (entry.env as Record<string, string>)
+      : {};
+  const envEntries = Object.entries(env);
+  if (envEntries.length > 0) {
+    lines.push('', '[mcp_servers.elisym.env]');
+    for (const [key, value] of envEntries) {
+      lines.push(`${key} = ${quoteTomlString(String(value))}`);
+    }
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
+function updateCodexTomlBlock(
+  body: string,
+  env: Record<string, string>,
+  rewriteEnv: boolean,
+): string {
+  const withFreshPackagePin = updateCodexPackagePin(body);
+  if (!rewriteEnv) {
+    return withFreshPackagePin;
+  }
+  const agent = env.ELISYM_AGENT;
+  if (agent === undefined) {
+    return withFreshPackagePin;
+  }
+  return replaceCodexAgentEnv(withFreshPackagePin, agent);
+}
+
+function updateCodexPackagePin(body: string): string {
+  const lines = body.match(/^.*(?:\n|$)/gm) ?? [];
+  let section: 'elisym' | 'env' | 'other' = 'other';
+
+  for (const [lineIndex, line] of lines.entries()) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[')) {
+      if (/^\[mcp_servers\.elisym\]\s*(?:#.*)?$/.test(trimmed)) {
+        section = 'elisym';
+      } else if (/^\[mcp_servers\.elisym\.env\]\s*(?:#.*)?$/.test(trimmed)) {
+        section = 'env';
+      } else {
+        section = 'other';
+      }
+      continue;
+    }
+
+    if (section !== 'elisym' || !/^\s*args\s*=/.test(line)) {
+      continue;
+    }
+
+    const packageSpec = `@elisym/mcp@~${PACKAGE_VERSION}`;
+    const assignmentEndIndex = findTomlAssignmentEnd(lines, lineIndex);
+    const assignmentLines = lines.slice(lineIndex, assignmentEndIndex + 1);
+    const packageLineOffset = assignmentLines.findIndex((assignmentLine) =>
+      assignmentLine.includes('@elisym/mcp@'),
+    );
+    if (packageLineOffset >= 0) {
+      const packageLineIndex = lineIndex + packageLineOffset;
+      const packageLine = lines[packageLineIndex] ?? '';
+      lines[packageLineIndex] = packageLine.replace(/@elisym\/mcp@[^"\],\s]+/, packageSpec);
+    } else {
+      lines.splice(
+        lineIndex,
+        assignmentEndIndex - lineIndex + 1,
+        replaceTomlAssignmentValue(line, renderTomlStringArray(elisymPackageArgs())),
+      );
+    }
+    break;
+  }
+
+  return lines.join('');
+}
+
+function findTomlAssignmentEnd(lines: string[], startIndex: number): number {
+  const firstLine = lines[startIndex] ?? '';
+  const assignmentStart = firstLine.indexOf('=');
+  if (assignmentStart < 0) {
+    return startIndex;
+  }
+
+  let depth = 0;
+  let sawArray = false;
+  for (let lineIndex = startIndex; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex] ?? '';
+    if (lineIndex > startIndex && /^\s*\[/.test(line) && depth > 0) {
+      return lineIndex - 1;
+    }
+
+    const scanFrom = lineIndex === startIndex ? assignmentStart + 1 : 0;
+    const scan = scanTomlArrayLine(line, scanFrom, depth);
+    depth = scan.depth;
+    sawArray = sawArray || scan.sawArray;
+
+    if (!sawArray) {
+      return startIndex;
+    }
+    if (depth <= 0) {
+      return lineIndex;
+    }
+  }
+
+  return lines.length - 1;
+}
+
+function scanTomlArrayLine(
+  line: string,
+  startIndex: number,
+  initialDepth: number,
+): { depth: number; sawArray: boolean } {
+  let depth = initialDepth;
+  let sawArray = false;
+  let inString = false;
+  let escaped = false;
+
+  for (let charIndex = startIndex; charIndex < line.length; charIndex++) {
+    const char = line[charIndex];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && inString) {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (char === '#' && !inString) {
+      break;
+    }
+    if (char === '[' && !inString) {
+      depth++;
+      sawArray = true;
+    } else if (char === ']' && !inString) {
+      depth--;
+    }
+  }
+
+  return { depth, sawArray };
+}
+
+function replaceTomlAssignmentValue(line: string, value: string): string {
+  const match = /^(\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*).*(\r?\n)?$/.exec(line);
+  if (!match) {
+    return line;
+  }
+  const [, prefix, newline = ''] = match;
+  return `${prefix}${value}${newline}`;
+}
+
+function replaceCodexAgentEnv(body: string, agent: string): string {
+  const lines = body.match(/^.*(?:\n|$)/gm) ?? [];
+  let section: 'elisym' | 'env' | 'other' = 'other';
+  let envInsertionIndex = -1;
+  let elisymInsertionIndex = -1;
+
+  for (const [lineIndex, line] of lines.entries()) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[')) {
+      if (section === 'env' && envInsertionIndex < 0) {
+        envInsertionIndex = lineIndex;
+      }
+      if (section === 'elisym') {
+        elisymInsertionIndex = lineIndex;
+      }
+
+      const header = parseTomlTableHeader(trimmed);
+      if (header === 'mcp_servers.elisym') {
+        section = 'elisym';
+      } else if (header === 'mcp_servers.elisym.env') {
+        section = 'env';
+        continue;
+      } else {
+        section = 'other';
+      }
+    }
+
+    if (section === 'env') {
+      if (/^\s*ELISYM_AGENT\s*=/.test(line)) {
+        lines[lineIndex] = replaceTomlAssignmentValue(line, quoteTomlString(agent));
+        return lines.join('');
+      }
+      continue;
+    }
+    if (section === 'elisym') {
+      elisymInsertionIndex = lineIndex + 1;
+      if (/^\s*env\s*=/.test(line)) {
+        const nextLine = replaceCodexInlineEnvAgent(line, agent);
+        if (nextLine !== null) {
+          lines[lineIndex] = nextLine;
+          return lines.join('');
+        }
+      }
+    }
+  }
+
+  if (section === 'env') {
+    envInsertionIndex = lines.length;
+  } else if (section === 'elisym') {
+    elisymInsertionIndex = lines.length;
+  }
+
+  const agentLine = `ELISYM_AGENT = ${quoteTomlString(agent)}\n`;
+  if (envInsertionIndex >= 0) {
+    lines.splice(envInsertionIndex, 0, agentLine);
+    return lines.join('');
+  }
+  const insertionIndex = elisymInsertionIndex >= 0 ? elisymInsertionIndex : lines.length;
+  lines.splice(insertionIndex, 0, '\n', '[mcp_servers.elisym.env]\n', agentLine);
+  return lines.join('');
+}
+
+function replaceCodexInlineEnvAgent(line: string, agent: string): string | null {
+  const match = /^(\s*env\s*=\s*\{)(.*)(\}\s*(?:#.*)?(?:\r?\n)?)$/.exec(line);
+  if (!match) {
+    return null;
+  }
+
+  const [, prefix, body, suffix] = match;
+  const entries = splitInlineTableEntries(body);
+  const nextEntries: string[] = [];
+  let replaced = false;
+
+  for (const entry of entries) {
+    if (/^\s*ELISYM_AGENT\s*=/.test(entry)) {
+      const entryMatch = /^(\s*ELISYM_AGENT\s*=\s*).*$/.exec(entry);
+      if (!entryMatch) {
+        return null;
+      }
+      nextEntries.push(`${entryMatch[1]}${quoteTomlString(agent)}`);
+      replaced = true;
+    } else {
+      nextEntries.push(entry);
+    }
+  }
+
+  if (!replaced) {
+    nextEntries.push(` ELISYM_AGENT = ${quoteTomlString(agent)} `);
+  }
+
+  return `${prefix}${nextEntries.join(',')}${suffix}`;
+}
+
+function removeCodexElisymTables(raw: string): string {
+  const ranges = findTomlTableRanges(raw)
+    .filter((table) => isCodexElisymPath(table.path))
+    .sort((left, right) => right.start - left.start);
+
+  let nextRaw = raw;
+  for (const range of ranges) {
+    nextRaw = `${nextRaw.slice(0, range.start)}${nextRaw.slice(range.end)}`;
+  }
+  return nextRaw;
+}
+
+function isCodexElisymPath(path: string): boolean {
+  return path === 'mcp_servers.elisym' || path.startsWith('mcp_servers.elisym.');
+}
+
+function replaceCodexBlock(raw: string, block: CodexBlock | null, replacement: string): string {
+  if (!block) {
+    let separator = '\n\n';
+    if (raw.length === 0 || raw.endsWith('\n\n')) {
+      separator = '';
+    } else if (raw.endsWith('\n')) {
+      separator = '\n';
+    }
+    return `${raw}${separator}${replacement}`;
+  }
+  return `${raw.slice(0, block.start)}${replacement}${raw.slice(block.end)}`;
+}
+
+async function installToCodexConfig(
+  path: string,
+  entry: Record<string, any>,
+  agentRebind: string | undefined,
+): Promise<InstallResult> {
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw err;
+    }
+    await mkdir(dirname(path), { recursive: true });
+    await writeFileAtomic(path, renderCodexTomlBlock(entry), 0o600);
+    return 'installed';
+  }
+
+  const block = findCodexElisymBlock(raw);
+  if (block) {
+    if (agentRebind === undefined) {
+      return 'unchanged';
+    }
+    const env = parseCodexEnv(raw);
+    if (env.ELISYM_AGENT === agentRebind) {
+      return 'unchanged';
+    }
+    env.ELISYM_AGENT = agentRebind;
+    const replacement = updateCodexTomlBlock(raw, env, true);
+    await safeRewriteRaw(path, raw, replacement);
+    return 'rebound';
+  }
+
+  await safeRewriteRaw(path, raw, replaceCodexBlock(raw, null, renderCodexTomlBlock(entry)));
+  return 'installed';
+}
+
+async function updateCodexConfig(
+  path: string,
+  agentOverride: string | undefined,
+): Promise<CodexUpdateResult> {
+  const raw = await readFile(path, 'utf-8');
+  const block = findCodexElisymBlock(raw);
+  if (!block) {
+    return 'unchanged';
+  }
+
+  const env = parseCodexEnv(raw);
+  const existingAgentRaw = typeof env.ELISYM_AGENT === 'string' ? env.ELISYM_AGENT : undefined;
+  if (existingAgentRaw !== undefined && agentOverride === undefined) {
+    validateAgentName(existingAgentRaw);
+  }
+  if (agentOverride !== undefined) {
+    env.ELISYM_AGENT = agentOverride;
+  }
+
+  const replacement = updateCodexTomlBlock(raw, env, agentOverride !== undefined);
+  await safeRewriteRaw(path, raw, replacement);
+  return 'updated';
+}
+
+async function uninstallFromCodexConfig(path: string): Promise<CodexUninstallResult> {
+  const raw = await readFile(path, 'utf-8');
+  const replacement = removeCodexElisymTables(raw);
+  if (replacement === raw) {
+    return 'unchanged';
+  }
+  await safeRewriteRaw(path, raw, replacement);
+  return 'removed';
+}
+
+async function safeRewriteRaw(path: string, expectedRaw: string, nextRaw: string): Promise<void> {
+  let recheck: string;
+  try {
+    recheck = await readFile(path, 'utf-8');
+  } catch (err) {
+    throw new Error(
+      `${path} disappeared between read and write: ${(err as Error).message}. ` +
+        `Re-run after the file is restored.`,
+    );
+  }
+  if (recheck !== expectedRaw) {
+    throw new Error(
+      `${path} was modified by another process during update. ` +
+        `Close the MCP client and re-run.`,
+    );
+  }
+  await writeFileAtomic(path, nextRaw, 0o600);
 }
