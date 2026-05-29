@@ -2,7 +2,7 @@ import { classifyJobError, LIMITS, utf8ByteLength, type CapabilityCard } from '@
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import Decimal from 'decimal.js-light';
-import { useState, type ReactNode } from 'react';
+import { useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import type { PingStatus } from '~/hooks/usePingAgent';
@@ -79,6 +79,11 @@ function JobInputInner({
   // purchase and point the user at the MCP/CLI. We gate on presence only and
   // never render the (untrusted) value.
   const needsFileInput = typeof card.inputMime === 'string' && card.inputMime.length > 0;
+  // Capabilities that return a file result declare `outputMime` and deliver it
+  // as an iroh blob. The browser has no iroh transport, so it cannot receive the
+  // result even when the input is plain text - block the purchase and point the
+  // user at the MCP/CLI. We gate on presence only and never render the value.
+  const returnsFileResult = typeof card.outputMime === 'string' && card.outputMime.length > 0;
   const price = card.payment?.job_price ?? 0;
   const isFree = price === 0;
   const gasFeeLamports = useSolGasFeeEstimate(card);
@@ -106,6 +111,16 @@ function JobInputInner({
     buy(isStatic ? card.name : input);
   }
 
+  function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    // Cmd+Enter (macOS) / Ctrl+Enter (Windows/Linux) submits, mirroring the
+    // Buy button. Skip when the action is disabled so the shortcut never does
+    // something the button itself wouldn't.
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !isDisabled) {
+      event.preventDefault();
+      handleBuy();
+    }
+  }
+
   function buttonLabel(): ReactNode {
     if (buying) {
       return 'Processing...';
@@ -129,6 +144,7 @@ function JobInputInner({
   const isDisabled =
     buying ||
     needsFileInput ||
+    returnsFileResult ||
     !relaysConnected ||
     ((!!publicKey || isFree) && !isStatic && !input.trim()) ||
     ((!!publicKey || isFree) && pingStatus !== 'online') ||
@@ -157,8 +173,10 @@ function JobInputInner({
     <div className="rounded-3xl border border-black/7 bg-surface shadow-[0_1px_8px_rgba(0,0,0,0.05)]">
       {!isStatic && !needsFileInput && (
         <textarea
+          autoFocus
           value={input}
           onChange={(event) => setInput(event.target.value)}
+          onKeyDown={handleInputKeyDown}
           placeholder={`Ask ${agentName || 'agent'}…`}
           className="min-h-[40px] w-full resize-none bg-transparent px-14 pt-16 pb-8 font-[inherit] text-sm text-text outline-none placeholder:text-text-2/40 sm:px-20 sm:pt-20"
         />
@@ -248,6 +266,12 @@ function JobInputInner({
         <div className="px-20 pb-12 text-xs text-text-2">
           This capability needs a file input. The web app does not support file jobs yet - use the
           elisym MCP to send files.
+        </div>
+      )}
+      {!needsFileInput && returnsFileResult && (
+        <div className="px-20 pb-12 text-xs text-text-2">
+          This capability returns a file result. The web app cannot receive file results yet - use
+          the elisym MCP to run this job.
         </div>
       )}
       {error && <ErrorMessage error={error} paid={paid} />}
