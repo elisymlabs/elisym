@@ -1,21 +1,32 @@
 /**
  * Auto-install elisym MCP server into MCP client configs.
  */
-import { mkdir, readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import { validateAgentName } from '@elisym/sdk';
 import { listAgents } from '@elisym/sdk/agent-store';
 import { writeFileAtomic } from './atomic-write.js';
-import { PACKAGE_VERSION } from './utils.js';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Single source of truth for the npx args we write into client configs. Shared
  * by `runInstall` (fresh entry) and `runUpdate` (refresh of existing entry) so
- * the version pin format cannot drift between the two paths.
+ * the package spec cannot drift between the two paths.
+ *
+ * We pin to the `latest` dist-tag (not a `~MAJOR.MINOR` range) so that every
+ * cold start of the MCP server resolves the newest published build with no
+ * manual `update` step. npx re-checks the registry on each launch; the running
+ * server only changes version on client restart. The trade-off is that a
+ * minor release that changes the tool schema lands silently on the next
+ * restart - acceptable here because the network is iterating quickly and we
+ * want users on the freshest server by default.
  */
 function elisymPackageArgs(): string[] {
-  return ['-y', `@elisym/mcp@~${PACKAGE_VERSION}`];
+  return ['-y', '@elisym/mcp@latest'];
 }
 
 interface McpClient {
@@ -26,6 +37,45 @@ interface McpClient {
 
 function userHome(): string {
   return process.env.HOME ?? homedir();
+}
+
+/**
+ * Resolve the npm cache directory, honoring an explicit `npm_config_cache`
+ * override or a user `.npmrc` (`npm config get cache`). Falls back to the
+ * platform default when npm is not on PATH so cache-busting still works in a
+ * minimal environment.
+ */
+async function resolveNpmCacheDir(): Promise<string> {
+  const fromEnv = process.env.npm_config_cache;
+  if (fromEnv && fromEnv.trim() !== '') {
+    return fromEnv.trim();
+  }
+  try {
+    const { stdout } = await execFileAsync('npm', ['config', 'get', 'cache']);
+    const value = stdout.trim();
+    if (value && value !== 'undefined' && value !== 'null') {
+      return value;
+    }
+  } catch {
+    // npm not on PATH - fall through to the platform default.
+  }
+  if (platform() === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA ?? join(userHome(), 'AppData', 'Local');
+    return join(localAppData, 'npm-cache');
+  }
+  return join(userHome(), '.npm');
+}
+
+/**
+ * Remove the `_npx` subtree of the npm cache so the next `npx @elisym/mcp@latest`
+ * re-fetches from the registry. `rm` with `force: true` is a no-op when the
+ * directory is absent, so this is safe to call unconditionally.
+ */
+async function clearNpxCache(): Promise<void> {
+  const cacheDir = await resolveNpmCacheDir();
+  const npxDir = join(cacheDir, '_npx');
+  await rm(npxDir, { recursive: true, force: true });
+  console.log(`Cleared npx cache: ${npxDir}`);
 }
 
 /**
@@ -141,10 +191,9 @@ const CLIENTS: McpClient[] = [
 ];
 
 function buildServerEntry(agentName?: string, env?: Record<string, string>): Record<string, any> {
-  // use ~MAJOR.MINOR.PATCH so patches update automatically but minor versions
-  // (which may break the schema) need an explicit `elisym-mcp install` re-run. The
-  // version string is shared with `server.ts` and `index.ts` via `PACKAGE_VERSION` so
-  // the install pin cannot drift from what the server reports.
+  // Package spec comes from elisymPackageArgs() (the `latest` dist-tag) so the
+  // server self-updates on each cold start. See that helper for the rationale
+  // and trade-offs.
   const entry: Record<string, any> = {
     command: 'npx',
     args: elisymPackageArgs(),
@@ -247,7 +296,11 @@ async function resolveDefaultAgent(): Promise<DefaultAgentResolution> {
   return { kind: 'ambiguous', names: agents.map((agent) => agent.name) };
 }
 
-export async function runUpdate(options: { client?: string; agent?: string }): Promise<void> {
+export async function runUpdate(options: {
+  client?: string;
+  agent?: string;
+  clearCache?: boolean;
+}): Promise<void> {
   validateClientName(options.client);
   if (options.agent) {
     validateAgentName(options.agent);
@@ -272,7 +325,7 @@ export async function runUpdate(options: { client?: string; agent?: string }): P
       try {
         const result = await updateCodexConfig(path, options.agent);
         if (result === 'updated') {
-          console.log(`Updated ${client.name}: ${path} -> @elisym/mcp@~${PACKAGE_VERSION}`);
+          console.log(`Updated ${client.name}: ${path} -> @elisym/mcp@latest`);
           updated++;
         }
       } catch (err) {
@@ -382,12 +435,23 @@ export async function runUpdate(options: { client?: string; agent?: string }): P
       console.log(`Skipped ${client.name}: ${(err as Error).message}`);
       continue;
     }
-    console.log(`Updated ${client.name}: ${path} -> @elisym/mcp@~${PACKAGE_VERSION}`);
+    console.log(`Updated ${client.name}: ${path} -> @elisym/mcp@latest`);
     updated++;
   }
 
   if (updated === 0) {
     console.log('No existing elisym MCP installs found to update.');
+  }
+
+  // Force-bust the npx cache so the NEXT client restart re-resolves
+  // `@elisym/mcp@latest` from the registry instead of replaying a stale cached
+  // tarball. With installs defaulting to the `latest` dist-tag this is the
+  // primary reason `update` still exists: npx normally re-checks the registry
+  // per launch, but the cache can stick (offline, flaky network, npm quirks)
+  // and silently pin an old build. The running server is unaffected until the
+  // client restarts.
+  if (options.clearCache) {
+    await clearNpxCache();
   }
 }
 
@@ -781,7 +845,10 @@ function updateCodexPackagePin(body: string): string {
       continue;
     }
 
-    const packageSpec = `@elisym/mcp@~${PACKAGE_VERSION}`;
+    const packageSpec = elisymPackageArgs()[1];
+    if (packageSpec === undefined) {
+      throw new Error('Internal error: missing package argument for elisym MCP install.');
+    }
     const assignmentEndIndex = findTomlAssignmentEnd(lines, lineIndex);
     const assignmentLines = lines.slice(lineIndex, assignmentEndIndex + 1);
     const packageLineOffset = assignmentLines.findIndex((assignmentLine) =>

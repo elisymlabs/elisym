@@ -268,12 +268,15 @@ program
     }),
   );
 
-// Update subcommand: refresh the version pin (and optionally agent binding) in
-// all client configs that already have elisym installed. Existing agent + env
-// are preserved unless explicitly overridden.
+// Update subcommand: installs default to the `@latest` dist-tag, so npx already
+// pulls the newest build on each cold start. `update` exists for the case where
+// that does NOT happen - it refreshes the entry to `@latest` (migrating any
+// legacy version pin forward) AND clears the npx cache so the next client
+// restart is guaranteed to re-fetch from the registry. Existing agent + env are
+// preserved unless explicitly overridden.
 program
   .command('update')
-  .description('Refresh the elisym MCP entry in installed client configs')
+  .description('Force-refresh installed elisym MCP entries to @latest and clear the npx cache')
   .option(
     '--client <name>',
     'Specific client (claude-desktop, claude-code, cursor, codex, windsurf)',
@@ -281,7 +284,7 @@ program
   .option('--agent <name>', 'Override the agent binding')
   .action(
     safe(async (options) => {
-      await runUpdate({ client: options.client, agent: options.agent });
+      await runUpdate({ client: options.client, agent: options.agent, clearCache: true });
     }),
   );
 
