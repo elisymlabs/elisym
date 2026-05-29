@@ -45,6 +45,7 @@ lamport
 lookback
 lamports
 localnet
+localappdata
 mainnet
 mgmt
 modelcontextprotocol

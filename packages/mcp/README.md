@@ -24,7 +24,8 @@ npx @elisym/mcp install --agent <agent-name>
 # List detected MCP clients
 npx @elisym/mcp install --list
 
-# Refresh the version pin in installed clients (preserves agent + env)
+# Installs pin to @latest, so npx pulls the newest build on each restart.
+# Run update only to force a refresh (clears the npx cache; preserves agent + env).
 npx @elisym/mcp update
 
 # Remove from MCP clients

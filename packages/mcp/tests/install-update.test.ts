@@ -61,7 +61,7 @@ describe('runUpdate', () => {
 
     const after = JSON.parse(await readFile(cursorPath, 'utf-8'));
     const entry = after.mcpServers.elisym;
-    expect(entry.args).toEqual(['-y', `@elisym/mcp@~${PACKAGE_VERSION}`]);
+    expect(entry.args).toEqual(['-y', '@elisym/mcp@latest']);
     // Existing agent + env must survive an update.
     expect(entry.env.ELISYM_AGENT).toBe('alice');
     expect(entry.env.ELISYM_PASSPHRASE).toBe('secret');
@@ -147,7 +147,7 @@ describe('runUpdate', () => {
 
     const after = JSON.parse(await readFile(cursorPath, 'utf-8'));
     const entry = after.mcpServers.elisym;
-    expect(entry.args).toEqual(['-y', `@elisym/mcp@~${PACKAGE_VERSION}`]);
+    expect(entry.args).toEqual(['-y', '@elisym/mcp@latest']);
     // No agent was bound before; nothing should appear after.
     expect(entry.env).toBeUndefined();
   });
@@ -271,7 +271,7 @@ describe('runUpdate', () => {
     // Sibling MCP servers must be untouched.
     expect(after.mcpServers['other-server']).toEqual({ command: 'bar', args: ['--baz'] });
     // elisym entry refreshed; agent + env preserved.
-    expect(after.mcpServers.elisym.args).toEqual(['-y', `@elisym/mcp@~${PACKAGE_VERSION}`]);
+    expect(after.mcpServers.elisym.args).toEqual(['-y', '@elisym/mcp@latest']);
     expect(after.mcpServers.elisym.env.ELISYM_AGENT).toBe('alice');
     expect(after.mcpServers.elisym.env.ELISYM_PASSPHRASE).toBe('secret');
   });
@@ -307,7 +307,7 @@ describe('runUpdate', () => {
       '-y',
       '--registry',
       'https://my.registry/',
-      `@elisym/mcp@~${PACKAGE_VERSION}`,
+      '@elisym/mcp@latest',
       '--verbose',
     ]);
     // Env preserved.
@@ -346,6 +346,60 @@ describe('runUpdate', () => {
       'ELISYM_PASSPHRASE',
       'ZED_LAST',
     ]);
+  });
+
+  // With installs pinned to @latest, `update`'s real job is to bust the npx
+  // cache so the next client restart re-fetches from the registry. We point
+  // npm_config_cache at a tmpdir so cache resolution never spawns npm and never
+  // touches the developer's real ~/.npm.
+  it('clears the npx cache when clearCache is set', async () => {
+    const cacheRoot = join(dir, 'fake-npm-cache');
+    const npxDir = join(cacheRoot, '_npx');
+    await mkdir(join(npxDir, 'abc123'), { recursive: true });
+    await writeFile(join(npxDir, 'abc123', 'marker'), 'cached', { mode: 0o600 });
+
+    const originalCache = process.env.npm_config_cache;
+    process.env.npm_config_cache = cacheRoot;
+    try {
+      await runUpdate({ client: 'cursor', clearCache: true });
+    } finally {
+      if (originalCache === undefined) {
+        delete process.env.npm_config_cache;
+      } else {
+        process.env.npm_config_cache = originalCache;
+      }
+    }
+
+    await expect(readFile(join(npxDir, 'abc123', 'marker'), 'utf-8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    const calls = logSpy.mock.calls.map((call) => call.join(' '));
+    expect(calls.some((line) => line.includes('Cleared npx cache') && line.includes(npxDir))).toBe(
+      true,
+    );
+  });
+
+  // Without clearCache the cache must be left alone - the default update path
+  // (and every test above) must not spawn npm or delete _npx.
+  it('does not touch the npx cache when clearCache is not set', async () => {
+    const cacheRoot = join(dir, 'untouched-npm-cache');
+    const marker = join(cacheRoot, '_npx', 'keep', 'marker');
+    await mkdir(join(cacheRoot, '_npx', 'keep'), { recursive: true });
+    await writeFile(marker, 'cached', { mode: 0o600 });
+
+    const originalCache = process.env.npm_config_cache;
+    process.env.npm_config_cache = cacheRoot;
+    try {
+      await runUpdate({ client: 'cursor' });
+    } finally {
+      if (originalCache === undefined) {
+        delete process.env.npm_config_cache;
+      } else {
+        process.env.npm_config_cache = originalCache;
+      }
+    }
+
+    expect(await readFile(marker, 'utf-8')).toBe('cached');
   });
 });
 
@@ -403,7 +457,7 @@ describe('runInstall', () => {
     await runInstall({ client: 'cursor' });
 
     const after = JSON.parse(await readFile(cursorPath, 'utf-8'));
-    expect(after.mcpServers.elisym.args).toEqual(['-y', `@elisym/mcp@~${PACKAGE_VERSION}`]);
+    expect(after.mcpServers.elisym.args).toEqual(['-y', '@elisym/mcp@latest']);
   });
 
   it('creates a fresh Codex TOML config when none exists', async () => {
@@ -414,7 +468,7 @@ describe('runInstall', () => {
     const after = await readFile(codexPath, 'utf-8');
     expect(after).toContain('[mcp_servers.elisym]');
     expect(after).toContain('command = "npx"');
-    expect(after).toContain(`args = ["-y", "@elisym/mcp@~${PACKAGE_VERSION}"]`);
+    expect(after).toContain('args = ["-y", "@elisym/mcp@latest"]');
     expect(after).toContain('[mcp_servers.elisym.env]');
     expect(after).toContain('ELISYM_AGENT = "alice"');
   });
@@ -435,7 +489,7 @@ describe('runInstall', () => {
     const after = JSON.parse(await readFile(cursorPath, 'utf-8'));
     expect(after.userID).toBe('abc');
     expect(after.mcpServers['other-server']).toEqual({ command: 'foo', args: ['--bar'] });
-    expect(after.mcpServers.elisym.args).toEqual(['-y', `@elisym/mcp@~${PACKAGE_VERSION}`]);
+    expect(after.mcpServers.elisym.args).toEqual(['-y', '@elisym/mcp@latest']);
   });
 
   it('rebinds an existing entry to a new agent when --agent is supplied', async () => {
@@ -515,9 +569,7 @@ describe('runInstall', () => {
 
     const after = await readFile(codexPath, 'utf-8');
     expect(after).toContain('command = "/opt/bin/custom-runner"');
-    expect(after).toContain(
-      `args = ["--quiet", "-y", "@elisym/mcp@~${PACKAGE_VERSION}", "--trace"]`,
-    );
+    expect(after).toContain('args = ["--quiet", "-y", "@elisym/mcp@latest", "--trace"]');
     expect(after).toContain('cwd = "/repo"');
     expect(after).toContain('ELISYM_AGENT = "bob"');
     expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
@@ -665,7 +717,7 @@ describe('runUpdate for Codex', () => {
     expect(after).toContain('[projects."/repo"]');
     expect(after).toContain('[mcp_servers.other]');
     expect(after).toContain('[features]');
-    expect(after).toContain(`args = ["-y", "@elisym/mcp@~${PACKAGE_VERSION}"]`);
+    expect(after).toContain('args = ["-y", "@elisym/mcp@latest"]');
     expect(after).toContain('ELISYM_AGENT = "alice"');
     expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Updated codex'));
@@ -693,9 +745,7 @@ describe('runUpdate for Codex', () => {
 
     const after = await readFile(codexPath, 'utf-8');
     expect(after).toContain('command = "/opt/bin/custom-runner"');
-    expect(after).toContain(
-      `args = ["--quiet", "-y", "@elisym/mcp@~${PACKAGE_VERSION}", "--trace"]`,
-    );
+    expect(after).toContain('args = ["--quiet", "-y", "@elisym/mcp@latest", "--trace"]');
     expect(after).toContain('cwd = "/repo"');
     expect(after).toContain('startup_timeout_ms = 30000');
     expect(after).toContain('ELISYM_AGENT = "alice"');
@@ -726,7 +776,7 @@ describe('runUpdate for Codex', () => {
 
     const after = await readFile(codexPath, 'utf-8');
     expect(after).toContain('args = [');
-    expect(after).toContain(`  "@elisym/mcp@~${PACKAGE_VERSION}",`);
+    expect(after).toContain('  "@elisym/mcp@latest",');
     expect(after).toContain('  "--trace",');
     expect(after).toContain(']');
     expect(after).toContain('ELISYM_AGENT = "alice"');
@@ -751,7 +801,7 @@ describe('runUpdate for Codex', () => {
     await runUpdate({ client: 'codex' });
 
     const after = await readFile(codexPath, 'utf-8');
-    expect(after).toContain(`args = ["-y", "@elisym/mcp@~${PACKAGE_VERSION}"]`);
+    expect(after).toContain('args = ["-y", "@elisym/mcp@latest"]');
     expect(after).not.toContain('"--stale"');
     expect(after).not.toContain('"--trace"');
     expect(after).toContain('cwd = "/repo"');
@@ -773,7 +823,7 @@ describe('runUpdate for Codex', () => {
     await runUpdate({ client: 'codex' });
 
     const after = await readFile(codexPath, 'utf-8');
-    expect(after).toContain(`args = ["-y", "@elisym/mcp@~${PACKAGE_VERSION}"]`);
+    expect(after).toContain('args = ["-y", "@elisym/mcp@latest"]');
     expect(after).toContain('env = { ELISYM_AGENT = "alice", ELISYM_PASSPHRASE = "secret" }');
     expect(after).toContain('ELISYM_AGENT = "alice"');
     expect(after).toContain('ELISYM_PASSPHRASE = "secret"');
