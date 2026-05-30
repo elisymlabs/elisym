@@ -515,7 +515,54 @@ export async function cmdStart(
   const localPolicyDTags = new Set(
     policies.map((policy) => `${POLICY_D_TAG_PREFIX}${policy.type}`),
   );
+
+  // Fetch what is already on the relays once, up front. The result drives both
+  // the unchanged-skip below (Step 10.5) and the orphan sweep (Step 10.6), so we
+  // pay for a single querySync per start instead of re-publishing blind. A network
+  // failure returns [] - we then re-publish everything (safe) and skip the sweep.
+  async function fetchPublishedPolicies() {
+    try {
+      return await client.pool.querySync({
+        kinds: [KIND_LONG_FORM_ARTICLE],
+        authors: [identity.publicKey],
+        '#t': [POLICY_T_TAG],
+      });
+    } catch {
+      return [];
+    }
+  }
+  const publishedPolicies = await fetchPublishedPolicies();
+
+  // Latest event per d-tag (tombstones included), so the skip compares against
+  // the true live version. A tombstone is the live "deleted" state - filtering
+  // tombstones out here would let an older non-empty version shadow a newer
+  // tombstone and wrongly skip re-publishing a re-added policy file.
+  const latestPolicyByDTag = new Map<string, (typeof publishedPolicies)[number]>();
+  for (const event of publishedPolicies) {
+    const dTag = event.tags.find((tag) => tag[0] === 'd')?.[1];
+    if (!dTag) {
+      continue;
+    }
+    const prev = latestPolicyByDTag.get(dTag);
+    if (!prev || event.created_at > prev.created_at) {
+      latestPolicyByDTag.set(dTag, event);
+    }
+  }
+
   for (const policy of policies) {
+    const onRelay = latestPolicyByDTag.get(`${POLICY_D_TAG_PREFIX}${policy.type}`);
+    const relayVersion = onRelay?.tags.find((tag) => tag[0] === 'policy_version')?.[1];
+    // `onRelay.content` excludes a tombstoned latest (empty content): a deleted
+    // policy that is back on disk must be re-published, not skipped.
+    if (
+      onRelay &&
+      onRelay.content &&
+      relayVersion === policy.version &&
+      onRelay.content === policy.content
+    ) {
+      console.log(`  * Policy: ${policy.type}@${policy.version} (unchanged, skipped)`);
+      continue;
+    }
     try {
       const { naddr } = await client.policies.publishPolicy(identity, policy);
       console.log(`  * Policy: ${policy.type}@${policy.version} -> ${naddr}`);
@@ -538,34 +585,25 @@ export async function cmdStart(
   }
 
   // -- Step 10.6: Tombstone orphan policies (file removed from disk) --
-  try {
-    const existingPolicies = await client.pool.querySync({
-      kinds: [KIND_LONG_FORM_ARTICLE],
-      authors: [identity.publicKey],
-      '#t': [POLICY_T_TAG],
-    });
-    for (const event of existingPolicies) {
-      const dTag = event.tags.find((tag) => tag[0] === 'd')?.[1];
-      if (!dTag || localPolicyDTags.has(dTag)) {
-        continue;
-      }
-      // Skip already-tombstoned events (empty content) so we don't re-publish identical retractions every start.
-      if (!event.content) {
-        continue;
-      }
-      const type = event.tags.find((tag) => tag[0] === 'policy_type')?.[1];
-      if (!type) {
-        continue;
-      }
-      try {
-        await client.policies.deletePolicy(identity, type);
-        console.log(`  Removed stale policy: ${type}`);
-      } catch {
-        // non-fatal, will retry next start
-      }
+  for (const event of publishedPolicies) {
+    const dTag = event.tags.find((tag) => tag[0] === 'd')?.[1];
+    if (!dTag || localPolicyDTags.has(dTag)) {
+      continue;
     }
-  } catch {
-    // non-fatal: stale policies stay on relay, agent still starts
+    // Skip already-tombstoned events (empty content) so we don't re-publish identical retractions every start.
+    if (!event.content) {
+      continue;
+    }
+    const type = event.tags.find((tag) => tag[0] === 'policy_type')?.[1];
+    if (!type) {
+      continue;
+    }
+    try {
+      await client.policies.deletePolicy(identity, type);
+      console.log(`  Removed stale policy: ${type}`);
+    } catch {
+      // non-fatal, will retry next start
+    }
   }
 
   // -- Step 11: Publish per-skill capability cards (kind:31990) --
