@@ -8,13 +8,13 @@
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.15.5",
+  "version": "0.15.6",
   "websiteUrl": "https://www.elisym.network",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@elisym/mcp",
-      "version": "0.15.4",
+      "version": "0.15.6",
       "transport": {
         "type": "stdio"
       },
