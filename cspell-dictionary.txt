@@ -124,3 +124,5 @@ launchagents
 launchdaemons
 crontabs
 webp
+msdos
+msdownload

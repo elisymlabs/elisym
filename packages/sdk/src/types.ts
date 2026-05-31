@@ -1,5 +1,5 @@
 import type { ElisymIdentity } from './primitives/identity';
-import type { FileAttachment } from './transport/attachment';
+import type { FileAttachment, TransportKind } from './transport/attachment';
 
 // --- Pool ---
 
@@ -165,6 +165,12 @@ export interface SubmitJobOptions {
    * itself travels out-of-band (P2P via iroh), not in the Nostr event.
    */
   attachment?: FileAttachment;
+  /**
+   * Ordered (by client preference) transports this customer can RECEIVE output on. Published as a
+   * public `accept` tag. When omitted, providers default to seeding all transports (back-compat);
+   * advertising `['iroh']` makes a provider skip the (encrypted-Blossom) upload it can't use.
+   */
+  acceptTransports?: TransportKind[];
 }
 
 export interface JobUpdateCallbacks {

@@ -103,6 +103,71 @@ export class BlossomService {
     }
   }
 
+  /**
+   * Download a public blob (BUD-01 GET, no auth). Bounds memory on the ACTUAL streamed bytes (never
+   * the declared Content-Length) and verifies the sha256 when `expectedSha256` is given. Browser-safe.
+   */
+  async download(
+    url: string,
+    opts: { maxBytes?: number; timeoutMs?: number; expectedSha256?: string } = {},
+  ): Promise<Uint8Array> {
+    const maxBytes = opts.maxBytes ?? LIMITS.MAX_FILE_SIZE;
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      opts.timeoutMs ?? DEFAULTS.BLOSSOM_FETCH_TIMEOUT_MS,
+    );
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) {
+        throw new Error(`Download failed: ${res.status} ${res.statusText}`);
+      }
+      const declared = Number(res.headers.get('content-length'));
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        throw new Error(`Blob too large: ${declared} bytes exceeds limit of ${maxBytes}.`);
+      }
+      if (!res.body) {
+        throw new Error('Download response has no body.');
+      }
+
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      let chunk = await reader.read();
+      while (!chunk.done) {
+        total += chunk.value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel();
+          throw new Error(`Blob exceeds limit of ${maxBytes} bytes.`);
+        }
+        chunks.push(chunk.value);
+        chunk = await reader.read();
+      }
+
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const c of chunks) {
+        bytes.set(c, offset);
+        offset += c.byteLength;
+      }
+
+      if (opts.expectedSha256 !== undefined) {
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const hashHex = [...new Uint8Array(digest)]
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+        if (hashHex !== opts.expectedSha256) {
+          throw new Error(
+            `Download integrity check failed: got ${hashHex}, expected ${opts.expectedSha256}.`,
+          );
+        }
+      }
+      return bytes;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async uploadToBlossom(
     identity: ElisymIdentity,
     bytes: Uint8Array,
