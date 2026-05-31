@@ -123,3 +123,4 @@ pipx
 launchagents
 launchdaemons
 crontabs
+webp

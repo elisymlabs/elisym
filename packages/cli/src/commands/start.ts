@@ -9,7 +9,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
   ElisymClient,
   ElisymIdentity,
-  MediaService,
+  type BlossomService,
   USDC_SOLANA_DEVNET,
   formatAssetAmount,
   formatSol,
@@ -60,6 +60,7 @@ import { cacheKeyFor, resolveTripleForOverride } from '../llm/cache.js';
 import { resolveProviderApiKey } from '../llm/keys.js';
 import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
 import { createLogger, sanitizeForTerminal } from '../logging.js';
+import { mimeFromPath } from '../mime.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SkillRegistry, type SkillContext, type SkillLlmOverride } from '../skill';
 import type { LlmClient } from '../skill/index.js';
@@ -442,7 +443,7 @@ export async function cmdStart(
   }
 
   // -- Step 9: Resolve media URLs via cache (no SKILL.md mutation) --
-  const media = new MediaService();
+  // Uploads go to the Blossom relay (client.blossom), which falls back to nostr.build on failure.
   const mediaCache = await readMediaCache(loaded.dir);
   let mediaCacheDirty = false;
 
@@ -450,7 +451,7 @@ export async function cmdStart(
     loaded.yaml.picture,
     loaded.dir,
     mediaCache,
-    media,
+    client.blossom,
     identity,
     (updated) => (mediaCacheDirty = mediaCacheDirty || updated),
   );
@@ -458,7 +459,7 @@ export async function cmdStart(
     loaded.yaml.banner,
     loaded.dir,
     mediaCache,
-    media,
+    client.blossom,
     identity,
     (updated) => (mediaCacheDirty = mediaCacheDirty || updated),
   );
@@ -475,7 +476,7 @@ export async function cmdStart(
       cacheKey,
       absPath,
       mediaCache,
-      media,
+      client.blossom,
       identity,
       () => (mediaCacheDirty = true),
     );
@@ -867,7 +868,7 @@ async function resolveMediaField(
   value: string | undefined,
   agentDir: string,
   cache: MediaCache,
-  media: MediaService,
+  blossom: Pick<BlossomService, 'upload'>,
   identity: ElisymIdentity,
   onCacheUpdate: (updated: boolean) => void,
 ): Promise<string | undefined> {
@@ -882,7 +883,7 @@ async function resolveMediaField(
     console.warn(`  ! Skipping media field "${value}": path must stay inside the agent directory.`);
     return undefined;
   }
-  return uploadOrReuse(value, absPath, cache, media, identity, () => onCacheUpdate(true));
+  return uploadOrReuse(value, absPath, cache, blossom, identity, () => onCacheUpdate(true));
 }
 
 /**
@@ -901,11 +902,11 @@ function resolveInsideAgentDir(value: string, agentDir: string): string | null {
 }
 
 /** Look up `cacheKey` in cache; if hit returns URL, else uploads and updates cache. */
-async function uploadOrReuse(
+export async function uploadOrReuse(
   cacheKey: string,
   absPath: string,
   cache: MediaCache,
-  media: MediaService,
+  blossom: Pick<BlossomService, 'upload'>,
   identity: ElisymIdentity,
   onCacheUpdate: () => void,
 ): Promise<string | undefined> {
@@ -917,12 +918,12 @@ async function uploadOrReuse(
     console.log(`  Uploading ${basename(absPath)}...`);
     const data = readFileSync(absPath);
     const sha256 = createHash('sha256').update(data).digest('hex');
-    const blob = new Blob([data]);
-    const url = await media.upload(identity, blob, basename(absPath));
-    cache[cacheKey] = newCacheEntry(url, sha256);
+    const blob = new Blob([data], { type: mimeFromPath(absPath) });
+    const descriptor = await blossom.upload(identity, blob);
+    cache[cacheKey] = newCacheEntry(descriptor.url, sha256);
     onCacheUpdate();
-    console.log(`  Uploaded: ${url}`);
-    return url;
+    console.log(`  Uploaded: ${descriptor.url}`);
+    return descriptor.url;
   } catch (e: any) {
     console.warn(`  ! Failed to upload ${basename(absPath)}: ${e.message}`);
     return undefined;
