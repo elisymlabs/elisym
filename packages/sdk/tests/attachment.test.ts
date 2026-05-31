@@ -4,6 +4,9 @@ import {
   encodeJobPayload,
   decodeJobPayload,
   ENVELOPE_VERSION,
+  ACCEPT_TRANSPORTS_TAG,
+  buildAcceptTransportsTag,
+  readAcceptedTransports,
   type FileAttachment,
 } from '../src/transport/attachment';
 
@@ -100,5 +103,83 @@ describe('decodeJobPayload - rejects malformed envelopes', () => {
       attachment: { ...attachment, transports: [{ kind: 'iroh', ticket: 'a'.repeat(5000) }] },
     });
     expect(() => decodeJobPayload(bad)).toThrow();
+  });
+});
+
+describe('decodeJobPayload - blossom transport + lenient transports', () => {
+  const blossomTransport = {
+    kind: 'blossom' as const,
+    url: `https://files.elisym.network/${'a'.repeat(64)}.bin`,
+    sha256: 'a'.repeat(64),
+    enc: { alg: 'AES-256-GCM' as const, iv: 'AAAAAAAAAAAAAAAAAAAAAA==', key: 'wrapped-key-b64' },
+  };
+
+  it('round-trips a blossom attachment', () => {
+    const blossomAttachment: FileAttachment = {
+      name: 'secret.png',
+      size: 1234,
+      mime: 'image/png',
+      transports: [blossomTransport],
+    };
+    const decoded = decodeJobPayload(encodeJobPayload({ attachment: blossomAttachment }));
+    expect(decoded.attachment).toEqual(blossomAttachment);
+  });
+
+  it('drops unknown transport kinds but keeps a known one (no throw)', () => {
+    const raw = JSON.stringify({
+      v: ENVELOPE_VERSION,
+      attachment: {
+        ...attachment,
+        transports: [
+          { kind: 'carrier-pigeon', ref: 'x' },
+          { kind: 'iroh', ticket: 'blobaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+        ],
+      },
+    });
+    const decoded = decodeJobPayload(raw);
+    expect(decoded.attachment?.transports).toEqual([
+      { kind: 'iroh', ticket: 'blobaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+    ]);
+  });
+
+  it('preserves the order of known transports (blossom before iroh)', () => {
+    const both: FileAttachment = {
+      ...attachment,
+      transports: [blossomTransport, { kind: 'iroh', ticket: 'blobaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }],
+    };
+    const decoded = decodeJobPayload(encodeJobPayload({ attachment: both }));
+    expect(decoded.attachment?.transports.map((t) => t.kind)).toEqual(['blossom', 'iroh']);
+  });
+});
+
+describe('accept-transports tag (buildAcceptTransportsTag / readAcceptedTransports)', () => {
+  it('round-trips a built tag', () => {
+    const tag = buildAcceptTransportsTag(['blossom', 'iroh']);
+    expect(tag).toEqual([ACCEPT_TRANSPORTS_TAG, 'blossom', 'iroh']);
+    expect(readAcceptedTransports([tag])).toEqual(['blossom', 'iroh']);
+  });
+
+  it('dedupes preserving order', () => {
+    expect(readAcceptedTransports([['accept', 'iroh', 'iroh', 'blossom']])).toEqual([
+      'iroh',
+      'blossom',
+    ]);
+  });
+
+  it('drops unknown kinds but keeps known ones', () => {
+    expect(readAcceptedTransports([['accept', 'carrier-pigeon', 'iroh']])).toEqual(['iroh']);
+  });
+
+  it('returns undefined when there is no accept tag', () => {
+    expect(
+      readAcceptedTransports([
+        ['t', 'elisym'],
+        ['p', 'abc'],
+      ]),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when the accept tag has no known kind (forward-compat default)', () => {
+    expect(readAcceptedTransports([['accept', 'carrier-pigeon']])).toBeUndefined();
   });
 });

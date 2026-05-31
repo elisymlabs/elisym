@@ -111,6 +111,8 @@ export const DEFAULTS = {
   // Ceiling for a single Blossom blob upload (PUT /upload). Large blobs (up to
   // LIMITS.MAX_FILE_SIZE) need far more than the 30s used for small media images.
   BLOSSOM_UPLOAD_TIMEOUT_MS: 300_000,
+  // Ceiling for a single encrypted Blossom blob download (GET). Same budget as upload.
+  BLOSSOM_FETCH_TIMEOUT_MS: 300_000,
 } as const;
 
 /** Protocol limits for input validation. */
@@ -135,6 +137,11 @@ export const LIMITS = {
   // actual streamed bytes (never the sender-declared `size`). A tunable default;
   // providers may lower it per deployment.
   MAX_FILE_SIZE: 1_073_741_824, // 1 GiB
+  // Cap for the ENCRYPTED Blossom path (web/SDK). The encrypt-then-upload flow is
+  // whole-buffer in WebCrypto + BlossomService (~3x file-size peak RAM), so this is
+  // deliberately far below MAX_FILE_SIZE to stay safe in a browser tab; larger files
+  // use iroh. The relay enforces a ~128 MiB server-side backstop.
+  MAX_BLOSSOM_ENCRYPTED_BYTES: 104_857_600, // 100 MiB
 
   MAX_TIMEOUT_SECS: 600,
   // Upper bound for execution budgets (`max_execution_secs` / `execution_timeout_secs`).

@@ -17,7 +17,12 @@ import type {
   CapabilityCard,
   FileAttachment,
   PaymentRequestData,
+  TransportKind,
 } from '@elisym/sdk';
+
+// MCP receives results over iroh (fetch_job_file is iroh-only), so it advertises iroh as its sole
+// receive transport - this lets providers skip the encrypted-Blossom upload MCP would never fetch.
+const MCP_ACCEPT_TRANSPORTS: TransportKind[] = ['iroh'];
 import {
   createKeyPairSignerFromBytes,
   createSolanaRpc,
@@ -937,6 +942,7 @@ async function executeSubmitAndPay(
     providerPubkey: params.providerPubkey,
     kindOffset: params.kindOffset,
     attachment: params.attachment,
+    acceptTransports: MCP_ACCEPT_TRANSPORTS,
   });
 
   let paymentSig: string | undefined;
@@ -1126,6 +1132,7 @@ export const customerTools: ToolDefinition[] = [
         capability: dTag,
         providerPubkey,
         kindOffset: input.kind_offset,
+        acceptTransports: MCP_ACCEPT_TRANSPORTS,
       });
 
       // return structured data so the LLM can follow up.
@@ -1762,6 +1769,7 @@ export const customerTools: ToolDefinition[] = [
         input: input.input || '',
         capability: dTag,
         providerPubkey,
+        acceptTransports: MCP_ACCEPT_TRANSPORTS,
       });
 
       let paymentSig: string | undefined;

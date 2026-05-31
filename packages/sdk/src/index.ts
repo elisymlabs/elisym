@@ -11,13 +11,27 @@ export type { ElisymClientFullConfig } from './client';
 
 // --- Transport ---
 export { NostrPool } from './transport/pool';
-export { encodeJobPayload, decodeJobPayload, ENVELOPE_VERSION } from './transport/attachment';
+export {
+  encodeJobPayload,
+  decodeJobPayload,
+  ENVELOPE_VERSION,
+  ACCEPT_TRANSPORTS_TAG,
+  buildAcceptTransportsTag,
+  readAcceptedTransports,
+} from './transport/attachment';
 export type {
   FileAttachment,
   FileTransport,
+  TransportKind,
   JobPayloadEnvelope,
   DecodedJobPayload,
 } from './transport/attachment';
+// Encrypted Blossom/HTTP file transport (browser-safe peer to the Node-only iroh transport).
+export { createBlossomTransport } from './transport/blossom-transport';
+export type { BlossomBlobTransport } from './transport/blossom-transport';
+export { buildEncryptedFileInput, fetchEncryptedFileOutput } from './transport/file-jobs';
+export { encryptBytesForRecipient, decryptBytesFromSender } from './primitives/file-crypto';
+export type { EncryptedBytes } from './primitives/file-crypto';
 
 // --- Services ---
 export {

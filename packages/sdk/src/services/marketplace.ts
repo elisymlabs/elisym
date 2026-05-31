@@ -14,7 +14,12 @@ import { assertLamports } from '../payment/fee';
 import { parsePaymentRequest } from '../payment/schema';
 import { nip44Encrypt, nip44Decrypt } from '../primitives/crypto';
 import type { ElisymIdentity } from '../primitives/identity';
-import { encodeJobPayload, decodeJobPayload, type FileAttachment } from '../transport/attachment';
+import {
+  encodeJobPayload,
+  decodeJobPayload,
+  buildAcceptTransportsTag,
+  type FileAttachment,
+} from '../transport/attachment';
 import type { NostrPool } from '../transport/pool';
 import type {
   Job,
@@ -104,6 +109,15 @@ export class MarketplaceService {
     if (options.providerPubkey) {
       tags.push(['p', options.providerPubkey]);
       tags.push(['encrypted', 'nip44']);
+    }
+
+    if (options.acceptTransports && options.acceptTransports.length > 0) {
+      // Advertise which transports this customer can RECEIVE output on. Public, signed tag; the
+      // provider reads it to decide which transports to seed. Skip if no known kind survives.
+      const acceptTag = buildAcceptTransportsTag(options.acceptTransports);
+      if (acceptTag.length > 1) {
+        tags.push(acceptTag);
+      }
     }
 
     const kind = jobRequestKind(options.kindOffset ?? DEFAULT_KIND_OFFSET);

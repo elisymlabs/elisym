@@ -10,6 +10,7 @@ import {
   ElisymClient,
   ElisymIdentity,
   type BlossomService,
+  createBlossomTransport,
   USDC_SOLANA_DEVNET,
   formatAssetAmount,
   formatSol,
@@ -784,6 +785,9 @@ export async function cmdStart(
     diagLog('LLM health monitor armed (lazy recovery, 5min interval).');
   }
 
+  // Encrypted Blossom transport for job file I/O (peer to iroh). Reuses the client's BlossomService
+  // (so it shares the nostr.build fallback) and the provider identity for BUD-11 auth + NIP-44 wrap.
+  const blossomTransport = createBlossomTransport({ blossom: client.blossom, identity });
   const runtime = new AgentRuntime(
     transport,
     registry,
@@ -816,6 +820,8 @@ export async function cmdStart(
     },
     healthMonitor,
     irohTransport,
+    identity,
+    blossomTransport,
   );
 
   // -- Step 15: Run --

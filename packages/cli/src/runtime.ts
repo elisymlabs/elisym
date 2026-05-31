@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 /**
@@ -15,9 +15,19 @@ import {
   getProtocolConfig,
   getProtocolProgramId,
   LIMITS,
+  readAcceptedTransports,
   utf8ByteLength,
 } from '@elisym/sdk';
-import type { Asset, FileAttachment, ProtocolConfigInput, SlidingWindowLimiter } from '@elisym/sdk';
+import type {
+  Asset,
+  BlossomBlobTransport,
+  ElisymIdentity,
+  FileAttachment,
+  FileTransport,
+  ProtocolConfigInput,
+  SlidingWindowLimiter,
+  TransportKind,
+} from '@elisym/sdk';
 import {
   createFreeLlmLimiterSet,
   FREE_LLM_GLOBAL_KEY,
@@ -328,6 +338,8 @@ export class AgentRuntime {
     private callbacks: RuntimeCallbacks = {},
     private healthMonitor?: LlmHealthMonitor,
     private irohTransport?: IrohBlobTransport,
+    private identity?: ElisymIdentity,
+    private blossomTransport?: BlossomBlobTransport,
   ) {
     this.limit = pLimit(config.maxConcurrentJobs);
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
@@ -886,7 +898,7 @@ export class AgentRuntime {
 
     // Fetch a file input (if any) AFTER payment is confirmed - never before, so an
     // unpaid request can't make the provider download attacker-hosted data.
-    const inputFile = await this.resolveInputFile(job.attachment);
+    const inputFile = await this.resolveInputFile(job.attachment, job.customerId);
 
     // ── Step 2: Send Processing feedback ──
     await this.transport.sendFeedback(job, { type: 'processing' }).catch(() => {});
@@ -993,7 +1005,12 @@ export class AgentRuntime {
     // buildResultAttachment runs before markExecuted: a seed failure leaves the
     // job `paid` so recovery re-executes. `deliveredContent` is empty whenever the
     // payload was spilled to iroh, so the result event carries only the ticket.
-    const { attachment, deliveredContent } = await this.buildResultAttachment(job.jobId, output);
+    const { attachment, deliveredContent } = await this.buildResultAttachment(
+      job.jobId,
+      output,
+      job.customerId,
+      readAcceptedTransports(job.rawEvent.tags),
+    );
 
     // NOTE: At-least-once delivery. A crash between execute() return and markExecuted()
     // flush leaves the job as 'paid' - recovery will re-execute. Skills must be idempotent
@@ -1034,7 +1051,12 @@ export class AgentRuntime {
   private async buildResultAttachment(
     jobId: string,
     output: SkillOutput,
+    customerPubkey: string,
+    acceptedTransports: TransportKind[] | undefined,
   ): Promise<{ attachment: FileAttachment | undefined; deliveredContent: string }> {
+    // Seed the (encrypted-Blossom) member only when the customer didn't advertise, or advertised
+    // blossom. iroh is always seeded. So advertising ['iroh'] (MCP) skips the Blossom upload.
+    const wantBlossom = acceptedTransports === undefined || acceptedTransports.includes('blossom');
     if (output.filePath !== undefined) {
       // seedPath copies the bytes into the persistent iroh store, so the producer's
       // temp file is no longer needed once seeding has been attempted (recovery
@@ -1047,11 +1069,24 @@ export class AgentRuntime {
           throw new Error('Skill produced a file result but iroh transport is unavailable.');
         }
         const seeded = await this.irohTransport.seedPath(output.filePath);
+        // iroh is always present (the robust fallback); blossom is added (preferred, first) when
+        // available + within the encrypted-size cap, so web customers can fetch over HTTP too.
+        const transports: FileTransport[] = [{ kind: 'iroh', ticket: seeded.ticket }];
+        if (wantBlossom) {
+          const blossomMember = await this.seedBlossomFromPath(
+            output.filePath,
+            seeded.size,
+            customerPubkey,
+          );
+          if (blossomMember !== undefined) {
+            transports.unshift(blossomMember);
+          }
+        }
         const attachment: FileAttachment = {
           name: basename(output.filePath),
           size: seeded.size,
           mime: output.outputMime ?? 'application/octet-stream',
-          transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+          transports,
         };
         this.ledger.recordAttachment(jobId, { resultAttachment: JSON.stringify(attachment) });
         // A file result's `output.data` is a small note, delivered inline alongside
@@ -1068,18 +1103,70 @@ export class AgentRuntime {
       if (!this.irohTransport) {
         throw new Error('Result is too large to deliver inline and iroh transport is unavailable.');
       }
-      const seeded = await this.irohTransport.seedBytes(Buffer.from(output.data, 'utf8'));
+      const dataBytes = Buffer.from(output.data, 'utf8');
+      const seeded = await this.irohTransport.seedBytes(dataBytes);
+      const transports: FileTransport[] = [{ kind: 'iroh', ticket: seeded.ticket }];
+      if (wantBlossom) {
+        const blossomMember = await this.seedBlossomMember(dataBytes, customerPubkey);
+        if (blossomMember !== undefined) {
+          transports.unshift(blossomMember);
+        }
+      }
       const attachment: FileAttachment = {
         name: 'result.txt',
         size: seeded.size,
         mime: 'text/plain',
-        transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+        transports,
       };
       this.ledger.recordAttachment(jobId, { resultAttachment: JSON.stringify(attachment) });
       return { attachment, deliveredContent: '' };
     }
 
     return { attachment: undefined, deliveredContent: output.data };
+  }
+
+  /**
+   * Encrypt `bytes` to `recipientPubkey` and seed them to Blossom, returning a `blossom` transport
+   * member - or `undefined` when blossom isn't configured, the bytes exceed the encrypted cap, or the
+   * upload fails. Returning undefined (never throwing) keeps iroh as the guaranteed transport: an
+   * optional second path must never fail the job.
+   */
+  private async seedBlossomMember(
+    bytes: Uint8Array,
+    recipientPubkey: string,
+  ): Promise<Extract<FileTransport, { kind: 'blossom' }> | undefined> {
+    if (this.blossomTransport === undefined || this.identity === undefined) {
+      return undefined;
+    }
+    if (bytes.byteLength > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES) {
+      return undefined;
+    }
+    try {
+      return await this.blossomTransport.seedBytes({ bytes, recipientPubkey });
+    } catch {
+      // Blossom (incl. the nostr.build-fallback refusal) failed - deliver iroh-only this time.
+      return undefined;
+    }
+  }
+
+  /** Read a file (only when within the encrypted cap, to bound memory) and seed it to Blossom. */
+  private async seedBlossomFromPath(
+    filePath: string,
+    size: number,
+    recipientPubkey: string,
+  ): Promise<Extract<FileTransport, { kind: 'blossom' }> | undefined> {
+    if (this.blossomTransport === undefined || this.identity === undefined) {
+      return undefined;
+    }
+    if (size > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES) {
+      return undefined;
+    }
+    try {
+      const bytes = await readFile(filePath);
+      return await this.seedBlossomMember(bytes, recipientPubkey);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1098,12 +1185,20 @@ export class AgentRuntime {
       throw new Error('Cannot recover a file result: iroh transport is unavailable.');
     }
     const stored = JSON.parse(resultAttachmentJson) as FileAttachment;
-    const irohTransport = stored.transports.find((transport) => transport.kind === 'iroh');
+    const irohTransport = stored.transports.find(
+      (transport): transport is Extract<FileTransport, { kind: 'iroh' }> =>
+        transport.kind === 'iroh',
+    );
     if (!irohTransport) {
       throw new Error('Stored result attachment has no iroh transport.');
     }
     const freshTicket = await this.irohTransport.reShare(irohTransport.ticket);
-    return { ...stored, transports: [{ kind: 'iroh', ticket: freshTicket }] };
+    // Preserve every non-iroh transport (e.g. blossom: its url/sha256/enc stay valid across a
+    // restart - the blob lives on the relay, not a per-session ticket); refresh only the iroh ticket.
+    const transports = stored.transports.map((transport) =>
+      transport.kind === 'iroh' ? { kind: 'iroh' as const, ticket: freshTicket } : transport,
+    );
+    return { ...stored, transports };
   }
 
   /**
@@ -1121,32 +1216,82 @@ export class AgentRuntime {
    */
   private async resolveInputFile(
     attachment: FileAttachment | undefined,
+    senderPubkey: string,
   ): Promise<{ inlineText?: string; filePath?: string; cleanup: () => Promise<void> } | undefined> {
     if (attachment === undefined) {
       return undefined;
     }
-    if (!this.irohTransport) {
-      throw new Error('Job carries a file input but iroh transport is unavailable.');
-    }
-    const irohTransport = attachment.transports.find((transport) => transport.kind === 'iroh');
-    if (!irohTransport) {
-      throw new Error('File input has no iroh transport.');
-    }
+    const irohMember = attachment.transports.find(
+      (t): t is Extract<FileTransport, { kind: 'iroh' }> => t.kind === 'iroh',
+    );
+    const blossomMember = attachment.transports.find(
+      (t): t is Extract<FileTransport, { kind: 'blossom' }> => t.kind === 'blossom',
+    );
 
-    if (attachment.mime.startsWith('text/') && attachment.size <= LIMITS.MAX_REINLINE_TEXT_BYTES) {
-      const bytes = await this.irohTransport.fetchToBytes(irohTransport.ticket, {
-        maxBytes: LIMITS.MAX_REINLINE_TEXT_BYTES,
-      });
+    // Prefer iroh when available: it streams to disk with no in-memory cap. Fall back to the
+    // encrypted blossom transport for web-submitted inputs that only carry a blossom member.
+    if (irohMember !== undefined && this.irohTransport !== undefined) {
+      if (
+        attachment.mime.startsWith('text/') &&
+        attachment.size <= LIMITS.MAX_REINLINE_TEXT_BYTES
+      ) {
+        const bytes = await this.irohTransport.fetchToBytes(irohMember.ticket, {
+          maxBytes: LIMITS.MAX_REINLINE_TEXT_BYTES,
+        });
+        return this.materializeBytesInput(bytes, attachment.mime);
+      }
+      const dir = await mkdtemp(join(tmpdir(), 'elisym-job-'));
+      const filePath = join(dir, 'input');
+      try {
+        await this.irohTransport.fetchToPath(irohMember.ticket, filePath);
+      } catch (error) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
       return {
-        inlineText: Buffer.from(bytes).toString('utf8'),
-        cleanup: async () => {},
+        filePath,
+        cleanup: async () => {
+          await rm(dir, { recursive: true, force: true });
+        },
       };
     }
 
+    if (
+      blossomMember !== undefined &&
+      this.blossomTransport !== undefined &&
+      this.identity !== undefined
+    ) {
+      if (attachment.size > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES) {
+        throw new Error('Blossom file input exceeds the encrypted size cap.');
+      }
+      const bytes = await this.blossomTransport.fetchToBytes({
+        transport: blossomMember,
+        senderPubkey,
+        maxBytes: LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES,
+      });
+      return this.materializeBytesInput(bytes, attachment.mime);
+    }
+
+    throw new Error('Job carries a file input but no supported transport is available.');
+  }
+
+  /**
+   * Turn fetched input bytes into a SkillInput: text within the re-inline ceiling becomes an
+   * in-memory string; anything else is written to a fixed `input` name inside a unique mkdtemp dir
+   * (the untrusted attachment `name` never touches the path). Shared by the iroh-text and blossom
+   * paths (both have the bytes in hand); the iroh-binary path streams to disk separately.
+   */
+  private async materializeBytesInput(
+    bytes: Uint8Array,
+    mime: string,
+  ): Promise<{ inlineText?: string; filePath?: string; cleanup: () => Promise<void> }> {
+    if (mime.startsWith('text/') && bytes.byteLength <= LIMITS.MAX_REINLINE_TEXT_BYTES) {
+      return { inlineText: Buffer.from(bytes).toString('utf8'), cleanup: async () => {} };
+    }
     const dir = await mkdtemp(join(tmpdir(), 'elisym-job-'));
     const filePath = join(dir, 'input');
     try {
-      await this.irohTransport.fetchToPath(irohTransport.ticket, filePath);
+      await writeFile(filePath, bytes);
     } catch (error) {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
       throw error;
@@ -1602,6 +1747,7 @@ export class AgentRuntime {
         try {
           recoveryInputFile = await this.resolveInputFile(
             decodeJobPayload(rawEvent.content).attachment,
+            entry.customer_id,
           );
         } catch {
           log(`[${entry.job_id.slice(0, 8)}] Recovery: input file unavailable, marking failed`);
@@ -1657,6 +1803,8 @@ export class AgentRuntime {
         const { attachment: resultAttachment, deliveredContent } = await this.buildResultAttachment(
           entry.job_id,
           output,
+          entry.customer_id,
+          readAcceptedTransports(rawEvent.tags),
         );
         this.ledger.markExecuted(entry.job_id, deliveredContent);
         await this.transport.deliverResult(

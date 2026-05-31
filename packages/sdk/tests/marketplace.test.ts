@@ -163,6 +163,48 @@ describe('MarketplaceService.submitJobRequest', () => {
       svc.submitJobRequest(customer, { input: '', capability: 'text-gen' }),
     ).rejects.toThrow('Job input must not be empty');
   });
+
+  it('publishes an accept tag advertising receive transports', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+
+    await svc.submitJobRequest(customer, {
+      input: 'hi',
+      capability: 'text-gen',
+      acceptTransports: ['iroh'],
+    });
+
+    const ev = pool.published[0]!;
+    expect(ev.tags.find((t) => t[0] === 'accept')).toEqual(['accept', 'iroh']);
+  });
+
+  it('omits the accept tag when acceptTransports is not set', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+
+    await svc.submitJobRequest(customer, { input: 'hi', capability: 'text-gen' });
+
+    expect(pool.published[0]!.tags.find((t) => t[0] === 'accept')).toBeUndefined();
+  });
+
+  it('keeps the accept tag in plaintext on a targeted (encrypted) job', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+
+    await svc.submitJobRequest(customer, {
+      input: 'hi',
+      capability: 'text-gen',
+      providerPubkey: provider.publicKey,
+      acceptTransports: ['blossom', 'iroh'],
+    });
+
+    const ev = pool.published[0]!;
+    expect(ev.tags.find((t) => t[0] === 'accept')).toEqual(['accept', 'blossom', 'iroh']);
+  });
 });
 
 describe('MarketplaceService NIP-44 byte backstop', () => {

@@ -30,6 +30,26 @@ const FileTransportSchema = z.discriminatedUnion('kind', [
     /** Opaque iroh `BlobTicket` string. Parsed into a real ticket only at fetch time. */
     ticket: z.string().min(1).max(MAX_TICKET_LENGTH),
   }),
+  z.object({
+    kind: z.literal('blossom'),
+    /** Public HTTP(S) URL of the CIPHERTEXT blob on a Blossom relay. */
+    url: z.string().url().max(2048),
+    /** sha256 (lowercase hex) of the ciphertext - what the relay stores and addresses. */
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    /**
+     * Hybrid-encryption parameters. The file bytes are AES-256-GCM encrypted with a random
+     * content key; that key is NIP-44-wrapped to the recipient. `name`/`mime`/`size` on the
+     * attachment describe the PLAINTEXT and live only inside the (encrypted) envelope - never
+     * sent to the relay (the relay only ever sees opaque ciphertext).
+     */
+    enc: z.object({
+      alg: z.literal('AES-256-GCM'),
+      /** base64 12-byte GCM IV (non-secret). */
+      iv: z.string().min(1).max(64),
+      /** NIP-44-wrapped content key. */
+      key: z.string().min(1).max(2048),
+    }),
+  }),
 ]);
 
 const FileAttachmentSchema = z.object({
@@ -38,8 +58,21 @@ const FileAttachmentSchema = z.object({
   /** Declared size in bytes (display/hint only; enforcement is on actual streamed bytes). */
   size: z.number().int().nonnegative(),
   mime: z.string().min(1).max(255),
-  /** Ordered by sender preference; at least one. */
-  transports: z.array(FileTransportSchema).min(1),
+  /**
+   * Ordered by sender preference; at least one KNOWN transport. Parsed leniently: unknown
+   * transport `kind`s are dropped (not rejected) so adding a new transport never makes an older
+   * decoder throw away the whole envelope - it just ignores the kinds it doesn't know and uses
+   * the ones it does. At least one known transport must survive, else the attachment is invalid.
+   */
+  transports: z
+    .array(z.unknown())
+    .transform((arr): z.infer<typeof FileTransportSchema>[] =>
+      arr.flatMap((t) => {
+        const parsed = FileTransportSchema.safeParse(t);
+        return parsed.success ? [parsed.data] : [];
+      }),
+    )
+    .refine((arr) => arr.length >= 1, { message: 'attachment has no known transport' }),
   /** Optional provider hint (unix seconds) for when seeding may stop. */
   seedingExpiresAt: z.number().int().nonnegative().optional(),
 });
@@ -53,6 +86,56 @@ const JobPayloadEnvelopeSchema = z.object({
 export type FileTransport = z.infer<typeof FileTransportSchema>;
 export type FileAttachment = z.infer<typeof FileAttachmentSchema>;
 export type JobPayloadEnvelope = z.infer<typeof JobPayloadEnvelopeSchema>;
+
+/** The kinds of file transport a job can use ('iroh' | 'blossom'). */
+export type TransportKind = FileTransport['kind'];
+
+/** Public job-request tag advertising which transports a customer can RECEIVE output on. */
+export const ACCEPT_TRANSPORTS_TAG = 'accept';
+
+const KNOWN_TRANSPORT_KINDS: readonly TransportKind[] = ['iroh', 'blossom'];
+
+function isKnownTransportKind(value: string): value is TransportKind {
+  return (KNOWN_TRANSPORT_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * Build the `['accept', ...kinds]` job-request tag from a client's RECEIVE-capable transports.
+ * Drops unknown kinds and dedupes, preserving the client's preference order.
+ */
+export function buildAcceptTransportsTag(kinds: TransportKind[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [ACCEPT_TRANSPORTS_TAG];
+  for (const kind of kinds) {
+    if (isKnownTransportKind(kind) && !seen.has(kind)) {
+      seen.add(kind);
+      out.push(kind);
+    }
+  }
+  return out;
+}
+
+/**
+ * Read accepted transports from an event's tags. Returns the ordered, deduped, known kinds, or
+ * `undefined` when there is no `accept` tag or it carries no known kind - both normalize to the
+ * provider's default (seed all transports). Lenient: unknown kinds (from a newer client) are ignored
+ * so this never strands a job.
+ */
+export function readAcceptedTransports(tags: string[][]): TransportKind[] | undefined {
+  const tag = tags.find((t) => t[0] === ACCEPT_TRANSPORTS_TAG);
+  if (tag === undefined) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const out: TransportKind[] = [];
+  for (const value of tag.slice(1)) {
+    if (isKnownTransportKind(value) && !seen.has(value)) {
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 /** Decoded job payload: a free-text note and/or a file attachment. */
 export interface DecodedJobPayload {
