@@ -15,6 +15,7 @@ vi.mock('nostr-tools', async (importOriginal) => {
 });
 
 import {
+  BlossomService,
   DiscoveryService,
   ElisymClient,
   MarketplaceService,
@@ -30,6 +31,7 @@ describe('ElisymClient', () => {
     expect(client.discovery).toBeInstanceOf(DiscoveryService);
     expect(client.marketplace).toBeInstanceOf(MarketplaceService);
     expect(client.ping).toBeInstanceOf(PingService);
+    expect(client.blossom).toBeInstanceOf(BlossomService);
     expect(client.payment).toBeInstanceOf(SolanaPaymentStrategy);
     client.close();
   });

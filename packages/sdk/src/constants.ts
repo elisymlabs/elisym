@@ -108,6 +108,9 @@ export const DEFAULTS = {
   // default, not a protocol constant - the transfer is resumable and its own
   // budget, decoupled from the result-wait window.
   IROH_FETCH_TIMEOUT_MS: 300_000,
+  // Ceiling for a single Blossom blob upload (PUT /upload). Large blobs (up to
+  // LIMITS.MAX_FILE_SIZE) need far more than the 30s used for small media images.
+  BLOSSOM_UPLOAD_TIMEOUT_MS: 300_000,
 } as const;
 
 /** Protocol limits for input validation. */

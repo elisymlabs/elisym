@@ -1,6 +1,7 @@
 import { RELAYS } from './constants';
 import { SolanaPaymentStrategy } from './payment/solana';
 import type { PaymentStrategy } from './payment/strategy';
+import { BlossomService } from './services/blossom';
 import { DiscoveryService } from './services/discovery';
 import { MarketplaceService } from './services/marketplace';
 import { MediaService } from './services/media';
@@ -13,6 +14,8 @@ export interface ElisymClientFullConfig extends ElisymClientConfig {
   payment?: PaymentStrategy;
   /** Custom upload URL for file uploads (defaults to nostr.build). */
   uploadUrl?: string;
+  /** Custom Blossom server base URL for blob uploads (defaults to files.elisym.network). */
+  blossomUrl?: string;
 }
 
 export class ElisymClient {
@@ -21,6 +24,7 @@ export class ElisymClient {
   readonly marketplace: MarketplaceService;
   readonly ping: PingService;
   readonly media: MediaService;
+  readonly blossom: BlossomService;
   readonly policies: PoliciesService;
   readonly payment: PaymentStrategy;
 
@@ -30,6 +34,9 @@ export class ElisymClient {
     this.marketplace = new MarketplaceService(this.pool);
     this.ping = new PingService(this.pool);
     this.media = new MediaService(config.uploadUrl);
+    this.blossom = new BlossomService(config.blossomUrl, (identity, file) =>
+      this.media.upload(identity, file),
+    );
     this.policies = new PoliciesService(this.pool);
     this.payment = config.payment ?? new SolanaPaymentStrategy();
   }

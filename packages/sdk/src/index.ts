@@ -31,6 +31,8 @@ export { MarketplaceService } from './services/marketplace';
 export { classifyJobError, JobWaitTimeoutError } from './services/jobErrors';
 export type { JobErrorKind } from './services/jobErrors';
 export { MediaService } from './services/media';
+export { BlossomService } from './services/blossom';
+export type { BlobDescriptor, BlossomUploadFallback } from './services/blossom';
 export { PingService } from './services/ping';
 export { PoliciesService } from './services/policies';
 
