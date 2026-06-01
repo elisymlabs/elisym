@@ -3,6 +3,7 @@ import { LIMITS } from '../src/constants';
 import {
   encodeJobPayload,
   decodeJobPayload,
+  attachmentsOf,
   ENVELOPE_VERSION,
   ACCEPT_TRANSPORTS_TAG,
   buildAcceptTransportsTag,
@@ -181,5 +182,46 @@ describe('accept-transports tag (buildAcceptTransportsTag / readAcceptedTranspor
 
   it('returns undefined when the accept tag has no known kind (forward-compat default)', () => {
     expect(readAcceptedTransports([['accept', 'carrier-pigeon']])).toBeUndefined();
+  });
+});
+
+describe('multi-attachment envelope (attachments[] + attachmentsOf)', () => {
+  const a1: FileAttachment = {
+    name: 'vocals.wav',
+    size: 100,
+    mime: 'audio/wav',
+    transports: [{ kind: 'iroh', ticket: 'blobaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }],
+  };
+  const a2: FileAttachment = {
+    name: 'drums.wav',
+    size: 200,
+    mime: 'audio/wav',
+    transports: [{ kind: 'iroh', ticket: 'blobbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }],
+  };
+
+  it('round-trips multiple attachments and decodes them as an array', () => {
+    const decoded = decodeJobPayload(encodeJobPayload({ text: 'note', attachments: [a1, a2] }));
+    expect(decoded.text).toBe('note');
+    expect(decoded.attachments).toEqual([a1, a2]);
+    expect(attachmentsOf(decoded)).toEqual([a1, a2]);
+  });
+
+  it('mirrors `attachment = attachments[0]` so an attachments-unaware decoder gets the first file', () => {
+    const parsed = JSON.parse(encodeJobPayload({ attachments: [a1, a2] })) as {
+      attachment?: unknown;
+      attachments?: unknown[];
+    };
+    expect(parsed.attachment).toEqual(a1);
+    expect(parsed.attachments).toHaveLength(2);
+  });
+
+  it('attachmentsOf normalizes a legacy single attachment to a 1-element list', () => {
+    const decoded = decodeJobPayload(encodeJobPayload({ attachment: a1 }));
+    expect(attachmentsOf(decoded)).toEqual([a1]);
+  });
+
+  it('attachmentsOf returns [] for a text-only payload', () => {
+    expect(attachmentsOf({ text: 'hi' })).toEqual([]);
+    expect(attachmentsOf(decodeJobPayload('plain text'))).toEqual([]);
   });
 });

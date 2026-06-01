@@ -128,6 +128,34 @@ describe('DiscoveryService.fetchAgentsPage', () => {
     expect(agents[0]!.cards[0]!.outputMime).toBe('image/png');
   });
 
+  it('round-trips a valid inputText on the parsed card', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    const card = makeCard({ inputMime: 'image/*', inputText: 'none' });
+    const ev = makeCapabilityEvent(agent, card);
+
+    (pool.querySync as any).mockResolvedValue([ev]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(1);
+    expect(agents[0]!.cards[0]!.inputText).toBe('none');
+  });
+
+  it('keeps the card but drops an unknown inputText value (lenient, forward-compat)', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    const card = makeCard({ inputMime: 'image/*', inputText: 'maybe' as any });
+    const ev = makeCapabilityEvent(agent, card);
+
+    (pool.querySync as any).mockResolvedValue([ev]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(1);
+    expect(agents[0]!.cards[0]!.inputText).toBeUndefined();
+  });
+
   it('drops a card whose inputMime is not a string', async () => {
     const pool = createMockPool();
     const agent = ElisymIdentity.generate();

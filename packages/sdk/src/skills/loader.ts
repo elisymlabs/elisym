@@ -77,6 +77,13 @@ export interface SkillFrontmatter {
    */
   input_mime?: unknown;
   /**
+   * Whether the skill ALSO accepts a text prompt alongside a file input
+   * (`dynamic-script` only; meaningful only with `input_mime`). `'none'` = file
+   * only, `'optional'` = file + optional note (default), `'required'` = needs both.
+   * Discovery hint only; lets the web app show/hide its text box for file jobs.
+   */
+  input_text?: unknown;
+  /**
    * Optional per-skill rate limit. Applies to any skill mode. Snake-case
    * keys here match the YAML frontmatter convention; parsed into camelCase
    * `rateLimit` on `ParsedSkill`.
@@ -129,6 +136,12 @@ export interface ParsedSkill {
    * capability needs a file input (clients gate file-only flows on it).
    */
   inputMime?: string;
+  /**
+   * Whether the skill also accepts a text prompt with a file input (mode
+   * 'dynamic-script' only). Discovery hint; clients (the web app) gate their text
+   * box on it. Default behavior when absent = file + optional text.
+   */
+  inputText?: 'required' | 'optional' | 'none';
   /** Optional per-skill rate limit (any mode). */
   rateLimit?: SkillRateLimit;
   /**
@@ -498,6 +511,25 @@ function validateInputMime(skillName: string, raw: unknown): string | undefined 
   return raw;
 }
 
+const INPUT_TEXT_VALUES = ['required', 'optional', 'none'] as const;
+
+// Parse-time check for `input_text` (whether a file skill also takes a text prompt).
+// Discovery hint only; enforced as a strict enum at author-time so a typo fails fast.
+function validateInputText(
+  skillName: string,
+  raw: unknown,
+): 'required' | 'optional' | 'none' | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (typeof raw !== 'string' || !(INPUT_TEXT_VALUES as readonly string[]).includes(raw)) {
+    throw new Error(
+      `SKILL.md "${skillName}": "input_text" must be one of "required", "optional", "none"`,
+    );
+  }
+  return raw as 'required' | 'optional' | 'none';
+}
+
 function validateMaxExecutionSecs(skillName: string, raw: unknown): number | undefined {
   if (raw === undefined || raw === null) {
     return undefined;
@@ -622,6 +654,7 @@ export function validateSkillFrontmatter(
   let scriptTimeoutMs: number | undefined;
   let outputMime: string | undefined;
   let inputMime: string | undefined;
+  let inputText: 'required' | 'optional' | 'none' | undefined;
 
   if (mode === 'static-file') {
     if (typeof frontmatter.output_file !== 'string' || frontmatter.output_file.length === 0) {
@@ -644,6 +677,11 @@ export function validateSkillFrontmatter(
         `SKILL.md "${frontmatter.name}": "input_mime" is only valid in mode 'dynamic-script'`,
       );
     }
+    if (frontmatter.input_text !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "input_text" is only valid in mode 'dynamic-script'`,
+      );
+    }
     outputFile = frontmatter.output_file;
   } else if (mode === 'static-script' || mode === 'dynamic-script') {
     if (typeof frontmatter.script !== 'string' || frontmatter.script.length === 0) {
@@ -661,6 +699,7 @@ export function validateSkillFrontmatter(
     if (mode === 'dynamic-script') {
       outputMime = validateOutputMime(frontmatter.name, frontmatter.output_mime);
       inputMime = validateInputMime(frontmatter.name, frontmatter.input_mime);
+      inputText = validateInputText(frontmatter.name, frontmatter.input_text);
     } else {
       if (frontmatter.output_mime !== undefined) {
         throw new Error(
@@ -670,6 +709,11 @@ export function validateSkillFrontmatter(
       if (frontmatter.input_mime !== undefined) {
         throw new Error(
           `SKILL.md "${frontmatter.name}": "input_mime" is only valid in mode 'dynamic-script'`,
+        );
+      }
+      if (frontmatter.input_text !== undefined) {
+        throw new Error(
+          `SKILL.md "${frontmatter.name}": "input_text" is only valid in mode 'dynamic-script'`,
         );
       }
     }
@@ -704,6 +748,11 @@ export function validateSkillFrontmatter(
         `SKILL.md "${frontmatter.name}": "input_mime" is only valid in mode 'dynamic-script'`,
       );
     }
+    if (frontmatter.input_text !== undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "input_text" is only valid in mode 'dynamic-script'`,
+      );
+    }
   }
 
   const image = typeof frontmatter.image === 'string' ? frontmatter.image : undefined;
@@ -735,6 +784,7 @@ export function validateSkillFrontmatter(
     scriptTimeoutMs,
     outputMime,
     inputMime,
+    inputText,
     rateLimit,
     executionTimeoutSecs,
   };

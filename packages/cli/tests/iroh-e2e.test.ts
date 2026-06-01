@@ -191,7 +191,7 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
 
     // The result was delivered with a file attachment, not inlined.
     expect(deliverResult).toHaveBeenCalledTimes(1);
-    const attachment = deliverResult.mock.calls[0]![3] as FileAttachment | undefined;
+    const attachment = (deliverResult.mock.calls[0]![3] as FileAttachment[] | undefined)?.[0];
     expect(attachment).toBeDefined();
     const ticket = attachment!.transports.find((t) => t.kind === 'iroh')?.ticket;
     expect(typeof ticket).toBe('string');
@@ -241,7 +241,7 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
     // cap) plus a text/plain attachment carrying the spilled text.
     expect(deliverResult).toHaveBeenCalledTimes(1);
     expect(deliverResult.mock.calls[0]![1]).toBe('');
-    const attachment = deliverResult.mock.calls[0]![3] as FileAttachment | undefined;
+    const attachment = (deliverResult.mock.calls[0]![3] as FileAttachment[] | undefined)?.[0];
     expect(attachment?.mime).toBe('text/plain');
     const ticket = attachment!.transports.find((t) => t.kind === 'iroh')?.ticket;
 
@@ -312,7 +312,7 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
     expect(skill.execute).toHaveBeenCalledTimes(1);
     expect(deliverResult).toHaveBeenCalledTimes(1);
     expect(deliverResult.mock.calls[0]![1]).toBe('');
-    const attachment = deliverResult.mock.calls[0]![3] as FileAttachment | undefined;
+    const attachment = (deliverResult.mock.calls[0]![3] as FileAttachment[] | undefined)?.[0];
     expect(attachment?.mime).toBe('text/plain');
     const ticket = attachment!.transports.find((t) => t.kind === 'iroh')?.ticket;
     const fetched = await customerTransport.fetchToBytes(ticket!, { maxBytes: 4 * 1024 * 1024 });
@@ -584,7 +584,7 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
     // note is the script's stdout, and the mime comes from the skill's output_mime.
     expect(deliverResult).toHaveBeenCalledTimes(1);
     expect(deliverResult.mock.calls[0]![1]).toBe('processed');
-    const resultAttachment = deliverResult.mock.calls[0]![3] as FileAttachment | undefined;
+    const resultAttachment = (deliverResult.mock.calls[0]![3] as FileAttachment[] | undefined)?.[0];
     expect(resultAttachment?.mime).toBe('image/png');
     const ticket = resultAttachment!.transports.find((t) => t.kind === 'iroh')?.ticket;
 

@@ -147,6 +147,13 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     return null;
   }
 
+  // `inputText` is an enum, so coerce an unknown value to undefined (do NOT drop the
+  // whole card like the strict MIME check above): forward-compat so a future value
+  // never hides an agent from older clients. Clients gate on the known values only.
+  if (card.inputText !== undefined && !['required', 'optional', 'none'].includes(card.inputText)) {
+    card.inputText = undefined;
+  }
+
   if (
     card.payment?.job_price !== null &&
     card.payment?.job_price !== undefined &&

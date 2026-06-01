@@ -80,7 +80,11 @@ const FileAttachmentSchema = z.object({
 const JobPayloadEnvelopeSchema = z.object({
   v: z.literal(ENVELOPE_VERSION),
   text: z.string().optional(),
+  // Legacy single attachment - kept (and mirrored from `attachments[0]`) so an old
+  // decoder that doesn't know `attachments` still gets the first file.
   attachment: FileAttachmentSchema.optional(),
+  // Multiple result/input files. Additive; old decoders strip this unknown key.
+  attachments: z.array(FileAttachmentSchema).optional(),
 });
 
 export type FileTransport = z.infer<typeof FileTransportSchema>;
@@ -137,10 +141,25 @@ export function readAcceptedTransports(tags: string[][]): TransportKind[] | unde
   return out.length > 0 ? out : undefined;
 }
 
-/** Decoded job payload: a free-text note and/or a file attachment. */
+/** Decoded job payload: a free-text note and/or file attachment(s). */
 export interface DecodedJobPayload {
   text?: string;
+  /** Legacy single attachment (also mirrors `attachments[0]`). */
   attachment?: FileAttachment;
+  /** All attachments when a job carries multiple files. */
+  attachments?: FileAttachment[];
+}
+
+/**
+ * Normalize a decoded payload to the full attachment list, treating the legacy
+ * single `attachment` as a 1-element list. Use this everywhere instead of reading
+ * `.attachment`/`.attachments` directly, so single- and multi-file are uniform.
+ */
+export function attachmentsOf(decoded: DecodedJobPayload): FileAttachment[] {
+  if (decoded.attachments !== undefined && decoded.attachments.length > 0) {
+    return decoded.attachments;
+  }
+  return decoded.attachment !== undefined ? [decoded.attachment] : [];
 }
 
 /**
@@ -153,7 +172,12 @@ export function encodeJobPayload(payload: DecodedJobPayload): string {
   if (payload.text !== undefined) {
     envelope.text = payload.text;
   }
-  if (payload.attachment !== undefined) {
+  // Prefer the multi-attachment form and mirror the first into the legacy single
+  // `attachment` (old decoders that ignore `attachments` still get one file).
+  if (payload.attachments !== undefined && payload.attachments.length > 0) {
+    envelope.attachments = payload.attachments;
+    envelope.attachment = payload.attachments[0];
+  } else if (payload.attachment !== undefined) {
     envelope.attachment = payload.attachment;
   }
   return JSON.stringify(envelope);
@@ -199,5 +223,9 @@ export function decodeJobPayload(content: string): DecodedJobPayload {
     );
   }
 
-  return { text: result.data.text, attachment: result.data.attachment };
+  return {
+    text: result.data.text,
+    attachment: result.data.attachment,
+    attachments: result.data.attachments,
+  };
 }

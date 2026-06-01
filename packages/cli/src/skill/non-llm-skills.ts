@@ -89,6 +89,8 @@ export interface CliScriptSkillParams extends BaseParams {
    * surfaced in the published capability card; not used by the runner.
    */
   inputMime?: string;
+  /** Whether the file skill also accepts a text prompt (dynamic-script only). */
+  inputText?: 'required' | 'optional' | 'none';
 }
 
 export class StaticScriptSkill implements Skill {
@@ -147,8 +149,9 @@ export class DynamicScriptSkill implements Skill {
   llmOverride?: SkillLlmOverride;
   // Discovery hints surfaced in the published capability card (buildCard).
   // `outputMime` is also forwarded to the inner SDK runner (it labels the file
-  // result); `inputMime` is publish-time metadata only.
+  // result); `inputMime`/`inputText` are publish-time metadata only.
   inputMime?: string;
+  inputText?: 'required' | 'optional' | 'none';
   outputMime?: string;
   private inner: SdkDynamicScriptSkill;
 
@@ -163,6 +166,7 @@ export class DynamicScriptSkill implements Skill {
     this.dir = params.dir;
     this.llmOverride = params.llmOverride;
     this.inputMime = params.inputMime;
+    this.inputText = params.inputText;
     this.outputMime = params.outputMime;
     this.inner = new SdkDynamicScriptSkill({
       name: params.name,

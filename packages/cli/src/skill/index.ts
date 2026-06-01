@@ -43,9 +43,15 @@ export interface SkillOutput {
    */
   filePath?: string;
   /**
-   * Releases the resources backing `filePath` (e.g. a temp dir). The runtime
-   * calls it once it has seeded the file - or failed to - since seeding happens
-   * after `execute()` returns and the producer cannot release the file itself.
+   * Local paths to MULTIPLE file results (a skill that wrote several files to
+   * `ELISYM_OUTPUT_DIR`). Each is seeded + delivered as its own attachment;
+   * `outputMime` applies to all. The runtime prefers `filePaths` over `filePath`.
+   */
+  filePaths?: string[];
+  /**
+   * Releases the resources backing `filePath`/`filePaths` (e.g. a temp dir). The
+   * runtime calls it once it has seeded the file(s) - or failed to - since seeding
+   * happens after `execute()` returns and the producer cannot release them itself.
    * Mirrors the input-side cleanup callback in the runtime's `resolveInputFile`.
    */
   cleanup?: () => Promise<void>;
@@ -167,6 +173,11 @@ export interface Skill {
   inputMime?: string;
   /** MIME of a file result (`output_mime`, dynamic-script only). */
   outputMime?: string;
+  /**
+   * Whether a file-input skill also accepts a text prompt (`input_text`,
+   * dynamic-script only). Discovery hint published in the capability card.
+   */
+  inputText?: 'required' | 'optional' | 'none';
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;
 }
 

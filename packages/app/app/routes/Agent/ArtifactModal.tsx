@@ -1,9 +1,11 @@
-import { useEffect } from 'react';
+import { type ReactNode, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import { useBodyScrollLock } from '~/hooks/useBodyScrollLock';
 import { cn } from '~/lib/cn';
+import { hasBlossom } from '~/lib/fileResult';
 import { Markdown } from '~/lib/markdown';
+import { FileResultCard } from './FileResultCard';
 import { ProductAvatar } from './ProductAvatar';
 import type { Artifact } from './types';
 
@@ -57,6 +59,29 @@ export function ArtifactModal({
   const rated = isRated;
   const showFeedbackRow = artifact.capability && !(rated && !thanksMounted);
   const feedbackCollapsed = rated && !thanksVisible;
+
+  // Browser-fetchable result files (those with a blossom member). Each renders its
+  // own preview/download card; a no-blossom or text result falls back to <Markdown>.
+  const resultProviderPubkey = artifact.resultProviderPubkey;
+  const fetchableAttachments = resultProviderPubkey
+    ? (artifact.resultAttachments ?? []).filter(hasBlossom)
+    : [];
+
+  // The customer's INPUT file (if any). NIP-44 is symmetric, so it decrypts against
+  // the agent it was sent to (`promptProviderPubkey`). Show a real preview when the
+  // input has a blossom member; otherwise a plain `📎 name` line (no nested ternary).
+  const promptAttachment = artifact.promptAttachment;
+  const promptProviderPubkey = artifact.promptProviderPubkey;
+  let promptFileNode: ReactNode = null;
+  if (promptAttachment && promptProviderPubkey && hasBlossom(promptAttachment)) {
+    promptFileNode = (
+      <FileResultCard attachment={promptAttachment} providerPubkey={promptProviderPubkey} />
+    );
+  } else if (promptAttachment) {
+    promptFileNode = (
+      <div className="text-sm break-words text-text-2">📎 {promptAttachment.name}</div>
+    );
+  }
 
   return createPortal(
     <div
@@ -116,18 +141,35 @@ export function ArtifactModal({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-16 pt-20 pb-24 sm:px-32 sm:pt-28 sm:pb-28">
-          {artifact.prompt && (
+          {(artifact.prompt || promptFileNode) && (
             <div className="mb-16 w-full rounded-xl px-12 py-10 prompt-block sm:mb-20 sm:px-16 sm:py-12">
               <div className="mb-2 text-xs text-text-2">Prompt</div>
-              <div className="text-sm break-words whitespace-pre-wrap text-text">
-                {artifact.prompt}
-              </div>
+              {artifact.prompt && (
+                <div className="text-sm break-words whitespace-pre-wrap text-text">
+                  {artifact.prompt}
+                </div>
+              )}
+              {promptFileNode && (
+                <div className={artifact.prompt ? 'mt-10' : ''}>{promptFileNode}</div>
+              )}
             </div>
           )}
-          <Markdown
-            content={artifact.result}
-            className="text-[14px] leading-[1.6] break-words text-text sm:text-[15px] sm:leading-[1.65]"
-          />
+          {resultProviderPubkey && fetchableAttachments.length > 0 ? (
+            <div className="flex flex-col gap-12">
+              {fetchableAttachments.map((att, idx) => (
+                <FileResultCard
+                  key={`${idx}-${att.name}`}
+                  attachment={att}
+                  providerPubkey={resultProviderPubkey}
+                />
+              ))}
+            </div>
+          ) : (
+            <Markdown
+              content={artifact.result}
+              className="text-[14px] leading-[1.6] break-words text-text sm:text-[15px] sm:leading-[1.65]"
+            />
+          )}
         </div>
         {showFeedbackRow && (
           <div

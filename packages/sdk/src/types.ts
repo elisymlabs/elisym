@@ -27,6 +27,13 @@ export interface CapabilityCard {
   inputMime?: string;
   /** MIME of a file result the capability produces (from `output_mime`). */
   outputMime?: string;
+  /**
+   * Whether a file-input capability ALSO accepts a text prompt (from `input_text`):
+   * `'none'` = file only, `'optional'` = file + optional note, `'required'` = both.
+   * Discovery hint; the web app shows/hides its text box accordingly. Only meaningful
+   * with `inputMime`. Untrusted - gate on it, never render the raw value.
+   */
+  inputText?: 'required' | 'optional' | 'none';
 }
 
 /** Payment info embedded in capability card (legacy format for on-network events). */
@@ -182,11 +189,17 @@ export interface JobUpdateCallbacks {
   ) => void;
   /**
    * Fired on a job result. `content` is the result text (for a file result, the
-   * envelope's text note, or `''`); `attachment` is the file descriptor when the
-   * result carries a file. The file is fetched separately (P2P via iroh), never
-   * inlined here.
+   * envelope's text note, or `''`); `attachment` is the FIRST file descriptor
+   * (= `attachments[0]`, kept for back-compat); `attachments` is the full list for
+   * a multi-file result. Files are fetched separately (P2P via iroh / Blossom),
+   * never inlined here.
    */
-  onResult?: (content: string, eventId: string, attachment?: FileAttachment) => void;
+  onResult?: (
+    content: string,
+    eventId: string,
+    attachment?: FileAttachment,
+    attachments?: FileAttachment[],
+  ) => void;
   onError?: (error: string) => void;
   /**
    * Fired when the result wait window expires without a result - a distinct,

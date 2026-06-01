@@ -17,6 +17,7 @@ import type { ElisymIdentity } from '../primitives/identity';
 import {
   encodeJobPayload,
   decodeJobPayload,
+  attachmentsOf,
   buildAcceptTransportsTag,
   type FileAttachment,
 } from '../transport/attachment';
@@ -223,8 +224,10 @@ export class MarketplaceService {
       resultDelivered = true;
       try {
         // For a file result, surface the text note (or '') plus the attachment
-        // descriptor; the file is fetched separately, never inlined here.
-        cb.onResult?.(decoded.text ?? '', ev.id, decoded.attachment);
+        // descriptor(s); the file(s) are fetched separately, never inlined here.
+        // 3rd arg stays the single attachment (= attachments[0]) for back-compat;
+        // 4th arg is the full list for multi-file results.
+        cb.onResult?.(decoded.text ?? '', ev.id, decoded.attachment, attachmentsOf(decoded));
       } catch {
         /* caller error - don't crash subscription */
       } finally {
@@ -438,9 +441,9 @@ export class MarketplaceService {
     requestEvent: Event,
     content: string,
     amount?: number,
-    attachment?: FileAttachment,
+    attachments?: FileAttachment[],
   ): Promise<string> {
-    const hasAttachment = attachment !== undefined;
+    const hasAttachment = attachments !== undefined && attachments.length > 0;
     if (!content && !hasAttachment) {
       throw new Error('Job result content must not be empty.');
     }
@@ -457,7 +460,7 @@ export class MarketplaceService {
     // A file result wraps the (optional) text + attachment in an envelope so the
     // recovery/empty-content path always has non-empty content to deliver.
     const payload = hasAttachment
-      ? encodeJobPayload({ text: content || undefined, attachment })
+      ? encodeJobPayload({ text: content || undefined, attachments })
       : content;
     // NIP-44 backstop (same as submitJobRequest): the post-envelope payload must
     // fit the 65_535-byte cap. A large text result should have been spilled to a
@@ -516,12 +519,12 @@ export class MarketplaceService {
     amount?: number,
     maxAttempts: number = DEFAULTS.RESULT_RETRY_COUNT,
     baseDelayMs: number = DEFAULTS.RESULT_RETRY_BASE_MS,
-    attachment?: FileAttachment,
+    attachments?: FileAttachment[],
   ): Promise<string> {
     const attempts = Math.max(1, maxAttempts);
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
-        return await this.submitJobResult(identity, requestEvent, content, amount, attachment);
+        return await this.submitJobResult(identity, requestEvent, content, amount, attachments);
       } catch (e: unknown) {
         if (attempt >= attempts - 1) {
           throw e;

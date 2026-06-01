@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
@@ -96,9 +96,15 @@ export class DynamicScriptSkill implements Skill {
     // stdin -> stdout text behavior unchanged.
     const outDir = await mkdtemp(join(tmpdir(), 'elisym-skill-out-'));
     const outputFile = join(outDir, 'output');
+    // A skill returning MULTIPLE files writes them here instead of ELISYM_OUTPUT_FILE.
+    // It lives under outDir (so the single `cleanup` of outDir removes both) and is a
+    // distinct subpath from `outputFile`, so scanning it never picks up the single file.
+    const outputDir = join(outDir, 'files');
+    await mkdir(outputDir, { recursive: true });
     const env: NodeJS.ProcessEnv = {
       ...(this.scriptEnv ?? process.env),
       ELISYM_OUTPUT_FILE: outputFile,
+      ELISYM_OUTPUT_DIR: outputDir,
     };
     if (input.filePath !== undefined) {
       env.ELISYM_INPUT_FILE = input.filePath;
@@ -132,6 +138,33 @@ export class DynamicScriptSkill implements Skill {
         // Generic message reaches the customer; raw stderr/stdout stays on `detail`
         // for the operator log and health-monitor classification only.
         throw new ScriptExecutionError(result.code, detail);
+      }
+
+      // Multi-file result: the script wrote files to ELISYM_OUTPUT_DIR. Collect the
+      // non-empty files (sorted, deterministic) and deliver them as N attachments.
+      // Like the single-file path, the stdout note may be empty (no empty-output guard).
+      const dirEntries = await readdir(outputDir, { withFileTypes: true }).catch(() => []);
+      const filePaths: string[] = [];
+      for (const entry of dirEntries.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isFile()) {
+          continue;
+        }
+        const candidate = join(outputDir, entry.name);
+        const entryStat = await stat(candidate).catch(() => null);
+        if (entryStat !== null && entryStat.isFile() && entryStat.size > 0) {
+          filePaths.push(candidate);
+        }
+      }
+      if (filePaths.length > 0) {
+        keepOutDir = true;
+        return {
+          data: result.stdout.trim(),
+          filePaths,
+          outputMime: this.outputMime ?? 'application/octet-stream',
+          cleanup: async () => {
+            await rm(outDir, { recursive: true, force: true });
+          },
+        };
       }
 
       // File result: the script wrote a non-empty file to ELISYM_OUTPUT_FILE. The

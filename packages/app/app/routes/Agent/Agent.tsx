@@ -16,6 +16,7 @@ import { usePingAgent, type PingStatus } from '~/hooks/usePingAgent';
 import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
+import { decodeResult } from '~/lib/fileResult';
 import { compactZeros, formatDecimal } from '~/lib/formatPrice';
 import { cacheGet, cacheSet } from '~/lib/localCache';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
@@ -234,6 +235,12 @@ function mergeArtifacts(
           prompt: existing.prompt ?? partial.prompt,
           priceLamports: existing.priceLamports ?? partial.priceLamports,
           asset: existing.asset ?? partial.asset,
+          // A job seen both live and in history merges here; carry the file
+          // descriptors so the downloads survive (the whitelist would drop them).
+          promptAttachment: existing.promptAttachment ?? partial.promptAttachment,
+          promptProviderPubkey: existing.promptProviderPubkey ?? partial.promptProviderPubkey,
+          resultAttachments: existing.resultAttachments ?? partial.resultAttachments,
+          resultProviderPubkey: existing.resultProviderPubkey ?? partial.resultProviderPubkey,
         });
       } else {
         const capability = partial.capability;
@@ -255,7 +262,8 @@ function useHydrateArtifacts(
 
   useEffect(() => {
     const missing = artifacts.filter(
-      (artifact) => !artifact.prompt || artifact.priceLamports === undefined,
+      (artifact) =>
+        (!artifact.prompt && !artifact.promptAttachment) || artifact.priceLamports === undefined,
     );
     if (missing.length === 0 || !pubkey) {
       return;
@@ -278,14 +286,24 @@ function useHydrateArtifacts(
         for (const artifact of missing) {
           const req = requests.find((event) => event.id === artifact.id);
           const patch: Partial<Artifact> = {};
-          if (req && !artifact.prompt) {
+          if (req && !artifact.prompt && !artifact.promptAttachment) {
             const pTag = req.tags.find((tag) => tag[0] === 'p')?.[1];
             const isEncrypted = req.tags.some((tag) => tag[0] === 'encrypted');
             try {
-              patch.prompt =
+              const plaintext =
                 isEncrypted && pTag && identity
                   ? nip44Decrypt(req.content, identity.secretKey, pTag)
                   : req.content;
+              // Decode the input envelope: keep the genuine text note (not the
+              // `📎 name` placeholder) and the file attachment so the modal can show
+              // a real preview. NIP-44 is symmetric, so the input decrypts against the
+              // `p`-tag recipient. An input is always a single file.
+              const decodedInput = decodeResult(plaintext);
+              patch.prompt = decodedInput.text?.trim() ? decodedInput.text : undefined;
+              patch.promptAttachment = decodedInput.attachments[0];
+              if (decodedInput.attachments[0] && pTag) {
+                patch.promptProviderPubkey = pTag;
+              }
             } catch {
               // decryption failed, skip
             }

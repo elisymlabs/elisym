@@ -46,6 +46,18 @@ export class BlossomService {
   ) {}
 
   /**
+   * The content-addressed GET URL for a blob, derivable from its sha256 BEFORE
+   * upload (BUD-01: `<serverUrl>/<sha256>`, no extension for our octet-stream
+   * ciphertext uploads - same form `delete` addresses by). Lets a caller build a
+   * complete attachment descriptor and defer the actual byte upload (the descriptor
+   * is submitted first, the bytes PUT later). `upload()` re-verifies the server
+   * returns this exact url.
+   */
+  contentUrl(sha256: string): string {
+    return `${this.serverUrl}/${sha256}`;
+  }
+
+  /**
    * Upload a file to the Blossom server, returning its descriptor. On any failure, falls
    * back to the configured uploader (if any) and returns a normalized descriptor with
    * `provider: 'fallback'`. Works with browser File objects and Node.js/Bun Blobs.

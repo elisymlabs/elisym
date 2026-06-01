@@ -102,12 +102,16 @@ function fakeBlossom() {
     return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
   };
   const svc = {
+    // Content-addressed, no extension - matches the real relay (and contentUrl).
+    contentUrl(sha256: string) {
+      return `https://files.elisym.network/${sha256}`;
+    },
     async upload(_identity: ElisymIdentity, blob: Blob) {
       const bytes = new Uint8Array(await blob.arrayBuffer());
       const sha256 = await hashHex(bytes);
       store.set(sha256, bytes);
       return {
-        url: `https://files.elisym.network/${sha256}.bin`,
+        url: `https://files.elisym.network/${sha256}`,
         sha256,
         size: bytes.byteLength,
         type: blob.type,
@@ -115,7 +119,7 @@ function fakeBlossom() {
       };
     },
     async download(url: string, opts?: { maxBytes?: number; expectedSha256?: string }) {
-      const sha = url.split('/').pop()?.replace('.bin', '') ?? '';
+      const sha = url.split('/').pop() ?? '';
       const bytes = store.get(sha);
       if (!bytes) {
         throw new Error('not found');
@@ -245,13 +249,14 @@ describe('encrypted Blossom file transport e2e', () => {
       await runPromise.catch(() => {});
 
       expect(deliverResult).toHaveBeenCalledTimes(1);
-      const attachment = deliverResult.mock.calls[0]![3] as FileAttachment | undefined;
-      expect(attachment).toBeDefined();
+      const attachments = deliverResult.mock.calls[0]![3] as FileAttachment[] | undefined;
+      expect(attachments).toHaveLength(1);
+      const attachment = attachments![0]!;
       // Blossom preferred (first), iroh as the fallback.
-      expect(attachment!.transports.map((t) => t.kind)).toEqual(['blossom', 'iroh']);
+      expect(attachment.transports.map((t) => t.kind)).toEqual(['blossom', 'iroh']);
 
       const out = await fetchEncryptedFileOutput({
-        attachment: attachment!,
+        attachment,
         providerPubkey: provider.publicKey,
         identity: customer,
         blossom,
@@ -330,8 +335,8 @@ describe('encrypted Blossom file transport e2e', () => {
       runtime.stop();
       await runPromise.catch(() => {});
 
-      const attachment = deliverResult.mock.calls[0]![3] as FileAttachment | undefined;
-      expect(attachment!.transports.map((t) => t.kind)).toEqual(['iroh']);
+      const attachments = deliverResult.mock.calls[0]![3] as FileAttachment[] | undefined;
+      expect(attachments![0]!.transports.map((t) => t.kind)).toEqual(['iroh']);
       // The win: advertising iroh-only means the provider never uploaded to Blossom.
       expect(uploadSpy).not.toHaveBeenCalled();
     },

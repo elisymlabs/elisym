@@ -194,17 +194,18 @@ describe('AgentRuntime', () => {
   });
 
   describe('result spill (large text)', () => {
-    it('fails cleanly without delivering when seeding the spilled result fails', async () => {
+    it('keeps the job paid for recovery (no delivery) when seeding the spilled result fails', async () => {
       // > MAX_ENCRYPTED_INLINE_BYTES (60_000), so the result must spill to iroh.
       const largeText = 'x'.repeat(70_000);
       const skill = makeFakeSkill('big-skill', largeText, 0);
       const registry = makeFakeRegistry(skill);
       const { transport, triggerJob } = makeFakeTransport();
       // A transport whose seedBytes fails. The seed runs BEFORE markExecuted, so
-      // the job is still 'paid' when the error is caught -> marked 'failed' with
-      // NO delivery. (If the seed ran AFTER markExecuted, the job would be stuck
-      // 'executed' and recovery would re-deliver a dead, tickless result - the
-      // bug the reorder fixes; this asserts 'failed', not 'executed'.)
+      // the job is still 'paid' when the error is caught. The runtime maps a seed
+      // failure to a SeedFailedError and KEEPS the job 'paid' (no delivery) so the
+      // recovery loop re-delivers it on a reset node - rather than losing a paid
+      // job to 'failed'. (It must not be stuck 'executed' either, which would
+      // re-deliver a dead, tickless result; this asserts 'paid', not 'executed'.)
       const failingIroh = {
         seedPath: vi.fn(),
         seedBytes: vi.fn().mockRejectedValue(new Error('seed failed')),
@@ -233,8 +234,64 @@ describe('AgentRuntime', () => {
       await runPromise.catch(() => {});
 
       expect(failingIroh.seedBytes).toHaveBeenCalledTimes(1);
-      expect(ledger.getStatus('spill-fail-job')).toBe('failed');
+      expect(ledger.getStatus('spill-fail-job')).toBe('paid');
       expect((transport as any).deliverResult).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('multi-file result', () => {
+    it('delivers each ELISYM_OUTPUT_DIR file as its own attachment', async () => {
+      // A skill that produced several files (filePaths) - e.g. a stem splitter.
+      const skill: Skill = {
+        name: 'stems',
+        description: 'multi-file',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        execute: vi.fn().mockResolvedValue({
+          data: 'stems',
+          filePaths: ['/tmp/stems/vocals.wav', '/tmp/stems/drums.wav'],
+          outputMime: 'audio/wav',
+        }),
+      };
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      // iroh seeds each file (no blossom transport -> iroh-only members).
+      const fakeIroh = {
+        seedPath: vi.fn().mockResolvedValue({ ticket: `blob${'a'.repeat(28)}`, size: 1234 }),
+        seedBytes: vi.fn(),
+        fetchToPath: vi.fn(),
+        fetchToBytes: vi.fn(),
+        reShare: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as IrohBlobTransport;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+        undefined,
+        fakeIroh,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('multi-job'));
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(fakeIroh.seedPath).toHaveBeenCalledTimes(2);
+      const attachments = (transport as any).deliverResult.mock.calls[0]![3] as
+        | Array<{ name: string; mime: string }>
+        | undefined;
+      expect(attachments).toHaveLength(2);
+      expect(attachments!.map((a) => a.name)).toEqual(['vocals.wav', 'drums.wav']);
+      expect(attachments!.every((a) => a.mime === 'audio/wav')).toBe(true);
+      expect(ledger.getStatus('multi-job')).toBe('delivered');
     });
   });
 
