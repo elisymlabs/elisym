@@ -28,6 +28,8 @@ export interface BlossomBlobTransport {
     transport: BlossomTransport;
     senderPubkey: string;
     maxBytes?: number;
+    /** Abort the in-flight download (e.g. job stop() / input-fetch budget). */
+    signal?: AbortSignal;
   }): Promise<Uint8Array>;
 }
 
@@ -64,11 +66,12 @@ export function createBlossomTransport(opts: {
       };
     },
 
-    async fetchToBytes({ transport, senderPubkey, maxBytes }) {
+    async fetchToBytes({ transport, senderPubkey, maxBytes, signal }) {
       const plaintextCap = maxBytes ?? LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES;
       const ciphertext = await blossom.download(transport.url, {
         maxBytes: plaintextCap + AES_GCM_TAG_BYTES,
         expectedSha256: transport.sha256,
+        signal,
       });
       return decryptBytesFromSender(
         ciphertext,

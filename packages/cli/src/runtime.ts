@@ -211,6 +211,23 @@ class SeedFailedError extends Error {
   }
 }
 
+/**
+ * Thrown when on-chain payment verification times out but the customer was NOT
+ * conclusively shown to have abandoned the job (the reference scan did not return
+ * the definitive "no matching transaction" result, or the customer asserted a
+ * signature we could not yet confirm). Kept distinct so `processJob` keeps the job
+ * `paid` instead of marking it `failed`: a payment that confirms shortly after the
+ * timeout (e.g. a lagging devnet RPC) is then picked up by recovery's reVerifyPayment
+ * rather than being silently lost. A conclusively-abandoned job throws a plain Error
+ * and is still marked failed.
+ */
+class PaymentTimeoutError extends Error {
+  constructor() {
+    super('Payment verification timed out; awaiting late confirmation.');
+    this.name = 'PaymentTimeoutError';
+  }
+}
+
 // A dynamic-script result is written to a temp file literally named `output` (no
 // extension), so the customer would download a bare `output` with no extension.
 // Derive a sensible extension from the declared output MIME; unknown MIME → none.
@@ -822,10 +839,15 @@ export class AgentRuntime {
       //   - `paid` + `SeedFailedError`: same - the skill produced output but the
       //     result blob seed failed/timed out; keep `paid` so recovery re-delivers
       //     on a freshly-reset iroh node rather than losing the paid job.
+      //   - `paid` + `PaymentTimeoutError`: payment verification timed out but the
+      //     customer was not conclusively shown to have abandoned; keep `paid` so
+      //     recovery re-verifies a late on-chain payment instead of losing it.
       //   - everything else: markFailed as before.
       const currentStatus = this.ledger.getStatus(job.jobId);
       const keepPaidForRecovery =
-        (e instanceof AgentUnavailableError || e instanceof SeedFailedError) &&
+        (e instanceof AgentUnavailableError ||
+          e instanceof SeedFailedError ||
+          e instanceof PaymentTimeoutError) &&
         currentStatus === 'paid';
       if (currentStatus !== 'executed' && !keepPaidForRecovery) {
         this.ledger.markFailed(job.jobId);
@@ -946,7 +968,7 @@ export class AgentRuntime {
 
     // Fetch a file input (if any) AFTER payment is confirmed - never before, so an
     // unpaid request can't make the provider download attacker-hosted data.
-    const inputFile = await this.resolveInputFile(job.attachment, job.customerId);
+    const inputFile = await this.resolveInputFile(job.attachment, job.customerId, signal);
 
     // ── Step 2: Send Processing feedback ──
     await this.transport.sendFeedback(job, { type: 'processing' }).catch(() => {});
@@ -1156,11 +1178,22 @@ export class AgentRuntime {
             ),
           );
         }
+        // A file result's `output.data` is normally a small note delivered inline
+        // alongside the tickets. But a skill can emit a LARGE note next to its file(s)
+        // (e.g. a long summary + a generated PDF); spill it the same way the large-text
+        // branch does so it never overflows the NIP-44 inline cap, which would otherwise
+        // throw at encryption time and fail the whole paid job.
+        let deliveredContent = output.data;
+        if (utf8ByteLength(output.data) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES) {
+          attachments.push(
+            await this.spillTextAttachment(jobId, output.data, customerPubkey, wantBlossom),
+          );
+          deliveredContent = '';
+        }
         this.ledger.recordAttachment(jobId, {
           resultAttachments: attachments.map((a) => JSON.stringify(a)),
         });
-        // A file result's `output.data` is a small note, delivered inline alongside the tickets.
-        return { attachments, deliveredContent: output.data };
+        return { attachments, deliveredContent };
       } finally {
         await output.cleanup?.().catch(() => {});
       }
@@ -1169,30 +1202,44 @@ export class AgentRuntime {
     // Large text result: spill it to iroh and deliver EMPTY content + a text/plain
     // attachment, so the customer fetches it via fetch_job_file (same as a file).
     if (utf8ByteLength(output.data) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES) {
-      if (!this.irohTransport) {
-        throw new Error('Result is too large to deliver inline and iroh transport is unavailable.');
-      }
-      const iroh = this.irohTransport;
-      const dataBytes = Buffer.from(output.data, 'utf8');
-      const seeded = await this.seedGuarded(jobId, 'large-text', () => iroh.seedBytes(dataBytes));
-      const transports: FileTransport[] = [{ kind: 'iroh', ticket: seeded.ticket }];
-      if (wantBlossom) {
-        const blossomMember = await this.seedBlossomMember(dataBytes, customerPubkey);
-        if (blossomMember !== undefined) {
-          transports.unshift(blossomMember);
-        }
-      }
-      const attachment: FileAttachment = {
-        name: 'result.txt',
-        size: seeded.size,
-        mime: 'text/plain',
-        transports,
-      };
+      const attachment = await this.spillTextAttachment(
+        jobId,
+        output.data,
+        customerPubkey,
+        wantBlossom,
+      );
       this.ledger.recordAttachment(jobId, { resultAttachments: [JSON.stringify(attachment)] });
       return { attachments: [attachment], deliveredContent: '' };
     }
 
     return { attachments: [], deliveredContent: output.data };
+  }
+
+  /**
+   * Seed a text note too large for inline delivery to iroh (+ encrypted Blossom when
+   * wanted) and return it as a `result.txt` FileAttachment. Shared by the large-text
+   * result path and the file-result path (a file result may carry an oversized note).
+   */
+  private async spillTextAttachment(
+    jobId: string,
+    text: string,
+    customerPubkey: string,
+    wantBlossom: boolean,
+  ): Promise<FileAttachment> {
+    if (!this.irohTransport) {
+      throw new Error('Result is too large to deliver inline and iroh transport is unavailable.');
+    }
+    const iroh = this.irohTransport;
+    const dataBytes = Buffer.from(text, 'utf8');
+    const seeded = await this.seedGuarded(jobId, 'large-text', () => iroh.seedBytes(dataBytes));
+    const transports: FileTransport[] = [{ kind: 'iroh', ticket: seeded.ticket }];
+    if (wantBlossom) {
+      const blossomMember = await this.seedBlossomMember(dataBytes, customerPubkey);
+      if (blossomMember !== undefined) {
+        transports.unshift(blossomMember);
+      }
+    }
+    return { name: 'result.txt', size: seeded.size, mime: 'text/plain', transports };
   }
 
   /**
@@ -1345,62 +1392,102 @@ export class AgentRuntime {
   private async resolveInputFile(
     attachment: FileAttachment | undefined,
     senderPubkey: string,
+    signal?: AbortSignal,
   ): Promise<{ inlineText?: string; filePath?: string; cleanup: () => Promise<void> } | undefined> {
     if (attachment === undefined) {
       return undefined;
     }
-    const irohMember = attachment.transports.find(
-      (t): t is Extract<FileTransport, { kind: 'iroh' }> => t.kind === 'iroh',
-    );
-    const blossomMember = attachment.transports.find(
-      (t): t is Extract<FileTransport, { kind: 'blossom' }> => t.kind === 'blossom',
-    );
+    // Bound the post-payment input fetch so a slow/non-responsive customer ticket or URL
+    // can't hold a p-limit job slot. ONE controller drives the abort: it fires when the job
+    // is aborted (stop()/shutdown via `signal`) OR the operator's execution budget elapses.
+    // It is threaded into both transports - the blossom HTTP fetch aborts for real; the iroh
+    // fetch abandons its JS wait (the napi binding can't cancel a native transfer mid-flight,
+    // so the native download self-terminates in the background, like the timeout path).
+    const fetchTimeoutMs =
+      this.config.executionTimeoutSecs && this.config.executionTimeoutSecs > 0
+        ? this.config.executionTimeoutSecs * 1000
+        : undefined;
+    const fetchAbort = new AbortController();
+    const onParentAbort = (): void => fetchAbort.abort();
+    if (signal) {
+      if (signal.aborted) {
+        fetchAbort.abort();
+      } else {
+        signal.addEventListener('abort', onParentAbort);
+      }
+    }
+    const budgetTimer =
+      fetchTimeoutMs !== undefined
+        ? setTimeout(() => fetchAbort.abort(), fetchTimeoutMs)
+        : undefined;
 
-    // Prefer iroh when available: it streams to disk with no in-memory cap. Fall back to the
-    // encrypted blossom transport for web-submitted inputs that only carry a blossom member.
-    if (irohMember !== undefined && this.irohTransport !== undefined) {
+    try {
+      const irohMember = attachment.transports.find(
+        (t): t is Extract<FileTransport, { kind: 'iroh' }> => t.kind === 'iroh',
+      );
+      const blossomMember = attachment.transports.find(
+        (t): t is Extract<FileTransport, { kind: 'blossom' }> => t.kind === 'blossom',
+      );
+
+      // Prefer iroh when available: it streams to disk with no in-memory cap. Fall back to the
+      // encrypted blossom transport for web-submitted inputs that only carry a blossom member.
+      if (irohMember !== undefined && this.irohTransport !== undefined) {
+        if (
+          attachment.mime.startsWith('text/') &&
+          attachment.size <= LIMITS.MAX_REINLINE_TEXT_BYTES
+        ) {
+          const bytes = await this.irohTransport.fetchToBytes(irohMember.ticket, {
+            maxBytes: LIMITS.MAX_REINLINE_TEXT_BYTES,
+            timeoutMs: fetchTimeoutMs,
+            signal: fetchAbort.signal,
+          });
+          return this.materializeBytesInput(bytes, attachment.mime);
+        }
+        const dir = await mkdtemp(join(tmpdir(), 'elisym-job-'));
+        const filePath = join(dir, 'input');
+        try {
+          await this.irohTransport.fetchToPath(irohMember.ticket, filePath, {
+            timeoutMs: fetchTimeoutMs,
+            signal: fetchAbort.signal,
+          });
+        } catch (error) {
+          await rm(dir, { recursive: true, force: true }).catch(() => {});
+          throw error;
+        }
+        return {
+          filePath,
+          cleanup: async () => {
+            await rm(dir, { recursive: true, force: true });
+          },
+        };
+      }
+
       if (
-        attachment.mime.startsWith('text/') &&
-        attachment.size <= LIMITS.MAX_REINLINE_TEXT_BYTES
+        blossomMember !== undefined &&
+        this.blossomTransport !== undefined &&
+        this.identity !== undefined
       ) {
-        const bytes = await this.irohTransport.fetchToBytes(irohMember.ticket, {
-          maxBytes: LIMITS.MAX_REINLINE_TEXT_BYTES,
+        if (attachment.size > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES) {
+          throw new Error('Blossom file input exceeds the encrypted size cap.');
+        }
+        const bytes = await this.blossomTransport.fetchToBytes({
+          transport: blossomMember,
+          senderPubkey,
+          maxBytes: LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES,
+          signal: fetchAbort.signal,
         });
         return this.materializeBytesInput(bytes, attachment.mime);
       }
-      const dir = await mkdtemp(join(tmpdir(), 'elisym-job-'));
-      const filePath = join(dir, 'input');
-      try {
-        await this.irohTransport.fetchToPath(irohMember.ticket, filePath);
-      } catch (error) {
-        await rm(dir, { recursive: true, force: true }).catch(() => {});
-        throw error;
-      }
-      return {
-        filePath,
-        cleanup: async () => {
-          await rm(dir, { recursive: true, force: true });
-        },
-      };
-    }
 
-    if (
-      blossomMember !== undefined &&
-      this.blossomTransport !== undefined &&
-      this.identity !== undefined
-    ) {
-      if (attachment.size > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES) {
-        throw new Error('Blossom file input exceeds the encrypted size cap.');
+      throw new Error('Job carries a file input but no supported transport is available.');
+    } finally {
+      if (budgetTimer !== undefined) {
+        clearTimeout(budgetTimer);
       }
-      const bytes = await this.blossomTransport.fetchToBytes({
-        transport: blossomMember,
-        senderPubkey,
-        maxBytes: LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES,
-      });
-      return this.materializeBytesInput(bytes, attachment.mime);
+      if (signal) {
+        signal.removeEventListener('abort', onParentAbort);
+      }
     }
-
-    throw new Error('Job carries a file input but no supported transport is available.');
   }
 
   /**
@@ -1663,7 +1750,15 @@ export class AgentRuntime {
     await this.transport
       .sendFeedback(job, { type: 'error', message: 'payment timeout' })
       .catch(() => {});
-    throw new Error('Payment timeout');
+    // A conclusively-abandoned customer (definitive on-chain "no transaction" + no
+    // asserted signature) is a real failure - mark it failed as before. Otherwise the
+    // payment may still confirm late (e.g. a lagging RPC), so throw a distinct error
+    // that keeps the job `paid` for recovery to re-verify - `payment_request` was
+    // already persisted above via the early `updatePayment`, so reVerifyPayment can run.
+    if (customerAbandoned) {
+      throw new Error('Payment timeout');
+    }
+    throw new PaymentTimeoutError();
   }
 
   private async recoverPendingJobs(): Promise<void> {
@@ -1878,9 +1973,20 @@ export class AgentRuntime {
         // recovery skill.execute would run without its file.
         let recoveryInputFile;
         try {
+          // Select the payload source exactly as the live handler does
+          // (transport/nostr.ts): an encrypted job's decrypted envelope lives in
+          // `content`, but an UNENCRYPTED job carries it in the `i` tag. Decoding
+          // only from `content` would miss an unencrypted file job's attachment and
+          // re-execute it with no input - producing a wrong result the customer paid for.
+          const encrypted = rawEvent.tags?.some(
+            (tag: string[]) => tag[0] === 'encrypted' && tag[1] === 'nip44',
+          );
+          const iTag = rawEvent.tags?.find((tag: string[]) => tag[0] === 'i');
+          const rawInput = encrypted ? rawEvent.content : (iTag?.[1] ?? rawEvent.content);
           recoveryInputFile = await this.resolveInputFile(
-            decodeJobPayload(rawEvent.content).attachment,
+            decodeJobPayload(rawInput).attachment,
             entry.customer_id,
+            recoveryAbort.signal,
           );
         } catch {
           log(`[${entry.job_id.slice(0, 8)}] Recovery: input file unavailable, marking failed`);
@@ -1921,6 +2027,16 @@ export class AgentRuntime {
           } else {
             output = await execPromise;
           }
+        } catch (err) {
+          // Mirror the primary executeJob path: a billing/invalid signal raised
+          // during recovery must flip the (provider, model) pair to unhealthy.
+          // Otherwise a key that expires while jobs are mid-recovery is never
+          // detected - the preflight gate keeps admitting NEW jobs and customers
+          // keep paying for a skill that will fail, and this loop's assertReady
+          // gate keeps passing so retries burn for nothing. A budget abort matches
+          // neither billing nor invalid signals, so this is a no-op for it.
+          this.markHealthFromExecuteError(skill, err, log, entry.job_id);
+          throw err;
         } finally {
           if (budgetTimer) {
             clearTimeout(budgetTimer);

@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { NATIVE_SOL } from '@elisym/sdk';
+import { ElisymIdentity, NATIVE_SOL } from '@elisym/sdk';
+import type { BlossomBlobTransport } from '@elisym/sdk';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
@@ -292,6 +293,374 @@ describe('AgentRuntime', () => {
       expect(attachments!.map((a) => a.name)).toEqual(['vocals.wav', 'drums.wav']);
       expect(attachments!.every((a) => a.mime === 'audio/wav')).toBe(true);
       expect(ledger.getStatus('multi-job')).toBe('delivered');
+    });
+
+    it('spills an oversized note alongside a file result instead of delivering it inline', async () => {
+      // A skill returning a file AND a note larger than the inline cap. The note must
+      // spill to its own result.txt attachment - delivering it inline would overflow
+      // the NIP-44 byte cap at encryption time and fail the whole paid job.
+      const largeNote = 'x'.repeat(70_000);
+      const skill: Skill = {
+        name: 'doc-gen',
+        description: 'file + big note',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        execute: vi.fn().mockResolvedValue({
+          data: largeNote,
+          filePath: '/tmp/out/report.pdf',
+          outputMime: 'application/pdf',
+        }),
+      };
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      const fakeIroh = {
+        seedPath: vi.fn().mockResolvedValue({ ticket: `blob${'a'.repeat(28)}`, size: 2048 }),
+        seedBytes: vi.fn().mockResolvedValue({ ticket: `blob${'b'.repeat(28)}`, size: 70_000 }),
+        fetchToPath: vi.fn(),
+        fetchToBytes: vi.fn(),
+        reShare: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as IrohBlobTransport;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+        undefined,
+        fakeIroh,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('file-plus-note'));
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      // The file seeded via seedPath; the oversized note spilled via seedBytes.
+      expect(fakeIroh.seedPath).toHaveBeenCalledTimes(1);
+      expect(fakeIroh.seedBytes).toHaveBeenCalledTimes(1);
+      const attachments = (transport as any).deliverResult.mock.calls[0]![3] as Array<{
+        name: string;
+      }>;
+      expect(attachments.map((attachment) => attachment.name)).toEqual(
+        expect.arrayContaining(['report.pdf', 'result.txt']),
+      );
+      expect(ledger.getStatus('file-plus-note')).toBe('delivered');
+    });
+  });
+
+  describe('payment timeout handling', () => {
+    it('keeps the job paid (not failed) on timeout without conclusive abandonment', async () => {
+      // Both verify paths fail, but the reference scan did NOT return the definitive
+      // "no matching transaction" literal (e.g. a flaky RPC), so the customer is not
+      // conclusively abandoned - a late on-chain confirmation is still possible. Keep
+      // the job paid so recovery re-verifies instead of losing a possible payment.
+      mockVerifyResult = { verified: false, error: 'RPC request failed' };
+      mockSigVerifyResult = { verified: false, error: 'RPC request failed' };
+      const skill = makeFakeSkill('paid-skill', 'unused', 100_000);
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue(null);
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, paymentTimeoutSecs: 1, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('timeout-keep-paid'));
+      await tick(300);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(ledger.getStatus('timeout-keep-paid')).toBe('paid');
+      expect(skill.execute).not.toHaveBeenCalled();
+    });
+
+    it('marks the job failed when the customer conclusively abandoned (no on-chain tx)', async () => {
+      mockVerifyResult = {
+        verified: false,
+        error: 'No matching transaction found for reference key',
+      };
+      mockSigVerifyResult = {
+        verified: false,
+        error: 'No matching transaction found for reference key',
+      };
+      const skill = makeFakeSkill('paid-skill', 'unused', 100_000);
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue(null);
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, paymentTimeoutSecs: 1, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('timeout-abandoned'));
+      await tick(300);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(ledger.getStatus('timeout-abandoned')).toBe('failed');
+    });
+  });
+
+  describe('recovery input decode', () => {
+    it('decodes an unencrypted job attachment from the i tag, not just content', async () => {
+      const { encodeJobPayload } = await import('@elisym/sdk');
+      const ticket = `blob${'c'.repeat(28)}`;
+      const envelope = encodeJobPayload({
+        attachment: {
+          name: 'input.bin',
+          size: 5000,
+          mime: 'application/octet-stream',
+          transports: [{ kind: 'iroh', ticket }],
+        },
+      });
+      ledger.recordPaid({
+        job_id: 'recover-itag',
+        input: '',
+        input_type: 'application/octet-stream',
+        tags: ['elisym', 'text-gen'],
+        customer_id: 'cust',
+        net_amount: 9_700_000,
+        raw_event_json: JSON.stringify({
+          id: 'recover-itag',
+          pubkey: 'cust',
+          created_at: Math.floor(Date.now() / 1000),
+          kind: 5100,
+          // Unencrypted job: the payload envelope lives in the `i` tag, NOT in content.
+          tags: [
+            ['i', envelope, 'application/octet-stream'],
+            ['t', 'elisym'],
+            ['t', 'text-gen'],
+          ],
+          content: '',
+          sig: 'sig',
+        }),
+        created_at: Math.floor(Date.now() / 1000),
+      });
+
+      const skill = makeFakeSkill('file-skill', 'done', 100_000);
+      const registry = makeFakeRegistry(skill);
+      const { transport } = makeFakeTransport();
+      const fakeIroh = {
+        seedPath: vi.fn(),
+        seedBytes: vi.fn(),
+        fetchToPath: vi.fn().mockResolvedValue(undefined),
+        fetchToBytes: vi.fn(),
+        reShare: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as IrohBlobTransport;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        undefined,
+        fakeIroh,
+      );
+
+      const runPromise = runtime.run();
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      // The fix: the attachment is decoded from the `i` tag, so the input file is
+      // fetched with that ticket. Decoding only from (empty) content would skip the
+      // fetch entirely. Assert on the ticket (not the full arg list) so the input-fetch
+      // timeout option added later doesn't couple this test to the call signature.
+      expect(fakeIroh.fetchToPath).toHaveBeenCalled();
+      expect(
+        (fakeIroh.fetchToPath as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0],
+      ).toBe(ticket);
+      expect(skill.execute).toHaveBeenCalled();
+    });
+  });
+
+  describe('input file fetch budget', () => {
+    it('passes executionTimeoutSecs as the iroh input-fetch timeout', async () => {
+      const ticket = `blob${'d'.repeat(28)}`;
+      const skill = makeFakeSkill('file-skill', 'done', 100_000);
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      const fakeIroh = {
+        seedPath: vi.fn(),
+        seedBytes: vi.fn(),
+        fetchToPath: vi.fn().mockResolvedValue(undefined),
+        fetchToBytes: vi.fn(),
+        reShare: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as IrohBlobTransport;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr', executionTimeoutSecs: 5 },
+        ledger,
+        { onLog: vi.fn() },
+        undefined,
+        fakeIroh,
+      );
+
+      const job = makeJob('iroh-fetch-budget');
+      job.attachment = {
+        name: 'input.bin',
+        size: 5000,
+        mime: 'application/octet-stream',
+        transports: [{ kind: 'iroh', ticket }],
+      };
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(job);
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      // The execution budget is forwarded so the iroh fetch self-aborts at the bound
+      // instead of holding the slot for the transport's 5-minute default; the combined
+      // abort signal (budget + stop()) is threaded in too.
+      expect(fakeIroh.fetchToPath).toHaveBeenCalledWith(ticket, expect.any(String), {
+        timeoutMs: 5000,
+        signal: expect.any(AbortSignal),
+      });
+    });
+
+    it('frees the slot (fails the job) when a blossom input fetch exceeds the budget', async () => {
+      const identity = ElisymIdentity.generate();
+      const skill = makeFakeSkill('file-skill', 'done', 100_000);
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      // A blossom transport whose fetch hangs until its signal aborts; the budget-driven
+      // abort threaded into fetchToBytes must reject it so the p-limit slot is released.
+      const hangingBlossom = {
+        seedBytes: vi.fn(),
+        fetchToBytes: vi.fn().mockImplementation(
+          ({ signal }: { signal?: AbortSignal }) =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            }),
+        ),
+      } as unknown as BlossomBlobTransport;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr', executionTimeoutSecs: 1 },
+        ledger,
+        { onLog: vi.fn() },
+        undefined,
+        undefined,
+        identity,
+        hangingBlossom,
+      );
+
+      const job = makeJob('blossom-fetch-hang');
+      job.attachment = {
+        name: 'input.bin',
+        size: 5000,
+        mime: 'application/octet-stream',
+        transports: [
+          {
+            kind: 'blossom',
+            url: `https://files.elisym.network/${'a'.repeat(64)}`,
+            sha256: 'a'.repeat(64),
+            enc: { alg: 'AES-256-GCM', iv: 'aaa', key: 'bbb' },
+          },
+        ],
+      };
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(job);
+      await tick(1300);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(hangingBlossom.fetchToBytes).toHaveBeenCalledTimes(1);
+      expect(skill.execute).not.toHaveBeenCalled();
+      expect(ledger.getStatus('blossom-fetch-hang')).toBe('failed');
+    });
+
+    it('aborts an in-flight input fetch on stop() even with no budget set', async () => {
+      // No executionTimeoutSecs => no budget timer; only stop() can free the slot. The
+      // blossom fetch hangs until its signal aborts, proving the job's abort signal is
+      // threaded through resolveInputFile and stop() cancels the in-flight fetch.
+      const identity = ElisymIdentity.generate();
+      const skill = makeFakeSkill('file-skill', 'done', 100_000);
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      const hangingBlossom = {
+        seedBytes: vi.fn(),
+        fetchToBytes: vi.fn().mockImplementation(
+          ({ signal }: { signal?: AbortSignal }) =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            }),
+        ),
+      } as unknown as BlossomBlobTransport;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        undefined,
+        undefined,
+        identity,
+        hangingBlossom,
+      );
+
+      const job = makeJob('blossom-fetch-stop');
+      job.attachment = {
+        name: 'input.bin',
+        size: 5000,
+        mime: 'application/octet-stream',
+        transports: [
+          {
+            kind: 'blossom',
+            url: `https://files.elisym.network/${'a'.repeat(64)}`,
+            sha256: 'a'.repeat(64),
+            enc: { alg: 'AES-256-GCM', iv: 'aaa', key: 'bbb' },
+          },
+        ],
+      };
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(job);
+      await tick(100); // let payment settle and the fetch start
+      runtime.stop(); // aborts the job; the in-flight fetch must reject promptly
+      await tick(50); // let the abort -> reject -> markFailed chain run
+      await runPromise.catch(() => {});
+
+      expect(hangingBlossom.fetchToBytes).toHaveBeenCalledTimes(1);
+      expect(skill.execute).not.toHaveBeenCalled();
+      expect(ledger.getStatus('blossom-fetch-stop')).toBe('failed');
     });
   });
 
@@ -1866,6 +2235,87 @@ describe('AgentRuntime', () => {
       expect(llmSkill.execute).toHaveBeenCalledOnce();
       expect(ledger.getStatus('recovered-job')).toBe('delivered');
       expect((transport as any).deliverResult).toHaveBeenCalled();
+    });
+
+    it('flips health monitor when recovery skill.execute hits billing', async () => {
+      // Regression (HIGH_BUG): a key that expires while a job is mid-recovery must
+      // still flip the (provider, model) pair to unhealthy. Before the fix recovery's
+      // skill.execute failure was swallowed, the pair stayed healthy, the preflight
+      // gate kept admitting NEW paying jobs, and this loop's assertReady kept passing.
+      const { ScriptBillingExhaustedError } = await import('@elisym/sdk/llm-health');
+      ledger.recordPaid({
+        job_id: 'recovery-billing',
+        input: 'will hit billing',
+        input_type: 'text',
+        tags: ['elisym', 'text-gen'],
+        customer_id: 'cust',
+        net_amount: 9_700_000,
+        raw_event_json: JSON.stringify({
+          id: 'recovery-billing',
+          pubkey: 'cust',
+          created_at: Math.floor(Date.now() / 1000),
+          kind: 5100,
+          tags: [
+            ['t', 'elisym'],
+            ['t', 'text-gen'],
+          ],
+          content: 'will hit billing',
+          sig: 'sig',
+        }),
+        created_at: Math.floor(Date.now() / 1000),
+      });
+
+      const billingSkill: Skill = {
+        name: 'recovery-billing-skill',
+        description: 'Recovery skill that hits a billing-exhausted API',
+        capabilities: ['text-gen'],
+        priceSubunits: 100_000,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        llmOverride: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+        execute: vi
+          .fn()
+          .mockRejectedValue(new ScriptBillingExhaustedError(42, '', 'HTTP 401 disabled')),
+      };
+      const registry = makeFakeRegistry(billingSkill);
+      const { transport } = makeFakeTransport();
+
+      // Pair is healthy when recovery starts, so assertReady passes and the loop
+      // proceeds to skill.execute - which then fails with billing exhaustion.
+      const stubMonitor = {
+        assertReady: vi.fn().mockResolvedValue(undefined),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      } as any;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: 'addr' },
+        ledger,
+        { onLog: vi.fn() },
+        stubMonitor,
+      );
+
+      const runPromise = runtime.run();
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(billingSkill.execute).toHaveBeenCalled();
+      // The fix: recovery flips the pair to unhealthy so the preflight gate refuses
+      // new jobs before payment.
+      expect(stubMonitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5-20251001',
+        'billing',
+        expect.any(String),
+      );
+      // Job stays paid (recoverPendingJobs logs the error); the next tick's
+      // assertReady now sees the unhealthy pair and waits instead of re-charging.
+      expect(ledger.getStatus('recovery-billing')).toBe('paid');
     });
 
     it('marks paid job failed after 24h cutoff with explicit feedback', async () => {

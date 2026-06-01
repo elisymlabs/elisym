@@ -3,6 +3,7 @@
  * (README, MCP tool descriptions, security notes). A regression here would
  * change observable behaviour for MCP clients even if types still compile.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { registeredTools } from '../src/server.js';
 import { customerTools } from '../src/tools/customer.js';
@@ -36,5 +37,32 @@ describe('ping is an internal mechanism, not a user-facing tool', () => {
     // to skip it when it mattered and call it when it didn't.
     expect(registeredTools.some((tool) => tool.name === 'ping_agent')).toBe(false);
     expect(discoveryTools.some((tool) => tool.name === 'ping_agent')).toBe(false);
+  });
+});
+
+describe('MCP Registry manifest stays in sync with package.json', () => {
+  it('server.json top-level and packages[0] versions match package.json', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const server = JSON.parse(readFileSync(new URL('../server.json', import.meta.url), 'utf8'));
+    expect(server.version).toBe(pkg.version);
+    expect(server.packages[0].version).toBe(pkg.version);
+  });
+});
+
+describe('search_agents capability tokens must be non-empty', () => {
+  function searchAgentsSchema() {
+    const tool = discoveryTools.find((candidate) => candidate.name === 'search_agents');
+    if (!tool) {
+      throw new Error('search_agents tool not registered');
+    }
+    return tool.schema;
+  }
+
+  it('rejects an empty-string capability (which would substring-match every card)', () => {
+    expect(searchAgentsSchema().safeParse({ capabilities: [''] }).success).toBe(false);
+  });
+
+  it('accepts a non-empty capability token', () => {
+    expect(searchAgentsSchema().safeParse({ capabilities: ['image'] }).success).toBe(true);
   });
 });
