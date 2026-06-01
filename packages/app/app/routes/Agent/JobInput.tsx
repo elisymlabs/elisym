@@ -212,7 +212,7 @@ function JobInputInner({
       )}
       {needsFileInput && !freeFileBlocked && (
         <div className={cn('px-14 sm:px-20', showsTextarea ? 'pt-4' : 'pt-16 sm:pt-20')}>
-          <label className="flex cursor-pogitinter items-center justify-center gap-10 rounded-2xl border border-dashed border-black/15 bg-black/[0.015] px-16 py-16 text-sm transition-colors hover:border-black/30 hover:bg-black/[0.03]">
+          <label className="flex cursor-pointer items-center justify-center gap-10 rounded-2xl border border-dashed border-black/15 bg-black/[0.015] px-16 py-16 text-sm transition-colors hover:border-black/30 hover:bg-black/[0.03]">
             <input
               type="file"
               className="hidden"
