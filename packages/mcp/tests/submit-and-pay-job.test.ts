@@ -154,6 +154,46 @@ describe('submit_and_pay_job expected-recipient fail-fast', () => {
     expect(submitJobRequest).not.toHaveBeenCalled();
   });
 
+  it('refuses to submit when the requested capability matches no card (no wrong-card fallback)', async () => {
+    // Provider HAS a payable card, but for a DIFFERENT capability. The requested
+    // dTag matches nothing, so paymentCardForCapability must return undefined rather
+    // than silently pricing/addressing against the unrelated card.
+    const providerEvent = {
+      npub: VALID_PROVIDER_NPUB,
+      name: 'Test Provider',
+      cards: [
+        {
+          name: 'do-thing',
+          description: 'paid capability',
+          capabilities: ['do-thing'],
+          payment: {
+            chain: 'solana' as const,
+            address: 'provider-wallet-addr',
+            token: 'usdc' as const,
+            job_price: 500_000,
+          },
+        },
+      ],
+    };
+    const fetchAgents = vi.fn(async () => [providerEvent]);
+    const submitJobRequest = vi.fn();
+    const agent = buildStubAgent({ fetchAgents, submitJobRequest, hasSolana: true });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('submit_and_pay_job');
+    const input = tool.schema.parse({
+      input: 'do something else',
+      provider_npub: VALID_PROVIDER_NPUB,
+      capability: 'nonexistent-thing',
+    });
+    const result = await tool.handler(ctx, input);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/no Solana payment address/i);
+    // Crucial: it did NOT fall back to the unrelated 'do-thing' card and price against it.
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
   it('allows free providers when the customer has no Solana wallet', async () => {
     // No wallet + no provider recipient = free-job path, should NOT fail-fast.
     const providerEvent = {

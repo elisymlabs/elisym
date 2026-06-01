@@ -74,6 +74,12 @@ export interface FetchOptions {
   maxBytes?: number;
   /** Per-fetch timeout; defaults to `DEFAULTS.IROH_FETCH_TIMEOUT_MS`. */
   timeoutMs?: number;
+  /**
+   * Abort the JS wait early (e.g. on shutdown). NOTE: the napi binding has no mid-transfer
+   * cancel, so this abandons the await - freeing the caller - while the native transfer
+   * self-terminates in the background, exactly like the `timeoutMs` path.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -151,6 +157,33 @@ function rejectAfter(
     );
   });
   return { promise, cancel: () => clearTimeout(timer) };
+}
+
+/** Thrown when a bounded iroh op is abandoned via an AbortSignal (distinct from timeout). */
+class IrohAbortError extends Error {}
+
+/**
+ * Race partner that rejects when `signal` aborts. Returns `promise: undefined` when no
+ * signal is given (caller omits it from the race - no dangling promise). `cancel()`
+ * detaches the listener and is safe to call when none was attached.
+ */
+function rejectOnAbort(signal: AbortSignal | undefined): {
+  promise: Promise<never> | undefined;
+  cancel: () => void;
+} {
+  if (signal === undefined) {
+    return { promise: undefined, cancel: () => {} };
+  }
+  let onAbort: () => void = () => {};
+  const promise = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new IrohAbortError('iroh fetch aborted'));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  return { promise, cancel: () => signal.removeEventListener('abort', onAbort) };
 }
 
 /**
@@ -301,47 +334,49 @@ export function createIrohTransport(options: CreateIrohTransportOptions): IrohBl
     const hash = ticket.hash;
 
     const timeout = rejectAfter(timeoutMs, 'iroh fetch');
+    const abort = rejectOnAbort(fetchOptions?.signal);
     try {
-      await Promise.race([
-        timeout.promise,
-        new Promise<void>((resolve, reject) => {
-          node.blobs
-            .download(hash, ticket.asDownloadOptions(), (err, progress) => {
-              if (err !== null) {
-                reject(err);
-                return;
-              }
-              // Enforce on the BLAKE3-verified size, never the descriptor's claim.
-              if (progress.found !== undefined && Number(progress.found.size) > maxBytes) {
-                reject(
-                  new Error(
-                    `file exceeds MAX_FILE_SIZE: ${progress.found.size} > ${maxBytes} bytes`,
-                  ),
-                );
-                return;
-              }
-              if (progress.progress !== undefined && Number(progress.progress.offset) > maxBytes) {
-                reject(
-                  new Error(`file exceeds MAX_FILE_SIZE during transfer (> ${maxBytes} bytes)`),
-                );
-                return;
-              }
-              if (progress.allDone !== undefined) {
-                resolve();
-              }
-            })
-            .catch(reject);
-        }),
-      ]);
+      const downloadPromise = new Promise<void>((resolve, reject) => {
+        node.blobs
+          .download(hash, ticket.asDownloadOptions(), (err, progress) => {
+            if (err !== null) {
+              reject(err);
+              return;
+            }
+            // Enforce on the BLAKE3-verified size, never the descriptor's claim.
+            if (progress.found !== undefined && Number(progress.found.size) > maxBytes) {
+              reject(
+                new Error(`file exceeds MAX_FILE_SIZE: ${progress.found.size} > ${maxBytes} bytes`),
+              );
+              return;
+            }
+            if (progress.progress !== undefined && Number(progress.progress.offset) > maxBytes) {
+              reject(new Error(`file exceeds MAX_FILE_SIZE during transfer (> ${maxBytes} bytes)`));
+              return;
+            }
+            if (progress.allDone !== undefined) {
+              resolve();
+            }
+          })
+          .catch(reject);
+      });
+      // The abort racer is only added when a signal was supplied, so the common
+      // (no-signal) path never allocates a dangling promise.
+      const racers: Promise<unknown>[] = [timeout.promise, downloadPromise];
+      if (abort.promise !== undefined) {
+        racers.push(abort.promise);
+      }
+      await Promise.race(racers);
     } catch (error) {
       // Best-effort reclaim of any (partial) data for the rejected blob. The napi
-      // binding exposes no mid-transfer cancel, so an oversized transfer may finish
-      // in the background before this runs; the cap still prevents the caller from
+      // binding exposes no mid-transfer cancel, so an oversized (or aborted) transfer may
+      // finish in the background before this runs; the cap still prevents the caller from
       // exporting/using it, and this keeps the store from retaining it.
       await node.blobs.deleteBlob(hash).catch(() => {});
       throw error;
     } finally {
       timeout.cancel();
+      abort.cancel();
     }
     // Re-check the verified size against the cap. The progress-callback guard
     // above only fires while bytes transfer; a blob ALREADY resident in the local

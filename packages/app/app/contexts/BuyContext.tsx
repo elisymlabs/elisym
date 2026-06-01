@@ -323,6 +323,14 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // error. Closure-local so it survives across the async callbacks.
         let paidLocally = false;
 
+        // Guards against a DUPLICATE `payment-required` event triggering a second
+        // on-chain payment for the same job. Set synchronously at the top of the
+        // handler (before any await), so two events that interleave at the await
+        // points can't both reach `sendTransaction`. `paidLocally` can't serve this:
+        // it flips only after the whole flow completes, by which point both
+        // transactions would already be signed and broadcast.
+        let paymentInitiated = false;
+
         const cleanup = client.marketplace.subscribeToJobUpdates({
           jobEventId,
           providerPubkey: agentPubkey,
@@ -339,6 +347,12 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 cleanupRef.current = null;
                 return;
               }
+
+              // Synchronous double-payment guard - must run before the first await.
+              if (paymentInitiated) {
+                return;
+              }
+              paymentInitiated = true;
 
               try {
                 // Refuse to pay a card whose recipient we cannot verify: no

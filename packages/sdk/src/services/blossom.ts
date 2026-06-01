@@ -116,21 +116,48 @@ export class BlossomService {
   }
 
   /**
-   * Download a public blob (BUD-01 GET, no auth). Bounds memory on the ACTUAL streamed bytes (never
-   * the declared Content-Length) and verifies the sha256 when `expectedSha256` is given. Browser-safe.
+   * Download a content-addressed blob from THIS Blossom server (BUD-01 GET, no auth). Bounds memory
+   * on the ACTUAL streamed bytes (never the declared Content-Length) and verifies the sha256 when
+   * `expectedSha256` is given. Browser-safe.
+   *
+   * SSRF guard: `url` typically arrives inside a remote counterparty's encrypted job envelope, so it
+   * is untrusted. elisym blobs are content-addressed on the single configured server (`seedBytes`
+   * refuses non-content-addressed fallbacks), so a legitimate URL is always `<serverUrl>/<sha256>`.
+   * The origin is pinned to `serverUrl` and redirects are refused, so a crafted url (or a 30x from
+   * the host) can't coerce a fetch to loopback, cloud-metadata, or internal addresses. Federation
+   * across Blossom servers would replace this single-origin pin with an explicit allowlist.
    */
   async download(
     url: string,
-    opts: { maxBytes?: number; timeoutMs?: number; expectedSha256?: string } = {},
+    opts: {
+      maxBytes?: number;
+      timeoutMs?: number;
+      expectedSha256?: string;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<Uint8Array> {
+    if (new URL(url).origin !== new URL(this.serverUrl).origin) {
+      throw new Error(`Refusing to download from a non-Blossom origin: ${url}`);
+    }
     const maxBytes = opts.maxBytes ?? LIMITS.MAX_FILE_SIZE;
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(),
       opts.timeoutMs ?? DEFAULTS.BLOSSOM_FETCH_TIMEOUT_MS,
     );
+    // Abort the in-flight fetch when an external caller signal fires (e.g. job stop() or
+    // the runtime's input-fetch budget), alongside the internal timeout above.
+    const externalSignal = opts.signal;
+    const onExternalAbort = (): void => controller.abort();
+    if (externalSignal !== undefined) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+      }
+    }
     try {
-      const res = await fetch(url, { signal: controller.signal });
+      const res = await fetch(url, { signal: controller.signal, redirect: 'error' });
       if (!res.ok) {
         throw new Error(`Download failed: ${res.status} ${res.statusText}`);
       }
@@ -177,6 +204,9 @@ export class BlossomService {
       return bytes;
     } finally {
       clearTimeout(timer);
+      if (externalSignal !== undefined) {
+        externalSignal.removeEventListener('abort', onExternalAbort);
+      }
     }
   }
 

@@ -268,7 +268,13 @@ function paymentCardForCapability(
           card.capabilities?.some((capability) => toDTag(capability) === dTag),
       )
     : cards;
-  for (const card of candidates.length > 0 ? candidates : cards) {
+  // When a dTag is supplied but matches no card, do NOT fall back to scanning every
+  // card: returning an unrelated card would make the confirm-before-publish gate
+  // price (and set the recipient) against a capability the customer never asked for.
+  // Return undefined so the caller errors cleanly, matching buy_capability. The
+  // no-dTag case still legitimately considers all cards.
+  const pool = dTag !== undefined ? candidates : cards;
+  for (const card of pool) {
     if (card.payment?.chain === 'solana' && card.payment?.address) {
       return card;
     }

@@ -209,4 +209,80 @@ describe('BlossomService', () => {
 
     await expect(service.delete(identity, VALID_HASH)).rejects.toThrow('Delete failed: 404');
   });
+
+  it('download refuses a URL whose origin is not the configured Blossom server (SSRF)', async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as any;
+    const service = new BlossomService('https://files.elisym.network');
+
+    // Classic SSRF targets a remote counterparty could place in an attachment's
+    // transport.url; the origin pin must refuse them before any network call.
+    const hostileUrls = [
+      'http://169.254.169.254/latest/meta-data/',
+      'http://127.0.0.1:11434/api/tags',
+      `http://files.elisym.network.evil.com/${VALID_HASH}`,
+      `https://evil.example/${VALID_HASH}`,
+    ];
+    for (const url of hostileUrls) {
+      await expect(service.download(url)).rejects.toThrow(/non-Blossom origin/);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('download refuses redirects and accepts a same-origin content URL', async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const sha256 = await sha256Hex(bytes);
+    let read = false;
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => String(bytes.byteLength) },
+      body: {
+        getReader() {
+          return {
+            read() {
+              if (read) {
+                return Promise.resolve({ done: true, value: undefined });
+              }
+              read = true;
+              return Promise.resolve({ done: false, value: bytes });
+            },
+            cancel() {
+              return Promise.resolve();
+            },
+          };
+        },
+      },
+    });
+    globalThis.fetch = fetchSpy as any;
+
+    const service = new BlossomService('https://files.elisym.network');
+    const out = await service.download(`https://files.elisym.network/${sha256}`, {
+      expectedSha256: sha256,
+    });
+
+    expect([...out]).toEqual([1, 2, 3, 4]);
+    // redirect:'error' so a 30x from the host can't escape the pinned origin mid-fetch.
+    expect(fetchSpy.mock.calls[0][1].redirect).toBe('error');
+  });
+
+  it('download aborts the in-flight fetch when an external signal fires', async () => {
+    const service = new BlossomService('https://files.elisym.network');
+    const controller = new AbortController();
+    // A fetch that only settles when its request signal aborts - proves download wires the
+    // external caller signal into the request (true cancellation, no orphan).
+    globalThis.fetch = vi.fn().mockImplementation(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+
+    const promise = service.download(`https://files.elisym.network/${VALID_HASH}`, {
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(promise).rejects.toThrow(/aborted/);
+  });
 });

@@ -128,4 +128,16 @@ maybe('iroh transport (integration)', () => {
     const { ticket } = await seeder.seedBytes(randomBytes(64 * 1024));
     await expect(getter.fetchToBytes(ticket, { maxBytes: 1024 })).rejects.toThrow(/MAX_FILE_SIZE/);
   }, 60_000);
+
+  it('rejects a fetch when the abort signal is already aborted', async () => {
+    const seeder = newTransport();
+    const getter = newTransport();
+
+    const { ticket } = await seeder.seedBytes(randomBytes(1024));
+    // A pre-aborted signal must reject the fetch (the JS wait is abandoned; the napi
+    // binding cannot cancel the native transfer, but the caller is freed).
+    await expect(getter.fetchToBytes(ticket, { signal: AbortSignal.abort() })).rejects.toThrow(
+      /aborted/,
+    );
+  }, 60_000);
 });

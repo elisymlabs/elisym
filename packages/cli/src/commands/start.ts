@@ -142,7 +142,10 @@ export async function cmdStart(
       }
       console.log();
     } catch (e: any) {
-      console.warn(`  ! Wallet error: ${e.message}\n`);
+      // `@solana/kit` transport errors routinely interpolate the request URL, which
+      // can carry a Helius/Alchemy/QuickNode API key - scrub before it hits the banner.
+      const message = typeof e?.message === 'string' ? e.message : String(e);
+      console.warn(`  ! Wallet error: ${redactRpcUrlsInText(message)}\n`);
     }
   }
 
@@ -157,6 +160,14 @@ export async function cmdStart(
   // values win when no per-agent secret is set, matching the priority used by
   // resolveProviderApiKey for LLM-mode skills.
   const scriptEnv: NodeJS.ProcessEnv = { ...process.env };
+  // ELISYM_PASSPHRASE decrypts `.secrets.json` (Nostr + Solana secret keys) at rest.
+  // A skill script - which may be third-party SKILL.md installed under the agent dir -
+  // has no legitimate use for it, and leaking it would let the script read the on-disk
+  // secrets and defeat the AES-256-GCM + scrypt at-rest encryption entirely. The
+  // per-provider LLM keys added below ARE intentional (scripts proxy to LLMs); the
+  // passphrase is not. (The LLM-tool subprocess path already strips secrets via
+  // scriptSkill's SECRET_ENV_VARS; this closes the same gap on the script path.)
+  delete scriptEnv.ELISYM_PASSPHRASE;
   const llmKeys = loaded.secrets.llm_api_keys ?? {};
   for (const descriptor of listLlmProviders()) {
     const secretValue = llmKeys[descriptor.id];
@@ -868,6 +879,16 @@ export function stripRpcSecrets(raw: string): string {
   } catch {
     return '[unparseable RPC URL]';
   }
+}
+
+/**
+ * Redact any RPC URL embedded in free-form text (e.g. a thrown error message) by
+ * routing every http(s) URL it contains through `stripRpcSecrets`. Used on error
+ * messages that may interpolate the request URL (and thus an embedded API key)
+ * while preserving the surrounding diagnostic text.
+ */
+export function redactRpcUrlsInText(text: string): string {
+  return text.replace(/https?:\/\/[^\s)'"]+/g, (url) => stripRpcSecrets(url));
 }
 
 /** Resolve a YAML media field (picture/banner) - URL returned as-is, local path uploaded via cache. */

@@ -12,6 +12,11 @@ import { defineTool, textResult, errorResult } from './types.js';
 // cost stays bounded by this value plus the fetchAgents roundtrip.
 const SEARCH_PING_TIMEOUT_MS = 3000;
 
+// Hard cap on the candidate set before the parallel online-ping fan-out, so a broad
+// substring filter (possibly via prompt injection through a remote result) cannot
+// amplify one search_agents call into a relay ping per online agent on the network.
+const MAX_SEARCH_CANDIDATES = 100;
+
 const STOP_WORDS = new Set([
   'a',
   'an',
@@ -144,7 +149,7 @@ const STOP_WORDS = new Set([
 
 const SearchAgentsSchema = z.object({
   capabilities: z
-    .array(z.string())
+    .array(z.string().min(1))
     .min(1)
     .describe('OR-matched substring filter on agent names, descriptions, and capability tags.'),
   query: z
@@ -234,6 +239,15 @@ export const discoveryTools: ToolDefinition[] = [
             (card) => !card.payment?.job_price || card.payment.job_price <= max_price_lamports,
           ),
         );
+      }
+
+      // Bound the candidate set BEFORE the online-ping fan-out (and the returned
+      // result size). Without this, a single common substring matches every card and
+      // the ping below issues one relay roundtrip per online agent.
+      const matchedCount = filtered.length;
+      const truncated = matchedCount > MAX_SEARCH_CANDIDATES;
+      if (truncated) {
+        filtered = filtered.slice(0, MAX_SEARCH_CANDIDATES);
       }
 
       // Online gate: parallel live ping across all candidates. The 30s pong cache
@@ -391,6 +405,13 @@ export const discoveryTools: ToolDefinition[] = [
       });
 
       const { text } = sanitizeUntrusted(JSON.stringify(results, null, 2), 'structured');
+      if (truncated) {
+        return textResult(
+          `Matched ${matchedCount} agents; only the first ${MAX_SEARCH_CANDIDATES} were probed for ` +
+            'availability (online-ping cap). Use more specific `capabilities` tokens for full coverage.\n\n' +
+            text,
+        );
+      }
       return textResult(text);
     },
   }),

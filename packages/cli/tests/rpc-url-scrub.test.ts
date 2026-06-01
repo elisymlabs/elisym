@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { stripRpcSecrets } from '../src/commands/start';
+import { redactRpcUrlsInText, stripRpcSecrets } from '../src/commands/start';
 
 describe('stripRpcSecrets', () => {
   it('preserves a bare devnet URL', () => {
@@ -34,5 +34,21 @@ describe('stripRpcSecrets', () => {
 
   it('returns a sentinel for unparseable URLs', () => {
     expect(stripRpcSecrets('not a url')).toBe('[unparseable RPC URL]');
+  });
+});
+
+describe('redactRpcUrlsInText', () => {
+  it('redacts an RPC URL embedded in an error message, keeping the surrounding text', () => {
+    const message =
+      'fetch failed: HTTP 401 at https://rpc.helius.xyz/?api-key=hunter2 (will retry)';
+    const scrubbed = redactRpcUrlsInText(message);
+    expect(scrubbed).not.toContain('hunter2');
+    expect(scrubbed).toContain('HTTP 401');
+    expect(scrubbed).toContain('https://rpc.helius.xyz/***');
+    expect(scrubbed).toContain('(will retry)');
+  });
+
+  it('leaves text with no URL unchanged', () => {
+    expect(redactRpcUrlsInText('Connection refused')).toBe('Connection refused');
   });
 });
