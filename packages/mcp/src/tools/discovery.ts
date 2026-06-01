@@ -378,6 +378,7 @@ export const discoveryTools: ToolDefinition[] = [
               // gate anything - it just tells the caller a file input is expected.
               // Already length-bounded by parseCapabilityEvent.
               ...(card.inputMime ? { input_mime: card.inputMime } : {}),
+              ...(card.inputText ? { input_text: card.inputText } : {}),
               ...(card.outputMime ? { output_mime: card.outputMime } : {}),
             };
           }),

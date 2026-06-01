@@ -108,6 +108,11 @@ export const DEFAULTS = {
   // default, not a protocol constant - the transfer is resumable and its own
   // budget, decoupled from the result-wait window.
   IROH_FETCH_TIMEOUT_MS: 300_000,
+  // Ceiling for a single iroh SEED (addFromPath/addBytes/share). Seeding is local
+  // (hash + store-copy + ticket mint), so this is a generous backstop: it bounds
+  // the JS await so a wedged native call surfaces as a thrown error (and triggers a
+  // node reset) instead of an indefinite hang that stalls file delivery.
+  IROH_SEED_TIMEOUT_MS: 120_000,
   // Ceiling for a single Blossom blob upload (PUT /upload). Large blobs (up to
   // LIMITS.MAX_FILE_SIZE) need far more than the 30s used for small media images.
   BLOSSOM_UPLOAD_TIMEOUT_MS: 300_000,

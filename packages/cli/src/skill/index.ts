@@ -167,6 +167,11 @@ export interface Skill {
   inputMime?: string;
   /** MIME of a file result (`output_mime`, dynamic-script only). */
   outputMime?: string;
+  /**
+   * Whether a file-input skill also accepts a text prompt (`input_text`,
+   * dynamic-script only). Discovery hint published in the capability card.
+   */
+  inputText?: 'required' | 'optional' | 'none';
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;
 }
 

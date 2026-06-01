@@ -194,17 +194,18 @@ describe('AgentRuntime', () => {
   });
 
   describe('result spill (large text)', () => {
-    it('fails cleanly without delivering when seeding the spilled result fails', async () => {
+    it('keeps the job paid for recovery (no delivery) when seeding the spilled result fails', async () => {
       // > MAX_ENCRYPTED_INLINE_BYTES (60_000), so the result must spill to iroh.
       const largeText = 'x'.repeat(70_000);
       const skill = makeFakeSkill('big-skill', largeText, 0);
       const registry = makeFakeRegistry(skill);
       const { transport, triggerJob } = makeFakeTransport();
       // A transport whose seedBytes fails. The seed runs BEFORE markExecuted, so
-      // the job is still 'paid' when the error is caught -> marked 'failed' with
-      // NO delivery. (If the seed ran AFTER markExecuted, the job would be stuck
-      // 'executed' and recovery would re-deliver a dead, tickless result - the
-      // bug the reorder fixes; this asserts 'failed', not 'executed'.)
+      // the job is still 'paid' when the error is caught. The runtime maps a seed
+      // failure to a SeedFailedError and KEEPS the job 'paid' (no delivery) so the
+      // recovery loop re-delivers it on a reset node - rather than losing a paid
+      // job to 'failed'. (It must not be stuck 'executed' either, which would
+      // re-deliver a dead, tickless result; this asserts 'paid', not 'executed'.)
       const failingIroh = {
         seedPath: vi.fn(),
         seedBytes: vi.fn().mockRejectedValue(new Error('seed failed')),
@@ -233,7 +234,7 @@ describe('AgentRuntime', () => {
       await runPromise.catch(() => {});
 
       expect(failingIroh.seedBytes).toHaveBeenCalledTimes(1);
-      expect(ledger.getStatus('spill-fail-job')).toBe('failed');
+      expect(ledger.getStatus('spill-fail-job')).toBe('paid');
       expect((transport as any).deliverResult).not.toHaveBeenCalled();
     });
   });

@@ -57,7 +57,7 @@ interface IrohNode {
   node: { shutdown(): Promise<void> };
 }
 
-interface IrohModule {
+export interface IrohModule {
   Iroh: { persistent(path: string): Promise<IrohNode> };
   SetTagOption: { auto(): unknown };
   BlobTicket: { fromString(ticket: string): IrohTicket };
@@ -103,6 +103,11 @@ export interface IrohBlobTransport {
 export interface CreateIrohTransportOptions {
   /** Directory for the persistent fs-store (e.g. `<agent-dir>/.iroh/`). */
   storePath: string;
+  /**
+   * Test seam: override how the native addon is loaded. Defaults to the real
+   * dynamic `import('@number0/iroh')`. Production code never sets this.
+   */
+  loadModule?: () => Promise<IrohModule>;
 }
 
 const ADDR_INFO_RELAY_AND_ADDRESSES = 'RelayAndAddresses';
@@ -131,6 +136,9 @@ async function loadIrohModule(): Promise<IrohModule> {
   );
 }
 
+/** Thrown when a bounded iroh op exceeds its deadline (distinct so callers can react). */
+export class IrohTimeoutError extends Error {}
+
 function rejectAfter(
   timeoutMs: number,
   label: string,
@@ -138,7 +146,7 @@ function rejectAfter(
   let timer: ReturnType<typeof setTimeout>;
   const promise = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      () => reject(new IrohTimeoutError(`${label} timed out after ${timeoutMs}ms`)),
       timeoutMs,
     );
   });
@@ -152,11 +160,53 @@ function rejectAfter(
  */
 export function createIrohTransport(options: CreateIrohTransportOptions): IrohBlobTransport {
   let nodePromise: Promise<{ module: IrohModule; node: IrohNode }> | null = null;
+  // Set while a node teardown-and-recreate is in flight. `getNode` awaits it so no
+  // caller spins up a SECOND `Iroh.persistent` on the still-locked fs-store mid-reset.
+  let resetPromise: Promise<void> | null = null;
 
-  const getNode = (): Promise<{ module: IrohModule; node: IrohNode }> => {
+  // Tear the shared node down so the next `getNode` recreates a fresh one - the
+  // automatic equivalent of a manual agent restart when a native call wedges the
+  // node. Single-flight; `nodePromise` is nulled SYNCHRONOUSLY (no await before
+  // `resetPromise` is assigned) so a concurrent `getNode` either awaits the reset or
+  // sees a fresh node, never a null+no-reset gap that would create a duplicate node.
+  const resetNode = (): Promise<void> => {
+    if (resetPromise) {
+      return resetPromise;
+    }
+    const pending = nodePromise;
+    nodePromise = null;
+    const running = (async () => {
+      if (!pending) {
+        return;
+      }
+      const loaded = await pending.catch(() => null);
+      if (!loaded) {
+        return;
+      }
+      // A wedged node's shutdown may itself hang, so bound it; recreate regardless.
+      const timeout = rejectAfter(DEFAULTS.IROH_SEED_TIMEOUT_MS, 'iroh node shutdown');
+      try {
+        await Promise.race([loaded.node.node.shutdown(), timeout.promise]);
+      } catch {
+        // ignore - we proceed to recreate on the next getNode either way
+      } finally {
+        timeout.cancel();
+      }
+    })();
+    resetPromise = running.finally(() => {
+      resetPromise = null;
+    });
+    return resetPromise;
+  };
+
+  const getNode = async (): Promise<{ module: IrohModule; node: IrohNode }> => {
+    // Wait out any in-flight reset before checking/creating the node.
+    if (resetPromise) {
+      await resetPromise;
+    }
     if (!nodePromise) {
       const pending = (async () => {
-        const module = await loadIrohModule();
+        const module = await (options.loadModule ?? loadIrohModule)();
         const node = await module.Iroh.persistent(options.storePath);
         return { module, node };
       })();
@@ -174,43 +224,68 @@ export function createIrohTransport(options: CreateIrohTransportOptions): IrohBl
     return nodePromise;
   };
 
-  const seedPath = async (path: string): Promise<SeedResult> => {
-    const { module, node } = await getNode();
-    let size = 0;
-    const outcome = await new Promise<{ hash: string; format: string }>((resolve, reject) => {
-      node.blobs
-        .addFromPath(path, false, module.SetTagOption.auto(), { wrap: false }, (err, progress) => {
-          if (err !== null) {
-            reject(err);
-            return;
-          }
-          if (progress.found !== undefined) {
-            size = Number(progress.found.size);
-          }
-          if (progress.allDone !== undefined) {
-            resolve(progress.allDone);
-          }
-        })
-        .catch(reject);
-    });
-    const ticket = await node.blobs.share(
-      outcome.hash,
-      outcome.format,
-      ADDR_INFO_RELAY_AND_ADDRESSES,
-    );
-    return { ticket: ticket.toString(), size };
+  // Bound a seed/share op so a wedged native call surfaces as a thrown error
+  // instead of an indefinite hang. On TIMEOUT (only - not ordinary errors, which
+  // would thrash the node) reset the node so the next op gets a fresh one.
+  const withSeedTimeout = async <T>(label: string, op: () => Promise<T>): Promise<T> => {
+    const timeout = rejectAfter(DEFAULTS.IROH_SEED_TIMEOUT_MS, label);
+    try {
+      return await Promise.race([op(), timeout.promise]);
+    } catch (error) {
+      if (error instanceof IrohTimeoutError) {
+        void resetNode();
+      }
+      throw error;
+    } finally {
+      timeout.cancel();
+    }
   };
 
-  const seedBytes = async (bytes: Uint8Array): Promise<SeedResult> => {
-    const { node } = await getNode();
-    const outcome = await node.blobs.addBytes(Array.from(bytes));
-    const ticket = await node.blobs.share(
-      outcome.hash,
-      outcome.format,
-      ADDR_INFO_RELAY_AND_ADDRESSES,
-    );
-    return { ticket: ticket.toString(), size: Number(outcome.size) };
-  };
+  const seedPath = (path: string): Promise<SeedResult> =>
+    withSeedTimeout('iroh seed (path)', async () => {
+      const { module, node } = await getNode();
+      let size = 0;
+      const outcome = await new Promise<{ hash: string; format: string }>((resolve, reject) => {
+        node.blobs
+          .addFromPath(
+            path,
+            false,
+            module.SetTagOption.auto(),
+            { wrap: false },
+            (err, progress) => {
+              if (err !== null) {
+                reject(err);
+                return;
+              }
+              if (progress.found !== undefined) {
+                size = Number(progress.found.size);
+              }
+              if (progress.allDone !== undefined) {
+                resolve(progress.allDone);
+              }
+            },
+          )
+          .catch(reject);
+      });
+      const ticket = await node.blobs.share(
+        outcome.hash,
+        outcome.format,
+        ADDR_INFO_RELAY_AND_ADDRESSES,
+      );
+      return { ticket: ticket.toString(), size };
+    });
+
+  const seedBytes = (bytes: Uint8Array): Promise<SeedResult> =>
+    withSeedTimeout('iroh seed (bytes)', async () => {
+      const { node } = await getNode();
+      const outcome = await node.blobs.addBytes(Array.from(bytes));
+      const ticket = await node.blobs.share(
+        outcome.hash,
+        outcome.format,
+        ADDR_INFO_RELAY_AND_ADDRESSES,
+      );
+      return { ticket: ticket.toString(), size: Number(outcome.size) };
+    });
 
   // Download a blob by ticket, enforcing the size cap on the BLAKE3-verified
   // total and a per-fetch timeout, deleting any (partial) blob on failure.
@@ -301,12 +376,17 @@ export function createIrohTransport(options: CreateIrohTransportOptions): IrohBl
     return Uint8Array.from(bytes);
   };
 
-  const reShare = async (ticketStr: string): Promise<string> => {
-    const { module, node } = await getNode();
-    const ticket = module.BlobTicket.fromString(ticketStr);
-    const fresh = await node.blobs.share(ticket.hash, ticket.format, ADDR_INFO_RELAY_AND_ADDRESSES);
-    return fresh.toString();
-  };
+  const reShare = (ticketStr: string): Promise<string> =>
+    withSeedTimeout('iroh re-share', async () => {
+      const { module, node } = await getNode();
+      const ticket = module.BlobTicket.fromString(ticketStr);
+      const fresh = await node.blobs.share(
+        ticket.hash,
+        ticket.format,
+        ADDR_INFO_RELAY_AND_ADDRESSES,
+      );
+      return fresh.toString();
+    });
 
   const shutdown = async (): Promise<void> => {
     if (!nodePromise) {

@@ -1,16 +1,16 @@
 import {
-  decodeJobPayload,
   KIND_JOB_FEEDBACK,
   KIND_JOB_REQUEST,
   nip44Decrypt,
   parsePaymentRequest,
+  type FileAttachment,
   type PaymentAssetRef,
 } from '@elisym/sdk';
 import type { Event as NostrEvent } from 'nostr-tools';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
-import { tooLargeResultNotice } from '~/lib/resultPayload';
+import { decodeResult, promptDisplay, resultDisplay } from '~/lib/fileResult';
 import type { Artifact } from './types';
 
 const STALE_TIME_MS = 1000 * 30;
@@ -88,28 +88,24 @@ export function useNostrArtifacts(agentPubkey: string) {
         const isEncrypted = req.tags.some((tag) => tag[0] === 'encrypted');
         const recipient = req.tags.find((tag) => tag[0] === 'p')?.[1];
         try {
-          prompt =
+          const plaintext =
             isEncrypted && recipient
               ? nip44Decrypt(req.content, viewerSecret, recipient)
               : req.content;
+          // A file input is wrapped in an `elisym-job/*` envelope, so decode it and
+          // show a friendly `📎 name` / the text note - never the raw JSON.
+          prompt = promptDisplay(decodeResult(plaintext));
         } catch {
           // decryption failed, leave prompt undefined
         }
 
         // queryJobResults returns the raw decrypted content (no envelope decode),
-        // so decode here - mirroring the BuyContext poll path. A spilled/file
-        // result surfaces as a notice (the browser can't fetch the iroh blob); a
-        // normal result yields its inline text; a malformed envelope falls back to
-        // the raw content rather than dropping the artifact.
-        let resultText = result.content;
-        try {
-          const decoded = decodeJobPayload(result.content);
-          resultText = decoded.attachment
-            ? tooLargeResultNotice(decoded.attachment)
-            : (decoded.text ?? result.content);
-        } catch {
-          // malformed envelope from a provider - keep the raw content
-        }
+        // so decode here - mirroring the BuyContext poll path. A file result with a
+        // blossom member becomes downloadable in the browser; one without falls back
+        // to a notice; a normal result yields its inline text.
+        const decoded = decodeResult(result.content);
+        const resultText = resultDisplay(decoded);
+        const resultAttachment: FileAttachment | undefined = decoded.attachment;
 
         out.push({
           id: req.id,
@@ -119,6 +115,10 @@ export function useNostrArtifacts(agentPubkey: string) {
           priceLamports: result.amount,
           asset: assetByJobId.get(req.id),
           prompt,
+          resultAttachment,
+          // The result author is `agentPubkey` (the query filters by it), which is
+          // also the blossom content-key wrapper - the decrypt sender.
+          resultProviderPubkey: resultAttachment ? agentPubkey : undefined,
         });
       }
 

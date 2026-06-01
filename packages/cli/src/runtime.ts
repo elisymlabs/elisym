@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 /**
  * AgentRuntime - main job processing loop with concurrency, payment, and recovery.
  * Supports per-capability pricing: each capability can have a different price.
@@ -198,6 +198,47 @@ class ExecutionBudgetExceededError extends Error {
   }
 }
 
+/**
+ * Thrown when seeding the RESULT blob (iroh/blossom) fails or times out AFTER the
+ * skill produced output. Kept distinct so the post-execute catch keeps the job
+ * `paid` (not `failed`) - the recovery loop then re-delivers it on a freshly-reset
+ * iroh node. The message is customer-safe (no internals); the real cause is logged.
+ */
+class SeedFailedError extends Error {
+  constructor(cause?: unknown) {
+    super('Result is ready - delivery is retrying and will arrive shortly.', { cause });
+    this.name = 'SeedFailedError';
+  }
+}
+
+// A dynamic-script result is written to a temp file literally named `output` (no
+// extension), so the customer would download a bare `output` with no extension.
+// Derive a sensible extension from the declared output MIME; unknown MIME → none.
+const MIME_EXTENSIONS: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'image/svg+xml': '.svg',
+  'application/pdf': '.pdf',
+  'text/plain': '.txt',
+  'text/markdown': '.md',
+  'application/json': '.json',
+  'audio/mpeg': '.mp3',
+  'audio/wav': '.wav',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'application/zip': '.zip',
+};
+
+function extensionForMime(mime: string | undefined): string {
+  return mime ? (MIME_EXTENSIONS[mime] ?? '') : '';
+}
+
+// Seeding is local (hash + store-copy + ticket mint); anything slower than this is
+// worth an operator log line to pin a misbehaving native addon before it times out.
+const SLOW_SEED_LOG_MS = 5_000;
+
 // Allowlist of safe, informative messages the runtime itself produces and may
 // forward verbatim to a remote customer. Everything not matched here (raw script
 // stderr, provider internals, unexpected errors) collapses to a fixed generic
@@ -210,7 +251,11 @@ const CUSTOMER_SAFE_MESSAGE_PREFIXES = ['Input too long', 'No skill matched', 'P
  * raw subprocess output or provider error bodies can never leak.
  */
 function customerSafeMessage(error: unknown): string {
-  if (error instanceof AgentUnavailableError || error instanceof ExecutionBudgetExceededError) {
+  if (
+    error instanceof AgentUnavailableError ||
+    error instanceof ExecutionBudgetExceededError ||
+    error instanceof SeedFailedError
+  ) {
     return error.message;
   }
   if (error instanceof ScriptExecutionError) {
@@ -774,16 +819,19 @@ export class AgentRuntime {
       //     customer paid, so abandoning the job to `failed` would lose
       //     their funds with no path back. The recovery loop's gate-aware
       //     check (assertReady) and 24h hard cutoff bound the wait.
+      //   - `paid` + `SeedFailedError`: same - the skill produced output but the
+      //     result blob seed failed/timed out; keep `paid` so recovery re-delivers
+      //     on a freshly-reset iroh node rather than losing the paid job.
       //   - everything else: markFailed as before.
       const currentStatus = this.ledger.getStatus(job.jobId);
-      const keepPaidForRecovery = e instanceof AgentUnavailableError && currentStatus === 'paid';
+      const keepPaidForRecovery =
+        (e instanceof AgentUnavailableError || e instanceof SeedFailedError) &&
+        currentStatus === 'paid';
       if (currentStatus !== 'executed' && !keepPaidForRecovery) {
         this.ledger.markFailed(job.jobId);
       }
       if (keepPaidForRecovery) {
-        log(
-          `[${job.jobId.slice(0, 8)}] Keeping status=paid; recovery will re-execute when LLM pair recovers (24h cutoff).`,
-        );
+        log(`[${job.jobId.slice(0, 8)}] Keeping status=paid; recovery will retry (24h cutoff).`);
       }
       // Operator log keeps the full detail (including raw script stderr from a
       // ScriptExecutionError); the customer only ever receives an allowlisted,
@@ -1035,6 +1083,35 @@ export class AgentRuntime {
   }
 
   /**
+   * Seed a result blob through iroh, timing it and converting any failure (incl. the
+   * transport's seed timeout, which also resets the wedged node) into a
+   * `SeedFailedError` so the post-execute catch keeps the job `paid` for recovery
+   * rather than losing the customer's paid job.
+   */
+  private async seedGuarded(
+    jobId: string,
+    kind: string,
+    run: () => Promise<{ ticket: string; size: number }>,
+  ): Promise<{ ticket: string; size: number }> {
+    const log = this.callbacks.onLog ?? console.log;
+    const started = Date.now();
+    try {
+      const seeded = await run();
+      const elapsed = Date.now() - started;
+      if (elapsed > SLOW_SEED_LOG_MS) {
+        log(`[${jobId.slice(0, 8)}] iroh seed (${kind}) slow: ${elapsed}ms`);
+      }
+      return seeded;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      log(
+        `[${jobId.slice(0, 8)}] iroh seed (${kind}) failed after ${Date.now() - started}ms: ${detail}`,
+      );
+      throw new SeedFailedError(error);
+    }
+  }
+
+  /**
    * Decide how a skill's result travels: inline text, a seeded file, or seeded
    * large text. Returns the attachment descriptor (if any) PLUS the content to
    * deliver on the wire - which is the EMPTY string whenever the payload was
@@ -1058,6 +1135,7 @@ export class AgentRuntime {
     // blossom. iroh is always seeded. So advertising ['iroh'] (MCP) skips the Blossom upload.
     const wantBlossom = acceptedTransports === undefined || acceptedTransports.includes('blossom');
     if (output.filePath !== undefined) {
+      const filePath = output.filePath;
       // seedPath copies the bytes into the persistent iroh store, so the producer's
       // temp file is no longer needed once seeding has been attempted (recovery
       // re-shares from the store, never the temp file). Release it whether seeding
@@ -1068,13 +1146,17 @@ export class AgentRuntime {
         if (!this.irohTransport) {
           throw new Error('Skill produced a file result but iroh transport is unavailable.');
         }
-        const seeded = await this.irohTransport.seedPath(output.filePath);
+        const iroh = this.irohTransport;
+        // A seed failure/timeout here is transient (a wedged node self-resets), so
+        // surface it as SeedFailedError → the job stays `paid` and recovery re-delivers,
+        // rather than losing the customer's paid job.
+        const seeded = await this.seedGuarded(jobId, 'file', () => iroh.seedPath(filePath));
         // iroh is always present (the robust fallback); blossom is added (preferred, first) when
         // available + within the encrypted-size cap, so web customers can fetch over HTTP too.
         const transports: FileTransport[] = [{ kind: 'iroh', ticket: seeded.ticket }];
         if (wantBlossom) {
           const blossomMember = await this.seedBlossomFromPath(
-            output.filePath,
+            filePath,
             seeded.size,
             customerPubkey,
           );
@@ -1082,8 +1164,15 @@ export class AgentRuntime {
             transports.unshift(blossomMember);
           }
         }
+        // The producer's temp file is literally `output`; give it an extension from
+        // the declared MIME so the customer downloads e.g. `output.png`. A producer
+        // that already chose a name with an extension is kept as-is.
+        const producedName = basename(filePath);
+        const name = extname(producedName)
+          ? producedName
+          : `${producedName}${extensionForMime(output.outputMime)}`;
         const attachment: FileAttachment = {
-          name: basename(output.filePath),
+          name,
           size: seeded.size,
           mime: output.outputMime ?? 'application/octet-stream',
           transports,
@@ -1103,8 +1192,9 @@ export class AgentRuntime {
       if (!this.irohTransport) {
         throw new Error('Result is too large to deliver inline and iroh transport is unavailable.');
       }
+      const iroh = this.irohTransport;
       const dataBytes = Buffer.from(output.data, 'utf8');
-      const seeded = await this.irohTransport.seedBytes(dataBytes);
+      const seeded = await this.seedGuarded(jobId, 'large-text', () => iroh.seedBytes(dataBytes));
       const transports: FileTransport[] = [{ kind: 'iroh', ticket: seeded.ticket }];
       if (wantBlossom) {
         const blossomMember = await this.seedBlossomMember(dataBytes, customerPubkey);

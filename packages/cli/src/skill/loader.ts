@@ -115,6 +115,7 @@ function buildCliSkill(
               ...scriptParams,
               outputMime: parsed.outputMime,
               inputMime: parsed.inputMime,
+              inputText: parsed.inputText,
             })
           : new StaticScriptSkill(scriptParams);
       break;

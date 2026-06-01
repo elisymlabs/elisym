@@ -16,6 +16,7 @@ import { usePingAgent, type PingStatus } from '~/hooks/usePingAgent';
 import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
+import { decodeResult, promptDisplay } from '~/lib/fileResult';
 import { compactZeros, formatDecimal } from '~/lib/formatPrice';
 import { cacheGet, cacheSet } from '~/lib/localCache';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
@@ -234,6 +235,10 @@ function mergeArtifacts(
           prompt: existing.prompt ?? partial.prompt,
           priceLamports: existing.priceLamports ?? partial.priceLamports,
           asset: existing.asset ?? partial.asset,
+          // A job seen both live and in history merges here; carry the file
+          // descriptor so the download survives (the whitelist would drop it).
+          resultAttachment: existing.resultAttachment ?? partial.resultAttachment,
+          resultProviderPubkey: existing.resultProviderPubkey ?? partial.resultProviderPubkey,
         });
       } else {
         const capability = partial.capability;
@@ -282,10 +287,12 @@ function useHydrateArtifacts(
             const pTag = req.tags.find((tag) => tag[0] === 'p')?.[1];
             const isEncrypted = req.tags.some((tag) => tag[0] === 'encrypted');
             try {
-              patch.prompt =
+              const plaintext =
                 isEncrypted && pTag && identity
                   ? nip44Decrypt(req.content, identity.secretKey, pTag)
                   : req.content;
+              // Decode the input envelope so a file input shows `📎 name`, not raw JSON.
+              patch.prompt = promptDisplay(decodeResult(plaintext));
             } catch {
               // decryption failed, skip
             }

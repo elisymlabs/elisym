@@ -10,6 +10,7 @@ import { useSolGasFeeEstimate } from '~/hooks/useSolGasFeeEstimate';
 import { useWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
+import { formatBytes } from '~/lib/fileResult';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { CapabilityDropdown } from './CapabilityDropdown';
 import { checkBuyAffordability, checkSelfPayment } from './lib/balanceCheck';
@@ -73,19 +74,27 @@ function JobInputInner({
   const { buy, buying, error, paid } = buyState;
 
   const [input, setInput] = useState('');
+  const [file, setFile] = useState<File | null>(null);
   const isStatic = card.static === true;
-  // Capabilities that take a file input declare `inputMime`. The browser has no
-  // iroh transport and no file-upload UI, so it cannot satisfy these - block the
-  // purchase and point the user at the MCP/CLI. We gate on presence only and
-  // never render the (untrusted) value.
+  // Capabilities that take a file input declare `inputMime`. We gate on presence
+  // only and never trust/render the (untrusted) value - the file picker uses it as
+  // a soft `accept` hint at most, and the provider content-sniffs the actual file.
   const needsFileInput = typeof card.inputMime === 'string' && card.inputMime.length > 0;
-  // Capabilities that return a file result declare `outputMime` and deliver it
-  // as an iroh blob. The browser has no iroh transport, so it cannot receive the
-  // result even when the input is plain text - block the purchase and point the
-  // user at the MCP/CLI. We gate on presence only and never render the value.
-  const returnsFileResult = typeof card.outputMime === 'string' && card.outputMime.length > 0;
+  // `input_text` says whether a file skill also takes a text prompt: 'none' = file
+  // only (hide the text box), 'required' = needs both, else (incl. undefined) =
+  // file + optional note. Only meaningful with `needsFileInput`.
+  const fileOnly = needsFileInput && card.inputText === 'none';
+  const textRequiredForFile = needsFileInput && card.inputText === 'required';
+  // For a file-only card the text box is hidden, so any `input` is stale text left
+  // over from a prior capability - never send/record it.
+  const effectiveInput = fileOnly ? '' : input;
   const price = card.payment?.job_price ?? 0;
   const isFree = price === 0;
+  // The provider rejects a file input on a zero-price skill before payment, so a
+  // free + file-input card is unusable from the web - block it (gate on presence).
+  const freeFileBlocked = isFree && needsFileInput;
+  // Whole-buffer encrypt + upload is bounded to the encrypted-Blossom cap (100 MiB).
+  const fileTooLarge = !!file && file.size > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES;
   const gasFeeLamports = useSolGasFeeEstimate(card);
   const priceLabel = isFree ? null : formatCardPrice(card.payment, price);
   const { solLamports, usdcRaw } = useWalletBalances();
@@ -108,7 +117,7 @@ function JobInputInner({
       agent: agentName,
       price: priceLabel ?? 'free',
     });
-    buy(isStatic ? card.name : input);
+    buy(isStatic ? card.name : effectiveInput, file ?? undefined);
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -139,22 +148,29 @@ function JobInputInner({
   // The browser submits encrypted jobs and cannot spill large input to iroh
   // (node-only transport), so cap the input at the NIP-44 inline byte budget and
   // point large inputs at the CLI. Measured in BYTES - the cap is a byte cap.
-  const inputTooLarge = !isStatic && utf8ByteLength(input) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
+  const inputTooLarge =
+    !isStatic && utf8ByteLength(effectiveInput) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
 
   const isDisabled =
     buying ||
-    needsFileInput ||
-    returnsFileResult ||
+    freeFileBlocked ||
     !relaysConnected ||
-    ((!!publicKey || isFree) && !isStatic && !input.trim()) ||
+    // Text cards require text; file cards require a file (text is an optional note,
+    // unless `input_text: required`, which needs both).
+    ((!!publicKey || isFree) && !isStatic && !needsFileInput && !input.trim()) ||
+    ((!!publicKey || isFree) && needsFileInput && !file) ||
+    ((!!publicKey || isFree) && textRequiredForFile && !input.trim()) ||
     ((!!publicKey || isFree) && pingStatus !== 'online') ||
     inputTooLarge ||
+    fileTooLarge ||
     !selfPayment.ok ||
     !affordability.ok;
 
   let tip: string | null = null;
   if (!buying) {
-    if (!relaysConnected) {
+    if (freeFileBlocked) {
+      tip = 'File inputs require a paid capability - this one is free.';
+    } else if (!relaysConnected) {
       tip = 'Connecting to relays…';
     } else if ((!!publicKey || isFree) && pingStatus === 'pinging') {
       tip = 'Checking if the agent is available…';
@@ -162,6 +178,8 @@ function JobInputInner({
       tip = "This agent is offline right now, so you can't place an order. Try again later.";
     } else if (inputTooLarge) {
       tip = 'Input is too large for the web app - use the elisym CLI for large inputs.';
+    } else if (fileTooLarge) {
+      tip = 'File is too large for the web app (max 100 MiB) - use the elisym CLI.';
     } else if (!selfPayment.ok) {
       tip = selfPayment.tooltip;
     } else if (!affordability.ok) {
@@ -169,17 +187,59 @@ function JobInputInner({
     }
   }
 
+  let inputPlaceholder = `Ask ${agentName || 'agent'}…`;
+  if (textRequiredForFile) {
+    inputPlaceholder = 'Describe what to do with the file…';
+  } else if (needsFileInput) {
+    inputPlaceholder = 'Add an optional note…';
+  }
+
   return (
     <div className="rounded-3xl border border-black/7 bg-surface shadow-[0_1px_8px_rgba(0,0,0,0.05)]">
-      {!isStatic && !needsFileInput && (
+      {!isStatic && !fileOnly && (
         <textarea
           autoFocus
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleInputKeyDown}
-          placeholder={`Ask ${agentName || 'agent'}…`}
+          placeholder={inputPlaceholder}
           className="min-h-[40px] w-full resize-none bg-transparent px-14 pt-16 pb-8 font-[inherit] text-sm text-text outline-none placeholder:text-text-2/40 sm:px-20 sm:pt-20"
         />
+      )}
+      {needsFileInput && !freeFileBlocked && (
+        <div className="px-14 pt-4 sm:px-20">
+          <label className="flex cursor-pointer items-center gap-10 rounded-2xl border border-dashed border-black/15 px-14 py-12 text-sm transition-colors hover:border-black/30 hover:bg-black/[0.02]">
+            <input
+              type="file"
+              className="hidden"
+              aria-label="Choose a file to send"
+              accept={card.inputMime}
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            />
+            <svg
+              aria-hidden
+              className="size-18 shrink-0 text-text-2"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <path d="M17 8l-5-5-5 5" />
+              <path d="M12 3v12" />
+            </svg>
+            <span className={cn('min-w-0 flex-1 truncate', file ? 'text-text' : 'text-text-2')}>
+              {file ? file.name : 'Choose a file to send'}
+            </span>
+            {file && (
+              <span className="shrink-0 text-xs text-text-2 tabular-nums">
+                {formatBytes(file.size)}
+              </span>
+            )}
+          </label>
+        </div>
       )}
       {/*
         Mobile-only gas fee row slot. For non-static cards (with textarea) the
@@ -262,16 +322,9 @@ function JobInputInner({
           )}
         </div>
       </div>
-      {needsFileInput && (
+      {freeFileBlocked && (
         <div className="px-20 pb-12 text-xs text-text-2">
-          This capability needs a file input. The web app does not support file jobs yet - use the
-          elisym MCP to send files.
-        </div>
-      )}
-      {!needsFileInput && returnsFileResult && (
-        <div className="px-20 pb-12 text-xs text-text-2">
-          This capability returns a file result. The web app cannot receive file results yet - use
-          the elisym MCP to run this job.
+          File inputs require a paid capability - this one is free.
         </div>
       )}
       {error && <ErrorMessage error={error} paid={paid} />}

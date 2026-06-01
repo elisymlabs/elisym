@@ -27,6 +27,13 @@ export interface CapabilityCard {
   inputMime?: string;
   /** MIME of a file result the capability produces (from `output_mime`). */
   outputMime?: string;
+  /**
+   * Whether a file-input capability ALSO accepts a text prompt (from `input_text`):
+   * `'none'` = file only, `'optional'` = file + optional note, `'required'` = both.
+   * Discovery hint; the web app shows/hides its text box accordingly. Only meaningful
+   * with `inputMime`. Untrusted - gate on it, never render the raw value.
+   */
+  inputText?: 'required' | 'optional' | 'none';
 }
 
 /** Payment info embedded in capability card (legacy format for on-network events). */

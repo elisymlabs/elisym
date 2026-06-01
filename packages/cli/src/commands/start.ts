@@ -619,9 +619,10 @@ export async function cmdStart(
       capabilities: skill.capabilities,
       image: skill.image,
       ...(isStatic ? { static: true } : {}),
-      // File-exchange hints (dynamic-script only). `inputMime` lets clients that
-      // cannot send files (the web app) gate the Buy button before payment.
+      // File-exchange hints (dynamic-script only). `inputMime` flags a file input;
+      // `inputText` tells the web whether to also show its text box for that file job.
       ...(skill.inputMime ? { inputMime: skill.inputMime } : {}),
+      ...(skill.inputText ? { inputText: skill.inputText } : {}),
       ...(skill.outputMime ? { outputMime: skill.outputMime } : {}),
       payment: solanaAddress
         ? {

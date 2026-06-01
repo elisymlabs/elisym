@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import { useBodyScrollLock } from '~/hooks/useBodyScrollLock';
 import { cn } from '~/lib/cn';
+import { hasBlossom } from '~/lib/fileResult';
 import { Markdown } from '~/lib/markdown';
+import { FileResultCard } from './FileResultCard';
 import { ProductAvatar } from './ProductAvatar';
 import type { Artifact } from './types';
 
@@ -124,10 +126,19 @@ export function ArtifactModal({
               </div>
             </div>
           )}
-          <Markdown
-            content={artifact.result}
-            className="text-[14px] leading-[1.6] break-words text-text sm:text-[15px] sm:leading-[1.65]"
-          />
+          {artifact.resultAttachment &&
+          artifact.resultProviderPubkey &&
+          hasBlossom(artifact.resultAttachment) ? (
+            <FileResultCard
+              attachment={artifact.resultAttachment}
+              providerPubkey={artifact.resultProviderPubkey}
+            />
+          ) : (
+            <Markdown
+              content={artifact.result}
+              className="text-[14px] leading-[1.6] break-words text-text sm:text-[15px] sm:leading-[1.65]"
+            />
+          )}
         </div>
         {showFeedbackRow && (
           <div

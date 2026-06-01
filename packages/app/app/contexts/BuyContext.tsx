@@ -1,7 +1,7 @@
 import {
+  buildEncryptedFileInput,
   buildPaymentInstructions,
   classifyJobError,
-  decodeJobPayload,
   estimatePriorityFeeMicroLamports,
   getProtocolConfig,
   getProtocolProgramId,
@@ -10,6 +10,7 @@ import {
   type CapabilityCard,
   type FileAttachment,
   type PaymentRequestData,
+  type TransportKind,
 } from '@elisym/sdk';
 import {
   address,
@@ -51,15 +52,19 @@ import { useJobHistory } from '~/hooks/useJobHistory';
 import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
 import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
+import { decodeResult, resultDisplay } from '~/lib/fileResult';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
-import { tooLargeResultNotice } from '~/lib/resultPayload';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
 const PRIORITY_FEE_PERCENTILE = 75;
 const PROTOCOL_PROGRAM_ID = getProtocolProgramId(SDK_CLUSTER);
 const kitRpc = createSolanaRpc(SOLANA_RPC_URL);
 const payment = new SolanaPaymentStrategy();
+// The browser can only receive a file result over the encrypted-Blossom transport
+// (iroh is node-only), so it advertises blossom as its sole receive transport. This
+// also makes a large text result spill to a fetchable blossom member.
+const WEB_ACCEPT_TRANSPORTS: TransportKind[] = ['blossom'];
 
 // Sync subscription window before a paid job flips to background polling.
 // Matches the MCP 10-min cap; the result (kind 6100) persists on the relays.
@@ -150,6 +155,10 @@ export interface ActiveBuySession {
   pending: boolean;
   lastInput: string;
   rated: boolean;
+  /** When the result is a file, the (small) attachment descriptor - never the bytes. */
+  resultAttachment?: FileAttachment;
+  /** The result-event author, used to decrypt the blossom file output. */
+  resultProviderPubkey?: string;
 }
 
 interface BuyArgs {
@@ -161,7 +170,7 @@ interface BuyArgs {
 
 interface BuyCtx {
   session: ActiveBuySession | null;
-  buy: (args: BuyArgs, input: string) => Promise<void>;
+  buy: (args: BuyArgs, input: string, file?: File) => Promise<void>;
   rate: (positive: boolean) => Promise<void>;
 }
 
@@ -204,7 +213,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
   }, [buying]);
 
   const buy = useCallback(
-    async (args: BuyArgs, input: string) => {
+    async (args: BuyArgs, input: string, file?: File) => {
       if (session?.buying) {
         return;
       }
@@ -247,10 +256,26 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         const identity = idCtx.identity;
         const capability = toDTag(cardName);
 
+        // Build the encrypted file input BEFORE submitting, so an executable/oversize
+        // rejection (or upload failure) happens pre-payment and flows to the catch
+        // below. The browser uses the blossom transport only (iroh is node-only).
+        let attachment: FileAttachment | undefined;
+        if (file) {
+          toast.loading('Uploading file...', { id: toastId });
+          attachment = await buildEncryptedFileInput({
+            file,
+            providerPubkey: agentPubkey,
+            identity,
+            blossom: client.blossom,
+          });
+        }
+
         const jobEventId = await client.marketplace.submitJobRequest(identity, {
           input,
           capability,
           providerPubkey: agentPubkey,
+          acceptTransports: WEB_ACCEPT_TRANSPORTS,
+          ...(attachment ? { attachment } : {}),
         });
         setSession((prev) => (sessionMatches(prev) ? { ...prev, jobId: jobEventId } : prev));
 
@@ -387,9 +412,14 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             },
 
             onResult: (content: string, eventId: string, attachment?: FileAttachment) => {
-              // A spilled result arrives as empty content + an attachment; show a
-              // notice (the browser cannot fetch the iroh blob) rather than blank.
-              const result = attachment ? tooLargeResultNotice(attachment) : content;
+              // The subscription already decoded the envelope, so `content` is the
+              // text and `attachment` the file descriptor - do NOT re-decode here.
+              const result = resultDisplay({ text: content || undefined, attachment });
+              // The result-event author == the provider we subscribed to (filtered by
+              // pubkey), and the CLI provider wraps the blossom content key with that
+              // same identity, so agentPubkey is the decrypt sender. Cross-package
+              // invariant: a provider that splits signing/encryption keys would break this.
+              const resultProviderPubkey = attachment ? agentPubkey : undefined;
               snapshotUpdateJob(jobEventId, { status: 'completed', result });
               cacheSet(`purchase:${jobEventId}`, {
                 result,
@@ -397,7 +427,16 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 receivedAt: Date.now(),
               });
               setSession((prev) =>
-                sessionMatches(prev) ? { ...prev, buying: false, pending: false, result } : prev,
+                sessionMatches(prev)
+                  ? {
+                      ...prev,
+                      buying: false,
+                      pending: false,
+                      result,
+                      resultAttachment: attachment,
+                      resultProviderPubkey,
+                    }
+                  : prev,
               );
               cleanupRef.current = null;
               const agentPath = `/agent/${agentPubkey}`;
@@ -603,14 +642,13 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             if (!res || res.decryptionFailed) {
               continue;
             }
-            // queryJobResults returns the raw decrypted content (no envelope
-            // decode), so decode here - mirroring the live subscription. A spilled
-            // result surfaces as a notice (the browser can't fetch the iroh blob);
-            // a normal result yields its inline text.
-            const decoded = decodeJobPayload(res.content);
-            const result = decoded.attachment
-              ? tooLargeResultNotice(decoded.attachment)
-              : (decoded.text ?? res.content);
+            // queryJobResults returns the raw decrypted content, so envelope-decode
+            // here. A file result with a blossom member becomes downloadable; one
+            // without falls back to the notice. Provider = the agent we paid.
+            const decoded = decodeResult(res.content);
+            const result = resultDisplay(decoded);
+            const resultAttachment = decoded.attachment;
+            const resultProviderPubkey = decoded.attachment ? job.agentPubkey : undefined;
             updateJob(job.jobEventId, { status: 'completed', result });
             cacheSet(`purchase:${job.jobEventId}`, {
               result,
@@ -619,7 +657,14 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             });
             setSession((prev) =>
               prev && prev.jobId === job.jobEventId
-                ? { ...prev, buying: false, pending: false, result }
+                ? {
+                    ...prev,
+                    buying: false,
+                    pending: false,
+                    result,
+                    resultAttachment,
+                    resultProviderPubkey,
+                  }
                 : prev,
             );
           } catch {
@@ -684,9 +729,12 @@ interface UseBuyForCardArgs {
 }
 
 export interface ScopedBuyState {
-  buy: (input?: string) => Promise<void>;
+  buy: (input?: string, file?: File) => Promise<void>;
   buying: boolean;
   result: string | null;
+  /** When the result is a file, the descriptor needed to fetch + decrypt it. */
+  resultAttachment?: FileAttachment;
+  resultProviderPubkey?: string;
   error: string | null;
   /**
    * Whether on-chain payment was completed for the current session before
@@ -723,11 +771,11 @@ export function useBuyForCard(args: UseBuyForCardArgs): ScopedBuyState | null {
   );
 
   const buy = useCallback(
-    async (input = '') => {
+    async (input = '', file?: File) => {
       if (!card) {
         return;
       }
-      await globalBuy({ agentPubkey, agentName, agentPicture, card }, input);
+      await globalBuy({ agentPubkey, agentName, agentPicture, card }, input, file);
     },
     [globalBuy, agentPubkey, agentName, agentPicture, card],
   );
@@ -753,6 +801,8 @@ export function useBuyForCard(args: UseBuyForCardArgs): ScopedBuyState | null {
     // the previous per-page hook).
     buying: session?.buying ?? false,
     result: matches ? (session?.result ?? null) : null,
+    resultAttachment: matches ? session?.resultAttachment : undefined,
+    resultProviderPubkey: matches ? session?.resultProviderPubkey : undefined,
     error: matches ? (session?.error ?? null) : null,
     paid: matches ? (session?.paid ?? false) : false,
     pending: matches ? (session?.pending ?? false) : false,
