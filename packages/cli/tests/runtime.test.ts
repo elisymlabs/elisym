@@ -239,6 +239,62 @@ describe('AgentRuntime', () => {
     });
   });
 
+  describe('multi-file result', () => {
+    it('delivers each ELISYM_OUTPUT_DIR file as its own attachment', async () => {
+      // A skill that produced several files (filePaths) - e.g. a stem splitter.
+      const skill: Skill = {
+        name: 'stems',
+        description: 'multi-file',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        execute: vi.fn().mockResolvedValue({
+          data: 'stems',
+          filePaths: ['/tmp/stems/vocals.wav', '/tmp/stems/drums.wav'],
+          outputMime: 'audio/wav',
+        }),
+      };
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      // iroh seeds each file (no blossom transport -> iroh-only members).
+      const fakeIroh = {
+        seedPath: vi.fn().mockResolvedValue({ ticket: `blob${'a'.repeat(28)}`, size: 1234 }),
+        seedBytes: vi.fn(),
+        fetchToPath: vi.fn(),
+        fetchToBytes: vi.fn(),
+        reShare: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as IrohBlobTransport;
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+        undefined,
+        fakeIroh,
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('multi-job'));
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(fakeIroh.seedPath).toHaveBeenCalledTimes(2);
+      const attachments = (transport as any).deliverResult.mock.calls[0]![3] as
+        | Array<{ name: string; mime: string }>
+        | undefined;
+      expect(attachments).toHaveLength(2);
+      expect(attachments!.map((a) => a.name)).toEqual(['vocals.wav', 'drums.wav']);
+      expect(attachments!.every((a) => a.mime === 'audio/wav')).toBe(true);
+      expect(ledger.getStatus('multi-job')).toBe('delivered');
+    });
+  });
+
   describe('skill routing', () => {
     it('calls onJobError when no skill matches', async () => {
       const registry = makeFakeRegistry(null);

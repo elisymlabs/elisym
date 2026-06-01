@@ -553,8 +553,8 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
 
     // Fire through result subscription handler (index 1)
     pool.subs[1]!.onEvent(resultEvent);
-    // Plain-text result: no attachment descriptor (3rd arg undefined).
-    expect(onResult).toHaveBeenCalledWith('Here is your result', resultEvent.id, undefined);
+    // Plain-text result: no attachment descriptor (3rd arg undefined, 4th empty).
+    expect(onResult).toHaveBeenCalledWith('Here is your result', resultEvent.id, undefined, []);
   });
 
   it('decrypts encrypted result events', () => {
@@ -588,7 +588,7 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
     );
 
     pool.subs[1]!.onEvent(resultEvent);
-    expect(onResult).toHaveBeenCalledWith('secret result', resultEvent.id, undefined);
+    expect(onResult).toHaveBeenCalledWith('secret result', resultEvent.id, undefined, []);
   });
 
   it('surfaces the attachment from a file-result envelope', () => {
@@ -625,8 +625,9 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
     );
 
     pool.subs[1]!.onEvent(resultEvent);
-    // The text note rides in arg 1; the file descriptor in arg 3 (never inlined).
-    expect(onResult).toHaveBeenCalledWith('done', resultEvent.id, attachment);
+    // Text note in arg 1; the single descriptor in arg 3 (back-compat) and the full
+    // list in arg 4 (one entry for a single-file result).
+    expect(onResult).toHaveBeenCalledWith('done', resultEvent.id, attachment, [attachment]);
   });
 
   it('skips undecryptable results (DoS protection)', () => {

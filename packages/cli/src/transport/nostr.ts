@@ -241,7 +241,7 @@ export class NostrTransport {
     job: IncomingJob,
     content: string,
     amount?: number,
-    attachment?: FileAttachment,
+    attachments?: FileAttachment[],
     retries = 3,
   ): Promise<string> {
     return this.client.marketplace.submitJobResultWithRetry(
@@ -251,7 +251,7 @@ export class NostrTransport {
       amount,
       retries,
       undefined,
-      attachment,
+      attachments,
     );
   }
 

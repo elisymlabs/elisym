@@ -33,6 +33,12 @@ export interface LedgerEntry {
    * recovered from the persisted decrypted `raw_event_json`, not stored here.)
    */
   result_attachment?: string;
+  /**
+   * Result descriptors for a MULTI-file job (each a serialized FileAttachment).
+   * Supersedes `result_attachment`; recovery prefers this and falls back to the
+   * single field for jobs recorded before multi-file support.
+   */
+  result_attachments?: string[];
   created_at: number;
   retry_count: number;
 }
@@ -140,13 +146,19 @@ export class JobLedger {
    * Record the JSON-serialized file-result descriptor. Survives later
    * `markDelivered`/`markFailed` (which only null `result`).
    */
-  recordAttachment(jobId: string, fields: { resultAttachment?: string }): void {
+  recordAttachment(
+    jobId: string,
+    fields: { resultAttachment?: string; resultAttachments?: string[] },
+  ): void {
     const entry = this.entries.get(jobId);
     if (!entry) {
       return;
     }
     if (fields.resultAttachment !== undefined) {
       entry.result_attachment = fields.resultAttachment;
+    }
+    if (fields.resultAttachments !== undefined) {
+      entry.result_attachments = fields.resultAttachments;
     }
     this.flush();
   }

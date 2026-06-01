@@ -40,9 +40,9 @@ export function ArtifactCapturer({ buyState, card, onCapture }: Props) {
     if (!buyState || !buyState.jobId || !card) {
       return;
     }
-    // A file-only result carries an attachment with an empty/label `result`; capture
+    // A file-only result carries attachment(s) with an empty/label `result`; capture
     // it as long as either is present.
-    if (!buyState.result && !buyState.resultAttachment) {
+    if (!buyState.result && !buyState.resultAttachments?.length) {
       return;
     }
     if (lastIdRef.current === buyState.jobId) {
@@ -58,13 +58,17 @@ export function ArtifactCapturer({ buyState, card, onCapture }: Props) {
       asset: paymentToAsset(card.payment),
       prompt: buyState.lastInput || undefined,
       capability: toDTag(card.name),
-      resultAttachment: buyState.resultAttachment,
+      promptAttachment: buyState.promptAttachment,
+      promptProviderPubkey: buyState.promptProviderPubkey,
+      resultAttachments: buyState.resultAttachments,
       resultProviderPubkey: buyState.resultProviderPubkey,
     });
   }, [
     buyState?.result,
-    buyState?.resultAttachment,
+    buyState?.resultAttachments,
     buyState?.resultProviderPubkey,
+    buyState?.promptAttachment,
+    buyState?.promptProviderPubkey,
     buyState?.jobId,
     buyState?.lastInput,
     card,

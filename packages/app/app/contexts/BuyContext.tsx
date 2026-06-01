@@ -1,5 +1,5 @@
 import {
-  buildEncryptedFileInput,
+  prepareEncryptedFileInput,
   buildPaymentInstructions,
   classifyJobError,
   estimatePriorityFeeMicroLamports,
@@ -155,9 +155,18 @@ export interface ActiveBuySession {
   pending: boolean;
   lastInput: string;
   rated: boolean;
-  /** When the result is a file, the (small) attachment descriptor - never the bytes. */
-  resultAttachment?: FileAttachment;
-  /** The result-event author, used to decrypt the blossom file output. */
+  /**
+   * When the job carried a file INPUT, its attachment descriptor - so the modal
+   * shows a live input preview without waiting for a history refresh. With deferred
+   * upload the bytes are on Blossom only after pay-time, so the live preview loads
+   * post-payment; history always works.
+   */
+  promptAttachment?: FileAttachment;
+  /** The agent the input was encrypted to = the decrypt counterparty for the input. */
+  promptProviderPubkey?: string;
+  /** When the result is file(s), the (small) attachment descriptors - never the bytes. */
+  resultAttachments?: FileAttachment[];
+  /** The result-event author, used to decrypt the blossom file output(s). */
   resultProviderPubkey?: string;
 }
 
@@ -256,18 +265,36 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         const identity = idCtx.identity;
         const capability = toDTag(cardName);
 
-        // Build the encrypted file input BEFORE submitting, so an executable/oversize
-        // rejection (or upload failure) happens pre-payment and flows to the catch
-        // below. The browser uses the blossom transport only (iroh is node-only).
+        // Encrypt + build the input descriptor BEFORE submitting (so an executable/
+        // oversize rejection happens pre-payment), but DEFER the byte upload: Blossom
+        // is content-addressed so the url is known from the ciphertext sha256. We
+        // upload only once the provider quotes a price (see the payment-required
+        // handler), so an unresponsive provider never costs a wasted upload. The
+        // browser uses the blossom transport only (iroh is node-only).
         let attachment: FileAttachment | undefined;
+        let uploadInput: (() => Promise<void>) | undefined;
         if (file) {
-          toast.loading('Uploading file...', { id: toastId });
-          attachment = await buildEncryptedFileInput({
+          const prepared = await prepareEncryptedFileInput({
             file,
             providerPubkey: agentPubkey,
             identity,
             blossom: client.blossom,
           });
+          attachment = prepared.attachment;
+          uploadInput = prepared.upload;
+          // Show the input preview live. NIP-44 is symmetric, so the customer
+          // decrypts its own input against `agentPubkey`. (With deferred upload the
+          // bytes land on Blossom only at pay-time, so this preview resolves after
+          // payment; the history path always works.)
+          setSession((prev) =>
+            sessionMatches(prev)
+              ? {
+                  ...prev,
+                  promptAttachment: prepared.attachment,
+                  promptProviderPubkey: agentPubkey,
+                }
+              : prev,
+          );
         }
 
         const jobEventId = await client.marketplace.submitJobRequest(identity, {
@@ -366,6 +393,15 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   );
                 }
 
+                // The provider has quoted, so it's engaged - upload the deferred input
+                // NOW, before asking for payment. A failure aborts here with no payment
+                // (no paid-but-no-input); an unresponsive provider that never quotes
+                // means this never runs and the file is never uploaded.
+                if (uploadInput) {
+                  toast.loading('Uploading file...', { id: toastId });
+                  await retryWithBackoff(uploadInput);
+                }
+
                 const amountLabel = formatCardPrice(card.payment, paymentRequest.amount);
                 toast.loading(`Approve the ${amountLabel} payment in your wallet...`, {
                   id: toastId,
@@ -411,15 +447,24 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               }
             },
 
-            onResult: (content: string, eventId: string, attachment?: FileAttachment) => {
+            onResult: (
+              content: string,
+              eventId: string,
+              _attachment?: FileAttachment,
+              attachments?: FileAttachment[],
+            ) => {
               // The subscription already decoded the envelope, so `content` is the
-              // text and `attachment` the file descriptor - do NOT re-decode here.
-              const result = resultDisplay({ text: content || undefined, attachment });
+              // text and `attachments` the file descriptor(s) - do NOT re-decode here.
+              const resultAttachments = attachments ?? [];
+              const result = resultDisplay({
+                text: content || undefined,
+                attachments: resultAttachments,
+              });
               // The result-event author == the provider we subscribed to (filtered by
               // pubkey), and the CLI provider wraps the blossom content key with that
               // same identity, so agentPubkey is the decrypt sender. Cross-package
               // invariant: a provider that splits signing/encryption keys would break this.
-              const resultProviderPubkey = attachment ? agentPubkey : undefined;
+              const resultProviderPubkey = resultAttachments.length > 0 ? agentPubkey : undefined;
               snapshotUpdateJob(jobEventId, { status: 'completed', result });
               cacheSet(`purchase:${jobEventId}`, {
                 result,
@@ -433,7 +478,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                       buying: false,
                       pending: false,
                       result,
-                      resultAttachment: attachment,
+                      resultAttachments,
                       resultProviderPubkey,
                     }
                   : prev,
@@ -647,8 +692,8 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             // without falls back to the notice. Provider = the agent we paid.
             const decoded = decodeResult(res.content);
             const result = resultDisplay(decoded);
-            const resultAttachment = decoded.attachment;
-            const resultProviderPubkey = decoded.attachment ? job.agentPubkey : undefined;
+            const resultAttachments = decoded.attachments;
+            const resultProviderPubkey = resultAttachments.length > 0 ? job.agentPubkey : undefined;
             updateJob(job.jobEventId, { status: 'completed', result });
             cacheSet(`purchase:${job.jobEventId}`, {
               result,
@@ -662,7 +707,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                     buying: false,
                     pending: false,
                     result,
-                    resultAttachment,
+                    resultAttachments,
                     resultProviderPubkey,
                   }
                 : prev,
@@ -732,8 +777,11 @@ export interface ScopedBuyState {
   buy: (input?: string, file?: File) => Promise<void>;
   buying: boolean;
   result: string | null;
-  /** When the result is a file, the descriptor needed to fetch + decrypt it. */
-  resultAttachment?: FileAttachment;
+  /** When the job carried a file INPUT, its descriptor (for the live input preview). */
+  promptAttachment?: FileAttachment;
+  promptProviderPubkey?: string;
+  /** When the result is file(s), the descriptors needed to fetch + decrypt them. */
+  resultAttachments?: FileAttachment[];
   resultProviderPubkey?: string;
   error: string | null;
   /**
@@ -801,7 +849,9 @@ export function useBuyForCard(args: UseBuyForCardArgs): ScopedBuyState | null {
     // the previous per-page hook).
     buying: session?.buying ?? false,
     result: matches ? (session?.result ?? null) : null,
-    resultAttachment: matches ? session?.resultAttachment : undefined,
+    promptAttachment: matches ? session?.promptAttachment : undefined,
+    promptProviderPubkey: matches ? session?.promptProviderPubkey : undefined,
+    resultAttachments: matches ? session?.resultAttachments : undefined,
     resultProviderPubkey: matches ? session?.resultProviderPubkey : undefined,
     error: matches ? (session?.error ?? null) : null,
     paid: matches ? (session?.paid ?? false) : false,

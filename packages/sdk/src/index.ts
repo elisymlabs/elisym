@@ -14,6 +14,7 @@ export { NostrPool } from './transport/pool';
 export {
   encodeJobPayload,
   decodeJobPayload,
+  attachmentsOf,
   ENVELOPE_VERSION,
   ACCEPT_TRANSPORTS_TAG,
   buildAcceptTransportsTag,
@@ -29,7 +30,11 @@ export type {
 // Encrypted Blossom/HTTP file transport (browser-safe peer to the Node-only iroh transport).
 export { createBlossomTransport } from './transport/blossom-transport';
 export type { BlossomBlobTransport } from './transport/blossom-transport';
-export { buildEncryptedFileInput, fetchEncryptedFileOutput } from './transport/file-jobs';
+export {
+  buildEncryptedFileInput,
+  prepareEncryptedFileInput,
+  fetchEncryptedFileOutput,
+} from './transport/file-jobs';
 export { encryptBytesForRecipient, decryptBytesFromSender } from './primitives/file-crypto';
 export type { EncryptedBytes } from './primitives/file-crypto';
 

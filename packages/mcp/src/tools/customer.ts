@@ -1,5 +1,6 @@
 import {
   assetKey,
+  attachmentsOf,
   decodeJobPayload,
   estimateNetworkBaseline,
   formatAssetAmount,
@@ -129,6 +130,15 @@ const FetchJobFileSchema = z.object({
     .min(1)
     .max(4096)
     .describe('Local path to write the downloaded result file to.'),
+  attachment_index: z
+    .number()
+    .int()
+    .min(0)
+    .default(0)
+    .describe(
+      'Which file to download when the result has MULTIPLE files (0-based; default 0). ' +
+        'The download message reports the total count so you can fetch the others.',
+    ),
   allow_outside_cwd: z
     .boolean()
     .default(false)
@@ -1259,21 +1269,23 @@ export const customerTools: ToolDefinition[] = [
       }
       const agent = ctx.active();
 
-      // Resolve the attachment descriptor: local history first (survives relay
-      // expiry; identity-backed agents only), then a relay re-fetch + decode -
-      // the path for ephemeral agents that keep no persisted history.
-      let attachment: FileAttachment | undefined;
+      // Resolve the full attachment LIST (multi-file aware): local history first
+      // (survives relay expiry; identity-backed agents only) holds the first file;
+      // a relay re-fetch + decode has them all. Re-fetch when the cache is empty or
+      // a beyond-the-cache index is requested.
+      const index = input.attachment_index;
+      let attachments: FileAttachment[] = [];
       if (agent.agentDir !== undefined) {
         const entry = await findCustomerJob(agent.agentDir, input.job_event_id);
         if (entry?.attachmentJson !== undefined) {
           try {
-            attachment = JSON.parse(entry.attachmentJson) as FileAttachment;
+            attachments = [JSON.parse(entry.attachmentJson) as FileAttachment];
           } catch {
             /* corrupt cache - fall through to a relay re-fetch */
           }
         }
       }
-      if (attachment === undefined) {
+      if (attachments.length === 0 || index >= attachments.length) {
         try {
           const results = await agent.client.marketplace.queryJobResults(
             agent.identity,
@@ -1282,7 +1294,7 @@ export const customerTools: ToolDefinition[] = [
           );
           const resultEntry = results.get(input.job_event_id);
           if (resultEntry !== undefined && !resultEntry.decryptionFailed) {
-            attachment = decodeJobPayload(resultEntry.content).attachment;
+            attachments = attachmentsOf(decodeJobPayload(resultEntry.content));
           }
         } catch (error) {
           logger.warn(
@@ -1291,10 +1303,17 @@ export const customerTools: ToolDefinition[] = [
           );
         }
       }
-      if (attachment === undefined) {
+      if (attachments.length === 0) {
         return errorResult(
           `No file result found for event_id="${input.job_event_id}". It may be a text ` +
             `result, not yet delivered, or expired from the relays.`,
+        );
+      }
+      const attachment = attachments[index];
+      if (attachment === undefined) {
+        return errorResult(
+          `attachment_index ${index} is out of range - this result has ${attachments.length} file(s) ` +
+            `(valid indexes 0-${attachments.length - 1}).`,
         );
       }
 
@@ -1323,7 +1342,11 @@ export const customerTools: ToolDefinition[] = [
         }).catch(() => {});
       }
 
-      return textResult(`Downloaded result file to ${outputPath}.`);
+      const more =
+        attachments.length > 1
+          ? ` (file ${index + 1} of ${attachments.length}; fetch others with attachment_index=0..${attachments.length - 1})`
+          : '';
+      return textResult(`Downloaded result file "${attachment.name}" to ${outputPath}${more}.`);
     },
   }),
 

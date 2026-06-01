@@ -1,16 +1,16 @@
 import {
   KIND_JOB_FEEDBACK,
   KIND_JOB_REQUEST,
+  type FileAttachment,
   nip44Decrypt,
   parsePaymentRequest,
-  type FileAttachment,
   type PaymentAssetRef,
 } from '@elisym/sdk';
 import type { Event as NostrEvent } from 'nostr-tools';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
-import { decodeResult, promptDisplay, resultDisplay } from '~/lib/fileResult';
+import { decodeResult, resultDisplay } from '~/lib/fileResult';
 import type { Artifact } from './types';
 
 const STALE_TIME_MS = 1000 * 30;
@@ -85,6 +85,7 @@ export function useNostrArtifacts(agentPubkey: string) {
         const capability = req.tags.find((tag) => tag[0] === 't' && tag[1] !== 'elisym')?.[1];
 
         let prompt: string | undefined;
+        let promptAttachment: FileAttachment | undefined;
         const isEncrypted = req.tags.some((tag) => tag[0] === 'encrypted');
         const recipient = req.tags.find((tag) => tag[0] === 'p')?.[1];
         try {
@@ -92,11 +93,15 @@ export function useNostrArtifacts(agentPubkey: string) {
             isEncrypted && recipient
               ? nip44Decrypt(req.content, viewerSecret, recipient)
               : req.content;
-          // A file input is wrapped in an `elisym-job/*` envelope, so decode it and
-          // show a friendly `📎 name` / the text note - never the raw JSON.
-          prompt = promptDisplay(decodeResult(plaintext));
+          // A file input is wrapped in an `elisym-job/*` envelope. Keep the GENUINE
+          // text note (not the `📎 name` placeholder) so the modal can show it next
+          // to a real file preview; the file itself renders via promptAttachment,
+          // never as raw JSON. An input is always a single file.
+          const decodedInput = decodeResult(plaintext);
+          prompt = decodedInput.text?.trim() ? decodedInput.text : undefined;
+          promptAttachment = decodedInput.attachments[0];
         } catch {
-          // decryption failed, leave prompt undefined
+          // decryption failed, leave prompt/promptAttachment undefined
         }
 
         // queryJobResults returns the raw decrypted content (no envelope decode),
@@ -105,7 +110,7 @@ export function useNostrArtifacts(agentPubkey: string) {
         // to a notice; a normal result yields its inline text.
         const decoded = decodeResult(result.content);
         const resultText = resultDisplay(decoded);
-        const resultAttachment: FileAttachment | undefined = decoded.attachment;
+        const resultAttachments = decoded.attachments;
 
         out.push({
           id: req.id,
@@ -115,10 +120,15 @@ export function useNostrArtifacts(agentPubkey: string) {
           priceLamports: result.amount,
           asset: assetByJobId.get(req.id),
           prompt,
-          resultAttachment,
+          promptAttachment,
+          // The input is encrypted to the `p`-tag recipient (= agentPubkey, the query
+          // filter); NIP-44's conversation key is symmetric, so the customer decrypts
+          // its own input against that same pubkey.
+          promptProviderPubkey: promptAttachment ? agentPubkey : undefined,
+          resultAttachments,
           // The result author is `agentPubkey` (the query filters by it), which is
           // also the blossom content-key wrapper - the decrypt sender.
-          resultProviderPubkey: resultAttachment ? agentPubkey : undefined,
+          resultProviderPubkey: resultAttachments.length > 0 ? agentPubkey : undefined,
         });
       }
 

@@ -1,25 +1,26 @@
-import { decodeJobPayload, type FileAttachment } from '@elisym/sdk';
+import { attachmentsOf, decodeJobPayload, type FileAttachment } from '@elisym/sdk';
 import { tooLargeResultNotice } from '~/lib/resultPayload';
 
 export type MediaKind = 'image' | 'audio' | 'video' | 'file';
 
 export interface DecodedResult {
   text?: string;
-  attachment?: FileAttachment;
+  /** All file attachments (empty for a text-only payload; >1 for a multi-file result). */
+  attachments: FileAttachment[];
 }
 
 /**
  * Envelope-decode a RAW relay result content (the history + poller paths get raw
  * content from `queryJobResults`). The live `onResult` callback already receives a
- * decoded `content` + `attachment`, so it must NOT call this. A malformed envelope
+ * decoded `content` + `attachments`, so it must NOT call this. A malformed envelope
  * falls back to treating the raw string as the text rather than dropping the result.
  */
 export function decodeResult(content: string): DecodedResult {
   try {
     const decoded = decodeJobPayload(content);
-    return { text: decoded.text, attachment: decoded.attachment };
+    return { text: decoded.text, attachments: attachmentsOf(decoded) };
   } catch {
-    return { text: content };
+    return { text: content, attachments: [] };
   }
 }
 
@@ -64,31 +65,17 @@ export function resultDisplay(decoded: DecodedResult): string {
   if (text !== undefined && text.trim() !== '') {
     return text;
   }
-  const attachment = decoded.attachment;
-  if (attachment !== undefined) {
-    if (hasBlossom(attachment)) {
-      return `File: ${attachment.name} (${formatBytes(attachment.size)})`;
-    }
-    return tooLargeResultNotice(attachment);
+  const attachments = decoded.attachments;
+  if (attachments.length > 1) {
+    return `${attachments.length} files: ${attachments.map((a) => a.name).join(', ')}`;
+  }
+  const only = attachments[0];
+  if (only !== undefined) {
+    return hasBlossom(only)
+      ? `File: ${only.name} (${formatBytes(only.size)})`
+      : tooLargeResultNotice(only);
   }
   return text ?? '';
-}
-
-/**
- * The friendly representation of a job INPUT (the prompt the customer sent). Text
- * when present, else a `📎 <name>` label for a file input (always non-empty, so the
- * `Agent.tsx` hydrate fallback's `!artifact.prompt` guard stops re-firing), else
- * `undefined` so the prompt block hides. Avoids rendering the raw envelope JSON.
- */
-export function promptDisplay(decoded: DecodedResult): string | undefined {
-  const text = decoded.text;
-  if (text !== undefined && text.trim() !== '') {
-    return text;
-  }
-  if (decoded.attachment !== undefined) {
-    return `📎 ${decoded.attachment.name}`;
-  }
-  return undefined;
 }
 
 /** Strip any path separators a provider-supplied filename might carry. */

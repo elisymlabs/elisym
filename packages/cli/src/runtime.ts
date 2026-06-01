@@ -1053,7 +1053,7 @@ export class AgentRuntime {
     // buildResultAttachment runs before markExecuted: a seed failure leaves the
     // job `paid` so recovery re-executes. `deliveredContent` is empty whenever the
     // payload was spilled to iroh, so the result event carries only the ticket.
-    const { attachment, deliveredContent } = await this.buildResultAttachment(
+    const { attachments, deliveredContent } = await this.buildResultAttachment(
       job.jobId,
       output,
       job.customerId,
@@ -1072,7 +1072,7 @@ export class AgentRuntime {
       job,
       deliveredContent,
       netAmount,
-      attachment,
+      attachments.length > 0 ? attachments : undefined,
     );
     this.ledger.markDelivered(job.jobId);
 
@@ -1130,57 +1130,37 @@ export class AgentRuntime {
     output: SkillOutput,
     customerPubkey: string,
     acceptedTransports: TransportKind[] | undefined,
-  ): Promise<{ attachment: FileAttachment | undefined; deliveredContent: string }> {
+  ): Promise<{ attachments: FileAttachment[]; deliveredContent: string }> {
     // Seed the (encrypted-Blossom) member only when the customer didn't advertise, or advertised
     // blossom. iroh is always seeded. So advertising ['iroh'] (MCP) skips the Blossom upload.
     const wantBlossom = acceptedTransports === undefined || acceptedTransports.includes('blossom');
-    if (output.filePath !== undefined) {
-      const filePath = output.filePath;
+    // One OR many file results: a skill that wrote several files to ELISYM_OUTPUT_DIR
+    // yields `filePaths`; a single ELISYM_OUTPUT_FILE yields `filePath`. Treat both as a list.
+    const filePaths = output.filePaths ?? (output.filePath !== undefined ? [output.filePath] : []);
+    if (filePaths.length > 0) {
       // seedPath copies the bytes into the persistent iroh store, so the producer's
-      // temp file is no longer needed once seeding has been attempted (recovery
-      // re-shares from the store, never the temp file). Release it whether seeding
-      // succeeds or throws - including the no-transport case below - so a failure
-      // (job stays `paid`, recovery re-executes into a fresh temp file) does not
-      // leave the temp dir behind on every retry.
+      // temp dir is no longer needed once seeding has been attempted (recovery
+      // re-shares from the store, never the temp dir). Release it whether seeding
+      // succeeds or throws (a SeedFailedError keeps the job `paid` for recovery, which
+      // re-executes into a fresh temp dir) so a failure doesn't leave it behind.
       try {
-        if (!this.irohTransport) {
-          throw new Error('Skill produced a file result but iroh transport is unavailable.');
-        }
-        const iroh = this.irohTransport;
-        // A seed failure/timeout here is transient (a wedged node self-resets), so
-        // surface it as SeedFailedError → the job stays `paid` and recovery re-delivers,
-        // rather than losing the customer's paid job.
-        const seeded = await this.seedGuarded(jobId, 'file', () => iroh.seedPath(filePath));
-        // iroh is always present (the robust fallback); blossom is added (preferred, first) when
-        // available + within the encrypted-size cap, so web customers can fetch over HTTP too.
-        const transports: FileTransport[] = [{ kind: 'iroh', ticket: seeded.ticket }];
-        if (wantBlossom) {
-          const blossomMember = await this.seedBlossomFromPath(
-            filePath,
-            seeded.size,
-            customerPubkey,
+        const attachments: FileAttachment[] = [];
+        for (const filePath of filePaths) {
+          attachments.push(
+            await this.seedFileToAttachment(
+              jobId,
+              filePath,
+              output.outputMime,
+              customerPubkey,
+              wantBlossom,
+            ),
           );
-          if (blossomMember !== undefined) {
-            transports.unshift(blossomMember);
-          }
         }
-        // The producer's temp file is literally `output`; give it an extension from
-        // the declared MIME so the customer downloads e.g. `output.png`. A producer
-        // that already chose a name with an extension is kept as-is.
-        const producedName = basename(filePath);
-        const name = extname(producedName)
-          ? producedName
-          : `${producedName}${extensionForMime(output.outputMime)}`;
-        const attachment: FileAttachment = {
-          name,
-          size: seeded.size,
-          mime: output.outputMime ?? 'application/octet-stream',
-          transports,
-        };
-        this.ledger.recordAttachment(jobId, { resultAttachment: JSON.stringify(attachment) });
-        // A file result's `output.data` is a small note, delivered inline alongside
-        // the ticket - unchanged from the original file-transfer behavior.
-        return { attachment, deliveredContent: output.data };
+        this.ledger.recordAttachment(jobId, {
+          resultAttachments: attachments.map((a) => JSON.stringify(a)),
+        });
+        // A file result's `output.data` is a small note, delivered inline alongside the tickets.
+        return { attachments, deliveredContent: output.data };
       } finally {
         await output.cleanup?.().catch(() => {});
       }
@@ -1208,11 +1188,46 @@ export class AgentRuntime {
         mime: 'text/plain',
         transports,
       };
-      this.ledger.recordAttachment(jobId, { resultAttachment: JSON.stringify(attachment) });
-      return { attachment, deliveredContent: '' };
+      this.ledger.recordAttachment(jobId, { resultAttachments: [JSON.stringify(attachment)] });
+      return { attachments: [attachment], deliveredContent: '' };
     }
 
-    return { attachment: undefined, deliveredContent: output.data };
+    return { attachments: [], deliveredContent: output.data };
+  }
+
+  /**
+   * Seed ONE result file to iroh (+ encrypted Blossom when wanted) and build its
+   * FileAttachment. A seed timeout throws SeedFailedError (job stays `paid` for
+   * recovery). Shared by the single- and multi-file result paths.
+   */
+  private async seedFileToAttachment(
+    jobId: string,
+    filePath: string,
+    outputMime: string | undefined,
+    customerPubkey: string,
+    wantBlossom: boolean,
+  ): Promise<FileAttachment> {
+    if (!this.irohTransport) {
+      throw new Error('Skill produced a file result but iroh transport is unavailable.');
+    }
+    const iroh = this.irohTransport;
+    const seeded = await this.seedGuarded(jobId, 'file', () => iroh.seedPath(filePath));
+    // iroh is always present (the robust fallback); blossom is added (preferred, first) when
+    // available + within the per-file encrypted-size cap, so web customers can fetch over HTTP.
+    const transports: FileTransport[] = [{ kind: 'iroh', ticket: seeded.ticket }];
+    if (wantBlossom) {
+      const blossomMember = await this.seedBlossomFromPath(filePath, seeded.size, customerPubkey);
+      if (blossomMember !== undefined) {
+        transports.unshift(blossomMember);
+      }
+    }
+    // The single-file producer's temp file is literally `output` (no extension); give
+    // it one from the declared MIME. A producer-chosen name with an extension is kept.
+    const producedName = basename(filePath);
+    const name = extname(producedName)
+      ? producedName
+      : `${producedName}${extensionForMime(outputMime)}`;
+    return { name, size: seeded.size, mime: outputMime ?? 'application/octet-stream', transports };
   }
 
   /**
@@ -1289,6 +1304,29 @@ export class AgentRuntime {
       transport.kind === 'iroh' ? { kind: 'iroh' as const, ticket: freshTicket } : transport,
     );
     return { ...stored, transports };
+  }
+
+  /**
+   * Re-share ALL of a recovered job's result attachments (multi-file aware). Prefers
+   * the `result_attachments` array; falls back to the legacy single `result_attachment`.
+   * A failure on ANY attachment throws (the caller marks the whole job failed - a
+   * partial multi-file delivery is not a valid paid result).
+   */
+  private async reShareResultAttachments(entry: {
+    result_attachments?: string[];
+    result_attachment?: string;
+  }): Promise<FileAttachment[]> {
+    const stored =
+      entry.result_attachments ??
+      (entry.result_attachment !== undefined ? [entry.result_attachment] : []);
+    const out: FileAttachment[] = [];
+    for (const serialized of stored) {
+      const attachment = await this.reShareResultAttachment(serialized);
+      if (attachment !== undefined) {
+        out.push(attachment);
+      }
+    }
+    return out;
   }
 
   /**
@@ -1765,15 +1803,20 @@ export class AgentRuntime {
         // addresses go stale across a restart); if the blob is gone, fail cleanly
         // rather than deliver a dead ticket.
         this.ledger.incrementRetry(entry.job_id);
-        let attachment;
+        let attachments: FileAttachment[];
         try {
-          attachment = await this.reShareResultAttachment(entry.result_attachment);
+          attachments = await this.reShareResultAttachments(entry);
         } catch {
           log(`[${entry.job_id.slice(0, 8)}] Recovery: result blob unavailable, marking failed`);
           this.ledger.markFailed(entry.job_id);
           return;
         }
-        await this.transport.deliverResult(fakeJob, entry.result, entry.net_amount, attachment);
+        await this.transport.deliverResult(
+          fakeJob,
+          entry.result,
+          entry.net_amount,
+          attachments.length > 0 ? attachments : undefined,
+        );
         this.ledger.markDelivered(entry.job_id);
         log(`[${entry.job_id.slice(0, 8)}] Recovery: re-delivered`);
       } else if (entry.status === 'paid') {
@@ -1890,18 +1933,19 @@ export class AgentRuntime {
         // Symmetric with the primary path: seed any spilled payload (file or large
         // text) BEFORE markExecuted, and deliver `deliveredContent` (empty when
         // spilled) so a re-executed result never re-trips the NIP-44 byte cap.
-        const { attachment: resultAttachment, deliveredContent } = await this.buildResultAttachment(
-          entry.job_id,
-          output,
-          entry.customer_id,
-          readAcceptedTransports(rawEvent.tags),
-        );
+        const { attachments: resultAttachments, deliveredContent } =
+          await this.buildResultAttachment(
+            entry.job_id,
+            output,
+            entry.customer_id,
+            readAcceptedTransports(rawEvent.tags),
+          );
         this.ledger.markExecuted(entry.job_id, deliveredContent);
         await this.transport.deliverResult(
           fakeJob,
           deliveredContent,
           entry.net_amount,
-          resultAttachment,
+          resultAttachments.length > 0 ? resultAttachments : undefined,
         );
         this.ledger.markDelivered(entry.job_id);
         log(`[${entry.job_id.slice(0, 8)}] Recovery: re-executed and delivered`);
