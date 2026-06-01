@@ -85,6 +85,10 @@ function JobInputInner({
   // file + optional note. Only meaningful with `needsFileInput`.
   const fileOnly = needsFileInput && card.inputText === 'none';
   const textRequiredForFile = needsFileInput && card.inputText === 'required';
+  // The prompt textarea shows for any non-static card that isn't file-only. When
+  // it's hidden the file dropzone becomes the card's first element and needs full
+  // top padding to breathe from the card edge, not the tight inter-field gap.
+  const showsTextarea = !isStatic && !fileOnly;
   // For a file-only card the text box is hidden, so any `input` is stale text left
   // over from a prior capability - never send/record it.
   const effectiveInput = fileOnly ? '' : input;
@@ -196,7 +200,7 @@ function JobInputInner({
 
   return (
     <div className="rounded-3xl border border-black/7 bg-surface shadow-[0_1px_8px_rgba(0,0,0,0.05)]">
-      {!isStatic && !fileOnly && (
+      {showsTextarea && (
         <textarea
           autoFocus
           value={input}
@@ -207,8 +211,8 @@ function JobInputInner({
         />
       )}
       {needsFileInput && !freeFileBlocked && (
-        <div className="px-14 pt-4 sm:px-20">
-          <label className="flex cursor-pointer items-center gap-10 rounded-2xl border border-dashed border-black/15 px-14 py-12 text-sm transition-colors hover:border-black/30 hover:bg-black/[0.02]">
+        <div className={cn('px-14 sm:px-20', showsTextarea ? 'pt-4' : 'pt-16 sm:pt-20')}>
+          <label className="flex cursor-pointer items-center justify-center gap-10 rounded-2xl border border-dashed border-black/15 bg-black/[0.015] px-16 py-16 text-sm transition-colors hover:border-black/30 hover:bg-black/[0.03]">
             <input
               type="file"
               className="hidden"
@@ -230,7 +234,7 @@ function JobInputInner({
               <path d="M17 8l-5-5-5 5" />
               <path d="M12 3v12" />
             </svg>
-            <span className={cn('min-w-0 flex-1 truncate', file ? 'text-text' : 'text-text-2')}>
+            <span className={cn('min-w-0 truncate', file ? 'text-text' : 'text-text-2')}>
               {file ? file.name : 'Choose a file to send'}
             </span>
             {file && (
@@ -250,11 +254,11 @@ function JobInputInner({
         next to the Buy button.
       */}
       {!isOwn && (!isStatic || !isFree) && (
-        <div className="flex min-h-24 items-center px-12 pt-4 sm:hidden">
+        <div className="flex min-h-24 items-center px-14 pt-4 sm:hidden">
           {!isFree && <NetworkFeeRow lamports={gasFeeLamports} />}
         </div>
       )}
-      <div className="flex items-center justify-between gap-12 px-12 py-10 sm:px-16 sm:py-12">
+      <div className="flex items-center justify-between gap-12 px-14 py-10 sm:px-20 sm:py-12">
         <div className="flex min-w-0 items-center gap-8">
           <CapabilityDropdown
             cards={allCards}
@@ -282,7 +286,7 @@ function JobInputInner({
               <button
                 onClick={handleBuy}
                 disabled={isDisabled}
-                className="inline-flex h-32 min-w-[72px] cursor-pointer items-center justify-center gap-8 rounded-xl border-none bg-surface-dark px-14 text-xs leading-none font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-25 sm:h-36 sm:min-w-[92px] sm:px-16"
+                className="inline-flex h-32 min-w-64 cursor-pointer items-center justify-center gap-8 rounded-xl border-none bg-surface-dark px-14 text-xs leading-none font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-25 sm:h-36 sm:min-w-72 sm:px-16"
               >
                 {buying && (
                   <svg aria-hidden className="size-14 animate-spin" viewBox="0 0 24 24" fill="none">
