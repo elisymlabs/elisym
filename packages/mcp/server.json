@@ -14,7 +14,7 @@
     {
       "registryType": "npm",
       "identifier": "@elisym/mcp",
-      "version": "0.15.9",
+      "version": "0.16.0",
       "transport": {
         "type": "stdio"
       },
