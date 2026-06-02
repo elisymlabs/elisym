@@ -80,11 +80,17 @@ function JobInputInner({
   // only and never trust/render the (untrusted) value - the file picker uses it as
   // a soft `accept` hint at most, and the provider content-sniffs the actual file.
   const needsFileInput = typeof card.inputMime === 'string' && card.inputMime.length > 0;
-  // `input_text` says whether a file skill also takes a text prompt: 'none' = file
-  // only (hide the text box), 'required' = needs both, else (incl. undefined) =
-  // file + optional note. Only meaningful with `needsFileInput`.
+  // `input_text` says how a file skill treats the text prompt: 'none' = file only
+  // (hide the text box), 'required' = file + text both required, 'optional' = the
+  // FILE is optional and the instruction is required (a generate-or-edit skill:
+  // text alone generates, text + photo edits), else (incl. undefined) = file
+  // required + optional note. Only meaningful with `needsFileInput`.
   const fileOnly = needsFileInput && card.inputText === 'none';
   const textRequiredForFile = needsFileInput && card.inputText === 'required';
+  // `optional` inverts the usual file-input gate: the instruction is required and
+  // the file is an optional augmentation, so a file-capable card can still run
+  // text-only (e.g. image generation without a photo to edit).
+  const fileOptional = needsFileInput && card.inputText === 'optional';
   // The prompt textarea shows for any non-static card that isn't file-only. When
   // it's hidden the file dropzone becomes the card's first element and needs full
   // top padding to breathe from the card edge, not the tight inter-field gap.
@@ -160,10 +166,12 @@ function JobInputInner({
     freeFileBlocked ||
     !relaysConnected ||
     // Text cards require text; file cards require a file (text is an optional note,
-    // unless `input_text: required`, which needs both).
+    // unless `input_text: required`, which needs both). A `fileOptional` card
+    // inverts this: the file is optional and the instruction is required instead.
     ((!!publicKey || isFree) && !isStatic && !needsFileInput && !input.trim()) ||
-    ((!!publicKey || isFree) && needsFileInput && !file) ||
+    ((!!publicKey || isFree) && needsFileInput && !fileOptional && !file) ||
     ((!!publicKey || isFree) && textRequiredForFile && !input.trim()) ||
+    ((!!publicKey || isFree) && fileOptional && !input.trim()) ||
     ((!!publicKey || isFree) && pingStatus !== 'online') ||
     inputTooLarge ||
     fileTooLarge ||
@@ -194,9 +202,17 @@ function JobInputInner({
   let inputPlaceholder = `Ask ${agentName || 'agent'}…`;
   if (textRequiredForFile) {
     inputPlaceholder = 'Describe what to do with the file…';
+  } else if (fileOptional) {
+    // The instruction is required here; the file is the optional part.
+    inputPlaceholder = 'Describe the image, or attach a photo to edit…';
   } else if (needsFileInput) {
     inputPlaceholder = 'Add an optional note…';
   }
+
+  // Empty-state label for the file dropzone (a real filename replaces it once chosen).
+  const fileDropLabel = fileOptional
+    ? 'Attach a photo to edit (optional)'
+    : 'Choose a file to send';
 
   return (
     <div className="rounded-3xl border border-black/7 bg-surface shadow-[0_1px_8px_rgba(0,0,0,0.05)]">
@@ -235,7 +251,7 @@ function JobInputInner({
               <path d="M12 3v12" />
             </svg>
             <span className={cn('min-w-0 truncate', file ? 'text-text' : 'text-text-2')}>
-              {file ? file.name : 'Choose a file to send'}
+              {file ? file.name : fileDropLabel}
             </span>
             {file && (
               <span className="shrink-0 text-xs text-text-2 tabular-nums">

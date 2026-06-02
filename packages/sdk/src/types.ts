@@ -20,18 +20,20 @@ export interface CapabilityCard {
   /**
    * MIME the capability expects as a file input (from a dynamic-script skill's
    * `input_mime`). Discovery hint only; the provider still content-sniffs the
-   * actual file. Its presence means the capability needs a file input - which
-   * the web app cannot send (no iroh transport), so the web app blocks the Buy
-   * button. `*` = any file, `image/*` = any image, `image/png` = exact.
+   * actual file. Its presence means the capability accepts a file input (the web
+   * app sends it over encrypted Blossom; the MCP/CLI over iroh), so clients show a
+   * file picker. `*` = any file, `image/*` = any image, `image/png` = exact.
    */
   inputMime?: string;
   /** MIME of a file result the capability produces (from `output_mime`). */
   outputMime?: string;
   /**
-   * Whether a file-input capability ALSO accepts a text prompt (from `input_text`):
-   * `'none'` = file only, `'optional'` = file + optional note, `'required'` = both.
-   * Discovery hint; the web app shows/hides its text box accordingly. Only meaningful
-   * with `inputMime`. Untrusted - gate on it, never render the raw value.
+   * How a file-input capability treats the text prompt (from `input_text`):
+   * `'none'` = file only, `'optional'` = file optional + instruction required (a
+   * generate-or-edit skill), `'required'` = file + text both required. Omitted =
+   * file required + optional note. Discovery hint; the web app shows/hides/gates its
+   * text box and file picker accordingly. Only meaningful with `inputMime`.
+   * Untrusted - gate on it, never render the raw value.
    */
   inputText?: 'required' | 'optional' | 'none';
 }

@@ -77,10 +77,11 @@ export interface SkillFrontmatter {
    */
   input_mime?: unknown;
   /**
-   * Whether the skill ALSO accepts a text prompt alongside a file input
-   * (`dynamic-script` only; meaningful only with `input_mime`). `'none'` = file
-   * only, `'optional'` = file + optional note (default), `'required'` = needs both.
-   * Discovery hint only; lets the web app show/hide its text box for file jobs.
+   * How the skill treats a text prompt alongside a file input (`dynamic-script`
+   * only; meaningful only with `input_mime`). `'none'` = file only, `'optional'` =
+   * file optional + instruction required (a generate-or-edit skill), `'required'` =
+   * needs both. Omitted = file required + optional note. Discovery hint only; lets
+   * the web app show/hide/gate its text box and file picker for file jobs.
    */
   input_text?: unknown;
   /**
@@ -137,9 +138,10 @@ export interface ParsedSkill {
    */
   inputMime?: string;
   /**
-   * Whether the skill also accepts a text prompt with a file input (mode
-   * 'dynamic-script' only). Discovery hint; clients (the web app) gate their text
-   * box on it. Default behavior when absent = file + optional text.
+   * How the skill treats a text prompt with a file input (mode 'dynamic-script'
+   * only). `'none'` = file only, `'optional'` = file optional + instruction
+   * required, `'required'` = both required. Discovery hint; clients (the web app)
+   * gate their text box and file picker on it. Absent = file required + optional text.
    */
   inputText?: 'required' | 'optional' | 'none';
   /** Optional per-skill rate limit (any mode). */

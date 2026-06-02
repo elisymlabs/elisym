@@ -69,14 +69,14 @@ For script modes, declaring `provider` + `model` tells the runtime "this script 
 
 ### `static-script` / `dynamic-script`
 
-| Field               | Type     | Required | Notes                                                                                                                                                                                       |
-| ------------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `script`            | string   | yes      | Path relative to the skill directory.                                                                                                                                                       |
-| `script_args`       | string[] | no       | Extra positional args appended after the script path.                                                                                                                                       |
-| `script_timeout_ms` | integer  | no       | Override the 60s default. Positive integer.                                                                                                                                                 |
-| `output_mime`       | string   | no       | `dynamic-script` only. MIME of a file result (see below). Default `application/octet-stream`.                                                                                               |
-| `input_mime`        | string   | no       | `dynamic-script` only. Discovery hint for the MIME a file input carries (see below). NOT enforced - the runtime content-sniffs the actual file.                                             |
-| `input_text`        | string   | no       | `dynamic-script` only. Whether a file-input skill also takes a text prompt: `none` = file only, `optional` = file + optional note (default), `required` = both. Discovery hint (see below). |
+| Field               | Type     | Required | Notes                                                                                                                                                                                                                                                                                   |
+| ------------------- | -------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `script`            | string   | yes      | Path relative to the skill directory.                                                                                                                                                                                                                                                   |
+| `script_args`       | string[] | no       | Extra positional args appended after the script path.                                                                                                                                                                                                                                   |
+| `script_timeout_ms` | integer  | no       | Override the 60s default. Positive integer.                                                                                                                                                                                                                                             |
+| `output_mime`       | string   | no       | `dynamic-script` only. MIME of a file result (see below). Default `application/octet-stream`.                                                                                                                                                                                           |
+| `input_mime`        | string   | no       | `dynamic-script` only. Discovery hint for the MIME a file input carries (see below). NOT enforced - the runtime content-sniffs the actual file.                                                                                                                                         |
+| `input_text`        | string   | no       | `dynamic-script` only. How a file-input skill treats the text prompt: `none` = file only, `optional` = **file optional, instruction required** (a generate-or-edit skill), `required` = file + text both required. Omitted = file required + optional note. Discovery hint (see below). |
 
 The script inherits `process.env` plus any per-provider keys the agent decrypted from `.secrets.json`. Scripts run **without** `shell: true` (no metacharacter expansion - `.sh` files need a shebang).
 
@@ -96,7 +96,11 @@ Rules:
 - If the script does **not** write `ELISYM_OUTPUT_FILE`, behavior is unchanged: trimmed stdout is the text result, and empty stdout is still an error.
 - File inputs require a **paid** skill (a free skill would let anyone make the provider fetch arbitrary blobs). The runtime rejects `attachment + price 0` before payment.
 - Declare `input_mime` when a skill expects a file input. It is a **discovery hint**, published in the capability card and surfaced by `search_agents` - it is **not** enforced (the runtime content-sniffs the real file). Its purpose is to let clients detect a file-input capability and gate their UI; the MCP/CLI send files via `submit_and_pay_job_from_file` and the web app sends them over encrypted Blossom. Convention: `*` or `*/*` = any file, `image/*` = any image, `image/png` = an exact type.
-- Declare `input_text` alongside `input_mime` to say whether the skill ALSO reads a text prompt: `none` (the script ignores stdin - e.g. a pure image filter), `optional` (default - stdin is an optional note), or `required` (the script needs both a file and text). It is a **discovery hint** (not enforced); the web app uses it to show only a file picker for `none`, a file picker + text box for `optional`/`required`, and to require both for `required`.
+- Declare `input_text` alongside `input_mime` to say how the skill treats the text prompt. It is a **discovery hint** (not enforced) the web app uses to gate its UI:
+  - `none` - the script ignores stdin (e.g. a pure image filter). Web shows only a file picker; the file is required.
+  - `optional` - the FILE is optional and the **instruction is required** (a generate-or-edit skill: text alone generates, text + file edits). Web shows a required text box + an optional file picker. This inverts the usual gate so a file-capable card can still run text-only.
+  - `required` - the script needs both a file and text. Web shows a file picker + text box and requires both.
+  - Omitted - file required + optional note. Web shows a file picker (required) + an optional text box.
 
 ```bash
 #!/usr/bin/env bash
