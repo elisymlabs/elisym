@@ -192,6 +192,16 @@ const SubmitAndPayJobFromFileSchema = z.object({
       'Path to a regular file whose contents become the job input. Absolute or relative ' +
         "to the MCP server's working directory.",
     ),
+  prompt: z
+    .string()
+    .max(MAX_INPUT_LEN)
+    .default('')
+    .describe(
+      'Optional text instruction sent alongside the file (e.g. how to edit an image: ' +
+        '"make it night", "add a hat"). It rides inline (NIP-44 encrypted) in the job ' +
+        'event while the file travels peer-to-peer via iroh. The single attachment slot ' +
+        'holds the file, so the prompt cannot spill to a second transfer - keep it short.',
+    ),
   provider_npub: z.string(),
   capability: z.string().min(1).max(64).default('general'),
   kind_offset: z.number().int().min(0).max(999).default(DEFAULT_KIND_OFFSET),
@@ -1566,11 +1576,28 @@ export const customerTools: ToolDefinition[] = [
       "input_path may be absolute or relative to the MCP server's working directory. " +
       'The file is ALWAYS transferred peer-to-peer via iroh, so this needs: a persistent ' +
       'agent, a PAID provider skill (free skills reject file inputs), and the iroh addon. ' +
-      'Text files reach the skill on stdin; binary files via ELISYM_INPUT_FILE.',
+      'Text files reach the skill on stdin; binary files via ELISYM_INPUT_FILE. ' +
+      'Pass an optional `prompt` to send a text instruction alongside the file (e.g. how ' +
+      'to edit an image); it rides inline (encrypted) while the file rides P2P.',
     schema: SubmitAndPayJobFromFileSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
       checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
+
+      // An optional prompt accompanies the file as the inline (NIP-44 encrypted) job
+      // note. The single attachment slot holds the FILE, so the prompt cannot spill to
+      // a second iroh transfer - bound it here (best-effort) below the NIP-44 inline
+      // budget, leaving headroom for envelope JSON + the iroh ticket; the SDK's
+      // plaintext backstop is the definitive guard. Do NOT route it through
+      // prepareTextInput (which would spill an oversize note to a conflicting attachment).
+      const PROMPT_INLINE_CAP = 55_000;
+      const trimmedPrompt = input.prompt.trim();
+      if (utf8ByteLength(trimmedPrompt) > PROMPT_INLINE_CAP) {
+        return errorResult(
+          `Prompt is too long to ride inline (max ${PROMPT_INLINE_CAP} bytes); ` +
+            `the file occupies the only attachment slot, so shorten the prompt.`,
+        );
+      }
 
       // Validate + classify first, so a bad/sensitive/missing path gives a specific
       // error rather than the persistent-agent message below.
@@ -1615,9 +1642,10 @@ export const customerTools: ToolDefinition[] = [
         return errorResult(`Failed to seed file for transfer: ${msg}`);
       }
 
-      // The file body always rides the attachment; the inline input is empty.
+      // The file body rides the attachment; the optional prompt rides inline as the
+      // job note (empty -> the SDK omits the envelope text, preserving file-only jobs).
       return executeSubmitAndPay(ctx, agent, {
-        input: '',
+        input: trimmedPrompt,
         attachment,
         providerNpub: input.provider_npub,
         providerPubkey: decodeNpub(input.provider_npub),

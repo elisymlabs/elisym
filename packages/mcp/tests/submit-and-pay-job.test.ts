@@ -441,13 +441,14 @@ describe('submit_and_pay_job_from_file always seeds via iroh (never inline)', ()
     return { agent, submitJobRequest };
   }
 
-  async function runFromFile(agent: AgentInstance, filePath: string) {
+  async function runFromFile(agent: AgentInstance, filePath: string, prompt?: string) {
     const tool = findTool('submit_and_pay_job_from_file');
     const input = tool.schema.parse({
       input_path: filePath,
       provider_npub: VALID_PROVIDER_NPUB,
       allow_outside_cwd: true,
       timeout_secs: 1,
+      ...(prompt !== undefined ? { prompt } : {}),
     });
     return tool.handler(ctxWith(agent), input);
   }
@@ -502,6 +503,40 @@ describe('submit_and_pay_job_from_file always seeds via iroh (never inline)', ()
 
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toMatch(/requires a persistent agent/i);
+    expect(mockSeedPath).not.toHaveBeenCalled();
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('forwards the prompt inline alongside the file attachment', async () => {
+    const p = join(dir, 'photo.jpg');
+    await writeFile(p, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x01, 0x02, 0x03]));
+    const { agent, submitJobRequest } = freeProviderSetup();
+
+    const resultPromise = runFromFile(agent, p, 'make it night');
+    await vi.waitFor(() => expect(submitJobRequest).toHaveBeenCalledTimes(1));
+
+    expect(mockSeedPath).toHaveBeenCalledTimes(1);
+    const submitArgs = submitJobRequest.mock.calls[0]![1] as {
+      input: string;
+      attachment?: { transports: { kind: string; ticket: string }[] };
+    };
+    // Prompt rides inline as the job note; the file still rides the attachment.
+    expect(submitArgs.input).toBe('make it night');
+    expect(submitArgs.attachment?.transports[0]?.ticket).toBe('blobticket-file');
+    void resultPromise;
+  });
+
+  it('rejects a prompt over the inline byte budget without seeding', async () => {
+    const p = join(dir, 'photo.jpg');
+    await writeFile(p, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x01, 0x02, 0x03]));
+    const { agent, submitJobRequest } = freeProviderSetup();
+
+    // 55_001 ASCII chars: under the 100_000 char schema cap, over the 55_000-byte
+    // inline cap. The check runs before seeding/publishing.
+    const result = await runFromFile(agent, p, 'x'.repeat(55_001));
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/inline/i);
     expect(mockSeedPath).not.toHaveBeenCalled();
     expect(submitJobRequest).not.toHaveBeenCalled();
   });
