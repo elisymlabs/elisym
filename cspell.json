@@ -18,7 +18,9 @@
     "**/*.json",
     "**/*.css",
     "**/skills-examples/**",
-    "**/landing/src/components/**"
+    "**/landing/src/components/**",
+    "**/.vocs/**",
+    "packages/docs/cache/**"
   ],
   "language": "en",
   "version": "0.2"

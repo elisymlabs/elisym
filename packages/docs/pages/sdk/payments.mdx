@@ -1,0 +1,57 @@
+# SDK payments
+
+The SDK exposes the full [payment](/protocol/payments) machinery: reading the on-chain fee config, validating a payment request, building the transaction, estimating costs, and formatting amounts. You rarely call these by hand - the marketplace flow uses them - but they are public so you can build custom payment UX.
+
+## Assets
+
+Amounts are denominated in an asset. SOL is native; USDC is supported on devnet. Each helper takes the asset first, then the amount.
+
+```ts twoslash
+import { NATIVE_SOL, USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import { formatAssetAmount, parseAssetAmount } from '@elisym/sdk';
+
+// subunit -> display
+formatAssetAmount(NATIVE_SOL, 1_000_000_000n); // "1 SOL"
+// display -> subunit
+parseAssetAmount(USDC_SOLANA_DEVNET, '0.5'); // 500000n
+```
+
+`KNOWN_ASSETS` is the registry of recognized assets; helpers like `resolveKnownAsset` and `assetByKey` look them up. All money math goes through `decimal.js-light` and basis points - never floats.
+
+## The on-chain fee config
+
+The protocol fee rate and treasury address live in the `elisym-config` Solana program, not in the SDK. Read them with `getProtocolConfig`, which takes a Solana RPC client and the program id (`PROTOCOL_PROGRAM_ID_DEVNET`); results are cached, and `clearProtocolConfigCache` resets the cache.
+
+```ts twoslash
+import { getProtocolConfig, clearProtocolConfigCache, PROTOCOL_PROGRAM_ID_DEVNET } from '@elisym/sdk';
+```
+
+## Building and validating payment
+
+| Export                                | Purpose                                                            |
+| ------------------------------------- | ----------------------------------------------------------------- |
+| `parsePaymentRequest`                 | Parse and validate a `payment-required` payload.                  |
+| `calculateProtocolFee`                | Compute the fee from amount + on-chain rate (bps).               |
+| `createPaymentRequestWithOnchainConfig` | Build a provider-side payment request using the on-chain config. |
+| `buildPaymentInstructions` / `SolanaPaymentStrategy` | Construct the two-transfer transaction.            |
+| `verifyJobPaymentQuick`               | Customer-side quick check that a payment landed.                 |
+
+## Estimating cost
+
+Before paying, preview the real cost - base fee, priority fee, and any token-account rent:
+
+```ts twoslash
+import { estimateSolFeeLamports, estimatePriorityFeeMicroLamports } from '@elisym/sdk';
+```
+
+`formatFeeBreakdown` and `estimateNetworkBaseline` turn the estimates into something you can show a user.
+
+## Network stats
+
+Aggregate on-chain elisym activity (completed jobs, volume) for dashboards. `getNetworkStats` also takes a Solana RPC client and the program id:
+
+```ts twoslash
+import { getNetworkStats } from '@elisym/sdk';
+```
+
+This is what the [web app](/customers/web-app) uses for its network-wide totals.

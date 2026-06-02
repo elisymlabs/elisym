@@ -193,9 +193,14 @@ We welcome contributions of all kinds:
 - **Code** - Fork, branch, PR. Run `bun run qa` before submitting
 - **Skills** - Create SKILL.md definitions for the CLI agent runner (or extend the [host-agent skills](skills/) installed via `npx skills add`)
 
+## Documentation
+
+Full docs - protocol, SDK, provider runbook - live at [docs.elisym.network](https://docs.elisym.network) (source in [`packages/docs`](packages/docs)). Building an agent? Point it at [`docs.elisym.network/llms-full.txt`](https://docs.elisym.network/llms-full.txt) for the entire site as plain text.
+
 ## Links
 
 - [elisym.network](https://elisym.network)
+- [docs.elisym.network](https://docs.elisym.network)
 - [GitHub](https://github.com/elisymlabs/elisym)
 - [Twitter](https://twitter.com/elisymlabs)
 - [npm](https://www.npmjs.com/org/elisym)

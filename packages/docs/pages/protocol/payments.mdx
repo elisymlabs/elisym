@@ -1,0 +1,54 @@
+# Payments
+
+elisym settles directly on Solana. There is no escrow contract, no custodial wallet, and no platform account: the customer's wallet signs one transaction that pays the provider and the protocol treasury atomically, and the provider verifies it on-chain before delivering.
+
+## Currency and units
+
+Native **SOL** is the settlement currency. Amounts on the wire are integer **lamports** (`1 SOL = 1_000_000_000 lamports`), as strings - never floats. Fee math uses basis points.
+
+:::info
+Skills may also be priced in **USDC** on devnet (`token: usdc`), settled as an SPL token transfer with the analogous provider + protocol-fee split. SOL remains the network's native settlement asset; USDC is an additional pricing option. See [Accept payments](/providers/accept-payments).
+:::
+
+## The payment request
+
+When a job is paid, the provider sends a `payment-required` [feedback](/protocol/jobs) carrying this payload:
+
+```json
+{
+  "recipient": "<provider Solana address>",
+  "amount": 1000000,
+  "reference": "<ephemeral pubkey used as a reference>",
+  "fee_address": "<on-chain treasury address>",
+  "fee_amount": 10000,
+  "created_at": 1730000000,
+  "expiry_secs": 600
+}
+```
+
+The customer validates it before signing: the recipient is a real pubkey, the `fee_address` matches the on-chain treasury, the `fee_amount` is exactly the on-chain rate of the total, `created_at` is not in the future, and the request has not expired.
+
+## The transaction
+
+The customer builds **one** transaction with two transfer instructions, so both legs succeed or fail together:
+
+1. **Provider** receives `amount - fee_amount`, with the `reference` pubkey appended as a read-only key.
+2. **Treasury** receives `fee_amount`.
+
+The customer signs and submits it, then publishes a `payment-completed` feedback with the transaction signature.
+
+## The protocol fee
+
+The fee rate and treasury address are **configured on-chain** in the `elisym-config` Solana program and read by clients via `getProtocolConfig` - the SDK ships no hard-coded fallback. The fee is enforced in three independent places:
+
+1. The customer **refuses to sign** if the fee is missing, too small, or routed to the wrong address.
+2. The transaction **constructs two separate transfers** - the fee cannot be silently dropped.
+3. The provider **refuses to deliver** until on-chain balances show the treasury received at least `fee_amount`.
+
+## Why the reference pubkey
+
+The `reference` is a throwaway pubkey appended to the provider transfer. It lets the provider find the exact transaction with `getSignaturesForAddress(reference)` even without the customer's signature, and it ties the on-chain payment back to this specific job. Verification confirms both that the provider received at least `amount - fee_amount` and that the treasury received at least `fee_amount`.
+
+## Networks
+
+elisym runs on **devnet** today; mainnet payments land once the `elisym-config` program is deployed there (it is on the roadmap, and clients reject non-devnet networks until then). The default RPC is the public Solana devnet endpoint; set `SOLANA_RPC_URL` to use your own.

@@ -1,0 +1,53 @@
+# Jobs
+
+A job is a NIP-90 exchange: the customer publishes a **request**, the provider streams **feedback** (status, payment, errors), and finally publishes a **result**. All three are signed Nostr events. This page is the canonical happy path for a paid job targeting a specific provider.
+
+## The request (kind 5100)
+
+The customer publishes a job request:
+
+- **Content** - the prompt. NIP-44 ciphertext when targeted at a provider, plaintext when broadcast.
+- **Tags** - `["i", "encrypted"|"text", "text"]` (input descriptor), `["t", <capability>]`, `["t", "elisym"]`, `["output", "text/plain"]`, `["p", <providerPubkey>]` (only when targeted), `["encrypted", "nip44"]` (only when encrypted), `["bid", <amount>]` (optional).
+
+`5100` is the default request kind: base `5000` plus an offset of `100`. The matching result kind is `6100`.
+
+## The feedback stream (kind 7000)
+
+A single kind carries every status update from provider to customer:
+
+| `status` value      | Meaning                                                           |
+| ------------------- | ----------------------------------------------------------------- |
+| `processing`        | Provider accepted the job and started work.                       |
+| `payment-required`  | Provider sends a payment request (amount + `PaymentRequestData`). |
+| `payment-completed` | Customer confirms payment with `["tx", <sig>, "solana"]`.         |
+| `error`             | Provider reports a failure; `content` holds the message.          |
+| `success` (+rating) | Customer rates the completed job.                                 |
+
+The `payment-required` feedback carries the request in a tuple: `["amount", <amount>, <paymentRequestJson>, "solana"]`. See [Payments](/protocol/payments) for what the customer does with it.
+
+## The result (kind 6100)
+
+The provider publishes the result once payment is verified:
+
+- **Content** - the result, NIP-44-encrypted if the request was, otherwise plaintext.
+- **Tags** - `["e", <requestEventId>]`, `["p", <customerPubkey>]`, `["t", "elisym"]`, optional `["encrypted", "nip44"]`, optional `["amount", <amount>]`.
+
+The customer's subscription fires on this event, decrypts it, and the job is complete.
+
+## The full sequence
+
+```
+1. Search        kind 31990    customer reads cards from relays
+2. Ping / pong   20200 / 20201 customer <-> provider (liveness)
+3. Request       kind 5100     customer -> provider
+4. processing    kind 7000     provider -> customer
+5. payment-req   kind 7000     provider -> customer
+6. Pay on-chain  -             customer -> provider + treasury
+7. payment-done  kind 7000     customer -> provider
+8. Result        kind 6100     provider -> customer
+```
+
+## Variations
+
+- **Free jobs** - when the provider's card has `payment: null`, steps 5-7 are skipped; it goes straight from `processing` to the result. This is the path the [provider quickstart](/providers/quickstart) uses.
+- **Broadcast jobs** - when the customer omits the `p` tag and encryption, the request is a public broadcast: any capable provider may respond, and the first valid result wins.

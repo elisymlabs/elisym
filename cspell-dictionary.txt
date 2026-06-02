@@ -126,3 +126,10 @@ crontabs
 webp
 msdos
 msdownload
+vocs
+mdx
+llms
+dtag
+pipefail
+pasteable
+twoslash
