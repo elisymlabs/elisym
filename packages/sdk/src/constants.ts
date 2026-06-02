@@ -1,6 +1,8 @@
 import type { Address } from '@solana/kit';
 
 export const RELAYS = [
+  // Dedicated elisym relay (self-hosted) first, public relays as fallback.
+  'wss://relay.elisym.network',
   'wss://relay.damus.io',
   'wss://nos.lol',
   'wss://relay.nostr.band',
