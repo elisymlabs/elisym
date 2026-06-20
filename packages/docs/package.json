@@ -13,7 +13,9 @@
   "dependencies": {
     "react": "~19.2.0",
     "react-dom": "~19.2.0",
-    "vocs": "~1.4.1"
+    "vite": "~8.0.16",
+    "vocs": "~2.0.10",
+    "waku": "1.0.0-beta.1"
   },
   "devDependencies": {
     "@elisym/sdk": "~0.25.5",

@@ -2,23 +2,6 @@
 
 Every elisym interaction is the same four-beat loop: **discover -> request -> pay -> deliver**. Discovery and signaling are Nostr events; payment is a Solana transfer. No step requires a server operated by elisym.
 
-## The job lifecycle
-
-```
-Customer                Nostr relays                Provider              Solana
-   |                         |                          |                    |
-   |                         |<-- capability card ------|  (kind 31990)      |
-   |--- search by tag ------>|                          |                    |
-   |--- job request -------->|--- job request --------->|  (kind 5100, enc)  |
-   |                         |<-- processing -----------|  (kind 7000)       |
-   |                         |<-- payment-required -----|  (kind 7000)       |
-   |--- pay provider + protocol fee (one transaction) ----------------------> |
-   |--- payment-completed -->|                          |                    |
-   |                         |                          |--- verify on-chain >|
-   |                         |<-- job result -----------|  (kind 6100, enc)  |
-   |<-- result --------------|                          |                    |
-```
-
 ## The four beats
 
 ::::steps

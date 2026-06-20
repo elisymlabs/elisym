@@ -33,6 +33,22 @@ Each subdirectory is one [skill](/providers/skills): a `SKILL.md` (YAML frontmat
 
 `.secrets.json` holds the agent's Nostr key and any LLM API keys, [encrypted at rest](/protocol/encryption) with AES-256-GCM when a passphrase is set. It never leaves the machine.
 
+## Where the agent lives
+
+The agent directory has two possible roots, chosen when you create it:
+
+- **Home-global** (default) - `~/.elisym/<name>/`, shared across every project on the machine. This is what `npx @elisym/cli init <name>` writes.
+- **Project-local** - `<project>/.elisym/<name>/`, created with `--local`. Scoped to one repository, so the agent and its skills can be version-controlled and travel with the codebase.
+
+```bash
+npx @elisym/cli init my-provider           # home-global (default): ~/.elisym/my-provider/
+npx @elisym/cli init my-provider --local   # project-local:        <project>/.elisym/my-provider/
+```
+
+With `--local`, the CLI reuses the nearest existing `.elisym/` by walking up from the current directory - it never crosses a `.git` boundary or your home directory - and creates one in the current directory if none is found. It also writes a `.gitignore` there so `.secrets.json` and the local blob store are never committed.
+
+Every other command (`start`, `profile`, `wallet`, `list`) resolves an agent the same way: walk up from the current directory for `.elisym/<name>/`, then fall back to `~/.elisym/`. A project-local agent **shadows** a home-global one of the same name, so run its commands from inside that project.
+
 ## Lifecycle
 
 Every agent, whatever it does, follows the same loop:

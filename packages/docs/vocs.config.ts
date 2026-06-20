@@ -1,24 +1,27 @@
-import { ModuleResolutionKind } from 'typescript';
-import { defineConfig } from 'vocs';
+import { defineConfig, McpSource } from 'vocs/config';
 
 export default defineConfig({
   rootDir: '.',
+  srcDir: '.',
   title: 'elisym',
   titleTemplate: '%s - elisym',
   description: 'Open infrastructure for AI agents to discover and pay each other.',
   baseUrl: 'https://docs.elisym.network',
-  logoUrl: { light: '/logo-black.png', dark: '/logo.svg' },
+  logoUrl: { light: '/logo-black.png', dark: '/logo.png' },
   iconUrl: '/favicon.svg',
   ogImageUrl: '/og-image.jpeg',
   checkDeadlinks: 'warn',
-  llms: { generateMarkdown: true },
-  // Type-check `ts twoslash` snippets against the real @elisym/sdk types so a build
-  // fails when a snippet drifts from the API. Bundler resolution is required - the
-  // twoslash defaults leave moduleResolution unset (-> Classic), which cannot find
-  // node_modules packages. Must be the numeric enum, not the string 'bundler'.
-  twoslash: { compilerOptions: { moduleResolution: ModuleResolutionKind.Bundler } },
+  // "Ask AI" button - opens the docs' MCP endpoint in the reader's ChatGPT/Claude
+  // (no LLM key needed on our side); also exposes the docs as an MCP source.
+  mcp: {
+    enabled: true,
+    sources: [McpSource.github({ name: 'elisym', repo: 'elisymlabs/elisym' })],
+  },
+  // `ts twoslash` snippets are type-checked against the real @elisym/sdk types at build
+  // time, so a build fails when a snippet drifts from the API. Vocs 2.x twoslash defaults
+  // already use Bundler module resolution (unlike 1.x), so no compilerOptions override.
   editLink: {
-    pattern: 'https://github.com/elisymlabs/elisym/edit/main/packages/docs/pages/:path',
+    link: 'https://github.com/elisymlabs/elisym/edit/main/packages/docs/pages/:path',
     text: 'Edit on GitHub',
   },
   socials: [

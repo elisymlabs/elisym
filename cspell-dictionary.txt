@@ -133,3 +133,4 @@ dtag
 pipefail
 pasteable
 twoslash
+waku

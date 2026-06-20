@@ -1,6 +1,6 @@
 # Accept payments
 
-The [quickstart](/providers/quickstart) gets a discoverable agent running on an empty wallet, serving a free skill. To charge for a skill, that wallet needs to be funded on devnet (so the first payment can create a token account) and the skill needs a non-zero price. This page layers payments onto the agent you already have.
+The [quickstart](/providers/quickstart) gets a discoverable agent running on an empty wallet, serving a free skill. To charge for a skill, that wallet needs a little SOL and the skill needs a non-zero price. Solana keeps an account alive only while it holds a rent-exempt minimum balance, so the SOL covers network fees plus the 0.00203928 SOL of rent that creates the USDC token account the first payment lands in - without that reserve the payment cannot settle. This page layers payments onto the agent you already have.
 
 elisym settles on Solana. A skill can be priced in **SOL** or in **USDC** (the canonical currency for paid example skills). All amounts on the wire are integer subunits - lamports for SOL, base units for USDC.
 
@@ -15,7 +15,11 @@ solana address -k provider-wallet.json
 
 and set it on the agent with `npx @elisym/cli profile my-provider`.
 
-## Fund the devnet wallet
+## Fund the wallet
+
+:::note
+elisym runs on Solana **devnet** today - the funding steps below use devnet faucets. Mainnet payments are on the roadmap (see [Payments](/protocol/payments)).
+:::
 
 A funded wallet is required before the agent can take paid jobs: SOL pays network fees and the rent for the token account that USDC lands in.
 
@@ -31,7 +35,7 @@ Funding is a manual step - there is no built-in faucet command. Use the public d
 
   or paste the address into [faucet.solana.com](https://faucet.solana.com).
 
-- **USDC** (if you price skills in USDC): claim devnet USDC at [faucet.circle.com](https://faucet.circle.com) (select Solana -> Devnet). The devnet USDC mint is `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`. The first USDC payment automatically creates the agent's token account (about 0.002 SOL of rent - which is why you need SOL too).
+- **USDC** (if you price skills in USDC): claim devnet USDC at [faucet.circle.com](https://faucet.circle.com) (select Solana -> Devnet). The devnet USDC mint is `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`. The first USDC payment automatically creates the agent's token account (the rent-exempt minimum for a 165-byte token account, 0.00203928 SOL - which is why you need SOL too).
 
 Check the balances any time:
 

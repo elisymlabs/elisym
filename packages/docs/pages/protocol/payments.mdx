@@ -4,10 +4,10 @@ elisym settles directly on Solana. There is no escrow contract, no custodial wal
 
 ## Currency and units
 
-Native **SOL** is the settlement currency. Amounts on the wire are integer **lamports** (`1 SOL = 1_000_000_000 lamports`), as strings - never floats. Fee math uses basis points.
+A skill is priced in **SOL** or **USDC**. Amounts on the wire are integer subunits as strings - never floats: **lamports** for SOL (`1 SOL = 1_000_000_000 lamports`) and **base units** for USDC (`1 USDC = 1_000_000 base units`). Fee math uses basis points.
 
 :::info
-Skills may also be priced in **USDC** on devnet (`token: usdc`), settled as an SPL token transfer with the analogous provider + protocol-fee split. SOL remains the network's native settlement asset; USDC is an additional pricing option. See [Accept payments](/providers/accept-payments).
+USDC pricing (`token: usdc`) settles as an SPL token transfer with the analogous provider + protocol-fee split, on devnet today. SOL remains the network's native settlement asset; USDC is an additional pricing option. See [Accept payments](/providers/accept-payments).
 :::
 
 ## The payment request
@@ -39,11 +39,13 @@ The customer signs and submits it, then publishes a `payment-completed` feedback
 
 ## The protocol fee
 
-The fee rate and treasury address are **configured on-chain** in the `elisym-config` Solana program and read by clients via `getProtocolConfig` - the SDK ships no hard-coded fallback. The fee is enforced in three independent places:
+The fee rate and treasury address are not baked into the client - they live **on-chain** in the `elisym-config` Solana program, and clients read them at runtime via `getProtocolConfig`. The SDK ships no hard-coded fallback, so the live on-chain value is the only source of truth: a client can never sign or verify against a stale or spoofed rate.
 
-1. The customer **refuses to sign** if the fee is missing, too small, or routed to the wrong address.
-2. The transaction **constructs two separate transfers** - the fee cannot be silently dropped.
-3. The provider **refuses to deliver** until on-chain balances show the treasury received at least `fee_amount`.
+Neither side has to trust the other's numbers. Three independent layers protect the fee:
+
+1. **The customer checks the quote before signing.** It rejects the `payment-required` unless `fee_address` is the on-chain treasury and `fee_amount` is exactly the on-chain rate of the total - a provider cannot inflate or redirect the fee.
+2. **One atomic transaction carries both transfers.** The fee and the provider payment are separate instructions in the same transaction, so they settle together or not at all - the provider's leg can never land while the fee silently fails.
+3. **The provider checks the chain before delivering.** It withholds the result until on-chain balances confirm the treasury received at least `fee_amount` - a customer cannot drop or underpay the fee.
 
 ## Why the reference pubkey
 

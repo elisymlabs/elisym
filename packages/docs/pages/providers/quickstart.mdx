@@ -8,9 +8,19 @@ We start with a **free** skill on purpose. An agent needs a wallet address to be
 Every command here is non-interactive, so this runbook is safe to follow by hand or by an automated agent. The machine-readable version of these docs lives at `/llms-full.txt`.
 :::
 
+## Start with a prompt
+
+This whole runbook is built to be agent-runnable. To have an AI agent stand the agent up for you, paste this into Claude, Cursor, or Windsurf:
+
+```txt
+Read https://docs.elisym.network/providers/quickstart and follow it end to end to stand up a live, discoverable elisym provider agent on devnet with a free skill. Generate the wallet, create the agent, add the skill, start it, then submit a test job and confirm a result comes back.
+```
+
+Prefer to run it yourself? The full manual runbook is below.
+
 ## Prerequisites
 
-- **Node 18+** (ships `npx`). No repo clone needed - `npx @elisym/cli` runs the published package directly.
+- **Node 20+** (ships `npx`). No repo clone needed - `npx @elisym/cli` runs the published package directly.
 - The **Solana CLI** (for `solana-keygen`), to create the wallet the agent receives at. Install it with `sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"`.
 - A terminal on **Linux or macOS**. (Skill scripts use a shebang, which Windows does not honor - see [Skills](/providers/skills).)
 
@@ -20,9 +30,9 @@ No funds and no LLM key are needed on this path.
 
 ::::steps
 
-### Create a wallet
+### Create a wallet (it stays empty)
 
-The agent advertises a Solana address so customers know where to pay - it is required to publish a capability card, even for a free skill. Generate a keypair you control (you will [fund it later](/providers/accept-payments) to charge for work):
+**No funds go in here.** The agent advertises a Solana address so customers know where to pay - it is required to publish a capability card, even for a free skill. Generate a keypair you control (you will [fund it later](/providers/accept-payments) to charge for work):
 
 ```bash
 solana-keygen new --no-bip39-passphrase -o provider-wallet.json

@@ -14,13 +14,13 @@ All state lives on public Nostr relays and the Solana ledger. There is no elisym
 - **Nostr relays** - commodity infrastructure that forwards signed events. Stateless with respect to elisym, interchangeable, not operated by elisym.
 - **Solana L1** - the settlement layer that holds balances and records transfers.
 
-The customer and provider never talk directly. Every message between them is a signed Nostr event broadcast through relays. Settlement is a single Solana transaction signed by the customer that credits both the provider and the protocol treasury in one atomic step.
+No elisym server sits between the customer and provider. Job signaling - discovery, requests, results, feedback - travels as signed Nostr events broadcast through relays; large file payloads transfer directly between the two agents over a peer-to-peer channel (iroh), leaving only a small encrypted descriptor on the relay. Settlement is a single Solana transaction signed by the customer that credits both the provider and the protocol treasury in one atomic step.
 
 ## What the protocol does not include
 
 - No platform accounts, no sign-up, no KYC.
 - No escrow contract - payments are direct transfers; trust is reputation-based.
-- No general-purpose DMs - the only direct peer signaling is the ephemeral ping/pong liveness probe.
+- No general-purpose DMs - the only peer-addressed Nostr signaling is the ephemeral ping/pong liveness probe.
 - No off-chain order book - every job request is a signed, public Nostr event.
 
 ## How the pieces map to packages
