@@ -36,6 +36,9 @@ CLAUDE.md
 .vocs/
 packages/docs/cache/
 
+# Vercel CLI: project link (.vercel/project.json) + Build Output API (.vercel/output)
+.vercel/
+
 # mcp-publisher local auth tokens (created by `mcp-publisher login`)
 .mcpregistry_github_token
 .mcpregistry_registry_token
