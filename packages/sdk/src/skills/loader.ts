@@ -15,7 +15,8 @@ import { resolveInsidePath } from './path-safety';
 import { DEFAULT_SCRIPT_TIMEOUT_MS, ScriptSkill, type SkillToolDef } from './scriptSkill';
 import { StaticFileSkill } from './staticFileSkill';
 import { StaticScriptSkill } from './staticScriptSkill';
-import type { Skill, SkillLlmOverride, SkillMode } from './types';
+import type { Skill, SkillLlmOverride, SkillMode, X402SkillParams } from './types';
+import { X402ProxySkill } from './x402ProxySkill';
 
 const MAX_TOKENS_LIMIT = 200_000;
 
@@ -26,7 +27,17 @@ const VALID_MODES: readonly SkillMode[] = [
   'static-file',
   'static-script',
   'dynamic-script',
+  'x402',
 ] as const;
+
+/**
+ * Default ceiling on buyer input size for x402 skills (bytes). Conservative:
+ * upstream request-body limits are opaque (express.json defaults to 100KB,
+ * nginx to 1MiB) and an over-limit POST fails only AFTER the customer paid.
+ * Operators raise it per skill via `x402_max_input_bytes` when the upstream
+ * is known to accept more; hard cap is `LIMITS.MAX_REINLINE_TEXT_BYTES`.
+ */
+export const DEFAULT_X402_MAX_INPUT_BYTES = 100_000;
 
 export interface SkillFrontmatter {
   name?: unknown;
@@ -96,6 +107,23 @@ export interface SkillFrontmatter {
    * `execution_timeout_secs`, then to unlimited.
    */
   max_execution_secs?: unknown;
+  /** Required when mode === 'x402'. Upstream resource URL (https only). */
+  x402_url?: unknown;
+  /** HTTP method for the upstream call ('GET' | 'POST'). Default 'POST'. x402 mode only. */
+  x402_method?: unknown;
+  /** Query parameter carrying the buyer input. GET upstreams only; absent => skill takes no input. */
+  x402_query_param?: unknown;
+  /**
+   * Required when mode === 'x402'. Ceiling on the upstream quote in integer
+   * subunits of the upstream asset (recorded at `elisym x402 add` time). The
+   * host's payment layer refuses to sign anything above it.
+   */
+  x402_max_upstream?: unknown;
+  /**
+   * Ceiling on buyer input size in bytes (x402 mode only). Default
+   * `DEFAULT_X402_MAX_INPUT_BYTES`; hard cap `LIMITS.MAX_REINLINE_TEXT_BYTES`.
+   */
+  x402_max_input_bytes?: unknown;
 }
 
 export interface ParsedSkill {
@@ -152,6 +180,14 @@ export interface ParsedSkill {
    * then to unlimited.
    */
   executionTimeoutSecs?: number;
+  /** Set when mode === 'x402': the parsed `x402_*` frontmatter block. */
+  x402?: X402SkillParams;
+  /**
+   * True when the skill consumes no buyer input (x402 GET without a query
+   * param). Hosts mark the discovery card `static` so clients hide the input
+   * box instead of silently dropping what the buyer typed.
+   */
+  noInput?: boolean;
 }
 
 export interface LoaderLogger {
@@ -166,6 +202,14 @@ export interface LoadSkillsOptions {
    * false: paid-only (plugin's historical behaviour).
    */
   allowFreeSkills?: boolean;
+  /**
+   * When true, `mode: 'x402'` skills load. Default false: an x402 skill
+   * needs a host runtime that injects `SkillContext.x402` (the elisym CLI);
+   * an SDK-only host (e.g. the ElizaOS plugin) must fail at load time -
+   * NOT after a customer has paid for a job the skill cannot execute.
+   * `loadSkillsFromDir` then skips the skill with a warning.
+   */
+  allowX402Skills?: boolean;
   logger?: LoaderLogger;
 }
 
@@ -378,6 +422,14 @@ function validateLlmOverride(
     return undefined;
   }
 
+  if (mode === 'x402') {
+    // x402 skills call no LLM and spawn no script - there is no API key to
+    // health-monitor, so a declared pair would silently do nothing.
+    throw new Error(
+      `SKILL.md "${skillName}": "provider"/"model"/"max_tokens" are not valid in mode 'x402'`,
+    );
+  }
+
   if (hasMaxTokens && mode !== 'llm') {
     throw new Error(
       `SKILL.md "${skillName}": "max_tokens" is only valid in mode 'llm' (got '${mode}'). For script modes, control token limits inside the script.`,
@@ -549,6 +601,144 @@ function validateMaxExecutionSecs(skillName: string, raw: unknown): number | und
     );
   }
   return raw;
+}
+
+const X402_METHODS = ['GET', 'POST'] as const;
+
+/**
+ * Parse and validate the `x402_*` frontmatter block. Returns `undefined` for
+ * every non-x402 mode (throwing if any `x402_*` field is present there).
+ * For `mode: 'x402'` the whole block is rejected unless the host opted in
+ * via `allowX402Skills` - see `LoadSkillsOptions`.
+ */
+function validateX402Config(
+  skillName: string,
+  frontmatter: SkillFrontmatter,
+  mode: SkillMode,
+  options: LoadSkillsOptions,
+): X402SkillParams | undefined {
+  const fieldNames = [
+    'x402_url',
+    'x402_method',
+    'x402_query_param',
+    'x402_max_upstream',
+    'x402_max_input_bytes',
+  ] as const;
+  const presentFields = fieldNames.filter(
+    (field) => frontmatter[field] !== undefined && frontmatter[field] !== null,
+  );
+
+  if (mode !== 'x402') {
+    if (presentFields.length > 0) {
+      throw new Error(
+        `SKILL.md "${skillName}": "${presentFields[0]}" is only valid in mode 'x402'`,
+      );
+    }
+    return undefined;
+  }
+
+  if (!options.allowX402Skills) {
+    throw new Error(
+      `SKILL.md "${skillName}": x402 skills require the elisym CLI runtime; this host cannot execute mode 'x402'`,
+    );
+  }
+
+  if (typeof frontmatter.x402_url !== 'string' || frontmatter.x402_url.length === 0) {
+    throw new Error(`SKILL.md "${skillName}": mode 'x402' requires "x402_url" (string)`);
+  }
+  let url: URL;
+  try {
+    url = new URL(frontmatter.x402_url);
+  } catch {
+    throw new Error(`SKILL.md "${skillName}": "x402_url" is not a valid URL`);
+  }
+  // Loopback http is allowed so a locally-run x402 server (the guide's demo,
+  // test fixtures) can be bridged; anything remote must be https - payment
+  // headers over plain http leak to the network.
+  const isLoopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback)) {
+    throw new Error(
+      `SKILL.md "${skillName}": "x402_url" must be an https:// URL (plain http is allowed for localhost only)`,
+    );
+  }
+
+  let method: X402SkillParams['method'] = 'POST';
+  if (frontmatter.x402_method !== undefined && frontmatter.x402_method !== null) {
+    if (
+      typeof frontmatter.x402_method !== 'string' ||
+      !(X402_METHODS as readonly string[]).includes(frontmatter.x402_method)
+    ) {
+      throw new Error(
+        `SKILL.md "${skillName}": "x402_method" must be one of ${X402_METHODS.join(', ')}`,
+      );
+    }
+    method = frontmatter.x402_method as X402SkillParams['method'];
+  }
+
+  let queryParam: string | undefined;
+  if (frontmatter.x402_query_param !== undefined && frontmatter.x402_query_param !== null) {
+    if (method !== 'GET') {
+      throw new Error(
+        `SKILL.md "${skillName}": "x402_query_param" is only valid with x402_method 'GET' (POST maps the input to the request body)`,
+      );
+    }
+    if (
+      typeof frontmatter.x402_query_param !== 'string' ||
+      frontmatter.x402_query_param.length === 0
+    ) {
+      throw new Error(`SKILL.md "${skillName}": "x402_query_param" must be a non-empty string`);
+    }
+    if (url.searchParams.has(frontmatter.x402_query_param)) {
+      throw new Error(
+        `SKILL.md "${skillName}": "x402_query_param" ("${frontmatter.x402_query_param}") collides with a parameter already present in "x402_url"`,
+      );
+    }
+    queryParam = frontmatter.x402_query_param;
+  }
+
+  const rawMaxUpstream = frontmatter.x402_max_upstream;
+  if (rawMaxUpstream === undefined || rawMaxUpstream === null) {
+    throw new Error(
+      `SKILL.md "${skillName}": mode 'x402' requires "x402_max_upstream" (integer subunits - the ceiling on the upstream quote)`,
+    );
+  }
+  let maxUpstreamSubunits: bigint;
+  if (typeof rawMaxUpstream === 'number' && Number.isSafeInteger(rawMaxUpstream)) {
+    maxUpstreamSubunits = BigInt(rawMaxUpstream);
+  } else if (typeof rawMaxUpstream === 'string' && /^[0-9]+$/.test(rawMaxUpstream)) {
+    maxUpstreamSubunits = BigInt(rawMaxUpstream);
+  } else {
+    throw new Error(
+      `SKILL.md "${skillName}": "x402_max_upstream" must be a non-negative integer (subunits)`,
+    );
+  }
+  if (maxUpstreamSubunits <= 0n) {
+    throw new Error(`SKILL.md "${skillName}": "x402_max_upstream" must be > 0`);
+  }
+
+  let maxInputBytes = DEFAULT_X402_MAX_INPUT_BYTES;
+  if (frontmatter.x402_max_input_bytes !== undefined && frontmatter.x402_max_input_bytes !== null) {
+    const raw = frontmatter.x402_max_input_bytes;
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+      throw new Error(
+        `SKILL.md "${skillName}": "x402_max_input_bytes" must be a positive integer (bytes)`,
+      );
+    }
+    if (raw > LIMITS.MAX_REINLINE_TEXT_BYTES) {
+      throw new Error(
+        `SKILL.md "${skillName}": "x402_max_input_bytes" must be <= ${LIMITS.MAX_REINLINE_TEXT_BYTES} (inputs above it never reach the skill as text)`,
+      );
+    }
+    maxInputBytes = raw;
+  }
+
+  return {
+    url: frontmatter.x402_url,
+    method,
+    queryParam,
+    maxUpstreamSubunits,
+    maxInputBytes,
+  };
 }
 
 export function validateSkillFrontmatter(
@@ -766,6 +956,7 @@ export function validateSkillFrontmatter(
     frontmatter.name,
     frontmatter.max_execution_secs,
   );
+  const x402 = validateX402Config(frontmatter.name, frontmatter, mode, options);
 
   return {
     name: frontmatter.name,
@@ -789,6 +980,9 @@ export function validateSkillFrontmatter(
     inputText,
     rateLimit,
     executionTimeoutSecs,
+    x402,
+    noInput:
+      x402 === undefined ? undefined : x402.method === 'GET' && x402.queryParam === undefined,
   };
 }
 
@@ -875,6 +1069,23 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
       return parsed.mode === 'dynamic-script'
         ? new DynamicScriptSkill({ ...scriptParams, outputMime: parsed.outputMime })
         : new StaticScriptSkill(scriptParams);
+    }
+    case 'x402': {
+      if (parsed.x402 === undefined) {
+        throw new Error(
+          `SKILL.md "${parsed.name}": internal error - x402 config missing for mode 'x402'`,
+        );
+      }
+      return new X402ProxySkill({
+        name: parsed.name,
+        description: parsed.description,
+        capabilities: parsed.capabilities,
+        priceSubunits: parsed.priceSubunits,
+        asset: parsed.asset,
+        x402: parsed.x402,
+        image: parsed.image,
+        imageFile,
+      });
     }
   }
 }

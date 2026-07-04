@@ -4,9 +4,9 @@
 
 import { toDTag, type Asset } from '@elisym/sdk';
 import type { SkillRateLimit } from '@elisym/sdk/llm-health';
-import type { SkillLlmOverride, SkillMode } from '@elisym/sdk/skills';
+import type { SkillLlmOverride, SkillMode, X402SkillParams } from '@elisym/sdk/skills';
 
-export type { SkillLlmOverride, SkillMode, SkillRateLimit };
+export type { SkillLlmOverride, SkillMode, SkillRateLimit, X402SkillParams };
 
 /**
  * Resolved (provider, model, maxTokens) triple for an LLM-mode skill.
@@ -66,9 +66,48 @@ export interface SkillContext {
    * `llmOverride` (or undefined for the agent default).
    */
   getLlm?: (override?: SkillLlmOverride) => LlmClient | undefined;
+  /**
+   * x402 protocol driver for `mode: 'x402'` skills. Wired by `start.ts`
+   * when at least one x402 skill loads (implementation: `src/x402/driver.ts`).
+   * Named `x402Driver` (not `x402`) so the CLI context stays structurally
+   * assignable to the SDK's `SkillContext`, whose `x402` slot has a
+   * different (SDK-side) driver shape.
+   */
+  x402Driver?: X402JobDriver;
   agentName: string;
   agentDescription: string;
   signal?: AbortSignal;
+}
+
+/** What the x402 driver needs to know about the skill behind a job. */
+export interface X402SkillJob {
+  skillName: string;
+  params: X402SkillParams;
+  /** elisym-side price in subunits of `asset` (the customer-facing price). */
+  priceSubunits: number;
+  asset: Asset;
+}
+
+/**
+ * The x402 protocol driver contract. All money-touching logic lives behind
+ * it: payment signing with requirement policies, the pre-payment preflight,
+ * the idempotency cache and error classification. Kept as an interface here
+ * so the skill layer stays import-cycle-free from `src/x402/`.
+ */
+export interface X402JobDriver {
+  /**
+   * Pre-payment gate: wallet invariant, live 402 quote vs ceiling, float
+   * balance, live margin, input-size rules. Throws (`X402PreflightError`)
+   * to refuse the job BEFORE the customer pays. A cached completed result
+   * short-circuits to success - delivery needs neither float nor upstream.
+   */
+  preflight(job: X402SkillJob, input: SkillInput): Promise<void>;
+  /** Paid upstream call, or the cached result for this jobId. */
+  execute(
+    job: X402SkillJob,
+    input: SkillInput,
+    signal?: AbortSignal,
+  ): Promise<{ data: string; outputMime?: string; filePath?: string }>;
 }
 
 export interface LlmClient {
@@ -178,6 +217,22 @@ export interface Skill {
    * dynamic-script only). Discovery hint published in the capability card.
    */
   inputText?: 'required' | 'optional' | 'none';
+  /** Parsed `x402_*` frontmatter (mode 'x402' only). Read by the runtime's pre-payment input rules. */
+  x402?: X402SkillParams;
+  /**
+   * True when the skill consumes no buyer input (x402 GET without a query
+   * param). `buildCard` marks the discovery card `static` so clients hide
+   * the input box instead of silently dropping what the buyer typed.
+   */
+  noInput?: boolean;
+  /**
+   * Optional pre-payment gate. The runtime calls it BEFORE `recordPaid` /
+   * payment collection (and in the recovery path BEFORE a retry slot is
+   * consumed); throwing refuses/defers the job without touching customer
+   * funds. `input.filePath` is never set here - file inputs are fetched
+   * only after payment.
+   */
+  preflight?(input: SkillInput, ctx: SkillContext): Promise<void>;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;
 }
 

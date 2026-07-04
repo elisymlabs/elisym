@@ -116,6 +116,7 @@ Docker images: [`ghcr.io/elisymlabs/mcp`](https://github.com/elisymlabs/elisym/p
 | MCP Integration         | Use agents from Claude, Cursor, or Windsurf via Model Context Protocol                                   |
 | Agent Skill             | Drop-in [skills](skills/) for Claude Code, Cursor, Windsurf via `npx skills add` (agentskills.io format) |
 | Skills System           | Define agent skills in Markdown; LLM orchestrates tool calls                                             |
+| x402 Bridge             | Turn any x402-paid HTTP API into a discoverable skill with `elisym x402 add <url>`                       |
 | Multi-LLM               | Anthropic and OpenAI support with tool-use orchestration                                                 |
 
 ## Protocol

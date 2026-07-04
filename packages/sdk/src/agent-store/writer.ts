@@ -15,6 +15,9 @@ import { renderInitialYaml } from './template';
 /** Bare per-agent `.iroh/` store dir; ignored at any depth under `.elisym/`. */
 const IROH_GITIGNORE_ENTRY = '.iroh/';
 
+/** x402 bridge idempotency cache: upstream payment attempts + bought results. */
+const X402_GITIGNORE_ENTRIES = ['.x402-jobs.json', '.x402-results/'] as const;
+
 const GITIGNORE_CONTENT = [
   '# elisym private state - do not commit.',
   '.secrets.json',
@@ -24,17 +27,19 @@ const GITIGNORE_CONTENT = [
   '.customer-history.json',
   '.contacts.json',
   IROH_GITIGNORE_ENTRY,
+  ...X402_GITIGNORE_ENTRIES,
   '',
 ].join('\n');
 
 /**
- * Ensure the project-local `.elisym/.gitignore` ignores the iroh blob store.
- * Idempotent migration for agents created before `.iroh/` was added to the
- * default ignore list; a no-op when no `.gitignore` exists (e.g. home-global,
- * which relies on directory permissions instead). The iroh store holds job
- * payloads in cleartext, so it must never be committed.
+ * Idempotently append missing entries to an existing `.gitignore`. A no-op
+ * when the file does not exist (e.g. home-global agents, which rely on
+ * directory permissions instead).
  */
-export async function ensureGitignoreHasIrohEntry(elisymRoot: string): Promise<void> {
+async function ensureGitignoreHasEntries(
+  elisymRoot: string,
+  entries: readonly string[],
+): Promise<void> {
   const gitignorePath = join(elisymRoot, '.gitignore');
   let current: string;
   try {
@@ -42,14 +47,36 @@ export async function ensureGitignoreHasIrohEntry(elisymRoot: string): Promise<v
   } catch {
     return;
   }
-  const hasEntry = current.split('\n').some((line) => line.trim() === IROH_GITIGNORE_ENTRY);
-  if (hasEntry) {
+  const existing = new Set(current.split('\n').map((line) => line.trim()));
+  const missing = entries.filter((entry) => !existing.has(entry));
+  if (missing.length === 0) {
     return;
   }
   const separator = current.length === 0 || current.endsWith('\n') ? '' : '\n';
-  await writeFile(gitignorePath, `${current}${separator}${IROH_GITIGNORE_ENTRY}\n`, {
+  await writeFile(gitignorePath, `${current}${separator}${missing.join('\n')}\n`, {
     mode: 0o644,
   });
+}
+
+/**
+ * Ensure the project-local `.elisym/.gitignore` ignores the iroh blob store.
+ * Idempotent migration for agents created before `.iroh/` was added to the
+ * default ignore list. The iroh store holds job payloads in cleartext, so it
+ * must never be committed.
+ */
+export async function ensureGitignoreHasIrohEntry(elisymRoot: string): Promise<void> {
+  await ensureGitignoreHasEntries(elisymRoot, [IROH_GITIGNORE_ENTRY]);
+}
+
+/**
+ * Ensure the project-local `.elisym/.gitignore` ignores the x402 bridge
+ * cache. Idempotent migration for agents created before the x402 mode
+ * existed - `elisym x402 add` targets existing agents by definition, whose
+ * `.gitignore` was written at create time and never gains new defaults.
+ * The cache holds customer job inputs/results and upstream payment history.
+ */
+export async function ensureGitignoreHasX402Entries(elisymRoot: string): Promise<void> {
+  await ensureGitignoreHasEntries(elisymRoot, X402_GITIGNORE_ENTRIES);
 }
 
 export interface CreateAgentDirOptions {

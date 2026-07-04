@@ -66,6 +66,12 @@ export interface SkillContext {
    * `llmOverride` (or undefined for the agent default).
    */
   getLlm?: (override?: SkillLlmOverride) => LlmClient | undefined;
+  /**
+   * x402 protocol driver for `mode: 'x402'` skills. Injected by the elisym
+   * CLI runtime; absent in SDK-only hosts (which also refuse to LOAD x402
+   * skills - see `LoadSkillsOptions.allowX402Skills`).
+   */
+  x402?: X402Invoker;
   agentName: string;
   agentDescription: string;
   signal?: AbortSignal;
@@ -77,10 +83,73 @@ export interface SkillContext {
  * - `static-file`: return the contents of a fixed file. No input required.
  * - `static-script`: spawn a script with no stdin. No input required.
  * - `dynamic-script`: spawn a script and pipe the user's input to stdin.
+ * - `x402`: proxy the job to an x402-paid HTTP upstream; the host runtime pays
+ *   the upstream from the agent's wallet. Requires an x402-capable host (the
+ *   elisym CLI) that injects `SkillContext.x402` - gated at load time via
+ *   `LoadSkillsOptions.allowX402Skills`.
  *
- * Static modes set `card.static = true` so the webapp hides its input box.
+ * Static modes (and an x402 GET skill without a query param) set
+ * `card.static = true` so the webapp hides its input box.
  */
-export type SkillMode = 'llm' | 'static-file' | 'static-script' | 'dynamic-script';
+export type SkillMode = 'llm' | 'static-file' | 'static-script' | 'dynamic-script' | 'x402';
+
+/**
+ * Static configuration of an x402 bridge skill, parsed from SKILL.md
+ * frontmatter (`x402_*` fields). All money values are integer subunits.
+ */
+export interface X402SkillParams {
+  /** Upstream resource URL (https only). */
+  url: string;
+  /** HTTP method for the upstream call. Buyer input maps to the POST body or a GET query param. */
+  method: 'GET' | 'POST';
+  /** Query parameter carrying the buyer input (GET only). Absent on GET => the skill takes no input. */
+  queryParam?: string;
+  /**
+   * Ceiling on the upstream quote in subunits of the upstream asset. The
+   * host's payment layer must refuse to sign anything above it - this is the
+   * operator's wallet protection against upstream repricing.
+   */
+  maxUpstreamSubunits: bigint;
+  /**
+   * Ceiling on the buyer input size in bytes (inline UTF-8 length, or an
+   * attachment's declared size). Enforced by the host BEFORE the customer
+   * pays - upstream request-body limits are opaque, so an oversized input
+   * would otherwise fail deterministically after payment.
+   */
+  maxInputBytes: number;
+}
+
+/** Upstream response mapped by Content-Type: text inline, anything else as a file. */
+export interface X402ProxyResult {
+  data: string;
+  outputMime?: string;
+  /**
+   * Set for a non-text upstream body. The file is owned by the host's
+   * idempotency cache (delivery source for crash recovery) - the skill must
+   * NOT attach a cleanup callback for it; the cache's TTL sweep deletes it.
+   */
+  filePath?: string;
+}
+
+/**
+ * Host-provided x402 protocol driver. Implemented by the elisym CLI runtime
+ * (payment signing, requirement policies, idempotency, error classification
+ * all live host-side); the SDK's `X402ProxySkill` only delegates to it.
+ */
+export interface X402Invoker {
+  /**
+   * Pre-payment gate: verify the wallet invariant, probe the live 402 quote
+   * against `maxUpstreamSubunits`, check balance/margin and the input-size
+   * rules. Throws to refuse the job before the customer pays.
+   */
+  preflight(params: X402SkillParams, input: SkillInput): Promise<void>;
+  /** Perform the paid upstream call (or return a cached result for this jobId). */
+  execute(
+    params: X402SkillParams,
+    input: SkillInput,
+    signal?: AbortSignal,
+  ): Promise<X402ProxyResult>;
+}
 
 export interface ToolDef {
   name: string;
@@ -146,5 +215,13 @@ export interface Skill {
   llmOverride?: SkillLlmOverride;
   image?: string;
   imageFile?: string;
+  /**
+   * Optional pre-payment gate. The runtime calls it BEFORE the customer pays
+   * (and before the job enters the ledger); throwing refuses the job with an
+   * error feedback and no payment. `input` is the pre-payment view: inline
+   * text, tags and jobId only - a file input is fetched after payment, so
+   * `filePath` is never set here.
+   */
+  preflight?(input: SkillInput, ctx: SkillContext): Promise<void>;
   execute(input: SkillInput, ctx: SkillContext): Promise<SkillOutput>;
 }

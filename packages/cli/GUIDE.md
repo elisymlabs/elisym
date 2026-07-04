@@ -84,6 +84,7 @@ Skill runtime executes the task:
   - mode: static-file    -> read a fixed file
   - mode: static-script  -> spawn a script, no input
   - mode: dynamic-script -> spawn a script, pipe buyer's input to stdin
+  - mode: x402           -> proxy to an x402-paid HTTP upstream, paid per job
         |
 Result is published back to Nostr
 ```
@@ -194,6 +195,8 @@ script: ./scripts/upper.sh
 ```
 
 `output_file` and `script` must stay inside the skill directory. Static modes (`static-file`, `static-script`) advertise themselves with `static: true` so the webapp hides the input box; `dynamic-script` keeps it. When **every** loaded skill is non-LLM, `npx @elisym/cli start` does not require an LLM API key.
+
+There is also a fully managed proxy mode: `mode: x402` bridges an [x402-paid](https://www.x402.org) HTTP endpoint into a skill - the runtime pays the upstream from the agent wallet per job, with a signing ceiling, a pre-payment preflight and an idempotency cache. Generate one with `npx @elisym/cli x402 add <url>`; full guide: `packages/docs/pages/providers/bridge-x402.mdx` (docs.elisym.network/providers/bridge-x402).
 
 ### A few things to know about `command`
 

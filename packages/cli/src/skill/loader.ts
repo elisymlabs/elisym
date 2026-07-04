@@ -17,6 +17,7 @@ import {
 } from '@elisym/sdk/skills';
 import { DynamicScriptSkill, StaticFileSkill, StaticScriptSkill } from './non-llm-skills.js';
 import { ScriptSkill } from './script-skill.js';
+import { X402Skill } from './x402-skill.js';
 import type { Skill } from './index.js';
 
 function buildCliSkill(
@@ -120,6 +121,26 @@ function buildCliSkill(
           : new StaticScriptSkill(scriptParams);
       break;
     }
+    case 'x402': {
+      if (parsed.x402 === undefined) {
+        throw new Error(
+          `SKILL.md "${parsed.name}": internal error - x402 config missing for mode 'x402'`,
+        );
+      }
+      skill = new X402Skill({
+        name: parsed.name,
+        description: parsed.description,
+        capabilities: parsed.capabilities,
+        priceSubunits: Number(parsed.priceSubunits),
+        asset: parsed.asset,
+        x402: parsed.x402,
+        noInput: parsed.noInput === true,
+        image: parsed.image,
+        imageFile: safeImageFile,
+        dir: entryPath,
+      });
+      break;
+    }
   }
   if (parsed.rateLimit) {
     skill.rateLimit = parsed.rateLimit;
@@ -166,6 +187,9 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions 
       const { frontmatter, systemPrompt } = parseSkillMd(content);
       const parsed = validateSkillFrontmatter(frontmatter, systemPrompt, {
         allowFreeSkills: true,
+        // The CLI runtime wires an x402 driver into the skill context, so
+        // x402 skills are executable here (SDK-only hosts reject them).
+        allowX402Skills: true,
       });
       skills.push(buildCliSkill(parsed, entryPath, options.scriptEnv));
     } catch (e: unknown) {

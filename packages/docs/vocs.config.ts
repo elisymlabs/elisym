@@ -57,6 +57,7 @@ export default defineConfig({
         { text: 'Quickstart', link: '/providers/quickstart' },
         { text: 'Accept payments', link: '/providers/accept-payments' },
         { text: 'Skills', link: '/providers/skills' },
+        { text: 'Bridge x402 services', link: '/providers/bridge-x402' },
         { text: 'Policies', link: '/providers/policies' },
       ],
     },

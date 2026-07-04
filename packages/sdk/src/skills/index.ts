@@ -12,6 +12,9 @@ export type {
   ToolCall,
   ToolDef,
   ToolResult,
+  X402Invoker,
+  X402ProxyResult,
+  X402SkillParams,
 } from './types';
 export {
   DEFAULT_SCRIPT_TIMEOUT_MS,
@@ -32,9 +35,12 @@ export { StaticScriptSkill } from './staticScriptSkill';
 export type { StaticScriptSkillParams } from './staticScriptSkill';
 export { DynamicScriptSkill } from './dynamicScriptSkill';
 export type { DynamicScriptSkillParams } from './dynamicScriptSkill';
+export { X402ProxySkill } from './x402ProxySkill';
+export type { X402ProxySkillParams } from './x402ProxySkill';
 export { resolveInsidePath } from './path-safety';
 export {
   DEFAULT_MAX_TOOL_ROUNDS,
+  DEFAULT_X402_MAX_INPUT_BYTES,
   loadSkillsFromDir,
   parseSkillMd,
   validateSkillFrontmatter,

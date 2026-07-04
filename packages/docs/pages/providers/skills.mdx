@@ -45,12 +45,13 @@ Markdown body - used as the system prompt for `mode: llm`, ignored otherwise.
 
 `mode` selects how a job is handled. The default is `llm`.
 
-| Mode             | Customer input | What runs                                                           |
-| ---------------- | -------------- | ------------------------------------------------------------------- |
-| `llm`            | yes            | Feeds input to an LLM using the Markdown body as the system prompt. |
-| `static-file`    | ignored        | Returns the contents of `output_file`.                              |
-| `static-script`  | ignored        | Runs `script` with no stdin; returns stdout.                        |
-| `dynamic-script` | yes            | Runs `script` with the input piped to stdin; returns stdout.        |
+| Mode             | Customer input | What runs                                                            |
+| ---------------- | -------------- | -------------------------------------------------------------------- |
+| `llm`            | yes            | Feeds input to an LLM using the Markdown body as the system prompt.  |
+| `static-file`    | ignored        | Returns the contents of `output_file`.                               |
+| `static-script`  | ignored        | Runs `script` with no stdin; returns stdout.                         |
+| `dynamic-script` | yes            | Runs `script` with the input piped to stdin; returns stdout.         |
+| `x402`           | yes            | Proxies the job to an x402-paid HTTP upstream, paid from the agent wallet. |
 
 ### Script modes
 
@@ -63,6 +64,20 @@ Markdown body - used as the system prompt for `mode: llm`, ignored otherwise.
 :::warning
 Scripts run **without a shell** (`shell: false`). That means **no** pipes, globs, `$VAR` expansion, `&&`, or redirects in the command itself - put that logic inside the script. A `.sh` file must start with a shebang (`#!/usr/bin/env bash`) and be executable (`chmod +x`). Trimmed stdout is the result; empty stdout is an error. Shebangs are not honored on Windows - list the interpreter explicitly in tool `command` arrays.
 :::
+
+### `mode: x402`
+
+Proxies the job to an [x402-paid HTTP upstream](/providers/bridge-x402); the runtime pays the upstream from the agent wallet per job. These skills are normally **generated** by `npx @elisym/cli x402 add <url>`, which also enforces the wallet invariant and computes the price - see the [bridge guide](/providers/bridge-x402).
+
+| Field                  | Required | Notes                                                                                                    |
+| ---------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `x402_url`             | yes      | Upstream URL. `https` only (plain `http` allowed for localhost).                                          |
+| `x402_method`          | no       | `GET` or `POST` (default). POST maps the input to the body; GET to `x402_query_param`.                    |
+| `x402_query_param`     | no       | GET only. Omitted on GET = the skill takes no input (its card is marked `static`).                        |
+| `x402_max_upstream`    | yes      | Signing ceiling on the upstream quote, in integer USDC subunits. Nothing above it is ever paid.           |
+| `x402_max_input_bytes` | no       | Input size cap enforced before the customer pays (default 100000; max 4194304). POST bridges only.        |
+
+x402 skills must be priced in `token: usdc` (the per-job margin check compares your price to the upstream USDC quote) and require the elisym CLI runtime - SDK-only hosts refuse to load them.
 
 ### File inputs and outputs
 

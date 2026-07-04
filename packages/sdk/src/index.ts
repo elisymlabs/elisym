@@ -108,6 +108,12 @@ export {
   formatAssetAmount,
 } from './payment/assets';
 export type { Asset, Chain } from './payment/assets';
+export {
+  encodeSecretKeyBase58,
+  exportKeyPairBytes,
+  generateSolanaWallet,
+  signerFromSecretKeyBase58,
+} from './payment/wallet';
 
 // --- On-chain protocol config ---
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
