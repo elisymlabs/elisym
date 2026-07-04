@@ -18,6 +18,7 @@ type Page =
   | { path: '/protocol/overview'; render: 'static' }
   | { path: '/protocol/payments'; render: 'static' }
   | { path: '/providers/accept-payments'; render: 'static' }
+  | { path: '/providers/bridge-x402'; render: 'static' }
   | { path: '/providers/policies'; render: 'static' }
   | { path: '/providers/quickstart'; render: 'static' }
   | { path: '/providers/skills'; render: 'static' }
