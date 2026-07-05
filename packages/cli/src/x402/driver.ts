@@ -4,8 +4,10 @@
  * requirements policy as the wallet guard (nothing above the skill's ceiling
  * is ever signed, regardless of what the upstream re-quotes); the preflight
  * protects the CUSTOMER by refusing doomed jobs before they pay; the
- * idempotency store bounds the operator's worst case at
- * `X402_MAX_PAID_ATTEMPTS` upstream prices per job.
+ * idempotency store bounds the operator's steady-state worst case at
+ * `X402_MAX_PAID_ATTEMPTS` upstream prices per job, and the adversarial
+ * worst case (an upstream that settles payments while answering 402 to farm
+ * attempt refunds) at `X402_MAX_PAYMENT_SIGNATURES` prices.
  *
  * NOTE: no `onPaymentResponse` / scheme hooks are registered here - on
  * purpose. The fetch wrapper has a dormant `result.recovered` branch that
@@ -31,11 +33,14 @@ import { ExactSvmScheme } from '@x402/svm';
 import { fetchUsdcBalance } from '../helpers.js';
 import type { SkillInput, X402JobDriver, X402SkillJob } from '../skill/index.js';
 import {
+  X402_FREE_RETRY_DELAYS_MS,
   X402_GET_INPUT_MAX_ENCODED_BYTES,
   X402_MAX_CHALLENGE_BYTES,
   X402_MAX_PAID_ATTEMPTS,
+  X402_MAX_PAYMENT_SIGNATURES,
   X402_MAX_RESPONSE_BYTES,
   X402_PROBE_TTL_MS,
+  X402_REFUNDED_RETRIES,
   X402_SOLANA_DEVNET_CAIP2,
   X402_SOLANA_DEVNET_V1,
 } from './constants.js';
@@ -54,6 +59,8 @@ export interface X402DriverOptions {
   /** Live protocol fee accessor (bps) - fetched fresh, mirrors `collectPayment`. */
   getFeeBps: () => Promise<number>;
   log?: (message: string) => void;
+  /** Backoff override for inline money-free retries (tests); defaults to `X402_FREE_RETRY_DELAYS_MS`. */
+  freeRetryDelaysMs?: number[];
 }
 
 const CUSTOMER_INPUT_TOO_LARGE = 'Input too large for this skill.';
@@ -134,6 +141,30 @@ async function capChallengeResponse(response: Response): Promise<Response> {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
+  });
+}
+
+/** Per-attempt flag: flips the moment a payment claim is granted (i.e. just before a signed payment leaves). */
+interface AttemptState {
+  paymentSent: boolean;
+}
+
+/** Sleep between inline retries; resolves `false` early if the signal aborts. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -287,20 +318,33 @@ export class X402Driver implements X402JobDriver {
    * claims a budget slot, and it does so ATOMICALLY: `claimPaidAttempt`
    * increments-or-refuses inside the store's serialization queue, so no set
    * of concurrent `execute()` flows for one jobId can each pass a stale
-   * check and pay past the 2x bound. A refusal throws BEFORE `globalThis.fetch`
-   * so no payment is sent.
+   * check and pay past the budget caps. A refusal throws BEFORE
+   * `globalThis.fetch` so no payment is sent.
    */
-  private buildInstrumentedFetch(jobId: string): typeof globalThis.fetch {
+  private buildInstrumentedFetch(
+    jobId: string,
+    attemptState: AttemptState,
+  ): typeof globalThis.fetch {
     const store = this.store;
     return async function instrumentedFetch(info, init) {
       const request = new Request(info, init);
       if (request.headers.has('PAYMENT-SIGNATURE') || request.headers.has('X-PAYMENT')) {
-        const claim = await store.claimPaidAttempt(jobId, X402_MAX_PAID_ATTEMPTS);
+        const claim = await store.claimPaidAttempt(
+          jobId,
+          X402_MAX_PAID_ATTEMPTS,
+          X402_MAX_PAYMENT_SIGNATURES,
+        );
         if (!claim.granted) {
           throw new X402PermanentError(
-            `paid attempt budget exhausted (${claim.attempts}/${X402_MAX_PAID_ATTEMPTS}) - refusing to pay the upstream again`,
+            claim.refusedBy === 'signatures'
+              ? `signed payment budget exhausted (${claim.signatures}/${X402_MAX_PAYMENT_SIGNATURES} payments signed for this job) - refusing to sign another`
+              : `paid attempt budget exhausted (${claim.attempts}/${X402_MAX_PAID_ATTEMPTS}) - refusing to pay the upstream again`,
           );
         }
+        // Set BEFORE the request goes out: if the send itself fails we do not
+        // know whether the upstream saw (and can settle) the payment, so the
+        // attempt must count as money-unknown, never as money-free.
+        attemptState.paymentSent = true;
       }
       // `redirect: 'error'`: the upstream is untrusted. Auto-following a 3xx
       // would send the request - including the signed PAYMENT-SIGNATURE on the
@@ -347,10 +391,10 @@ export class X402Driver implements X402JobDriver {
 
   private classifyStatus(status: number): Error {
     if (status === 402) {
-      return new X402TransientError('upstream still returned 402 after a payment attempt');
+      return new X402TransientError('upstream still returned 402 after a payment attempt', status);
     }
     if (status === 429 || status >= 500) {
-      return new X402TransientError(`upstream returned ${status}`);
+      return new X402TransientError(`upstream returned ${status}`, status);
     }
     return new X402PermanentError(`upstream returned ${status}`);
   }
@@ -403,9 +447,100 @@ export class X402Driver implements X402JobDriver {
 
     const signer = await this.assertWalletInvariant();
     const rule: RequirementRule = { maxUpstreamSubunits: job.params.maxUpstreamSubunits };
+    const client = this.buildClient(signer, rule);
+    const jobTag = input.jobId.slice(0, 8);
+
+    // Inline retry loop: a transient failure that provably cost no money is
+    // retried here after a short backoff instead of waiting a full recovery
+    // cycle; a definitive 402 payment refusal refunds its budget slot (an
+    // honest upstream did not settle) and retries once with a freshly signed
+    // payment - the honest cause is a blockhash that expired while a slow
+    // upstream served before settling. Money-unknown transients (network
+    // error or 5xx AFTER a payment left) never retry inline: only the
+    // recovery loop, with its delay and cache-first re-execution, owns them.
+    let freeRetriesUsed = 0;
+    let refundedRetriesUsed = 0;
+    while (true) {
+      const attemptState: AttemptState = { paymentSent: false };
+      try {
+        return await this.attemptUpstream(
+          job,
+          requestUrl,
+          headers,
+          body,
+          input.jobId,
+          client,
+          attemptState,
+          signal,
+        );
+      } catch (error) {
+        if (!(error instanceof X402TransientError)) {
+          throw error;
+        }
+        if (attemptState.paymentSent) {
+          if (error.upstreamStatus !== 402) {
+            throw error;
+          }
+          // Refund BEFORE checking the inline budget so recovery also gets
+          // the freed slot; the monotonic signature cap keeps a lying
+          // upstream bounded either way.
+          try {
+            await this.store.refundPaidAttempt(input.jobId);
+          } catch (refundError) {
+            // A refund that cannot flush must not surface raw (the runtime
+            // would mark the paid job failed): keep the slot consumed
+            // (fail-closed for money) and stay on the keep-paid transient
+            // path - without the inline retry, since the store misbehaves.
+            const message =
+              refundError instanceof Error ? refundError.message : String(refundError);
+            this.log(
+              `job ${jobTag}: could not refund the refused payment attempt (${message}) - keeping the slot consumed`,
+            );
+            throw error;
+          }
+          if (refundedRetriesUsed >= X402_REFUNDED_RETRIES) {
+            throw error;
+          }
+          refundedRetriesUsed += 1;
+          this.log(
+            `job ${jobTag}: upstream refused the signed payment with a fresh 402 (likely expired blockhash) - attempt slot refunded, retrying with a fresh payment`,
+          );
+          continue;
+        }
+        const freeRetryDelays = this.options.freeRetryDelaysMs ?? X402_FREE_RETRY_DELAYS_MS;
+        const delayMs = freeRetryDelays[freeRetriesUsed];
+        if (delayMs === undefined) {
+          throw error;
+        }
+        freeRetriesUsed += 1;
+        this.log(
+          `job ${jobTag}: transient failure before any payment (${error.message}) - inline retry ${freeRetriesUsed}/${freeRetryDelays.length} in ${delayMs}ms`,
+        );
+        const slept = await abortableDelay(delayMs, signal);
+        if (!slept) {
+          // Aborted mid-backoff (shutdown/execution budget): surface the
+          // already-classified keep-paid transient, not an AbortError the
+          // runtime would turn into a permanent failure.
+          throw error;
+        }
+      }
+    }
+  }
+
+  /** One full payment-wrapper pass against the upstream; throws classified errors. */
+  private async attemptUpstream(
+    job: X402SkillJob,
+    requestUrl: URL,
+    headers: Record<string, string>,
+    body: string | undefined,
+    jobId: string,
+    client: x402Client,
+    attemptState: AttemptState,
+    signal?: AbortSignal,
+  ): Promise<{ data: string; outputMime?: string; filePath?: string }> {
     const fetchWithPayment = wrapFetchWithPayment(
-      this.buildInstrumentedFetch(input.jobId),
-      this.buildClient(signer, rule),
+      this.buildInstrumentedFetch(jobId, attemptState),
+      client,
     );
 
     let response: Response;
@@ -424,18 +559,26 @@ export class X402Driver implements X402JobDriver {
       throw this.classifyStatus(response.status);
     }
 
-    const bytes = await readBodyCapped(response, X402_MAX_RESPONSE_BYTES);
+    let bytes: Uint8Array;
+    try {
+      bytes = await readBodyCapped(response, X402_MAX_RESPONSE_BYTES);
+    } catch (error) {
+      // A network hiccup mid-body on a PAID 2xx must not fail the job for
+      // good (the runtime marks unclassified errors failed): classify it so
+      // recovery re-delivers. Size-cap violations stay permanent.
+      throw this.classifyWrapperError(error);
+    }
     const contentType = response.headers.get('content-type') ?? 'application/octet-stream';
     if (isTextContentType(contentType)) {
       const data = new TextDecoder().decode(bytes);
-      await this.store.saveTextResult(input.jobId, data);
+      await this.store.saveTextResult(jobId, data);
       return { data };
     }
     const mime = contentType.split(';')[0]?.trim() ?? 'application/octet-stream';
     // The cache file doubles as the delivery source - handed out WITHOUT a
     // cleanup callback (the store's TTL sweep owns deletion; the runtime
     // calls cleanup even on a failed seed, which would destroy the only copy).
-    const filePath = await this.store.saveFileResult(input.jobId, mime, bytes);
+    const filePath = await this.store.saveFileResult(jobId, mime, bytes);
     return { data: '', outputMime: mime, filePath };
   }
 }

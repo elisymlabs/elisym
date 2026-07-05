@@ -20,20 +20,81 @@ describe('X402JobStore', () => {
 
   it('claims paid attempts up to the max and flushes each one to disk', async () => {
     expect(await store.paidAttempts('job-1')).toBe(0);
-    expect(await store.claimPaidAttempt('job-1', 2)).toEqual({ granted: true, attempts: 1 });
-    expect(await store.claimPaidAttempt('job-1', 2)).toEqual({ granted: true, attempts: 2 });
+    expect(await store.claimPaidAttempt('job-1', 2, 4)).toEqual({
+      granted: true,
+      attempts: 1,
+      signatures: 1,
+    });
+    expect(await store.claimPaidAttempt('job-1', 2, 4)).toEqual({
+      granted: true,
+      attempts: 2,
+      signatures: 2,
+    });
     // Third claim is refused without incrementing (the atomic budget gate).
-    expect(await store.claimPaidAttempt('job-1', 2)).toEqual({ granted: false, attempts: 2 });
+    expect(await store.claimPaidAttempt('job-1', 2, 4)).toEqual({
+      granted: false,
+      attempts: 2,
+      signatures: 2,
+      refusedBy: 'attempts',
+    });
     expect(await store.paidAttempts('job-1')).toBe(2);
     const onDisk = JSON.parse(await readFile(join(dir, X402_JOBS_FILE), 'utf-8'));
     expect(onDisk['job-1'].attempts).toBe(2);
+    expect(onDisk['job-1'].signatures).toBe(2);
   });
 
   it('serializes concurrent claims and never exceeds the max (no lost updates)', async () => {
-    const claims = Array.from({ length: 10 }, () => store.claimPaidAttempt('job-race', 2));
+    const claims = Array.from({ length: 10 }, () => store.claimPaidAttempt('job-race', 2, 4));
     const results = await Promise.all(claims);
     expect(results.filter((claim) => claim.granted)).toHaveLength(2);
     expect(await store.paidAttempts('job-race')).toBe(2);
+  });
+
+  it('refunds a durable attempt slot but never the signature count', async () => {
+    await store.claimPaidAttempt('job-refund', 2, 4);
+    await store.claimPaidAttempt('job-refund', 2, 4);
+    await store.refundPaidAttempt('job-refund');
+    expect(await store.paidAttempts('job-refund')).toBe(1);
+    expect(await store.paymentSignatures('job-refund')).toBe(2);
+    // The freed slot can be claimed again; the signature count keeps growing.
+    expect(await store.claimPaidAttempt('job-refund', 2, 4)).toEqual({
+      granted: true,
+      attempts: 2,
+      signatures: 3,
+    });
+  });
+
+  it('refuses at the signature cap even when every attempt slot was refunded', async () => {
+    for (let i = 0; i < 4; i++) {
+      const claim = await store.claimPaidAttempt('job-cap', 2, 4);
+      expect(claim.granted).toBe(true);
+      await store.refundPaidAttempt('job-cap');
+    }
+    expect(await store.paidAttempts('job-cap')).toBe(0);
+    expect(await store.claimPaidAttempt('job-cap', 2, 4)).toEqual({
+      granted: false,
+      attempts: 0,
+      signatures: 4,
+      refusedBy: 'signatures',
+    });
+  });
+
+  it('treats a refund at zero attempts or for an unknown job as a no-op', async () => {
+    await store.refundPaidAttempt('job-unknown');
+    expect(await store.paidAttempts('job-unknown')).toBe(0);
+    expect(await store.paymentSignatures('job-unknown')).toBe(0);
+  });
+
+  it('treats legacy records without a signature count as signatures == attempts', async () => {
+    await writeFile(
+      join(dir, X402_JOBS_FILE),
+      JSON.stringify({ 'legacy-job': { attempts: 2, created_at: 1, updated_at: 1 } }),
+    );
+    expect(await store.paymentSignatures('legacy-job')).toBe(2);
+    await store.refundPaidAttempt('legacy-job');
+    expect(await store.paidAttempts('legacy-job')).toBe(1);
+    // The pre-refund count is preserved, not recomputed from the decremented attempts.
+    expect(await store.paymentSignatures('legacy-job')).toBe(2);
   });
 
   it('round-trips a text result', async () => {
@@ -63,12 +124,12 @@ describe('X402JobStore', () => {
   });
 
   it('fails closed on a corrupt store (does not reset the ledger to empty)', async () => {
-    await store.claimPaidAttempt('job-x', 2);
+    await store.claimPaidAttempt('job-x', 2, 4);
     await writeFile(join(dir, X402_JOBS_FILE), '{ this is not json');
     // A corrupt/unreadable store must surface, not silently reset the
     // paid-attempt counter (which would let re-payment past the budget).
     await expect(store.paidAttempts('job-x')).rejects.toThrow();
-    await expect(store.claimPaidAttempt('job-x', 2)).rejects.toThrow();
+    await expect(store.claimPaidAttempt('job-x', 2, 4)).rejects.toThrow();
   });
 
   it('rejects a JSON array as a corrupt store (not an empty ledger)', async () => {

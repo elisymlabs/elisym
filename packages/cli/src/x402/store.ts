@@ -6,7 +6,11 @@
  *
  * - a *paid attempt* is recorded the moment a `PAYMENT-SIGNATURE` request
  *   leaves the process (see the instrumented fetch in the driver), capping
- *   money spent per job;
+ *   money spent per job. An attempt whose payment the upstream definitively
+ *   refuses with a fresh 402 can be refunded (no settle happened on an
+ *   honest upstream), but the parallel *signatures* counter is monotonic -
+ *   it caps how many signed payments can EVER leave for one job, because a
+ *   malicious upstream can settle a payment and still respond 402;
  * - a completed *result* is recorded after the upstream responds, so
  *   recovery delivers the bought result instead of buying it twice. Binary
  *   results live as files in `.x402-results/<jobId>` written BEFORE the
@@ -30,6 +34,12 @@ type StoredResult = { kind: 'text'; data: string } | { kind: 'file'; mime: strin
 
 interface X402JobRecord {
   attempts: number;
+  /**
+   * Monotonic count of signed payments ever sent for this job - never
+   * refunded. Absent in records written before the counter existed; treated
+   * as equal to `attempts` (those attempts were never refunded).
+   */
+  signatures?: number;
   result?: StoredResult;
   created_at: number;
   updated_at: number;
@@ -41,6 +51,14 @@ export interface X402CachedResult {
   data: string;
   outputMime?: string;
   filePath?: string;
+}
+
+export interface X402ClaimResult {
+  granted: boolean;
+  attempts: number;
+  signatures: number;
+  /** Which cap refused the claim; absent when granted. */
+  refusedBy?: 'attempts' | 'signatures';
 }
 
 /** Keep result filenames safe regardless of what a jobId turns out to be. */
@@ -104,32 +122,60 @@ export class X402JobStore {
   }
 
   /**
-   * Atomically claim one paid attempt: increment iff still under `max`, and
-   * FLUSH before returning. The whole check-and-increment runs inside the
-   * serialization queue so concurrent `execute()` flows for the same jobId
-   * (dedup failure, crash-recovery racing the original) can never each read
-   * a stale count and all pass the budget gate - the money bound holds. The
-   * flush ordering errs on "an attempt happened" (documented 2x bound), since
-   * the caller sends the payment immediately after a grant.
+   * Atomically claim one paid attempt: increment iff still under BOTH caps
+   * (durable attempts and the monotonic signature count), and FLUSH before
+   * returning. The whole check-and-increment runs inside the serialization
+   * queue so concurrent `execute()` flows for the same jobId (dedup failure,
+   * crash-recovery racing the original) can never each read a stale count
+   * and all pass the budget gate - the money bound holds. The flush ordering
+   * errs on "an attempt happened", since the caller sends the payment
+   * immediately after a grant.
    */
   async claimPaidAttempt(
     jobId: string,
-    max: number,
-  ): Promise<{ granted: boolean; attempts: number }> {
+    maxAttempts: number,
+    maxSignatures: number,
+  ): Promise<X402ClaimResult> {
     return this.runExclusive(async () => {
       const file = await this.load();
       const now = Date.now();
       const record = file[jobId] ?? { attempts: 0, created_at: now, updated_at: now };
-      if (record.attempts >= max) {
-        // Persist nothing on refusal; the count is already at the ceiling.
-        file[jobId] = record;
-        return { granted: false, attempts: record.attempts };
+      const signatures = record.signatures ?? record.attempts;
+      // Persist nothing on refusal; the counts are already at the ceiling.
+      if (signatures >= maxSignatures) {
+        return { granted: false, attempts: record.attempts, signatures, refusedBy: 'signatures' };
+      }
+      if (record.attempts >= maxAttempts) {
+        return { granted: false, attempts: record.attempts, signatures, refusedBy: 'attempts' };
       }
       record.attempts += 1;
+      record.signatures = signatures + 1;
       record.updated_at = now;
       file[jobId] = record;
       await this.save(file);
-      return { granted: true, attempts: record.attempts };
+      return { granted: true, attempts: record.attempts, signatures: record.signatures };
+    });
+  }
+
+  /**
+   * Return one durable attempt slot after the upstream DEFINITIVELY refused
+   * the signed payment with a fresh 402 (an honest upstream did not settle,
+   * so no money moved). The monotonic `signatures` counter is intentionally
+   * NOT decremented: it is the adversarial bound against an upstream that
+   * settles the payment and lies with a 402 (see `claimPaidAttempt`).
+   */
+  async refundPaidAttempt(jobId: string): Promise<void> {
+    await this.runExclusive(async () => {
+      const file = await this.load();
+      const record = file[jobId];
+      if (record === undefined || record.attempts === 0) {
+        return;
+      }
+      const signatures = record.signatures ?? record.attempts;
+      record.attempts -= 1;
+      record.signatures = signatures;
+      record.updated_at = Date.now();
+      await this.save(file);
     });
   }
 
@@ -138,6 +184,15 @@ export class X402JobStore {
     return this.runExclusive(async () => {
       const file = await this.load();
       return file[jobId]?.attempts ?? 0;
+    });
+  }
+
+  /** Serialized point-in-time signed-payment count (test/inspection helper). */
+  async paymentSignatures(jobId: string): Promise<number> {
+    return this.runExclusive(async () => {
+      const file = await this.load();
+      const record = file[jobId];
+      return record === undefined ? 0 : (record.signatures ?? record.attempts);
     });
   }
 

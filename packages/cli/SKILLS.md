@@ -72,7 +72,7 @@ For script modes, declaring `provider` + `model` tells the runtime "this script 
 | `x402_max_upstream`    | integer or string | yes      | Signing ceiling on the upstream quote in integer USDC subunits. The payment layer never signs above it.          |
 | `x402_max_input_bytes` | integer           | no       | Pre-payment input size cap in bytes. Default 100000, max 4194304 (`MAX_REINLINE_TEXT_BYTES`). POST bridges only. |
 
-`provider`/`model`/`max_tokens`, `tools`, `script*` and file-hint fields are all rejected in this mode. Failure classification, the paid-attempt budget (max 2 upstream payments per job), the idempotency cache (`.x402-jobs.json` + `.x402-results/` in the agent dir) and the wallet invariant live in the CLI runtime - see `packages/docs/pages/providers/bridge-x402.mdx`.
+`provider`/`model`/`max_tokens`, `tools`, `script*` and file-hint fields are all rejected in this mode. Failure classification, the payment budget (2 durable paid attempts per job; a payment the upstream refuses with a fresh 402 is refunded and retried, under a hard cap of 4 signed payments per job), inline retries of money-free transients, the idempotency cache (`.x402-jobs.json` + `.x402-results/` in the agent dir) and the wallet invariant live in the CLI runtime - see `packages/docs/pages/providers/bridge-x402.mdx`.
 
 ### `static-file`
 

@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { NATIVE_SOL, USDC_SOLANA_DEVNET, generateSolanaWallet } from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SkillInput, X402SkillJob } from '../src/skill/index.js';
-import { X402_MAX_PAID_ATTEMPTS, X402_SOLANA_DEVNET_CAIP2 } from '../src/x402/constants.js';
+import {
+  X402_MAX_PAID_ATTEMPTS,
+  X402_MAX_PAYMENT_SIGNATURES,
+  X402_SOLANA_DEVNET_CAIP2,
+} from '../src/x402/constants.js';
 import { X402PermanentError, X402PreflightError, X402TransientError } from '../src/x402/errors.js';
 import { X402JobStore } from '../src/x402/store.js';
 
@@ -56,6 +60,9 @@ vi.mock('@x402/svm', () => ({
 import { X402Driver } from '../src/x402/driver.js';
 
 const USDC_MINT = USDC_SOLANA_DEVNET.mint ?? '';
+
+/** Millisecond-scale backoff so inline-retry tests run on real timers. */
+const TEST_FREE_RETRY_DELAYS = [5, 10];
 
 function requirementAt(amount: string) {
   return {
@@ -113,6 +120,7 @@ describe('X402Driver', () => {
       rpcUrl: 'http://127.0.0.1:1/never-used',
       getFeeBps: async () => 250,
       log: () => {},
+      freeRetryDelaysMs: TEST_FREE_RETRY_DELAYS,
     });
     job = {
       skillName: 'market-data',
@@ -307,8 +315,58 @@ describe('X402Driver', () => {
     it('classifies a paid 5xx as transient (keep-paid path) and records the attempt', async () => {
       stubUpstream(() => new Response('boom', { status: 503 }));
       await expect(driver.execute(job, input)).rejects.toBeInstanceOf(X402TransientError);
+      // Money-unknown outcome (the upstream may have settled): the slot is
+      // NOT refunded and there is NO inline retry - recovery owns it.
+      expect(mocks.wrapFetchWithPayment).toHaveBeenCalledTimes(1);
       const store = new X402JobStore(dir);
       expect(await store.paidAttempts(input.jobId)).toBe(1);
+      expect(await store.paymentSignatures(input.jobId)).toBe(1);
+    });
+
+    it('refunds the slot on a 402 payment refusal and retries once with a fresh payment', async () => {
+      let paidCalls = 0;
+      const fetchMock = vi.fn(async (info: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(info, init);
+        if (request.headers.has('PAYMENT-SIGNATURE') || request.headers.has('X-PAYMENT')) {
+          paidCalls += 1;
+          if (paidCalls === 1) {
+            // First signed payment refused (e.g. blockhash expired before settle).
+            return new Response('payment required', { status: 402 });
+          }
+          return new Response('the result', {
+            status: 200,
+            headers: { 'content-type': 'text/plain' },
+          });
+        }
+        return new Response('payment required', { status: 402 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const result = await driver.execute(job, input);
+      expect(result).toEqual({ data: 'the result' });
+      const store = new X402JobStore(dir);
+      // The refused attempt was refunded: one durable attempt, two signatures.
+      expect(await store.paidAttempts(input.jobId)).toBe(1);
+      expect(await store.paymentSignatures(input.jobId)).toBe(2);
+    });
+
+    it('gives up after one refunded retry, leaving the freed slots to recovery', async () => {
+      stubUpstream(() => new Response('payment required', { status: 402 }));
+      await expect(driver.execute(job, input)).rejects.toBeInstanceOf(X402TransientError);
+      const store = new X402JobStore(dir);
+      expect(await store.paidAttempts(input.jobId)).toBe(0);
+      expect(await store.paymentSignatures(input.jobId)).toBe(2);
+    });
+
+    it('turns a refuse-forever upstream permanent at the signature cap across re-executions', async () => {
+      stubUpstream(() => new Response('payment required', { status: 402 }));
+      // Two executions (original + recovery) burn two signatures each.
+      await expect(driver.execute(job, input)).rejects.toBeInstanceOf(X402TransientError);
+      await expect(driver.execute(job, input)).rejects.toBeInstanceOf(X402TransientError);
+      // The third refuses to sign at all: no more money can ever leave.
+      await expect(driver.execute(job, input)).rejects.toThrow(/signed payment budget exhausted/);
+      const store = new X402JobStore(dir);
+      expect(await store.paidAttempts(input.jobId)).toBe(0);
+      expect(await store.paymentSignatures(input.jobId)).toBe(X402_MAX_PAYMENT_SIGNATURES);
     });
 
     it('classifies an unpaid 4xx as permanent without burning the budget', async () => {
@@ -328,17 +386,94 @@ describe('X402Driver', () => {
       await expect(driver.execute(job, input)).rejects.toThrow(/payment refused by policy/);
     });
 
-    it('classifies a network failure as transient', async () => {
-      mocks.wrapFetchWithPayment.mockImplementationOnce(() => async () => {
+    it('retries a money-free network failure inline, then goes transient for recovery', async () => {
+      const failingWrapper = () => async (): Promise<Response> => {
         throw new TypeError('fetch failed');
-      });
+      };
+      // One implementation per attempt: initial + every inline retry.
+      for (let i = 0; i < 1 + TEST_FREE_RETRY_DELAYS.length; i++) {
+        mocks.wrapFetchWithPayment.mockImplementationOnce(failingWrapper);
+      }
       await expect(driver.execute(job, input)).rejects.toBeInstanceOf(X402TransientError);
+      expect(mocks.wrapFetchWithPayment).toHaveBeenCalledTimes(1 + TEST_FREE_RETRY_DELAYS.length);
+      const store = new X402JobStore(dir);
+      expect(await store.paidAttempts(input.jobId)).toBe(0);
+    });
+
+    it('recovers inline from an unpaid 5xx without burning money', async () => {
+      let unpaidCalls = 0;
+      const fetchMock = vi.fn(async (info: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(info, init);
+        if (request.headers.has('PAYMENT-SIGNATURE') || request.headers.has('X-PAYMENT')) {
+          return new Response('the result', {
+            status: 200,
+            headers: { 'content-type': 'text/plain' },
+          });
+        }
+        unpaidCalls += 1;
+        if (unpaidCalls === 1) {
+          // Unpaid 5xx: transient AND provably money-free -> inline retry.
+          return new Response('flaky', { status: 503 });
+        }
+        return new Response('payment required', { status: 402 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      expect(await driver.execute(job, input)).toEqual({ data: 'the result' });
+      const store = new X402JobStore(dir);
+      expect(await store.paidAttempts(input.jobId)).toBe(1);
+    });
+
+    it('surfaces the keep-paid transient (not AbortError) when aborted mid-backoff', async () => {
+      const fetchMock = vi.fn(async () => new Response('flaky', { status: 503 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const abort = new AbortController();
+      const slowDriver = new X402Driver({
+        agentDir: dir,
+        paymentsAddress: wallet.signer.address,
+        solanaSecretKeyBase58: wallet.secretKeyBase58,
+        rpcUrl: 'http://127.0.0.1:1/never-used',
+        getFeeBps: async () => 250,
+        log: () => {},
+        freeRetryDelaysMs: [60_000],
+      });
+      const outcome = slowDriver.execute(job, input, abort.signal).catch((error: unknown) => error);
+      // Let the first attempt fail and the driver enter the backoff sleep.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      abort.abort();
+      // The already-classified transient must win so the runtime keeps the job paid.
+      expect(await outcome).toBeInstanceOf(X402TransientError);
+    });
+
+    it('stays on the keep-paid transient when the refund itself fails (no raw store error)', async () => {
+      let paidCalls = 0;
+      stubUpstream(() => {
+        paidCalls += 1;
+        return new Response('payment required', { status: 402 });
+      });
+      const refundSpy = vi
+        .spyOn(X402JobStore.prototype, 'refundPaidAttempt')
+        .mockRejectedValueOnce(new Error('disk full'));
+      try {
+        const error = await driver.execute(job, input).catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(X402TransientError);
+        expect((error as Error).message).toMatch(/402 after a payment attempt/);
+        // The failed refund keeps the slot consumed and skips the inline retry.
+        expect(paidCalls).toBe(1);
+        const store = new X402JobStore(dir);
+        expect(await store.paidAttempts(input.jobId)).toBe(1);
+      } finally {
+        refundSpy.mockRestore();
+      }
     });
 
     it('refuses to pay once the attempt budget is exhausted', async () => {
       const store = new X402JobStore(dir);
       for (let attempt = 0; attempt < X402_MAX_PAID_ATTEMPTS; attempt++) {
-        await store.claimPaidAttempt(input.jobId, X402_MAX_PAID_ATTEMPTS);
+        await store.claimPaidAttempt(
+          input.jobId,
+          X402_MAX_PAID_ATTEMPTS,
+          X402_MAX_PAYMENT_SIGNATURES,
+        );
       }
       // The wrapper still makes the initial UNPAID probe, but the budget gate
       // in the instrumented fetch throws before any PAYMENT-SIGNATURE request.
