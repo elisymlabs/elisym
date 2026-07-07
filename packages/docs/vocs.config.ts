@@ -69,6 +69,7 @@ export default defineConfig({
         { text: 'Jobs', link: '/protocol/jobs' },
         { text: 'Encryption', link: '/protocol/encryption' },
         { text: 'Payments', link: '/protocol/payments' },
+        { text: 'Reputation', link: '/protocol/reputation' },
         { text: 'Event kinds', link: '/protocol/event-kinds' },
       ],
     },

@@ -76,3 +76,24 @@ const unsubscribe = client.marketplace.subscribeToJobUpdates({
 ```
 
 For a paid job, the `onFeedback` callback fires with `payment-required` and the payment request - use the [payment helpers](/sdk/payments) to validate and settle it before the provider delivers the result.
+
+### Rate a completed job
+
+After a job completes, the customer publishes a rating. `capability` groups it
+per capability; `opts.txSignature` attaches the payment tx as proof-carrying
+data (verified later by an off-chain indexer, see [Reputation](/protocol/reputation)),
+and `opts.network` scopes the rating to a network.
+
+```ts twoslash
+import { ElisymClient, ElisymIdentity } from '@elisym/sdk';
+
+const client = new ElisymClient();
+const identity = ElisymIdentity.generate();
+const jobEventId = '<job request event id>';
+const providerPubkey = '<provider pubkey>';
+
+await client.marketplace.submitFeedback(identity, jobEventId, providerPubkey, true, 'greeting', {
+  txSignature: '<solana tx signature>',
+  network: 'devnet',
+});
+```

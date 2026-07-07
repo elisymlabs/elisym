@@ -6,7 +6,7 @@ import {
   parsePaymentRequest,
   type PaymentAssetRef,
 } from '@elisym/sdk';
-import type { Event as NostrEvent } from 'nostr-tools';
+import { verifyEvent, type Event as NostrEvent } from 'nostr-tools';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
@@ -33,11 +33,16 @@ export function useNostrArtifacts(agentPubkey: string) {
   const { data } = useLocalQuery<Omit<Artifact, 'cardName'>[]>({
     queryKey: ['agent-nostr-history', agentPubkey, viewerPubkey],
     queryFn: async () => {
-      const requests = (await client.pool.querySync({
-        kinds: [KIND_JOB_REQUEST],
-        authors: [viewerPubkey],
-        '#p': [agentPubkey],
-      })) as NostrEvent[];
+      // Verify: a relay is only bound by its own filter honesty, so drop any request
+      // event not actually signed by the viewer before decrypting its content against
+      // the viewer's key (mirrors useHydrateArtifacts / queryJobResults' author filter).
+      const requests = (
+        (await client.pool.querySync({
+          kinds: [KIND_JOB_REQUEST],
+          authors: [viewerPubkey],
+          '#p': [agentPubkey],
+        })) as NostrEvent[]
+      ).filter((event) => verifyEvent(event) && event.pubkey === viewerPubkey);
 
       if (requests.length === 0) {
         return [];

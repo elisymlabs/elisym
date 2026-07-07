@@ -461,6 +461,87 @@ describe('MarketplaceService.queryJobResults', () => {
 
     expect(results.get(reqId)?.content).toBe('new result');
   });
+
+  it('binds newest-wins per author: a forged higher-created_at result cannot evict the legit one', async () => {
+    const provider = ElisymIdentity.generate();
+    const attacker = ElisymIdentity.generate();
+    const customer = ElisymIdentity.generate();
+    const reqId = 'request-grief';
+    const nowSecs = Math.floor(Date.now() / 1000);
+
+    const legit = finalizeEvent(
+      {
+        kind: KIND_JOB_RESULT,
+        created_at: nowSecs - 100,
+        tags: [['e', reqId]],
+        content: 'legit result',
+      },
+      provider.secretKey,
+    );
+    // Attacker out-dates the legit result for the same public job id.
+    const forged = finalizeEvent(
+      {
+        kind: KIND_JOB_RESULT,
+        created_at: nowSecs - 1,
+        tags: [['e', reqId]],
+        content: 'forged result',
+      },
+      attacker.secretKey,
+    );
+
+    const pool = createMockPool();
+    (pool.queryBatchedByTag as any).mockResolvedValue([legit, forged]);
+    const svc = new MarketplaceService(pool as any);
+
+    // Author-blind newest-wins would surface the forgery (the pre-fix behavior).
+    const unbound = await svc.queryJobResults(customer, [reqId]);
+    expect(unbound.get(reqId)?.content).toBe('forged result');
+
+    // With a per-request binding to the real provider, the legit result wins its slot
+    // and is NOT evicted (then dropped) by the out-dating forgery.
+    const bound = await svc.queryJobResults(
+      customer,
+      [reqId],
+      undefined,
+      undefined,
+      new Map([[reqId, provider.publicKey]]),
+    );
+    expect(bound.get(reqId)?.senderPubkey).toBe(provider.publicKey);
+    expect(bound.get(reqId)?.content).toBe('legit result');
+  });
+
+  it('rejects a far-future result from newest-wins (clock-skew clamp)', async () => {
+    const provider = ElisymIdentity.generate();
+    const customer = ElisymIdentity.generate();
+    const reqId = 'request-future';
+    const nowSecs = Math.floor(Date.now() / 1000);
+
+    const real = finalizeEvent(
+      {
+        kind: KIND_JOB_RESULT,
+        created_at: nowSecs - 50,
+        tags: [['e', reqId]],
+        content: 'real result',
+      },
+      provider.secretKey,
+    );
+    const future = finalizeEvent(
+      {
+        kind: KIND_JOB_RESULT,
+        created_at: nowSecs + 4000,
+        tags: [['e', reqId]],
+        content: 'future forgery',
+      },
+      provider.secretKey,
+    );
+
+    const pool = createMockPool();
+    (pool.queryBatchedByTag as any).mockResolvedValue([real, future]);
+    const svc = new MarketplaceService(pool as any);
+
+    const results = await svc.queryJobResults(customer, [reqId]);
+    expect(results.get(reqId)?.content).toBe('real result');
+  });
 });
 
 // --- subscribeToJobUpdates ---
@@ -1351,5 +1432,123 @@ describe('MarketplaceService.fetchRecentJobs asset parsing', () => {
       mint: usdcMint,
       decimals: 6,
     });
+  });
+});
+
+describe('MarketplaceService.fetchRecentJobs author binding', () => {
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const usdcMint = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+
+  function broadcastRequest(customer: ElisymIdentity): Event {
+    // No `p` tag -> broadcast job (no targeted provider).
+    return finalizeEvent(
+      {
+        kind: KIND_JOB_REQUEST,
+        created_at: nowSecs,
+        tags: [
+          ['t', 'elisym'],
+          ['t', 'general'],
+        ],
+        content: 'hi',
+      },
+      customer.secretKey,
+    );
+  }
+
+  // A third party `#e`-tags the public job id with a fabricated payment-required.
+  function forgedPaymentRequired(attacker: ElisymIdentity, req: Event): Event {
+    const paymentRequestJson = JSON.stringify({
+      recipient: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',
+      amount: 999,
+      asset: { chain: 'solana', token: 'usdc', mint: usdcMint, decimals: 6 },
+    });
+    return finalizeEvent(
+      {
+        kind: KIND_JOB_FEEDBACK,
+        created_at: nowSecs + 1,
+        tags: [
+          ['e', req.id],
+          ['p', req.pubkey],
+          ['status', 'payment-required'],
+          ['amount', '999', paymentRequestJson, 'solana'],
+          ['t', 'elisym'],
+        ],
+        content: '',
+      },
+      attacker.secretKey,
+    );
+  }
+
+  function makePool(requests: Event[], feedbacks: Event[], results: Event[] = []): NostrPool {
+    return {
+      querySync: vi.fn().mockResolvedValue(requests),
+      queryBatched: vi.fn().mockResolvedValue([]),
+      queryBatchedByTag: vi.fn(async (filter: Filter) => {
+        if (filter.kinds?.includes(KIND_JOB_FEEDBACK)) {
+          return feedbacks;
+        }
+        if (filter.kinds?.includes(KIND_JOB_RESULT)) {
+          return results;
+        }
+        return [];
+      }),
+      publish: vi.fn(),
+      publishAll: vi.fn(),
+      subscribe: vi.fn(),
+      subscribeAndWait: vi.fn(),
+      probe: vi.fn(),
+      reset: vi.fn(),
+      getRelays: vi.fn().mockReturnValue([]),
+      close: vi.fn(),
+    } as unknown as NostrPool;
+  }
+
+  it('ignores a third-party amount/asset/status on an unpaid broadcast job', async () => {
+    const customer = ElisymIdentity.generate();
+    const attacker = ElisymIdentity.generate();
+    const req = broadcastRequest(customer);
+    const pool = makePool([req], [forgedPaymentRequired(attacker, req)]);
+
+    const jobs = await new MarketplaceService(pool).fetchRecentJobs();
+    expect(jobs).toHaveLength(1);
+    // No trusted provider anchor -> the forged feedback drives nothing.
+    expect(jobs[0]?.agentPubkey).toBeUndefined();
+    expect(jobs[0]?.amount).toBeUndefined();
+    expect(jobs[0]?.asset).toBeUndefined();
+    expect(jobs[0]?.txHash).toBeUndefined();
+    expect(jobs[0]?.status).toBe('processing');
+  });
+
+  it('binds a paid broadcast job to the customer-paid provider, not a third party', async () => {
+    const customer = ElisymIdentity.generate();
+    const realProvider = ElisymIdentity.generate();
+    const attacker = ElisymIdentity.generate();
+    const req = broadcastRequest(customer);
+    // The customer's own payment-completed names the provider they actually paid.
+    const paymentCompleted = finalizeEvent(
+      {
+        kind: KIND_JOB_FEEDBACK,
+        created_at: nowSecs,
+        tags: [
+          ['e', req.id],
+          ['p', realProvider.publicKey],
+          ['status', 'payment-completed'],
+          ['tx', 'real-sig', 'solana'],
+          ['t', 'elisym'],
+        ],
+        content: '',
+      },
+      customer.secretKey,
+    );
+    const pool = makePool([req], [paymentCompleted, forgedPaymentRequired(attacker, req)]);
+
+    const jobs = await new MarketplaceService(pool).fetchRecentJobs();
+    expect(jobs).toHaveLength(1);
+    // Provider is the customer-paid one, never the attacker; tx comes from the
+    // customer's own payment-completed and the attacker's asset/amount are ignored.
+    expect(jobs[0]?.agentPubkey).toBe(realProvider.publicKey);
+    expect(jobs[0]?.txHash).toBe('real-sig');
+    expect(jobs[0]?.asset).toBeUndefined();
+    expect(jobs[0]?.amount).toBeUndefined();
   });
 });

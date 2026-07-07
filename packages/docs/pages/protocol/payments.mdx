@@ -37,6 +37,12 @@ The customer builds **one** transaction with two transfer instructions, so both 
 
 The customer signs and submits it, then publishes a `payment-completed` feedback with the transaction signature.
 
+## The job memo
+
+Every payment built by the SDK embeds an **SPL Memo** instruction with the payload `elisym:v1:<jobEventId>`, where `<jobEventId>` is the Nostr id of the job request the payment settles. It binds one on-chain transaction to exactly one job, on-chain and permanently.
+
+The memo is what makes a payment independently verifiable without any off-chain state: given a rating's `["tx", <sig>]` tag, anyone can fetch that transaction and confirm from the memo that it paid *this* job. It is the anchor a future off-chain reputation indexer joins on (see [Reputation](/protocol/reputation)). Both automatic payment paths (SDK submit-and-pay, the web app) embed it; the manual `send_payment` tool embeds it when given the job id.
+
 ## The protocol fee
 
 The fee rate and treasury address are not baked into the client - they live **on-chain** in the `elisym-config` Solana program, and clients read them at runtime via `getProtocolConfig`. The SDK ships no hard-coded fallback, so the live on-chain value is the only source of truth: a client can never sign or verify against a stale or spoofed rate.

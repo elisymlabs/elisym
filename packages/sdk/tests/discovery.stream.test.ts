@@ -24,14 +24,17 @@ function createStreamPool(): {
   subs: CapturedSub[];
   queryBatched: ReturnType<typeof vi.fn>;
   queryBatchedByTag: ReturnType<typeof vi.fn>;
+  queryByIds: ReturnType<typeof vi.fn>;
 } {
   const subs: CapturedSub[] = [];
   const queryBatched = vi.fn().mockResolvedValue([]);
   const queryBatchedByTag = vi.fn().mockResolvedValue([]);
+  const queryByIds = vi.fn().mockResolvedValue([]);
   const pool = {
     querySync: vi.fn().mockResolvedValue([]),
     queryBatched,
     queryBatchedByTag,
+    queryByIds,
     publish: vi.fn(),
     publishAll: vi.fn(),
     subscribe: vi.fn(
@@ -60,7 +63,7 @@ function createStreamPool(): {
     getRelays: vi.fn().mockReturnValue([]),
     close: vi.fn(),
   } as unknown as NostrPool;
-  return { pool, subs, queryBatched, queryBatchedByTag };
+  return { pool, subs, queryBatched, queryBatchedByTag, queryByIds };
 }
 
 function makeCard(overrides: Partial<CapabilityCard> = {}): CapabilityCard {
@@ -129,6 +132,22 @@ function makeResultEvent(
       content: JSON.stringify({ ok: true }),
     },
     identity.secretKey,
+  );
+}
+
+/** A signed job request J (kind 5xxx) authored by the customer, targeting an agent. */
+function makeRequestEvent(customer: ElisymIdentity, providerPubkey: string): Event {
+  return finalizeEvent(
+    {
+      kind: KIND_JOB_REQUEST,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ['p', providerPubkey],
+        ['t', 'elisym'],
+      ],
+      content: '',
+    },
+    customer.secretKey,
   );
 }
 
@@ -291,18 +310,18 @@ describe('DiscoveryService.streamAgents', () => {
   });
 
   it('matched payment-completed sets lastPaidJobAt when result event exists for the same job', async () => {
-    const { pool, subs, queryBatched, queryBatchedByTag } = createStreamPool();
+    const { pool, subs, queryBatched, queryBatchedByTag, queryByIds } = createStreamPool();
     const svc = new DiscoveryService(pool);
 
     const provider = ElisymIdentity.generate();
     const customer = ElisymIdentity.generate();
     const capEvent = makeCapabilityEvent(provider, makeCard({ name: 'p-agent' }));
-    const jobEventId = 'real-job-id';
+    // The request-authorship anchor: J is signed by the customer and targets the
+    // provider; its id is the jobEventId the result and payment-completed reference.
+    const requestEvent = makeRequestEvent(customer, provider.publicKey);
+    const jobEventId = requestEvent.id;
     const ts = Math.floor(Date.now() / 1000);
 
-    // Real result events tag the customer (requestEvent.pubkey) in `p`; the
-    // discovery ranking binds the feedback author to that customer, so the
-    // fixture must include it for the legit "customer rated their own job" path.
     queryBatched.mockResolvedValueOnce([
       makeResultEvent(provider, jobEventId, { createdAt: ts, tags: [['p', customer.publicKey]] }),
     ]);
@@ -314,6 +333,7 @@ describe('DiscoveryService.streamAgents', () => {
         createdAt: ts,
       }),
     ]);
+    queryByIds.mockResolvedValueOnce([requestEvent]);
 
     const onComplete = vi.fn();
     svc.streamAgents('devnet', { onAgent: vi.fn(), onComplete });

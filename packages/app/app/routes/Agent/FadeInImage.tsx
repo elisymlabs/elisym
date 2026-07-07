@@ -26,6 +26,9 @@ export function FadeInImage({ src, className, alt = '' }: Props) {
       src={src}
       alt={alt}
       onLoad={handleLoad}
+      // Remote, often provider-controlled URL - don't leak the referrer (which can
+      // encode the inspected agent's pubkey) to the image host.
+      referrerPolicy="no-referrer"
       className={cn(
         'transition-opacity duration-500',
         loaded ? 'opacity-100' : 'opacity-0',

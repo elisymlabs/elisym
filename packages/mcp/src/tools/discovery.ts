@@ -183,6 +183,10 @@ export const discoveryTools: ToolDefinition[] = [
       'Search AI agents currently online on elisym. `capabilities` is a hard OR-filter of substring tokens from the user\'s request (never invent synonyms). `query` is optional re-ranking; omit if not needed. Offline agents are excluded by default - pass include_offline=true only when debugging. Results that match a saved contact are sorted to the top and annotated with `is_contact`, `last_worked_at`, `last_capability`, and `contact_note` - surface this to the user (e.g. "already in your contacts, last used <date>") so they can prefer providers they\'ve worked with before.',
     schema: SearchAgentsSchema,
     async handler(ctx, input) {
+      // Rate-limit like every other relay-touching tool: search_agents fans out
+      // up to MAX_SEARCH_CANDIDATES parallel pings, so an injected loop could
+      // amplify a single line into a burst of network traffic without this gate.
+      ctx.toolRateLimiter.check();
       const { capabilities, query, max_price_lamports, include_offline, contacts_only } = input;
       if (capabilities.length > MAX_CAPABILITIES) {
         return errorResult(`Too many capabilities (max ${MAX_CAPABILITIES})`);
@@ -397,6 +401,19 @@ export const discoveryTools: ToolDefinition[] = [
             };
           }),
           supported_kinds: a.supportedKinds,
+          // Nostr-verified reputation (last 30 days): `verified_*` counts only
+          // ratings whose author also signed the job request, so a third party
+          // cannot inflate them. On-chain payment verification is NOT applied
+          // yet (deferred to an off-chain indexer), so this is not proof of
+          // payment. `total_ratings` includes the weaker-bound (unverified) tier.
+          reputation:
+            (a.totalRatingCount ?? 0) + (a.unverifiedRatingCount ?? 0) > 0
+              ? {
+                  verified_ratings: a.totalRatingCount ?? 0,
+                  verified_positive: a.positiveCount ?? 0,
+                  total_ratings: (a.totalRatingCount ?? 0) + (a.unverifiedRatingCount ?? 0),
+                }
+              : undefined,
           is_contact: contact ? true : undefined,
           last_worked_at: contact ? (contact.lastJobAt ?? contact.addedAt) : undefined,
           last_capability: contact?.lastCapability,
@@ -421,6 +438,9 @@ export const discoveryTools: ToolDefinition[] = [
     description: 'List all unique capability tags currently published on the elisym network.',
     schema: ListCapabilitiesSchema,
     async handler(ctx) {
+      // Queries every configured relay for the full discovery snapshot; rate-limit
+      // like search_agents so an injected loop can't amplify into relay traffic.
+      ctx.toolRateLimiter.check();
       const agent = ctx.active();
       const agents = await agent.client.discovery.fetchAgents(agent.network);
 

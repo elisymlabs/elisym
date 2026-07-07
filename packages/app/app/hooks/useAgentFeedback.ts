@@ -1,80 +1,59 @@
-import { KIND_JOB_FEEDBACK, KIND_JOB_REQUEST, KIND_JOB_RESULT } from '@elisym/sdk';
-import { useRef } from 'react';
+import {
+  KIND_JOB_FEEDBACK,
+  KIND_JOB_REQUEST,
+  KIND_JOB_RESULT,
+  tallyReputation,
+  type RatingTier,
+} from '@elisym/sdk';
+import { SOLANA_CLUSTER } from '~/lib/cluster';
 import type { StreamStatus } from './useAgents';
 import { useElisymClient } from './useElisymClient';
 import { useLocalQuery } from './useLocalQuery';
 
-export interface FeedbackCounts {
-  positive: number;
-  negative: number;
-  total: number;
+export interface CapabilityStats {
+  /** Ratings whose author also signed the job request (Nostr-verified). */
+  nostrVerified: RatingTier;
+  /** Ratings that passed only the weaker result-`p`-tag binding. */
+  unverified: RatingTier;
   purchases: number;
 }
 
-/** Per-capability stats for a single agent */
-export type CapabilityStatsMap = Record<string, FeedbackCounts>;
+/** capability d-tag -> per-capability stats */
+export type CapabilityStatsMap = Record<string, CapabilityStats>;
 
-export interface AgentFeedbackEntry extends FeedbackCounts {
-  /** capability d-tag → per-capability stats */
+export interface AgentFeedbackEntry {
+  nostrVerified: RatingTier;
+  unverified: RatingTier;
+  purchases: number;
   byCapability: CapabilityStatsMap;
 }
 
-/** pubkey → AgentFeedbackEntry */
+/** pubkey -> AgentFeedbackEntry */
 export type FeedbackMap = Record<string, AgentFeedbackEntry>;
 
-/** Merge two maps, keeping the max of each field per pubkey */
-function mergeMax(prev: FeedbackMap, next: FeedbackMap): FeedbackMap {
-  const merged: FeedbackMap = { ...prev };
-  for (const [key, val] of Object.entries(next)) {
-    const p = merged[key];
-    if (!p) {
-      merged[key] = val;
-    } else {
-      merged[key] = {
-        positive: Math.max(p.positive, val.positive),
-        negative: Math.max(p.negative, val.negative),
-        total: Math.max(p.total, val.total),
-        purchases: Math.max(p.purchases, val.purchases),
-        byCapability: mergeCapabilityMax(p.byCapability, val.byCapability),
-      };
-    }
-  }
-  return merged;
+function emptyTier(): RatingTier {
+  return { total: 0, positive: 0 };
 }
 
-function mergeCapabilityMax(
-  prev: CapabilityStatsMap,
-  next: CapabilityStatsMap,
-): CapabilityStatsMap {
-  const merged: CapabilityStatsMap = { ...prev };
-  for (const [key, val] of Object.entries(next)) {
-    const p = merged[key];
-    if (!p) {
-      merged[key] = val;
-    } else {
-      merged[key] = {
-        positive: Math.max(p.positive, val.positive),
-        negative: Math.max(p.negative, val.negative),
-        total: Math.max(p.total, val.total),
-        purchases: Math.max(p.purchases, val.purchases),
-      };
-    }
-  }
-  return merged;
+function capabilityOf(event: { tags: string[][] }): string | undefined {
+  return event.tags.find((tag) => tag[0] === 't' && tag[1] !== 'elisym')?.[1];
 }
 
 /**
- * Fetches feedback and purchase stats for a given set of agent pubkeys.
- * Builds both per-agent and per-capability groupings in a single pass.
+ * Fetches rating and purchase stats for a set of agent pubkeys.
  *
- * `streamStatus` gates the network fetch: if provided, the query waits for
- * the discovery stream to finish enumerating agents (`'eose'` / `'enriched'`)
- * before issuing the feedback query. This avoids one fetch per intermediate
- * agent batch as the live stream fills in.
+ * Rating counting is delegated to the SDK reputation tally (Nostr-verified via
+ * request-event authorship; no `verifyEvent` bypass, no RPC). `purchases`
+ * (completed-jobs count) is kept as a separate activity metric derived from
+ * job requests and results. Counts can legitimately decrease (latest-wins
+ * dedupe), so there is no high-water merge.
+ *
+ * `streamStatus` gates the network fetch: if provided, the query waits for the
+ * discovery stream to finish enumerating agents (`'eose'` / `'enriched'`)
+ * before issuing the query.
  */
 export function useAgentFeedback(agentPubkeys: string[], streamStatus?: StreamStatus) {
   const { client } = useElisymClient();
-  const highWater = useRef<FeedbackMap>({});
 
   // Stable key: sort and join so order doesn't cause refetches
   const pubkeysKey = agentPubkeys.slice().sort().join(',');
@@ -82,152 +61,101 @@ export function useAgentFeedback(agentPubkeys: string[], streamStatus?: StreamSt
     streamStatus === undefined || streamStatus === 'eose' || streamStatus === 'enriched';
 
   return useLocalQuery<FeedbackMap>({
-    queryKey: ['agent-feedback-v2', pubkeysKey],
+    queryKey: ['agent-feedback-v3', pubkeysKey],
     queryFn: async () => {
       if (agentPubkeys.length === 0) {
         return {};
       }
 
       const [feedbackEvents, jobRequests, jobResults] = await Promise.all([
-        client.pool.querySync({
-          kinds: [KIND_JOB_FEEDBACK],
-          '#p': agentPubkeys,
-        }),
-        client.pool.querySync({
-          kinds: [KIND_JOB_REQUEST],
-          '#p': agentPubkeys,
-        }),
-        client.pool.querySync({
-          kinds: [KIND_JOB_RESULT],
-          authors: agentPubkeys,
-        }),
+        client.pool.querySync({ kinds: [KIND_JOB_FEEDBACK], '#p': agentPubkeys }),
+        client.pool.querySync({ kinds: [KIND_JOB_REQUEST], '#p': agentPubkeys }),
+        client.pool.querySync({ kinds: [KIND_JOB_RESULT], authors: agentPubkeys }),
       ]);
 
-      // Dedup events by ID
-      const seenFeedback = new Map<string, (typeof feedbackEvents)[0]>();
-      for (const ev of feedbackEvents) {
-        seenFeedback.set(ev.id, ev);
-      }
+      // Nostr-verified rating tally (request-authorship anchored). The #p-fetched
+      // requests are the authorship anchors; the tally matches them by id.
+      const reputation = tallyReputation({
+        agentPubkeys,
+        feedbackEvents,
+        resultEvents: jobResults,
+        requestEvents: jobRequests,
+        network: SOLANA_CLUSTER,
+      });
 
-      const seenRequests = new Map<string, (typeof jobRequests)[0]>();
-      for (const req of jobRequests) {
-        seenRequests.set(req.id, req);
-      }
-
-      const map: FeedbackMap = {};
-
-      // Build set of request IDs that have a completed result
-      const completedJobIds = new Set<string>();
-      for (const res of jobResults) {
-        const jobId = res.tags.find((t) => t[0] === 'e')?.[1];
-        if (jobId) {
-          completedJobIds.add(jobId);
+      // Purchases: a job request whose id has a matching provider result is a
+      // completed job, credited to the agent that AUTHORED the result (kind:6100) -
+      // NOT the request's `p` tag, which is a customer-written target hint that a
+      // broadcast/multi-target request can point at anyone. `jobResults` is fetched
+      // with `authors: agentPubkeys`, so the author is the agent that did the work.
+      // Kept unverified (an activity signal, not a trust signal).
+      const resultAuthorByJobId = new Map<string, string>();
+      for (const result of jobResults) {
+        const jobId = result.tags.find((tag) => tag[0] === 'e')?.[1];
+        if (jobId && !resultAuthorByJobId.has(jobId)) {
+          resultAuthorByJobId.set(jobId, result.pubkey);
         }
       }
 
-      // Map job ID → { providerPubkey, capability } for feedback lookup
-      const jobMeta = new Map<string, { provider: string; capability: string }>();
-
-      for (const req of seenRequests.values()) {
-        const providerPubkey = req.tags.find((t) => t[0] === 'p')?.[1];
-        if (!providerPubkey) {
-          continue;
-        }
-
-        const capability = req.tags.find((t) => t[0] === 't' && t[1] !== 'elisym')?.[1];
-
-        if (!map[providerPubkey]) {
-          map[providerPubkey] = {
-            positive: 0,
-            negative: 0,
-            total: 0,
+      // Null-prototype: `map` is keyed by a provider pubkey taken from a raw relay
+      // event (not verified in this fold) and `byCapability` by an untrusted `t`
+      // tag - a `__proto__` value must land as a plain own key rather than walk the
+      // prototype chain (prototype pollution / bogus reads).
+      const map: FeedbackMap = Object.create(null) as FeedbackMap;
+      const entryFor = (pubkey: string): AgentFeedbackEntry => {
+        let entry = map[pubkey];
+        if (!entry) {
+          entry = {
+            nostrVerified: emptyTier(),
+            unverified: emptyTier(),
             purchases: 0,
-            byCapability: {},
+            byCapability: Object.create(null) as CapabilityStatsMap,
           };
+          map[pubkey] = entry;
         }
+        return entry;
+      };
+      const capabilityStatsFor = (
+        entry: AgentFeedbackEntry,
+        capability: string,
+      ): CapabilityStats => {
+        let stats = entry.byCapability[capability];
+        if (!stats) {
+          stats = { nostrVerified: emptyTier(), unverified: emptyTier(), purchases: 0 };
+          entry.byCapability[capability] = stats;
+        }
+        return stats;
+      };
 
-        const isCompleted = completedJobIds.has(req.id);
-
-        if (capability) {
-          jobMeta.set(req.id, { provider: providerPubkey, capability });
-          if (!map[providerPubkey].byCapability[capability]) {
-            map[providerPubkey].byCapability[capability] = {
-              positive: 0,
-              negative: 0,
-              total: 0,
-              purchases: 0,
-            };
-          }
-          if (isCompleted) {
-            map[providerPubkey].byCapability[capability].purchases++;
-          }
+      // Fold the rating tiers in from the SDK tally.
+      for (const [pubkey, rep] of reputation) {
+        const entry = entryFor(pubkey);
+        entry.nostrVerified = rep.nostrVerified;
+        entry.unverified = rep.unverified;
+        for (const [capability, tiers] of Object.entries(rep.byCapability)) {
+          const stats = capabilityStatsFor(entry, capability);
+          stats.nostrVerified = tiers.nostrVerified;
+          stats.unverified = tiers.unverified;
         }
       }
 
-      for (const ev of seenFeedback.values()) {
-        const ratingTag = ev.tags.find((t) => t[0] === 'rating');
-        if (!ratingTag) {
+      // Fold purchases in from completed job requests.
+      const seenRequestIds = new Set<string>();
+      for (const request of jobRequests) {
+        const providerPubkey = resultAuthorByJobId.get(request.id);
+        if (!providerPubkey || seenRequestIds.has(request.id)) {
           continue;
         }
-
-        const providerPubkey = ev.tags.find((t) => t[0] === 'p')?.[1];
-        if (!providerPubkey) {
-          continue;
-        }
-
-        if (!map[providerPubkey]) {
-          map[providerPubkey] = {
-            positive: 0,
-            negative: 0,
-            total: 0,
-            purchases: 0,
-            byCapability: {},
-          };
-        }
-
-        const isPositive = ratingTag[1] === '1';
-        if (isPositive) {
-          map[providerPubkey].positive++;
-        } else {
-          map[providerPubkey].negative++;
-        }
-        map[providerPubkey].total++;
-
-        // Per-capability feedback: prefer direct #t tag, fall back to jobMeta lookup
-        const directCapability = ev.tags.find((t) => t[0] === 't' && t[1] !== 'elisym')?.[1];
-        const jobId = ev.tags.find((t) => t[0] === 'e')?.[1];
-        const capability = directCapability ?? (jobId ? jobMeta.get(jobId)?.capability : undefined);
+        seenRequestIds.add(request.id);
+        const entry = entryFor(providerPubkey);
+        entry.purchases += 1;
+        const capability = capabilityOf(request);
         if (capability) {
-          const capStats = map[providerPubkey].byCapability;
-          const existing = capStats[capability];
-          const cap = existing ?? { positive: 0, negative: 0, total: 0, purchases: 0 };
-          if (!existing) {
-            capStats[capability] = cap;
-          }
-          if (isPositive) {
-            cap.positive++;
-          } else {
-            cap.negative++;
-          }
-          cap.total++;
+          capabilityStatsFor(entry, capability).purchases += 1;
         }
       }
 
-      // Derive agent-level purchases from per-capability totals (single source of truth)
-      for (const entry of Object.values(map)) {
-        entry.purchases = Object.values(entry.byCapability).reduce(
-          (sum, s) => sum + s.purchases,
-          0,
-        );
-      }
-
-      // Never decrease - merge with high water mark
-      highWater.current = mergeMax(highWater.current, map);
-      return highWater.current;
-    },
-    cacheTransform: (cached) => {
-      highWater.current = mergeMax(highWater.current, cached);
-      return highWater.current;
+      return map;
     },
     staleTime: 1000 * 30,
     refetchInterval: 1000 * 60,

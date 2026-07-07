@@ -25,6 +25,7 @@ import type { NostrPool } from '../transport/pool';
 import type {
   Job,
   JobStatus,
+  Network,
   PaymentAssetRef,
   SubCloser,
   SubmitJobOptions,
@@ -55,6 +56,13 @@ const VALID_JOB_STATUSES = new Set<string>([
   'success',
   'partial',
 ]);
+
+/**
+ * Max clock skew for an event's `created_at` in the newest-wins picks below. A validly
+ * signed event can still carry an attacker-chosen future timestamp, which would win
+ * newest-per-request and evict the legit event; reject anything dated further ahead.
+ */
+const MAX_FUTURE_SKEW_SECS = 300;
 
 function toJobStatus(raw: string): JobStatus {
   return VALID_JOB_STATUSES.has(raw) ? (raw as JobStatus) : 'unknown';
@@ -338,24 +346,36 @@ export class MarketplaceService {
     return done;
   }
 
-  /** Submit payment confirmation feedback. */
+  /**
+   * Submit payment confirmation feedback.
+   *
+   * `network` tags the event so the reputation tally can scope it to a network
+   * (a missing tag is read as `devnet` by consumers). Optional and trailing to
+   * keep the published signature backward-compatible.
+   */
   async submitPaymentConfirmation(
     identity: ElisymIdentity,
     jobEventId: string,
     providerPubkey: string,
     txSignature: string,
+    network?: Network,
   ): Promise<void> {
+    const tags: string[][] = [
+      ['e', jobEventId],
+      ['p', providerPubkey],
+      ['status', 'payment-completed'],
+      ['tx', txSignature, 'solana'],
+      ['t', 'elisym'],
+    ];
+    if (network) {
+      tags.push(['network', network]);
+    }
+
     const event = finalizeEvent(
       {
         kind: KIND_JOB_FEEDBACK,
         created_at: Math.floor(Date.now() / 1000),
-        tags: [
-          ['e', jobEventId],
-          ['p', providerPubkey],
-          ['status', 'payment-completed'],
-          ['tx', txSignature, 'solana'],
-          ['t', 'elisym'],
-        ],
+        tags,
         content: '',
       },
       identity.secretKey,
@@ -364,13 +384,21 @@ export class MarketplaceService {
     await this.pool.publishAll(event);
   }
 
-  /** Submit rating feedback for a job. */
+  /**
+   * Submit rating feedback for a job.
+   *
+   * `opts.txSignature` attaches the payment tx as proof-carrying data for a
+   * future off-chain indexer - it is NOT verified on-chain here. `opts.network`
+   * scopes the rating to a network (missing => `devnet`). The options object is
+   * a trailing 6th param to keep the published signature backward-compatible.
+   */
   async submitFeedback(
     identity: ElisymIdentity,
     jobEventId: string,
     providerPubkey: string,
     positive: boolean,
     capability?: string,
+    opts?: { txSignature?: string; network?: Network },
   ): Promise<void> {
     const tags: string[][] = [
       ['e', jobEventId],
@@ -381,6 +409,12 @@ export class MarketplaceService {
     ];
     if (capability) {
       tags.push(['t', capability]);
+    }
+    if (opts?.txSignature) {
+      tags.push(['tx', opts.txSignature, 'solana']);
+    }
+    if (opts?.network) {
+      tags.push(['network', opts.network]);
     }
 
     const event = finalizeEvent(
@@ -630,12 +664,26 @@ export class MarketplaceService {
     await this.pool.publishAll(event);
   }
 
-  /** Query job results by request IDs and decrypt NIP-44 content. */
+  /**
+   * Query job results by request IDs and decrypt NIP-44 content.
+   *
+   * SECURITY: bind results to a known author. Nostr event ids are public, so without a
+   * binding ANY key can publish a higher-`created_at` kind-6xxx tagging a victim's job id
+   * - and because NIP-44 is symmetric, even the encrypted body can be forged to the
+   * customer - winning the newest-per-request slot. For a single known provider pass
+   * `providerPubkey`. For a batch of jobs with different providers pass `providerByRequest`
+   * (jobId -> trusted provider): the author check then runs INSIDE the newest-wins pick,
+   * so a forgery cannot win the slot and evict (suppress) the legit result. A post-hoc
+   * `senderPubkey` filter is NOT sufficient - the forgery would already have displaced the
+   * real result. A request absent from `providerByRequest` (nostr-only, no known provider)
+   * accepts any author, unchanged - surfaced as unauthenticated per the caller's warning.
+   */
   async queryJobResults(
     identity: ElisymIdentity,
     requestIds: string[],
     kindOffsets?: number[],
     providerPubkey?: string,
+    providerByRequest?: Map<string, string>,
   ): Promise<
     Map<
       string,
@@ -659,8 +707,14 @@ export class MarketplaceService {
       { content: string; amount?: number; senderPubkey: string; decryptionFailed: boolean }
     >();
     const createdAtByRequest = new Map<string, number>();
+    const nowSecs = Math.floor(Date.now() / 1000);
     for (const r of results) {
       if (!verifyEvent(r)) {
+        continue;
+      }
+      // Reject a far-future `created_at` (same clamp as fetchRecentJobs) so a forged
+      // result cannot win newest-wins by post-dating the real one.
+      if (r.created_at > nowSecs + MAX_FUTURE_SKEW_SECS) {
         continue;
       }
       if (providerPubkey && r.pubkey !== providerPubkey) {
@@ -668,6 +722,14 @@ export class MarketplaceService {
       }
       const eTag = r.tags.find((t) => t[0] === 'e');
       if (!eTag?.[1]) {
+        continue;
+      }
+      // Per-request author binding for batch callers: reject a result not from the
+      // request's known provider BEFORE the newest-wins pick, so a forgery cannot win
+      // the slot and thereby suppress the legit result. A request absent from the map
+      // (nostr-only, no known provider) accepts any author, unchanged.
+      const boundProvider = providerByRequest?.get(eTag[1]);
+      if (boundProvider !== undefined && r.pubkey !== boundProvider) {
         continue;
       }
 
@@ -753,15 +815,62 @@ export class MarketplaceService {
       }
     }
 
-    // Index results by request ID (respect targeted agent, keep newest)
+    // For broadcast jobs (no `p` tag on the request) the provider the customer
+    // actually paid is named in the `p` tag of the customer's own payment-completed
+    // feedback - use it to author-bind the result, since the request has no target.
+    const requestAuthorById = new Map(requests.map((req) => [req.id, req.pubkey]));
+    const paidProviderByRequest = new Map<string, string>();
+    for (const f of feedbacks) {
+      const reqId = resolveRequestId(f);
+      if (!reqId || f.pubkey !== requestAuthorById.get(reqId)) {
+        continue;
+      }
+      if (f.tags.find((t) => t[0] === 'status')?.[1] !== 'payment-completed') {
+        continue;
+      }
+      const paidProvider = f.tags.find((t) => t[0] === 'p')?.[1];
+      if (paidProvider) {
+        paidProviderByRequest.set(reqId, paidProvider);
+      }
+    }
+
+    // The single trusted provider anchor per request: the targeted agent, or (for a
+    // broadcast job) the provider the customer actually paid. It author-binds the fields
+    // a third party must not be able to poison by `#e`-tagging the public job id:
+    // `tx` (bound to the customer below) and `asset`/amount/status (bound to this anchor).
+    // An UNBOUND broadcast job (no target, no payment) has no anchor: feedback-derived
+    // fields are dropped entirely (see the feedback loop), but its RESULT is still
+    // surfaced from the responding provider's own signed event - that is the
+    // free-broadcast flow, whose provider self-selects and cannot be anchored on Nostr.
+    // So for an unbound job the result-derived provider/status/amount/content are
+    // unauthenticated (display-only, pending the off-chain indexer); the boundary-wrapped
+    // sanitizer still caps result-content blast radius.
+    const boundProviderByRequest = new Map<string, string>();
+    for (const req of requests) {
+      const bound = targetedAgentByRequest.get(req.id) ?? paidProviderByRequest.get(req.id);
+      if (bound) {
+        boundProviderByRequest.set(req.id, bound);
+      }
+    }
+
+    // Index results by request ID (clock-skew capped, keep newest). Author-bound to the
+    // anchor when there is one; an unbound broadcast job keeps the responding provider's
+    // own result (free-broadcast) - unauthenticated, display-only per the anchor note.
+    const nowSecs = Math.floor(Date.now() / 1000);
     const resultsByRequest = new Map<string, Event>();
     for (const r of results) {
       const reqId = resolveRequestId(r);
       if (!reqId) {
         continue;
       }
-      const targeted = targetedAgentByRequest.get(reqId);
-      if (targeted && r.pubkey !== targeted) {
+      // Reject a far-future `created_at` so a forged result cannot win newest-wins.
+      if (r.created_at > nowSecs + MAX_FUTURE_SKEW_SECS) {
+        continue;
+      }
+      // Bind to the anchor when present; an unbound broadcast job keeps the responding
+      // provider's own result (free-broadcast) - see the boundProviderByRequest note.
+      const boundProvider = boundProviderByRequest.get(reqId);
+      if (boundProvider && r.pubkey !== boundProvider) {
         continue;
       }
       const existing = resultsByRequest.get(reqId);
@@ -770,14 +879,18 @@ export class MarketplaceService {
       }
     }
 
+    // Only the bound provider's own feedback drives the feedback-derived summary
+    // (status/amount/asset). Unlike the result loop above, an unbound (broadcast) job
+    // surfaces NO feedback - a status/amount claim from an arbitrary author carries no
+    // deliverable, so forging one via an `#e`-tag on the public job id gains nothing.
     const feedbackByRequest = new Map<string, Event>();
     for (const f of feedbacks) {
       const reqId = resolveRequestId(f);
-      if (!reqId) {
+      if (!reqId || f.created_at > nowSecs + MAX_FUTURE_SKEW_SECS) {
         continue;
       }
-      const targeted = targetedAgentByRequest.get(reqId);
-      if (targeted && f.pubkey !== targeted) {
+      const boundProvider = boundProviderByRequest.get(reqId);
+      if (!boundProvider || f.pubkey !== boundProvider) {
         continue;
       }
       const existing = feedbackByRequest.get(reqId);
@@ -805,7 +918,9 @@ export class MarketplaceService {
     for (const req of requests) {
       const result = resultsByRequest.get(req.id);
       const feedback = feedbackByRequest.get(req.id);
-      const jobAgentPubkey = result?.pubkey ?? feedback?.pubkey;
+      // Provider is the result author or the bound provider anchor - never a feedback
+      // author, which for an unbound broadcast job could be anyone.
+      const jobAgentPubkey = result?.pubkey ?? boundProviderByRequest.get(req.id);
 
       if (agentPubkeys && agentPubkeys.size > 0 && jobAgentPubkey) {
         if (!agentPubkeys.has(jobAgentPubkey)) {
@@ -828,15 +943,22 @@ export class MarketplaceService {
         amount = safeParseInt(amtTag?.[1]);
       }
 
-      // Check all feedbacks for tx hash + payment asset (encoded inside the
-      // payment-required feedback's amount tag as `[amount, raw, requestJson, chain]`).
+      // Read the tx hash + payment asset from feedback, but bind each field to
+      // its legitimate author so a third party cannot poison them by publishing a
+      // feedback that merely `#e`-references the public job id. `tx` is signed by
+      // the customer (the request author) in the payment-completed / rating
+      // feedback; the payment asset rides in the provider's payment-required
+      // feedback (its `amount` tag holds `[amount, raw, requestJson, chain]`).
+      const jobProvider = boundProviderByRequest.get(req.id);
       const allFeedbacksForReq = feedbacksByRequestId.get(req.id) ?? [];
       for (const fb of allFeedbacksForReq) {
-        const txTag = fb.tags.find((t) => t[0] === 'tx');
-        if (txTag?.[1] && !txHash) {
-          txHash = txTag[1];
+        if (!txHash && fb.pubkey === req.pubkey) {
+          const txTag = fb.tags.find((t) => t[0] === 'tx');
+          if (txTag?.[1]) {
+            txHash = txTag[1];
+          }
         }
-        if (!asset) {
+        if (!asset && jobProvider && fb.pubkey === jobProvider) {
           const amtTag = fb.tags.find((t) => t[0] === 'amount');
           const requestJson = amtTag?.[2];
           if (requestJson) {
@@ -863,6 +985,9 @@ export class MarketplaceService {
             }
           }
         }
+        // Amount fallback: `feedback` was already selected as the bound provider's own
+        // feedback above, so it carries no third-party amount and needs no further
+        // author check here.
         if (!amount) {
           const amtTag = feedback.tags.find((t) => t[0] === 'amount');
           amount = safeParseInt(amtTag?.[1]);

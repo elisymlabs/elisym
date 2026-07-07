@@ -232,6 +232,36 @@ describe('resolveOutputPath', () => {
     );
   });
 
+  it('refuses new sensitive credential directories (.docker, .kube, .config/gcloud)', async () => {
+    await expect(resolveOutputPath(join(process.cwd(), '.docker', 'config.json'))).rejects.toThrow(
+      /sensitive path/,
+    );
+    await expect(resolveOutputPath(join(process.cwd(), '.kube', 'config'))).rejects.toThrow(
+      /sensitive path/,
+    );
+    await expect(
+      resolveOutputPath(join(process.cwd(), '.config', 'gcloud', 'credentials.db')),
+    ).rejects.toThrow(/sensitive path/);
+  });
+
+  it('refuses sensitive credential filenames (authorized_keys, wallet.dat, credentials)', async () => {
+    await expect(resolveOutputPath(join(process.cwd(), 'authorized_keys'))).rejects.toThrow(
+      /sensitive path/,
+    );
+    await expect(resolveOutputPath(join(process.cwd(), 'wallet.dat'))).rejects.toThrow(
+      /sensitive path/,
+    );
+    await expect(resolveOutputPath(join(process.cwd(), 'credentials'))).rejects.toThrow(
+      /sensitive path/,
+    );
+  });
+
+  it('allows a non-sensitive .config subdir (no over-block)', async () => {
+    await expect(
+      resolveOutputPath(join(process.cwd(), '.config', 'myapp', 'out.bin')),
+    ).resolves.toBeTruthy();
+  });
+
   it('rejects an in-cwd destination symlink whose target escapes the working directory', async () => {
     // The link sits inside cwd (so the logical-path confinement check passes), but
     // its target is outside cwd: blobs.export would follow the link and overwrite

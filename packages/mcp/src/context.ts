@@ -114,8 +114,10 @@ export interface WithdrawalNonce {
   /** Asset to withdraw. Defaults to 'sol' for back-compat with pre-USDC nonces. */
   token?: 'sol' | 'usdc';
   /**
-   * Resolved subunits at preview time - used for display only, not for match
-   * verification. For SOL this is lamports; for USDC this is 1e-6 USDC.
+   * Amount resolved at preview time (SOL: lamports; USDC: 1e-6 USDC). Authoritative
+   * for execution at confirm time: re-parsing `amountRaw` (especially "all") could
+   * move a different amount if the balance shifted between preview and confirm. NOT
+   * used for nonce match verification - that is `amountRaw`.
    */
   lamports: bigint;
   createdAt: number;

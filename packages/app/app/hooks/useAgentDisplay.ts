@@ -51,9 +51,17 @@ export interface AgentDisplayData {
   picture: string | undefined;
   cards: CapabilityCard[];
   agent: Agent;
+  /**
+   * Rating figures reflect the **Nostr-verified** tier (rating author also
+   * signed the job request), so the positive rate cannot be inflated by a third
+   * party. `feedbackTotalAllTiers` adds the weaker-bound unverified ratings for
+   * a broader "total". None of this is payment-verified (deferred to the
+   * indexer) - it is distinct from the identity `VerifiedBadge`.
+   */
   feedbackPositive: number;
   feedbackNegative: number;
   feedbackTotal: number;
+  feedbackTotalAllTiers: number;
   purchases: number;
   byCapability: CapabilityStatsMap;
 }
@@ -83,12 +91,23 @@ function toDisplayData(agent: Agent, feedbackMap?: FeedbackMap): AgentDisplayDat
     (c): c is CapabilityCard & { payment: NonNullable<CapabilityCard['payment']> } =>
       c.payment?.job_price !== null && c.payment?.job_price !== undefined,
   );
-  const cheapestCard = pricedCards.reduce<(typeof pricedCards)[number] | undefined>((acc, c) => {
-    if (!acc) {
-      return c;
-    }
-    return (c.payment.job_price ?? 0) < (acc.payment.job_price ?? 0) ? c : acc;
-  }, undefined);
+  // Raw `job_price` subunits are NOT comparable across assets (SOL has 9 decimals,
+  // USDC 6, so equal-fiat amounts differ ~1000x). Restrict the min to a single asset -
+  // the first priced card's - rather than a global compare that would pick the wrong
+  // "cheapest" for a mixed-asset agent. Shown as a "from <asset>" starting price.
+  const primaryAssetCard = pricedCards[0];
+  const cheapestCard = primaryAssetCard
+    ? pricedCards
+        .filter(
+          (c) =>
+            (c.payment.token ?? 'sol') === (primaryAssetCard.payment.token ?? 'sol') &&
+            c.payment.mint === primaryAssetCard.payment.mint,
+        )
+        .reduce(
+          (acc, c) => ((c.payment.job_price ?? 0) < (acc.payment.job_price ?? 0) ? c : acc),
+          primaryAssetCard,
+        )
+    : undefined;
   const price = cheapestCard?.payment.job_price;
 
   // Find any card with a wallet address
@@ -119,9 +138,12 @@ function toDisplayData(agent: Agent, feedbackMap?: FeedbackMap): AgentDisplayDat
     picture: agent.picture,
     cards,
     agent,
-    feedbackPositive: fb?.positive ?? 0,
-    feedbackNegative: fb?.negative ?? 0,
-    feedbackTotal: fb?.total ?? 0,
+    // The positive rate keys on the Nostr-verified tier only, so a third party
+    // cannot inflate it. `feedbackTotalAllTiers` includes unverified ratings.
+    feedbackPositive: fb?.nostrVerified.positive ?? 0,
+    feedbackNegative: fb ? fb.nostrVerified.total - fb.nostrVerified.positive : 0,
+    feedbackTotal: fb?.nostrVerified.total ?? 0,
+    feedbackTotalAllTiers: fb ? fb.nostrVerified.total + fb.unverified.total : 0,
     purchases: fb?.purchases ?? 0,
     byCapability: fb?.byCapability ?? {},
   };

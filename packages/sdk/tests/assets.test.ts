@@ -5,6 +5,7 @@ import {
   assetKey,
   assetByKey,
   resolveKnownAsset,
+  resolveAssetFromPaymentRequest,
   parseAssetAmount,
   formatAssetAmount,
   type Asset,
@@ -45,6 +46,31 @@ describe('resolveKnownAsset / assetByKey', () => {
     expect(KNOWN_ASSETS[0]).toBe(NATIVE_SOL);
     expect(KNOWN_ASSETS[1]?.token).toBe('usdc');
     expect(KNOWN_ASSETS[1]?.mint).toBe('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
+  });
+});
+
+describe('resolveAssetFromPaymentRequest', () => {
+  it('returns NATIVE_SOL when no asset is present', () => {
+    expect(resolveAssetFromPaymentRequest({})).toBe(NATIVE_SOL);
+  });
+
+  it('resolves a known asset', () => {
+    const sol = resolveAssetFromPaymentRequest({ asset: { chain: 'solana', token: 'sol' } });
+    expect(sol.token).toBe('sol');
+  });
+
+  it('strips unsafe chars from provider asset ids in the unknown-asset error', () => {
+    let msg = '';
+    try {
+      resolveAssetFromPaymentRequest({ asset: { chain: 'evil\nchain <x>', token: 'tok' } });
+    } catch (error) {
+      msg = error instanceof Error ? error.message : String(error);
+    }
+    expect(msg).toContain('Unknown asset');
+    // Injection payload (newline, markup) stripped; safe chars preserved.
+    expect(msg).not.toContain('\n');
+    expect(msg).not.toContain('<x>');
+    expect(msg).toContain('evilchain');
   });
 });
 

@@ -29,9 +29,20 @@ const solanaAddressSchema = z
   .regex(BASE58_RE, 'must be base58')
   .regex(SOLANA_ADDRESS_LENGTH_RE, 'must be 32-44 base58 chars');
 
+// Asset identifiers are short lowercase slugs ('solana', 'usdc'). Bounding the
+// charset and length keeps a malicious `payment-required` from smuggling prompt-
+// injection text through `chain`/`token` into an "unknown asset" error that
+// surfaces (unwrapped) to the customer's LLM.
+const ASSET_ID_RE = /^[a-z0-9-]+$/;
+const assetIdSchema = z
+  .string()
+  .min(1)
+  .max(32)
+  .regex(ASSET_ID_RE, 'must be a lowercase asset id (a-z, 0-9, hyphen)');
+
 const paymentAssetRefSchema = z.object({
-  chain: z.string().min(1),
-  token: z.string().min(1),
+  chain: assetIdSchema,
+  token: assetIdSchema,
   mint: solanaAddressSchema.optional(),
   decimals: z.number().int().min(0).max(18),
 });

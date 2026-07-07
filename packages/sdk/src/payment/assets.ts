@@ -65,6 +65,16 @@ export function assetByKey(key: string): Asset | undefined {
  * asset that isn't in `KNOWN_ASSETS` - callers that want to tolerate unknown
  * assets should check `resolveKnownAsset` directly instead.
  */
+/**
+ * Strip a provider-supplied asset id to safe chars before embedding it in an error
+ * message. `asset.chain`/`token`/`mint` are raw provider input here (this runs
+ * before any Zod schema), so an un-stripped value could smuggle prompt-injection
+ * text (newlines, fake markers) into an error that surfaces to a customer LLM.
+ */
+function displayAssetId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 64);
+}
+
 export function resolveAssetFromPaymentRequest(request: {
   asset?: { chain: string; token: string; mint?: string };
 }): Asset {
@@ -74,8 +84,8 @@ export function resolveAssetFromPaymentRequest(request: {
   const found = resolveKnownAsset(request.asset.chain, request.asset.token, request.asset.mint);
   if (!found) {
     const display = request.asset.mint
-      ? `${request.asset.chain}:${request.asset.token}:${request.asset.mint}`
-      : `${request.asset.chain}:${request.asset.token}`;
+      ? `${displayAssetId(request.asset.chain)}:${displayAssetId(request.asset.token)}:${displayAssetId(request.asset.mint)}`
+      : `${displayAssetId(request.asset.chain)}:${displayAssetId(request.asset.token)}`;
     throw new Error(
       `Unknown asset in payment request: ${display}. ` +
         `Known assets: ${KNOWN_ASSETS.map(assetKey).join(', ')}`,

@@ -33,6 +33,8 @@ export const NETWORK = 'devnet';
 
 const PRELOAD_TIMEOUT_MS = 3000;
 const MAX_FIRST_PAINT_MS = 8000;
+/** Reject a streaming paidJob timestamp dated more than this far in the future. */
+const MAX_PAID_JOB_FUTURE_SKEW_SECS = 300;
 
 type Patch = { type: 'agent'; agent: Agent } | { type: 'paidJob'; pubkey: string; ts: number };
 
@@ -96,6 +98,9 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
           if (
             existing &&
             !existing.lastPaidJobTx &&
+            // Defense-in-depth: the SDK already rejects future-dated result events,
+            // but guard the consumer too so a future `patch.ts` can't pin an agent.
+            patch.ts <= Math.floor(Date.now() / 1000) + MAX_PAID_JOB_FUTURE_SKEW_SECS &&
             (!existing.lastPaidJobAt || patch.ts > existing.lastPaidJobAt)
           ) {
             writeAgent({ ...existing, lastPaidJobAt: patch.ts });

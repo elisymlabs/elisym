@@ -51,7 +51,7 @@ import { useIdentity } from '~/hooks/useIdentity';
 import { useJobHistory } from '~/hooks/useJobHistory';
 import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
-import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
+import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
@@ -77,6 +77,13 @@ const PENDING_POLL_MAX_MS = 24 * 60 * 60 * 1000;
 // `payment-completed` (tab closed after paying, before the result arrived).
 const RESUMABLE_PENDING_STATUSES = new Set(['pending', 'payment-completed']);
 
+/**
+ * The payment tx landed in a block but reverted on-chain (no funds moved). Distinct
+ * from a confirmation/network failure so the catch can mark a genuine revert 'error'
+ * (not recoverable) while a maybe-landed failure becomes resumable 'pending'.
+ */
+class PaymentRevertedError extends Error {}
+
 async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -100,7 +107,7 @@ async function buildVersionedPaymentTransaction(
   paymentRequest: PaymentRequestData,
   payerAddress: string,
   jobEventId: string,
-): Promise<VersionedTransaction> {
+): Promise<{ tx: VersionedTransaction; blockhash: string; lastValidBlockHeight: number }> {
   const payerSigner = createNoopSigner(address(payerAddress));
   const instructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
     jobEventId,
@@ -127,7 +134,12 @@ async function buildVersionedPaymentTransaction(
   const compiled = compileTransaction(message);
   const wireBase64 = getBase64EncodedWireTransaction(compiled);
   const wireBytes = Uint8Array.from(atob(wireBase64), (c) => c.charCodeAt(0));
-  return VersionedTransaction.deserialize(wireBytes);
+  return {
+    tx: VersionedTransaction.deserialize(wireBytes),
+    blockhash: latestBlockhash.blockhash,
+    // web3.js `confirmTransaction` strategy form takes a number; kit returns a bigint slot.
+    lastValidBlockHeight: Number(latestBlockhash.lastValidBlockHeight),
+  };
 }
 
 export interface ActiveBuySession {
@@ -155,6 +167,8 @@ export interface ActiveBuySession {
   pending: boolean;
   lastInput: string;
   rated: boolean;
+  /** Solana tx signature of the confirmed payment, attached to a later rating as proof. */
+  txHash?: string;
   /**
    * When the job carried a file INPUT, its attachment descriptor - so the modal
    * shows a live input preview without waiting for a history refresh. With deferred
@@ -322,6 +336,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // timeout is treated as "still processing" (pending) rather than an
         // error. Closure-local so it survives across the async callbacks.
         let paidLocally = false;
+        // Set once the payment tx is broadcast (signature obtained) but before
+        // confirmation completes. A wait-window timeout in that window is NOT a hard
+        // failure - the tx may still land - so the timeout marks it resumable-pending.
+        let paymentSubmitted = false;
 
         // Guards against a DUPLICATE `payment-required` event triggering a second
         // on-chain payment for the same job. Set synchronously at the top of the
@@ -396,11 +414,36 @@ export function BuyProvider({ children }: { children: ReactNode }) {
 
                 const paymentRequest: PaymentRequestData = JSON.parse(paymentRequestJson);
 
-                // The `amount` tag on the payment-required feedback is what the
-                // provider claims to charge; `paymentRequest.amount` is what the
-                // signed request will actually move. They must agree, otherwise
-                // the feedback understated the real charge - abort.
-                if (amount !== undefined && amount !== paymentRequest.amount) {
+                // The card advertises a price in ONE asset; refuse a request that
+                // switches the asset (e.g. a SOL-priced card quoting the same
+                // numeric amount in USDC subunits). `maxAmountLamports` bounds only
+                // the number, not the currency, so without this a provider could
+                // bait-and-switch the asset after the customer committed. Card
+                // `token` absent = native SOL; request `asset` absent = native SOL.
+                const cardToken = card.payment?.token ?? 'sol';
+                const cardMint = card.payment?.mint;
+                const requestChain = paymentRequest.asset?.chain ?? 'solana';
+                const requestToken = paymentRequest.asset?.token ?? 'sol';
+                const requestMint = paymentRequest.asset?.mint;
+                if (
+                  requestChain !== 'solana' ||
+                  requestToken !== cardToken ||
+                  requestMint !== cardMint
+                ) {
+                  throw new Error(
+                    'Payment asset mismatch: the signed request charges a different asset than ' +
+                      'the card advertises. Refusing to proceed.',
+                  );
+                }
+
+                // Defense-in-depth cross-check: when the provider advertised an
+                // `amount` on the payment-required feedback, it must match
+                // `paymentRequest.amount` (what the signed request actually moves) -
+                // catches a provider that quoted low then signed high. A missing/zero
+                // advertised amount has nothing to cross-check; the real bound is
+                // `maxAmountLamports` (<= the card price) + `validatePaymentRequest`
+                // + the asset check above.
+                if (amount !== undefined && amount !== 0 && amount !== paymentRequest.amount) {
                   throw new Error(
                     `Payment amount mismatch: feedback advertised ${amount} but the signed ` +
                       `request charges ${paymentRequest.amount}. Refusing to proceed.`,
@@ -421,13 +464,37 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   id: toastId,
                 });
 
-                const versionedTx = await buildVersionedPaymentTransaction(
+                const {
+                  tx: versionedTx,
+                  blockhash,
+                  lastValidBlockHeight,
+                } = await buildVersionedPaymentTransaction(
                   paymentRequest,
                   publicKey.toBase58(),
                   jobEventId,
                 );
                 const signature = await sendTransaction(versionedTx, connection);
-                await connection.confirmTransaction(signature, 'confirmed');
+                paymentSubmitted = true;
+                // Persist the tx signature immediately - the payment is now on-chain.
+                // If confirmTransaction throws (an RPC hiccup after the tx landed) or the
+                // confirmation publish below exhausts its retries, the catch marks the job
+                // 'error', but this merge keeps the signature so a successful payment is
+                // never discarded and can be reconciled from history.
+                snapshotUpdateJob(jobEventId, { txHash: signature });
+                // Strategy form (blockhash + lastValidBlockHeight) so a dropped tx rejects
+                // at blockhash expiry instead of hanging `buying` forever - the deprecated
+                // single-signature form has no expiry. Then inspect the result: a tx can
+                // land in a block yet revert (err non-null) without throwing; treating that
+                // as success would publish a payment-completed for an unpaid job.
+                const confirmation = await connection.confirmTransaction(
+                  { signature, blockhash, lastValidBlockHeight },
+                  'confirmed',
+                );
+                if (confirmation.value.err) {
+                  throw new PaymentRevertedError(
+                    `Transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`,
+                  );
+                }
                 invalidateWalletBalances(queryClient, publicKey.toBase58());
 
                 await retryWithBackoff(() =>
@@ -436,6 +503,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                     jobEventId,
                     agentPubkey,
                     signature,
+                    SOLANA_CLUSTER,
                   ),
                 );
 
@@ -445,12 +513,38 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   txHash: signature,
                 });
                 paidLocally = true;
-                setSession((prev) => (sessionMatches(prev) ? { ...prev, paid: true } : prev));
+                setSession((prev) =>
+                  sessionMatches(prev) ? { ...prev, paid: true, txHash: signature } : prev,
+                );
 
                 toast.loading('Payment sent, waiting for result...', { id: toastId });
               } catch (err) {
                 const msg = err instanceof Error ? err.message : 'Payment failed';
-                snapshotUpdateJob(jobEventId, { status: 'error' });
+                // If the tx was broadcast (signature obtained) but confirmation failed
+                // for a reason OTHER than an on-chain revert - an RPC error, or the
+                // Nostr payment-completed publish exhausting its retries - the payment
+                // may have landed. Mark it resumable 'pending' (txHash already saved)
+                // so the poller reconciles it, instead of a terminal 'error'. A genuine
+                // revert (no funds moved) stays 'error'.
+                const resumable = paymentSubmitted && !(err instanceof PaymentRevertedError);
+                if (resumable) {
+                  snapshotUpdateJob(jobEventId, { status: 'pending' });
+                  setSession((prev) => (sessionMatches(prev) ? { ...prev, buying: false } : prev));
+                  cleanupRef.current?.();
+                  cleanupRef.current = null;
+                  toast.dismiss(toastId);
+                  toast('Payment sent - still confirming; check job history shortly.');
+                  return;
+                }
+                // A confirmed on-chain revert moved no funds, so drop the signature we
+                // optimistically persisted before confirmation - otherwise it could later
+                // ride a rating as false payment proof for a payment that never landed.
+                snapshotUpdateJob(
+                  jobEventId,
+                  err instanceof PaymentRevertedError
+                    ? { status: 'error', txHash: undefined }
+                    : { status: 'error' },
+                );
                 setSession((prev) =>
                   sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
                 );
@@ -573,6 +667,18 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // background poller pick it up. A timeout before payment means
               // nothing settled - surface it as an error.
               if (!paidLocally) {
+                if (paymentSubmitted) {
+                  // Tx broadcast but not yet confirmed when the wait window elapsed -
+                  // the payment may still land, so mark it resumable-pending (the txHash
+                  // is already persisted) and let the poller reconcile it, rather than a
+                  // terminal 'error'.
+                  snapshotUpdateJob(jobEventId, { status: 'pending' });
+                  setSession((prev) => (sessionMatches(prev) ? { ...prev, buying: false } : prev));
+                  cleanupRef.current = null;
+                  toast.dismiss(toastId);
+                  toast('Payment sent - still confirming; check job history shortly.');
+                  return;
+                }
                 snapshotUpdateJob(jobEventId, { status: 'error' });
                 setSession((prev) =>
                   sessionMatches(prev)
@@ -747,7 +853,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       if (!session || !session.jobId || session.rated) {
         return;
       }
-      const { jobId, agentPubkey, cardName } = session;
+      const { jobId, agentPubkey, cardName, txHash } = session;
       setSession((prev) => (prev ? { ...prev, rated: true } : prev));
       try {
         const identity = idCtx.identity;
@@ -757,6 +863,8 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           agentPubkey,
           positive,
           toDTag(cardName),
+          // Attach the payment proof (for the future indexer) and the network.
+          { txSignature: txHash, network: SOLANA_CLUSTER },
         );
         await cacheSet(`rated:${jobId}`, true);
         track('rate-result', { rating: positive ? 'good' : 'bad' });

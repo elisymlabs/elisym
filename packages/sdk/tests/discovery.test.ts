@@ -12,6 +12,7 @@ import {
   DiscoveryService,
   compareAgentsByRank,
   computeRankKey,
+  parseCapabilityEvent,
   toDTag,
 } from '../src/services/discovery';
 import type { NostrPool } from '../src/transport/pool';
@@ -24,6 +25,7 @@ function createMockPool(): NostrPool & { published: Event[] } {
     querySync: vi.fn().mockResolvedValue([]),
     queryBatched: vi.fn().mockResolvedValue([]),
     queryBatchedByTag: vi.fn().mockResolvedValue([]),
+    queryByIds: vi.fn().mockResolvedValue([]),
     publish: vi.fn(async (event: Event) => {
       published.push(event);
     }),
@@ -72,6 +74,46 @@ function makeCapabilityEvent(
     identity.secretKey,
   );
 }
+
+// --- clock skew (future-dated capability events) ---
+
+describe('parseCapabilityEvent - future timestamp', () => {
+  it('rejects a capability event dated beyond the clock-skew margin', () => {
+    const agent = ElisymIdentity.generate();
+    const future = makeCapabilityEvent(agent, makeCard(), {
+      createdAt: Math.floor(Date.now() / 1000) + 3600, // 1h ahead (> 300s skew)
+    });
+    expect(parseCapabilityEvent(future, 'devnet')).toBeNull();
+  });
+
+  it('accepts an event within the clock-skew margin', () => {
+    const agent = ElisymIdentity.generate();
+    const recent = makeCapabilityEvent(agent, makeCard(), {
+      createdAt: Math.floor(Date.now() / 1000) + 60, // within 300s skew
+    });
+    expect(parseCapabilityEvent(recent, 'devnet')).not.toBeNull();
+  });
+});
+
+describe('DiscoveryService.fetchAgentsPage - future timestamp eviction', () => {
+  it('a forged future-dated event cannot evict the legit event from the dedup slot', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    const nowSecs = Math.floor(Date.now() / 1000);
+    const legit = makeCapabilityEvent(agent, makeCard(), { createdAt: nowSecs - 60 });
+    // Same (pubkey, d-tag), dated ~100y ahead - would win the newest-wins dedup.
+    const forged = makeCapabilityEvent(agent, makeCard(), {
+      createdAt: nowSecs + 100 * 365 * 24 * 3600,
+    });
+    (pool.querySync as any).mockResolvedValue([legit, forged]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(1);
+    // Forged far-future event dropped, so lastSeen reflects the legit event.
+    expect(agents[0]!.lastSeen).toBeLessThanOrEqual(nowSecs + 300);
+  });
+});
 
 // --- toDTag ---
 
@@ -451,6 +493,43 @@ describe('DiscoveryService.enrichWithMetadata', () => {
     expect(agents[0]!.about).toBe('Hello');
   });
 
+  it('rejects a non-https picture/banner URL (tracking / SSRF probe)', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+
+    const metaEvent = finalizeEvent(
+      {
+        kind: 0,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        content: JSON.stringify({
+          name: 'Mallory',
+          picture: 'http://192.168.1.1/track.png', // http -> intranet SSRF / tracking
+          banner: 'javascript:alert(1)', // non-http scheme
+        }),
+      },
+      agent.secretKey,
+    );
+    (pool.queryBatched as any).mockResolvedValue([metaEvent]);
+
+    const svc = new DiscoveryService(pool as any);
+    const agents = [
+      {
+        pubkey: agent.publicKey,
+        npub: agent.npub,
+        cards: [],
+        eventId: '',
+        supportedKinds: [],
+        lastSeen: 0,
+      },
+    ];
+    await svc.enrichWithMetadata(agents as any);
+
+    expect(agents[0]!.name).toBe('Mallory');
+    expect(agents[0]!.picture).toBeUndefined();
+    expect(agents[0]!.banner).toBeUndefined();
+  });
+
   it('handles empty agent list', async () => {
     const pool = createMockPool();
     const svc = new DiscoveryService(pool as any);
@@ -690,15 +769,33 @@ function makeResultEvent(
   );
 }
 
+/** A signed job request J (kind 5xxx) authored by the customer, targeting a provider. */
+function makeRequestEvent(customer: ElisymIdentity, providerPubkey: string, label: string): Event {
+  return finalizeEvent(
+    {
+      kind: KIND_JOB_REQUEST,
+      created_at: Math.floor(Date.now() / 1000) - 300,
+      tags: [
+        ['p', providerPubkey],
+        ['t', 'elisym'],
+      ],
+      content: label,
+    },
+    customer.secretKey,
+  );
+}
+
 /**
- * Build a feedback + matching result event for one delivered, customer-rated job.
- * The result is tagged to the customer (`p`) so the rating/payment counts under the
- * authorship binding; each call uses a distinct jobEventId so ratings dedupe correctly.
+ * Build a request + result + feedback for one delivered, customer-rated job.
+ * The request J (authored by the customer, targeting the provider) is the
+ * authorship anchor; its id is the jobEventId the result and feedback reference,
+ * so the rating counts in the Nostr-verified tier. The `label` is only for
+ * readability (a distinct request event id is generated per call regardless).
  */
 function ratedJob(
   provider: ElisymIdentity,
   customer: ElisymIdentity,
-  jobEventId: string,
+  label: string,
   opts: {
     feedbackAt: number;
     resultAt: number;
@@ -706,8 +803,11 @@ function ratedJob(
     status?: string;
     txSignature?: string;
   },
-): { feedback: Event; result: Event } {
+): { feedback: Event; result: Event; request: Event } {
+  const request = makeRequestEvent(customer, provider.publicKey, label);
+  const jobEventId = request.id;
   return {
+    request,
     feedback: makeFeedbackEvent(customer, provider.publicKey, {
       createdAt: opts.feedbackAt,
       jobEventId,
@@ -731,6 +831,7 @@ function setupRoutedPool(opts: {
   capabilityEvents: Event[];
   resultEvents: Event[];
   feedbackEvents: Event[];
+  requestEvents?: Event[];
   metaEvents?: Event[];
 }): RoutedPool {
   const pool = createMockPool();
@@ -752,6 +853,11 @@ function setupRoutedPool(opts: {
       return Promise.resolve(opts.feedbackEvents);
     }
     return Promise.resolve([]);
+  });
+  // Request events (authorship anchor) are fetched by id.
+  (pool.queryByIds as any).mockImplementation((_filter: Omit<Filter, 'ids'>, ids: string[]) => {
+    const wanted = new Set(ids);
+    return Promise.resolve((opts.requestEvents ?? []).filter((event) => wanted.has(event.id)));
   });
   return pool as RoutedPool;
 }
@@ -828,11 +934,13 @@ describe('DiscoveryService.fetchAgents ranking', () => {
     ];
     const feedbacks = jobs.map((job) => job.feedback);
     const results = jobs.map((job) => job.result);
+    const requests = jobs.map((job) => job.request);
 
     const pool = setupRoutedPool({
       capabilityEvents: [cap1, cap2],
       resultEvents: results,
       feedbackEvents: feedbacks,
+      requestEvents: requests,
     });
 
     const svc = new DiscoveryService(pool as any);
@@ -896,11 +1004,13 @@ describe('DiscoveryService.fetchAgents ranking', () => {
     ];
     const feedbacks = jobs.map((job) => job.feedback);
     const results = jobs.map((job) => job.result);
+    const requests = jobs.map((job) => job.request);
 
     const pool = setupRoutedPool({
       capabilityEvents: [capFresh, capStale],
       resultEvents: results,
       feedbackEvents: feedbacks,
+      requestEvents: requests,
     });
 
     const svc = new DiscoveryService(pool as any);
@@ -943,7 +1053,8 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       { createdAt: now - 5000 },
     );
 
-    const jobPaid = 'job-paid';
+    const requestPaid = makeRequestEvent(customer, aPaid.publicKey, 'job-paid');
+    const jobPaid = requestPaid.id;
     const feedbacks = [
       makeFeedbackEvent(customer, aPaid.publicKey, {
         createdAt: now - 200,
@@ -964,6 +1075,7 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       capabilityEvents: [capPaid, capColdNew, capColdOld],
       resultEvents: results,
       feedbackEvents: feedbacks,
+      requestEvents: [requestPaid],
     });
 
     const svc = new DiscoveryService(pool as any);
@@ -1015,6 +1127,7 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       capabilityEvents: [cap],
       resultEvents: jobs.map((job) => job.result),
       feedbackEvents: jobs.map((job) => job.feedback),
+      requestEvents: jobs.map((job) => job.request),
     });
 
     const svc = new DiscoveryService(pool as any);
@@ -1093,7 +1206,9 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       { createdAt: now - 30 },
     );
 
-    const jobVerified = 'job-verified';
+    // The verified job's request J (authorship anchor); its id is the jobEventId.
+    const requestVerified = makeRequestEvent(customer, verifiedAgent.publicKey, 'job-verified');
+    const jobVerified = requestVerified.id;
     const feedbacks = [
       // Orphan: payment-completed with no matching result event.
       makeFeedbackEvent(customer, orphanAgent.publicKey, {
@@ -1122,6 +1237,7 @@ describe('DiscoveryService.fetchAgents ranking', () => {
       capabilityEvents: [capOrphan, capVerified],
       resultEvents: results,
       feedbackEvents: feedbacks,
+      requestEvents: [requestVerified],
     });
 
     const svc = new DiscoveryService(pool as any);

@@ -102,14 +102,40 @@ export interface Agent {
   supportedKinds: number[];
   /** Newest network signal of any kind: capability publish, result event, or feedback event. */
   lastSeen: number;
-  /** Unix seconds of the agent's most recent on-chain-verified paid job. Undefined if none. */
+  /**
+   * Unix seconds of the agent's most recent paid job, request-authorship-bound
+   * (the `payment-completed` author equals the job request's author). Undefined
+   * if none. Read by `compareAgentsByRank` as the top sort key.
+   */
   lastPaidJobAt?: number;
-  /** Solana tx signature of the verified paid job referenced by `lastPaidJobAt`. */
+  /** Solana tx signature of the paid job referenced by `lastPaidJobAt`. */
   lastPaidJobTx?: string;
-  /** Count of `rating=1` feedback events targeting this agent (last 30 days). */
+  /**
+   * Nostr-verified positive ratings (last 30 days): the rating author signed
+   * the job request too. Read by `compareAgentsByRank`.
+   */
   positiveCount?: number;
-  /** Count of all rated feedback events targeting this agent (last 30 days). */
+  /** Nostr-verified total ratings (last 30 days). Read by `compareAgentsByRank`. */
   totalRatingCount?: number;
+  /**
+   * Ratings that passed the weaker result-`p`-tag binding but not the strong
+   * request-authorship anchor (broadcast jobs, expired requests). Displayed as
+   * the broader "total", NOT a ranking input.
+   */
+  unverifiedRatingCount?: number;
+  unverifiedPositiveCount?: number;
+  /**
+   * Reserved for the off-chain indexer (see docs/plans/agent-reputation-indexer.md).
+   * Always undefined in stage 1 - the payment tx signatures ride in the events
+   * but are not verified on-chain here. The indexer fills this without an API
+   * break.
+   */
+  paymentVerified?: {
+    total: number;
+    positive: number;
+    /** assetKey -> raw subunits (string). */
+    volume: Record<string, string>;
+  };
   picture?: string;
   banner?: string;
   name?: string;

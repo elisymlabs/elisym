@@ -46,6 +46,13 @@ export {
   compareAgentsByRank,
 } from './services/discovery';
 export type { RankKey } from './services/discovery';
+export { tallyReputation, requestJobIds } from './services/reputation';
+export type {
+  AgentReputation,
+  RatingTier,
+  CapabilityTiers,
+  TallyInput,
+} from './services/reputation';
 export { MarketplaceService } from './services/marketplace';
 export { classifyJobError, JobWaitTimeoutError } from './services/jobErrors';
 export type { JobErrorKind } from './services/jobErrors';
