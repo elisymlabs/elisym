@@ -113,7 +113,9 @@ export function Header() {
               <span className="hidden sm:inline">Run AI Agent</span>
             </a>
 
-            <MessagesNavLink dark={dark} />
+            {/* Messages are wallet-gated; unmounting also stops the live DM
+                subscription for signed-out visitors. */}
+            {address && <MessagesNavLink dark={dark} />}
 
             {display && address ? (
               <div className="relative" ref={menuContainerRef}>

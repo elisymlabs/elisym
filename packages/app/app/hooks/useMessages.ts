@@ -44,7 +44,7 @@ export function mergeMessages(
  * SDK (single implementation shared with MCP), fed by the localStorage
  * read-cursor map; cursor moves re-trigger the query via the version store.
  */
-export function useConversations() {
+export function useConversations(opts: { enabled?: boolean } = {}) {
   const { client } = useElisymClient();
   const { identity, publicKey } = useIdentity();
   const cursorsVersion = useSyncExternalStore(subscribeReadCursors, readCursorsVersion);
@@ -55,6 +55,7 @@ export function useConversations() {
     queryFn: () =>
       client.messages.listConversations(identity, { readCursors: readCursors(publicKey) }),
     staleTime: 15_000,
+    enabled: opts.enabled ?? true,
   });
 
   // A cursor advance changes unread counts without changing the relay data;

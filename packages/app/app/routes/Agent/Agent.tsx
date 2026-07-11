@@ -767,10 +767,10 @@ export default function AgentPage() {
               </div>
 
               <div className="flex shrink-0 flex-col items-start gap-8 sm:items-end">
-                {!isOwn && (
+                {!isOwn && walletPublicKey && (
                   <Link
                     to={`/messages/${pubkey}`}
-                    className="inline-flex shrink-0 items-center gap-6 rounded-12 border border-black/15 bg-transparent px-12 py-8 text-xs font-medium text-surface-dark no-underline transition-colors hover:bg-black/4"
+                    className="inline-flex shrink-0 cursor-pointer items-center gap-6 rounded-8 border border-border px-10 py-6 text-xs font-medium text-text-2 no-underline transition-colors hover:border-accent hover:text-text"
                   >
                     <svg
                       aria-hidden
