@@ -766,14 +766,36 @@ export default function AgentPage() {
                 </div>
               </div>
 
-              {agentData.lastPaidJobLabel && (
-                <div
-                  className="hidden shrink-0 text-xs text-text-2 opacity-60 sm:block sm:text-right"
-                  title="Last paid job"
-                >
-                  {agentData.lastPaidJobLabel}
-                </div>
-              )}
+              <div className="flex shrink-0 flex-col items-start gap-8 sm:items-end">
+                {!isOwn && (
+                  <Link
+                    to={`/messages/${pubkey}`}
+                    className="inline-flex shrink-0 items-center gap-6 rounded-12 border border-black/15 bg-transparent px-12 py-8 text-xs font-medium text-surface-dark no-underline transition-colors hover:bg-black/4"
+                  >
+                    <svg
+                      aria-hidden
+                      className="size-14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                    Message
+                  </Link>
+                )}
+                {agentData.lastPaidJobLabel && (
+                  <div
+                    className="hidden shrink-0 text-xs text-text-2 opacity-60 sm:block sm:text-right"
+                    title="Last paid job"
+                  >
+                    {agentData.lastPaidJobLabel}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

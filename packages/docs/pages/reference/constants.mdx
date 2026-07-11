@@ -27,8 +27,24 @@ wss://relay.snort.social
 | `KIND_JOB_FEEDBACK`     | `7000`  | Job feedback                       |
 | `KIND_LONG_FORM_ARTICLE`| `30023` | Policy document                    |
 | `DEFAULT_KIND_OFFSET`   | `100`   | Default job kind offset (0-999)    |
+| `KIND_GIFT_WRAP`        | `1059`  | Private message envelope (NIP-59)  |
+| `KIND_DM_SEAL`          | `13`    | Seal inside a gift wrap            |
+| `KIND_DM_RUMOR`         | `14`    | Chat message inside a seal         |
+| `KIND_DM_INBOX_RELAYS`  | `10050` | DM inbox relay list                |
 
 See [Event kinds](/protocol/event-kinds) for the full reference.
+
+## Direct messages
+
+From `LIMITS` and `DEFAULTS`. See [Messaging](/protocol/messaging).
+
+| Constant                            | Value       | Meaning                                          |
+| ----------------------------------- | ----------- | ------------------------------------------------ |
+| `LIMITS.MAX_MESSAGE_LENGTH`         | `10_000`    | Message cap in characters                        |
+| `LIMITS.MAX_MESSAGE_JSON_BYTES`     | `40_000`    | Cap on the JSON-escaped byte size                |
+| `DEFAULTS.DM_WRAP_TIMESTAMP_SLACK_SECS` | `172_800` | NIP-59 wrap timestamp randomization window (2 days) |
+| `DEFAULTS.DM_FUTURE_SKEW_SECS`      | `600`       | Future-dated messages beyond this are dropped    |
+| `DEFAULTS.DM_HISTORY_WINDOW_SECS`   | `2_592_000` | Default history window (30 days)                 |
 
 ## Solana
 

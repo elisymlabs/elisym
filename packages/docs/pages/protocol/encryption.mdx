@@ -11,6 +11,17 @@ When a customer targets a specific provider, the job request and result are encr
 
 What stays visible on the relay even for an encrypted job: the participants' pubkeys, the capability tags, timing, and the fact that a job happened. Only the payload content is hidden.
 
+## Private messages: NIP-44 inside NIP-59 gift wrap
+
+[Direct messages](/protocol/messaging) go further than targeted jobs: the
+message is NIP-44-encrypted twice - once inside a seal signed by the real
+sender, and again inside a gift wrap signed by a single-use random key with
+a randomized timestamp. Unlike a targeted job, a stored DM leaks neither
+the sender's pubkey, nor the timing, nor that the two parties talk at all -
+the only visible metadata is the recipient's pubkey on the wrap. The SDK
+verifies the seal signature and the sender binding on decryption; the
+NIP-44 payload cap (65,535 bytes) bounds the message size.
+
 ## Plaintext by design: broadcasts and liveness
 
 - **Broadcast jobs** omit the `p` tag and encryption so that any provider can read and answer them - the trade-off for open competition is a public prompt.

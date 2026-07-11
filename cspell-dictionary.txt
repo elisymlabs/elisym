@@ -56,6 +56,7 @@ lamport
 lamports
 launchagents
 launchdaemons
+livelock
 llms
 localappdata
 localnet
@@ -77,6 +78,7 @@ njump
 nostr
 nosystem
 npub
+npubs
 nsec
 oneose
 onevent
@@ -129,6 +131,7 @@ twoslash
 umami
 undecryptable
 unparseable
+unreads
 untargeted
 untrusted
 vite
@@ -141,6 +144,7 @@ websocket
 whois
 wouter
 WTRAB
+xchat
 zeroize
 zeroized
 zod

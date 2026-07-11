@@ -67,6 +67,7 @@ export {
   writeExampleSkillTemplate,
   ensureGitignoreHasIrohEntry,
   ensureGitignoreHasX402Entries,
+  ensureGitignoreHasMessagesEntry,
 } from './writer';
 export type { CreateAgentDirOptions, CreatedAgentDir } from './writer';
 

@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import YAML from 'yaml';
+import { validateAgentName } from '../primitives/config';
 import { encryptSecret, isEncrypted } from '../primitives/encryption';
 import { agentPaths, type AgentPaths } from './paths';
 import { elisymRootFor, type AgentSource } from './resolver';
@@ -18,6 +19,9 @@ const IROH_GITIGNORE_ENTRY = '.iroh/';
 /** x402 bridge idempotency cache: upstream payment attempts + bought results. */
 const X402_GITIGNORE_ENTRIES = ['.x402-jobs.json', '.x402-results/'] as const;
 
+/** DM read cursors: keyed by counterpart pubkeys - maps who the agent talks to. */
+const MESSAGES_GITIGNORE_ENTRY = '.messages-read.json';
+
 const GITIGNORE_CONTENT = [
   '# elisym private state - do not commit.',
   '.secrets.json',
@@ -26,6 +30,7 @@ const GITIGNORE_CONTENT = [
   '.jobs.json.corrupt.*',
   '.customer-history.json',
   '.contacts.json',
+  MESSAGES_GITIGNORE_ENTRY,
   IROH_GITIGNORE_ENTRY,
   ...X402_GITIGNORE_ENTRIES,
   '',
@@ -79,6 +84,17 @@ export async function ensureGitignoreHasX402Entries(elisymRoot: string): Promise
   await ensureGitignoreHasEntries(elisymRoot, X402_GITIGNORE_ENTRIES);
 }
 
+/**
+ * Ensure the project-local `.elisym/.gitignore` ignores the DM read-cursor
+ * file. Idempotent migration for agents created before direct messages
+ * existed - `GITIGNORE_CONTENT` only lands at dir creation. The cursor file
+ * is keyed by counterpart pubkeys, i.e. it maps who the agent talks to, and
+ * must never be committable from a project-local agent dir.
+ */
+export async function ensureGitignoreHasMessagesEntry(elisymRoot: string): Promise<void> {
+  await ensureGitignoreHasEntries(elisymRoot, [MESSAGES_GITIGNORE_ENTRY]);
+}
+
 export interface CreateAgentDirOptions {
   target: AgentSource;
   name: string;
@@ -104,6 +120,9 @@ export interface CreatedAgentDir {
  */
 export async function createAgentDir(options: CreateAgentDirOptions): Promise<CreatedAgentDir> {
   const { target, name, cwd, projectRoot } = options;
+  // The name becomes a path segment under the elisym root; validate here (not
+  // only at call sites) so a traversal like `../.ssh` can never materialize.
+  validateAgentName(name);
 
   const existingRoot = elisymRootFor(target, cwd);
   let elisymRoot: string;

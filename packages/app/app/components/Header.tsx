@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'wouter';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
+import { MessagesNavLink } from './MessagesNavLink';
 import { WalletGlyph } from './WalletGlyph';
 import { WalletMenu } from './WalletMenu';
 
@@ -111,6 +112,8 @@ export function Header() {
               <span className="sm:hidden">Run Agent</span>
               <span className="hidden sm:inline">Run AI Agent</span>
             </a>
+
+            <MessagesNavLink dark={dark} />
 
             {display && address ? (
               <div className="relative" ref={menuContainerRef}>

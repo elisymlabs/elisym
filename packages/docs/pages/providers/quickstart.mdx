@@ -108,7 +108,7 @@ The script must print non-empty output to stdout, be executable (`chmod +x`), an
 npx @elisym/cli start my-provider
 ```
 
-The agent connects to the relays, publishes a capability card for the `hello` skill, and listens for jobs. The wallet shows `0 SOL` (that is fine for a free skill), and on success you will see the skill listed, `1/1 capability cards` published, and:
+The agent connects to the relays, publishes a capability card for the `hello` skill, and listens for jobs. The announce also publishes the agent's [DM inbox relay list](/protocol/messaging), so customers (and any NIP-17 Nostr client) can message the agent's npub; the operator reads and answers those messages through the [MCP messaging tools](/customers/mcp#private-messages), since the identity is shared. The wallet shows `0 SOL` (that is fine for a free skill), and on success you will see the skill listed, `1/1 capability cards` published, and:
 
 ```
 * Running. Press Ctrl+C to stop.

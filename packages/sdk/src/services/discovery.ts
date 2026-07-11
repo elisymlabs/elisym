@@ -13,6 +13,7 @@ import {
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type { Agent, CapabilityCard, Network, SubCloser } from '../types';
+import type { MessagesService } from './messages';
 import { requestJobIds, tallyReputation } from './reputation';
 
 const RANKING_ACTIVITY_WINDOW_SECS = 30 * 24 * 60 * 60;
@@ -148,6 +149,26 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     return null;
   }
   const card = candidate as unknown as CapabilityCard & { deleted?: boolean };
+
+  // Read-side mirror of the publish-side caps: the SDK never emits an
+  // oversized card, so a violating event is hostile or foreign. Reject it at
+  // the boundary - accepted cards are retained indefinitely in client state.
+  if (
+    card.name.length > LIMITS.MAX_AGENT_NAME_LENGTH ||
+    card.description.length > LIMITS.MAX_DESCRIPTION_LENGTH ||
+    card.capabilities.length > LIMITS.MAX_CAPABILITIES ||
+    card.capabilities.some((capability) => capability.length > LIMITS.MAX_CAPABILITY_LENGTH)
+  ) {
+    return null;
+  }
+
+  // `image` is rendered as `<img src>` by consumers - a hostile value turns
+  // every viewer into a tracking-pixel / SSRF probe. Clear (do NOT drop the
+  // card, matching the `inputText` coercion below) so a bad image never
+  // hides an otherwise valid agent.
+  if (card.image !== undefined && (typeof card.image !== 'string' || !isSafeImageUrl(card.image))) {
+    card.image = undefined;
+  }
 
   if (
     card.payment &&
@@ -301,7 +322,16 @@ function buildAgentsFromEvents(events: Event[], network: Network): Map<string, A
 }
 
 export class DiscoveryService {
-  constructor(private pool: NostrPool) {}
+  /**
+   * `messages` is optional so standalone `new DiscoveryService(pool)`
+   * construction keeps working; when present (the `ElisymClient` wiring),
+   * a successful capability publish also announces the agent's DM inbox
+   * relays (kind 10050) through it.
+   */
+  constructor(
+    private pool: NostrPool,
+    private messages?: MessagesService,
+  ) {}
 
   /**
    * Fetch a single page of elisym agents with relay-side pagination.
@@ -378,10 +408,13 @@ export class DiscoveryService {
         if (typeof meta.banner === 'string' && isSafeImageUrl(meta.banner)) {
           agent.banner = meta.banner;
         }
-        if (typeof meta.name === 'string') {
+        // Same skip-on-invalid shape as picture/banner above: kind:0 content
+        // is unauthenticated remote data, so cap free-text fields instead of
+        // retaining a multi-KB name/about in every discovered Agent.
+        if (typeof meta.name === 'string' && meta.name.length <= LIMITS.MAX_AGENT_NAME_LENGTH) {
           agent.name = meta.name;
         }
-        if (typeof meta.about === 'string') {
+        if (typeof meta.about === 'string' && meta.about.length <= LIMITS.MAX_DESCRIPTION_LENGTH) {
           agent.about = meta.about;
         }
       } catch {
@@ -780,6 +813,11 @@ export class DiscoveryService {
         );
       }
     }
+    // Write-side mirror of the parse-side guard: readers clear non-https
+    // images, so publishing one would silently ship a card with no image.
+    if (card.image !== undefined && !isSafeImageUrl(card.image)) {
+      throw new Error('Capability image must be a bounded https: URL.');
+    }
 
     const tags: string[][] = [
       ['d', toDTag(card.name)],
@@ -799,6 +837,20 @@ export class DiscoveryService {
     );
 
     await this.pool.publishAll(event);
+
+    // "Agent is announced" should imply "agent is reachable via DM from any
+    // NIP-17 client". Best-effort: the DM inbox hint must never fail the
+    // announce - the capability card is the deliverable, the 10050 is not.
+    // Default-mode guards inside publishInboxRelays (debounce + ownership)
+    // keep the per-skill announce loop from republishing or clobbering an
+    // operator-managed relay list.
+    if (this.messages) {
+      try {
+        await this.messages.publishInboxRelays(identity);
+      } catch {
+        // Swallowed by design - see above.
+      }
+    }
     return event.id;
   }
 

@@ -175,12 +175,15 @@ export function checkLen(field: string, value: string, max: number): void {
 export const MAX_INPUT_LEN = LIMITS.MAX_INPUT_LENGTH;
 export const MAX_CAPABILITIES = LIMITS.MAX_CAPABILITIES;
 export const MAX_TIMEOUT_SECS = LIMITS.MAX_TIMEOUT_SECS;
+export const MAX_MESSAGE_LEN = LIMITS.MAX_MESSAGE_LENGTH;
 // Encrypted-content byte limits used by the text-spill path (large input -> iroh).
 export const NIP44_MAX_PLAINTEXT_BYTES = LIMITS.NIP44_MAX_PLAINTEXT_BYTES;
 export const MAX_ENCRYPTED_INLINE_BYTES = LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
 export const MAX_REINLINE_TEXT_BYTES = LIMITS.MAX_REINLINE_TEXT_BYTES;
 
 // MCP-specific limits that have no SDK counterpart.
+/** Cap on messages returned by one `get_messages` call. */
+export const MAX_MESSAGES = 1_000;
 export const MAX_NPUB_LEN = 128;
 export const MAX_EVENT_ID_LEN = 128;
 export const MAX_PAYMENT_REQ_LEN = 10_000;

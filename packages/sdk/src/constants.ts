@@ -49,6 +49,20 @@ export function jobResultKind(offset: number): number {
 export const KIND_PING = 20200;
 export const KIND_PONG = 20201;
 
+/** NIP-59 gift wrap (outer layer of a NIP-17 private direct message). */
+export const KIND_GIFT_WRAP = 1059;
+/** NIP-59 seal (middle layer - signed by the real sender). */
+export const KIND_DM_SEAL = 13;
+/** NIP-17 chat rumor (innermost, unsigned DM event). */
+export const KIND_DM_RUMOR = 14;
+/** NIP-17/NIP-51 DM inbox relay list (replaceable). */
+export const KIND_DM_INBOX_RELAYS = 10050;
+/** Marker tag on SDK-published kind 10050 events: `['client', 'elisym']`.
+ * Present = SDK-managed default list (safe to refresh when the relay set
+ * changes); absent = operator-managed (never overwritten by the SDK). */
+export const DM_INBOX_MARKER_TAG = 'client';
+export const DM_INBOX_MARKER_VALUE = 'elisym';
+
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 
 /**
@@ -120,6 +134,15 @@ export const DEFAULTS = {
   BLOSSOM_UPLOAD_TIMEOUT_MS: 300_000,
   // Ceiling for a single encrypted Blossom blob download (GET). Same budget as upload.
   BLOSSOM_FETCH_TIMEOUT_MS: 300_000,
+  // NIP-59 randomizes gift-wrap/seal timestamps up to 2 days into the past.
+  // Every `since` filter on kind 1059 must be widened by this much (with a
+  // zero floor), and ordering must use the rumor's real created_at instead.
+  DM_WRAP_TIMESTAMP_SLACK_SECS: 172_800,
+  // Rumors stamped further than this into the future are dropped - a hostile
+  // sender must not pin a message to the top of a conversation forever.
+  DM_FUTURE_SKEW_SECS: 600,
+  // Default fetchHistory window when the caller passes no `since` (30 days).
+  DM_HISTORY_WINDOW_SECS: 2_592_000,
 } as const;
 
 /** Protocol limits for input validation. */
@@ -166,6 +189,15 @@ export const LIMITS = {
   MAX_POLICY_TITLE_LENGTH: 120,
   MAX_POLICY_SUMMARY_LENGTH: 280,
   MAX_POLICY_VERSION_LENGTH: 32,
+  // Direct messages (NIP-17). Two independent caps because the sealed payload
+  // is JSON of the rumor: escape-heavy content (control chars become 6-byte
+  // \uXXXX sequences) can blow the NIP-44 65_535-byte cap at the WRAP layer
+  // (the seal ciphertext is JSON-wrapped and encrypted again) even when the
+  // char count is small. 40_000 JSON bytes keeps the double envelope under
+  // the cap with real margin (hard edge measured at ~40.6KB on nostr-tools
+  // 2.23.3).
+  MAX_MESSAGE_LENGTH: 10_000,
+  MAX_MESSAGE_JSON_BYTES: 40_000,
 } as const;
 
 const UTF8_ENCODER = new TextEncoder();

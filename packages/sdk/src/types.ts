@@ -257,6 +257,42 @@ export interface PingResult {
   identity: ElisymIdentity | null;
 }
 
+// --- Direct messages (NIP-17) ---
+
+/** A decrypted private direct message. Transport details (wraps, seals) never leak out of the SDK. */
+export interface DirectMessage {
+  /** Rumor id - identical across the sender's self-copy and the recipient's copy. */
+  id: string;
+  senderPubkey: string;
+  /**
+   * Best-effort display metadata: the first `p` tag of the rumor, falling
+   * back to the reader's own pubkey when absent (the wrap decrypted to us,
+   * so we are a recipient). External clients may deviate (multi-`p` group
+   * rumors); received messages group by sender, so this stays correct.
+   */
+  recipientPubkey: string;
+  content: string;
+  /** Rumor created_at (real time - wrap/seal timestamps are randomized by NIP-59). */
+  createdAt: number;
+  /** True when the reader authored the message (senderPubkey === own pubkey). */
+  isMine: boolean;
+}
+
+/** One conversation (grouped by counterpart) in an inbox listing. */
+export interface ConversationSummary {
+  counterpartPubkey: string;
+  lastMessage: DirectMessage;
+  /** Messages fetched in the query window - not an all-time total. */
+  messageCount: number;
+  /**
+   * Counterpart-authored (`!isMine`) messages strictly newer than the
+   * caller's read cursor. Present only when `readCursors` was passed to
+   * `listConversations`; a missing cursor counts every counterpart-authored
+   * message as unread.
+   */
+  unreadCount?: number;
+}
+
 // --- Payment ---
 
 /**

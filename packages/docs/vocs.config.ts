@@ -67,6 +67,7 @@ export default defineConfig({
         { text: 'Overview', link: '/protocol/overview' },
         { text: 'Discovery', link: '/protocol/discovery' },
         { text: 'Jobs', link: '/protocol/jobs' },
+        { text: 'Messaging', link: '/protocol/messaging' },
         { text: 'Encryption', link: '/protocol/encryption' },
         { text: 'Payments', link: '/protocol/payments' },
         { text: 'Reputation', link: '/protocol/reputation' },

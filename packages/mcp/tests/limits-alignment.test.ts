@@ -12,6 +12,7 @@ import {
   MAX_CAPABILITIES,
   MAX_ENCRYPTED_INLINE_BYTES,
   MAX_INPUT_LEN,
+  MAX_MESSAGE_LEN,
   MAX_REINLINE_TEXT_BYTES,
   MAX_TIMEOUT_SECS,
   NIP44_MAX_PLAINTEXT_BYTES,
@@ -30,6 +31,11 @@ describe('MCP limits aligned with @elisym/sdk LIMITS', () => {
 
   it('MAX_TIMEOUT_SECS matches SDK MAX_TIMEOUT_SECS', () => {
     expect(MAX_TIMEOUT_SECS).toBe(LIMITS.MAX_TIMEOUT_SECS);
+  });
+
+  it('MAX_MESSAGE_LEN matches SDK MAX_MESSAGE_LENGTH', () => {
+    expect(MAX_MESSAGE_LEN).toBe(LIMITS.MAX_MESSAGE_LENGTH);
+    expect(MAX_MESSAGE_LEN).toBe(10_000);
   });
 
   it('encrypted-content byte limits match the SDK', () => {

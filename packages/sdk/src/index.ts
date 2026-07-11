@@ -59,6 +59,7 @@ export type { JobErrorKind } from './services/jobErrors';
 export { MediaService } from './services/media';
 export { BlossomService } from './services/blossom';
 export type { BlobDescriptor, BlossomUploadFallback } from './services/blossom';
+export { MessagesService } from './services/messages';
 export { PingService } from './services/ping';
 export { PoliciesService } from './services/policies';
 
@@ -166,6 +167,12 @@ export {
   jobResultKind,
   KIND_PING,
   KIND_PONG,
+  KIND_GIFT_WRAP,
+  KIND_DM_SEAL,
+  KIND_DM_RUMOR,
+  KIND_DM_INBOX_RELAYS,
+  DM_INBOX_MARKER_TAG,
+  DM_INBOX_MARKER_VALUE,
   POLICY_T_TAG,
   POLICY_D_TAG_PREFIX,
   POLICY_TYPE_REGEX,
@@ -196,6 +203,9 @@ export type {
   JobSubscriptionOptions,
   // Ping
   PingResult,
+  // Direct messages
+  DirectMessage,
+  ConversationSummary,
   // Payment
   PaymentRequestData,
   PaymentAssetRef,
