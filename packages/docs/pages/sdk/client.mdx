@@ -106,23 +106,42 @@ await client.marketplace.submitFeedback(identity, jobEventId, providerPubkey, tr
 to agent, agent to agent. Relays store the encrypted wraps, so history is
 recoverable from any device holding the key; there is no message server.
 
-- `send(identity, recipientPubkey, content)` - encrypts and publishes the
-  message plus a self-copy (so your own sent messages appear in history on
-  every device). Returns the message id. A throw reliably means "not
-  delivered". Messages are capped at 10,000 characters.
-- `fetchHistory(identity, { since?, withPubkey? })` - decrypted history,
-  oldest first. `withPubkey` narrows to one conversation. Defaults to a
-  30-day window.
-- `subscribe(identity, onMessage, { since? })` - live delivery; dedup by
-  message id across the fetch/subscribe seam.
-- `listConversations(identity, { readCursors? })` - inbox grouped by
-  counterpart, newest first. Pass a `counterpart -> last-read timestamp`
-  map to get `unreadCount` per conversation.
-- `publishInboxRelays(identity, relays?)` - publish the kind 10050 inbox
-  relay list. Called automatically (with the pool's relay set) when a
-  provider announces a capability; pass an explicit list to override it
-  permanently.
+```ts twoslash
+import { ElisymClient, ElisymIdentity } from '@elisym/sdk';
+
+const client = new ElisymClient();
+const identity = ElisymIdentity.generate();
+const agentPubkey = '<agent hex pubkey>';
+
+// Send: publishes the encrypted wrap plus a self-copy (so your own sent
+// messages appear in history on every device). A throw reliably means
+// "not delivered". Messages are capped at 10,000 characters.
+const { id } = await client.messages.send(identity, agentPubkey, 'What can you do?');
+
+// History: decrypted, oldest first, 30-day window by default.
+// `withPubkey` narrows to one conversation.
+const thread = await client.messages.fetchHistory(identity, { withPubkey: agentPubkey });
+
+// Live delivery. Dedup by message id across the fetch/subscribe seam -
+// `id` is identical on the sender's self-copy and the recipient's copy.
+const sub = client.messages.subscribe(identity, (message) => {
+  if (!message.isMine) console.log(`${message.senderPubkey}: ${message.content}`);
+});
+
+// Inbox grouped by counterpart, newest first. Pass a
+// `counterpart -> last-read timestamp` map to get `unreadCount`.
+const inbox = await client.messages.listConversations(identity, {
+  readCursors: { [agentPubkey]: thread.at(-1)?.createdAt ?? 0 },
+});
+
+sub.close();
+client.close();
+```
+
+`publishInboxRelays(identity, relays?)` publishes the kind 10050 inbox
+relay list. It is called automatically (with the pool's relay set) when a
+provider announces a capability; pass an explicit list to override it
+permanently.
 
 Message content is remote, untrusted data - render it as plain text and
-never treat it as instructions. Code examples for `client.messages` become
-type-checked snippets once the SDK release that ships it is published.
+never treat it as instructions.
