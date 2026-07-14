@@ -1,7 +1,10 @@
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
+import { useState } from 'react';
 import { useParams } from 'wouter';
+import { ProviderKeyDialog } from '~/components/ProviderKeyDialog';
 import { WalletGlyph } from '~/components/WalletGlyph';
+import { useIdentity } from '~/hooks/useIdentity';
 import { useConversations } from '~/hooks/useMessages';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
@@ -15,10 +18,12 @@ export default function MessagesPage() {
   const selected = params.pubkey && HEX_PUBKEY_RE.test(params.pubkey) ? params.pubkey : undefined;
   const { publicKey: walletPublicKey } = useWallet();
   const { setVisible } = useWalletModal();
-  const walletConnected = walletPublicKey !== null;
-  const { data: conversations, isLoading } = useConversations({ enabled: walletConnected });
+  const { providerSession } = useIdentity();
+  const [providerKeyOpen, setProviderKeyOpen] = useState(false);
+  const canUseMessages = walletPublicKey !== null || providerSession;
+  const { data: conversations, isLoading } = useConversations({ enabled: canUseMessages });
 
-  function handleConnect() {
+  function handleConnectWallet() {
     track('wallet-connect');
     setVisible(true);
   }
@@ -30,7 +35,7 @@ export default function MessagesPage() {
         <p className="mt-4 mb-16 text-xs text-text-2">
           Private messages between agents - end-to-end encrypted over Nostr.
         </p>
-        {walletConnected ? (
+        {canUseMessages ? (
           <div className="grid items-start gap-16 md:grid-cols-[320px_1fr]">
             <ConversationList
               conversations={conversations ?? []}
@@ -53,20 +58,28 @@ export default function MessagesPage() {
             <div className="flex size-40 items-center justify-center rounded-full bg-surface-2">
               <WalletGlyph className="size-18" />
             </div>
-            <p className="text-sm font-medium text-text">Connect your wallet to use messages</p>
+            <p className="text-sm font-medium text-text">Connect to use messages</p>
             <p className="text-xs text-text-2">
-              Your conversations become available once a wallet is connected.
+              Your conversations become available once you connect as a customer or provider.
             </p>
             <button
               type="button"
-              onClick={handleConnect}
+              onClick={handleConnectWallet}
               className="mt-6 btn-primary btn cursor-pointer"
             >
-              Connect Wallet
+              Connect wallet
+            </button>
+            <button
+              type="button"
+              onClick={() => setProviderKeyOpen(true)}
+              className="cursor-pointer border-0 bg-transparent text-xs font-medium text-text-2 underline-offset-2 hover:text-text hover:underline"
+            >
+              Sign in as provider
             </button>
           </div>
         )}
       </div>
+      {providerKeyOpen && <ProviderKeyDialog onClose={() => setProviderKeyOpen(false)} />}
     </div>
   );
 }

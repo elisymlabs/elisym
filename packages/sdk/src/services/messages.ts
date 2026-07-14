@@ -72,6 +72,12 @@ function rumorFromShape(shape: Record<string, unknown>): Rumor | null {
   ) {
     return null;
   }
+  // Receive-side mirror of the send-side cap: a non-SDK NIP-17 sender can
+  // stuff up to the NIP-44 plaintext ceiling into `content`, and an accepted
+  // rumor flows unbounded into MCP tool output and the web UI.
+  if (shape.content.length > LIMITS.MAX_MESSAGE_LENGTH) {
+    return null;
+  }
   return {
     id: shape.id,
     pubkey: shape.pubkey,
@@ -136,11 +142,16 @@ export class MessagesService {
 
   /**
    * Send a private message. Wraps one kind-14 rumor for the recipient plus a
-   * self-copy (identical rumor id in both), publishes the recipient's wrap
-   * first, and treats a self-copy publish failure as non-fatal - a throw
-   * from `send` therefore reliably means "not delivered", and the sender's
-   * history never shows a message the recipient cannot have received.
-   * Returns the rumor id.
+   * self-copy (identical rumor id in both).
+   *
+   * Resolves as soon as the recipient wrap reaches the FIRST relay
+   * (`publish` = `Promise.any`), not once every relay has settled - so a UI
+   * awaiting `send` unlocks promptly instead of stalling on the slowest
+   * relay; the remaining relays keep the event in the background for
+   * redundancy. A throw still reliably means "not delivered" (every relay
+   * rejected the recipient wrap). The self-copy (sender multi-device history
+   * + the live echo) is published best-effort in the background and never
+   * delays or fails the send. Returns the rumor id.
    */
   async send(
     identity: ElisymIdentity,
@@ -184,13 +195,16 @@ export class MessagesService {
 
     const rumorId = getEventHash({ ...template, pubkey: identity.publicKey });
 
-    await this.pool.publishAll(recipientWrap);
-    try {
-      await this.pool.publishAll(selfWrap);
-    } catch {
+    // Recipient wrap first, resolving on the first relay ack. The other relays
+    // keep publishing in the background (Promise.any does not cancel them).
+    await this.pool.publish(recipientWrap);
+    // Self-copy is best-effort and fire-and-forget: it powers the sender's
+    // multi-device history and the live echo, but must never delay or fail
+    // send. Fired only after the recipient wrap is confirmed delivered.
+    void this.pool.publishAll(selfWrap).catch(() => {
       // Non-fatal: the recipient already has the message; only the sender's
       // own relay-backed history is missing this copy.
-    }
+    });
     return { id: rumorId };
   }
 

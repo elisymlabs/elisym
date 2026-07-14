@@ -41,18 +41,15 @@ export function MessageComposer({ onSend }: Props) {
       return;
     }
     const content = trimmed;
-    // Clear optimistically: the live subscription can surface the message in
-    // the thread before every relay has confirmed the publish, and the field
-    // must not still hold the text at that point.
-    setDraft('');
-    resetHeight();
+    // Keep the text and lock the field while sending; clear only after onSend
+    // resolves, which is when the message has been inserted into the thread.
+    // A failed send therefore leaves the draft intact for a retry.
     setSending(true);
     try {
       await onSend(content);
+      setDraft('');
+      resetHeight();
     } catch (error) {
-      // Restore the draft so a failed send never loses the text.
-      setDraft(content);
-      requestAnimationFrame(autoGrow);
       toast.error(error instanceof Error ? error.message : 'Failed to send message');
     } finally {
       setSending(false);
@@ -77,9 +74,10 @@ export function MessageComposer({ onSend }: Props) {
           }}
           rows={1}
           maxLength={LIMITS.MAX_MESSAGE_LENGTH}
+          disabled={sending}
           placeholder="Write a message…"
           aria-label="Message"
-          className="min-h-28 flex-1 resize-none border-0 bg-transparent px-10 py-6 text-sm text-text outline-none placeholder:text-text-2/60"
+          className="min-h-28 flex-1 resize-none border-0 bg-transparent px-10 py-6 text-sm text-text outline-none placeholder:text-text-2/60 disabled:cursor-not-allowed disabled:opacity-60"
         />
         <button
           type="button"

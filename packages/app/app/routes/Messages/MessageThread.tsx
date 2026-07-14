@@ -1,5 +1,5 @@
 import { truncateKey } from '@elisym/sdk';
-import type { DirectMessage } from '@elisym/sdk';
+import type { ConversationSummary, DirectMessage } from '@elisym/sdk';
 import { useQueryClient } from '@tanstack/react-query';
 import { nip19 } from 'nostr-tools';
 import { useEffect, useRef, useState } from 'react';
@@ -9,7 +9,13 @@ import { VerifiedBadge } from '~/components/VerifiedBadge';
 import { useAgent } from '~/hooks/useAgent';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
-import { mergeMessages, threadQueryKey, useThread } from '~/hooks/useMessages';
+import {
+  applyMessageToConversations,
+  conversationsQueryKey,
+  mergeMessages,
+  threadQueryKey,
+  useThread,
+} from '~/hooks/useMessages';
 import { cn } from '~/lib/cn';
 import { advanceReadCursor } from '~/lib/readCursors';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
@@ -108,7 +114,16 @@ export function MessageThread({ counterpartPubkey }: Props) {
     }
     const maxSeen = messages.reduce((max, message) => Math.max(max, message.createdAt), 0);
     advanceReadCursor(publicKey, counterpartPubkey, maxSeen);
-  }, [messages, publicKey, counterpartPubkey]);
+    // Clear this conversation's unread badge immediately. Reading up to the
+    // newest loaded message means zero counterpart messages remain newer than
+    // the cursor, so the count is 0 - no need to wait for the cursor-driven
+    // conversation-list refetch to confirm it.
+    queryClient.setQueryData<ConversationSummary[]>(conversationsQueryKey(publicKey), (existing) =>
+      existing?.map((summary) =>
+        summary.counterpartPubkey === counterpartPubkey ? { ...summary, unreadCount: 0 } : summary,
+      ),
+    );
+  }, [messages, publicKey, counterpartPubkey, queryClient]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -127,9 +142,15 @@ export function MessageThread({ counterpartPubkey }: Props) {
       createdAt: nowSecs(),
       isMine: true,
     };
+    // Optimistic on both surfaces: the thread (right) and the conversation
+    // list (left) update immediately, without waiting for the live echo to
+    // trigger a relay refetch. A later refetch reconciles either way.
     queryClient.setQueryData<DirectMessage[]>(
       threadQueryKey(publicKey, counterpartPubkey),
       (existing) => mergeMessages(existing, [sent]),
+    );
+    queryClient.setQueryData<ConversationSummary[]>(conversationsQueryKey(publicKey), (existing) =>
+      applyMessageToConversations(existing, sent),
     );
   }
 

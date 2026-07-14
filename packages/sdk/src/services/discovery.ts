@@ -23,6 +23,14 @@ const COLD_START_BUCKET = -Infinity;
 const MAX_FUTURE_SKEW_SECS = 300;
 
 /**
+ * Pagination-cursor floor: the elisym protocol did not exist before 2024, so
+ * no real capability event can predate it. Without the floor a single
+ * validly-signed event backdated to `created_at: 0` would drag the `until`
+ * cursor to zero and silently end pagination for every consumer.
+ */
+const MIN_CURSOR_CREATED_AT = 1704067200; // 2024-01-01T00:00:00Z
+
+/**
  * A validly-signed event can still carry an attacker-chosen future `created_at`.
  * Left unchecked it wins the newest-per-(pubkey, d-tag) dedup and inflates
  * `lastSeen`, so reject anything dated beyond a small clock-skew margin.
@@ -358,9 +366,20 @@ export class DiscoveryService {
     const events = await this.pool.querySync(filter);
     const rawEventCount = events.length;
 
-    // Compute cursor from ALL raw events (before any filtering)
+    // Compute the cursor before capability-schema filtering (so forward-compat
+    // events still advance pagination), but only from events that pass the
+    // same signature + clock-skew gate as every other read path, plus the
+    // protocol-epoch floor: unverified or backdated input must not steer
+    // `until` and silently end pagination. nostr-tools memoizes verifyEvent
+    // per event object, so the re-check in buildAgentsFromEvents is free.
     let oldestCreatedAt: number | null = null;
     for (const event of events) {
+      if (!verifyEvent(event) || !isWithinClockSkew(event)) {
+        continue;
+      }
+      if (event.created_at < MIN_CURSOR_CREATED_AT) {
+        continue;
+      }
       if (oldestCreatedAt === null || event.created_at < oldestCreatedAt) {
         oldestCreatedAt = event.created_at;
       }
@@ -410,8 +429,13 @@ export class DiscoveryService {
         }
         // Same skip-on-invalid shape as picture/banner above: kind:0 content
         // is unauthenticated remote data, so cap free-text fields instead of
-        // retaining a multi-KB name/about in every discovered Agent.
-        if (typeof meta.name === 'string' && meta.name.length <= LIMITS.MAX_AGENT_NAME_LENGTH) {
+        // retaining a multi-KB name/about in every discovered Agent. A blank
+        // name never beats the capability-derived one - skip it too.
+        if (
+          typeof meta.name === 'string' &&
+          meta.name.trim().length > 0 &&
+          meta.name.length <= LIMITS.MAX_AGENT_NAME_LENGTH
+        ) {
           agent.name = meta.name;
         }
         if (typeof meta.about === 'string' && meta.about.length <= LIMITS.MAX_DESCRIPTION_LENGTH) {
@@ -871,6 +895,15 @@ export class DiscoveryService {
       throw new Error(
         `Profile about too long: ${about.length} chars (max ${LIMITS.MAX_DESCRIPTION_LENGTH}).`,
       );
+    }
+    // Same rule readers enforce in enrichWithMetadata: an unsafe URL would
+    // never render for any SDK consumer, so fail the publish loudly instead
+    // of broadcasting a profile that silently drops its images.
+    if (picture && !isSafeImageUrl(picture)) {
+      throw new Error('Profile picture must be a bounded https: URL.');
+    }
+    if (banner && !isSafeImageUrl(banner)) {
+      throw new Error('Profile banner must be a bounded https: URL.');
     }
     const content: Record<string, string> = { name, about };
     if (picture) {

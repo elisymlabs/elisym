@@ -63,7 +63,7 @@ export function ConversationRow({ summary, active }: Props) {
           </span>
           {VERIFIED_PUBKEYS.has(pubkey) && <VerifiedBadge className="size-14 shrink-0" />}
           <span className="ml-auto shrink-0 text-[10px] text-text-2 opacity-60">
-            {timeAgo(summary.lastMessage.createdAt * 1000)}
+            {timeAgo(summary.lastMessage.createdAt)}
           </span>
         </div>
         <div className="mt-2 flex items-center gap-8">

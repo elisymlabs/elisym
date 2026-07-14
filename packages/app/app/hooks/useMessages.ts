@@ -1,9 +1,10 @@
 import type { ConversationSummary, DirectMessage } from '@elisym/sdk';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useEffect, useSyncExternalStore } from 'react';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
+import { cacheDeleteWhere } from '~/lib/localCache';
 import { readCursors, readCursorsVersion, subscribeReadCursors } from '~/lib/readCursors';
 
 const HEX_PUBKEY_RE = /^[0-9a-f]{64}$/;
@@ -14,6 +15,69 @@ export function conversationsQueryKey(identityPubkey: string): string[] {
 
 export function threadQueryKey(identityPubkey: string, counterpartPubkey: string): string[] {
   return ['dm-thread', identityPubkey, counterpartPubkey];
+}
+
+/**
+ * Purge everything decrypted with (and keyed by) one identity: DM threads and
+ * conversation summaries, and the agent-page job history decrypted as this
+ * viewer. Called on provider logout BEFORE the imported key is removed -
+ * deleting the key alone would leave the plaintext on disk.
+ *
+ * Deliberately NOT covered: buy-flow customer history (`purchase:<jobEventId>`,
+ * `elisym:artifacts:<agentPubkey>`, `elisym:job-history:<wallet>`) - not
+ * identity-keyed. DM read cursors (`elisym:dm-read:<pubkey>`) - a
+ * counterpart->timestamp map, no message plaintext; wiping it resurrects the
+ * whole 30-day history as unread on every provider re-login (MCP keeps its
+ * cursor file across sessions for the same reason).
+ */
+export async function purgeIdentityCaches(
+  queryClient: QueryClient,
+  identityPubkey: string,
+): Promise<void> {
+  queryClient.removeQueries({ queryKey: conversationsQueryKey(identityPubkey) });
+  queryClient.removeQueries({ queryKey: ['dm-thread', identityPubkey] });
+  // Viewer pubkey is the LAST segment of agent-nostr-history keys.
+  queryClient.removeQueries({
+    predicate: (query) =>
+      query.queryKey[0] === 'agent-nostr-history' && query.queryKey[2] === identityPubkey,
+  });
+  await cacheDeleteWhere(
+    (key) =>
+      key.startsWith(`dm-conversations:${identityPubkey}`) ||
+      key.startsWith(`dm-thread:${identityPubkey}:`) ||
+      (key.startsWith('agent-nostr-history:') && key.endsWith(`:${identityPubkey}`)),
+  );
+}
+
+/**
+ * Fold one message into a cached conversation list: update (or insert) the
+ * counterpart's summary with this message as `lastMessage`, then re-sort
+ * newest first. Powers the optimistic left-column update on send so the list
+ * does not wait for a relay refetch. `unreadCount` is left untouched for an
+ * existing conversation (own sends do not change it); a brand-new own
+ * conversation starts at zero unread.
+ */
+export function applyMessageToConversations(
+  existing: ConversationSummary[] | undefined,
+  message: DirectMessage,
+): ConversationSummary[] {
+  const counterpart = message.isMine ? message.recipientPubkey : message.senderPubkey;
+  const list = existing ? [...existing] : [];
+  const index = list.findIndex((summary) => summary.counterpartPubkey === counterpart);
+  const current = list[index];
+  if (current) {
+    const lastMessage =
+      message.createdAt >= current.lastMessage.createdAt ? message : current.lastMessage;
+    list[index] = { ...current, lastMessage, messageCount: current.messageCount + 1 };
+  } else {
+    list.push({
+      counterpartPubkey: counterpart,
+      lastMessage: message,
+      messageCount: 1,
+      unreadCount: message.isMine ? 0 : undefined,
+    });
+  }
+  return list.sort((left, right) => right.lastMessage.createdAt - left.lastMessage.createdAt);
 }
 
 /** Dedup by id, sort by (createdAt, id) - the SDK's deterministic order. */

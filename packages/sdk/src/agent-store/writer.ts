@@ -40,6 +40,15 @@ const GITIGNORE_CONTENT = [
  * Idempotently append missing entries to an existing `.gitignore`. A no-op
  * when the file does not exist (e.g. home-global agents, which rely on
  * directory permissions instead).
+ *
+ * Append-only (`flag: 'a'`) on purpose: the file guards cleartext secrets
+ * from `git add`, so existing protective entries must never be rewritten -
+ * a whole-file rewrite could truncate them on a crash, and concurrent
+ * migrations in separate processes (e.g. MCP server and CLI starting
+ * together) could clobber each other's additions. Appends never remove
+ * data and the kernel serializes them; the worst concurrent outcome is a
+ * duplicated line, which gitignore semantics tolerate and the next run's
+ * missing-check makes moot.
  */
 async function ensureGitignoreHasEntries(
   elisymRoot: string,
@@ -58,7 +67,8 @@ async function ensureGitignoreHasEntries(
     return;
   }
   const separator = current.length === 0 || current.endsWith('\n') ? '' : '\n';
-  await writeFile(gitignorePath, `${current}${separator}${missing.join('\n')}\n`, {
+  await writeFile(gitignorePath, `${separator}${missing.join('\n')}\n`, {
+    flag: 'a',
     mode: 0o644,
   });
 }

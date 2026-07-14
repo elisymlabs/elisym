@@ -173,20 +173,22 @@ describe('MessagesService.send', () => {
     const alice = ElisymIdentity.generate();
     const bob = ElisymIdentity.generate();
 
+    // Recipient wrap goes through `publish` (first-ack); a total failure there
+    // rejects the whole send.
     const failFirst = createMockPool();
-    (failFirst.publishAll as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+    (failFirst.publish as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('all relays down'),
     );
     await expect(new MessagesService(failFirst).send(alice, bob.publicKey, 'x')).rejects.toThrow(
       'all relays down',
     );
 
+    // Self-copy goes through `publishAll` (background best-effort); its failure
+    // is swallowed and send still resolves with the recipient wrap delivered.
     const failSecond = createMockPool();
-    (failSecond.publishAll as ReturnType<typeof vi.fn>)
-      .mockImplementationOnce(async (event: Event) => {
-        failSecond.published.push(event);
-      })
-      .mockRejectedValueOnce(new Error('self copy failed'));
+    (failSecond.publishAll as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('self copy failed'),
+    );
     await expect(
       new MessagesService(failSecond).send(alice, bob.publicKey, 'x'),
     ).resolves.toHaveProperty('id');
