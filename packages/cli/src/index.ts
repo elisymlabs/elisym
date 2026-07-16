@@ -17,6 +17,7 @@ import { cmdInit, type InitOptions } from './commands/init.js';
 import { cmdProfile } from './commands/profile.js';
 import { cmdStart } from './commands/start.js';
 import { cmdWallet } from './commands/wallet.js';
+import { cmdX402Add, type X402AddOptions } from './commands/x402-add.js';
 import { PACKAGE_VERSION } from './version.js';
 
 /**
@@ -117,5 +118,33 @@ program
 
 // Wallet
 program.command('wallet [name]').description('Show wallet balance').action(safe(cmdWallet));
+
+// x402 bridge
+const x402 = program
+  .command('x402')
+  .description('Bridge x402-paid HTTP services into elisym skills');
+x402
+  .command('add <url> [agent]')
+  .description('Generate a bridge skill from a live x402 endpoint (probes its 402 challenge)')
+  .option('--method <method>', 'HTTP method for the upstream call: GET or POST (default POST)')
+  .option(
+    '--query-param <name>',
+    'GET only: query parameter carrying the buyer input (omitting it on GET makes a no-input skill)',
+  )
+  .option(
+    '--margin-bps <bps>',
+    'Operator margin over the upstream quote in basis points (default 1000 = 10%)',
+  )
+  .option('--name <skill-name>', 'Override the generated skill name (also the discovery d-tag)')
+  .option(
+    '--generate-wallet',
+    'Non-interactive runs only: generate a new Solana wallet key when the agent has none',
+  )
+  .option('--yes', 'Skip confirmation prompts (requires an explicit agent argument)')
+  .action(
+    safe(async (url: string, agent: string | undefined, options: X402AddOptions) => {
+      await cmdX402Add(url, agent, options);
+    }),
+  );
 
 program.parse();

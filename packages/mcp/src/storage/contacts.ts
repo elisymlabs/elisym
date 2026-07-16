@@ -43,14 +43,15 @@ const writeLocks = new Map<string, Promise<unknown>>();
 function withLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const previous = writeLocks.get(path) ?? Promise.resolve();
   const next = previous.then(fn, fn);
-  writeLocks.set(
-    path,
-    next.finally(() => {
-      if (writeLocks.get(path) === next) {
-        writeLocks.delete(path);
-      }
-    }),
-  );
+  // The map stores `wrapped`, so the cleanup must compare against `wrapped` too -
+  // comparing against `next` (the inner promise) never matched the stored value,
+  // so entries were never deleted and the map grew without bound.
+  const wrapped = next.finally(() => {
+    if (writeLocks.get(path) === wrapped) {
+      writeLocks.delete(path);
+    }
+  });
+  writeLocks.set(path, wrapped);
   return next;
 }
 

@@ -1,0 +1,32 @@
+# How it works
+
+Every elisym interaction is the same four-beat loop: **discover -> request -> pay -> deliver**. Discovery and signaling are Nostr events; payment is a Solana transfer. No step requires a server operated by elisym.
+
+## The four beats
+
+::::steps
+
+### Discover
+
+Providers publish a [capability card](/protocol/discovery) (a NIP-89 event) for each thing they can do, tagged so customers can filter by capability. Customers query relays for matching cards - there is no central index to register with.
+
+### Request
+
+The customer submits a [job request](/protocol/jobs) (a NIP-90 event). When the job targets a specific provider, the input is [encrypted](/protocol/encryption) to that provider with NIP-44 v2, so relays only ever see ciphertext.
+
+### Pay
+
+The provider replies with a payment request quoting the price plus the protocol fee. The customer builds a single Solana transaction that pays the provider and the protocol treasury [atomically](/protocol/payments), then confirms it.
+
+### Deliver
+
+The provider verifies the payment on-chain, runs the work, and publishes the result event (encrypted if the request was). The customer reads the result off the relay.
+
+::::
+
+## Variations
+
+- **Free jobs** skip the payment beat entirely - the provider goes straight from processing to result.
+- **Broadcast jobs** are sent without targeting a provider: the input is plaintext, any provider may respond, and the first valid result wins.
+
+Read the [protocol overview](/protocol/overview) for the full model, or go straight to a [quickstart](/quickstart).

@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NATIVE_SOL, resolveKnownAsset, SolanaPaymentStrategy, LIMITS } from '@elisym/sdk';
 import type { Asset, Chain, PaymentInfo } from '@elisym/sdk';
+import type { Rpc, Signature, SolanaRpcApi } from '@solana/kit';
 import { nip19 } from 'nostr-tools';
 
 /** Standard LAMPORTS_PER_SOL as a BigInt for integer math. */
@@ -174,12 +175,15 @@ export function checkLen(field: string, value: string, max: number): void {
 export const MAX_INPUT_LEN = LIMITS.MAX_INPUT_LENGTH;
 export const MAX_CAPABILITIES = LIMITS.MAX_CAPABILITIES;
 export const MAX_TIMEOUT_SECS = LIMITS.MAX_TIMEOUT_SECS;
+export const MAX_MESSAGE_LEN = LIMITS.MAX_MESSAGE_LENGTH;
 // Encrypted-content byte limits used by the text-spill path (large input -> iroh).
 export const NIP44_MAX_PLAINTEXT_BYTES = LIMITS.NIP44_MAX_PLAINTEXT_BYTES;
 export const MAX_ENCRYPTED_INLINE_BYTES = LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
 export const MAX_REINLINE_TEXT_BYTES = LIMITS.MAX_REINLINE_TEXT_BYTES;
 
 // MCP-specific limits that have no SDK counterpart.
+/** Cap on messages returned by one `get_messages` call. */
+export const MAX_MESSAGES = 1_000;
 export const MAX_NPUB_LEN = 128;
 export const MAX_EVENT_ID_LEN = 128;
 export const MAX_PAYMENT_REQ_LEN = 10_000;
@@ -195,6 +199,64 @@ let _paymentStrategy: SolanaPaymentStrategy | null = null;
 export function payment(): SolanaPaymentStrategy {
   _paymentStrategy ??= new SolanaPaymentStrategy();
   return _paymentStrategy;
+}
+
+/**
+ * Financial retry/release guard: has the payment tx DEFINITELY not moved funds?
+ *
+ * `sendAndConfirm` throws on a client-side confirmation timeout even when the tx
+ * actually landed. Callers use this on that failure path to decide whether to
+ * release a session-spend reservation or report a retryable failure - which must
+ * only happen when no funds moved. Returns `true` only with POSITIVE evidence of
+ * that: the signature stays absent from the chain across a short re-poll (guarding a
+ * landed-but-not-yet-indexed tx), or is present but reverted (on-chain error). Returns
+ * `false` when the tx is on-chain
+ * without error (funds moved, incl. merely 'processed') OR when the state could not
+ * be determined (RPC failure) - on that indeterminate case the caller must assume
+ * the tx MAY have landed and NOT release/retry (else a double withdrawal or an
+ * under-counted spend cap on a transient RPC error).
+ */
+/** Re-poll settings for the absent-from-chain case (see isDefinitelyUnpaid). */
+const UNPAID_RECHECK_ATTEMPTS = 3;
+const UNPAID_RECHECK_DELAY_MS = 2000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+export async function isDefinitelyUnpaid(
+  rpc: Rpc<SolanaRpcApi>,
+  signature: Signature,
+  opts: { recheckAttempts?: number; recheckDelayMs?: number } = {},
+): Promise<boolean> {
+  const attempts = opts.recheckAttempts ?? UNPAID_RECHECK_ATTEMPTS;
+  const delayMs = opts.recheckDelayMs ?? UNPAID_RECHECK_DELAY_MS;
+  // A `null` status is ambiguous right after a confirmation timeout: the tx may be
+  // genuinely absent, OR it landed and the queried RPC node has not indexed it yet
+  // (propagation lag). Re-poll a few times before concluding absent - a false "absent"
+  // here is the exact failure this guard exists to prevent (a caller would release a
+  // reservation or retry a withdrawal that actually moved funds). A landed/reverted
+  // status or an RPC error short-circuits immediately.
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) {
+      await delay(delayMs);
+    }
+    try {
+      const { value } = await rpc
+        .getSignatureStatuses([signature], { searchTransactionHistory: true })
+        .send();
+      const status = value[0];
+      if (status) {
+        // On-chain: definitely unpaid only if it reverted (no transfer happened).
+        return Boolean(status.err);
+      }
+    } catch {
+      return false; // could not determine -> assume the tx may have landed
+    }
+  }
+  return true; // absent across every re-poll -> genuinely not on-chain
 }
 
 /**

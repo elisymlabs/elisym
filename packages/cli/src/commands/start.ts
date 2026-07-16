@@ -20,13 +20,17 @@ import {
   KIND_LONG_FORM_ARTICLE,
   POLICY_D_TAG_PREFIX,
   POLICY_T_TAG,
+  getProtocolConfig,
+  getProtocolProgramId,
   jobRequestKind,
+  signerFromSecretKeyBase58,
   toDTag,
   type CapabilityCard,
 } from '@elisym/sdk';
 import {
   agentPaths,
   ensureGitignoreHasIrohEntry,
+  ensureGitignoreHasX402Entries,
   listAgents,
   loadAgent,
   loadPoliciesFromDir,
@@ -68,6 +72,7 @@ import type { LlmClient } from '../skill/index.js';
 import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
 import { startWatchdog } from '../watchdog.js';
+import { X402Driver } from '../x402/driver.js';
 
 export interface StartOptions {
   verbose?: boolean;
@@ -431,6 +436,59 @@ export async function cmdStart(
     agentDescription: loaded.yaml.description ?? '',
   };
 
+  // -- Step 7b: x402 bridge wiring (mode 'x402' skills) --
+  // Startup check of the single-wallet invariant: revenue lands at
+  // payments[].address, the upstream payer spends from solana_secret_key -
+  // the float is self-refilling ONLY when they are the same wallet.
+  // `elisym profile` can rewrite payments[] after `x402 add`, so a broken
+  // invariant must surface loudly HERE, not one refused job at a time.
+  const x402Skills = allSkills.filter((skill) => skill.mode === 'x402');
+  let x402InvariantBroken: string | undefined;
+  if (x402Skills.length > 0) {
+    const solanaSecretKey = loaded.secrets.solana_secret_key;
+    if (solanaSecretKey === undefined || solanaSecretKey.length === 0) {
+      x402InvariantBroken = 'no solana_secret_key in .secrets.json';
+    } else if (!solanaAddress) {
+      x402InvariantBroken = 'no payments[] entry in elisym.yaml';
+    } else {
+      const bridgeSigner = await signerFromSecretKeyBase58(solanaSecretKey);
+      if (bridgeSigner.address !== solanaAddress) {
+        x402InvariantBroken = `payments[].address (${solanaAddress}) differs from the solana_secret_key address (${bridgeSigner.address})`;
+      }
+    }
+    for (const skill of x402Skills) {
+      if (skill.asset.mint !== USDC_SOLANA_DEVNET.mint) {
+        console.warn(
+          `  ! x402 skill "${skill.name}" is priced in ${skill.asset.symbol}, not devnet USDC - every job will be refused at preflight. Re-run \`npx @elisym/cli x402 add\`.`,
+        );
+      }
+    }
+    if (x402InvariantBroken !== undefined) {
+      console.warn(`  ! x402 wallet invariant broken: ${x402InvariantBroken}.`);
+      console.warn(
+        '  ! x402 skills will NOT be advertised and their jobs will be refused before payment.',
+      );
+      console.warn('  ! Fix: re-run `npx @elisym/cli x402 add` or align elisym.yaml with the key.');
+    }
+    const x402RpcUrl = getRpcUrl(walletNetwork);
+    async function fetchLiveFeeBps(): Promise<number> {
+      const config = await getProtocolConfig(
+        createSolanaRpc(x402RpcUrl),
+        getProtocolProgramId('devnet'),
+        { forceRefresh: true },
+      );
+      return config.feeBps;
+    }
+    skillCtx.x402Driver = new X402Driver({
+      agentDir: loaded.dir,
+      paymentsAddress: solanaAddress,
+      solanaSecretKeyBase58: loaded.secrets.solana_secret_key,
+      rpcUrl: x402RpcUrl,
+      getFeeBps: fetchLiveFeeBps,
+      log: (message) => console.log(`  ${message}`),
+    });
+  }
+
   // -- Step 8: Connect to relays --
   console.log('  Connecting to relays and publishing capabilities...');
 
@@ -623,7 +681,11 @@ export async function cmdStart(
   const kinds = [jobRequestKind(DEFAULT_KIND_OFFSET)];
 
   function buildCard(skill: (typeof allSkills)[0]): CapabilityCard {
-    const isStatic = skill.mode === 'static-file' || skill.mode === 'static-script';
+    // `noInput` covers an x402 GET bridge without a query param: it consumes
+    // no buyer input, so the web app must hide its input box (`card.static`)
+    // instead of silently dropping whatever the buyer typed.
+    const isStatic =
+      skill.mode === 'static-file' || skill.mode === 'static-script' || skill.noInput === true;
     return {
       name: skill.name,
       description: skill.description,
@@ -668,6 +730,14 @@ export async function cmdStart(
       logger.warn(
         { event: 'publish_skipped_retired', kind: 31990, skill: skill.name, model: modelKey },
         'capability not advertised - model retired',
+      );
+      continue;
+    }
+    if (skill.mode === 'x402' && x402InvariantBroken !== undefined) {
+      console.warn(`  ! Not advertising "${skill.name}" - x402 wallet invariant broken.`);
+      logger.warn(
+        { event: 'publish_skipped_x402_invariant', kind: 31990, skill: skill.name },
+        'capability not advertised - x402 wallet invariant broken',
       );
       continue;
     }
@@ -741,6 +811,12 @@ export async function cmdStart(
   // Migration: ensure a project-local .gitignore created before `.iroh/` became a
   // default ignore entry still excludes the (cleartext) blob store.
   await ensureGitignoreHasIrohEntry(dirname(loaded.dir));
+  if (x402Skills.length > 0) {
+    // Same migration for the x402 idempotency cache (customer inputs/results
+    // + upstream payment history) - `x402 add` also ensures this, but a
+    // hand-written x402 skill must not leave the cache committable.
+    await ensureGitignoreHasX402Entries(dirname(loaded.dir));
+  }
 
   const runtimeConfig: RuntimeConfig = {
     paymentTimeoutSecs: DEFAULTS.PAYMENT_EXPIRY_SECS,

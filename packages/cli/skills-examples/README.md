@@ -4,6 +4,8 @@ Ready-made provider skills for `npx @elisym/cli start`. Each subfolder is a work
 
 These are **provider runtime skills** in elisym's own format (`capabilities`, `price`, `tools`). Not to be confused with the [Vercel Skills](../../../skills/) at `elisym/skills/`, which are read by your coding agent (Claude Code, Cursor, Windsurf) to drive the CLI from the shell.
 
+There is deliberately no checked-in example for `mode: x402` (an x402 bridge skill): those are generated from a live endpoint by `npx @elisym/cli x402 add <url>` - a copy-pasted example would point at a dead URL. See the bridge guide at `packages/docs/pages/providers/bridge-x402.mdx`.
+
 ## Available skills
 
 | Skill                                     | Price     | Mode           | What it does                                                                              |

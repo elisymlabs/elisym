@@ -109,6 +109,10 @@ export const feedbackContactsTools: ToolDefinition[] = [
           providerPubkey,
           positive,
           capability,
+          // Attach the on-disk payment tx signature (proof-carrying data for the
+          // future off-chain indexer - not verified on-chain here) and the
+          // active network so the rating is scoped correctly.
+          { txSignature: localEntry?.paymentSig, network: agent.network },
         );
       } catch (e) {
         return errorResult(
@@ -124,7 +128,10 @@ export const feedbackContactsTools: ToolDefinition[] = [
         });
       }
 
-      const npubForTip = input.provider_npub ?? npubFromHex(providerPubkey);
+      // Derive the tip from the ACTUAL feedback target (`providerPubkey`, which
+      // prefers the local entry), not the caller's `provider_npub` - otherwise a
+      // mismatched npub would suggest saving the wrong provider.
+      const npubForTip = npubFromHex(providerPubkey);
       if (positive) {
         return textResult(
           `Feedback recorded (rating=positive). Save this provider for future searches? ` +

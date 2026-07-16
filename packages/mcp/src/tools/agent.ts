@@ -1,7 +1,12 @@
-import { ElisymClient, ElisymIdentity, RELAYS, validateAgentName } from '@elisym/sdk';
+import {
+  ElisymClient,
+  ElisymIdentity,
+  RELAYS,
+  exportKeyPairBytes,
+  validateAgentName,
+} from '@elisym/sdk';
 import { resolveAgent } from '@elisym/sdk/agent-store';
 import {
-  type KeyPairSigner,
   createKeyPairSignerFromBytes,
   generateKeyPairSigner,
   getBase58Decoder,
@@ -18,25 +23,9 @@ import { defineTool, errorResult, textResult } from './types.js';
 const BASE58_ENCODER = getBase58Encoder();
 const BASE58_DECODER = getBase58Decoder();
 
-/**
- * Extract the 64-byte secret key (32-byte private seed + 32-byte public key)
- * from an extractable KeyPairSigner. This matches the format used by solana-keygen
- * and createKeyPairSignerFromBytes.
- */
-export async function exportKeyPairBytes(signer: KeyPairSigner): Promise<Uint8Array> {
-  const { privateKey, publicKey } = signer.keyPair;
-  const [pkcs8, rawPub] = await Promise.all([
-    crypto.subtle.exportKey('pkcs8', privateKey),
-    crypto.subtle.exportKey('raw', publicKey),
-  ]);
-  // PKCS#8 has a fixed 16-byte Ed25519 header; the raw 32-byte seed follows.
-  const privateBytes = new Uint8Array(pkcs8).slice(16);
-  const publicBytes = new Uint8Array(rawPub);
-  const bytes = new Uint8Array(64);
-  bytes.set(privateBytes, 0);
-  bytes.set(publicBytes, 32);
-  return bytes;
-}
+// Canonical implementation moved to the SDK (payment/wallet.ts) so the CLI can
+// share it; re-exported here because src/index.ts imports it from this module.
+export { exportKeyPairBytes };
 
 const CreateAgentSchema = z.object({
   name: z.string().min(1).max(64),

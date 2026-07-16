@@ -102,14 +102,40 @@ export interface Agent {
   supportedKinds: number[];
   /** Newest network signal of any kind: capability publish, result event, or feedback event. */
   lastSeen: number;
-  /** Unix seconds of the agent's most recent on-chain-verified paid job. Undefined if none. */
+  /**
+   * Unix seconds of the agent's most recent paid job, request-authorship-bound
+   * (the `payment-completed` author equals the job request's author). Undefined
+   * if none. Read by `compareAgentsByRank` as the top sort key.
+   */
   lastPaidJobAt?: number;
-  /** Solana tx signature of the verified paid job referenced by `lastPaidJobAt`. */
+  /** Solana tx signature of the paid job referenced by `lastPaidJobAt`. */
   lastPaidJobTx?: string;
-  /** Count of `rating=1` feedback events targeting this agent (last 30 days). */
+  /**
+   * Nostr-verified positive ratings (last 30 days): the rating author signed
+   * the job request too. Read by `compareAgentsByRank`.
+   */
   positiveCount?: number;
-  /** Count of all rated feedback events targeting this agent (last 30 days). */
+  /** Nostr-verified total ratings (last 30 days). Read by `compareAgentsByRank`. */
   totalRatingCount?: number;
+  /**
+   * Ratings that passed the weaker result-`p`-tag binding but not the strong
+   * request-authorship anchor (broadcast jobs, expired requests). Displayed as
+   * the broader "total", NOT a ranking input.
+   */
+  unverifiedRatingCount?: number;
+  unverifiedPositiveCount?: number;
+  /**
+   * Reserved for the off-chain indexer (see docs/plans/agent-reputation-indexer.md).
+   * Always undefined in stage 1 - the payment tx signatures ride in the events
+   * but are not verified on-chain here. The indexer fills this without an API
+   * break.
+   */
+  paymentVerified?: {
+    total: number;
+    positive: number;
+    /** assetKey -> raw subunits (string). */
+    volume: Record<string, string>;
+  };
   picture?: string;
   banner?: string;
   name?: string;
@@ -229,6 +255,42 @@ export interface PingResult {
   online: boolean;
   /** The identity used for the ping session - reuse for job submission so pubkeys match. */
   identity: ElisymIdentity | null;
+}
+
+// --- Direct messages (NIP-17) ---
+
+/** A decrypted private direct message. Transport details (wraps, seals) never leak out of the SDK. */
+export interface DirectMessage {
+  /** Rumor id - identical across the sender's self-copy and the recipient's copy. */
+  id: string;
+  senderPubkey: string;
+  /**
+   * Best-effort display metadata: the first `p` tag of the rumor, falling
+   * back to the reader's own pubkey when absent (the wrap decrypted to us,
+   * so we are a recipient). External clients may deviate (multi-`p` group
+   * rumors); received messages group by sender, so this stays correct.
+   */
+  recipientPubkey: string;
+  content: string;
+  /** Rumor created_at (real time - wrap/seal timestamps are randomized by NIP-59). */
+  createdAt: number;
+  /** True when the reader authored the message (senderPubkey === own pubkey). */
+  isMine: boolean;
+}
+
+/** One conversation (grouped by counterpart) in an inbox listing. */
+export interface ConversationSummary {
+  counterpartPubkey: string;
+  lastMessage: DirectMessage;
+  /** Messages fetched in the query window - not an all-time total. */
+  messageCount: number;
+  /**
+   * Counterpart-authored (`!isMine`) messages strictly newer than the
+   * caller's read cursor. Present only when `readCursors` was passed to
+   * `listConversations`; a missing cursor counts every counterpart-authored
+   * message as unread.
+   */
+  unreadCount?: number;
 }
 
 // --- Payment ---

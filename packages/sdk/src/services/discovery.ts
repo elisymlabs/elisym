@@ -13,10 +13,50 @@ import {
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type { Agent, CapabilityCard, Network, SubCloser } from '../types';
+import type { MessagesService } from './messages';
+import { requestJobIds, tallyReputation } from './reputation';
 
 const RANKING_ACTIVITY_WINDOW_SECS = 30 * 24 * 60 * 60;
 const RANKING_BUCKET_SIZE_SECS = 60;
 const COLD_START_BUCKET = -Infinity;
+/** Max clock skew for a capability event's `created_at`; further-future events are dropped. */
+const MAX_FUTURE_SKEW_SECS = 300;
+
+/**
+ * Pagination-cursor floor: the elisym protocol did not exist before 2024, so
+ * no real capability event can predate it. Without the floor a single
+ * validly-signed event backdated to `created_at: 0` would drag the `until`
+ * cursor to zero and silently end pagination for every consumer.
+ */
+const MIN_CURSOR_CREATED_AT = 1704067200; // 2024-01-01T00:00:00Z
+
+/**
+ * A validly-signed event can still carry an attacker-chosen future `created_at`.
+ * Left unchecked it wins the newest-per-(pubkey, d-tag) dedup and inflates
+ * `lastSeen`, so reject anything dated beyond a small clock-skew margin.
+ */
+function isWithinClockSkew(event: Event): boolean {
+  return event.created_at <= Math.floor(Date.now() / 1000) + MAX_FUTURE_SKEW_SECS;
+}
+
+/** Max length for a remote image URL before it is rejected outright. */
+const MAX_IMAGE_URL_LEN = 2048;
+
+/**
+ * Provider-supplied avatar/banner URLs are rendered as `<img src>`, so a hostile
+ * value turns every viewer into a tracking-pixel / SSRF probe (leaking their IP and,
+ * via `Referer`, the pubkey they are inspecting). Accept only bounded `https:` URLs.
+ */
+function isSafeImageUrl(value: string): boolean {
+  if (value.length > MAX_IMAGE_URL_LEN) {
+    return false;
+  }
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 /** Sentinel signal that never aborts; lets `runEnrichment` accept an `AbortSignal` uniformly. */
 const NEVER_ABORTED_SIGNAL: AbortSignal = new AbortController().signal;
@@ -85,6 +125,9 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
   if (!verifyEvent(event)) {
     return null;
   }
+  if (!isWithinClockSkew(event)) {
+    return null;
+  }
   if (!event.content) {
     return null;
   }
@@ -114,6 +157,26 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     return null;
   }
   const card = candidate as unknown as CapabilityCard & { deleted?: boolean };
+
+  // Read-side mirror of the publish-side caps: the SDK never emits an
+  // oversized card, so a violating event is hostile or foreign. Reject it at
+  // the boundary - accepted cards are retained indefinitely in client state.
+  if (
+    card.name.length > LIMITS.MAX_AGENT_NAME_LENGTH ||
+    card.description.length > LIMITS.MAX_DESCRIPTION_LENGTH ||
+    card.capabilities.length > LIMITS.MAX_CAPABILITIES ||
+    card.capabilities.some((capability) => capability.length > LIMITS.MAX_CAPABILITY_LENGTH)
+  ) {
+    return null;
+  }
+
+  // `image` is rendered as `<img src>` by consumers - a hostile value turns
+  // every viewer into a tracking-pixel / SSRF probe. Clear (do NOT drop the
+  // card, matching the `inputText` coercion below) so a bad image never
+  // hides an otherwise valid agent.
+  if (card.image !== undefined && (typeof card.image !== 'string' || !isSafeImageUrl(card.image))) {
+    card.image = undefined;
+  }
 
   if (
     card.payment &&
@@ -193,7 +256,7 @@ function buildAgentsFromEvents(events: Event[], network: Network): Map<string, A
   // map and effectively erase the victim's agent from results.
   const latestByDTag = new Map<string, Event>();
   for (const event of events) {
-    if (!verifyEvent(event)) {
+    if (!verifyEvent(event) || !isWithinClockSkew(event)) {
       continue;
     }
     const dTag = event.tags.find((tag) => tag[0] === 'd')?.[1] ?? '';
@@ -267,7 +330,16 @@ function buildAgentsFromEvents(events: Event[], network: Network): Map<string, A
 }
 
 export class DiscoveryService {
-  constructor(private pool: NostrPool) {}
+  /**
+   * `messages` is optional so standalone `new DiscoveryService(pool)`
+   * construction keeps working; when present (the `ElisymClient` wiring),
+   * a successful capability publish also announces the agent's DM inbox
+   * relays (kind 10050) through it.
+   */
+  constructor(
+    private pool: NostrPool,
+    private messages?: MessagesService,
+  ) {}
 
   /**
    * Fetch a single page of elisym agents with relay-side pagination.
@@ -294,9 +366,20 @@ export class DiscoveryService {
     const events = await this.pool.querySync(filter);
     const rawEventCount = events.length;
 
-    // Compute cursor from ALL raw events (before any filtering)
+    // Compute the cursor before capability-schema filtering (so forward-compat
+    // events still advance pagination), but only from events that pass the
+    // same signature + clock-skew gate as every other read path, plus the
+    // protocol-epoch floor: unverified or backdated input must not steer
+    // `until` and silently end pagination. nostr-tools memoizes verifyEvent
+    // per event object, so the re-check in buildAgentsFromEvents is free.
     let oldestCreatedAt: number | null = null;
     for (const event of events) {
+      if (!verifyEvent(event) || !isWithinClockSkew(event)) {
+        continue;
+      }
+      if (event.created_at < MIN_CURSOR_CREATED_AT) {
+        continue;
+      }
       if (oldestCreatedAt === null || event.created_at < oldestCreatedAt) {
         oldestCreatedAt = event.created_at;
       }
@@ -338,16 +421,24 @@ export class DiscoveryService {
       }
       try {
         const meta = JSON.parse(ev.content);
-        if (typeof meta.picture === 'string') {
+        if (typeof meta.picture === 'string' && isSafeImageUrl(meta.picture)) {
           agent.picture = meta.picture;
         }
-        if (typeof meta.banner === 'string') {
+        if (typeof meta.banner === 'string' && isSafeImageUrl(meta.banner)) {
           agent.banner = meta.banner;
         }
-        if (typeof meta.name === 'string') {
+        // Same skip-on-invalid shape as picture/banner above: kind:0 content
+        // is unauthenticated remote data, so cap free-text fields instead of
+        // retaining a multi-KB name/about in every discovered Agent. A blank
+        // name never beats the capability-derived one - skip it too.
+        if (
+          typeof meta.name === 'string' &&
+          meta.name.trim().length > 0 &&
+          meta.name.length <= LIMITS.MAX_AGENT_NAME_LENGTH
+        ) {
           agent.name = meta.name;
         }
-        if (typeof meta.about === 'string') {
+        if (typeof meta.about === 'string' && meta.about.length <= LIMITS.MAX_DESCRIPTION_LENGTH) {
           agent.about = meta.about;
         }
       } catch {
@@ -392,7 +483,7 @@ export class DiscoveryService {
     const agentMap = buildAgentsFromEvents(events, network);
     const agents = Array.from(agentMap.values());
 
-    return this.runEnrichment(agents, agentMap, NEVER_ABORTED_SIGNAL);
+    return this.runEnrichment(agents, agentMap, NEVER_ABORTED_SIGNAL, network);
   }
 
   /**
@@ -416,7 +507,7 @@ export class DiscoveryService {
       return null;
     }
     const agents = Array.from(agentMap.values());
-    await this.runEnrichment(agents, agentMap, NEVER_ABORTED_SIGNAL);
+    await this.runEnrichment(agents, agentMap, NEVER_ABORTED_SIGNAL, network);
     return agentMap.get(pubkey) ?? null;
   }
 
@@ -434,6 +525,7 @@ export class DiscoveryService {
     agents: Agent[],
     agentMap: Map<string, Agent>,
     signal: AbortSignal,
+    network: Network,
   ): Promise<Agent[]> {
     const agentPubkeys = Array.from(agentMap.keys());
     if (agentPubkeys.length === 0) {
@@ -443,14 +535,21 @@ export class DiscoveryService {
     const activitySince = Math.floor(Date.now() / 1000) - RANKING_ACTIVITY_WINDOW_SECS;
     // Derive result kinds from agents' supported request kinds (5xxx - 6xxx)
     const resultKinds = new Set<number>();
+    // Request kinds the anchor fetch below will filter on. A request's kind is one the
+    // provider supports, and every in-scope provider's supportedKinds are collected
+    // here, so this covers every attributable request while giving the relay an explicit
+    // `kinds` (some relays reject an ids-only filter).
+    const requestKinds = new Set<number>();
     for (const agent of agentMap.values()) {
       for (const supportedKind of agent.supportedKinds) {
         if (supportedKind >= KIND_JOB_REQUEST_BASE && supportedKind < KIND_JOB_RESULT_BASE) {
           resultKinds.add(KIND_JOB_RESULT_BASE + (supportedKind - KIND_JOB_REQUEST_BASE));
+          requestKinds.add(supportedKind);
         }
       }
     }
     resultKinds.add(jobResultKind(DEFAULT_KIND_OFFSET));
+    requestKinds.add(KIND_JOB_REQUEST);
 
     const [resultEvents, feedbackEvents] = await Promise.all([
       this.pool.queryBatched(
@@ -472,103 +571,44 @@ export class DiscoveryService {
       return agents;
     }
 
-    // Result events: written by the agent, indexed by author. Build
-    // (provider, jobEventId) pairs so we can cross-check `payment-completed`
-    // feedback against an actual delivered result. Customers publish
-    // `payment-completed` immediately on payment, before the result arrives -
-    // an unmatched feedback means the provider never delivered (or never
-    // existed at the time), so it must not count as a verified paid job.
-    const deliveredJobsByProvider = new Map<string, Set<string>>();
-    // jobEventId -> the customer pubkey the provider addressed the result to
-    // (the result's `p` tag is `requestEvent.pubkey`, see submitJobResult). Used
-    // to bind feedback/rating authorship to the job's actual customer below.
-    const customerByJob = new Map<string, string>();
-    for (const ev of resultEvents) {
-      if (!verifyEvent(ev)) {
-        continue;
-      }
-      const agent = agentMap.get(ev.pubkey);
-      if (!agent) {
-        continue;
-      }
-      if (ev.created_at > agent.lastSeen) {
-        agent.lastSeen = ev.created_at;
-      }
-      const jobEventId = ev.tags.find((tag) => tag[0] === 'e')?.[1];
-      if (jobEventId) {
-        let delivered = deliveredJobsByProvider.get(ev.pubkey);
-        if (!delivered) {
-          delivered = new Set();
-          deliveredJobsByProvider.set(ev.pubkey, delivered);
-        }
-        delivered.add(jobEventId);
-        const customerPubkey = ev.tags.find((tag) => tag[0] === 'p')?.[1];
-        if (customerPubkey) {
-          customerByJob.set(jobEventId, customerPubkey);
-        }
-      }
+    // Fetch the job requests that authorship is anchored to. Seeded by the union
+    // of both feedback streams' `e`-tags (ratings + payment-completed) so J is
+    // present for paid-but-unrated jobs. No `since` - the id set bounds it, and
+    // a request can predate the 30-day feedback window. This is a Nostr relay
+    // query, not a Solana RPC call.
+    const jobIds = requestJobIds(feedbackEvents);
+    const requestEvents =
+      jobIds.length > 0 ? await this.pool.queryByIds({ kinds: [...requestKinds] }, jobIds) : [];
+
+    if (signal.aborted) {
+      return agents;
     }
 
-    // Feedback events: written by the *customer*, target agent in the `p` tag.
-    // Tally rating counters and pick the newest `payment-completed` feedback
-    // per agent as `lastPaidJobAt` / `lastPaidJobTx`. A feedback only counts
-    // when (a) it references a job (`e` tag) that has a matching kind:6xxx
-    // result from the provider, and (b) its author is the customer that result
-    // was addressed to. This blocks unauthenticated third parties from inflating
-    // ratings / minting paid-job timestamps. Provider-vs-sock-puppet collusion
-    // still needs on-chain payment verification (roadmap).
-    const countedRatings = new Set<string>();
-    for (const ev of feedbackEvents) {
-      if (!verifyEvent(ev)) {
+    const reputation = tallyReputation({
+      agentPubkeys,
+      resultEvents,
+      feedbackEvents,
+      requestEvents,
+      network,
+    });
+
+    for (const agent of agents) {
+      const rep = reputation.get(agent.pubkey);
+      if (!rep) {
         continue;
       }
-      const targetPubkey = ev.tags.find((tag) => tag[0] === 'p')?.[1];
-      if (!targetPubkey) {
-        continue;
+      if (rep.lastActivityAt !== undefined && rep.lastActivityAt > agent.lastSeen) {
+        agent.lastSeen = rep.lastActivityAt;
       }
-      const agent = agentMap.get(targetPubkey);
-      if (!agent) {
-        continue;
-      }
-      if (ev.created_at > agent.lastSeen) {
-        agent.lastSeen = ev.created_at;
-      }
-
-      const jobEventId = ev.tags.find((tag) => tag[0] === 'e')?.[1];
-      const hasDeliveredResult =
-        jobEventId !== undefined &&
-        deliveredJobsByProvider.get(targetPubkey)?.has(jobEventId) === true;
-      // Was this feedback authored by the job's actual customer?
-      const jobCustomer = jobEventId !== undefined ? customerByJob.get(jobEventId) : undefined;
-      const authoredByCustomer = jobCustomer !== undefined && ev.pubkey === jobCustomer;
-
-      const rating = ev.tags.find((tag) => tag[0] === 'rating')?.[1];
-      if ((rating === '1' || rating === '0') && hasDeliveredResult && authoredByCustomer) {
-        // Dedupe: at most one rating per (customer, job).
-        const ratingKey = `${ev.pubkey}:${jobEventId}`;
-        if (!countedRatings.has(ratingKey)) {
-          countedRatings.add(ratingKey);
-          agent.totalRatingCount = (agent.totalRatingCount ?? 0) + 1;
-          if (rating === '1') {
-            agent.positiveCount = (agent.positiveCount ?? 0) + 1;
-          }
-        }
-      }
-
-      const status = ev.tags.find((tag) => tag[0] === 'status')?.[1];
-      const txTag = ev.tags.find((tag) => tag[0] === 'tx');
-      const txSignature = txTag?.[1];
-      if (
-        status === 'payment-completed' &&
-        typeof txSignature === 'string' &&
-        txSignature &&
-        hasDeliveredResult &&
-        authoredByCustomer
-      ) {
-        if (!agent.lastPaidJobAt || ev.created_at > agent.lastPaidJobAt) {
-          agent.lastPaidJobAt = ev.created_at;
-          agent.lastPaidJobTx = txSignature;
-        }
+      // `compareAgentsByRank` reads only the Nostr-verified tier; the unverified
+      // tier is display-only.
+      agent.totalRatingCount = rep.nostrVerified.total;
+      agent.positiveCount = rep.nostrVerified.positive;
+      agent.unverifiedRatingCount = rep.unverified.total;
+      agent.unverifiedPositiveCount = rep.unverified.positive;
+      if (rep.lastPaidJobAt !== undefined) {
+        agent.lastPaidJobAt = rep.lastPaidJobAt;
+        agent.lastPaidJobTx = rep.lastPaidJobTx;
       }
     }
 
@@ -636,7 +676,7 @@ export class DiscoveryService {
       // enrichment mutation.
       const snapshotAgents = Array.from(agentByPubkey.values()).map((agent) => ({ ...agent }));
       const snapshotMap = new Map(snapshotAgents.map((agent) => [agent.pubkey, agent]));
-      void this.runEnrichment(snapshotAgents, snapshotMap, enrichmentAbort.signal).then(
+      void this.runEnrichment(snapshotAgents, snapshotMap, enrichmentAbort.signal, network).then(
         (sorted) => {
           if (enrichmentAbort.signal.aborted) {
             return;
@@ -658,10 +698,12 @@ export class DiscoveryService {
         if (prev && event.created_at <= prev.created_at) {
           return;
         }
-        // Verify before trusting `event.pubkey`. An unsigned forged event with a
-        // future `created_at` would otherwise displace a legitimate event from
-        // the (pubkey, d-tag) slot.
-        if (!verifyEvent(event)) {
+        // Verify before trusting `event.pubkey`, and reject a far-future
+        // `created_at`: a validly-signed but future-dated event would otherwise
+        // displace a legitimate event from the (pubkey, d-tag) slot. The
+        // `perDTag.set` below runs only after both checks pass, so a rejected
+        // event never evicts the incumbent.
+        if (!verifyEvent(event) || !isWithinClockSkew(event)) {
           return;
         }
 
@@ -721,13 +763,12 @@ export class DiscoveryService {
     const resultsSub = this.pool.subscribe(
       { kinds: [KIND_JOB_RESULT], '#t': ['elisym'], since: activitySince },
       (event) => {
-        // Verify signature before trusting `event.pubkey`. Without this, a
-        // forged unsigned event would let an attacker bump any pubkey's
-        // streaming `lastPaidJobAt` until enrichment overrides it. The
-        // post-enrichment flush guards against bare-event spoofing once
-        // `lastPaidJobTx` is set, but the pre-enrichment window would
-        // otherwise be unprotected.
-        if (!verifyEvent(event)) {
+        // Verify signature before trusting `event.pubkey`, and reject a far-future
+        // `created_at`: a self-signed result event could otherwise pin the provider's
+        // pre-enrichment streaming `lastPaidJobAt` to the top of the ranking. The
+        // post-enrichment flush guards spoofing once `lastPaidJobTx` is set, but the
+        // pre-enrichment window would otherwise be unprotected.
+        if (!verifyEvent(event) || !isWithinClockSkew(event)) {
           return;
         }
         opts.onPaidJob?.(event.pubkey, event.created_at);
@@ -796,6 +837,11 @@ export class DiscoveryService {
         );
       }
     }
+    // Write-side mirror of the parse-side guard: readers clear non-https
+    // images, so publishing one would silently ship a card with no image.
+    if (card.image !== undefined && !isSafeImageUrl(card.image)) {
+      throw new Error('Capability image must be a bounded https: URL.');
+    }
 
     const tags: string[][] = [
       ['d', toDTag(card.name)],
@@ -815,6 +861,20 @@ export class DiscoveryService {
     );
 
     await this.pool.publishAll(event);
+
+    // "Agent is announced" should imply "agent is reachable via DM from any
+    // NIP-17 client". Best-effort: the DM inbox hint must never fail the
+    // announce - the capability card is the deliverable, the 10050 is not.
+    // Default-mode guards inside publishInboxRelays (debounce + ownership)
+    // keep the per-skill announce loop from republishing or clobbering an
+    // operator-managed relay list.
+    if (this.messages) {
+      try {
+        await this.messages.publishInboxRelays(identity);
+      } catch {
+        // Swallowed by design - see above.
+      }
+    }
     return event.id;
   }
 
@@ -835,6 +895,15 @@ export class DiscoveryService {
       throw new Error(
         `Profile about too long: ${about.length} chars (max ${LIMITS.MAX_DESCRIPTION_LENGTH}).`,
       );
+    }
+    // Same rule readers enforce in enrichWithMetadata: an unsafe URL would
+    // never render for any SDK consumer, so fail the publish loudly instead
+    // of broadcasting a profile that silently drops its images.
+    if (picture && !isSafeImageUrl(picture)) {
+      throw new Error('Profile picture must be a bounded https: URL.');
+    }
+    if (banner && !isSafeImageUrl(banner)) {
+      throw new Error('Profile banner must be a bounded https: URL.');
     }
     const content: Record<string, string> = { name, about };
     if (picture) {

@@ -28,7 +28,14 @@ export const MAX_INPUT_PATH_LEN = 4096;
 // filenames (/etc/crontab, /etc/sudoers, /etc/bash.bashrc) and unit/desktop-entry
 // extensions (systemd `.service`, freedesktop `.desktop` autostart entries).
 const SENSITIVE_NAME_RE =
-  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*-keypair\.json|.*\.pem|.*\.key|\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.bash_aliases|\.profile|\.zshrc|\.zprofile|\.zshenv|\.zlogin|\.zlogout|config\.fish|\.gitconfig|\.npmrc|\.netrc|crontab|sudoers|bash\.bashrc|.*\.service|.*\.desktop)$/i;
+  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys|wallet\.dat|credentials|.*-keypair\.json|.*\.pem|.*\.key|\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.bash_aliases|\.profile|\.zshrc|\.zprofile|\.zshenv|\.zlogin|\.zlogout|config\.fish|\.gitconfig|\.npmrc|\.netrc|crontab|sudoers|bash\.bashrc|.*\.service|.*\.desktop)$/i;
+
+/**
+ * Credential subdirs under `~/.config/` (gcloud, gh, ...). Too generic to list as
+ * bare path segments (they would over-block unrelated dirs), so matched only when
+ * they directly follow a `.config` segment.
+ */
+const SENSITIVE_CONFIG_SUBDIRS = new Set(['gcloud', 'gh', 'hub', 'doctl', 'terraform']);
 // `.git` blocks the repo-internal config + hooks dir (hooks are auto-run on git ops).
 // The remaining segments are OS auto-run / privilege-escalation dirs whose contents
 // execute on login or schedule: macOS Launch{Agents,Daemons}, freedesktop autostart,
@@ -38,6 +45,10 @@ const SENSITIVE_DIR_SEGMENTS = new Set([
   '.ssh',
   '.aws',
   '.gnupg',
+  '.docker',
+  '.kube',
+  '.terraform.d',
+  '.dropbox',
   '.git',
   'launchagents',
   'launchdaemons',
@@ -62,7 +73,14 @@ function isSensitiveInputPath(absPath: string): boolean {
     return true;
   }
   const segments = absPath.split(/[/\\]+/);
-  return segments.some((segment) => SENSITIVE_DIR_SEGMENTS.has(segment.toLowerCase()));
+  const lower = segments.map((segment) => segment.toLowerCase());
+  if (lower.some((segment) => SENSITIVE_DIR_SEGMENTS.has(segment))) {
+    return true;
+  }
+  // `~/.config/<tool>` credential dirs: match only the `.config`-parented sequence.
+  const configIdx = lower.indexOf('.config');
+  const configSub = configIdx >= 0 ? lower[configIdx + 1] : undefined;
+  return configSub !== undefined && SENSITIVE_CONFIG_SUBDIRS.has(configSub);
 }
 
 /**

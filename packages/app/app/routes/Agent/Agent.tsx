@@ -1,5 +1,6 @@
 import { nip44Decrypt, resolveKnownAsset, toDTag, truncateKey } from '@elisym/sdk';
-import { nip19, type Event as NostrEvent } from 'nostr-tools';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { nip19, verifyEvent, type Event as NostrEvent } from 'nostr-tools';
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
@@ -12,9 +13,11 @@ import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
+import { useJobHistory } from '~/hooks/useJobHistory';
 import { usePingAgent, type PingStatus } from '~/hooks/usePingAgent';
 import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { track } from '~/lib/analytics';
+import { SOLANA_CLUSTER } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
 import { decodeResult } from '~/lib/fileResult';
 import { compactZeros, formatDecimal } from '~/lib/formatPrice';
@@ -277,14 +280,23 @@ function useHydrateArtifacts(
         const [requests, resMap] = await Promise.all([
           client.pool.querySync({ ids }) as Promise<NostrEvent[]>,
           identity
-            ? client.marketplace.queryJobResults(identity, ids).catch(() => new Map())
+            ? // Scope results to this agent's pubkey: without the author filter a
+              // forged kind-6100 tagging a public request id could be hydrated as
+              // the result (amount/content poisoning of localStorage).
+              client.marketplace
+                .queryJobResults(identity, ids, undefined, pubkey)
+                .catch(() => new Map())
             : Promise.resolve(new Map()),
         ]);
         if (cancelled) {
           return;
         }
         for (const artifact of missing) {
-          const req = requests.find((event) => event.id === artifact.id);
+          // verifyEvent: the relay-supplied `id` is content-addressed but not
+          // trusted at face value - a malicious relay could return an event with a
+          // matching id but attacker `pubkey`/`tags`/`content`, whose `p` tag would
+          // then drive nip44Decrypt. Verifying rejects any forged/tampered event.
+          const req = requests.find((event) => event.id === artifact.id && verifyEvent(event));
           const patch: Partial<Artifact> = {};
           if (req && !artifact.prompt && !artifact.promptAttachment) {
             const pTag = req.tags.find((tag) => tag[0] === 'p')?.[1];
@@ -346,6 +358,19 @@ export default function AgentPage() {
   const agentData = agent ? displayAgents[0] : undefined;
 
   const idCtx = useIdentity();
+  // The connected Solana wallet's job history holds the payment tx per job, so
+  // an artifact-tab rating can carry the payment proof for the future indexer.
+  const { publicKey: walletPublicKey } = useWallet();
+  const { jobs: walletJobs } = useJobHistory({ wallet: walletPublicKey?.toBase58() ?? '' });
+  const txHashByJobId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const job of walletJobs) {
+      if (job.txHash) {
+        map.set(job.jobEventId, job.txHash);
+      }
+    }
+    return map;
+  }, [walletJobs]);
   const isOwn = idCtx.publicKey === pubkey;
   const pingedStatus = usePingAgent(isOwn || !pubkey ? '' : pubkey);
   const pingStatus: PingStatus = isOwn ? 'online' : pingedStatus;
@@ -455,6 +480,7 @@ export default function AgentPage() {
           pubkey,
           positive,
           artifact.capability,
+          { txSignature: txHashByJobId.get(artifact.id), network: SOLANA_CLUSTER },
         );
         await cacheSet(`rated:${artifact.id}`, true);
         track('rate-result', { rating: positive ? 'good' : 'bad' });
@@ -462,7 +488,7 @@ export default function AgentPage() {
         // silent fail
       }
     },
-    [client, idCtx.identity, pubkey, ratedArtifacts],
+    [client, idCtx.identity, pubkey, ratedArtifacts, txHashByJobId],
   );
 
   // ?tab=history lands the user straight on the History tab. Used by the
@@ -510,8 +536,11 @@ export default function AgentPage() {
     return <LoadingOverlay />;
   }
 
+  // Gate on total, not positives: an all-negative agent (0 positive, N total) must
+  // still show "0% positive", otherwise it looks identical to a brand-new unrated
+  // agent and the negative trust signal is hidden.
   const feedbackPct =
-    agentData.feedbackPositive > 0
+    agentData.feedbackTotal > 0
       ? Math.round((agentData.feedbackPositive / agentData.feedbackTotal) * 100)
       : null;
   const clampedDisplayName =
@@ -611,6 +640,9 @@ export default function AgentPage() {
                     <img
                       src={agentData.picture}
                       alt={displayName}
+                      // Provider-controlled URL (https-validated in the SDK): don't leak
+                      // the inspected pubkey via Referer to the image host.
+                      referrerPolicy="no-referrer"
                       className="size-full object-cover"
                     />
                   ) : (
@@ -704,7 +736,10 @@ export default function AgentPage() {
                     </span>
                   )}
                   {feedbackPct !== null && (
-                    <span className="flex items-center gap-6">
+                    <span
+                      className="flex items-center gap-6"
+                      title="From buyers who signed the job request (Nostr-verified). On-chain payment verification is not applied yet."
+                    >
                       <svg
                         aria-hidden
                         className="size-14 shrink-0 text-green"
@@ -719,19 +754,48 @@ export default function AgentPage() {
                         <polyline points="5 12 12 5 19 12" />
                       </svg>
                       {feedbackPct}% positive
+                      <span className="text-text-2">
+                        ({agentData.feedbackTotal} verified
+                        {agentData.feedbackTotalAllTiers > agentData.feedbackTotal
+                          ? ` · ${agentData.feedbackTotalAllTiers} total`
+                          : ''}
+                        )
+                      </span>
                     </span>
                   )}
                 </div>
               </div>
 
-              {agentData.lastPaidJobLabel && (
-                <div
-                  className="hidden shrink-0 text-xs text-text-2 opacity-60 sm:block sm:text-right"
-                  title="Last paid job"
-                >
-                  {agentData.lastPaidJobLabel}
-                </div>
-              )}
+              <div className="flex shrink-0 flex-col items-start gap-8 sm:items-end">
+                {!isOwn && (walletPublicKey !== null || idCtx.providerSession) && (
+                  <Link
+                    to={`/messages/${pubkey}`}
+                    className="inline-flex shrink-0 cursor-pointer items-center gap-6 rounded-8 border border-border px-10 py-6 text-xs font-medium text-text-2 no-underline transition-colors hover:border-accent hover:text-text"
+                  >
+                    <svg
+                      aria-hidden
+                      className="size-14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                    Message
+                  </Link>
+                )}
+                {agentData.lastPaidJobLabel && (
+                  <div
+                    className="hidden shrink-0 text-xs text-text-2 opacity-60 sm:block sm:text-right"
+                    title="Last paid job"
+                  >
+                    {agentData.lastPaidJobLabel}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

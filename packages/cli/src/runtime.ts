@@ -45,6 +45,7 @@ import { getRpcUrl } from './helpers.js';
 import { JobLedger } from './ledger.js';
 import type { SkillRegistry, SkillContext, SkillOutput } from './skill';
 import type { NostrTransport, IncomingJob } from './transport/nostr.js';
+import { X402PreflightError, X402TransientError } from './x402/errors.js';
 
 const payment = new SolanaPaymentStrategy();
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -842,12 +843,23 @@ export class AgentRuntime {
       //   - `paid` + `PaymentTimeoutError`: payment verification timed out but the
       //     customer was not conclusively shown to have abandoned; keep `paid` so
       //     recovery re-verifies a late on-chain payment instead of losing it.
+      //   - `paid` + `X402TransientError`: the x402 upstream hiccuped (network,
+      //     timeout, 5xx, 429) AFTER the customer paid; keep `paid` so recovery
+      //     retries. The driver's idempotency cache + paid-attempt budget bound
+      //     the money, so retries are safe.
+      //   - `paid` + budget abort on an x402 skill: the bought result may already
+      //     sit in the idempotency cache; cache-first recovery delivers it
+      //     without paying the upstream again. Recovery's retry cap + 24h cutoff
+      //     bound the loop.
       //   - everything else: markFailed as before.
       const currentStatus = this.ledger.getStatus(job.jobId);
       const keepPaidForRecovery =
         (e instanceof AgentUnavailableError ||
           e instanceof SeedFailedError ||
-          e instanceof PaymentTimeoutError) &&
+          e instanceof PaymentTimeoutError ||
+          e instanceof X402TransientError ||
+          (e instanceof ExecutionBudgetExceededError &&
+            this.skills.route(job.tags)?.mode === 'x402')) &&
         currentStatus === 'paid';
       if (currentStatus !== 'executed' && !keepPaidForRecovery) {
         this.ledger.markFailed(job.jobId);
@@ -915,6 +927,63 @@ export class AgentRuntime {
             type: 'error',
             message: AGENT_UNAVAILABLE_MESSAGE,
           })
+          .catch(() => {});
+        return;
+      }
+    }
+
+    // ── x402 pre-payment rules ──
+    // (a) Attachment rule: spilled >60KB text and real files both arrive as
+    // attachments with an EMPTY inline input, invisible to the preflight
+    // below. POST bridges accept a text/* attachment up to the skill's input
+    // cap (the runtime transparently re-inlines it after payment); anything
+    // else - and any attachment on a GET bridge - is refused BEFORE payment.
+    // Declared mime/size are envelope fields, readable without fetching the
+    // bytes; a lying descriptor is caught again in the executor (filePath
+    // guard + actual-size re-check) before any upstream payment.
+    if (matched?.mode === 'x402' && job.attachment !== undefined) {
+      const method = matched.x402?.method ?? 'POST';
+      const maxInputBytes = matched.x402?.maxInputBytes ?? 0;
+      const attachmentOk =
+        method === 'POST' &&
+        job.attachment.mime.startsWith('text/') &&
+        job.attachment.size <= maxInputBytes;
+      if (!attachmentOk) {
+        log(
+          `[${job.jobId.slice(0, 8)}] Rejecting attachment on x402 skill (mime=${job.attachment.mime}, size=${job.attachment.size})`,
+        );
+        await this.transport
+          .sendFeedback(job, {
+            type: 'error',
+            message:
+              'This skill accepts inline text input only (or a text attachment within its size limit).',
+          })
+          .catch(() => {});
+        return;
+      }
+    }
+
+    // (b) Generic pre-payment preflight (x402: wallet invariant, live quote
+    // vs ceiling, float balance, live margin, input-size rules). Refuses the
+    // job BEFORE recordPaid/payment collection; `input` here is the
+    // pre-payment view - inline text only, file inputs are fetched after
+    // payment. Customer-facing text stays generic unless the error marks a
+    // customer-actionable reason (e.g. input too large).
+    if (matched?.preflight) {
+      try {
+        await matched.preflight(
+          { data: job.input, inputType: job.inputType, tags: job.tags, jobId: job.jobId },
+          this.skillCtx,
+        );
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log(`[${job.jobId.slice(0, 8)}] Preflight refused job: ${detail}`);
+        const customerMessage =
+          err instanceof X402PreflightError && err.customerMessage !== undefined
+            ? err.customerMessage
+            : AGENT_UNAVAILABLE_MESSAGE;
+        await this.transport
+          .sendFeedback(job, { type: 'error', message: customerMessage })
           .catch(() => {});
         return;
       }
@@ -1943,6 +2012,33 @@ export class AgentRuntime {
               return;
             }
             throw err;
+          }
+        }
+
+        // Skill preflight gate, same retry-free semantics as the health gate
+        // above: skip THIS tick without burning a retry slot. For x402 this
+        // is what lets an empty float WAIT for a top-up (within the 24h
+        // cutoff) instead of failing an already-paid job in 5 quick retries.
+        // Cache-first ordering lives inside the driver's preflight: a bought
+        // result already in the idempotency cache passes trivially and is
+        // then delivered by execute() without a live quote or float.
+        if (skill.preflight) {
+          try {
+            await skill.preflight(
+              {
+                data: entry.input,
+                inputType: entry.input_type,
+                tags: entry.tags,
+                jobId: entry.job_id,
+              },
+              this.skillCtx,
+            );
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            log(
+              `[${entry.job_id.slice(0, 8)}] Recovery: preflight refused (${detail}); waiting for next tick.`,
+            );
+            return;
           }
         }
 

@@ -1,0 +1,26 @@
+{
+  "name": "@elisym/docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vocs dev",
+    "build": "vocs build",
+    "preview": "vocs preview",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist .vocs cache"
+  },
+  "dependencies": {
+    "react": "~19.2.0",
+    "react-dom": "~19.2.0",
+    "vite": "~8.0.16",
+    "vocs": "~2.0.10",
+    "waku": "1.0.0-beta.1"
+  },
+  "devDependencies": {
+    "@elisym/sdk": "~0.28.1",
+    "@types/react": "~19.2.0",
+    "@types/react-dom": "~19.2.0",
+    "typescript": "~5.7.0"
+  }
+}

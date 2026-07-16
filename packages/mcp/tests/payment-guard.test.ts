@@ -1,4 +1,4 @@
-import { assetKey, NATIVE_SOL } from '@elisym/sdk';
+import { type Asset, assetKey, NATIVE_SOL, USDC_SOLANA_DEVNET } from '@elisym/sdk';
 /**
  * regression tests for the single-shot payment guard.
  *
@@ -32,6 +32,7 @@ function buildHandler(overrides: {
   executor?: ReturnType<typeof vi.fn>;
   hasSolana?: boolean;
   maxPriceLamports?: number;
+  expectedAsset?: Asset;
   resolveNoWallet?: (msg: string) => void;
   resolveResult?: (msg: string) => void;
   rejectPayment?: (e: Error) => void;
@@ -45,13 +46,18 @@ function buildHandler(overrides: {
   const rejectPayment = overrides.rejectPayment ?? vi.fn();
   const onPaid = overrides.onPaid ?? vi.fn();
   const ctx = overrides.ctx ?? new AgentContext();
-  const { onFeedback: handler, onResultReceived } = makePaymentFeedbackHandler({
+  const {
+    onFeedback: handler,
+    onResultReceived,
+    settled,
+  } = makePaymentFeedbackHandler({
     ctx,
     agent: stubAgent(overrides.hasSolana ?? true),
     jobId: 'job-abc',
     providerPubkey: 'a'.repeat(64),
     expectedRecipient: 'So1aNaExpectedRecipient1111111111111111111',
     maxPriceLamports: overrides.maxPriceLamports,
+    expectedAsset: overrides.expectedAsset,
     resolveNoWallet,
     resolveResult,
     rejectPayment,
@@ -61,6 +67,7 @@ function buildHandler(overrides: {
   return {
     handler,
     onResultReceived,
+    settled,
     executor,
     resolveNoWallet,
     resolveResult,
@@ -375,5 +382,45 @@ describe('makePaymentFeedbackHandler', () => {
     expect(execB).not.toHaveBeenCalled();
     expect(rejectB).toHaveBeenCalledTimes(1);
     expect(rejectB.mock.calls[0]?.[0].message).toMatch(/Session spend limit reached/);
+  });
+
+  it('rejects a payment that switches the asset (SOL-priced card billed in USDC)', () => {
+    const executor = vi.fn(async () => 'sig-should-not-happen');
+    const { handler, rejectPayment } = buildHandler({
+      executor,
+      maxPriceLamports: 1_000_000_000,
+      expectedAsset: NATIVE_SOL,
+    });
+    const usdcRequest = JSON.stringify({
+      recipient: 'x',
+      amount: 1000,
+      asset: { chain: 'solana', token: 'usdc', mint: USDC_SOLANA_DEVNET.mint, decimals: 6 },
+    });
+    handler('payment-required', 1000, usdcRequest);
+    expect(executor).not.toHaveBeenCalled();
+    expect(rejectPayment).toHaveBeenCalledTimes(1);
+    expect(rejectPayment.mock.calls[0]?.[0].message).toMatch(/asset mismatch/i);
+  });
+
+  it('allows a payment whose asset matches the expected asset', async () => {
+    const executor = vi.fn(async () => 'sig-ok');
+    const { handler, onPaid } = buildHandler({
+      executor,
+      maxPriceLamports: 10_000,
+      expectedAsset: NATIVE_SOL,
+    });
+    handler('payment-required', 1000, '{"recipient":"x","amount":1000}');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(executor).toHaveBeenCalledTimes(1);
+    expect(onPaid).toHaveBeenCalledTimes(1);
+  });
+
+  it('settled() resolves after the in-flight payment completes', async () => {
+    const executor = vi.fn(async () => 'sig-ok');
+    const { handler, settled } = buildHandler({ executor, maxPriceLamports: 10_000 });
+    handler('payment-required', 1000, '{"recipient":"x","amount":1000}');
+    await expect(settled()).resolves.toBeUndefined();
+    expect(executor).toHaveBeenCalledTimes(1);
   });
 });

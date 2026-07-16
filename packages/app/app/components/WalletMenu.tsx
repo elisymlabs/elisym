@@ -1,14 +1,17 @@
 import { USDC_SOLANA_DEVNET } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
+import { useQueryClient } from '@tanstack/react-query';
 import Decimal from 'decimal.js-light';
 import { useEffect, useId, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useLocation } from 'wouter';
 import { useIdentity } from '~/hooks/useIdentity';
+import { purgeIdentityCaches } from '~/hooks/useMessages';
 import { useWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
 import { SOLANA_CLUSTER_LABEL } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
+import { CopyRow, truncateMiddle } from './CopyRow';
 import { MarbleAvatar } from './MarbleAvatar';
 import { WalletGlyph } from './WalletGlyph';
 
@@ -26,89 +29,29 @@ interface Props {
   onAnimationEnd?: (event: React.AnimationEvent<HTMLDivElement>) => void;
 }
 
-function truncateMiddle(value: string, prefix = 4, suffix = 4) {
-  if (value.length <= prefix + suffix + 1) {
-    return value;
-  }
-  return `${value.slice(0, prefix)}…${value.slice(-suffix)}`;
-}
-
-interface CopyRowProps {
-  label: string;
-  display: string;
-  icon: React.ReactNode;
-  copied: boolean;
-  onCopy: () => void;
-}
-
-function CopyRow({ label, display, icon, copied, onCopy }: CopyRowProps) {
-  return (
-    <button
-      type="button"
-      onClick={onCopy}
-      title={`Copy ${label.toLowerCase()}`}
-      className="group flex w-full min-w-0 items-center gap-12 border-0 bg-transparent px-20 py-14 text-left transition-colors hover:bg-black/[0.025]"
-    >
-      <span className="flex shrink-0 items-center justify-center">{icon}</span>
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="text-[10px] font-semibold tracking-[0.14em] text-text-2/80 uppercase">
-          {label}
-        </span>
-        <span className="mt-2 truncate font-mono text-[13px] font-medium text-text">{display}</span>
-      </span>
-      <span
-        aria-hidden
-        className={cn(
-          'flex size-28 shrink-0 items-center justify-center rounded-full transition-all',
-          copied
-            ? 'bg-green/10 text-green'
-            : 'text-text-2/60 group-hover:bg-black/5 group-hover:text-text',
-        )}
-      >
-        {copied ? <CheckIcon /> : <CopyIcon />}
-      </span>
-    </button>
-  );
-}
-
-function CopyIcon() {
-  return (
-    <svg
-      className="size-14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect x="9" y="9" width="13" height="13" rx="2.5" ry="2.5" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      className="size-14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
-}
-
 interface BalanceCellProps {
   amount: string | null;
   symbol: string;
   icon: React.ReactNode;
   isLoading: boolean;
+}
+
+function KeyGlyph() {
+  return (
+    <svg
+      aria-hidden
+      width="14"
+      height="14"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4" />
+    </svg>
+  );
 }
 
 function BalanceCell({ amount, symbol, icon, isLoading }: BalanceCellProps) {
@@ -175,7 +118,8 @@ function UsdcMark({ className }: { className?: string }) {
 
 export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Props) {
   const { disconnect } = useWallet();
-  const { npub, publicKey: nostrPubkey } = useIdentity();
+  const { npub, publicKey: nostrPubkey, providerSession, logoutProvider } = useIdentity();
+  const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const [copiedKey, setCopiedKey] = useState<CopyKey | null>(null);
   const copyTimeoutRef = useRef<number | null>(null);
@@ -205,7 +149,12 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
           .toString();
 
   async function handleCopy(key: CopyKey, value: string, toastText: string) {
-    await navigator.clipboard.writeText(value);
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      toast.error('Could not copy');
+      return;
+    }
     toast.success(toastText);
     setCopiedKey(key);
     if (copyTimeoutRef.current !== null) {
@@ -218,10 +167,25 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
   }
 
   async function handleLogout() {
+    // Close BEFORE the await: the adapter's publicKey can flip to null in its
+    // own commit mid-await, and a continuation-side close would re-arm
+    // menuClosing after the header's reset already ran - the next pill mount
+    // would then replay a phantom dropdown-out.
+    onClose();
     track('wallet-disconnect');
     await disconnect();
-    onClose();
     setLocation('/');
+  }
+
+  async function handleProviderLogout() {
+    track('provider-disconnect');
+    // The plaintext purge must commit before the key entry is removed - a
+    // fire-and-forget purge lets a tab close strand decrypted DMs in
+    // IndexedDB with the key already gone (see purgeIdentityCaches).
+    await purgeIdentityCaches(queryClient, nostrPubkey);
+    logoutProvider();
+    // No onClose/navigation: the wallet stays connected and the menu stays
+    // open - the Identity row above simply swaps back to the generated key.
   }
 
   return (
@@ -288,6 +252,16 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
       <div className="mx-20 h-px bg-black/5" />
 
       <div className="p-10">
+        {providerSession && (
+          <button
+            type="button"
+            onClick={() => void handleProviderLogout()}
+            className="group inline-flex w-full cursor-pointer items-center justify-center gap-8 rounded-12 bg-transparent px-16 py-10 text-[13px] font-medium text-text-2 transition-colors hover:bg-black/5 hover:text-text"
+          >
+            <KeyGlyph />
+            Log out provider key
+          </button>
+        )}
         <button
           type="button"
           onClick={() => void handleLogout()}

@@ -1,0 +1,31 @@
+# File inputs & outputs
+
+Jobs are not limited to text. A skill can accept a file input (an image to edit, audio to process, a document to analyze) and return a file output. Because Nostr events are a poor fit for large or binary payloads, elisym moves files over a separate channel and keeps only small references on the relay.
+
+## Two transports
+
+elisym carries file payloads two ways, chosen by the client:
+
+- **iroh (peer-to-peer)** - the CLI and MCP move files directly between customer and provider over [iroh](https://iroh.computer). The payload never touches a relay; only a small encrypted descriptor does. This is the default for `submit_and_pay_job_from_file` and `fetch_job_file`.
+- **Encrypted Blossom (HTTP)** - the browser cannot hold long-lived P2P connections, so the web app uploads the encrypted payload to a [Blossom](https://github.com/hzrd149/blossom) blob host and shares a reference. The provider fetches and decrypts it.
+
+Both transports encrypt the payload end-to-end between the customer and the targeted provider, so the host (relay or blob server) only ever sees ciphertext.
+
+## How a provider receives a file
+
+A provider's [`dynamic-script` skill](/providers/skills) reads the input file from `ELISYM_INPUT_FILE` and writes its result to `ELISYM_OUTPUT_FILE`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+process "$ELISYM_INPUT_FILE" "$ELISYM_OUTPUT_FILE"
+echo "done"   # optional inline note alongside the file result
+```
+
+Skills advertise file support with discovery hints (`input_mime`, `output_mime`, `input_text`) so clients can show the right picker. See [Skills](/providers/skills) for the full contract.
+
+## Limits and safety
+
+- File inputs require a **paid** skill - a free skill would let anyone make a provider fetch arbitrary blobs, so the runtime rejects an attachment on a zero-price job before payment.
+- The input file is fetched **after** payment is verified.
+- Size limits are enforced on both transports to prevent abuse.

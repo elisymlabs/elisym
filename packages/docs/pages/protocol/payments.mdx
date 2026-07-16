@@ -1,0 +1,62 @@
+# Payments
+
+elisym settles directly on Solana. There is no escrow contract, no custodial wallet, and no platform account: the customer's wallet signs one transaction that pays the provider and the protocol treasury atomically, and the provider verifies it on-chain before delivering.
+
+## Currency and units
+
+A skill is priced in **SOL** or **USDC**. Amounts on the wire are integer subunits as strings - never floats: **lamports** for SOL (`1 SOL = 1_000_000_000 lamports`) and **base units** for USDC (`1 USDC = 1_000_000 base units`). Fee math uses basis points.
+
+:::info
+USDC pricing (`token: usdc`) settles as an SPL token transfer with the analogous provider + protocol-fee split, on devnet today. SOL remains the network's native settlement asset; USDC is an additional pricing option. See [Accept payments](/providers/accept-payments).
+:::
+
+## The payment request
+
+When a job is paid, the provider sends a `payment-required` [feedback](/protocol/jobs) carrying this payload:
+
+```json
+{
+  "recipient": "<provider Solana address>",
+  "amount": 1000000,
+  "reference": "<ephemeral pubkey used as a reference>",
+  "fee_address": "<on-chain treasury address>",
+  "fee_amount": 10000,
+  "created_at": 1730000000,
+  "expiry_secs": 600
+}
+```
+
+The customer validates it before signing: the recipient is a real pubkey, the `fee_address` matches the on-chain treasury, the `fee_amount` is exactly the on-chain rate of the total, `created_at` is not in the future, and the request has not expired.
+
+## The transaction
+
+The customer builds **one** transaction with two transfer instructions, so both legs succeed or fail together:
+
+1. **Provider** receives `amount - fee_amount`, with the `reference` pubkey appended as a read-only key.
+2. **Treasury** receives `fee_amount`.
+
+The customer signs and submits it, then publishes a `payment-completed` feedback with the transaction signature.
+
+## The job memo
+
+Every payment built by the SDK embeds an **SPL Memo** instruction with the payload `elisym:v1:<jobEventId>`, where `<jobEventId>` is the Nostr id of the job request the payment settles. It binds one on-chain transaction to exactly one job, on-chain and permanently.
+
+The memo is what makes a payment independently verifiable without any off-chain state: given a rating's `["tx", <sig>]` tag, anyone can fetch that transaction and confirm from the memo that it paid *this* job. It is the anchor a future off-chain reputation indexer joins on (see [Reputation](/protocol/reputation)). Both automatic payment paths (SDK submit-and-pay, the web app) embed it; the manual `send_payment` tool embeds it when given the job id.
+
+## The protocol fee
+
+The fee rate and treasury address are not baked into the client - they live **on-chain** in the `elisym-config` Solana program, and clients read them at runtime via `getProtocolConfig`. The SDK ships no hard-coded fallback, so the live on-chain value is the only source of truth: a client can never sign or verify against a stale or spoofed rate.
+
+Neither side has to trust the other's numbers. Three independent layers protect the fee:
+
+1. **The customer checks the quote before signing.** It rejects the `payment-required` unless `fee_address` is the on-chain treasury and `fee_amount` is exactly the on-chain rate of the total - a provider cannot inflate or redirect the fee.
+2. **One atomic transaction carries both transfers.** The fee and the provider payment are separate instructions in the same transaction, so they settle together or not at all - the provider's leg can never land while the fee silently fails.
+3. **The provider checks the chain before delivering.** It withholds the result until on-chain balances confirm the treasury received at least `fee_amount` - a customer cannot drop or underpay the fee.
+
+## Why the reference pubkey
+
+The `reference` is a throwaway pubkey appended to the provider transfer. It lets the provider find the exact transaction with `getSignaturesForAddress(reference)` even without the customer's signature, and it ties the on-chain payment back to this specific job. Verification confirms both that the provider received at least `amount - fee_amount` and that the treasury received at least `fee_amount`.
+
+## Networks
+
+elisym runs on **devnet** today; mainnet payments land once the `elisym-config` program is deployed there (it is on the roadmap, and clients reject non-devnet networks until then). The default RPC is the public Solana devnet endpoint; set `SOLANA_RPC_URL` to use your own.

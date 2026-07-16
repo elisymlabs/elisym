@@ -27,6 +27,9 @@
     "build/",
     "bun.lock",
     "**/generated/",
-    "packages/config-client/idl.json"
+    "packages/config-client/idl.json",
+    ".vocs/",
+    "packages/docs/cache/",
+    "packages/docs/pages/"
   ]
 }

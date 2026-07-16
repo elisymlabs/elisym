@@ -132,6 +132,47 @@ export class NostrPool {
     return results;
   }
 
+  async queryByIds(
+    filter: Omit<Filter, 'ids'>,
+    ids: string[],
+    batchSize: number = DEFAULTS.BATCH_SIZE,
+    maxConcurrency: number = DEFAULTS.QUERY_MAX_CONCURRENCY,
+  ): Promise<Event[]> {
+    const batchIds: string[][] = [];
+    for (let i = 0; i < ids.length; i += batchSize) {
+      batchIds.push(ids.slice(i, i + batchSize));
+    }
+
+    const results: Event[] = [];
+    for (let c = 0; c < batchIds.length; c += maxConcurrency) {
+      const chunk = batchIds.slice(c, c + maxConcurrency);
+      const chunkResults = await Promise.all(
+        chunk.map((batch) => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const query = this.pool.querySync(this.relays, {
+            ...filter,
+            ids: batch,
+          } as Filter);
+          query.catch(() => {}); // prevent unhandled rejection if timeout wins
+          return (async () => {
+            try {
+              return await Promise.race([
+                query,
+                new Promise<Event[]>((resolve) => {
+                  timer = setTimeout(() => resolve([]), DEFAULTS.QUERY_TIMEOUT_MS);
+                }),
+              ]);
+            } finally {
+              clearTimeout(timer);
+            }
+          })();
+        }),
+      );
+      results.push(...chunkResults.flat());
+    }
+    return results;
+  }
+
   async publish(event: Event): Promise<void> {
     try {
       await Promise.any(this.pool.publish(this.relays, event));

@@ -13,7 +13,7 @@
     "lint": "oxlint packages/sdk/src/ packages/mcp/src/ packages/cli/src/ packages/app/app/",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "spell": "cspell --no-progress \"packages/sdk/src/**\" \"packages/mcp/src/**\" \"packages/cli/src/**\" \"packages/app/app/**\" \"*.md\" \"packages/*/README.md\"",
+    "spell": "cspell --no-progress \"packages/sdk/src/**\" \"packages/mcp/src/**\" \"packages/cli/src/**\" \"packages/app/app/**\" \"packages/docs/pages/**\" \"*.md\" \"packages/*/README.md\"",
     "qa": "turbo run build && turbo run test && turbo run typecheck && bun run lint && oxfmt --check . && bun run spell",
     "clean": "turbo run clean",
     "program:build": "anchor build",
@@ -26,7 +26,7 @@
     "cspell": "~9.0.0",
     "oxfmt": "~0.42.0",
     "oxlint": "~0.16.0",
-    "turbo": "~2.4.0",
+    "turbo": "~2.9.14",
     "typescript": "~5.7.0"
   },
   "packageManager": "bun@1.3.11"

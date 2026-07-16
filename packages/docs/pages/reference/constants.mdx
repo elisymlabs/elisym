@@ -1,0 +1,71 @@
+# Constants
+
+Default values and on-chain addresses, as shipped by `@elisym/sdk`. Defaults are conventions - relays and RPC endpoints are all overridable.
+
+## Default relays
+
+Published as `RELAYS`. The dedicated elisym relay is tried first, with public relays as fallback:
+
+```
+wss://relay.elisym.network   (dedicated)
+wss://relay.damus.io
+wss://nos.lol
+wss://relay.nostr.band
+wss://relay.primal.net
+wss://relay.snort.social
+```
+
+## Event kinds
+
+| Constant                | Value   | Meaning                            |
+| ----------------------- | ------- | ---------------------------------- |
+| `KIND_APP_HANDLER`      | `31990` | Capability card (discovery)        |
+| `KIND_PING`             | `20200` | Ping (ephemeral)                   |
+| `KIND_PONG`             | `20201` | Pong (ephemeral)                   |
+| `KIND_JOB_REQUEST`      | `5100`  | Job request (base 5000 + offset)   |
+| `KIND_JOB_RESULT`       | `6100`  | Job result (base 6000 + offset)    |
+| `KIND_JOB_FEEDBACK`     | `7000`  | Job feedback                       |
+| `KIND_LONG_FORM_ARTICLE`| `30023` | Policy document                    |
+| `DEFAULT_KIND_OFFSET`   | `100`   | Default job kind offset (0-999)    |
+| `KIND_GIFT_WRAP`        | `1059`  | Private message envelope (NIP-59)  |
+| `KIND_DM_SEAL`          | `13`    | Seal inside a gift wrap            |
+| `KIND_DM_RUMOR`         | `14`    | Chat message inside a seal         |
+| `KIND_DM_INBOX_RELAYS`  | `10050` | DM inbox relay list                |
+
+See [Event kinds](/protocol/event-kinds) for the full reference.
+
+## Direct messages
+
+From `LIMITS` and `DEFAULTS`. See [Messaging](/protocol/messaging).
+
+| Constant                            | Value       | Meaning                                          |
+| ----------------------------------- | ----------- | ------------------------------------------------ |
+| `LIMITS.MAX_MESSAGE_LENGTH`         | `10_000`    | Message cap in characters                        |
+| `LIMITS.MAX_MESSAGE_JSON_BYTES`     | `40_000`    | Cap on the JSON-escaped byte size                |
+| `DEFAULTS.DM_WRAP_TIMESTAMP_SLACK_SECS` | `172_800` | NIP-59 wrap timestamp randomization window (2 days) |
+| `DEFAULTS.DM_FUTURE_SKEW_SECS`      | `600`       | Future-dated messages beyond this are dropped    |
+| `DEFAULTS.DM_HISTORY_WINDOW_SECS`   | `2_592_000` | Default history window (30 days)                 |
+
+## Solana
+
+| Constant                      | Value                                          |
+| ----------------------------- | ---------------------------------------------- |
+| `LAMPORTS_PER_SOL`            | `1_000_000_000`                                |
+| `PROTOCOL_PROGRAM_ID_DEVNET`  | `BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE` |
+| `ELISYM_PROTOCOL_TAG`         | `ELiZksgwDt41LaeuPDLkUfWgFXhGgVayTMP7L5nTSEL8` |
+| USDC devnet mint              | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` |
+
+The protocol fee rate and treasury address are **not** constants - they live on-chain in the `elisym-config` program and are read via `getProtocolConfig`. The `ELISYM_PROTOCOL_TAG` is a read-only marker that lets anyone audit elisym payment activity on-chain.
+
+## Default timeouts
+
+From `DEFAULTS`. These are tunable client-side, not protocol rules.
+
+| Constant                  | Value     |
+| ------------------------- | --------- |
+| `SUBSCRIPTION_TIMEOUT_MS` | `120_000` |
+| `PING_TIMEOUT_MS`         | `3_000`   |
+| `PING_CACHE_TTL_MS`       | `30_000`  |
+| `PAYMENT_EXPIRY_SECS`     | `600`     |
+| `QUERY_TIMEOUT_MS`        | `15_000`  |
+| `IROH_FETCH_TIMEOUT_MS`   | `300_000` |

@@ -20,6 +20,8 @@ export interface StoredIdentity {
   hex: string;
   name: string;
   createdAt: number;
+  /** Absent = generated in this browser; 'imported' = pasted provider key. */
+  kind?: 'imported';
 }
 
 function toHex(sk: Uint8Array): string {
@@ -44,6 +46,52 @@ function firstOrThrow<T>(items: T[], context: string): T {
   return first;
 }
 
+const HEX_SECRET_REGEX = /^[0-9a-fA-F]{64}$/;
+
+type ParsedSecret = { ok: true; hex: string } | { ok: false; error: string };
+
+/**
+ * Parse a pasted secret key (nsec or raw hex) into vault hex. Both branches
+ * MUST construct an ElisymIdentity here, inside try/catch: the hex regex
+ * admits scalars outside the secp256k1 group (all-f, all-0) and the
+ * constructor throws from getPublicKey - a throw inside the provider's
+ * setState would white-screen the app (ErrorBoundary wraps only <main>).
+ */
+function parseSecretInput(input: string): ParsedSecret {
+  const trimmed = input.trim();
+  if (HEX_SECRET_REGEX.test(trimmed)) {
+    const hex = trimmed.toLowerCase();
+    try {
+      ElisymIdentity.fromHex(hex);
+    } catch {
+      return { ok: false, error: 'Invalid secret key: not a valid secp256k1 scalar.' };
+    }
+    return { ok: true, hex };
+  }
+  // Try nip19 for ANY bech32-looking input (not just nsec-prefixed) so a
+  // pasted npub gets a type error instead of the generic one.
+  let decoded: ReturnType<typeof nip19.decode> | undefined;
+  try {
+    decoded = nip19.decode(trimmed);
+  } catch {
+    decoded = undefined;
+  }
+  if (decoded) {
+    if (decoded.type !== 'nsec') {
+      return { ok: false, error: `That is a ${decoded.type} key, not an nsec secret key.` };
+    }
+    try {
+      return { ok: true, hex: toHex(ElisymIdentity.fromSecretKey(decoded.data).secretKey) };
+    } catch {
+      return { ok: false, error: 'Invalid nsec key.' };
+    }
+  }
+  if (trimmed.startsWith('nsec')) {
+    return { ok: false, error: 'Invalid nsec key.' };
+  }
+  return { ok: false, error: 'Paste an nsec1… key or 64 hex characters.' };
+}
+
 function freshEntry(name: string): { entry: StoredIdentity; identity: ElisymIdentity } {
   const identity = ElisymIdentity.generate();
   const entry: StoredIdentity = {
@@ -61,6 +109,8 @@ interface IdentityState {
   identity: ElisymIdentity;
 }
 
+export type ImportIdentityResult = { ok: true } | { ok: false; error: string };
+
 interface IdentityContextValue {
   loading: boolean;
   identity: ElisymIdentity;
@@ -69,10 +119,14 @@ interface IdentityContextValue {
   nsecEncode: () => string;
   allIdentities: StoredIdentity[];
   activeId: string;
+  /** True when the active identity was imported (provider session). */
+  providerSession: boolean;
   addIdentity: () => void;
+  importIdentity: (secret: string, name?: string) => ImportIdentityResult;
   switchIdentity: (id: string) => void;
   removeIdentity: (id: string) => void;
   renameIdentity: (id: string, name: string) => void;
+  logoutProvider: () => void;
 }
 
 const IdentityContext = createContext<IdentityContextValue | null>(null);
@@ -181,6 +235,68 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const importIdentity = useCallback((secret: string, name?: string): ImportIdentityResult => {
+    const parsed = parseSecretInput(secret);
+    if (!parsed.ok) {
+      return { ok: false, error: parsed.error };
+    }
+    setState((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      // Dedupe by hex: re-importing a stored key just switches to it. A match
+      // against a generated entry deliberately keeps its kind - marking it
+      // imported would let logoutProvider delete the browser's native key.
+      const existing = prev.allIdentities.find((entry) => entry.hex === parsed.hex);
+      if (existing) {
+        return {
+          allIdentities: prev.allIdentities,
+          activeId: existing.id,
+          identity: ElisymIdentity.fromHex(existing.hex),
+        };
+      }
+      const entry: StoredIdentity = {
+        id: crypto.randomUUID(),
+        hex: parsed.hex,
+        name: name ?? 'Provider key',
+        createdAt: Date.now(),
+        kind: 'imported',
+      };
+      return {
+        allIdentities: [...prev.allIdentities, entry],
+        activeId: entry.id,
+        identity: ElisymIdentity.fromHex(entry.hex),
+      };
+    });
+    return { ok: true };
+  }, []);
+
+  const logoutProvider = useCallback(() => {
+    setState((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const active = prev.allIdentities.find((entry) => entry.id === prev.activeId);
+      if (!active || active.kind !== 'imported') {
+        return prev;
+      }
+      let newList = prev.allIdentities.filter((entry) => entry.id !== active.id);
+      if (newList.length === 0) {
+        newList = [freshEntry('Key 1').entry];
+      }
+      // Prefer the browser's own generated key; an all-imported remainder is
+      // unreachable through the UI today, but never plant a throw for it.
+      const next =
+        newList.find((entry) => entry.kind !== 'imported') ??
+        firstOrThrow(newList, 'logoutProvider: next active');
+      return {
+        allIdentities: newList,
+        activeId: next.id,
+        identity: ElisymIdentity.fromHex(next.hex),
+      };
+    });
+  }, []);
+
   const switchIdentity = useCallback((id: string) => {
     setState((prev) => {
       if (!prev) {
@@ -249,10 +365,13 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
     nsecEncode,
     allIdentities,
     activeId,
+    providerSession: allIdentities.find((entry) => entry.id === activeId)?.kind === 'imported',
     addIdentity,
+    importIdentity,
     switchIdentity,
     removeIdentity,
     renameIdentity,
+    logoutProvider,
   };
 
   return createElement(IdentityContext.Provider, { value }, children);

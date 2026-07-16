@@ -23,6 +23,7 @@ import { dashboardTools } from './tools/dashboard.js';
 // Import all tool modules
 import { discoveryTools } from './tools/discovery.js';
 import { feedbackContactsTools } from './tools/feedback-contacts.js';
+import { messagesTools } from './tools/messages.js';
 import { policiesTools } from './tools/policies.js';
 import type { ToolDefinition } from './tools/types.js';
 import { walletTools } from './tools/wallet.js';
@@ -37,6 +38,7 @@ const allTools: ToolDefinition[] = [
   ...dashboardTools,
   ...agentTools,
   ...feedbackContactsTools,
+  ...messagesTools,
   ...policiesTools,
 ];
 
@@ -294,9 +296,11 @@ export async function startServer(ctx: AgentContext): Promise<void> {
       try {
         agent.client.close();
       } catch (e) {
+        // Free-text err strings bypass pino's path-based redaction (see
+        // safeError) - scrub key shapes before they hit stderr.
         const message = e instanceof Error ? e.message : String(e);
         logger.warn(
-          { event: 'close_failed', agent: agent.name, err: message },
+          { event: 'close_failed', agent: agent.name, err: redactSecrets(message) },
           'agent client close failed',
         );
       }
@@ -311,13 +315,23 @@ export async function startServer(ctx: AgentContext): Promise<void> {
 
   process.on('SIGINT', () => void shutdown('SIGINT', 0));
   process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
+  // Free-text err/stack strings bypass pino's path-based redaction (see
+  // safeError) - scrub key shapes before they hit stderr, which the MCP host
+  // captures into its own logs.
   process.on('unhandledRejection', (r) => {
     const message = r instanceof Error ? r.message : String(r);
-    logger.error({ event: 'unhandled_rejection', err: message }, 'unhandled rejection');
+    logger.error(
+      { event: 'unhandled_rejection', err: redactSecrets(message) },
+      'unhandled rejection',
+    );
   });
   process.on('uncaughtException', (e) => {
     logger.error(
-      { event: 'uncaught_exception', err: e.message, stack: e.stack },
+      {
+        event: 'uncaught_exception',
+        err: redactSecrets(e.message),
+        stack: e.stack !== undefined ? redactSecrets(e.stack) : undefined,
+      },
       'uncaught exception',
     );
     void shutdown('uncaughtException', 1);

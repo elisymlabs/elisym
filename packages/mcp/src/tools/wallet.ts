@@ -1,6 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import {
+  KIND_JOB_REQUEST_BASE,
+  KIND_JOB_RESULT_BASE,
   USDC_SOLANA_DEVNET,
+  assetKey,
   estimateSolFeeLamports,
   formatAssetAmount,
   formatFeeBreakdown,
@@ -20,6 +23,7 @@ import {
 } from '@solana-program/token';
 import {
   type Rpc,
+  type Signature,
   type SolanaRpcApi,
   address,
   appendTransactionMessageInstructions,
@@ -35,6 +39,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from '@solana/kit';
+import { verifyEvent } from 'nostr-tools';
 import { z } from 'zod';
 import type { AgentInstance } from '../context.js';
 import {
@@ -50,8 +55,14 @@ import {
 } from '../context.js';
 import { logger } from '../logger.js';
 import {
+  appendCustomerJob,
+  findCustomerJob,
+  updateCustomerJob,
+} from '../storage/customer-history.js';
+import {
   checkLen,
   formatSol,
+  isDefinitelyUnpaid,
   parseSolToLamports,
   payment,
   MAX_PAYMENT_REQ_LEN,
@@ -59,6 +70,93 @@ import {
 } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
+
+const HEX_PUBKEY_RE = /^[a-f0-9]{64}$/;
+
+/**
+ * Link a manual `send_payment` to its job so a later `submit_feedback` rating
+ * carries the payment proof. Fetches the job request J, verifies the caller is
+ * its author, derives the provider and capability from it, records the job
+ * locally, and publishes a payment-completed confirmation. Best-effort: the
+ * payment is already on-chain, so any failure here only skips the local link.
+ * Returns a human-readable note for the tool response.
+ */
+async function linkManualPayment(
+  agent: AgentInstance,
+  jobEventId: string,
+  signature: string,
+  requestData: import('@elisym/sdk').PaymentRequestData,
+): Promise<string> {
+  try {
+    // Ids-only lookup on purpose: a single-id filter is accepted everywhere, and the
+    // job's kind offset is unknown here, so a `kinds` filter (as the discovery path uses
+    // for its multi-id batch) could over-filter a non-default-offset request. A strict
+    // relay that rejects it degrades gracefully to the "not found" note below.
+    const events = await agent.client.pool.queryByIds({}, [jobEventId]);
+    const request = events.find((event) => event.id === jobEventId && verifyEvent(event));
+    if (!request) {
+      return '  Not linked: job request not found on relays (payment still carries the memo).';
+    }
+    if (request.kind < KIND_JOB_REQUEST_BASE || request.kind >= KIND_JOB_RESULT_BASE) {
+      return '  Not linked: referenced event is not a job request.';
+    }
+    if (request.pubkey !== agent.identity.publicKey) {
+      return '  Not linked: job request was not authored by this agent.';
+    }
+    const providers = [
+      ...new Set(request.tags.filter((tag) => tag[0] === 'p').map((tag) => tag[1])),
+    ];
+    if (providers.length !== 1 || !providers[0] || !HEX_PUBKEY_RE.test(providers[0])) {
+      return '  Not linked: job is broadcast (no single provider) - rate it via the app instead.';
+    }
+    const providerPubkey = providers[0];
+    const capability = request.tags.find((tag) => tag[0] === 't' && tag[1] !== 'elisym')?.[1];
+    if (!capability) {
+      return '  Not linked: job request has no capability tag.';
+    }
+
+    const paidAsset = sdkResolveAssetFromPaymentRequest(requestData);
+    if (agent.agentDir) {
+      const now = Date.now();
+      const paymentFields = {
+        completedAt: now,
+        paymentSig: signature,
+        assetKey: assetKey(paidAsset),
+        paidAmountSubunits: requestData.amount.toString(),
+      };
+      const existing = await findCustomerJob(agent.agentDir, jobEventId);
+      if (existing) {
+        // Merge into the existing entry (submit_and_pay_job may have set
+        // providerName/resultPreview/attachmentJson; submit_feedback customerFeedback) -
+        // appendCustomerJob replaces the whole entry and would clobber those fields.
+        await updateCustomerJob(agent.agentDir, jobEventId, paymentFields);
+      } else {
+        await appendCustomerJob(agent.agentDir, {
+          jobEventId,
+          capability,
+          providerPubkey,
+          status: 'pending',
+          submittedAt: now,
+          ...paymentFields,
+        });
+      }
+    }
+    await agent.client.marketplace.submitPaymentConfirmation(
+      agent.identity,
+      jobEventId,
+      providerPubkey,
+      signature,
+      agent.network,
+    );
+    return `  Linked to job ${jobEventId} (capability: ${capability}). Rate it later with submit_feedback.`;
+  } catch (e) {
+    logger.warn(
+      { event: 'manual_payment_link_failed', jobEventId },
+      `Payment sent but local job link failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return '  Not linked: local job link failed (payment still carries the memo).';
+  }
+}
 
 const GetBalanceSchema = z.object({});
 
@@ -75,6 +173,23 @@ const SendPaymentSchema = z.object({
   expected_solana_recipient: z
     .string()
     .describe('Base58 Solana address you expect to receive the payment (from the provider card).'),
+  job_event_id: z
+    .string()
+    .max(128)
+    .optional()
+    .describe(
+      'Optional: the Nostr job request event id this payment is for. When given, the ' +
+        'payment embeds an elisym memo so it is linkable to the job, and the job is ' +
+        'recorded locally so a later submit_feedback rating carries the payment proof.',
+    ),
+  expected_asset: z
+    .enum(['sol', 'usdc'])
+    .optional()
+    .describe(
+      "Optional: the asset you expect to pay ('sol' or 'usdc'). When set, the payment is " +
+        'refused if the payment_request debits a different asset. Verify BOTH the ' +
+        'recipient AND the asset independently before paying.',
+    ),
 });
 
 const WithdrawSchema = z.object({
@@ -319,6 +434,14 @@ export const walletTools: ToolDefinition[] = [
       // concurrent send_payment calls cannot both pass a stale read-only check.
       // Released on any failure below; committed implicitly on success.
       const sendAsset = resolveAssetFromPaymentRequest(requestData);
+      // Asset bait-and-switch guard: refuse a request that debits a different asset
+      // than the caller expects (recipient match alone does not bound the currency).
+      if (input.expected_asset && sendAsset.token !== input.expected_asset) {
+        return errorResult(
+          `Payment asset mismatch: expected ${input.expected_asset.toUpperCase()} but the ` +
+            `payment_request debits ${sendAsset.symbol}. Refusing to proceed.`,
+        );
+      }
       const sendAmount = BigInt(requestData.amount);
       try {
         reserveSpend(ctx, sendAsset, sendAmount);
@@ -330,7 +453,7 @@ export const walletTools: ToolDefinition[] = [
       // After `sendAndConfirm` resolves the funds have moved on-chain and the
       // reservation must stand even if the subsequent balance fetch fails.
       const rpc = rpcFor(agent);
-      let signature: string;
+      let signature: Signature;
       try {
         const signer = await agentSigner(agent.solanaKeypair.secretKey);
 
@@ -339,17 +462,36 @@ export const walletTools: ToolDefinition[] = [
           signer,
           rpc,
           protocolConfig,
+          // The memo makes the payment linkable to its job for the future
+          // off-chain indexer. Omitted (no memo) when the caller does not pass
+          // a job_event_id, preserving the pure manual-transfer path.
+          input.job_event_id ? { jobEventId: input.job_event_id } : undefined,
         );
 
-        const httpUrl = rpcUrlFor(agent.network);
-        const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
-        const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
-        await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
-          commitment: 'confirmed',
-        });
+        // Derivable from the signed tx, so it is available even if confirmation
+        // times out below.
         signature = getSignatureFromTransaction(
           signedTx as Parameters<typeof getSignatureFromTransaction>[0],
         );
+        const httpUrl = rpcUrlFor(agent.network);
+        const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
+        const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
+        try {
+          await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
+            commitment: 'confirmed',
+          });
+        } catch (confirmError) {
+          // A client-side confirmation timeout does not prove the tx failed - it
+          // may have landed. Only fail (and release the reservation below) when the
+          // tx is NOT on-chain; otherwise the funds moved and the reservation stands.
+          if (await isDefinitelyUnpaid(rpc, signature)) {
+            throw confirmError;
+          }
+          logger.warn(
+            { event: 'send_payment_confirm_timeout_landed', signature },
+            'sendAndConfirm timed out but the transaction is confirmed on-chain',
+          );
+        }
       } catch (e) {
         releaseSpend(ctx, sendAsset, sendAmount);
         throw e;
@@ -381,6 +523,12 @@ export const walletTools: ToolDefinition[] = [
       }
       const warningBlock = warnings.length > 0 ? `${warnings.join('\n')}\n` : '';
 
+      // Best-effort local link when the caller supplied a job id. The payment
+      // already committed; a failed link only omits the note.
+      const linkLine = input.job_event_id
+        ? `${await linkManualPayment(agent, input.job_event_id, signature, requestData)}\n`
+        : '';
+
       const paidAsset = sdkResolveAssetFromPaymentRequest(requestData);
       return textResult(
         `${warningBlock}Payment sent.\n` +
@@ -388,6 +536,7 @@ export const walletTools: ToolDefinition[] = [
           `  Amount: ${formatAssetAmount(paidAsset, BigInt(requestData.amount))}\n` +
           `  Recipient: ${requestData.recipient}\n` +
           remainingBalanceLine +
+          linkLine +
           `  Explorer: ${explorerUrl(agent, signature)}`,
       );
     },
@@ -535,6 +684,17 @@ export const walletTools: ToolDefinition[] = [
         );
       }
 
+      // Execute the amount resolved at PREVIEW time (stored in the nonce), not the
+      // value re-parsed above: for amount="all" the balance may have shifted since the
+      // preview, so re-resolving would move a different amount than was shown/approved.
+      lamports = stored.lamports;
+      if (lamports + TX_FEE_RESERVE > balance) {
+        return errorResult(
+          `Insufficient balance. Have: ${formatSol(balance)}, need: ${formatSol(lamports)} + fee. ` +
+            `The balance changed since the preview - re-run withdraw to preview again.`,
+        );
+      }
+
       const destination = address(input.address);
       const transferIx = getTransferSolInstruction({
         source: signer,
@@ -551,15 +711,31 @@ export const walletTools: ToolDefinition[] = [
       );
       const signedTx = await signTransactionMessageWithSigners(message);
 
-      const httpUrl = rpcUrlFor(agent.network);
-      const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
-      const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
-      await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
-        commitment: 'confirmed',
-      });
+      // Derivable from the signed tx, so it is available even if confirmation times out.
       const signature = getSignatureFromTransaction(
         signedTx as Parameters<typeof getSignatureFromTransaction>[0],
       );
+      const httpUrl = rpcUrlFor(agent.network);
+      const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
+      const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
+      try {
+        await sendAndConfirm(signedTx as Parameters<typeof sendAndConfirm>[0], {
+          commitment: 'confirmed',
+        });
+      } catch (confirmError) {
+        // A confirmation timeout does not prove the withdrawal failed - the tx may
+        // have landed. Reporting failure would invite a retry that withdraws a SECOND
+        // time, so only surface failure when the tx is genuinely not on-chain.
+        if (await isDefinitelyUnpaid(rpc, signature)) {
+          return errorResult(
+            `Withdrawal failed on-chain: ${confirmError instanceof Error ? confirmError.message : String(confirmError)}`,
+          );
+        }
+        logger.warn(
+          { event: 'withdraw_confirm_timeout_landed', signature },
+          'sendAndConfirm timed out but the withdrawal is confirmed on-chain',
+        );
+      }
 
       const { value: newBalanceLamports } = await rpc
         .getBalance(address(agent.solanaKeypair.publicKey))
@@ -679,6 +855,17 @@ async function handleUsdcWithdraw(
     );
   }
 
+  // Execute the amount resolved at PREVIEW time (stored in the nonce), not the value
+  // re-parsed above: for amount="all" the balance may have shifted since the preview.
+  subunits = stored.lamports;
+  if (subunits > usdcBalance) {
+    return errorResult(
+      `Insufficient USDC balance. Have: ${formatAssetAmount(asset, usdcBalance)}, ` +
+        `need: ${formatAssetAmount(asset, subunits)}. The balance changed since the preview - ` +
+        `re-run withdraw to preview again.`,
+    );
+  }
+
   const destinationOwner = address(input.address);
   const mintAddr = address(mint);
   const [sourceAta] = await findAssociatedTokenPda({
@@ -723,6 +910,10 @@ async function handleUsdcWithdraw(
   );
   const signedTx = await signTransactionMessageWithSigners(message);
 
+  // Derivable from the signed tx, so it is available even if confirmation times out.
+  const signature = getSignatureFromTransaction(
+    signedTx as Parameters<typeof getSignatureFromTransaction>[0],
+  );
   const httpUrl = rpcUrlFor(agent.network);
   const rpcSubscriptions = createSolanaRpcSubscriptions(wsUrlFor(httpUrl));
   const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
@@ -731,13 +922,19 @@ async function handleUsdcWithdraw(
       commitment: 'confirmed',
     });
   } catch (e) {
-    return errorResult(
-      `USDC withdraw failed on-chain: ${e instanceof Error ? e.message : String(e)}`,
+    // A confirmation timeout does not prove the withdrawal failed - only report
+    // failure (which invites a retry that withdraws again) when the tx DEFINITELY did
+    // not move funds; on an indeterminate RPC failure, assume it may have landed.
+    if (await isDefinitelyUnpaid(rpc, signature)) {
+      return errorResult(
+        `USDC withdraw failed on-chain: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    logger.warn(
+      { event: 'usdc_withdraw_confirm_timeout_landed', signature },
+      'sendAndConfirm timed out but the withdrawal is confirmed on-chain',
     );
   }
-  const signature = getSignatureFromTransaction(
-    signedTx as Parameters<typeof getSignatureFromTransaction>[0],
-  );
 
   const newUsdcBalance = await fetchUsdcBalance(rpc, walletAddr);
 

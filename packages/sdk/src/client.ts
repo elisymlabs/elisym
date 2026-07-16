@@ -5,6 +5,7 @@ import { BlossomService } from './services/blossom';
 import { DiscoveryService } from './services/discovery';
 import { MarketplaceService } from './services/marketplace';
 import { MediaService } from './services/media';
+import { MessagesService } from './services/messages';
 import { PingService } from './services/ping';
 import { PoliciesService } from './services/policies';
 import { NostrPool } from './transport/pool';
@@ -20,6 +21,7 @@ export interface ElisymClientFullConfig extends ElisymClientConfig {
 
 export class ElisymClient {
   readonly pool: NostrPool;
+  readonly messages: MessagesService;
   readonly discovery: DiscoveryService;
   readonly marketplace: MarketplaceService;
   readonly ping: PingService;
@@ -30,7 +32,10 @@ export class ElisymClient {
 
   constructor(config: ElisymClientFullConfig = {}) {
     this.pool = new NostrPool(config.relays ?? RELAYS);
-    this.discovery = new DiscoveryService(this.pool);
+    // messages precedes discovery: publishCapability triggers the default-mode
+    // kind 10050 inbox-relay publish through this instance.
+    this.messages = new MessagesService(this.pool);
+    this.discovery = new DiscoveryService(this.pool, this.messages);
     this.marketplace = new MarketplaceService(this.pool);
     this.ping = new PingService(this.pool);
     this.media = new MediaService(config.uploadUrl);

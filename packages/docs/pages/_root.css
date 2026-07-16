@@ -1,0 +1,12 @@
+/* "Start with a prompt" blocks use a ```txt fence (-> code[data-language="txt"]).
+   Wrap them by default so a long, copy-pasteable prompt does not scroll off the
+   edge. Scoped to txt only, so command (bash) and the ASCII flow diagram (no
+   language) keep their fixed horizontal layout. */
+pre[data-v]:has(> code[data-language="txt"]) {
+  overflow-x: hidden;
+}
+
+code[data-language="txt"] > .line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
