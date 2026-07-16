@@ -60,6 +60,16 @@ For `mode: 'llm'`, these override the agent default (in `elisym.yaml` `llm:` blo
 
 For script modes, declaring `provider` + `model` tells the runtime "this script depends on this LLM API key under the hood". The runtime then health-monitors the key (see below); the script itself is still responsible for making its own HTTP calls, reading the key from the env var the agent sets at start (e.g. `ANTHROPIC_API_KEY`).
 
+## Conversation context (sessions)
+
+| Field     | Type    | Modes accepted | Default | Notes                                                                  |
+| --------- | ------- | -------------- | ------- | ---------------------------------------------------------------------- |
+| `context` | boolean | `llm` only     | `false` | Opt this skill into multi-turn conversation sessions over NIP-90 jobs. |
+
+With `context: true`, a job that carries a session id (an encrypted, targeted job whose payload envelope has `session: { id: <uuid v4> }` - set via the SDK's `SubmitJobOptions.sessionId`) is answered with the prior turns of that session prepended to the LLM messages, and the new exchange is recorded to `<agentDir>/.sessions/<customerPubkey>/<sessionId>.jsonl` (gitignored; transcripts hold customer content in cleartext). Long sessions are compacted automatically (threshold + summarize on the skill's own LLM). A new session id starts a fresh chat; a job without a session id - or on a skill without `context: true` - is processed statelessly and leaves no transcript record.
+
+Declaring `context` on any non-`llm` mode is a parse-time error (like `max_tokens`). Design and limits: `docs/plans/job-conversation-context.md`.
+
 ## Mode-specific fields
 
 ### `x402`

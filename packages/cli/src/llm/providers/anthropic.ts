@@ -7,6 +7,7 @@
  */
 
 import type {
+  ChatTurn,
   CompletionResult,
   LlmClient,
   ToolCall,
@@ -64,7 +65,12 @@ export class AnthropicClient implements LlmClient {
     );
   }
 
-  async complete(systemPrompt: string, userInput: string, signal?: AbortSignal): Promise<string> {
+  async complete(
+    systemPrompt: string,
+    userInput: string,
+    signal?: AbortSignal,
+    history?: ChatTurn[],
+  ): Promise<string> {
     const response = await fetchWithRetry(
       'https://api.anthropic.com/v1/messages',
       {
@@ -78,7 +84,7 @@ export class AnthropicClient implements LlmClient {
           model: this.config.model,
           max_tokens: this.config.maxTokens,
           system: systemPrompt,
-          messages: [{ role: 'user', content: userInput }],
+          messages: [...(history ?? []), { role: 'user', content: userInput }],
         }),
       },
       signal,

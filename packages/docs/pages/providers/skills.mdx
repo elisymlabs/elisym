@@ -92,11 +92,16 @@ Small `text/*` input is still piped to stdin; a robust script handles both. Decl
 
 ### `llm` mode extras
 
-| Field             | Default | Notes                                         |
-| ----------------- | ------- | --------------------------------------------- |
-| `tools`           | -       | External tools the LLM can call during a job. |
-| `max_tool_rounds` | 10      | Cap on LLM-to-tools loops per job.            |
-| `max_tokens`      | -       | Per-skill output cap (`llm` only).            |
+| Field             | Default | Notes                                                        |
+| ----------------- | ------- | ------------------------------------------------------------ |
+| `tools`           | -       | External tools the LLM can call during a job.                |
+| `max_tool_rounds` | 10      | Cap on LLM-to-tools loops per job.                           |
+| `max_tokens`      | -       | Per-skill output cap (`llm` only).                           |
+| `context`         | `false` | Opt into multi-turn conversation sessions (see below).       |
+
+#### Conversation context (`context: true`)
+
+With `context: true`, a job that carries a session id (set by the customer via the SDK's `sessionId` option on an encrypted, targeted job) is answered with the prior turns of that session prepended to the LLM messages, and the new exchange is recorded to `<agentDir>/.sessions/` (gitignored - transcripts hold customer content in cleartext). Reusing a session id continues the chat; a fresh id starts a new one; a job without a session id is processed statelessly and leaves no record. Long sessions are compacted automatically (older turns are summarized on the skill's own LLM). Transcripts expire after 30 days of inactivity. Declaring `context` on a non-`llm` mode is a parse-time error.
 
 ```yaml
 tools:

@@ -9,6 +9,7 @@
  */
 
 import type {
+  ChatTurn,
   CompletionResult,
   LlmClient,
   ToolCall,
@@ -71,7 +72,12 @@ export class OpenAICompatibleClient implements LlmClient {
     );
   }
 
-  async complete(systemPrompt: string, userInput: string, signal?: AbortSignal): Promise<string> {
+  async complete(
+    systemPrompt: string,
+    userInput: string,
+    signal?: AbortSignal,
+    history?: ChatTurn[],
+  ): Promise<string> {
     const response = await fetchWithRetry(
       `${this.config.baseUrl}/chat/completions`,
       {
@@ -85,6 +91,7 @@ export class OpenAICompatibleClient implements LlmClient {
           max_tokens: this.config.maxTokens,
           messages: [
             { role: 'system', content: systemPrompt },
+            ...(history ?? []),
             { role: 'user', content: userInput },
           ],
         }),

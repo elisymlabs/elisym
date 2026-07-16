@@ -22,6 +22,9 @@ const X402_GITIGNORE_ENTRIES = ['.x402-jobs.json', '.x402-results/'] as const;
 /** DM read cursors: keyed by counterpart pubkeys - maps who the agent talks to. */
 const MESSAGES_GITIGNORE_ENTRY = '.messages-read.json';
 
+/** Conversation-session transcripts: customer job inputs and LLM results in cleartext. */
+const SESSIONS_GITIGNORE_ENTRY = '.sessions/';
+
 const GITIGNORE_CONTENT = [
   '# elisym private state - do not commit.',
   '.secrets.json',
@@ -31,6 +34,7 @@ const GITIGNORE_CONTENT = [
   '.customer-history.json',
   '.contacts.json',
   MESSAGES_GITIGNORE_ENTRY,
+  SESSIONS_GITIGNORE_ENTRY,
   IROH_GITIGNORE_ENTRY,
   ...X402_GITIGNORE_ENTRIES,
   '',
@@ -103,6 +107,17 @@ export async function ensureGitignoreHasX402Entries(elisymRoot: string): Promise
  */
 export async function ensureGitignoreHasMessagesEntry(elisymRoot: string): Promise<void> {
   await ensureGitignoreHasEntries(elisymRoot, [MESSAGES_GITIGNORE_ENTRY]);
+}
+
+/**
+ * Ensure the project-local `.elisym/.gitignore` ignores the conversation-session
+ * store. Idempotent migration for agents created before job sessions existed -
+ * `GITIGNORE_CONTENT` only lands at dir creation. Session transcripts hold
+ * customer job inputs and LLM results in cleartext and must never be committable
+ * from a project-local agent dir.
+ */
+export async function ensureGitignoreHasSessionsEntry(elisymRoot: string): Promise<void> {
+  await ensureGitignoreHasEntries(elisymRoot, [SESSIONS_GITIGNORE_ENTRY]);
 }
 
 export interface CreateAgentDirOptions {

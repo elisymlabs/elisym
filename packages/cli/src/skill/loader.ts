@@ -54,6 +54,7 @@ function buildCliSkill(
         parsed.tools,
         parsed.maxToolRounds,
         parsed.llmOverride,
+        parsed.context,
       );
       break;
     case 'static-file': {

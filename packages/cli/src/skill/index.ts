@@ -4,9 +4,9 @@
 
 import { toDTag, type Asset } from '@elisym/sdk';
 import type { SkillRateLimit } from '@elisym/sdk/llm-health';
-import type { SkillLlmOverride, SkillMode, X402SkillParams } from '@elisym/sdk/skills';
+import type { ChatTurn, SkillLlmOverride, SkillMode, X402SkillParams } from '@elisym/sdk/skills';
 
-export type { SkillLlmOverride, SkillMode, SkillRateLimit, X402SkillParams };
+export type { ChatTurn, SkillLlmOverride, SkillMode, SkillRateLimit, X402SkillParams };
 
 /**
  * Resolved (provider, model, maxTokens) triple for an LLM-mode skill.
@@ -31,6 +31,12 @@ export interface SkillInput {
    * it after execution; the skill reads from disk rather than from `data`.
    */
   filePath?: string;
+  /**
+   * Prior conversation turns of the job's session, oldest first. Present only
+   * when the job carries a session id AND the invoked skill declares
+   * `context: true` (llm mode). The LLM sees `[...history, current input]`.
+   */
+  history?: ChatTurn[];
 }
 
 export interface SkillOutput {
@@ -111,7 +117,17 @@ export interface X402JobDriver {
 }
 
 export interface LlmClient {
-  complete(systemPrompt: string, userInput: string, signal?: AbortSignal): Promise<string>;
+  /**
+   * Single completion. `history` (optional, trailing - existing implementations
+   * stay type-compatible and simply run stateless until updated) carries prior
+   * conversation turns to prepend before the current `userInput`.
+   */
+  complete(
+    systemPrompt: string,
+    userInput: string,
+    signal?: AbortSignal,
+    history?: ChatTurn[],
+  ): Promise<string>;
   completeWithTools(
     systemPrompt: string,
     messages: any[],
@@ -179,6 +195,14 @@ export interface Skill {
    * `model` are meaningful here; `maxTokens` is rejected at parse time.
    */
   llmOverride?: SkillLlmOverride;
+  /**
+   * Whether this skill participates in conversation sessions (SKILL.md
+   * frontmatter `context: true`; llm mode only, parse-time error otherwise).
+   * Optional - absent means `false`. When enabled, a session-carrying job gets
+   * prior turns in `SkillInput.history` and its exchange is recorded to the
+   * session store.
+   */
+  context?: boolean;
   /** Hero image URL. */
   image?: string;
   /** Local file path for hero image (uploaded on first start). */

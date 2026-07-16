@@ -50,7 +50,7 @@ describe('ScriptSkill', () => {
       );
 
       expect(result.data).toBe('simple result');
-      expect(llm.complete).toHaveBeenCalledWith('You are helpful.', 'hello', undefined);
+      expect(llm.complete).toHaveBeenCalledWith('You are helpful.', 'hello', undefined, undefined);
     });
 
     it('throws when LLM not configured', async () => {

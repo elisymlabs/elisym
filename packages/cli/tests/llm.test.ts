@@ -690,3 +690,72 @@ describe('reasoning model detection', () => {
     expect(body.max_tokens).toBe(1024);
   });
 });
+
+describe('complete() with session history', () => {
+  const HISTORY = [
+    { role: 'user' as const, content: 'first q' },
+    { role: 'assistant' as const, content: 'first a' },
+  ];
+
+  function sentBody(): any {
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    return JSON.parse(call[1].body);
+  }
+
+  it('anthropic prepends history before the current user message', async () => {
+    const client = createLlmClient({
+      provider: 'anthropic',
+      apiKey: 'sk-test',
+      model: 'claude-sonnet-4-6',
+      maxTokens: 512,
+    });
+    mockFetch({ content: [{ type: 'text', text: 'ok' }] });
+    await client.complete('sys', 'second q', undefined, HISTORY);
+    expect(sentBody().messages).toEqual([...HISTORY, { role: 'user', content: 'second q' }]);
+    expect(sentBody().system).toBe('sys');
+  });
+
+  it('openai keeps the system message first, history in the middle', async () => {
+    const client = createLlmClient({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-4o',
+      maxTokens: 512,
+    });
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'second q', undefined, HISTORY);
+    expect(sentBody().messages).toEqual([
+      { role: 'system', content: 'sys' },
+      ...HISTORY,
+      { role: 'user', content: 'second q' },
+    ]);
+  });
+
+  it('openai-compatible (deepseek) keeps the system message first, history in the middle', async () => {
+    const client = createLlmClient({
+      provider: 'deepseek',
+      apiKey: 'sk-test',
+      model: 'deepseek-chat',
+      maxTokens: 512,
+    });
+    mockFetch({ choices: [{ message: { content: 'ok' } }] });
+    await client.complete('sys', 'second q', undefined, HISTORY);
+    expect(sentBody().messages).toEqual([
+      { role: 'system', content: 'sys' },
+      ...HISTORY,
+      { role: 'user', content: 'second q' },
+    ]);
+  });
+
+  it('without history the request shape is unchanged (back-compat)', async () => {
+    const client = createLlmClient({
+      provider: 'anthropic',
+      apiKey: 'sk-test',
+      model: 'claude-sonnet-4-6',
+      maxTokens: 512,
+    });
+    mockFetch({ content: [{ type: 'text', text: 'ok' }] });
+    await client.complete('sys', 'one shot');
+    expect(sentBody().messages).toEqual([{ role: 'user', content: 'one shot' }]);
+  });
+});

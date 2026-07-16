@@ -1552,3 +1552,86 @@ describe('MarketplaceService.fetchRecentJobs author binding', () => {
     expect(jobs[0]?.amount).toBeUndefined();
   });
 });
+
+describe('MarketplaceService.submitJobRequest - sessions', () => {
+  const SESSION_ID = '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c';
+
+  it('wraps a session job in an encrypted envelope carrying the session ref', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+
+    await svc.submitJobRequest(customer, {
+      input: 'turn two',
+      capability: 'chat',
+      providerPubkey: provider.publicKey,
+      sessionId: SESSION_ID,
+    });
+
+    expect(pool.published.length).toBe(1);
+    const ev = pool.published[0]!;
+    // Placeholder tags unchanged: nothing session-shaped in cleartext.
+    expect(ev.tags.find((t) => t[0] === 'i')?.[1]).toBe('encrypted');
+    expect(JSON.stringify(ev.tags)).not.toContain(SESSION_ID);
+    expect(ev.content).not.toContain(SESSION_ID);
+
+    const decrypted = nip44Decrypt(ev.content, provider.secretKey, customer.publicKey);
+    const decoded = decodeJobPayload(decrypted);
+    expect(decoded.text).toBe('turn two');
+    expect(decoded.session).toEqual({ id: SESSION_ID });
+  });
+
+  it('throws on sessionId without providerPubkey (would leak in cleartext)', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+
+    await expect(
+      svc.submitJobRequest(customer, {
+        input: 'broadcast chat?',
+        capability: 'chat',
+        sessionId: SESSION_ID,
+      }),
+    ).rejects.toThrow(/sessionId requires providerPubkey/);
+    expect(pool.published.length).toBe(0);
+  });
+
+  it('throws on a non-UUID-v4 sessionId at submit time', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+
+    for (const bad of ['not-a-uuid', SESSION_ID.toUpperCase(), '', '../../x']) {
+      await expect(
+        svc.submitJobRequest(customer, {
+          input: 'x',
+          capability: 'chat',
+          providerPubkey: provider.publicKey,
+          sessionId: bad,
+        }),
+      ).rejects.toThrow(/Invalid sessionId/);
+    }
+    expect(pool.published.length).toBe(0);
+  });
+
+  it('a plain job without sessionId still sends raw text (no envelope)', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+
+    await svc.submitJobRequest(customer, {
+      input: 'one shot',
+      capability: 'text-gen',
+      providerPubkey: provider.publicKey,
+    });
+    const decrypted = nip44Decrypt(
+      pool.published[0]!.content,
+      provider.secretKey,
+      customer.publicKey,
+    );
+    expect(decrypted).toBe('one shot');
+  });
+});

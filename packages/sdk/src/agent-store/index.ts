@@ -68,6 +68,7 @@ export {
   ensureGitignoreHasIrohEntry,
   ensureGitignoreHasX402Entries,
   ensureGitignoreHasMessagesEntry,
+  ensureGitignoreHasSessionsEntry,
 } from './writer';
 export type { CreateAgentDirOptions, CreatedAgentDir } from './writer';
 

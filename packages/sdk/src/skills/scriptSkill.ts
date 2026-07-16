@@ -153,6 +153,8 @@ export interface ScriptSkillParams {
   maxToolRounds: number;
   /** Optional per-skill LLM override (provider/model pair and/or maxTokens). */
   llmOverride?: SkillLlmOverride;
+  /** Conversation-context participation (SKILL.md `context: true`). */
+  context?: boolean;
   image?: string;
   imageFile?: string;
   logger?: ScriptSkillLogger;
@@ -173,6 +175,7 @@ export class ScriptSkill implements Skill {
   asset: Asset;
   mode: SkillMode = 'llm';
   readonly llmOverride?: SkillLlmOverride;
+  readonly context?: boolean;
   image?: string;
   imageFile?: string;
   private skillDir: string;
@@ -188,6 +191,7 @@ export class ScriptSkill implements Skill {
     this.priceSubunits = params.priceSubunits;
     this.asset = params.asset;
     this.llmOverride = params.llmOverride;
+    this.context = params.context;
     this.image = params.image;
     this.imageFile = params.imageFile;
     this.skillDir = params.skillDir;
@@ -201,7 +205,7 @@ export class ScriptSkill implements Skill {
     const llm = this.resolveLlmClient(ctx);
 
     if (this.tools.length === 0) {
-      const result = await llm.complete(this.systemPrompt, input.data, ctx.signal);
+      const result = await llm.complete(this.systemPrompt, input.data, ctx.signal, input.history);
       return { data: result };
     }
 
@@ -215,7 +219,7 @@ export class ScriptSkill implements Skill {
       })),
     }));
 
-    const messages: unknown[] = [{ role: 'user', content: input.data }];
+    const messages: unknown[] = [...(input.history ?? []), { role: 'user', content: input.data }];
 
     for (let round = 0; round < this.maxToolRounds; round++) {
       if (ctx.signal?.aborted) {

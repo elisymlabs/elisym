@@ -3,7 +3,13 @@
  * Handles NIP-44 decryption, dedup, and retried delivery.
  */
 import { BoundedSet, KIND_JOB_FEEDBACK, decodeJobPayload, jobRequestKind } from '@elisym/sdk';
-import type { ElisymClient, ElisymIdentity, FileAttachment, SubCloser } from '@elisym/sdk';
+import type {
+  ElisymClient,
+  ElisymIdentity,
+  FileAttachment,
+  SessionRef,
+  SubCloser,
+} from '@elisym/sdk';
 import { verifyEvent, type Event, type Filter } from 'nostr-tools';
 
 export interface IncomingJob {
@@ -17,6 +23,13 @@ export interface IncomingJob {
   rawEvent: Event;
   /** File attachment descriptor, decoded from the job-payload envelope (if any). */
   attachment?: FileAttachment;
+  /**
+   * Conversation session ref, decoded from the envelope. Populated only for
+   * NIP-44-encrypted requests: sessions travel inside the encrypted payload by
+   * design, and honoring a cleartext session id from an unencrypted event would
+   * contradict that posture, so the transport ignores it there.
+   */
+  session?: SessionRef;
 }
 
 export type JobFeedbackStatus =
@@ -101,10 +114,12 @@ export class NostrTransport {
         // envelope is skipped (the provider can't process it).
         let input: string;
         let attachment: FileAttachment | undefined;
+        let session: SessionRef | undefined;
         try {
           const decoded = decodeJobPayload(rawInput);
           input = decoded.text ?? '';
           attachment = decoded.attachment;
+          session = encrypted ? decoded.session : undefined;
         } catch {
           return;
         }
@@ -119,6 +134,7 @@ export class NostrTransport {
           encrypted,
           rawEvent: event,
           attachment,
+          session,
         });
       },
     );

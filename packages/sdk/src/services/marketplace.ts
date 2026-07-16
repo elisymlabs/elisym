@@ -19,6 +19,7 @@ import {
   decodeJobPayload,
   attachmentsOf,
   buildAcceptTransportsTag,
+  SESSION_ID_REGEX,
   type FileAttachment,
 } from '../transport/attachment';
 import type { NostrPool } from '../transport/pool';
@@ -88,10 +89,31 @@ export class MarketplaceService {
     if (options.providerPubkey && !/^[0-9a-f]{64}$/.test(options.providerPubkey)) {
       throw new Error('Invalid provider pubkey: expected 64 hex characters.');
     }
-    // A file job wraps the (optional) text note + attachment in an envelope; a
-    // plain-text job sends its text directly. The `i` tag is unchanged either way.
-    const plaintext = hasAttachment
-      ? encodeJobPayload({ text: options.input || undefined, attachment: options.attachment })
+    if (options.sessionId !== undefined) {
+      // Fail loudly at submit time: an invalid id would silently degrade to
+      // stateless on the provider (lenient decode) with zero customer signal.
+      if (!SESSION_ID_REGEX.test(options.sessionId)) {
+        throw new Error('Invalid sessionId: expected a lowercase UUID v4.');
+      }
+      // The session ref travels inside the NIP-44-encrypted envelope; a broadcast
+      // job is unencrypted, so a session id on it would ship in cleartext relay
+      // content - refuse rather than leak.
+      if (!options.providerPubkey) {
+        throw new Error(
+          'sessionId requires providerPubkey (sessions are encrypted, targeted jobs).',
+        );
+      }
+    }
+    // A file or session job wraps the (optional) text note + attachment + session
+    // ref in an envelope; a plain-text job sends its text directly. The `i` tag is
+    // unchanged either way.
+    const needsEnvelope = hasAttachment || options.sessionId !== undefined;
+    const plaintext = needsEnvelope
+      ? encodeJobPayload({
+          text: options.input || undefined,
+          attachment: options.attachment,
+          session: options.sessionId !== undefined ? { id: options.sessionId } : undefined,
+        })
       : options.input;
     // NIP-44 backstop: the plaintext (post-envelope, the exact string handed to
     // nip44Encrypt) must fit the 65_535-byte cap or nip44Encrypt throws cryptically.

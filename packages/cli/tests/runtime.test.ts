@@ -2921,3 +2921,135 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
     expect(logs.some((line) => /abandoned by customer/.test(line))).toBe(false);
   });
 });
+
+describe('conversation sessions (live path)', () => {
+  const SID = '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c';
+
+  const SESSION_CUSTOMER = 'c'.repeat(64);
+
+  function makeSessionJob(id: string, input = 'test input'): IncomingJob {
+    const base = makeJob(id);
+    return {
+      ...base,
+      input,
+      encrypted: true,
+      session: { id: SID },
+      customerId: SESSION_CUSTOMER,
+      rawEvent: { ...base.rawEvent, pubkey: SESSION_CUSTOMER },
+    };
+  }
+
+  function makeContextSkill(overrides: Partial<Skill> = {}): Skill {
+    return {
+      name: 'chat-skill',
+      description: 'chatty',
+      capabilities: ['text-gen'],
+      priceSubunits: 0,
+      asset: NATIVE_SOL,
+      mode: 'llm',
+      context: true,
+      execute: vi.fn().mockImplementation(async (input: { data: string }) => ({
+        data: `answer to ${input.data}`,
+      })),
+      ...overrides,
+    };
+  }
+
+  async function makeSessionRuntime(skill: Skill) {
+    const { SessionStore } = await import('../src/sessions.js');
+    const store = new SessionStore(agentDir);
+    const registry = makeFakeRegistry(skill);
+    const { transport, triggerJob } = makeFakeTransport();
+    const runtime = new AgentRuntime(
+      transport,
+      registry,
+      { llm: null as any, agentName: 'test', agentDescription: '' },
+      freeConfig,
+      ledger,
+      { onLog: vi.fn() },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      store,
+    );
+    return { runtime, transport, triggerJob, store };
+  }
+
+  it('injects prior turns as history and records the exchange', async () => {
+    const skill = makeContextSkill();
+    const { runtime, triggerJob } = await makeSessionRuntime(skill);
+
+    const runPromise = runtime.run();
+    await tick();
+    triggerJob(makeSessionJob('sess-job-1', 'first question'));
+    await tick(150);
+    triggerJob(makeSessionJob('sess-job-2', 'second question'));
+    await tick(150);
+    runtime.stop();
+    await runPromise.catch(() => {});
+
+    const calls = (skill.execute as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]![0].history).toBeUndefined();
+    expect(calls[1]![0].history).toEqual([
+      { role: 'user', content: 'first question' },
+      { role: 'assistant', content: 'answer to first question' },
+    ]);
+    expect(ledger.getStatus('sess-job-2')).toBe('delivered');
+  });
+
+  it('processes a session job on a context-off skill statelessly (no transcript)', async () => {
+    const skill = makeContextSkill({ context: false, name: 'no-context' });
+    const { runtime, triggerJob } = await makeSessionRuntime(skill);
+
+    const runPromise = runtime.run();
+    await tick();
+    triggerJob(makeSessionJob('off-1', 'q1'));
+    await tick(150);
+    triggerJob(makeSessionJob('off-2', 'q2'));
+    await tick(150);
+    runtime.stop();
+    await runPromise.catch(() => {});
+
+    const calls = (skill.execute as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[1]![0].history).toBeUndefined();
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(join(agentDir, '.sessions'))).toBe(false);
+  });
+
+  it('rejects the third concurrent same-session job with "session busy"', async () => {
+    let releaseExecutions!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseExecutions = resolve;
+    });
+    const skill = makeContextSkill({
+      execute: vi.fn().mockImplementation(async () => {
+        await gate;
+        return { data: 'done' };
+      }),
+    });
+    const { runtime, transport, triggerJob } = await makeSessionRuntime(skill);
+
+    const runPromise = runtime.run();
+    await tick();
+    triggerJob(makeSessionJob('busy-1', 'q1'));
+    triggerJob(makeSessionJob('busy-2', 'q2'));
+    triggerJob(makeSessionJob('busy-3', 'q3'));
+    await tick(50);
+
+    expect((transport as any).sendFeedback).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'busy-3' }),
+      expect.objectContaining({ type: 'error', message: expect.stringContaining('Session busy') }),
+    );
+
+    releaseExecutions();
+    await tick(200);
+    runtime.stop();
+    await runPromise.catch(() => {});
+
+    // The two admitted jobs completed; the third never executed.
+    expect((skill.execute as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+    expect(ledger.getStatus('busy-3')).toBeUndefined();
+  });
+});

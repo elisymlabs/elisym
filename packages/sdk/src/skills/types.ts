@@ -5,6 +5,17 @@
  * against.
  */
 
+/**
+ * One replayed conversation turn, provider-agnostic. The session store's replay
+ * assembler guarantees the list handed to a skill is either empty or starts with
+ * `user`, ends with `assistant`, and contains no empty-content or consecutive
+ * same-role messages (some providers reject those shapes outright).
+ */
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface SkillInput {
   data: string;
   inputType: string;
@@ -16,6 +27,12 @@ export interface SkillInput {
    * it after execution; the skill reads from disk rather than from `data`.
    */
   filePath?: string;
+  /**
+   * Prior conversation turns of the job's session, oldest first. Present only
+   * when the job carries a session id AND the invoked skill declares
+   * `context: true` (llm mode). The LLM sees `[...history, current input]`.
+   */
+  history?: ChatTurn[];
 }
 
 export interface SkillOutput {
@@ -173,7 +190,17 @@ export type CompletionResult =
   | { type: 'tool_use'; calls: ToolCall[]; assistantMessage: unknown };
 
 export interface LlmClient {
-  complete(systemPrompt: string, userInput: string, signal?: AbortSignal): Promise<string>;
+  /**
+   * Single completion. `history` (optional, trailing - existing implementations
+   * stay type-compatible and simply run stateless until updated) carries prior
+   * conversation turns to prepend before the current `userInput`.
+   */
+  complete(
+    systemPrompt: string,
+    userInput: string,
+    signal?: AbortSignal,
+    history?: ChatTurn[],
+  ): Promise<string>;
   completeWithTools(
     systemPrompt: string,
     messages: unknown[],
@@ -213,6 +240,14 @@ export interface Skill {
    * is forbidden in script modes (the script controls its own limits).
    */
   llmOverride?: SkillLlmOverride;
+  /**
+   * Whether this skill participates in conversation sessions (SKILL.md
+   * frontmatter `context: true`; llm mode only, parse-time error otherwise).
+   * Optional - absent means `false` - so external `Skill` implementers stay
+   * source-compatible. When enabled, a session-carrying job gets prior turns
+   * in `SkillInput.history` and its exchange is recorded to the session store.
+   */
+  context?: boolean;
   image?: string;
   imageFile?: string;
   /**

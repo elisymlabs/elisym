@@ -30,6 +30,7 @@ import {
 import {
   agentPaths,
   ensureGitignoreHasIrohEntry,
+  ensureGitignoreHasSessionsEntry,
   ensureGitignoreHasX402Entries,
   listAgents,
   loadAgent,
@@ -67,6 +68,7 @@ import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
 import { createLogger, sanitizeForTerminal } from '../logging.js';
 import { mimeFromPath } from '../mime.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
+import { SessionStore } from '../sessions.js';
 import { SkillRegistry, type SkillContext, type SkillLlmOverride } from '../skill';
 import type { LlmClient } from '../skill/index.js';
 import { loadSkillsFromDir } from '../skill/loader.js';
@@ -818,6 +820,14 @@ export async function cmdStart(
     await ensureGitignoreHasX402Entries(dirname(loaded.dir));
   }
 
+  // Conversation-session gitignore migration: session transcripts hold customer
+  // inputs and LLM results in cleartext, same posture as the other stores. The
+  // store itself is constructed below, once the diagnostics logger exists.
+  const hasContextSkills = registry.all().some((skill) => skill.context === true);
+  if (hasContextSkills) {
+    await ensureGitignoreHasSessionsEntry(dirname(loaded.dir));
+  }
+
   const runtimeConfig: RuntimeConfig = {
     paymentTimeoutSecs: DEFAULTS.PAYMENT_EXPIRY_SECS,
     maxConcurrentJobs: MAX_CONCURRENT_JOBS,
@@ -876,6 +886,11 @@ export async function cmdStart(
   // Encrypted Blossom transport for job file I/O (peer to iroh). Reuses the client's BlossomService
   // (so it shares the nostr.build fallback) and the provider identity for BUD-11 auth + NIP-44 wrap.
   const blossomTransport = createBlossomTransport({ blossom: client.blossom, identity });
+  // Conversation-session store, wired only when at least one skill opted in.
+  const sessionStore = hasContextSkills ? new SessionStore(loaded.dir, diagLog) : undefined;
+  if (sessionStore) {
+    diagLog('Conversation sessions enabled (context: true skills present).');
+  }
   const runtime = new AgentRuntime(
     transport,
     registry,
@@ -910,6 +925,7 @@ export async function cmdStart(
     irohTransport,
     identity,
     blossomTransport,
+    sessionStore,
   );
 
   // -- Step 15: Run --

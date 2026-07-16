@@ -206,6 +206,16 @@ export interface SubmitJobOptions {
    * advertising `['iroh']` makes a provider skip the (encrypted-Blossom) upload it can't use.
    */
   acceptTransports?: TransportKind[];
+  /**
+   * Conversation session id (client-generated UUID v4, lowercase). Reusing an id
+   * asks the provider to answer with the context of prior jobs in the session;
+   * a fresh id starts a new chat; omitting it is a stateless one-shot. Requires
+   * `providerPubkey` (the session travels inside the NIP-44-encrypted payload
+   * envelope and must never appear in cleartext relay content) - submitting a
+   * session id without a provider pubkey throws. Providers that predate or
+   * disable sessions strip the field and process the job statelessly.
+   */
+  sessionId?: string;
 }
 
 export interface JobUpdateCallbacks {

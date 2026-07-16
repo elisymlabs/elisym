@@ -63,6 +63,12 @@ export interface SkillFrontmatter {
   model?: unknown;
   /** Per-skill max_tokens override. Only valid for `mode: 'llm'`. */
   max_tokens?: unknown;
+  /**
+   * Conversation-context participation (default false). Only valid for
+   * `mode: 'llm'` - declaring it on any other mode is a parse-time error,
+   * mirroring the `max_tokens` rule.
+   */
+  context?: unknown;
   /** Execution mode. Default 'llm'. */
   mode?: unknown;
   /** Required when mode === 'static-file'. Path relative to skill dir. */
@@ -147,6 +153,8 @@ export interface ParsedSkill {
    * script depends on so the agent can health-monitor it.
    */
   llmOverride?: SkillLlmOverride;
+  /** Conversation-context participation (`context: true`, llm mode only). */
+  context: boolean;
   image?: string;
   imageFile?: string;
   /** Set when mode === 'static-file'. */
@@ -470,6 +478,27 @@ function validateLlmOverride(
   }
 
   return override;
+}
+
+/**
+ * Parse the optional `context` frontmatter flag (conversation-context
+ * participation). Only `mode: 'llm'` may declare it - other modes never read
+ * or write session history, so a declared flag would silently do nothing;
+ * rejecting it at parse time mirrors the `max_tokens` rule above.
+ */
+function validateContext(skillName: string, value: unknown, mode: SkillMode): boolean {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (typeof value !== 'boolean') {
+    throw new Error(`SKILL.md "${skillName}": "context" must be a boolean`);
+  }
+  if (mode !== 'llm') {
+    throw new Error(
+      `SKILL.md "${skillName}": "context" is only valid in mode 'llm' (got '${mode}')`,
+    );
+  }
+  return value;
 }
 
 const MAX_RATE_LIMIT_WINDOW_SECS = 86400;
@@ -951,6 +980,7 @@ export function validateSkillFrontmatter(
   const imageFile = typeof frontmatter.image_file === 'string' ? frontmatter.image_file : undefined;
 
   const llmOverride = validateLlmOverride(frontmatter.name, frontmatter, mode);
+  const context = validateContext(frontmatter.name, frontmatter.context, mode);
   const rateLimit = validateRateLimit(frontmatter.name, frontmatter.rate_limit);
   const executionTimeoutSecs = validateMaxExecutionSecs(
     frontmatter.name,
@@ -969,6 +999,7 @@ export function validateSkillFrontmatter(
     tools,
     maxToolRounds,
     llmOverride,
+    context,
     image,
     imageFile,
     outputFile,
@@ -1012,6 +1043,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         tools: parsed.tools,
         maxToolRounds: parsed.maxToolRounds,
         llmOverride: parsed.llmOverride,
+        context: parsed.context,
         image: parsed.image,
         imageFile,
         logger,

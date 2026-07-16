@@ -39,11 +39,17 @@ import {
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
+import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc } from '@solana/kit';
 import pLimit from 'p-limit';
 import { getRpcUrl } from './helpers.js';
 import { JobLedger } from './ledger.js';
-import type { SkillRegistry, SkillContext, SkillOutput } from './skill';
+import {
+  SESSION_MAX_CONCURRENT_JOBS,
+  type RecoverySessionRef,
+  type SessionStore,
+} from './sessions.js';
+import type { Skill, SkillRegistry, SkillContext, SkillOutput } from './skill';
 import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 import { X402PreflightError, X402TransientError } from './x402/errors.js';
 
@@ -101,6 +107,49 @@ export interface RuntimeCallbacks {
    *   callers can safely use transport-backed services for final operations.
    */
   onStop?: () => void;
+}
+
+/**
+ * System prompt for the compaction summarize call. Runs on the invoked skill's
+ * own resolved LLM.
+ */
+const SESSION_SUMMARIZE_SYSTEM =
+  'Summarize the following conversation between a user and an assistant so the ' +
+  'conversation can continue with your summary standing in for the older turns. ' +
+  'Preserve facts, decisions, names, numbers, constraints, and open questions. ' +
+  'Reply with the summary only.';
+
+/**
+ * Stored user-turn content: what the LLM saw as input, plus a file placeholder
+ * appended (never replacing - a file-plus-note input keeps the note) when the
+ * job carried a file input on the filePath branch.
+ */
+function buildUserRecord(data: string, fileName: string | undefined): string {
+  if (fileName === undefined) {
+    return data;
+  }
+  const placeholder = `[file input: ${fileName}]`;
+  return data.length > 0 ? `${data}\n${placeholder}` : placeholder;
+}
+
+/**
+ * Stored assistant-turn content: what the skill produced (`output.data`, NOT
+ * the delivered wire content, which is empty when the payload spills), plus
+ * file-result placeholders (unreachable for llm-mode skills today - kept for
+ * shape symmetry with the input side).
+ */
+function buildAssistantRecord(output: SkillOutput): string {
+  let filePaths: string[] = [];
+  if (output.filePaths !== undefined && output.filePaths.length > 0) {
+    filePaths = output.filePaths;
+  } else if (output.filePath !== undefined) {
+    filePaths = [output.filePath];
+  }
+  if (filePaths.length === 0) {
+    return output.data;
+  }
+  const placeholders = filePaths.map((path) => `[file result: ${basename(path)}]`).join('\n');
+  return output.data.length > 0 ? `${output.data}\n${placeholders}` : placeholders;
 }
 
 /** Resolve the price for a job by matching its tags against registered skills. */
@@ -403,9 +452,143 @@ export class AgentRuntime {
     private irohTransport?: IrohBlobTransport,
     private identity?: ElisymIdentity,
     private blossomTransport?: BlossomBlobTransport,
+    private sessionStore?: SessionStore,
   ) {
     this.limit = pLimit(config.maxConcurrentJobs);
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
+  }
+
+  /**
+   * Whether a job takes the session path: session ref present (transport only
+   * populates it for NIP-44-encrypted requests) AND the matched skill opted in
+   * (`context: true`, llm mode) AND a session store is wired. Everything else
+   * processes stateless - deterministically, never implicitly per-pubkey.
+   */
+  private resolveJobSession(
+    job: Pick<IncomingJob, 'session' | 'customerId'>,
+    skill: Skill | null | undefined,
+  ): { store: SessionStore; customerId: string; sessionId: string; skill: Skill } | null {
+    if (
+      job.session === undefined ||
+      this.sessionStore === undefined ||
+      skill === null ||
+      skill === undefined ||
+      skill.mode !== 'llm' ||
+      skill.context !== true
+    ) {
+      return null;
+    }
+    return {
+      store: this.sessionStore,
+      customerId: job.customerId,
+      sessionId: job.session.id,
+      skill,
+    };
+  }
+
+  /**
+   * Run a session-path execution: history load -> execute -> append, under the
+   * session mutex. Lock-order invariant: callers already hold their `pLimit`
+   * slot (live and recovery paths alike), so a mutex holder never waits for a
+   * slot. The mutex is released after the append, BEFORE result seeding and
+   * delivery - it never spans that network I/O (the execute callback's own LLM
+   * call, and the compaction summarize below, are bounded by the LLM HTTP
+   * timeout). Appends only happen on execution success; a failed job leaves
+   * the transcript untouched.
+   */
+  private async runSessionExchange(params: {
+    session: { store: SessionStore; customerId: string; sessionId: string; skill: Skill };
+    jobId: string;
+    userRecord: string;
+    signal: AbortSignal | undefined;
+    log: (message: string) => void;
+    /** Existing execute closure (budget race, health marking) - unchanged. */
+    execute: (history?: ChatTurn[]) => Promise<SkillOutput>;
+    /** Crash recovery: exclude this job's own recorded turns from the history. */
+    excludeOwnTurns?: boolean;
+  }): Promise<SkillOutput> {
+    const { store, customerId, sessionId, skill } = params.session;
+    const release = await store.acquire(customerId, sessionId);
+    try {
+      const opened = store.open(
+        customerId,
+        sessionId,
+        params.excludeOwnTurns === true ? params.jobId : undefined,
+      );
+      let messages = opened.messages;
+
+      if (!opened.stateless && opened.compactionNeeded && opened.summarizeText !== undefined) {
+        messages = await this.compactSession({
+          store,
+          customerId,
+          sessionId,
+          skill,
+          summarizeText: opened.summarizeText,
+          fallbackMessages: messages,
+          signal: params.signal,
+          log: params.log,
+          jobId: params.jobId,
+        });
+      }
+
+      const history = opened.stateless || messages.length === 0 ? undefined : messages;
+      const output = await params.execute(history);
+
+      if (!opened.stateless) {
+        store.appendExchange(customerId, sessionId, {
+          jobId: params.jobId,
+          capability: skill.name,
+          userContent: params.userRecord,
+          assistantContent: buildAssistantRecord(output),
+          skipRoles: opened.recordedRoles,
+        });
+      }
+      return output;
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Compaction: one summarize call on the invoked skill's own resolved LLM,
+   * then an atomic rewrite to `[summary, ...kept tail]`. Any failure - thrown
+   * error, missing client, or an empty-string summary (rewriting on it would
+   * silently vaporize the summarized context, since empty messages are skipped
+   * at replay) - counts a strike and processes this job with the uncompacted
+   * history; after 2 consecutive strikes the store force-truncates without a
+   * summary so a small-window model can never permanently brick a session.
+   */
+  private async compactSession(params: {
+    store: SessionStore;
+    customerId: string;
+    sessionId: string;
+    skill: Skill;
+    summarizeText: string;
+    fallbackMessages: ChatTurn[];
+    signal: AbortSignal | undefined;
+    log: (message: string) => void;
+    jobId: string;
+  }): Promise<ChatTurn[]> {
+    const { store, customerId, sessionId, skill } = params;
+    try {
+      const llm = this.skillCtx.getLlm?.(skill.llmOverride) ?? this.skillCtx.llm;
+      if (llm === undefined) {
+        throw new Error('no LLM client available for session compaction');
+      }
+      const summary = await llm.complete(
+        SESSION_SUMMARIZE_SYSTEM,
+        params.summarizeText,
+        params.signal,
+      );
+      return store.compact(customerId, sessionId, summary);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      params.log(`[${params.jobId.slice(0, 8)}] Session compaction failed: ${detail}`);
+      const outcome = store.compactionFailed(customerId, sessionId);
+      return outcome.forced && outcome.messages !== undefined
+        ? outcome.messages
+        : params.fallbackMessages;
+    }
   }
 
   /**
@@ -614,6 +797,10 @@ export class AgentRuntime {
     // Prune terminal ledger entries past the 30-day retention window.
     this.ledger.pruneOldEntries(LEDGER_RETENTION_MS);
 
+    // Session store: byte-counter scan + TTL GC, sequenced BEFORE recovery
+    // (mirrors the ledger prune-before-recovery ordering above).
+    this.sessionStore?.init();
+
     // Recover pending jobs from previous sessions
     await this.recoverPendingJobs();
 
@@ -629,6 +816,11 @@ export class AgentRuntime {
         this.ledger.pruneOldEntries(LEDGER_RETENTION_MS);
       } catch (e: any) {
         log(`GC error: ${e.message}`);
+      }
+      try {
+        this.sessionStore?.gc();
+      } catch (e: any) {
+        log(`Session GC error: ${e.message}`);
       }
       this.cleanupRateLimits();
       if (!this.transport.isHealthy()) {
@@ -666,6 +858,27 @@ export class AgentRuntime {
       const isPaid = matched ? matched.priceSubunits > 0 : false;
       const customerLimiter = isPaid ? this.paidCustomerLimiter : this.freeCustomerLimiter;
       const globalLimiter = isPaid ? this.paidGlobalLimiter : this.freeGlobalLimiter;
+
+      // Session admission cap - part of the PEEK phase (no rate-limiter hit is
+      // recorded yet, so a session-busy rejection never burns rate budget).
+      // Scoped to session-path jobs only: stateless jobs never touch the
+      // session mutex, so capping them would be pure downside. The cap bounds
+      // slot-time abuse: same-session jobs that reach execution serialize on
+      // the session mutex while each holds a p-limit slot.
+      const jobSession = this.resolveJobSession(job, matched);
+      if (
+        jobSession &&
+        jobSession.store.admittedCount(jobSession.customerId, jobSession.sessionId) >=
+          SESSION_MAX_CONCURRENT_JOBS
+      ) {
+        this.transport
+          .sendFeedback(job, {
+            type: 'error',
+            message: 'Session busy - wait for the previous message to finish, then retry.',
+          })
+          .catch(() => {});
+        return;
+      }
 
       // Per-customer check first so a rate-limited customer does not
       // bump the global counter - otherwise a single abusive customer
@@ -727,6 +940,13 @@ export class AgentRuntime {
       this.callbacks.onJobReceived?.(job);
       this.inFlight.add(job.jobId);
       this.pending++;
+      // Live admitted-counter registration: released in the same finally that
+      // tears down inFlight/pending - on EVERY exit path (payment timeout,
+      // refusals, failures, success) - or two abandoned unpaid jobs would pin
+      // the session "busy" and eviction-immune forever.
+      if (jobSession) {
+        jobSession.store.admitLive(jobSession.customerId, jobSession.sessionId);
+      }
 
       this.limit(() => this.processJob(job))
         .catch((e: any) => {
@@ -735,6 +955,9 @@ export class AgentRuntime {
         .finally(() => {
           this.inFlight.delete(job.jobId);
           this.pending--;
+          if (jobSession) {
+            jobSession.store.releaseLive(jobSession.customerId, jobSession.sessionId);
+          }
         });
     });
 
@@ -1063,82 +1286,103 @@ export class AgentRuntime {
     // (so `stop()` still propagates), and sets `budgetExceeded` so the catch
     // can tell a budget abort apart from a real skill failure - the latter
     // would otherwise flip the health pair via `markHealthFromExecuteError`.
-    let output;
     const budgetMs = this.resolveExecutionBudgetMs(skill);
-    let budgetExceeded = false;
-    const execAbort = new AbortController();
-    const onOuterAbort = (): void => execAbort.abort();
-    if (signal) {
-      if (signal.aborted) {
-        execAbort.abort();
-      } else {
-        signal.addEventListener('abort', onOuterAbort);
-      }
-    }
-    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const execPromise = skill.execute(
-        {
-          data: inputFile?.inlineText ?? job.input,
-          inputType: job.inputType,
-          tags: job.tags,
-          jobId: job.jobId,
-          filePath: inputFile?.filePath,
-        },
-        { ...this.skillCtx, signal: execAbort.signal },
-      );
-      // If the budget race rejects first, the skill may settle later; a no-op
-      // handler keeps that late settlement from surfacing as an unhandled
-      // rejection.
-      execPromise.catch(() => {});
-      if (budgetMs > 0) {
-        // Race the skill against its budget so a skill that ignores the abort
-        // signal (or is stuck on a non-abortable await) cannot run past the
-        // budget and hold the job slot. `abort()` still asks it to stop
-        // (SIGKILL for scripts, next-round check for LLM skills); the race only
-        // bounds how long we wait.
-        output = await Promise.race([
-          execPromise,
-          new Promise<never>((_resolve, reject) => {
-            budgetTimer = setTimeout(() => {
-              budgetExceeded = true;
-              execAbort.abort();
-              reject(new ExecutionBudgetExceededError(budgetMs));
-            }, budgetMs);
-          }),
-        ]);
-      } else {
-        output = await execPromise;
-      }
-    } catch (err) {
-      // A budget abort is a clean operator/author limit, not a provider fault:
-      // mark it distinctly so it never trips the health monitor.
-      if (budgetExceeded) {
-        log(`[${job.jobId.slice(0, 8)}] Execution exceeded budget (${budgetMs / 1000}s)`);
-        throw new ExecutionBudgetExceededError(budgetMs);
-      }
-      const flippedToUnhealthy = this.markHealthFromExecuteError(skill, err, log, job.jobId);
-      // When the skill failure was the trigger that flipped the health
-      // pair to unhealthy, surface a stable "agent unavailable" message
-      // to the customer rather than the sanitized "Internal processing
-      // error" string the leaky-API masker would otherwise produce.
-      // Recovery happens through the lazy recovery loop.
-      if (flippedToUnhealthy) {
-        throw new AgentUnavailableError();
-      }
-      throw err;
-    } finally {
-      if (budgetTimer) {
-        clearTimeout(budgetTimer);
-      }
+    const runExecution = async (history?: ChatTurn[]): Promise<SkillOutput> => {
+      let budgetExceeded = false;
+      const execAbort = new AbortController();
+      const onOuterAbort = (): void => execAbort.abort();
       if (signal) {
-        signal.removeEventListener('abort', onOuterAbort);
+        if (signal.aborted) {
+          execAbort.abort();
+        } else {
+          signal.addEventListener('abort', onOuterAbort);
+        }
       }
-      // Remove the fetched input file (and its temp dir) once execution is done.
-      if (inputFile) {
-        await inputFile.cleanup().catch(() => {});
+      let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const execPromise = skill.execute(
+          {
+            data: inputFile?.inlineText ?? job.input,
+            inputType: job.inputType,
+            tags: job.tags,
+            jobId: job.jobId,
+            filePath: inputFile?.filePath,
+            history,
+          },
+          { ...this.skillCtx, signal: execAbort.signal },
+        );
+        // If the budget race rejects first, the skill may settle later; a no-op
+        // handler keeps that late settlement from surfacing as an unhandled
+        // rejection.
+        execPromise.catch(() => {});
+        if (budgetMs > 0) {
+          // Race the skill against its budget so a skill that ignores the abort
+          // signal (or is stuck on a non-abortable await) cannot run past the
+          // budget and hold the job slot. `abort()` still asks it to stop
+          // (SIGKILL for scripts, next-round check for LLM skills); the race only
+          // bounds how long we wait.
+          return await Promise.race([
+            execPromise,
+            new Promise<never>((_resolve, reject) => {
+              budgetTimer = setTimeout(() => {
+                budgetExceeded = true;
+                execAbort.abort();
+                reject(new ExecutionBudgetExceededError(budgetMs));
+              }, budgetMs);
+            }),
+          ]);
+        }
+        return await execPromise;
+      } catch (err) {
+        // A budget abort is a clean operator/author limit, not a provider fault:
+        // mark it distinctly so it never trips the health monitor.
+        if (budgetExceeded) {
+          log(`[${job.jobId.slice(0, 8)}] Execution exceeded budget (${budgetMs / 1000}s)`);
+          throw new ExecutionBudgetExceededError(budgetMs);
+        }
+        const flippedToUnhealthy = this.markHealthFromExecuteError(skill, err, log, job.jobId);
+        // When the skill failure was the trigger that flipped the health
+        // pair to unhealthy, surface a stable "agent unavailable" message
+        // to the customer rather than the sanitized "Internal processing
+        // error" string the leaky-API masker would otherwise produce.
+        // Recovery happens through the lazy recovery loop.
+        if (flippedToUnhealthy) {
+          throw new AgentUnavailableError();
+        }
+        throw err;
+      } finally {
+        if (budgetTimer) {
+          clearTimeout(budgetTimer);
+        }
+        if (signal) {
+          signal.removeEventListener('abort', onOuterAbort);
+        }
+        // Remove the fetched input file (and its temp dir) once execution is done.
+        if (inputFile) {
+          await inputFile.cleanup().catch(() => {});
+        }
       }
-    }
+    };
+
+    // Session path: history load -> execute -> append run under the session
+    // mutex; stateless jobs call the closure directly.
+    const jobSession = this.resolveJobSession(job, skill);
+    const output =
+      jobSession === null
+        ? await runExecution()
+        : await this.runSessionExchange({
+            session: jobSession,
+            jobId: job.jobId,
+            userRecord: buildUserRecord(
+              inputFile?.inlineText ?? job.input,
+              inputFile?.filePath !== undefined
+                ? (job.attachment?.name ?? 'attachment')
+                : undefined,
+            ),
+            signal,
+            log,
+            execute: runExecution,
+          });
 
     // ── Step 5: Seed any spilled payload (file or large text), THEN cache ──
     // buildResultAttachment runs before markExecuted: a seed failure leaves the
@@ -1830,8 +2074,72 @@ export class AgentRuntime {
     throw new PaymentTimeoutError();
   }
 
+  /**
+   * Session refs of pending `paid` entries, for the recovery pre-pass. `paid`
+   * only: `executed` entries do no session work and the status-predicate
+   * release would drop them at the first re-check anyway. Applies the same
+   * session-path scope as live intake (encrypted-only decode + routed skill
+   * with `context: true`, llm mode) - a context-off or x402 entry parked for
+   * hours must not pin session slots for a job that never touches the
+   * transcript.
+   */
+  private collectRecoverySessionRefs(
+    pending: ReturnType<JobLedger['pendingJobs']>,
+  ): RecoverySessionRef[] {
+    const refs: RecoverySessionRef[] = [];
+    for (const entry of pending) {
+      if (entry.status !== 'paid' || entry.raw_event_json === undefined) {
+        continue;
+      }
+      const skill = this.skills.route(entry.tags);
+      if (!skill || skill.mode !== 'llm' || skill.context !== true) {
+        continue;
+      }
+      try {
+        const rawEvent = JSON.parse(entry.raw_event_json) as {
+          tags?: string[][];
+          content?: string;
+        };
+        const encrypted =
+          rawEvent.tags?.some((tag) => tag[0] === 'encrypted' && tag[1] === 'nip44') === true;
+        if (!encrypted || typeof rawEvent.content !== 'string') {
+          continue;
+        }
+        const session = decodeJobPayload(rawEvent.content).session;
+        if (session !== undefined) {
+          refs.push({
+            jobId: entry.job_id,
+            customerId: entry.customer_id,
+            sessionId: session.id,
+          });
+        }
+      } catch {
+        /* malformed persisted event - the dispatch path handles/fails it */
+      }
+    }
+    return refs;
+  }
+
   private async recoverPendingJobs(): Promise<void> {
     const pending = this.ledger.pendingJobs().filter((e) => !this.inFlight.has(e.job_id));
+
+    // Session pre-pass + release sweep - unconditionally at the top of every
+    // tick, BEFORE the empty-pending early return: releases are needed
+    // precisely when entries have left the pending set (a sweep placed after
+    // the guard would be skipped forever once the last entry delivered,
+    // leaking the registration for the process lifetime). Registration here,
+    // synchronously and per tick, protects queued/parked paid session jobs
+    // from LRU/global eviction between recovery attempts; in-job registration
+    // would be too late (recovery is fire-and-forget, live intake starts while
+    // recovered jobs are still queued, and a health-gate-parked entry can stay
+    // `paid` for up to 24h).
+    if (this.sessionStore !== undefined) {
+      this.sessionStore.syncRecoveryRegistrations(
+        this.collectRecoverySessionRefs(pending),
+        (jobId) => this.ledger.getStatus(jobId) === 'paid',
+      );
+    }
+
     if (pending.length === 0) {
       return;
     }
@@ -2068,6 +2376,7 @@ export class AgentRuntime {
         // the descriptor from the persisted (decrypted) raw event. Without this the
         // recovery skill.execute would run without its file.
         let recoveryInputFile;
+        let recoverySession: { id: string } | undefined;
         try {
           // Select the payload source exactly as the live handler does
           // (transport/nostr.ts): an encrypted job's decrypted envelope lives in
@@ -2079,8 +2388,12 @@ export class AgentRuntime {
           );
           const iTag = rawEvent.tags?.find((tag: string[]) => tag[0] === 'i');
           const rawInput = encrypted ? rawEvent.content : (iTag?.[1] ?? rawEvent.content);
+          const decodedPayload = decodeJobPayload(rawInput);
+          // Same encrypted-only session rule as the transport: the live and
+          // recovery paths must not diverge on honoring a cleartext session id.
+          recoverySession = encrypted ? decodedPayload.session : undefined;
           recoveryInputFile = await this.resolveInputFile(
-            decodeJobPayload(rawInput).attachment,
+            decodedPayload.attachment,
             entry.customer_id,
             recoveryAbort.signal,
           );
@@ -2096,51 +2409,79 @@ export class AgentRuntime {
         // recoverPendingJobs logs; the entry stays paid/executed and retries on
         // the next sweep (each attempt now bounded by the budget).
         const recoveryBudgetMs = this.resolveExecutionBudgetMs(skill);
-        let budgetTimer: ReturnType<typeof setTimeout> | undefined;
-        let output;
-        try {
-          const execPromise = skill.execute(
-            {
-              data: recoveryInputFile?.inlineText ?? entry.input,
-              inputType: entry.input_type,
-              tags: entry.tags,
-              jobId: entry.job_id,
-              filePath: recoveryInputFile?.filePath,
-            },
-            { ...this.skillCtx, signal: recoveryAbort.signal },
-          );
-          execPromise.catch(() => {});
-          if (recoveryBudgetMs > 0) {
-            output = await Promise.race([
-              execPromise,
-              new Promise<never>((_resolve, reject) => {
-                budgetTimer = setTimeout(() => {
-                  recoveryAbort.abort();
-                  reject(new ExecutionBudgetExceededError(recoveryBudgetMs));
-                }, recoveryBudgetMs);
-              }),
-            ]);
-          } else {
-            output = await execPromise;
+        const runRecoveryExecution = async (history?: ChatTurn[]): Promise<SkillOutput> => {
+          let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const execPromise = skill.execute(
+              {
+                data: recoveryInputFile?.inlineText ?? entry.input,
+                inputType: entry.input_type,
+                tags: entry.tags,
+                jobId: entry.job_id,
+                filePath: recoveryInputFile?.filePath,
+                history,
+              },
+              { ...this.skillCtx, signal: recoveryAbort.signal },
+            );
+            execPromise.catch(() => {});
+            if (recoveryBudgetMs > 0) {
+              return await Promise.race([
+                execPromise,
+                new Promise<never>((_resolve, reject) => {
+                  budgetTimer = setTimeout(() => {
+                    recoveryAbort.abort();
+                    reject(new ExecutionBudgetExceededError(recoveryBudgetMs));
+                  }, recoveryBudgetMs);
+                }),
+              ]);
+            }
+            return await execPromise;
+          } catch (err) {
+            // Mirror the primary executeJob path: a billing/invalid signal raised
+            // during recovery must flip the (provider, model) pair to unhealthy.
+            // Otherwise a key that expires while jobs are mid-recovery is never
+            // detected - the preflight gate keeps admitting NEW jobs and customers
+            // keep paying for a skill that will fail, and this loop's assertReady
+            // gate keeps passing so retries burn for nothing. A budget abort matches
+            // neither billing nor invalid signals, so this is a no-op for it.
+            this.markHealthFromExecuteError(skill, err, log, entry.job_id);
+            throw err;
+          } finally {
+            if (budgetTimer) {
+              clearTimeout(budgetTimer);
+            }
+            if (recoveryInputFile) {
+              await recoveryInputFile.cleanup().catch(() => {});
+            }
           }
-        } catch (err) {
-          // Mirror the primary executeJob path: a billing/invalid signal raised
-          // during recovery must flip the (provider, model) pair to unhealthy.
-          // Otherwise a key that expires while jobs are mid-recovery is never
-          // detected - the preflight gate keeps admitting NEW jobs and customers
-          // keep paying for a skill that will fail, and this loop's assertReady
-          // gate keeps passing so retries burn for nothing. A budget abort matches
-          // neither billing nor invalid signals, so this is a no-op for it.
-          this.markHealthFromExecuteError(skill, err, log, entry.job_id);
-          throw err;
-        } finally {
-          if (budgetTimer) {
-            clearTimeout(budgetTimer);
-          }
-          if (recoveryInputFile) {
-            await recoveryInputFile.cleanup().catch(() => {});
-          }
-        }
+        };
+
+        // Session path, recovery flavor: same lock/open/append flow as live
+        // (slot-then-mutex holds - we run inside this.limit), with one
+        // deliberate difference: the history load excludes this job's own
+        // recorded turns. After a post-append SeedFailedError the transcript
+        // already holds this exchange; replaying it would ask the LLM the same
+        // question with its own undelivered answer in the prompt, and the
+        // `(jobId, role)`-deduped append skips the already-present lines.
+        const recoveryJobSession = this.resolveJobSession(
+          { session: recoverySession, customerId: entry.customer_id },
+          skill,
+        );
+        const output =
+          recoveryJobSession === null
+            ? await runRecoveryExecution()
+            : await this.runSessionExchange({
+                session: recoveryJobSession,
+                jobId: entry.job_id,
+                userRecord: buildUserRecord(
+                  recoveryInputFile?.inlineText ?? entry.input,
+                  recoveryInputFile?.filePath !== undefined ? 'attachment' : undefined,
+                ),
+                signal: recoveryAbort.signal,
+                log,
+                execute: runRecoveryExecution,
+                excludeOwnTurns: true,
+              });
 
         // Symmetric with the primary path: seed any spilled payload (file or large
         // text) BEFORE markExecuted, and deliver `deliveredContent` (empty when

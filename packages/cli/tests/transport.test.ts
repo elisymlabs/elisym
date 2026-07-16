@@ -513,3 +513,71 @@ describe('NostrTransport', () => {
     });
   });
 });
+
+describe('session decode (encrypted-only)', () => {
+  const SID = '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c';
+  const envelope = (session: unknown) =>
+    JSON.stringify({ v: 'elisym-job/1', text: 'turn two', session });
+  // makeDirectedEvent hard-codes its content, so build the encrypted event here.
+  const makeEncryptedEvent = (content: string) =>
+    makeEvent({
+      tags: [
+        ['i', 'encrypted', 'text'],
+        ['t', 'elisym'],
+        ['t', 'text-gen'],
+        ['p', mockIdentity.publicKey],
+        ['encrypted', 'nip44'],
+      ],
+      content,
+    });
+
+  it('populates job.session from an encrypted envelope', () => {
+    const transport = new NostrTransport(
+      mockClient as unknown as ElisymClient,
+      mockIdentity as unknown as ElisymIdentity,
+      [100],
+    );
+    const onJob = vi.fn();
+    transport.start(onJob);
+    capturedCallback!(makeEncryptedEvent(envelope({ id: SID })));
+    const job: IncomingJob = onJob.mock.calls[0][0];
+    expect(job.session).toEqual({ id: SID });
+    expect(job.input).toBe('turn two');
+  });
+
+  it('ignores a cleartext session id on an unencrypted event', () => {
+    const transport = new NostrTransport(
+      mockClient as unknown as ElisymClient,
+      mockIdentity as unknown as ElisymIdentity,
+      [100],
+    );
+    const onJob = vi.fn();
+    transport.start(onJob);
+    capturedCallback!(
+      makeEvent({
+        tags: [
+          ['i', envelope({ id: SID }), 'text'],
+          ['t', 'elisym'],
+          ['t', 'text-gen'],
+        ],
+      }),
+    );
+    const job: IncomingJob = onJob.mock.calls[0][0];
+    expect(job.session).toBeUndefined();
+    expect(job.input).toBe('turn two');
+  });
+
+  it('treats an invalid session shape as absent (job still processed)', () => {
+    const transport = new NostrTransport(
+      mockClient as unknown as ElisymClient,
+      mockIdentity as unknown as ElisymIdentity,
+      [100],
+    );
+    const onJob = vi.fn();
+    transport.start(onJob);
+    capturedCallback!(makeEncryptedEvent(envelope({ id: 'not-a-uuid' })));
+    const job: IncomingJob = onJob.mock.calls[0][0];
+    expect(job.session).toBeUndefined();
+    expect(job.input).toBe('turn two');
+  });
+});
