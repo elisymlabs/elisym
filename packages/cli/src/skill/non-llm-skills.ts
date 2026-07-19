@@ -66,6 +66,7 @@ export class StaticFileSkill implements Skill {
       priceSubunits: BigInt(Math.round(params.priceSubunits)),
       asset: params.asset,
       outputFilePath: params.outputFilePath,
+      skillDir: params.dir,
       image: params.image,
       imageFile: params.imageFile,
     });

@@ -4,6 +4,8 @@ import { useEffect, useSyncExternalStore } from 'react';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
+import { purgeChatSessions } from '~/lib/chatSession';
+import { purgeIdentityThreadEntries } from '~/lib/chatThread';
 import { cacheDeleteWhere } from '~/lib/localCache';
 import { readCursors, readCursorsVersion, subscribeReadCursors } from '~/lib/readCursors';
 
@@ -19,16 +21,25 @@ export function threadQueryKey(identityPubkey: string, counterpartPubkey: string
 
 /**
  * Purge everything decrypted with (and keyed by) one identity: DM threads and
- * conversation summaries, and the agent-page job history decrypted as this
- * viewer. Called on provider logout BEFORE the imported key is removed -
- * deleting the key alone would leave the plaintext on disk.
+ * conversation summaries, the identity's chat-thread entries (both halves of
+ * the transcript - the DM purge deletes plaintext threads and a chat
+ * transcript deserves the same) and its active-session map entries. Called on
+ * provider logout BEFORE the imported key is removed - deleting the key alone
+ * would leave the plaintext on disk. Also sweeps the legacy `purchase:` result
+ * caches once - their writes were removed with the Chat tab (they were
+ * write-only dead weight) and this clears historical residue.
  *
- * Deliberately NOT covered: buy-flow customer history (`purchase:<jobEventId>`,
- * `elisym:artifacts:<agentPubkey>`, `elisym:job-history:<wallet>`) - not
- * identity-keyed. DM read cursors (`elisym:dm-read:<pubkey>`) - a
- * counterpart->timestamp map, no message plaintext; wiping it resurrects the
- * whole 30-day history as unread on every provider re-login (MCP keeps its
- * cursor file across sessions for the same reason).
+ * Deliberately NOT covered: the wallet-keyed `elisym:job-history:<wallet>`
+ * payment ledger (scoped to the Solana wallet, not the Nostr identity - it
+ * exists for tx-proof lookups and is disconnected from identity logout);
+ * `rated:<jobId>` flags and `elisym:unseen-artifacts` id lists (content-free
+ * booleans/ids - the unseen reader intersects with the identity's rendered
+ * entries, so foreign ids are inert); the pre-feature `elisym:artifacts:*`
+ * localStorage keys (untouched on disk by design - no import, no deletion);
+ * DM read cursors (`elisym:dm-read:<pubkey>`) - a counterpart->timestamp map,
+ * no message plaintext; wiping it resurrects the whole 30-day history as
+ * unread on every provider re-login (MCP keeps its cursor file across
+ * sessions for the same reason).
  */
 export async function purgeIdentityCaches(
   queryClient: QueryClient,
@@ -36,15 +47,24 @@ export async function purgeIdentityCaches(
 ): Promise<void> {
   queryClient.removeQueries({ queryKey: conversationsQueryKey(identityPubkey) });
   queryClient.removeQueries({ queryKey: ['dm-thread', identityPubkey] });
-  // Viewer pubkey is the LAST segment of agent-nostr-history keys.
+  // Viewer pubkey is the LAST segment of the hydration query keys (the value
+  // is a content-free count, but drop the query state with the identity).
   queryClient.removeQueries({
     predicate: (query) =>
-      query.queryKey[0] === 'agent-nostr-history' && query.queryKey[2] === identityPubkey,
+      (query.queryKey[0] === 'agent-nostr-history' ||
+        query.queryKey[0] === 'chat-thread-hydration') &&
+      query.queryKey[2] === identityPubkey,
   });
+  // Thread entries and chat-session keys go through the store modules' own
+  // purge primitives (entry-level, lock-held - thread keys are agent-keyed
+  // with per-identity values inside; a key-level sweep cannot express that).
+  await purgeIdentityThreadEntries(identityPubkey);
+  await purgeChatSessions(identityPubkey);
   await cacheDeleteWhere(
     (key) =>
       key.startsWith(`dm-conversations:${identityPubkey}`) ||
       key.startsWith(`dm-thread:${identityPubkey}:`) ||
+      key.startsWith('purchase:') ||
       (key.startsWith('agent-nostr-history:') && key.endsWith(`:${identityPubkey}`)),
   );
 }

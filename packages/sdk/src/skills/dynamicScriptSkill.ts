@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { runScript } from './scriptSkill';
+import { runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
   SkillContext,
@@ -101,8 +101,10 @@ export class DynamicScriptSkill implements Skill {
     // distinct subpath from `outputFile`, so scanning it never picks up the single file.
     const outputDir = join(outDir, 'files');
     await mkdir(outputDir, { recursive: true });
+    // No caller-provided env -> scoped copy of process.env (secret vars
+    // stripped), never the raw parent env with the operator's key ring.
     const env: NodeJS.ProcessEnv = {
-      ...(this.scriptEnv ?? process.env),
+      ...(this.scriptEnv ?? scopedToolEnv()),
       ELISYM_OUTPUT_FILE: outputFile,
       ELISYM_OUTPUT_DIR: outputDir,
     };

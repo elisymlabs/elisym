@@ -166,6 +166,35 @@ export async function updateCustomerJob(
   });
 }
 
+/**
+ * Conditionally transition an entry's status and report whether it fired.
+ * A single locked read-modify-write: `updateCustomerJob` unconditionally
+ * patches and returns void, so a read-then-patch around it would be
+ * check-then-act - two concurrent `get_job_result` polls would both observe
+ * `pending` and double-fire. Used by the session `turnCount` late bump, which
+ * must increment at most once per job (the gate must never overstate what the
+ * provider holds).
+ */
+export async function transitionCustomerJobStatus(
+  agentDir: string,
+  jobEventId: string,
+  from: readonly CustomerJobEntry['status'][],
+  to: CustomerJobEntry['status'],
+): Promise<boolean> {
+  const path = pathFor(agentDir);
+  return withLock(path, async () => {
+    const history = await readRaw(path);
+    const index = history.jobs.findIndex((job) => job.jobEventId === jobEventId);
+    const entry = index >= 0 ? history.jobs[index] : undefined;
+    if (!entry || !from.includes(entry.status)) {
+      return false;
+    }
+    history.jobs[index] = CustomerJobEntrySchema.parse({ ...entry, status: to });
+    await writeRaw(path, history);
+    return true;
+  });
+}
+
 /** Find a single job by its event id. */
 export async function findCustomerJob(
   agentDir: string,

@@ -1,4 +1,12 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,7 +16,7 @@ import {
   parseSkillMd,
   validateSkillFrontmatter,
 } from '../src/skills/loader';
-import { resolveInsidePath } from '../src/skills/path-safety';
+import { resolveInsidePath, resolveInsidePathReal } from '../src/skills/path-safety';
 import { MAX_STATIC_FILE_SIZE } from '../src/skills/staticFileSkill';
 
 let tmpDir: string;
@@ -545,6 +553,44 @@ describe('resolveInsidePath', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'safe-path-'));
     try {
       expect(resolveInsidePath(tmp, '.')).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+});
+
+describe('resolveInsidePathReal', () => {
+  it('resolves an existing file to its physical path inside the root', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'safe-path-'));
+    try {
+      writeFileSync(join(tmp, 'a.txt'), 'x');
+      expect(resolveInsidePathReal(tmp, 'a.txt')).toBe(realpathSync(join(tmp, 'a.txt')));
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
+  it('rejects a symlink that escapes the root', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'safe-path-outside-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'safe-path-'));
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'secret');
+      symlinkSync(join(outside, 'secret.txt'), join(tmp, 'link.txt'));
+      expect(resolveInsidePathReal(tmp, 'link.txt')).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true });
+      rmSync(outside, { recursive: true });
+    }
+  });
+
+  it('passes a not-yet-existing path through unresolved', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'safe-path-'));
+    try {
+      // The string phase anchors on the physical root, so the candidate is
+      // rooted at realpath(tmp) even before the file exists.
+      expect(resolveInsidePathReal(tmp, 'missing.txt')).toBe(
+        join(realpathSync(tmp), 'missing.txt'),
+      );
     } finally {
       rmSync(tmp, { recursive: true });
     }

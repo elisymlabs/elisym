@@ -17,7 +17,7 @@ import type {
   ToolResult,
 } from '@elisym/sdk/skills';
 import type { LlmKeyVerification, LlmProviderDescriptor } from '../registry';
-import { fetchWithRetry, fetchWithTimeout } from './http';
+import { fetchWithRetry, fetchWithTimeout, sanitizeErrorBody } from './http';
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_MAX_TOKENS = 4096;
@@ -108,7 +108,9 @@ export class OpenAIClient implements LlmClient {
       signal,
     );
     if (!response.ok) {
-      throw new Error(`OpenAI API error: ${response.status} ${await response.text()}`);
+      throw new Error(
+        `OpenAI API error: ${response.status} ${sanitizeErrorBody(await response.text(), 200)}`,
+      );
     }
     const data = (await response.json()) as OpenAIResponse;
     this.logTokens(data.usage);
@@ -163,7 +165,9 @@ export class OpenAIClient implements LlmClient {
       signal,
     );
     if (!response.ok) {
-      throw new Error(`OpenAI API error: ${response.status} ${await response.text()}`);
+      throw new Error(
+        `OpenAI API error: ${response.status} ${sanitizeErrorBody(await response.text(), 200)}`,
+      );
     }
     const data = (await response.json()) as OpenAIResponse;
     this.logTokens(data.usage);
@@ -244,7 +248,7 @@ async function verifyKey(apiKey: string, signal?: AbortSignal): Promise<LlmKeyVe
       await response.body?.cancel().catch(() => undefined);
       return { ok: true };
     }
-    const body = (await response.text().catch(() => '')).slice(0, 500);
+    const body = sanitizeErrorBody(await response.text().catch(() => ''));
     if (response.status === 401 || response.status === 403) {
       return { ok: false, reason: 'invalid', status: response.status, body };
     }
@@ -311,7 +315,7 @@ async function verifyKeyDeep(
       await response.body?.cancel().catch(() => undefined);
       return { ok: true };
     }
-    const body = (await response.text().catch(() => '')).slice(0, 500);
+    const body = sanitizeErrorBody(await response.text().catch(() => ''));
     if (response.status === 401 || response.status === 403) {
       return { ok: false, reason: 'invalid', status: response.status, body };
     }

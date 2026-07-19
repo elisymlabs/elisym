@@ -61,6 +61,19 @@ function isSafeImageUrl(value: string): boolean {
 /** Sentinel signal that never aborts; lets `runEnrichment` accept an `AbortSignal` uniformly. */
 const NEVER_ABORTED_SIGNAL: AbortSignal = new AbortController().signal;
 
+// Payment-field formats enforced symmetrically: publishCapability rejects on
+// write, parseCapabilityEvent rejects on read. A raw Nostr event (published
+// outside the SDK) can carry arbitrary strings here, which would otherwise
+// propagate into client state and downstream error messages.
+// Base58 charset + length only - full decode validation happens at payment time.
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+/** Lowercase token id (e.g. 'sol', 'usdc'). */
+const PAYMENT_TOKEN_REGEX = /^[a-z0-9$._-]{1,32}$/;
+/** Display symbol (e.g. 'SOL', 'USDC', '$LSM'). */
+const PAYMENT_SYMBOL_REGEX = /^[A-Za-z0-9$._-]{1,32}$/;
+/** SPL mint (base58) or EVM contract (0x-hex). */
+const PAYMENT_MINT_REGEX = /^[0-9A-Za-z]{1,64}$/;
+
 /** Convert a capability name to its Nostr d-tag form (ASCII-only, lowercase, hyphen-separated). */
 export function toDTag(name: string): string {
   const tag = name
@@ -198,6 +211,24 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     return null;
   }
 
+  // Read-side mirror of publishCapability's payment format checks. Rejecting
+  // here keeps hostile strings (prompt-injection payloads, ANSI escapes) out of
+  // client state and every downstream error message.
+  if (card.payment) {
+    if (card.payment.chain === 'solana' && !SOLANA_ADDRESS_REGEX.test(card.payment.address)) {
+      return null;
+    }
+    if (card.payment.token !== undefined && !PAYMENT_TOKEN_REGEX.test(card.payment.token)) {
+      return null;
+    }
+    if (card.payment.symbol !== undefined && !PAYMENT_SYMBOL_REGEX.test(card.payment.symbol)) {
+      return null;
+    }
+    if (card.payment.mint !== undefined && !PAYMENT_MINT_REGEX.test(card.payment.mint)) {
+      return null;
+    }
+  }
+
   // Optional file-MIME hints must be bounded strings when present. This is
   // untrusted remote data; the cap (matching the loader's) keeps an unbounded
   // string out of client state. Clients gate on presence, not the value.
@@ -215,6 +246,13 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
   // never hides an agent from older clients. Clients gate on the known values only.
   if (card.inputText !== undefined && !['required', 'optional', 'none'].includes(card.inputText)) {
     card.inputText = undefined;
+  }
+
+  // `context` gates chat affordances (session-carrying sends), so only the strict
+  // boolean `true` counts; anything else coerces to absent rather than dropping
+  // the card - same forward-compat posture as `inputText`.
+  if (card.context !== undefined && card.context !== true) {
+    card.context = undefined;
   }
 
   if (
@@ -405,7 +443,10 @@ export class DiscoveryService {
     );
     const latestMeta = new Map<string, (typeof metaEvents)[0]>();
     for (const ev of metaEvents) {
-      if (!verifyEvent(ev)) {
+      // Clock-skew gate matches every other newest-wins pick in this file: a
+      // validly-signed event with a far-future created_at would otherwise pin
+      // the profile against all later legitimate updates.
+      if (!verifyEvent(ev) || !isWithinClockSkew(ev)) {
         continue;
       }
       const prev = latestMeta.get(ev.pubkey);
@@ -809,11 +850,20 @@ export class DiscoveryService {
     // Base58 charset + length check. Full validation (decode + 32 bytes) happens
     // at payment time via the @solana/kit `address()` helper - no Kit import here
     // to keep discovery browser-safe without a Solana peer dep at this layer.
-    if (
-      card.payment.chain === 'solana' &&
-      !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(card.payment.address)
-    ) {
+    if (card.payment.chain === 'solana' && !SOLANA_ADDRESS_REGEX.test(card.payment.address)) {
       throw new Error(`Invalid Solana address format: ${card.payment.address}`);
+    }
+    // Write-side mirror of parseCapabilityEvent's payment format checks:
+    // readers reject violating cards, so publishing one would silently ship a
+    // card no SDK client ever displays.
+    if (card.payment.token !== undefined && !PAYMENT_TOKEN_REGEX.test(card.payment.token)) {
+      throw new Error(`Invalid payment token id: ${card.payment.token}`);
+    }
+    if (card.payment.symbol !== undefined && !PAYMENT_SYMBOL_REGEX.test(card.payment.symbol)) {
+      throw new Error(`Invalid payment symbol: ${card.payment.symbol}`);
+    }
+    if (card.payment.mint !== undefined && !PAYMENT_MINT_REGEX.test(card.payment.mint)) {
+      throw new Error(`Invalid payment mint: ${card.payment.mint}`);
     }
     if (card.name.length > LIMITS.MAX_AGENT_NAME_LENGTH) {
       throw new Error(

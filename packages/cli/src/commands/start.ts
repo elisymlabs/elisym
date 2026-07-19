@@ -4,7 +4,7 @@
  * processes jobs with per-capability pricing, caches uploaded media URLs.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
   ElisymClient,
@@ -162,10 +162,12 @@ export async function cmdStart(
   // skill has `mode === 'llm'`.
   //
   // `scriptEnv` propagates decrypted per-provider keys (e.g. ANTHROPIC_API_KEY)
-  // into `dynamic-script` / `static-script` subprocesses, so script skills get
-  // the same secret access LLM-mode skills already have. Existing process.env
-  // values win when no per-agent secret is set, matching the priority used by
-  // resolveProviderApiKey for LLM-mode skills.
+  // into `dynamic-script` / `static-script` subprocesses. The skill loader then
+  // scopes the set per skill: only the key of the provider a SKILL.md declares
+  // (`llm.provider`) survives into that script's env - least privilege over the
+  // operator's key ring. Existing process.env values win when no per-agent
+  // secret is set, matching the priority used by resolveProviderApiKey for
+  // LLM-mode skills.
   const scriptEnv: NodeJS.ProcessEnv = { ...process.env };
   // ELISYM_PASSPHRASE decrypts `.secrets.json` (Nostr + Solana secret keys) at rest.
   // A skill script - which may be third-party SKILL.md installed under the agent dir -
@@ -175,6 +177,12 @@ export async function cmdStart(
   // passphrase is not. (The LLM-tool subprocess path already strips secrets via
   // scriptSkill's SECRET_ENV_VARS; this closes the same gap on the script path.)
   delete scriptEnv.ELISYM_PASSPHRASE;
+  // A third-party SOLANA_RPC_URL (Helius/Alchemy/QuickNode) embeds an API key in
+  // the URL itself - a skill script has no claim on that paid credential. Public
+  // api.*.solana.com endpoints carry no secret and pass through unchanged.
+  if (scriptEnv.SOLANA_RPC_URL !== undefined && !isPublicSolanaRpcUrl(scriptEnv.SOLANA_RPC_URL)) {
+    delete scriptEnv.SOLANA_RPC_URL;
+  }
   const llmKeys = loaded.secrets.llm_api_keys ?? {};
   for (const descriptor of listLlmProviders()) {
     const secretValue = llmKeys[descriptor.id];
@@ -547,6 +555,7 @@ export async function cmdStart(
     const url = await uploadOrReuse(
       cacheKey,
       absPath,
+      skillRoot,
       mediaCache,
       client.blossom,
       identity,
@@ -668,12 +677,15 @@ export async function cmdStart(
       continue;
     }
     const type = event.tags.find((tag) => tag[0] === 'policy_type')?.[1];
-    if (!type) {
+    // Only tombstone the slot the event itself occupies: `policy_type` comes from
+    // untrusted relay content, so without the d-tag match a malicious relay could
+    // inject an orphan event naming a live policy type and retract it.
+    if (!type || dTag !== `${POLICY_D_TAG_PREFIX}${type}`) {
       continue;
     }
     try {
       await client.policies.deletePolicy(identity, type);
-      console.log(`  Removed stale policy: ${type}`);
+      console.log(`  Removed stale policy: ${sanitizeForTerminal(type)}`);
     } catch {
       // non-fatal, will retry next start
     }
@@ -699,6 +711,9 @@ export async function cmdStart(
       ...(skill.inputMime ? { inputMime: skill.inputMime } : {}),
       ...(skill.inputText ? { inputText: skill.inputText } : {}),
       ...(skill.outputMime ? { outputMime: skill.outputMime } : {}),
+      // Conversation-context flag: clients gate chat affordances (session-carrying
+      // sends) on it. Strict true only - the read side coerces anything else away.
+      ...(skill.context === true ? { context: true } : {}),
       payment: solanaAddress
         ? {
             chain: 'solana',
@@ -779,9 +794,12 @@ export async function cmdStart(
       }
       try {
         const card = JSON.parse(ev.content);
-        if (card.name) {
+        // Only tombstone the slot the event itself occupies: `card.name` comes from
+        // untrusted relay content, so without the d-tag match a malicious relay could
+        // inject an orphan event whose name collapses to an active skill's d-tag.
+        if (card.name && toDTag(card.name) === dTag) {
           await client.discovery.deleteCapability(identity, card.name);
-          console.log(`  Removed stale capability: ${card.name}`);
+          console.log(`  Removed stale capability: ${sanitizeForTerminal(card.name)}`);
         }
       } catch {
         // malformed event, skip
@@ -974,6 +992,27 @@ export function stripRpcSecrets(raw: string): string {
 }
 
 /**
+ * True when the URL points at a public `api.*.solana.com` endpoint with no
+ * userinfo, path, or query - the shapes `stripRpcSecrets` treats as
+ * credential-bearing. Public hosts need no API key, so anything beyond the
+ * bare origin is treated as a secret an operator pasted in.
+ */
+export function isPublicSolanaRpcUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw);
+    return (
+      PUBLIC_SOLANA_RPC_HOSTS.has(parsed.hostname) &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.search &&
+      (parsed.pathname === '' || parsed.pathname === '/')
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Redact any RPC URL embedded in free-form text (e.g. a thrown error message) by
  * routing every http(s) URL it contains through `stripRpcSecrets`. Used on error
  * messages that may interpolate the request URL (and thus an embedded API key)
@@ -1003,7 +1042,9 @@ async function resolveMediaField(
     console.warn(`  ! Skipping media field "${value}": path must stay inside the agent directory.`);
     return undefined;
   }
-  return uploadOrReuse(value, absPath, cache, blossom, identity, () => onCacheUpdate(true));
+  return uploadOrReuse(value, absPath, agentDir, cache, blossom, identity, () =>
+    onCacheUpdate(true),
+  );
 }
 
 /**
@@ -1021,22 +1062,52 @@ function resolveInsideAgentDir(value: string, agentDir: string): string | null {
   return candidate;
 }
 
+/**
+ * Dereference symlinks and require the physical path to stay inside `rootDir`.
+ * String containment (`resolveInsideAgentDir` and friends) is not enough on its
+ * own: a symlink planted inside the root passes the string check while pointing
+ * at `.secrets.json` or anything else on disk.
+ */
+function realpathInsideDir(absPath: string, rootDir: string): string | null {
+  try {
+    const realRoot = realpathSync(resolve(rootDir));
+    const realCandidate = realpathSync(absPath);
+    const rel = relative(realRoot, realCandidate);
+    if (rel === '' || rel.startsWith('..') || rel.includes(`..${sep}`)) {
+      return null;
+    }
+    return realCandidate;
+  } catch {
+    return null;
+  }
+}
+
 /** Look up `cacheKey` in cache; if hit returns URL, else uploads and updates cache. */
 export async function uploadOrReuse(
   cacheKey: string,
   absPath: string,
+  containRoot: string,
   cache: MediaCache,
   blossom: Pick<BlossomService, 'upload'>,
   identity: ElisymIdentity,
   onCacheUpdate: () => void,
 ): Promise<string | undefined> {
+  // The upload target lands on a PUBLIC media host and its URL is published in
+  // the capability card - never read through a symlink that escapes the root.
+  const realPath = realpathInsideDir(absPath, containRoot);
+  if (realPath === null) {
+    console.warn(
+      `  ! Skipping upload of ${basename(absPath)}: unreadable or escapes its directory.`,
+    );
+    return undefined;
+  }
   try {
-    const cached = await lookupCachedUrl(cache, cacheKey, absPath);
+    const cached = await lookupCachedUrl(cache, cacheKey, realPath);
     if (cached) {
       return cached;
     }
-    console.log(`  Uploading ${basename(absPath)}...`);
-    const data = readFileSync(absPath);
+    console.log(`  Uploading ${basename(realPath)}...`);
+    const data = readFileSync(realPath);
     const sha256 = createHash('sha256').update(data).digest('hex');
     const blob = new Blob([data], { type: mimeFromPath(absPath) });
     const descriptor = await blossom.upload(identity, blob);

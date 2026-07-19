@@ -2192,7 +2192,12 @@ export class AgentRuntime {
     for (const entry of pending) {
       const ageMs = (Math.floor(Date.now() / 1000) - entry.created_at) * 1000;
       const expired = ageMs > MAX_PAID_AGE_MS;
-      const exhaustedRetries = entry.retry_count >= this.config.recoveryMaxRetries;
+      // The retry budget gates only expensive re-EXECUTION of 'paid' entries.
+      // 'executed' entries are delivery-only (a cheap relay publish of work the
+      // customer already paid for) - transient relay outages must not burn the
+      // result; they are bounded by the 24h expiry alone.
+      const exhaustedRetries =
+        entry.status === 'paid' && entry.retry_count >= this.config.recoveryMaxRetries;
       if (expired || exhaustedRetries) {
         this.ledger.markFailed(entry.job_id);
         const reason = expired

@@ -1,21 +1,17 @@
-import { classifyJobError, LIMITS, utf8ByteLength, type CapabilityCard } from '@elisym/sdk';
+import { type CapabilityCard } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import Decimal from 'decimal.js-light';
 import { useState, type KeyboardEvent, type ReactNode } from 'react';
-import { useElisymClient } from '~/hooks/useElisymClient';
-import { useIdentity } from '~/hooks/useIdentity';
 import type { PingStatus } from '~/hooks/usePingAgent';
-import { useSolGasFeeEstimate } from '~/hooks/useSolGasFeeEstimate';
-import { useWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
 import { formatBytes } from '~/lib/fileResult';
-import { formatCardPrice } from '~/lib/formatPrice';
+import { BuyErrorNote } from './BuyErrorNote';
 import { CapabilityDropdown } from './CapabilityDropdown';
-import { checkBuyAffordability, checkSelfPayment } from './lib/balanceCheck';
 import { SolIcon } from './SolIcon';
 import type { BuyState } from './types';
+import { useJobGating } from './useJobGating';
 
 interface Props {
   agentPubkey: string;
@@ -67,55 +63,27 @@ function JobInputInner({
 }: InnerProps) {
   const { publicKey } = useWallet();
   const { setVisible } = useWalletModal();
-  const { relaysConnected } = useElisymClient();
-  const idCtx = useIdentity();
-  const isOwn = idCtx.publicKey === agentPubkey;
 
   const { buy, buying, error, paid } = buyState;
 
   const [input, setInput] = useState('');
   const [file, setFile] = useState<File | null>(null);
-  const isStatic = card.static === true;
-  // Capabilities that take a file input declare `inputMime`. We gate on presence
-  // only and never trust/render the (untrusted) value - the file picker uses it as
-  // a soft `accept` hint at most, and the provider content-sniffs the actual file.
-  const needsFileInput = typeof card.inputMime === 'string' && card.inputMime.length > 0;
-  // `input_text` says how a file skill treats the text prompt: 'none' = file only
-  // (hide the text box), 'required' = file + text both required, 'optional' = the
-  // FILE is optional and the instruction is required (a generate-or-edit skill:
-  // text alone generates, text + photo edits), else (incl. undefined) = file
-  // required + optional note. Only meaningful with `needsFileInput`.
-  const fileOnly = needsFileInput && card.inputText === 'none';
-  const textRequiredForFile = needsFileInput && card.inputText === 'required';
-  // `optional` inverts the usual file-input gate: the instruction is required and
-  // the file is an optional augmentation, so a file-capable card can still run
-  // text-only (e.g. image generation without a photo to edit).
-  const fileOptional = needsFileInput && card.inputText === 'optional';
-  // The prompt textarea shows for any non-static card that isn't file-only. When
-  // it's hidden the file dropzone becomes the card's first element and needs full
-  // top padding to breathe from the card edge, not the tight inter-field gap.
-  const showsTextarea = !isStatic && !fileOnly;
-  // For a file-only card the text box is hidden, so any `input` is stale text left
-  // over from a prior capability - never send/record it.
-  const effectiveInput = fileOnly ? '' : input;
-  const price = card.payment?.job_price ?? 0;
-  const isFree = price === 0;
-  // The provider rejects a file input on a zero-price skill before payment, so a
-  // free + file-input card is unusable from the web - block it (gate on presence).
-  const freeFileBlocked = isFree && needsFileInput;
-  // Whole-buffer encrypt + upload is bounded to the encrypted-Blossom cap (100 MiB).
-  const fileTooLarge = !!file && file.size > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES;
-  const gasFeeLamports = useSolGasFeeEstimate(card);
-  const priceLabel = isFree ? null : formatCardPrice(card.payment, price);
-  const { solLamports, usdcRaw } = useWalletBalances();
-  const selfPayment =
-    !isFree && !!publicKey && !buying
-      ? checkSelfPayment({ card, buyerWallet: publicKey.toBase58() })
-      : { ok: true as const };
-  const affordability =
-    !isFree && !!publicKey && !buying && selfPayment.ok
-      ? checkBuyAffordability({ card, solLamports, usdcRaw, gasLamports: gasFeeLamports })
-      : { ok: true as const };
+  const gate = useJobGating({ card, agentPubkey, pingStatus, input, file, buying });
+  const {
+    isDisabled,
+    tip,
+    isFree,
+    isStatic,
+    isOwn,
+    needsFileInput,
+    textRequiredForFile,
+    fileOptional,
+    showsTextarea,
+    effectiveInput,
+    freeFileBlocked,
+    priceLabel,
+    gasFeeLamports,
+  } = gate;
 
   function handleBuy() {
     if (!isFree && !publicKey) {
@@ -127,7 +95,9 @@ function JobInputInner({
       agent: agentName,
       price: priceLabel ?? 'free',
     });
-    buy(isStatic ? card.name : effectiveInput, file ?? undefined);
+    // Products-tab buys are always stateless one-shots (the two-surface rule);
+    // only the Chat-tab composer may carry the active session id.
+    buy(isStatic ? card.name : effectiveInput, file ?? undefined, { sessionId: null });
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -153,50 +123,6 @@ function JobInputInner({
       );
     }
     return isFree ? 'Get' : 'Buy';
-  }
-
-  // The browser submits encrypted jobs and cannot spill large input to iroh
-  // (node-only transport), so cap the input at the NIP-44 inline byte budget and
-  // point large inputs at the CLI. Measured in BYTES - the cap is a byte cap.
-  const inputTooLarge =
-    !isStatic && utf8ByteLength(effectiveInput) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
-
-  const isDisabled =
-    buying ||
-    freeFileBlocked ||
-    !relaysConnected ||
-    // Text cards require text; file cards require a file (text is an optional note,
-    // unless `input_text: required`, which needs both). A `fileOptional` card
-    // inverts this: the file is optional and the instruction is required instead.
-    ((!!publicKey || isFree) && !isStatic && !needsFileInput && !input.trim()) ||
-    ((!!publicKey || isFree) && needsFileInput && !fileOptional && !file) ||
-    ((!!publicKey || isFree) && textRequiredForFile && !input.trim()) ||
-    ((!!publicKey || isFree) && fileOptional && !input.trim()) ||
-    ((!!publicKey || isFree) && pingStatus !== 'online') ||
-    inputTooLarge ||
-    fileTooLarge ||
-    !selfPayment.ok ||
-    !affordability.ok;
-
-  let tip: string | null = null;
-  if (!buying) {
-    if (freeFileBlocked) {
-      tip = 'File inputs require a paid capability - this one is free.';
-    } else if (!relaysConnected) {
-      tip = 'Connecting to relays…';
-    } else if ((!!publicKey || isFree) && pingStatus === 'pinging') {
-      tip = 'Checking if the agent is available…';
-    } else if ((!!publicKey || isFree) && pingStatus !== 'online') {
-      tip = "This agent is offline right now, so you can't place an order. Try again later.";
-    } else if (inputTooLarge) {
-      tip = 'Input is too large for the web app - use the elisym CLI for large inputs.';
-    } else if (fileTooLarge) {
-      tip = 'File is too large for the web app (max 100 MiB) - use the elisym CLI.';
-    } else if (!selfPayment.ok) {
-      tip = selfPayment.tooltip;
-    } else if (!affordability.ok) {
-      tip = affordability.tooltip;
-    }
   }
 
   let inputPlaceholder = `Ask ${agentName || 'agent'}…`;
@@ -347,27 +273,9 @@ function JobInputInner({
           File inputs require a paid capability - this one is free.
         </div>
       )}
-      {error && <ErrorMessage error={error} paid={paid} />}
+      {error && <BuyErrorNote error={error} paid={paid} />}
     </div>
   );
-}
-
-function ErrorMessage({ error, paid }: { error: string; paid: boolean }) {
-  const isAgentUnavailable = classifyJobError(error) === 'agent-unavailable';
-  if (isAgentUnavailable) {
-    return (
-      <div className="px-20 pb-12 text-xs text-red-500">
-        <div>Agent unavailable. Try again later.</div>
-        {paid && (
-          <div className="mt-4 text-text-2">
-            Your payment is held. Once the agent is back online, the job will be retried
-            automatically and the result delivered.
-          </div>
-        )}
-      </div>
-    );
-  }
-  return <div className="px-20 pb-12 text-xs text-red-500">{error}</div>;
 }
 
 export function JobInput({

@@ -1,5 +1,6 @@
 accum
 acks
+affordances
 agentskills
 antipattern
 autolinks
@@ -107,6 +108,7 @@ smol
 solana
 solflare
 solscan
+spoofable
 ssrf
 stablecoins
 statelessly
@@ -133,6 +135,8 @@ twoslash
 umami
 uncompacted
 undecryptable
+undercount
+undercounts
 unparseable
 unreads
 untargeted

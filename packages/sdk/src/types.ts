@@ -36,6 +36,14 @@ export interface CapabilityCard {
    * Untrusted - gate on it, never render the raw value.
    */
   inputText?: 'required' | 'optional' | 'none';
+  /**
+   * The capability keeps conversation context across jobs (from a skill's
+   * `context: true` frontmatter): reusing a `sessionId` on submits makes the
+   * provider answer with the session's prior exchanges as context. Absent =
+   * stateless; a session id sent anyway is processed statelessly without
+   * error. Discovery hint - clients gate chat affordances on it.
+   */
+  context?: boolean;
 }
 
 /** Payment info embedded in capability card (legacy format for on-network events). */

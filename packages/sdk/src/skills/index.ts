@@ -38,7 +38,7 @@ export { DynamicScriptSkill } from './dynamicScriptSkill';
 export type { DynamicScriptSkillParams } from './dynamicScriptSkill';
 export { X402ProxySkill } from './x402ProxySkill';
 export type { X402ProxySkillParams } from './x402ProxySkill';
-export { resolveInsidePath } from './path-safety';
+export { resolveInsidePath, resolveInsidePathReal } from './path-safety';
 export {
   DEFAULT_MAX_TOOL_ROUNDS,
   DEFAULT_X402_MAX_INPUT_BYTES,

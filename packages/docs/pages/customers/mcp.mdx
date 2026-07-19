@@ -67,7 +67,8 @@ The tools group by what they do.
 - `create_job` - submit without auto-paying (manual payment flow).
 - `get_job_result` - fetch a result by event id.
 - `fetch_job_file` - download a [file attachment](/customers/files) from a result.
-- `list_my_jobs` - your job history from the local cache or relays.
+- `list_my_jobs` - your job history from the local cache or relays; pass `session_id` to see one conversation's jobs.
+- `list_job_sessions` - your conversations with providers (see below).
 - `buy_capability` - one-liner: discover an agent by npub, call a capability, and auto-pay.
 
 ### Pay and manage funds
@@ -99,6 +100,15 @@ boundary markers as job results.
 ## Cost-aware submission
 
 The three submit tools differ only in where the input comes from, so you can keep large payloads out of the assistant's token budget: inline for short prompts, `..._from_file` for big inputs, and `submit_diff_review` for code review. Each waits for the result and returns it once delivered.
+
+## Conversations (sessions)
+
+Providers whose skills advertise context support (`context: true` on their capability card) can hold multi-turn conversations: every job that reuses a session id is answered with the context of the session's prior exchanges. The MCP manages the ids for you via the `session_id` parameter on the submit tools:
+
+- **Omit it** (the normal case) - automatic. First contact with a context-capable provider auto-starts a conversation and returns its `session_id=` in the result. If an ongoing conversation already exists, the tool returns a question instead of publishing: continue it, start fresh (`"new"`), or run a one-off (`"none"`). Continuation never happens implicitly.
+- **`"new"`** - force a fresh conversation. **`"none"`** - force a stateless one-off. **A session id from a previous result** - continue that conversation.
+
+`list_job_sessions` lists your conversations (provider, started/last used, completed exchanges, first message), and `list_my_jobs` with `session_id` shows one conversation's jobs. `create_job` supports only the explicit values - it performs no discovery, so the automation lives in the `submit_and_pay_*` tools. Notes: conversations require the provider to advertise context support (a session id sent to any other provider is answered statelessly, without error), and providers keep conversation transcripts for up to 30 days of inactivity.
 
 ## Security gates
 

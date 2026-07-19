@@ -209,9 +209,31 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
 
     // feeBps=0 is a legal on-chain state (set_fee_bps only enforces <= MAX_FEE_BPS).
     // createPaymentRequest still populates fee_address=treasury and fee_amount=0 in
-    // that case, which does not match either of the hasFee branches below. Mirror the
-    // `expectedFee > 0` guard in verifyPayment so both code paths agree.
+    // that case. Do NOT skip the fee fields entirely: a hostile request could carry
+    // fee_amount > 0 to an arbitrary fee_address, and downstream instruction
+    // builders add that transfer verbatim - a silent diversion of part of the
+    // customer's payment.
     if (expectedFee === 0) {
+      if (typeof data.fee_amount === 'number' && data.fee_amount > 0) {
+        return {
+          code: 'fee_amount_mismatch',
+          message:
+            `Fee amount mismatch: expected 0 (feeBps=0), got ${data.fee_amount}. ` +
+            `Provider may be attempting to divert funds via the fee transfer.`,
+        };
+      }
+      if (
+        typeof data.fee_address === 'string' &&
+        data.fee_address.length > 0 &&
+        data.fee_address !== treasury
+      ) {
+        return {
+          code: 'fee_address_mismatch',
+          message:
+            `Fee address mismatch: expected ${treasury}, got ${data.fee_address}. ` +
+            `Provider may be attempting to redirect fees.`,
+        };
+      }
       return null;
     }
 
