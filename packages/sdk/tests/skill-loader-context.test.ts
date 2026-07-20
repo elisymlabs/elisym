@@ -43,19 +43,34 @@ prompt`);
     expect(parsed.context).toBe(false);
   });
 
-  it('rejects context on a script-mode skill at parse time', () => {
-    expect(() =>
-      parseAndValidate(`---
-name: scripted
-description: scripted
+  it('parses context: true on a dynamic-script skill', () => {
+    const parsed = parseAndValidate(`---
+name: scripted-chat
+description: scripted chat
 capabilities: [tooling]
 price: 0.001
 mode: dynamic-script
 script: run.sh
 context: true
 ---
+prompt`);
+    expect(parsed.context).toBe(true);
+    expect(parsed.mode).toBe('dynamic-script');
+  });
+
+  it('rejects context on a static-script skill at parse time', () => {
+    expect(() =>
+      parseAndValidate(`---
+name: scripted
+description: scripted
+capabilities: [tooling]
+price: 0.001
+mode: static-script
+script: run.sh
+context: true
+---
 prompt`),
-    ).toThrow(/"context" is only valid in mode 'llm'/);
+    ).toThrow(/"context" is only valid in modes 'llm' and 'dynamic-script'/);
   });
 
   it('rejects context on an x402-mode skill at parse time', () => {
@@ -72,7 +87,7 @@ x402_max_upstream: 10000
 context: true
 ---
 prompt`),
-    ).toThrow(/"context" is only valid in mode 'llm'/);
+    ).toThrow(/"context" is only valid in modes 'llm' and 'dynamic-script'/);
   });
 
   it('rejects a non-boolean context value', () => {

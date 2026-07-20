@@ -763,6 +763,52 @@ script: ./upper.sh
     expect(out.data).toBe('HELLO THERE');
   });
 
+  it('dynamic-script: hands the session id and history to the script via env', async () => {
+    const dir = writeSkill(
+      'ctx',
+      `---
+name: ctx-skill
+description: Contextual script
+capabilities: [chat]
+price: 0.001
+mode: dynamic-script
+script: ./ctx.sh
+context: true
+---
+
+`,
+    );
+    const scriptPath = join(dir, 'ctx.sh');
+    writeFileSync(
+      scriptPath,
+      '#!/bin/sh\nif [ -n "$ELISYM_HISTORY_FILE" ]; then cat "$ELISYM_HISTORY_FILE"; fi\nprintf \':%s\' "$ELISYM_SESSION_ID"\n',
+      'utf-8',
+    );
+    chmodSync(scriptPath, 0o755);
+
+    const skills = loadSkillsFromDir(tmpDir);
+    expect(skills).toHaveLength(1);
+    expect(skills[0]!.context).toBe(true);
+
+    const history = [
+      { role: 'user' as const, content: 'first' },
+      { role: 'assistant' as const, content: 'reply' },
+    ];
+    const sessionId = '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c';
+    const withSession = await skills[0]!.execute(
+      { data: 'second', inputType: 'text', tags: ['chat'], jobId: 'j-ctx-1', history, sessionId },
+      { agentName: 't', agentDescription: '' },
+    );
+    expect(withSession.data).toBe(`${JSON.stringify(history)}:${sessionId}`);
+
+    // Stateless job: neither var is set - the script sees an empty id.
+    const stateless = await skills[0]!.execute(
+      { data: 'solo', inputType: 'text', tags: ['chat'], jobId: 'j-ctx-2' },
+      { agentName: 't', agentDescription: '' },
+    );
+    expect(stateless.data).toBe(':');
+  });
+
   it('dynamic-script: passes script_args after the script', async () => {
     const dir = writeSkill(
       'echo-args',

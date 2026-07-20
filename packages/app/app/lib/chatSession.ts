@@ -127,6 +127,11 @@ export interface ChatSessionStore {
     candidate: SessionCandidate,
     hasPendingOrInFlight: boolean,
   ): Promise<boolean>;
+  selectSession(
+    identityPubkey: string,
+    agentPubkey: string,
+    candidate: SessionCandidate,
+  ): Promise<boolean>;
   purgeChatSessions(identityPubkey: string): Promise<void>;
   readChatSession(identityPubkey: string, agentPubkey: string): ChatSessionEntry | undefined;
   subscribe(listener: () => void): () => void;
@@ -527,6 +532,44 @@ export function createChatSessionStore(
     });
   }
 
+  function selectSession(
+    identityPubkey: string,
+    agentPubkey: string,
+    candidate: SessionCandidate,
+  ): Promise<boolean> {
+    return mutateSession<boolean>(chatSessionKey(identityPubkey, agentPubkey), (current) => {
+      const now = Date.now();
+      const freshInFlight = (current?.inFlight ?? []).filter(
+        (element) => now - element.since < IN_FLIGHT_STALE_MS,
+      );
+      const pruned = current !== undefined && freshInFlight.length !== current.inFlight.length;
+      const base: ChatSessionEntry | undefined =
+        current !== undefined && pruned ? { ...current, inFlight: freshInFlight } : current;
+      if (freshInFlight.length > 0) {
+        // A send is resolving against the current id - switching now would
+        // strand that send's entry under an unselected conversation.
+        return { entry: base, changed: pruned, result: false };
+      }
+      if (current !== undefined && current.sessionId === candidate.sessionId) {
+        return { entry: base, changed: pruned, result: true };
+      }
+      // Explicit user selection from the chat list: unlike `switchToSession`
+      // (a passive cross-device note), it applies regardless of age or
+      // newer-than ordering, and may create an absent entry - the click IS
+      // the adoption entry point. `lastUsedAt` takes the conversation's last
+      // known activity so the stale hint stays truthful for an old chat.
+      const entry: ChatSessionEntry = {
+        sessionId: candidate.sessionId,
+        startedAt: candidate.ts,
+        lastUsedAt: candidate.ts,
+        completedCount: 0,
+        origin: 'adopted',
+        inFlight: [],
+      };
+      return { entry, changed: true, result: true };
+    });
+  }
+
   async function purgeChatSessions(identityPubkey: string): Promise<void> {
     const prefix = `${CHAT_SESSION_KEY_PREFIX}${identityPubkey}:`;
     const keys = storage.listKeys().filter((key) => key.startsWith(prefix));
@@ -558,6 +601,7 @@ export function createChatSessionStore(
     recordCompletion,
     divergenceCandidate,
     switchToSession,
+    selectSession,
     purgeChatSessions,
     readChatSession,
     subscribe,
@@ -574,6 +618,7 @@ export const repairMintedSession = defaultStore.repairMintedSession;
 export const recordCompletion = defaultStore.recordCompletion;
 export const divergenceCandidate = defaultStore.divergenceCandidate;
 export const switchToSession = defaultStore.switchToSession;
+export const selectSession = defaultStore.selectSession;
 export const purgeChatSessions = defaultStore.purgeChatSessions;
 export const readChatSession = defaultStore.readChatSession;
 /** Subscription surface for useSyncExternalStore (per-tab snapshot only). */

@@ -92,6 +92,26 @@ const TABS = [
     ),
   },
   {
+    id: 'about' as const,
+    label: 'About',
+    icon: (
+      <svg
+        aria-hidden
+        className="size-14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="16" x2="12" y2="12" />
+        <line x1="12" y1="8" x2="12.01" y2="8" />
+      </svg>
+    ),
+  },
+  {
     id: 'policies' as const,
     label: 'Policies',
     icon: (
@@ -641,116 +661,107 @@ export default function AgentPage() {
           </div>
         </div>
 
-        {/* 2-column layout */}
-        <div className="agent-page-grid items-start">
-          {/* Left column */}
-          <div className="order-2 flex min-w-0 flex-col gap-16 lg:order-1">
-            {/* Tabs + content */}
-            <div
-              ref={tabsContainerRef}
-              className={cn(
-                appearCls,
-                'scroll-mt-16 rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
-              )}
-            >
-              <TabsBar activeTab={activeTab} onSelect={setActiveTab} chatDot={chatDot} />
-
-              {activeTab === 'products' && (
-                <ProductsTab
-                  cards={cards}
-                  selectedCardIndex={selectedCardIndex}
-                  onSelect={setSelectedCardIndex}
-                />
-              )}
-
-              {activeTab === 'chat' && (
-                <ChatTab
-                  agentPubkey={pubkey}
-                  agentName={agentData.name}
-                  agentPicture={agentData.picture}
-                  pingStatus={pingStatus}
-                  cards={cards}
-                  selectedIndex={currentCardIndex}
-                  onSelectIndex={setSelectedCardIndex}
-                  buyState={buyState}
-                  entries={identityEntries}
-                  loading={!threadLoaded || (identityEntries.length === 0 && hydrating)}
-                />
-              )}
-
-              {activeTab === 'activity' && (
-                <AgentActivity agentPubkey={pubkey} productCount={cards.length} />
-              )}
-
-              {activeTab === 'policies' && <PoliciesPanel pubkey={pubkey} />}
-            </div>
-
-            {cards.length > 0 && activeTab === 'products' && (
-              <>
-                <div
-                  className={cn(
-                    appearCls,
-                    'relative sticky bottom-[var(--devnet-banner-h,0px)] z-40 -mx-12 [animation-delay:160ms] lg:static lg:bottom-auto lg:mx-0',
-                  )}
-                >
-                  <div
-                    aria-hidden
-                    className="pointer-events-none absolute -top-20 right-0 left-0 h-20 bg-gradient-to-t from-bg-page to-transparent lg:hidden"
-                  />
-                  <div className="bg-bg-page px-12 pb-[max(env(safe-area-inset-bottom),10px)] lg:bg-transparent lg:p-0">
-                    <JobInput
-                      agentPubkey={pubkey}
-                      agentName={agentData.name}
-                      pingStatus={pingStatus}
-                      cards={cards}
-                      selectedIndex={currentCardIndex}
-                      onSelectIndex={setSelectedCardIndex}
-                      buyState={buyState}
-                    />
-                  </div>
-                </div>
-                <p className="-mt-8 px-16 text-center text-[11px] text-text-2/50">
-                  Agents on Elisym can make mistakes. Always verify important information.
-                </p>
-              </>
+        {/* Single-column layout: About lives on its own tab, so every tab -
+            the chat especially - gets the full page width. */}
+        <div className="flex min-w-0 flex-col gap-16">
+          {/* Tabs + content */}
+          <div
+            ref={tabsContainerRef}
+            className={cn(
+              appearCls,
+              'scroll-mt-16 rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
             )}
+          >
+            <TabsBar activeTab={activeTab} onSelect={setActiveTab} chatDot={chatDot} />
+
+            {activeTab === 'products' && (
+              <ProductsTab
+                cards={cards}
+                selectedCardIndex={selectedCardIndex}
+                onSelect={setSelectedCardIndex}
+              />
+            )}
+
+            {activeTab === 'chat' && (
+              <ChatTab
+                agentPubkey={pubkey}
+                agentName={agentData.name}
+                agentPicture={agentData.picture}
+                pingStatus={pingStatus}
+                cards={cards}
+                selectedIndex={currentCardIndex}
+                onSelectIndex={setSelectedCardIndex}
+                buyState={buyState}
+                entries={identityEntries}
+                loading={!threadLoaded || (identityEntries.length === 0 && hydrating)}
+              />
+            )}
+
+            {activeTab === 'activity' && (
+              <AgentActivity agentPubkey={pubkey} productCount={cards.length} />
+            )}
+
+            {activeTab === 'about' && (
+              <AboutTab description={agentData.description} tags={agentData.tags} />
+            )}
+
+            {activeTab === 'policies' && <PoliciesPanel pubkey={pubkey} />}
           </div>
 
-          {/* Right column */}
-          <div className="order-1 flex min-w-0 flex-col gap-16 lg:sticky lg:top-16 lg:order-2">
-            {(agentData.description || agentData.tags.length > 0) && (
+          {cards.length > 0 && activeTab === 'products' && (
+            <>
               <div
                 className={cn(
                   appearCls,
-                  'rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:120ms] sm:p-20',
+                  'relative sticky bottom-[var(--devnet-banner-h,0px)] z-40 -mx-12 [animation-delay:160ms] lg:static lg:bottom-auto lg:mx-0',
                 )}
               >
-                <h2 className="mb-12 text-base font-semibold sm:mb-16">About</h2>
-                {agentData.description && (
-                  <p className="m-0 text-sm leading-relaxed text-text-2">{agentData.description}</p>
-                )}
-                {agentData.tags.length > 0 && (
-                  <div
-                    className={cn(
-                      'flex flex-wrap items-center gap-6',
-                      agentData.description && 'mt-16',
-                    )}
-                  >
-                    {agentData.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="inline-flex h-24 items-center rounded-full bg-tag-bg px-10 font-mono text-[11px] leading-none font-medium tracking-wide text-text-2 uppercase"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute -top-20 right-0 left-0 h-20 bg-gradient-to-t from-bg-page to-transparent lg:hidden"
+                />
+                <div className="bg-bg-page px-12 pb-[max(env(safe-area-inset-bottom),10px)] lg:bg-transparent lg:p-0">
+                  <JobInput
+                    agentPubkey={pubkey}
+                    agentName={agentData.name}
+                    pingStatus={pingStatus}
+                    cards={cards}
+                    selectedIndex={currentCardIndex}
+                    onSelectIndex={setSelectedCardIndex}
+                    buyState={buyState}
+                  />
+                </div>
               </div>
-            )}
-          </div>
+              <p className="-mt-8 px-16 text-center text-[11px] text-text-2/50">
+                Agents on Elisym can make mistakes. Always verify important information.
+              </p>
+            </>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function AboutTab({ description, tags }: { description: string; tags: string[] }) {
+  if (!description && tags.length === 0) {
+    return <p className="py-24 text-center text-sm text-text-2">No description yet.</p>;
+  }
+  return (
+    <div className="max-w-[720px]">
+      {description && <p className="m-0 text-sm leading-relaxed text-text-2">{description}</p>}
+      {tags.length > 0 && (
+        <div className={cn('flex flex-wrap items-center gap-6', description && 'mt-16')}>
+          {tags.map((tag) => (
+            <span
+              key={tag}
+              className="inline-flex h-24 items-center rounded-full bg-tag-bg px-10 font-mono text-[11px] leading-none font-medium tracking-wide text-text-2 uppercase"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

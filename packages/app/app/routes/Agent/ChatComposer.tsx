@@ -15,7 +15,6 @@ import {
   chatSessionsVersion,
   divergenceCandidate,
   readChatSession,
-  rotateSession,
   SESSION_LIVENESS_MS,
   subscribeChatSessions,
   switchToSession,
@@ -151,8 +150,6 @@ export function ChatComposer({
     card.context === true &&
     currentSession !== undefined &&
     Date.now() - currentSession.lastUsedAt > SESSION_LIVENESS_MS;
-  const showNewConversation =
-    card.context === true && (currentSession !== undefined || sessionCandidates.length > 0);
 
   async function handleJoinNewer() {
     if (divergence === undefined) {
@@ -170,10 +167,6 @@ export function ChatComposer({
       // The switch aborted - drop the note.
       setDismissedNoteSession(divergence.sessionId);
     }
-  }
-
-  async function handleNewConversation() {
-    await rotateSession(identityPubkey, agentPubkey);
   }
 
   async function handleSend() {
@@ -261,19 +254,9 @@ export function ChatComposer({
               Remembers the conversation
             </>
           ) : (
-            'Each message is independent'
+            'Each message is independent - it will open as its own chat'
           )}
         </span>
-        {showNewConversation && (
-          <button
-            type="button"
-            onClick={() => void handleNewConversation()}
-            disabled={buying}
-            className="shrink-0 cursor-pointer rounded-full border border-black/10 bg-surface px-10 py-4 text-[11px] font-medium text-text-2 transition-colors hover:bg-black/4 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            New conversation
-          </button>
-        )}
       </div>
 
       <div className="rounded-3xl border border-black/7 bg-surface shadow-[0_1px_8px_rgba(0,0,0,0.05)]">

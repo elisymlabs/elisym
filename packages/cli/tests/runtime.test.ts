@@ -2999,6 +2999,50 @@ describe('conversation sessions (live path)', () => {
     expect(ledger.getStatus('sess-job-2')).toBe('delivered');
   });
 
+  it('runs the session path for a context dynamic-script skill (history + session id)', async () => {
+    const skill = makeContextSkill({ mode: 'dynamic-script', name: 'chat-script' });
+    const { runtime, triggerJob } = await makeSessionRuntime(skill);
+
+    const runPromise = runtime.run();
+    await tick();
+    triggerJob(makeSessionJob('ds-1', 'first question'));
+    await tick(150);
+    triggerJob(makeSessionJob('ds-2', 'second question'));
+    await tick(150);
+    runtime.stop();
+    await runPromise.catch(() => {});
+
+    const calls = (skill.execute as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]![0].sessionId).toBe(SID);
+    expect(calls[0]![0].history).toBeUndefined();
+    expect(calls[1]![0].sessionId).toBe(SID);
+    expect(calls[1]![0].history).toEqual([
+      { role: 'user', content: 'first question' },
+      { role: 'assistant', content: 'answer to first question' },
+    ]);
+    expect(ledger.getStatus('ds-2')).toBe('delivered');
+  });
+
+  it('keeps a static-script skill stateless even if context is set on the object', async () => {
+    const skill = makeContextSkill({ mode: 'static-script', name: 'static-ctx' });
+    const { runtime, triggerJob } = await makeSessionRuntime(skill);
+
+    const runPromise = runtime.run();
+    await tick();
+    triggerJob(makeSessionJob('st-1', 'q1'));
+    await tick(150);
+    triggerJob(makeSessionJob('st-2', 'q2'));
+    await tick(150);
+    runtime.stop();
+    await runPromise.catch(() => {});
+
+    const calls = (skill.execute as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[1]![0].history).toBeUndefined();
+    expect(calls[1]![0].sessionId).toBeUndefined();
+  });
+
   it('processes a session job on a context-off skill statelessly (no transcript)', async () => {
     const skill = makeContextSkill({ context: false, name: 'no-context' });
     const { runtime, triggerJob } = await makeSessionRuntime(skill);

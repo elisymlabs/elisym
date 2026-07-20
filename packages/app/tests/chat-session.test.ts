@@ -498,6 +498,76 @@ describe('switchToSession', () => {
   });
 });
 
+describe('selectSession', () => {
+  const FOREIGN_ID = 'eeeeeeee-0000-4000-8000-00000000000e';
+
+  it('adopts the clicked conversation regardless of age or ordering', async () => {
+    const { store, storage } = createStore();
+    seedEntry(storage, IDENTITY, AGENT, sessionEntry({ startedAt: Date.now() - DAY_MS }));
+    // Older than the current session AND outside the liveness window - an
+    // explicit click still wins (the stale hint covers the UX).
+    const target = candidate(FOREIGN_ID, Date.now() - 26 * DAY_MS);
+    expect(await store.selectSession(IDENTITY, AGENT, target)).toBe(true);
+    const entry = store.readChatSession(IDENTITY, AGENT);
+    expect(entry?.sessionId).toBe(FOREIGN_ID);
+    expect(entry?.origin).toBe('adopted');
+    expect(entry?.startedAt).toBe(target.ts);
+    // lastUsedAt takes the conversation's last known activity, keeping the
+    // stale hint truthful for a re-opened old chat.
+    expect(entry?.lastUsedAt).toBe(target.ts);
+    expect(entry?.completedCount).toBe(0);
+  });
+
+  it('creates an absent entry - the click IS the adoption entry point', async () => {
+    const { store, storage } = createStore();
+    const target = candidate(FOREIGN_ID, Date.now() - DAY_MS);
+    expect(await store.selectSession(IDENTITY, AGENT, target)).toBe(true);
+    expect(storage.map.has(chatSessionKey(IDENTITY, AGENT))).toBe(true);
+  });
+
+  it('is a no-op when the candidate equals the current session', async () => {
+    const { store, storage } = createStore();
+    const current = sessionEntry({ completedCount: 3, origin: 'rotated' });
+    seedEntry(storage, IDENTITY, AGENT, current);
+    expect(
+      await store.selectSession(IDENTITY, AGENT, candidate(current.sessionId, Date.now())),
+    ).toBe(true);
+    // The entry is untouched - count and origin survive re-selection.
+    expect(store.readChatSession(IDENTITY, AGENT)?.completedCount).toBe(3);
+    expect(store.readChatSession(IDENTITY, AGENT)?.origin).toBe('rotated');
+  });
+
+  it('refuses while a fresh inFlight element exists (send resolving)', async () => {
+    const { store, storage } = createStore();
+    seedEntry(
+      storage,
+      IDENTITY,
+      AGENT,
+      sessionEntry({ inFlight: [{ since: Date.now(), token: 'sibling-send' }] }),
+    );
+    const target = candidate(FOREIGN_ID, Date.now() - DAY_MS);
+    expect(await store.selectSession(IDENTITY, AGENT, target)).toBe(false);
+    expect(store.readChatSession(IDENTITY, AGENT)?.sessionId).toBe(
+      'aaaaaaaa-0000-4000-8000-000000000001',
+    );
+  });
+
+  it('prunes a stale inFlight element and proceeds', async () => {
+    const { store, storage } = createStore();
+    seedEntry(
+      storage,
+      IDENTITY,
+      AGENT,
+      sessionEntry({
+        inFlight: [{ since: Date.now() - IN_FLIGHT_STALE_MS - 1000, token: 'crashed-tab' }],
+      }),
+    );
+    const target = candidate(FOREIGN_ID, Date.now() - DAY_MS);
+    expect(await store.selectSession(IDENTITY, AGENT, target)).toBe(true);
+    expect(store.readChatSession(IDENTITY, AGENT)?.inFlight).toEqual([]);
+  });
+});
+
 describe('purgeChatSessions', () => {
   it('deletes only the purged identity keys, lock-held', async () => {
     const { store, storage, locks } = createStore();

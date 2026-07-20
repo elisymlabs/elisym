@@ -461,8 +461,9 @@ export class AgentRuntime {
   /**
    * Whether a job takes the session path: session ref present (transport only
    * populates it for NIP-44-encrypted requests) AND the matched skill opted in
-   * (`context: true`, llm mode) AND a session store is wired. Everything else
-   * processes stateless - deterministically, never implicitly per-pubkey.
+   * (`context: true` - llm or dynamic-script mode) AND a session store is
+   * wired. Everything else processes stateless - deterministically, never
+   * implicitly per-pubkey.
    */
   private resolveJobSession(
     job: Pick<IncomingJob, 'session' | 'customerId'>,
@@ -473,7 +474,7 @@ export class AgentRuntime {
       this.sessionStore === undefined ||
       skill === null ||
       skill === undefined ||
-      skill.mode !== 'llm' ||
+      (skill.mode !== 'llm' && skill.mode !== 'dynamic-script') ||
       skill.context !== true
     ) {
       return null;
@@ -1287,6 +1288,9 @@ export class AgentRuntime {
     // can tell a budget abort apart from a real skill failure - the latter
     // would otherwise flip the health pair via `markHealthFromExecuteError`.
     const budgetMs = this.resolveExecutionBudgetMs(skill);
+    // Resolved BEFORE the execute closure so the closure can stamp the session
+    // id into SkillInput (dynamic scripts receive it as ELISYM_SESSION_ID).
+    const jobSession = this.resolveJobSession(job, skill);
     const runExecution = async (history?: ChatTurn[]): Promise<SkillOutput> => {
       let budgetExceeded = false;
       const execAbort = new AbortController();
@@ -1308,6 +1312,7 @@ export class AgentRuntime {
             jobId: job.jobId,
             filePath: inputFile?.filePath,
             history,
+            ...(jobSession !== null ? { sessionId: jobSession.sessionId } : {}),
           },
           { ...this.skillCtx, signal: execAbort.signal },
         );
@@ -1366,7 +1371,6 @@ export class AgentRuntime {
 
     // Session path: history load -> execute -> append run under the session
     // mutex; stateless jobs call the closure directly.
-    const jobSession = this.resolveJobSession(job, skill);
     const output =
       jobSession === null
         ? await runExecution()
@@ -2079,9 +2083,9 @@ export class AgentRuntime {
    * only: `executed` entries do no session work and the status-predicate
    * release would drop them at the first re-check anyway. Applies the same
    * session-path scope as live intake (encrypted-only decode + routed skill
-   * with `context: true`, llm mode) - a context-off or x402 entry parked for
-   * hours must not pin session slots for a job that never touches the
-   * transcript.
+   * with `context: true`, llm or dynamic-script mode) - a context-off or x402
+   * entry parked for hours must not pin session slots for a job that never
+   * touches the transcript.
    */
   private collectRecoverySessionRefs(
     pending: ReturnType<JobLedger['pendingJobs']>,
@@ -2092,7 +2096,11 @@ export class AgentRuntime {
         continue;
       }
       const skill = this.skills.route(entry.tags);
-      if (!skill || skill.mode !== 'llm' || skill.context !== true) {
+      if (
+        !skill ||
+        (skill.mode !== 'llm' && skill.mode !== 'dynamic-script') ||
+        skill.context !== true
+      ) {
         continue;
       }
       try {
@@ -2414,6 +2422,12 @@ export class AgentRuntime {
         // recoverPendingJobs logs; the entry stays paid/executed and retries on
         // the next sweep (each attempt now bounded by the budget).
         const recoveryBudgetMs = this.resolveExecutionBudgetMs(skill);
+        // Resolved BEFORE the execute closure (mirrors the primary path) so
+        // the closure can stamp the session id into SkillInput.
+        const recoveryJobSession = this.resolveJobSession(
+          { session: recoverySession, customerId: entry.customer_id },
+          skill,
+        );
         const runRecoveryExecution = async (history?: ChatTurn[]): Promise<SkillOutput> => {
           let budgetTimer: ReturnType<typeof setTimeout> | undefined;
           try {
@@ -2425,6 +2439,7 @@ export class AgentRuntime {
                 jobId: entry.job_id,
                 filePath: recoveryInputFile?.filePath,
                 history,
+                ...(recoveryJobSession !== null ? { sessionId: recoveryJobSession.sessionId } : {}),
               },
               { ...this.skillCtx, signal: recoveryAbort.signal },
             );
@@ -2468,10 +2483,6 @@ export class AgentRuntime {
         // already holds this exchange; replaying it would ask the LLM the same
         // question with its own undelivered answer in the prompt, and the
         // `(jobId, role)`-deduped append skips the already-present lines.
-        const recoveryJobSession = this.resolveJobSession(
-          { session: recoverySession, customerId: entry.customer_id },
-          skill,
-        );
         const output =
           recoveryJobSession === null
             ? await runRecoveryExecution()

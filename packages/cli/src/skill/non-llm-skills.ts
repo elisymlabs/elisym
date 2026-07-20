@@ -92,6 +92,8 @@ export interface CliScriptSkillParams extends BaseParams {
   inputMime?: string;
   /** Whether the file skill also accepts a text prompt (dynamic-script only). */
   inputText?: 'required' | 'optional' | 'none';
+  /** Conversation-context participation (dynamic-script only). */
+  context?: boolean;
 }
 
 export class StaticScriptSkill implements Skill {
@@ -154,6 +156,7 @@ export class DynamicScriptSkill implements Skill {
   inputMime?: string;
   inputText?: 'required' | 'optional' | 'none';
   outputMime?: string;
+  readonly context?: boolean;
   private inner: SdkDynamicScriptSkill;
 
   constructor(params: CliScriptSkillParams) {
@@ -166,6 +169,7 @@ export class DynamicScriptSkill implements Skill {
     this.imageFile = params.imageFile;
     this.dir = params.dir;
     this.llmOverride = params.llmOverride;
+    this.context = params.context;
     this.inputMime = params.inputMime;
     this.inputText = params.inputText;
     this.outputMime = params.outputMime;
@@ -182,6 +186,7 @@ export class DynamicScriptSkill implements Skill {
       image: params.image,
       imageFile: params.imageFile,
       outputMime: params.outputMime,
+      context: params.context,
     });
   }
 

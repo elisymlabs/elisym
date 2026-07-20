@@ -1044,7 +1044,9 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         await cacheSet(`rated:${jobId}`, true);
         track('rate-result', { rating: positive ? 'good' : 'bad' });
       } catch {
-        // silent fail
+        // The rating never reached the network - roll back the optimistic
+        // `rated` stamp so the affordance comes back and a retry stays possible.
+        setSession((prev) => (prev && prev.jobId === jobId ? { ...prev, rated: false } : prev));
       }
     },
     [session, client, idCtx.identity],

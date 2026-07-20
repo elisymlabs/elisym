@@ -7,7 +7,19 @@ import { ChatRetryButton } from './ChatRetryButton';
 import type { ChatSend } from './useChatSend';
 
 interface Props {
+  /** The selected chat's entries only (what this thread renders). */
   entries: ChatThreadEntry[];
+  /**
+   * The full identity-scoped thread - retry sends resolve their session
+   * adoption candidates over ALL entries, not the selected chat's slice.
+   */
+  allEntries: ChatThreadEntry[];
+  /**
+   * Whether the sidebar already lists chats - an empty panel then means "a
+   * draft new chat", not "no history at all", and the copy must not claim
+   * there are no messages with this agent.
+   */
+  hasChats: boolean;
   agentPubkey: string;
   loading: boolean;
   cards: CapabilityCard[];
@@ -94,6 +106,8 @@ function ChatThreadSkeleton() {
 
 export function ChatThread({
   entries,
+  allEntries,
+  hasChats,
   agentPubkey,
   loading,
   cards,
@@ -127,9 +141,11 @@ export function ChatThread({
   if (entries.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center px-16 py-56">
-        <p className="m-0 text-sm text-text-2">No messages yet</p>
+        <p className="m-0 text-sm text-text-2">{hasChats ? 'New chat' : 'No messages yet'}</p>
         <p className="m-0 mt-4 text-center text-sm text-text-2/60">
-          Your jobs with this agent will appear here as a conversation
+          {hasChats
+            ? 'Write your message below to start it'
+            : 'Your chats with this agent will appear in the chat list'}
         </p>
       </div>
     );
@@ -138,7 +154,7 @@ export function ChatThread({
   const items = buildThreadItems(entries);
 
   return (
-    <div ref={scrollRef} className="flex max-h-[60vh] flex-col gap-8 overflow-y-auto p-2 sm:p-6">
+    <div ref={scrollRef} className="flex max-h-[65vh] flex-col gap-8 overflow-y-auto p-2 sm:p-6">
       {items.map(({ entry, dayLabel, sessionDivider }) => (
         <div key={entry.jobEventId} className="flex flex-col gap-8">
           {dayLabel && (
@@ -173,7 +189,7 @@ export function ChatThread({
                   agentPubkey={agentPubkey}
                   pingStatus={pingStatus}
                   buying={buying}
-                  entries={entries}
+                  entries={allEntries}
                   onSelectCardIndex={onSelectCardIndex}
                   send={send}
                 />

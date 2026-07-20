@@ -495,9 +495,12 @@ function validateLlmOverride(
 
 /**
  * Parse the optional `context` frontmatter flag (conversation-context
- * participation). Only `mode: 'llm'` may declare it - other modes never read
- * or write session history, so a declared flag would silently do nothing;
- * rejecting it at parse time mirrors the `max_tokens` rule above.
+ * participation). Valid on the modes that consume customer input per message:
+ * `llm` (history goes into the LLM messages) and `dynamic-script` (history is
+ * handed to the script via `ELISYM_HISTORY_FILE`). Static modes ignore input
+ * entirely and `x402` state belongs to the upstream, so a declared flag would
+ * silently do nothing there; rejecting it at parse time mirrors the
+ * `max_tokens` rule above.
  */
 function validateContext(skillName: string, value: unknown, mode: SkillMode): boolean {
   if (value === undefined || value === null) {
@@ -506,9 +509,9 @@ function validateContext(skillName: string, value: unknown, mode: SkillMode): bo
   if (typeof value !== 'boolean') {
     throw new Error(`SKILL.md "${skillName}": "context" must be a boolean`);
   }
-  if (mode !== 'llm') {
+  if (mode !== 'llm' && mode !== 'dynamic-script') {
     throw new Error(
-      `SKILL.md "${skillName}": "context" is only valid in mode 'llm' (got '${mode}')`,
+      `SKILL.md "${skillName}": "context" is only valid in modes 'llm' and 'dynamic-script' (got '${mode}')`,
     );
   }
   return value;
@@ -1118,10 +1121,15 @@ function buildSkillFromParsed(
         imageFile,
         llmOverride: parsed.llmOverride,
       };
-      // Only dynamic-script supports a file result, so `outputMime` is threaded
-      // only there (StaticScriptSkill has no such param).
+      // Only dynamic-script supports a file result and conversation context,
+      // so `outputMime`/`context` are threaded only there (StaticScriptSkill
+      // has no such params).
       return parsed.mode === 'dynamic-script'
-        ? new DynamicScriptSkill({ ...scriptParams, outputMime: parsed.outputMime })
+        ? new DynamicScriptSkill({
+            ...scriptParams,
+            outputMime: parsed.outputMime,
+            context: parsed.context,
+          })
         : new StaticScriptSkill(scriptParams);
     }
     case 'x402': {

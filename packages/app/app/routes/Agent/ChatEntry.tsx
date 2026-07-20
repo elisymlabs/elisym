@@ -158,15 +158,7 @@ export function ChatEntry({
   return (
     <div className="flex flex-col gap-4">
       {(entry.prompt || promptFileChip) && (
-        <ChatBubble
-          side="user"
-          onClick={completed ? onOpen : undefined}
-          footer={
-            entry.sessionId === null ? (
-              <span className="text-[10px] text-text-2/60">not in context</span>
-            ) : undefined
-          }
-        >
+        <ChatBubble side="user" onClick={completed ? onOpen : undefined}>
           {entry.prompt && (
             <p className="m-0 line-clamp-4 break-words whitespace-pre-wrap">{entry.prompt}</p>
           )}

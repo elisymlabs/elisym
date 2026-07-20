@@ -30,9 +30,17 @@ export interface SkillInput {
   /**
    * Prior conversation turns of the job's session, oldest first. Present only
    * when the job carries a session id AND the invoked skill declares
-   * `context: true` (llm mode). The LLM sees `[...history, current input]`.
+   * `context: true`. An llm skill sees `[...history, current input]`; a
+   * dynamic-script skill receives the turns via `ELISYM_HISTORY_FILE`.
    */
   history?: ChatTurn[];
+  /**
+   * The job's session id (UUID v4), when the invoked skill takes the session
+   * path (`context: true`). Lets a script key its own upstream conversation
+   * state (`ELISYM_SESSION_ID`); llm skills ignore it - the runtime owns
+   * their transcript.
+   */
+  sessionId?: string;
 }
 
 export interface SkillOutput {
@@ -242,10 +250,12 @@ export interface Skill {
   llmOverride?: SkillLlmOverride;
   /**
    * Whether this skill participates in conversation sessions (SKILL.md
-   * frontmatter `context: true`; llm mode only, parse-time error otherwise).
-   * Optional - absent means `false` - so external `Skill` implementers stay
-   * source-compatible. When enabled, a session-carrying job gets prior turns
-   * in `SkillInput.history` and its exchange is recorded to the session store.
+   * frontmatter `context: true`; llm and dynamic-script modes only,
+   * parse-time error otherwise). Optional - absent means `false` - so
+   * external `Skill` implementers stay source-compatible. When enabled, a
+   * session-carrying job gets prior turns in `SkillInput.history` (llm: into
+   * the LLM messages; dynamic-script: via `ELISYM_HISTORY_FILE`) and its
+   * exchange is recorded to the session store.
    */
   context?: boolean;
   image?: string;

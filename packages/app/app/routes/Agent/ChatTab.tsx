@@ -1,21 +1,30 @@
 import { type CapabilityCard, toDTag } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useBuy } from '~/contexts/BuyContext';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useJobHistory } from '~/hooks/useJobHistory';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import { track } from '~/lib/analytics';
+import {
+  chatSessionsVersion,
+  readChatSession,
+  rotateSession,
+  selectSession,
+  subscribeChatSessions,
+} from '~/lib/chatSession';
 import type { ChatThreadEntry } from '~/lib/chatThread';
 import { SOLANA_CLUSTER } from '~/lib/cluster';
 import { cacheGet, cacheSet } from '~/lib/localCache';
 import { ArtifactModal } from './ArtifactModal';
 import { ChatComposer } from './ChatComposer';
+import { ChatList } from './ChatList';
 import { ChatThread } from './ChatThread';
+import { buildChatList, chatKeyOf, NEW_CHAT_KEY, type ChatListItem } from './lib/chatList';
 import type { Artifact, BuyState } from './types';
 import { useChatReconcile } from './useChatReconcile';
-import { useChatSend } from './useChatSend';
+import { useChatSend, type ChatSend } from './useChatSend';
 
 interface Props {
   agentPubkey: string;
@@ -54,10 +63,34 @@ function entryToArtifact(entry: ChatThreadEntry, agentPubkey: string, cardName: 
   };
 }
 
+interface ClosedChatNoteProps {
+  onNewChat: () => void;
+  disabled: boolean;
+}
+
+/** Footer for a selected one-off chat: closed by design, no composer. */
+function ClosedChatNote({ onNewChat, disabled }: ClosedChatNoteProps) {
+  return (
+    <div className="mt-12 flex items-center justify-between gap-8 rounded-12 bg-surface-2/70 px-12 py-8 text-xs text-text-2">
+      <span>This was a one-off job - each message is independent, so this chat is closed.</span>
+      <button
+        type="button"
+        onClick={onNewChat}
+        disabled={disabled}
+        className="shrink-0 cursor-pointer rounded-full border border-black/10 bg-surface px-10 py-4 text-[11px] font-medium text-text transition-colors hover:bg-black/4 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        New chat
+      </button>
+    </div>
+  );
+}
+
 /**
- * The Chat tab: job transcript as a thread + a composer bound to the selected
- * capability card. Mounting it runs the tab-open reconcile (wallet-independent
- * pending recovery + unpaid aging).
+ * The Chat tab: a Terms-style sidebar of chats (one per conversation session,
+ * one per one-off job) + the selected chat's thread. Conversation chats stay
+ * writable through the composer; one-off chats are closed - a new message
+ * always goes to a new chat. Mounting runs the tab-open reconcile
+ * (wallet-independent pending recovery + unpaid aging).
  */
 export function ChatTab({
   agentPubkey,
@@ -73,6 +106,7 @@ export function ChatTab({
 }: Props) {
   const { client } = useElisymClient();
   const idCtx = useIdentity();
+  const identityPubkey = idCtx.publicKey;
   const { session: liveSession } = useBuy();
   const send = useChatSend({ agentPubkey, agentName, agentPicture });
 
@@ -156,7 +190,24 @@ export function ChatTab({
         await cacheSet(`rated:${entry.jobEventId}`, true);
         track('rate-result', { rating: positive ? 'good' : 'bad' });
       } catch {
-        // silent fail
+        // The rating never reached the network (publish throws only on total
+        // failure) - roll back the optimistic state so the buttons come back
+        // and the user can retry, instead of a "Rated" that a reload undoes.
+        setRatedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(entry.jobEventId);
+          return next;
+        });
+        setThanksVisible((prev) => {
+          const next = new Set(prev);
+          next.delete(entry.jobEventId);
+          return next;
+        });
+        setThanksMounted((prev) => {
+          const next = new Set(prev);
+          next.delete(entry.jobEventId);
+          return next;
+        });
       }
     },
     [client, idCtx.identity, agentPubkey, ratedIds, txHashByJobId],
@@ -176,7 +227,7 @@ export function ChatTab({
   }, [cards]);
 
   const cardNameOf = useCallback(
-    (entry: ChatThreadEntry) => cardNameByDTag.get(entry.capability) ?? (entry.capability || 'Job'),
+    (capability: string) => cardNameByDTag.get(capability) ?? (capability || 'Job'),
     [cardNameByDTag],
   );
 
@@ -192,45 +243,174 @@ export function ChatTab({
   }
 
   const card = cards[selectedIndex] ?? cards[0];
+  const buying = buyState?.buying ?? false;
+
+  // -- Chat list + selection --
+  const items = useMemo(() => buildChatList(entries), [entries]);
+
+  const sessionsVersion = useSyncExternalStore(subscribeChatSessions, chatSessionsVersion);
+  const currentSession = useMemo(
+    () => readChatSession(identityPubkey, agentPubkey),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sessionsVersion re-reads the persisted entry
+    [identityPubkey, agentPubkey, sessionsVersion],
+  );
+
+  const [manualKey, setManualKey] = useState<string | null>(null);
+
+  // Resolved selection: the manual choice while its chat still exists, else
+  // the active session's chat, else the newest chat, else the draft.
+  let selectedKey = NEW_CHAT_KEY;
+  const manualValid =
+    manualKey !== null &&
+    (manualKey === NEW_CHAT_KEY || items.some((item) => item.key === manualKey));
+  const activeSessionItem =
+    currentSession !== undefined
+      ? items.find((item) => item.sessionId === currentSession.sessionId)
+      : undefined;
+  if (manualValid && manualKey !== null) {
+    selectedKey = manualKey;
+  } else if (activeSessionItem !== undefined) {
+    selectedKey = activeSessionItem.key;
+  } else if (items[0] !== undefined) {
+    selectedKey = items[0].key;
+  }
+
+  // Follow the active session when it changes (send-mint, draft rotation, a
+  // divergence join, a selection in another surface) - the composer writes
+  // there, so the view must too.
+  const prevSessionIdRef = useRef<string | undefined>(currentSession?.sessionId);
+  useEffect(() => {
+    const sessionId = currentSession?.sessionId;
+    if (sessionId === prevSessionIdRef.current) {
+      return;
+    }
+    prevSessionIdRef.current = sessionId;
+    if (sessionId === undefined) {
+      return;
+    }
+    const item = items.find((candidate) => candidate.sessionId === sessionId);
+    setManualKey(item !== undefined ? item.key : NEW_CHAT_KEY);
+  }, [currentSession?.sessionId, items]);
+
+  // Follow a live send once per job id (the messenger pattern: jump to the
+  // chat you just messaged) - covers draft sends, retries, and one-shots.
+  const followedJobRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (liveJobEventId === null || followedJobRef.current === liveJobEventId) {
+      return;
+    }
+    const entry = entries.find((candidate) => candidate.jobEventId === liveJobEventId);
+    if (entry !== undefined) {
+      followedJobRef.current = liveJobEventId;
+      setManualKey(chatKeyOf(entry));
+    }
+  }, [liveJobEventId, entries]);
+
+  function handleSelectChat(item: ChatListItem) {
+    if (buying) {
+      return;
+    }
+    setManualKey(item.key);
+    if (item.kind === 'session' && item.sessionId !== undefined) {
+      // Make the clicked conversation the active session so the composer's
+      // next send continues it, and bind the composer to the chat's last
+      // used capability.
+      void selectSession(identityPubkey, agentPubkey, {
+        sessionId: item.sessionId,
+        ts: item.lastTs,
+      });
+      const lastEntry = item.entries[item.entries.length - 1];
+      const cardIndex = cards.findIndex(
+        (candidate) => toDTag(candidate.name) === lastEntry?.capability,
+      );
+      if (cardIndex !== -1) {
+        onSelectIndex(cardIndex);
+      }
+    }
+  }
+
+  function handleNewChat() {
+    if (buying) {
+      return;
+    }
+    setManualKey(NEW_CHAT_KEY);
+  }
+
+  // A draft send must open a NEW conversation: rotate away an active session
+  // that already has visible entries. An empty active session IS the draft
+  // and is continued as-is; one-shot sends need no rotation at all.
+  const activeSessionHasEntries = activeSessionItem !== undefined;
+  const sendFromDraft = useCallback<ChatSend>(
+    async (draftCard, input, file, sendEntries, options) => {
+      if (draftCard.context === true && activeSessionHasEntries) {
+        await rotateSession(identityPubkey, agentPubkey);
+      }
+      await send(draftCard, input, file, sendEntries, options);
+    },
+    [send, identityPubkey, agentPubkey, activeSessionHasEntries],
+  );
+
+  const selectedItem =
+    selectedKey === NEW_CHAT_KEY ? undefined : items.find((item) => item.key === selectedKey);
+  const chatEntries = selectedItem?.entries ?? [];
+  const readOnly = selectedItem?.kind === 'oneshot';
 
   return (
-    <div className="flex flex-col">
-      <ChatThread
-        entries={entries}
-        agentPubkey={agentPubkey}
-        loading={loading}
-        cards={cards}
-        pingStatus={pingStatus}
-        buying={buyState?.buying ?? false}
-        liveJobEventId={liveJobEventId}
-        liveStatus={liveStatus}
-        ratedIds={ratedIds}
-        canRate={Boolean(idCtx.identity)}
-        onRate={(entry, positive) => void rateEntry(entry, positive)}
-        onOpen={(entry) => setOpenEntryId(entry.jobEventId)}
-        onSelectCardIndex={onSelectIndex}
-        send={send}
+    <div className="grid gap-16 sm:grid-cols-[240px_1fr] sm:gap-32">
+      <ChatList
+        items={items}
+        selectedKey={selectedKey}
+        onSelect={handleSelectChat}
+        onNewChat={handleNewChat}
+        disabled={buying}
+        cardNameOf={cardNameOf}
       />
 
-      {card && buyState && (
-        <ChatComposer
-          card={card}
-          allCards={cards}
-          selectedIndex={selectedIndex}
-          onSelectIndex={onSelectIndex}
+      <div className="flex min-w-0 flex-col">
+        <ChatThread
+          entries={chatEntries}
+          allEntries={entries}
+          hasChats={items.length > 0}
           agentPubkey={agentPubkey}
-          agentName={agentName}
-          identityPubkey={idCtx.publicKey}
+          loading={loading}
+          cards={cards}
           pingStatus={pingStatus}
-          buyState={buyState}
-          entries={entries}
+          buying={buying}
+          liveJobEventId={liveJobEventId}
+          liveStatus={liveStatus}
+          ratedIds={ratedIds}
+          canRate={Boolean(idCtx.identity)}
+          onRate={(entry, positive) => void rateEntry(entry, positive)}
+          onOpen={(entry) => setOpenEntryId(entry.jobEventId)}
+          onSelectCardIndex={onSelectIndex}
           send={send}
         />
-      )}
+
+        {readOnly ? (
+          <ClosedChatNote onNewChat={handleNewChat} disabled={buying} />
+        ) : (
+          card &&
+          buyState && (
+            <ChatComposer
+              card={card}
+              allCards={cards}
+              selectedIndex={selectedIndex}
+              onSelectIndex={onSelectIndex}
+              agentPubkey={agentPubkey}
+              agentName={agentName}
+              identityPubkey={identityPubkey}
+              pingStatus={pingStatus}
+              buyState={buyState}
+              entries={entries}
+              send={selectedKey === NEW_CHAT_KEY ? sendFromDraft : send}
+            />
+          )
+        )}
+      </div>
 
       {openEntry && (
         <ArtifactModal
-          artifact={entryToArtifact(openEntry, agentPubkey, cardNameOf(openEntry))}
+          artifact={entryToArtifact(openEntry, agentPubkey, cardNameOf(openEntry.capability))}
           onClose={() => setOpenEntryId(null)}
           isRated={ratedIds.has(openEntry.jobEventId)}
           thanksMounted={thanksMounted.has(openEntry.jobEventId)}
