@@ -408,6 +408,18 @@ export default function AgentPage() {
     card: currentCard,
   });
 
+  // A send from the Products tab jumps to the Chat tab, once per job - the
+  // message and its live status render there (the messenger pattern).
+  const switchedJobRef = useRef<string | null>(null);
+  useEffect(() => {
+    const jobId = buyState?.jobId ?? null;
+    if (!buyState?.buying || jobId === null || switchedJobRef.current === jobId) {
+      return;
+    }
+    switchedJobRef.current = jobId;
+    setActiveTab((current) => (current === 'products' ? 'chat' : current));
+  }, [buyState?.buying, buyState?.jobId]);
+
   // A malformed pubkey can never resolve to an agent and would crash the
   // `nip19.npubEncode` paths below, so route it straight to NotFound.
   if (!isValidPubkey) {

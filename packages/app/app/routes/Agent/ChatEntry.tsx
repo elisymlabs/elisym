@@ -80,7 +80,7 @@ export function ChatEntry({
               type="button"
               onClick={() => onRate(true)}
               title="Good result"
-              className="cursor-pointer rounded-full border-0 bg-transparent px-4 py-2 opacity-70 transition-opacity hover:opacity-100"
+              className="cursor-pointer rounded-full border border-black/10 bg-surface px-8 py-3 text-[11px] leading-none transition-colors hover:bg-black/4"
             >
               👍
             </button>
@@ -88,7 +88,7 @@ export function ChatEntry({
               type="button"
               onClick={() => onRate(false)}
               title="Bad result"
-              className="cursor-pointer rounded-full border-0 bg-transparent px-4 py-2 opacity-70 transition-opacity hover:opacity-100"
+              className="cursor-pointer rounded-full border border-black/10 bg-surface px-8 py-3 text-[11px] leading-none transition-colors hover:bg-black/4"
             >
               👎
             </button>
@@ -98,9 +98,12 @@ export function ChatEntry({
       </div>
     );
     // File cards render OUTSIDE the clickable bubble - FileResultCard has its
-    // own Preview/Download buttons, and buttons must never nest.
+    // own Preview/Download buttons, and buttons must never nest. The wrapper
+    // must STRETCH (no items-start): a shrink-to-fit parent makes the bubble's
+    // max-w-[85%] resolve against its own content width, collapsing short
+    // results into a one-word-per-line sliver.
     assistantBubble = (
-      <div className="flex flex-col items-start gap-4">
+      <div className="flex flex-col gap-4">
         <ChatBubble side="assistant" onClick={onOpen}>
           <p className="m-0 line-clamp-6 break-words whitespace-pre-wrap">
             {resultPreview || 'Result received'}

@@ -13,11 +13,9 @@ import type { PingStatus } from '~/hooks/usePingAgent';
 import { track } from '~/lib/analytics';
 import {
   chatSessionsVersion,
-  divergenceCandidate,
   readChatSession,
   SESSION_LIVENESS_MS,
   subscribeChatSessions,
-  switchToSession,
 } from '~/lib/chatSession';
 import type { ChatThreadEntry } from '~/lib/chatThread';
 import { cn } from '~/lib/cn';
@@ -26,7 +24,6 @@ import { BuyErrorNote } from './BuyErrorNote';
 import { CapabilityDropdown } from './CapabilityDropdown';
 import type { BuyState } from './types';
 import type { ChatSend } from './useChatSend';
-import { sessionCandidatesOf } from './useChatThread';
 import { useJobGating } from './useJobGating';
 
 interface Props {
@@ -39,7 +36,7 @@ interface Props {
   identityPubkey: string;
   pingStatus: PingStatus;
   buyState: BuyState;
-  /** Identity-scoped, ts-sorted thread entries (adoption/divergence source). */
+  /** Identity-scoped, ts-sorted thread entries (send-path adoption source). */
   entries: ChatThreadEntry[];
   send: ChatSend;
 }
@@ -54,9 +51,9 @@ const SIZE_PROBE_SESSION_ID = '00000000-0000-4000-8000-000000000000';
 /**
  * The Chat tab's composer: bound to the currently selected capability card,
  * driving the same `buy()` flow as the Products-tab JobInput and inheriting
- * its FULL disable/tip gating (shared `useJobGating` - never forked). Only
- * this surface may carry the active session id; context-off cards send
- * marked one-shots.
+ * its FULL disable/tip gating (shared `useJobGating` - never forked). This
+ * surface carries the ACTIVE session id (JobInput mints a fresh one per
+ * send instead); context-off cards send marked one-shots.
  */
 export function ChatComposer({
   card,
@@ -111,63 +108,19 @@ export function ChatComposer({
     ? 'Message is too large for a conversation send - shorten it or use the elisym CLI.'
     : gate.tip;
 
-  // Active-session surfaces: divergence note, stale hint, New conversation.
+  // Stale hint: the only remaining active-session surface here. The old
+  // divergence note ("a newer conversation exists - join it") is gone: the
+  // chat sidebar shows every conversation and clicking one IS the switch.
   const sessionsVersion = useSyncExternalStore(subscribeChatSessions, chatSessionsVersion);
-  const sessionCandidates = useMemo(
-    () => sessionCandidatesOf(entries, identityPubkey),
-    [entries, identityPubkey],
-  );
   const currentSession = useMemo(
     () => readChatSession(identityPubkey, agentPubkey),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sessionsVersion re-reads the persisted entry
     [identityPubkey, agentPubkey, sessionsVersion],
   );
-  const [dismissedNoteSession, setDismissedNoteSession] = useState<string | null>(null);
-  const divergence = useMemo(
-    () =>
-      card.context === true
-        ? divergenceCandidate(identityPubkey, agentPubkey, sessionCandidates)
-        : undefined,
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- sessionsVersion re-reads the persisted entry
-    [card.context, identityPubkey, agentPubkey, sessionCandidates, sessionsVersion],
-  );
-  // Pending activity under the current session (snapshot read) - it both
-  // suppresses the note at render and rides into the switch's re-validation.
-  const hasPendingUnderCurrent =
-    currentSession !== undefined &&
-    entries.some(
-      (entry) => entry.status === 'pending' && entry.sessionId === currentSession.sessionId,
-    );
-  const showDivergenceNote =
-    divergence !== undefined &&
-    !buying &&
-    !hasPendingUnderCurrent &&
-    divergence.sessionId !== dismissedNoteSession;
-  // The stale hint is suppressed while the divergence note shows - the note
-  // is the actionable one.
   const showStaleHint =
-    !showDivergenceNote &&
     card.context === true &&
     currentSession !== undefined &&
     Date.now() - currentSession.lastUsedAt > SESSION_LIVENESS_MS;
-
-  async function handleJoinNewer() {
-    if (divergence === undefined) {
-      return;
-    }
-    // The switch re-validates the FULL precondition set under the lock and
-    // aborts if a sibling tab moved (sent, rotated, or adopted meanwhile).
-    const switched = await switchToSession(
-      identityPubkey,
-      agentPubkey,
-      divergence,
-      hasPendingUnderCurrent || buying,
-    );
-    if (!switched) {
-      // The switch aborted - drop the note.
-      setDismissedNoteSession(divergence.sessionId);
-    }
-  }
 
   async function handleSend() {
     if (gate.needsWalletConnect) {
@@ -217,18 +170,6 @@ export function ChatComposer({
 
   return (
     <div className="mt-12 flex flex-col gap-8">
-      {showDivergenceNote && divergence !== undefined && (
-        <div className="flex items-center justify-between gap-8 rounded-12 bg-surface-2/70 px-12 py-8 text-xs text-text-2">
-          <span>A newer conversation with this agent exists (from another device or tab).</span>
-          <button
-            type="button"
-            onClick={() => void handleJoinNewer()}
-            className="shrink-0 cursor-pointer rounded-full border border-black/10 bg-surface px-10 py-4 text-[11px] font-medium text-text transition-colors hover:bg-black/4"
-          >
-            Join it
-          </button>
-        </div>
-      )}
       {showStaleHint && (
         <div className="rounded-12 bg-surface-2/70 px-12 py-8 text-xs text-text-2">
           The provider may have forgotten this conversation - consider starting a new one.

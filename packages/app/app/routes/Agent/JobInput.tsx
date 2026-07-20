@@ -1,10 +1,12 @@
-import { type CapabilityCard } from '@elisym/sdk';
+import { encodeJobPayload, LIMITS, utf8ByteLength, type CapabilityCard } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import Decimal from 'decimal.js-light';
 import { useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useIdentity } from '~/hooks/useIdentity';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import { track } from '~/lib/analytics';
+import { resolveSessionForSend, rotateSession } from '~/lib/chatSession';
 import { cn } from '~/lib/cn';
 import { formatBytes } from '~/lib/fileResult';
 import { BuyErrorNote } from './BuyErrorNote';
@@ -12,6 +14,13 @@ import { CapabilityDropdown } from './CapabilityDropdown';
 import { SolIcon } from './SolIcon';
 import type { BuyState } from './types';
 import { useJobGating } from './useJobGating';
+
+/**
+ * A UUID is fixed-length, so probing the envelope with any well-formed id
+ * makes the composer-side size check exact regardless of which id the
+ * lock-held resolution later picks (mirrors ChatComposer).
+ */
+const SIZE_PROBE_SESSION_ID = '00000000-0000-4000-8000-000000000000';
 
 interface Props {
   agentPubkey: string;
@@ -63,6 +72,7 @@ function JobInputInner({
 }: InnerProps) {
   const { publicKey } = useWallet();
   const { setVisible } = useWalletModal();
+  const idCtx = useIdentity();
 
   const { buy, buying, error, paid } = buyState;
 
@@ -70,8 +80,6 @@ function JobInputInner({
   const [file, setFile] = useState<File | null>(null);
   const gate = useJobGating({ card, agentPubkey, pingStatus, input, file, buying });
   const {
-    isDisabled,
-    tip,
     isFree,
     isStatic,
     isOwn,
@@ -85,7 +93,23 @@ function JobInputInner({
     gasFeeLamports,
   } = gate;
 
-  function handleBuy() {
+  // Context sends envelope the text with a session id; JSON escaping can
+  // inflate an input past the inline cap at submit (mirrors ChatComposer).
+  const sessionEnvelopeTooLarge =
+    card.context === true &&
+    !isStatic &&
+    utf8ByteLength(
+      encodeJobPayload({
+        text: effectiveInput || undefined,
+        session: { id: SIZE_PROBE_SESSION_ID },
+      }),
+    ) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
+  const isDisabled = gate.isDisabled || sessionEnvelopeTooLarge;
+  const tip = sessionEnvelopeTooLarge
+    ? 'Message is too large for a conversation send - shorten it or use the elisym CLI.'
+    : gate.tip;
+
+  async function handleBuy() {
     if (!isFree && !publicKey) {
       track('wallet-connect', { source: 'agent-page' });
       setVisible(true);
@@ -95,9 +119,20 @@ function JobInputInner({
       agent: agentName,
       price: priceLabel ?? 'free',
     });
-    // Products-tab buys are always stateless one-shots (the two-surface rule);
-    // only the Chat-tab composer may carry the active session id.
-    buy(isStatic ? card.name : effectiveInput, file ?? undefined, { sessionId: null });
+    if (card.context === true) {
+      // A Products send on a context card opens a NEW conversation: rotate the
+      // active session, then resolve on the fresh id (stamps the inFlight
+      // token). The page jumps to the Chat tab, where the dialog continues.
+      await rotateSession(idCtx.publicKey, agentPubkey);
+      const resolved = await resolveSessionForSend(idCtx.publicKey, agentPubkey, []);
+      await buy(isStatic ? card.name : effectiveInput, file ?? undefined, {
+        sessionId: resolved.sessionId,
+        token: resolved.token,
+      });
+      return;
+    }
+    // Context-off cards send deliberate one-shots.
+    await buy(isStatic ? card.name : effectiveInput, file ?? undefined, { sessionId: null });
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -106,7 +141,7 @@ function JobInputInner({
     // something the button itself wouldn't.
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !isDisabled) {
       event.preventDefault();
-      handleBuy();
+      void handleBuy();
     }
   }
 
@@ -226,7 +261,7 @@ function JobInputInner({
           {!isOwn && (
             <span className="group relative shrink-0">
               <button
-                onClick={handleBuy}
+                onClick={() => void handleBuy()}
                 disabled={isDisabled}
                 className="inline-flex h-32 min-w-64 cursor-pointer items-center justify-center gap-8 rounded-xl border-none bg-surface-dark px-14 text-xs leading-none font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-25 sm:h-36 sm:min-w-72 sm:px-16"
               >
