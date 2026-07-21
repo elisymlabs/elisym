@@ -128,6 +128,19 @@ describe('chatThread store', () => {
     });
   });
 
+  it('append bails when the id already exists (no completed -> pending demotion)', async () => {
+    const { store } = createStore();
+    await store.mergeHydratedEntry(AGENT, hydratedEntry('job-1'));
+    const versionBefore = store.version();
+    await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    const thread = await store.readThread(AGENT);
+    expect(thread).toHaveLength(1);
+    expect(thread[0]?.status).toBeUndefined();
+    expect(thread[0]?.result).toBe('result job-1');
+    // A bail is a no-op: no version bump, no notification.
+    expect(store.version()).toBe(versionBefore);
+  });
+
   it('acquires the navigator.locks mutex under the store key name', async () => {
     const { store, locks } = createStore();
     await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
@@ -403,7 +416,7 @@ describe('chatThread store', () => {
       await store.appendPendingEntry(AGENT, pendingEntry('job-fresh', { ts: now }));
       await store.mergeHydratedEntry(AGENT, hydratedEntry('job-done', { ts: now - 2 * dayMs }));
 
-      const aged = await store.agePendingEntries(AGENT, dayMs);
+      const aged = await store.agePendingEntries(AGENT, dayMs, IDENTITY_A);
       expect(aged.map((entry) => entry.jobEventId)).toEqual(['job-old-unpaid']);
       expect(aged[0]?.status).toBe('failed');
 
@@ -420,9 +433,9 @@ describe('chatThread store', () => {
       const { store } = createStore();
       const dayMs = 24 * 60 * 60 * 1000;
       await store.appendPendingEntry(AGENT, pendingEntry('job-1', { ts: Date.now() - 2 * dayMs }));
-      expect(await store.agePendingEntries(AGENT, dayMs)).toHaveLength(1);
+      expect(await store.agePendingEntries(AGENT, dayMs, IDENTITY_A)).toHaveLength(1);
       const versionAfterAging = store.version();
-      expect(await store.agePendingEntries(AGENT, dayMs)).toEqual([]);
+      expect(await store.agePendingEntries(AGENT, dayMs, IDENTITY_A)).toEqual([]);
       expect(store.version()).toBe(versionAfterAging);
     });
   });

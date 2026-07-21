@@ -62,6 +62,7 @@ export function useChatReconcile(agentPubkey: string): void {
         (entry) => entry.status === 'pending' && entry.customerPubkey === identity.publicKey,
       );
 
+      let queryFailed = false;
       if (pendingEntries.length > 0) {
         try {
           const resultsByJob = await client.marketplace.queryJobResults(
@@ -90,10 +91,17 @@ export function useChatReconcile(agentPubkey: string): void {
           }
         } catch {
           // transient relay error - the next tab open / hydration retries
+          queryFailed = true;
         }
       }
 
-      await agePendingEntries(agentPubkey, UNPAID_PENDING_MAX_AGE_MS);
+      // Aging requires the "found no result" precondition: a failed query
+      // proved nothing, so a >24h entry whose result sits on an unreachable
+      // relay must not flip to failed. Scoped to this identity - other
+      // identities' jobs were never queried here.
+      if (!queryFailed) {
+        await agePendingEntries(agentPubkey, UNPAID_PENDING_MAX_AGE_MS, identity.publicKey);
+      }
       if (cancelled) {
         return;
       }

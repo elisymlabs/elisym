@@ -119,7 +119,11 @@ export interface ChatThreadStore {
   failEntry(agentPubkey: string, jobEventId: string): Promise<boolean>;
   mergeHydratedEntry(agentPubkey: string, entry: HydratedChatEntry): Promise<MergeHydratedResult>;
   readThread(agentPubkey: string): Promise<ChatThreadEntry[]>;
-  agePendingEntries(agentPubkey: string, maxAgeMs: number): Promise<ChatThreadEntry[]>;
+  agePendingEntries(
+    agentPubkey: string,
+    maxAgeMs: number,
+    customerPubkey: string,
+  ): Promise<ChatThreadEntry[]>;
   purgeIdentityThreadEntries(customerPubkey: string): Promise<void>;
   subscribe(listener: () => void): () => void;
   version(): number;
@@ -263,10 +267,16 @@ export function createChatThreadStore(
     await mutateThread(
       chatThreadKey(agentPubkey),
       (entries) => {
+        // Bail when the id already exists: a hydration settle can complete the
+        // job in the window between submit resolving and this append, and
+        // re-inserting as `pending` would demote it (and double-bump the
+        // session counter when hydration re-completes it).
+        if (entries.some((existing) => existing.jobEventId === entry.jobEventId)) {
+          return { entries, changed: false, result: undefined };
+        }
         const pending: ChatThreadEntry = { ...entry, status: 'pending' };
-        const withoutDup = entries.filter((existing) => existing.jobEventId !== pending.jobEventId);
         return {
-          entries: trimToCap(sortByTs([...withoutDup, pending])),
+          entries: trimToCap(sortByTs([...entries, pending])),
           changed: true,
           result: undefined,
         };
@@ -408,14 +418,24 @@ export function createChatThreadStore(
     return Array.isArray(value) ? value : [];
   }
 
-  function agePendingEntries(agentPubkey: string, maxAgeMs: number): Promise<ChatThreadEntry[]> {
+  function agePendingEntries(
+    agentPubkey: string,
+    maxAgeMs: number,
+    customerPubkey: string,
+  ): Promise<ChatThreadEntry[]> {
     return mutateThread<ChatThreadEntry[]>(
       chatThreadKey(agentPubkey),
       (entries) => {
         const cutoff = Date.now() - maxAgeMs;
         const aged: ChatThreadEntry[] = [];
         const next = entries.map((entry) => {
-          const unpaidPending = entry.status === 'pending' && entry.txHash === undefined;
+          // Identity-scoped: the reconcile only queried results for ITS
+          // identity's jobs - another identity's entries were never checked
+          // and must not be aged on its behalf.
+          const unpaidPending =
+            entry.status === 'pending' &&
+            entry.txHash === undefined &&
+            entry.customerPubkey === customerPubkey;
           if (!unpaidPending || entry.ts >= cutoff) {
             return entry;
           }

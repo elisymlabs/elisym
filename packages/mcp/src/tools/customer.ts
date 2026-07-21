@@ -1289,20 +1289,32 @@ async function executeSubmitAndPay(
   if (sessionId !== undefined) {
     // Bookkeeping at submit (lastUsedAt + jobIds); turnCount stays untouched
     // here - it counts completed exchanges only and bumps on success below.
-    await recordSessionSubmit(sessionHandleFor(agent), {
-      sessionId,
-      providerPubkey: params.providerPubkey,
-      providerName: clipProviderName(provider.name),
-      capability: params.dTag,
-      firstPrompt: buildFirstPrompt(params.input, params.attachment?.name, params.dTag),
-      jobEventId: jobId,
-    });
+    // Best-effort (pinned failure semantics): the job is already published, so
+    // a store write failure must not abort the call and orphan it.
+    try {
+      await recordSessionSubmit(sessionHandleFor(agent), {
+        sessionId,
+        providerPubkey: params.providerPubkey,
+        providerName: clipProviderName(provider.name),
+        capability: params.dTag,
+        firstPrompt: buildFirstPrompt(params.input, params.attachment?.name, params.dTag),
+        jobEventId: jobId,
+      });
+    } catch (recordError) {
+      logger.warn(
+        { event: 'session_submit_record_failed', sessionId, err: String(recordError) },
+        'recordSessionSubmit failed after publish',
+      );
+    }
   }
 
   let paymentSig: string | undefined;
   let paidAmountSubunits: bigint | undefined;
   let paidAssetKey: string | undefined;
   let paymentWarnings: string[] = [];
+  // Set when the "payment required but no wallet" branch resolved the wait:
+  // the provider never executed, so session turn accounting must not fire.
+  let noWalletResolution = false;
   // Captured (not threaded through the string result buffer) when the result is
   // a file; surfaced as metadata and persisted for a later fetch_job_file.
   let resultAttachment: FileAttachment | undefined;
@@ -1321,7 +1333,14 @@ async function executeSubmitAndPay(
           expectedRecipient,
           maxPriceLamports: params.maxPriceLamports,
           expectedAsset: advertisedAsset,
-          resolveNoWallet: resolve,
+          // The no-wallet resolution is NOT a completed exchange: the provider
+          // never executed and holds no transcript, so it must not bump the
+          // session turn count or invite continuing (the gate never asserts
+          // provider-side state a never-paid job would falsify).
+          resolveNoWallet: (text) => {
+            noWalletResolution = true;
+            resolve(text);
+          },
           resolveResult: resolve,
           rejectPayment: reject,
           onPaid: (sig, warnings, amount, assetKey) => {
@@ -1380,7 +1399,7 @@ async function executeSubmitAndPay(
       paymentSig,
       attachmentJson: resultAttachment ? JSON.stringify(resultAttachment) : undefined,
     });
-    if (sessionId !== undefined) {
+    if (sessionId !== undefined && !noWalletResolution) {
       // In-window success = one completed exchange, exactly once per call (the
       // late-bump path in get_job_result only fires on a pending|timeout ->
       // completed transition, which an in-window 'completed' write precludes).
@@ -1399,7 +1418,7 @@ async function executeSubmitAndPay(
     const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
     const contextNote = warningLine !== undefined ? `${warningLine}\n` : '';
     const tip = buildJobCompletionTip(jobId, params.providerNpub);
-    const sessionTip = sessionContinueTip(sessionId, autoStarted);
+    const sessionTip = sessionContinueTip(noWalletResolution ? undefined : sessionId, autoStarted);
     return textResult(
       `${warningBlock}${contextNote}event_id=${jobId}\n${sessionIdLine(sessionId)}${result}${sessionTip}${tip}`,
     );
@@ -1428,12 +1447,16 @@ async function executeSubmitAndPay(
       paymentSig,
     });
     const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';
+    // The no-context warning survives failure/still-processing outcomes too:
+    // the LLM retries from these texts, and the retry has the same no-memory
+    // caveat as the original send.
+    const contextNote = warningLine !== undefined ? `${warningLine}\n` : '';
     if (pending && paymentSig !== undefined) {
       return pendingJobResult(
         jobId,
         paymentSig,
         submittedAt,
-        warningBlock,
+        `${warningBlock}${contextNote}`,
         sessionIdLine(sessionId),
       );
     }
@@ -1448,7 +1471,7 @@ async function executeSubmitAndPay(
     // recipient-mismatch error) - keep it inside the untrusted boundary.
     const safeMsg = sanitizeUntrusted(msg, 'text').text;
     return errorResult(
-      `${warningBlock}Job ${jobId} failed: ${safeMsg}.${paid}${failureSessionLine}`,
+      `${warningBlock}${contextNote}Job ${jobId} failed: ${safeMsg}.${paid}${failureSessionLine}`,
     );
   }
 }
@@ -1558,14 +1581,23 @@ export const customerTools: ToolDefinition[] = [
       if (sessionId !== undefined) {
         // Bookkeeping only (lastUsedAt + jobIds): create_job records no
         // CustomerJobEntry, so its turns never bump turnCount - a disclosed,
-        // safe-direction undercount (the gate never overstates).
-        await recordSessionSubmit(sessionHandleFor(agent), {
-          sessionId,
-          providerPubkey,
-          capability: dTag,
-          firstPrompt: buildFirstPrompt(input.input, undefined, dTag),
-          jobEventId: jobId,
-        });
+        // safe-direction undercount (the gate never overstates). Best-effort
+        // (pinned failure semantics): the job is already published, so a store
+        // write failure must not abort the call and lose the event_id.
+        try {
+          await recordSessionSubmit(sessionHandleFor(agent), {
+            sessionId,
+            providerPubkey,
+            capability: dTag,
+            firstPrompt: buildFirstPrompt(input.input, undefined, dTag),
+            jobEventId: jobId,
+          });
+        } catch (recordError) {
+          logger.warn(
+            { event: 'session_submit_record_failed', sessionId, err: String(recordError) },
+            'recordSessionSubmit failed after publish',
+          );
+        }
       }
 
       // return structured data so the LLM can follow up.
@@ -1671,20 +1703,34 @@ export const customerTools: ToolDefinition[] = [
       // unauthenticated fetch never bumps - the gate must not overstate on the
       // strength of a spoofable result.
       if (agent.agentDir !== undefined && providerPubkey !== undefined) {
-        const entry = await findCustomerJob(agent.agentDir, input.job_event_id);
-        if (entry && entry.providerPubkey === providerPubkey) {
-          const fired = await transitionCustomerJobStatus(
-            agent.agentDir,
-            input.job_event_id,
-            ['pending', 'timeout'],
-            'completed',
-          );
-          if (fired) {
-            const session = await findSessionByJobId(sessionHandleFor(agent), input.job_event_id);
-            if (session) {
-              await bumpSessionTurnCount(sessionHandleFor(agent), session.sessionId);
+        // Best-effort (pinned failure semantics): the result is already
+        // fetched - a history/session write failure must not replace it
+        // with an error.
+        try {
+          const entry = await findCustomerJob(agent.agentDir, input.job_event_id);
+          if (entry && entry.providerPubkey === providerPubkey) {
+            const fired = await transitionCustomerJobStatus(
+              agent.agentDir,
+              input.job_event_id,
+              ['pending', 'timeout'],
+              'completed',
+            );
+            if (fired) {
+              const session = await findSessionByJobId(sessionHandleFor(agent), input.job_event_id);
+              if (session) {
+                await bumpSessionTurnCount(sessionHandleFor(agent), session.sessionId);
+              }
             }
           }
+        } catch (bumpError) {
+          logger.warn(
+            {
+              event: 'session_late_bump_failed',
+              jobEventId: input.job_event_id,
+              err: String(bumpError),
+            },
+            'late session bookkeeping failed after result fetch',
+          );
         }
       }
 

@@ -380,15 +380,22 @@ export function createChatSessionStore(
   }
 
   function rotateSession(identityPubkey: string, agentPubkey: string): Promise<string> {
-    return mutateSession<string>(chatSessionKey(identityPubkey, agentPubkey), () => {
+    return mutateSession<string>(chatSessionKey(identityPubkey, agentPubkey), (current) => {
       const now = Date.now();
+      // Fresh foreign tokens survive the rotation ("remove own token only"):
+      // a sibling tab's send is still resolving against the old id, and the
+      // collection's non-empty state must keep guarding selectSession until
+      // that send lands or its token goes stale.
+      const freshInFlight = (current?.inFlight ?? []).filter(
+        (element) => now - element.since < IN_FLIGHT_STALE_MS,
+      );
       const entry: ChatSessionEntry = {
         sessionId: crypto.randomUUID(),
         startedAt: now,
         lastUsedAt: now,
         completedCount: 0,
         origin: 'rotated',
-        inFlight: [],
+        inFlight: freshInFlight,
       };
       return { entry, changed: true, result: entry.sessionId };
     });

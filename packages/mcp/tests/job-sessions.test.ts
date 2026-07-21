@@ -635,3 +635,66 @@ describe('list_job_sessions', () => {
     expect(result.content[0]?.text).toContain(UUID_A);
   });
 });
+
+describe('get_job_result late bump (integration)', () => {
+  const UUID_LATE = '9f8e7d6c-5b4a-4321-8abc-def012345678';
+  const LATE_JOB = 'f'.repeat(64);
+
+  function resultAgent() {
+    return buildStubAgent({
+      fetchAgents: vi.fn(async () => []),
+      subscribeToJobUpdates: vi.fn(
+        (options: { callbacks: { onResult: (content: string, eventId: string) => void } }) => {
+          setTimeout(() => options.callbacks.onResult('late answer', LATE_JOB), 5);
+          return () => {};
+        },
+      ),
+      agentDir: dir,
+    });
+  }
+
+  async function seedPendingJob(providerPubkey: string) {
+    await appendCustomerJob(dir, {
+      jobEventId: LATE_JOB,
+      capability: 'general',
+      providerPubkey,
+      submittedAt: 1,
+      completedAt: 2,
+      status: 'pending',
+    });
+    await recordSessionSubmit(handle, {
+      sessionId: UUID_LATE,
+      providerPubkey,
+      capability: 'general',
+      firstPrompt: 'hello',
+      jobEventId: LATE_JOB,
+    });
+  }
+
+  it('bumps the turn count once on an authenticated fetch, idempotent on re-poll', async () => {
+    await seedPendingJob(PROVIDER_A_PUBKEY);
+    const tool = findTool('get_job_result');
+    const input = tool.schema.parse({ job_event_id: LATE_JOB, provider_npub: PROVIDER_A_NPUB });
+    await tool.handler(ctxWith(resultAgent()), input);
+    expect((await findSessionById(handle, UUID_LATE))?.turnCount).toBe(1);
+    // Re-poll of the now-completed entry: the conditional transition does not
+    // fire, so the count stays exactly once per exchange.
+    await tool.handler(ctxWith(resultAgent()), input);
+    expect((await findSessionById(handle, UUID_LATE))?.turnCount).toBe(1);
+  });
+
+  it('never bumps for an unauthenticated fetch or a mismatched author', async () => {
+    await seedPendingJob(PROVIDER_B_PUBKEY);
+    const tool = findTool('get_job_result');
+    // No provider_npub: the SDK skipped its author check - the bump must not
+    // trust a spoofable result.
+    await tool.handler(ctxWith(resultAgent()), tool.schema.parse({ job_event_id: LATE_JOB }));
+    expect((await findSessionById(handle, UUID_LATE))?.turnCount).toBe(0);
+    // provider_npub differing from the author recorded at submit: no bump.
+    await tool.handler(
+      ctxWith(resultAgent()),
+      tool.schema.parse({ job_event_id: LATE_JOB, provider_npub: PROVIDER_A_NPUB }),
+    );
+    expect((await findSessionById(handle, UUID_LATE))?.turnCount).toBe(0);
+  });
+});

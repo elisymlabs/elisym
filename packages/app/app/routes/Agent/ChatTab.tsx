@@ -258,7 +258,10 @@ export function ChatTab({
   const [manualKey, setManualKey] = useState<string | null>(null);
 
   // Resolved selection: the manual choice while its chat still exists, else
-  // the active session's chat, else the newest chat, else the draft.
+  // the active session's chat, else the draft when an EMPTY active session
+  // exists (the composer would continue it, so the view must show the draft -
+  // never the newest chat over an invisible session), else the newest chat,
+  // else the draft.
   let selectedKey = NEW_CHAT_KEY;
   const manualValid =
     manualKey !== null &&
@@ -271,6 +274,8 @@ export function ChatTab({
     selectedKey = manualKey;
   } else if (activeSessionItem !== undefined) {
     selectedKey = activeSessionItem.key;
+  } else if (currentSession !== undefined) {
+    selectedKey = NEW_CHAT_KEY;
   } else if (items[0] !== undefined) {
     selectedKey = items[0].key;
   }
@@ -306,27 +311,38 @@ export function ChatTab({
     }
   }, [liveJobEventId, entries]);
 
+  async function selectSessionChat(item: ChatListItem, sessionId: string) {
+    // Make the clicked conversation the active session FIRST - the view must
+    // never switch while the composer would still send into another session.
+    // A refusal (a sibling tab's send is resolving, or its crashed token is
+    // not yet stale) keeps the current chat; the click can be retried.
+    const selected = await selectSession(identityPubkey, agentPubkey, {
+      sessionId,
+      ts: item.lastTs,
+    });
+    if (!selected) {
+      return;
+    }
+    setManualKey(item.key);
+    // Bind the composer to the chat's last used capability.
+    const lastEntry = item.entries[item.entries.length - 1];
+    const cardIndex = cards.findIndex(
+      (candidate) => toDTag(candidate.name) === lastEntry?.capability,
+    );
+    if (cardIndex !== -1) {
+      onSelectIndex(cardIndex);
+    }
+  }
+
   function handleSelectChat(item: ChatListItem) {
     if (buying) {
       return;
     }
-    setManualKey(item.key);
     if (item.kind === 'session' && item.sessionId !== undefined) {
-      // Make the clicked conversation the active session so the composer's
-      // next send continues it, and bind the composer to the chat's last
-      // used capability.
-      void selectSession(identityPubkey, agentPubkey, {
-        sessionId: item.sessionId,
-        ts: item.lastTs,
-      });
-      const lastEntry = item.entries[item.entries.length - 1];
-      const cardIndex = cards.findIndex(
-        (candidate) => toDTag(candidate.name) === lastEntry?.capability,
-      );
-      if (cardIndex !== -1) {
-        onSelectIndex(cardIndex);
-      }
+      void selectSessionChat(item, item.sessionId);
+      return;
     }
+    setManualKey(item.key);
   }
 
   function handleNewChat() {
@@ -337,17 +353,21 @@ export function ChatTab({
   }
 
   // A draft send must open a NEW conversation: rotate away an active session
-  // that already has visible entries. An empty active session IS the draft
-  // and is continued as-is; one-shot sends need no rotation at all.
+  // that already has visible entries, AND rotate when no active session
+  // exists at all - resolveSessionForSend would otherwise ADOPT the newest
+  // live candidate (a fresh device with relay history) instead of minting.
+  // Only an EMPTY active session IS the draft and is continued as-is;
+  // one-shot sends need no rotation at all.
   const activeSessionHasEntries = activeSessionItem !== undefined;
+  const draftNeedsRotation = currentSession === undefined || activeSessionHasEntries;
   const sendFromDraft = useCallback<ChatSend>(
     async (draftCard, input, file, sendEntries, options) => {
-      if (draftCard.context === true && activeSessionHasEntries) {
+      if (draftCard.context === true && draftNeedsRotation) {
         await rotateSession(identityPubkey, agentPubkey);
       }
       await send(draftCard, input, file, sendEntries, options);
     },
-    [send, identityPubkey, agentPubkey, activeSessionHasEntries],
+    [send, identityPubkey, agentPubkey, draftNeedsRotation],
   );
 
   const selectedItem =

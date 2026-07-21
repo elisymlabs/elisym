@@ -201,7 +201,7 @@ describe('clearInFlight', () => {
 });
 
 describe('rotateSession', () => {
-  it('mints a new id with origin rotated, startedAt = now, count reset, inFlight cleared', async () => {
+  it('mints a new id with origin rotated, startedAt = now, count reset', async () => {
     const { store, storage } = createStore();
     seedEntry(
       storage,
@@ -211,7 +211,6 @@ describe('rotateSession', () => {
         origin: 'adopted',
         completedCount: 4,
         startedAt: Date.now() - 5 * DAY_MS,
-        inFlight: [{ since: Date.now(), token: 'live-token' }],
       }),
     );
     const before = Date.now();
@@ -223,6 +222,26 @@ describe('rotateSession', () => {
     expect(entry?.startedAt).toBeGreaterThanOrEqual(before);
     expect(entry?.completedCount).toBe(0);
     expect(entry?.inFlight).toEqual([]);
+  });
+
+  it('preserves fresh foreign inFlight tokens and prunes stale ones ("remove own token only")', async () => {
+    const { store, storage } = createStore();
+    seedEntry(
+      storage,
+      IDENTITY,
+      AGENT,
+      sessionEntry({
+        inFlight: [
+          { since: Date.now(), token: 'sibling-send' },
+          { since: Date.now() - IN_FLIGHT_STALE_MS - 1000, token: 'crashed-tab' },
+        ],
+      }),
+    );
+    await store.rotateSession(IDENTITY, AGENT);
+    const entry = store.readChatSession(IDENTITY, AGENT);
+    // The sibling's send is still resolving against the old id - its token
+    // must keep guarding selectSession until it lands or goes stale.
+    expect(entry?.inFlight.map((element) => element.token)).toEqual(['sibling-send']);
   });
 });
 
