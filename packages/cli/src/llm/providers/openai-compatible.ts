@@ -9,6 +9,7 @@
  */
 
 import type {
+  ChatTurn,
   CompletionResult,
   LlmClient,
   ToolCall,
@@ -16,7 +17,7 @@ import type {
   ToolResult,
 } from '@elisym/sdk/skills';
 import type { CreateLlmClientConfig, LlmKeyVerification, LlmProviderDescriptor } from '../registry';
-import { fetchWithRetry, fetchWithTimeout } from './http';
+import { fetchWithRetry, fetchWithTimeout, sanitizeErrorBody } from './http';
 
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_BILLING_MARKERS = ['credit balance', 'billing', 'insufficient_quota', 'insufficient'];
@@ -71,7 +72,12 @@ export class OpenAICompatibleClient implements LlmClient {
     );
   }
 
-  async complete(systemPrompt: string, userInput: string, signal?: AbortSignal): Promise<string> {
+  async complete(
+    systemPrompt: string,
+    userInput: string,
+    signal?: AbortSignal,
+    history?: ChatTurn[],
+  ): Promise<string> {
     const response = await fetchWithRetry(
       `${this.config.baseUrl}/chat/completions`,
       {
@@ -85,6 +91,7 @@ export class OpenAICompatibleClient implements LlmClient {
           max_tokens: this.config.maxTokens,
           messages: [
             { role: 'system', content: systemPrompt },
+            ...(history ?? []),
             { role: 'user', content: userInput },
           ],
         }),
@@ -93,7 +100,7 @@ export class OpenAICompatibleClient implements LlmClient {
     );
     if (!response.ok) {
       throw new Error(
-        `${this.config.providerLabel} API error: ${response.status} ${await response.text()}`,
+        `${this.config.providerLabel} API error: ${response.status} ${sanitizeErrorBody(await response.text(), 200)}`,
       );
     }
     const data = (await response.json()) as OpenAIResponse;
@@ -144,7 +151,7 @@ export class OpenAICompatibleClient implements LlmClient {
     );
     if (!response.ok) {
       throw new Error(
-        `${this.config.providerLabel} API error: ${response.status} ${await response.text()}`,
+        `${this.config.providerLabel} API error: ${response.status} ${sanitizeErrorBody(await response.text(), 200)}`,
       );
     }
     const data = (await response.json()) as OpenAIResponse;
@@ -240,7 +247,7 @@ export function createOpenAICompatibleProvider(
         await response.body?.cancel().catch(() => undefined);
         return { ok: true };
       }
-      const body = (await response.text().catch(() => '')).slice(0, 500);
+      const body = sanitizeErrorBody(await response.text().catch(() => ''));
       if (response.status === 401 || response.status === 403) {
         return { ok: false, reason: 'invalid', status: response.status, body };
       }
@@ -290,7 +297,7 @@ export function createOpenAICompatibleProvider(
         await response.body?.cancel().catch(() => undefined);
         return { ok: true };
       }
-      const body = (await response.text().catch(() => '')).slice(0, 500);
+      const body = sanitizeErrorBody(await response.text().catch(() => ''));
       if (response.status === 401 || response.status === 403) {
         return { ok: false, reason: 'invalid', status: response.status, body };
       }

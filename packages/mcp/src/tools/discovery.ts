@@ -398,6 +398,9 @@ export const discoveryTools: ToolDefinition[] = [
               ...(card.inputMime ? { input_mime: card.inputMime } : {}),
               ...(card.inputText ? { input_text: card.inputText } : {}),
               ...(card.outputMime ? { output_mime: card.outputMime } : {}),
+              // Conversation support: pass session_id on submit tools to hold a
+              // multi-turn conversation with this capability.
+              ...(card.context ? { context: true } : {}),
             };
           }),
           supported_kinds: a.supportedKinds,

@@ -36,6 +36,14 @@ export interface CapabilityCard {
    * Untrusted - gate on it, never render the raw value.
    */
   inputText?: 'required' | 'optional' | 'none';
+  /**
+   * The capability keeps conversation context across jobs (from a skill's
+   * `context: true` frontmatter): reusing a `sessionId` on submits makes the
+   * provider answer with the session's prior exchanges as context. Absent =
+   * stateless; a session id sent anyway is processed statelessly without
+   * error. Discovery hint - clients gate chat affordances on it.
+   */
+  context?: boolean;
 }
 
 /** Payment info embedded in capability card (legacy format for on-network events). */
@@ -206,6 +214,16 @@ export interface SubmitJobOptions {
    * advertising `['iroh']` makes a provider skip the (encrypted-Blossom) upload it can't use.
    */
   acceptTransports?: TransportKind[];
+  /**
+   * Conversation session id (client-generated UUID v4, lowercase). Reusing an id
+   * asks the provider to answer with the context of prior jobs in the session;
+   * a fresh id starts a new chat; omitting it is a stateless one-shot. Requires
+   * `providerPubkey` (the session travels inside the NIP-44-encrypted payload
+   * envelope and must never appear in cleartext relay content) - submitting a
+   * session id without a provider pubkey throws. Providers that predate or
+   * disable sessions strip the field and process the job statelessly.
+   */
+  sessionId?: string;
 }
 
 export interface JobUpdateCallbacks {

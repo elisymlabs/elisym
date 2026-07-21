@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { runScript } from './scriptSkill';
+import { runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
   SkillContext,
@@ -41,6 +41,8 @@ export interface DynamicScriptSkillParams {
    * itself reads the key from its environment.
    */
   llmOverride?: SkillLlmOverride;
+  /** Conversation-context participation (SKILL.md `context: true`). */
+  context?: boolean;
   /**
    * MIME type the script declares for a file result (SKILL.md `output_mime`).
    * Used only when the script writes a file to `ELISYM_OUTPUT_FILE`; becomes the
@@ -65,6 +67,7 @@ export class DynamicScriptSkill implements Skill {
   image?: string;
   imageFile?: string;
   llmOverride?: SkillLlmOverride;
+  readonly context?: boolean;
   private scriptPath: string;
   private scriptArgs: string[];
   private scriptTimeoutMs?: number;
@@ -80,6 +83,7 @@ export class DynamicScriptSkill implements Skill {
     this.image = params.image;
     this.imageFile = params.imageFile;
     this.llmOverride = params.llmOverride;
+    this.context = params.context;
     this.scriptPath = params.scriptPath;
     this.scriptArgs = params.scriptArgs;
     this.scriptTimeoutMs = params.scriptTimeoutMs;
@@ -101,13 +105,28 @@ export class DynamicScriptSkill implements Skill {
     // distinct subpath from `outputFile`, so scanning it never picks up the single file.
     const outputDir = join(outDir, 'files');
     await mkdir(outputDir, { recursive: true });
+    // No caller-provided env -> scoped copy of process.env (secret vars
+    // stripped), never the raw parent env with the operator's key ring.
     const env: NodeJS.ProcessEnv = {
-      ...(this.scriptEnv ?? process.env),
+      ...(this.scriptEnv ?? scopedToolEnv()),
       ELISYM_OUTPUT_FILE: outputFile,
       ELISYM_OUTPUT_DIR: outputDir,
     };
     if (input.filePath !== undefined) {
       env.ELISYM_INPUT_FILE = input.filePath;
+    }
+    // Conversation contract (`context: true`): the session id always rides
+    // along so a script can key its own upstream conversation state; prior
+    // turns (when any) land in a JSON file - env values have size limits a
+    // long transcript would blow. Absent vars = stateless job; a set id with
+    // no history file = the conversation's first message.
+    if (input.sessionId !== undefined) {
+      env.ELISYM_SESSION_ID = input.sessionId;
+    }
+    if (input.history !== undefined && input.history.length > 0) {
+      const historyFile = join(outDir, 'history.json');
+      await writeFile(historyFile, JSON.stringify(input.history), 'utf8');
+      env.ELISYM_HISTORY_FILE = historyFile;
     }
 
     // Keep the temp dir only when we hand a file result back to the runtime: it

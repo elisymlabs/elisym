@@ -1,4 +1,12 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,7 +16,7 @@ import {
   parseSkillMd,
   validateSkillFrontmatter,
 } from '../src/skills/loader';
-import { resolveInsidePath } from '../src/skills/path-safety';
+import { resolveInsidePath, resolveInsidePathReal } from '../src/skills/path-safety';
 import { MAX_STATIC_FILE_SIZE } from '../src/skills/staticFileSkill';
 
 let tmpDir: string;
@@ -551,6 +559,44 @@ describe('resolveInsidePath', () => {
   });
 });
 
+describe('resolveInsidePathReal', () => {
+  it('resolves an existing file to its physical path inside the root', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'safe-path-'));
+    try {
+      writeFileSync(join(tmp, 'a.txt'), 'x');
+      expect(resolveInsidePathReal(tmp, 'a.txt')).toBe(realpathSync(join(tmp, 'a.txt')));
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
+  it('rejects a symlink that escapes the root', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'safe-path-outside-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'safe-path-'));
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'secret');
+      symlinkSync(join(outside, 'secret.txt'), join(tmp, 'link.txt'));
+      expect(resolveInsidePathReal(tmp, 'link.txt')).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true });
+      rmSync(outside, { recursive: true });
+    }
+  });
+
+  it('passes a not-yet-existing path through unresolved', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'safe-path-'));
+    try {
+      // The string phase anchors on the physical root, so the candidate is
+      // rooted at realpath(tmp) even before the file exists.
+      expect(resolveInsidePathReal(tmp, 'missing.txt')).toBe(
+        join(realpathSync(tmp), 'missing.txt'),
+      );
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+});
+
 describe('loadSkillsFromDir (mode dispatch + execute)', () => {
   it('loads a static-file skill and execute returns file contents', async () => {
     const dir = writeSkill(
@@ -715,6 +761,52 @@ script: ./upper.sh
       { agentName: 't', agentDescription: '' },
     );
     expect(out.data).toBe('HELLO THERE');
+  });
+
+  it('dynamic-script: hands the session id and history to the script via env', async () => {
+    const dir = writeSkill(
+      'ctx',
+      `---
+name: ctx-skill
+description: Contextual script
+capabilities: [chat]
+price: 0.001
+mode: dynamic-script
+script: ./ctx.sh
+context: true
+---
+
+`,
+    );
+    const scriptPath = join(dir, 'ctx.sh');
+    writeFileSync(
+      scriptPath,
+      '#!/bin/sh\nif [ -n "$ELISYM_HISTORY_FILE" ]; then cat "$ELISYM_HISTORY_FILE"; fi\nprintf \':%s\' "$ELISYM_SESSION_ID"\n',
+      'utf-8',
+    );
+    chmodSync(scriptPath, 0o755);
+
+    const skills = loadSkillsFromDir(tmpDir);
+    expect(skills).toHaveLength(1);
+    expect(skills[0]!.context).toBe(true);
+
+    const history = [
+      { role: 'user' as const, content: 'first' },
+      { role: 'assistant' as const, content: 'reply' },
+    ];
+    const sessionId = '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c';
+    const withSession = await skills[0]!.execute(
+      { data: 'second', inputType: 'text', tags: ['chat'], jobId: 'j-ctx-1', history, sessionId },
+      { agentName: 't', agentDescription: '' },
+    );
+    expect(withSession.data).toBe(`${JSON.stringify(history)}:${sessionId}`);
+
+    // Stateless job: neither var is set - the script sees an empty id.
+    const stateless = await skills[0]!.execute(
+      { data: 'solo', inputType: 'text', tags: ['chat'], jobId: 'j-ctx-2' },
+      { agentName: 't', agentDescription: '' },
+    );
+    expect(stateless.data).toBe(':');
   });
 
   it('dynamic-script: passes script_args after the script', async () => {

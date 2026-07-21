@@ -47,7 +47,15 @@ describe('uploadOrReuse', () => {
     const { blossom, upload, getCapturedType } = makeBlossom(descriptor);
     const onCacheUpdate = vi.fn();
 
-    const url = await uploadOrReuse('picture', filePath, cache, blossom, identity, onCacheUpdate);
+    const url = await uploadOrReuse(
+      'picture',
+      filePath,
+      dir,
+      cache,
+      blossom,
+      identity,
+      onCacheUpdate,
+    );
 
     expect(url).toBe(descriptor.url);
     expect(upload).toHaveBeenCalledTimes(1);
@@ -76,7 +84,15 @@ describe('uploadOrReuse', () => {
     const { blossom, upload } = makeBlossom(descriptor);
     const onCacheUpdate = vi.fn();
 
-    const url = await uploadOrReuse('picture', filePath, cache, blossom, identity, onCacheUpdate);
+    const url = await uploadOrReuse(
+      'picture',
+      filePath,
+      dir,
+      cache,
+      blossom,
+      identity,
+      onCacheUpdate,
+    );
 
     expect(url).toBe(cachedUrl);
     expect(upload).not.toHaveBeenCalled();

@@ -145,6 +145,34 @@ export async function fetchWithTimeout(
   });
 }
 
+// Known API-key shapes across the five supported providers (sk-* covers
+// OpenAI/Anthropic/DeepSeek, xai-* covers xAI, AIza* covers Google) plus
+// generic auth-header echoes. A proxy or gateway sitting on a custom baseUrl
+// can echo request headers verbatim in its error body.
+const SECRET_BODY_PATTERNS: readonly RegExp[] = [
+  /sk-[A-Za-z0-9_-]{8,}/g,
+  /xai-[A-Za-z0-9_-]{8,}/g,
+  /AIza[A-Za-z0-9_-]{16,}/g,
+  /(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi,
+  /(x-api-key["':\s=]+)[A-Za-z0-9._~+/=-]{8,}/gi,
+];
+
+/**
+ * Provider error bodies are untrusted: they end up in thrown Error messages,
+ * key-verification results, and operator logs, none of which redact free-form
+ * strings. Scrub known secret shapes and bound the length before the body
+ * leaves the HTTP layer.
+ */
+export function sanitizeErrorBody(body: string, maxLength = 500): string {
+  let scrubbed = body;
+  for (const pattern of SECRET_BODY_PATTERNS) {
+    scrubbed = scrubbed.replace(pattern, (_match, prefix: unknown) =>
+      typeof prefix === 'string' ? `${prefix}[REDACTED]` : '[REDACTED]',
+    );
+  }
+  return scrubbed.slice(0, maxLength);
+}
+
 export async function fetchWithRetry(
   url: string,
   init: RequestInit,

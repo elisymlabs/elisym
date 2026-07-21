@@ -58,7 +58,29 @@ Parse-time invariant: `provider` is set iff `model` is set.
 
 For `mode: 'llm'`, these override the agent default (in `elisym.yaml` `llm:` block) for runtime LLM execution.
 
-For script modes, declaring `provider` + `model` tells the runtime "this script depends on this LLM API key under the hood". The runtime then health-monitors the key (see below); the script itself is still responsible for making its own HTTP calls, reading the key from the env var the agent sets at start (e.g. `ANTHROPIC_API_KEY`).
+For script modes, declaring `provider` + `model` tells the runtime "this script depends on this LLM API key under the hood". The runtime then health-monitors the key (see below); the script itself is still responsible for making its own HTTP calls, reading the key from the env var the agent sets at start (e.g. `ANTHROPIC_API_KEY`). Only the declared provider's key is present in the script's env - keys of every other configured provider are stripped (least privilege), and a skill that declares no `provider` receives no LLM keys at all.
+
+## Conversation context (sessions)
+
+| Field     | Type    | Modes accepted          | Default | Notes                                                                  |
+| --------- | ------- | ----------------------- | ------- | ---------------------------------------------------------------------- |
+| `context` | boolean | `llm`, `dynamic-script` | `false` | Opt this skill into multi-turn conversation sessions over NIP-90 jobs. |
+
+With `context: true`, a job that carries a session id (an encrypted, targeted job whose payload envelope has `session: { id: <uuid v4> }` - set via the SDK's `SubmitJobOptions.sessionId`) takes the session path: the runtime loads the session's prior turns, hands them to the skill, and records the new exchange to `<agentDir>/.sessions/<customerPubkey>/<sessionId>.jsonl` (gitignored; transcripts hold customer content in cleartext). Long sessions are compacted automatically (threshold + summarize on the skill's resolved LLM; with no LLM available the store degrades to truncation). A new session id starts a fresh chat; a job without a session id - or on a skill without `context: true` - is processed statelessly and leaves no transcript record.
+
+Per mode:
+
+- `llm` - prior turns are prepended to the LLM messages: `[...history, current input]`.
+- `dynamic-script` - the script receives the conversation through two env vars; the transcript itself stays runtime-owned (recording, caps, TTL, compaction), and the stdin/stdout contract is unchanged - trimmed stdout is recorded as the assistant turn:
+
+| Env var               | Meaning                                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ELISYM_SESSION_ID`   | The job's session id (UUID v4). Set on every session-path job, first message included - lets a script key its own upstream conversation state.                |
+| `ELISYM_HISTORY_FILE` | Path to a JSON array of prior turns, oldest first: `[{"role":"user","content":"..."},{"role":"assistant","content":"..."}]`. Set only when prior turns exist. |
+
+Both vars absent = stateless job; `ELISYM_SESSION_ID` set with no `ELISYM_HISTORY_FILE` = the conversation's first message.
+
+Declaring `context` on any other mode is a parse-time error (like `max_tokens`): static modes ignore customer input entirely, and `x402` conversation state belongs to the upstream. The flag is advertised on the skill's NIP-89 capability card at `elisym start`, so clients (web app chat, MCP automatic sessions) can see the capability keeps context. Design and limits: `docs/plans/job-conversation-context.md`.
 
 ## Mode-specific fields
 

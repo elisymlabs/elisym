@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { runScript } from './scriptSkill';
+import { runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
   SkillContext,
@@ -82,7 +82,9 @@ export class StaticScriptSkill implements Skill {
       cwd: dirname(this.scriptPath),
       signal: ctx.signal,
       timeoutMs: this.scriptTimeoutMs,
-      env: this.scriptEnv,
+      // No caller-provided env -> scoped copy of process.env (secret vars
+      // stripped), never the raw parent env with the operator's key ring.
+      env: this.scriptEnv ?? scopedToolEnv(),
     });
     if (result.spawnError) {
       throw new ScriptExecutionError(

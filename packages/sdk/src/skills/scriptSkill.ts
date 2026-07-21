@@ -129,11 +129,23 @@ export function runScript(
 }
 
 // Env vars that carry agent/operator secrets and must not leak into skill tool
-// subprocesses. The child still inherits the rest of the environment (PATH,
-// HOME, locale, etc.) so legitimate tool scripts keep working.
-const SECRET_ENV_VARS: readonly string[] = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'];
+// subprocesses. Covers every LLM provider key the CLI can inject,
+// ELISYM_PASSPHRASE (decrypts `.secrets.json` at rest), and SOLANA_RPC_URL
+// (third-party RPC providers embed the API key in the URL itself; a tool that
+// needs devnet can hardcode the public endpoint). The child still inherits the
+// rest of the environment (PATH, HOME, locale, etc.) so legitimate tool
+// scripts keep working.
+const SECRET_ENV_VARS: readonly string[] = [
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'XAI_API_KEY',
+  'GEMINI_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'ELISYM_PASSPHRASE',
+  'SOLANA_RPC_URL',
+];
 
-function scopedToolEnv(): NodeJS.ProcessEnv {
+export function scopedToolEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of SECRET_ENV_VARS) {
     delete env[key];
@@ -153,6 +165,8 @@ export interface ScriptSkillParams {
   maxToolRounds: number;
   /** Optional per-skill LLM override (provider/model pair and/or maxTokens). */
   llmOverride?: SkillLlmOverride;
+  /** Conversation-context participation (SKILL.md `context: true`). */
+  context?: boolean;
   image?: string;
   imageFile?: string;
   logger?: ScriptSkillLogger;
@@ -173,6 +187,7 @@ export class ScriptSkill implements Skill {
   asset: Asset;
   mode: SkillMode = 'llm';
   readonly llmOverride?: SkillLlmOverride;
+  readonly context?: boolean;
   image?: string;
   imageFile?: string;
   private skillDir: string;
@@ -188,6 +203,7 @@ export class ScriptSkill implements Skill {
     this.priceSubunits = params.priceSubunits;
     this.asset = params.asset;
     this.llmOverride = params.llmOverride;
+    this.context = params.context;
     this.image = params.image;
     this.imageFile = params.imageFile;
     this.skillDir = params.skillDir;
@@ -201,7 +217,7 @@ export class ScriptSkill implements Skill {
     const llm = this.resolveLlmClient(ctx);
 
     if (this.tools.length === 0) {
-      const result = await llm.complete(this.systemPrompt, input.data, ctx.signal);
+      const result = await llm.complete(this.systemPrompt, input.data, ctx.signal, input.history);
       return { data: result };
     }
 
@@ -215,7 +231,7 @@ export class ScriptSkill implements Skill {
       })),
     }));
 
-    const messages: unknown[] = [{ role: 'user', content: input.data }];
+    const messages: unknown[] = [...(input.history ?? []), { role: 'user', content: input.data }];
 
     for (let round = 0; round < this.maxToolRounds; round++) {
       if (ctx.signal?.aborted) {
@@ -312,7 +328,10 @@ export class ScriptSkill implements Skill {
       if (stringValue.startsWith('-')) {
         return `Error: tool "${toolDef.name}" argument "${param.name}" must not begin with "-".`;
       }
-      if (param.required && index === 0) {
+      // Same `required` default as the tool schema advertised to the LLM
+      // (`param.required ?? true` in execute): an undeclared-required first
+      // param must dispatch positionally, not as `--name value`.
+      if ((param.required ?? true) && index === 0) {
         args.push(stringValue);
       } else {
         args.push(`--${param.name}`, stringValue);

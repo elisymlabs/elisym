@@ -92,11 +92,23 @@ Small `text/*` input is still piped to stdin; a robust script handles both. Decl
 
 ### `llm` mode extras
 
-| Field             | Default | Notes                                         |
-| ----------------- | ------- | --------------------------------------------- |
-| `tools`           | -       | External tools the LLM can call during a job. |
-| `max_tool_rounds` | 10      | Cap on LLM-to-tools loops per job.            |
-| `max_tokens`      | -       | Per-skill output cap (`llm` only).            |
+| Field             | Default | Notes                                                        |
+| ----------------- | ------- | ------------------------------------------------------------ |
+| `tools`           | -       | External tools the LLM can call during a job.                |
+| `max_tool_rounds` | 10      | Cap on LLM-to-tools loops per job.                           |
+| `max_tokens`      | -       | Per-skill output cap (`llm` only).                           |
+| `context`         | `false` | Opt into multi-turn conversation sessions - also valid on `dynamic-script` (see below). |
+
+#### Conversation context (`context: true`)
+
+With `context: true`, a job that carries a session id (set by the customer via the SDK's `sessionId` option on an encrypted, targeted job) takes the session path, and the new exchange is recorded to `<agentDir>/.sessions/` (gitignored - transcripts hold customer content in cleartext). Reusing a session id continues the chat; a fresh id starts a new one; a job without a session id is processed statelessly and leaves no record. Long sessions are compacted automatically (older turns are summarized on the skill's own LLM). Transcripts expire after 30 days of inactivity.
+
+How the skill sees the conversation depends on its mode:
+
+- `llm` - prior turns are prepended to the LLM messages.
+- `dynamic-script` - the script gets `ELISYM_SESSION_ID` (the session UUID, set on every session job - key your own upstream state on it) and `ELISYM_HISTORY_FILE` (path to a JSON array of prior `{role, content}` turns; absent on the conversation's first message). Stdin/stdout stay unchanged - stdout is recorded as the assistant turn.
+
+Declaring `context` on any other mode is a parse-time error. The flag is advertised on the skill's NIP-89 capability card, so clients (the web app chat, the MCP's automatic sessions) know the capability keeps context.
 
 ```yaml
 tools:
@@ -125,7 +137,7 @@ The agent keeps an on-disk job ledger and recovers in-flight jobs on restart, so
 
 ## LLM-backed scripts and the exit-code contract
 
-A script that calls an upstream LLM can declare `provider` + `model` so the agent health-monitors the API key (probed at startup, gated per-job, recovered lazily). To signal that the upstream provider is out of credits, exit with **42**:
+A script that calls an upstream LLM can declare `provider` + `model` so the agent health-monitors the API key (probed at startup, gated per-job, recovered lazily). The declaration also scopes the script's environment: only the declared provider's API key env var is present - keys of other configured providers are stripped, and a script with no declaration receives no LLM keys. To signal that the upstream provider is out of credits, exit with **42**:
 
 | Exit code     | Meaning                                | Effect                                                 |
 | ------------- | -------------------------------------- | ------------------------------------------------------ |

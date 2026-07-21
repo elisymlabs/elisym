@@ -1,7 +1,7 @@
-import { nip44Decrypt, resolveKnownAsset, toDTag, truncateKey } from '@elisym/sdk';
+import { truncateKey } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { nip19, verifyEvent, type Event as NostrEvent } from 'nostr-tools';
-import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { nip19 } from 'nostr-tools';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import { Link, useLocation, useParams, useSearch } from 'wouter';
@@ -11,36 +11,23 @@ import { useBuyForCard } from '~/contexts/BuyContext';
 import { useAgent } from '~/hooks/useAgent';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
-import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
-import { useJobHistory } from '~/hooks/useJobHistory';
 import { usePingAgent, type PingStatus } from '~/hooks/usePingAgent';
 import { useScrollEdges } from '~/hooks/useScrollEdges';
-import { track } from '~/lib/analytics';
-import { SOLANA_CLUSTER } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
-import { decodeResult } from '~/lib/fileResult';
-import { compactZeros, formatDecimal } from '~/lib/formatPrice';
-import { cacheGet, cacheSet } from '~/lib/localCache';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
 import { AgentActivity } from './AgentActivity';
-import { ArtifactCapturer } from './ArtifactCapturer';
-import { ArtifactModal } from './ArtifactModal';
+import { ChatTab } from './ChatTab';
 import { FadeInImage } from './FadeInImage';
 import { JobInput } from './JobInput';
-import { cleanPreviewText, formatArtifactTime } from './lib/artifactPreview';
 import { STATUS_DOT } from './lib/status';
 import { PoliciesPanel } from './PoliciesPanel';
-import { ProductAvatar } from './ProductAvatar';
 import { ProductCard } from './ProductCard';
 import { ScrambleText } from './ScrambleText';
-import type { Artifact } from './types';
-import { useArtifacts } from './useArtifacts';
-import { useNostrArtifacts } from './useNostrArtifacts';
+import { useChatHydration } from './useChatHydration';
+import { identityThreadEntries, useChatThread } from './useChatThread';
 
 const APPEAR_DURATION_MS = 600;
-const THANKS_VISIBLE_MS = 3000;
-const THANKS_MOUNT_MS = 3700;
 const MAX_DISPLAY_NAME = 60;
 
 // A Nostr pubkey is a 32-byte ed25519 key rendered as 64 lowercase hex chars.
@@ -68,8 +55,8 @@ const TABS = [
     ),
   },
   {
-    id: 'artifacts' as const,
-    label: 'History',
+    id: 'chat' as const,
+    label: 'Chat',
     icon: (
       <svg
         aria-hidden
@@ -81,8 +68,7 @@ const TABS = [
         strokeLinecap="round"
         strokeLinejoin="round"
       >
-        <circle cx="12" cy="12" r="9" />
-        <polyline points="12 7 12 12 15 14" />
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
       </svg>
     ),
   },
@@ -102,6 +88,26 @@ const TABS = [
       >
         <polyline points="4 7 8 11 4 15" />
         <line x1="12" y1="15" x2="20" y2="15" />
+      </svg>
+    ),
+  },
+  {
+    id: 'about' as const,
+    label: 'About',
+    icon: (
+      <svg
+        aria-hidden
+        className="size-14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="16" x2="12" y2="12" />
+        <line x1="12" y1="8" x2="12.01" y2="8" />
       </svg>
     ),
   },
@@ -155,7 +161,15 @@ function NotFound() {
   );
 }
 
-function TabsBar({ activeTab, onSelect }: { activeTab: TabId; onSelect: (tab: TabId) => void }) {
+function TabsBar({
+  activeTab,
+  onSelect,
+  chatDot,
+}: {
+  activeTab: TabId;
+  onSelect: (tab: TabId) => void;
+  chatDot: boolean;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const { atStart, atEnd } = useScrollEdges(scrollRef);
   return (
@@ -194,6 +208,12 @@ function TabsBar({ activeTab, onSelect }: { activeTab: TabId; onSelect: (tab: Ta
             >
               <span className="text-text-2">{tab.icon}</span>
               {tab.label}
+              {tab.id === 'chat' && chatDot && (
+                <span
+                  aria-label="Unseen results"
+                  className="size-6 shrink-0 rounded-full bg-stat-emerald"
+                />
+              )}
             </button>
           );
         })}
@@ -216,130 +236,6 @@ function TabsBar({ activeTab, onSelect }: { activeTab: TabId; onSelect: (tab: Ta
   );
 }
 
-function mergeArtifacts(
-  local: Artifact[],
-  remote: Omit<Artifact, 'cardName'>[] | undefined,
-  cards: { name: string }[],
-): Artifact[] {
-  const byId = new Map<string, Artifact>();
-  for (const artifact of local) {
-    byId.set(artifact.id, artifact);
-  }
-  if (remote) {
-    const cardNameByDTag = new Map<string, string>();
-    for (const card of cards) {
-      cardNameByDTag.set(toDTag(card.name), card.name);
-    }
-    for (const partial of remote) {
-      const existing = byId.get(partial.id);
-      if (existing) {
-        byId.set(partial.id, {
-          ...existing,
-          prompt: existing.prompt ?? partial.prompt,
-          priceLamports: existing.priceLamports ?? partial.priceLamports,
-          asset: existing.asset ?? partial.asset,
-          // A job seen both live and in history merges here; carry the file
-          // descriptors so the downloads survive (the whitelist would drop them).
-          promptAttachment: existing.promptAttachment ?? partial.promptAttachment,
-          promptProviderPubkey: existing.promptProviderPubkey ?? partial.promptProviderPubkey,
-          resultAttachments: existing.resultAttachments ?? partial.resultAttachments,
-          resultProviderPubkey: existing.resultProviderPubkey ?? partial.resultProviderPubkey,
-        });
-      } else {
-        const capability = partial.capability;
-        const cardName = (capability && cardNameByDTag.get(capability)) ?? capability ?? 'Job';
-        byId.set(partial.id, { ...partial, cardName });
-      }
-    }
-  }
-  return Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt);
-}
-
-function useHydrateArtifacts(
-  artifacts: Artifact[],
-  pubkey: string,
-  updateArtifact: (id: string, patch: Partial<Artifact>) => void,
-) {
-  const { client } = useElisymClient();
-  const idCtx = useIdentity();
-
-  useEffect(() => {
-    const missing = artifacts.filter(
-      (artifact) =>
-        (!artifact.prompt && !artifact.promptAttachment) || artifact.priceLamports === undefined,
-    );
-    if (missing.length === 0 || !pubkey) {
-      return;
-    }
-    let cancelled = false;
-
-    async function hydrate() {
-      try {
-        const ids = missing.map((artifact) => artifact.id);
-        const identity = idCtx.identity;
-        const [requests, resMap] = await Promise.all([
-          client.pool.querySync({ ids }) as Promise<NostrEvent[]>,
-          identity
-            ? // Scope results to this agent's pubkey: without the author filter a
-              // forged kind-6100 tagging a public request id could be hydrated as
-              // the result (amount/content poisoning of localStorage).
-              client.marketplace
-                .queryJobResults(identity, ids, undefined, pubkey)
-                .catch(() => new Map())
-            : Promise.resolve(new Map()),
-        ]);
-        if (cancelled) {
-          return;
-        }
-        for (const artifact of missing) {
-          // verifyEvent: the relay-supplied `id` is content-addressed but not
-          // trusted at face value - a malicious relay could return an event with a
-          // matching id but attacker `pubkey`/`tags`/`content`, whose `p` tag would
-          // then drive nip44Decrypt. Verifying rejects any forged/tampered event.
-          const req = requests.find((event) => event.id === artifact.id && verifyEvent(event));
-          const patch: Partial<Artifact> = {};
-          if (req && !artifact.prompt && !artifact.promptAttachment) {
-            const pTag = req.tags.find((tag) => tag[0] === 'p')?.[1];
-            const isEncrypted = req.tags.some((tag) => tag[0] === 'encrypted');
-            try {
-              const plaintext =
-                isEncrypted && pTag && identity
-                  ? nip44Decrypt(req.content, identity.secretKey, pTag)
-                  : req.content;
-              // Decode the input envelope: keep the genuine text note (not the
-              // `📎 name` placeholder) and the file attachment so the modal can show
-              // a real preview. NIP-44 is symmetric, so the input decrypts against the
-              // `p`-tag recipient. An input is always a single file.
-              const decodedInput = decodeResult(plaintext);
-              patch.prompt = decodedInput.text?.trim() ? decodedInput.text : undefined;
-              patch.promptAttachment = decodedInput.attachments[0];
-              if (decodedInput.attachments[0] && pTag) {
-                patch.promptProviderPubkey = pTag;
-              }
-            } catch {
-              // decryption failed, skip
-            }
-          }
-          const res = resMap.get(artifact.id);
-          if (res && artifact.priceLamports === undefined) {
-            patch.priceLamports = res.amount ?? 0;
-          }
-          if (Object.keys(patch).length > 0) {
-            updateArtifact(artifact.id, patch);
-          }
-        }
-      } catch {
-        // silent fail
-      }
-    }
-
-    void hydrate();
-    return () => {
-      cancelled = true;
-    };
-  }, [artifacts, client, idCtx.identity, pubkey, updateArtifact]);
-}
-
 export default function AgentPage() {
   const params = useParams<{ pubkey: string }>();
   const pubkey = params.pubkey ?? '';
@@ -358,26 +254,13 @@ export default function AgentPage() {
   const agentData = agent ? displayAgents[0] : undefined;
 
   const idCtx = useIdentity();
-  // The connected Solana wallet's job history holds the payment tx per job, so
-  // an artifact-tab rating can carry the payment proof for the future indexer.
   const { publicKey: walletPublicKey } = useWallet();
-  const { jobs: walletJobs } = useJobHistory({ wallet: walletPublicKey?.toBase58() ?? '' });
-  const txHashByJobId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const job of walletJobs) {
-      if (job.txHash) {
-        map.set(job.jobEventId, job.txHash);
-      }
-    }
-    return map;
-  }, [walletJobs]);
   const isOwn = idCtx.publicKey === pubkey;
   const pingedStatus = usePingAgent(isOwn || !pubkey ? '' : pubkey);
   const pingStatus: PingStatus = isOwn ? 'online' : pingedStatus;
 
   const [selectedCardIndex, setSelectedCardIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<TabId>('products');
-  const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const [appeared, setAppeared] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setAppeared(true), APPEAR_DURATION_MS);
@@ -385,20 +268,24 @@ export default function AgentPage() {
   }, []);
   const appearCls = appeared ? '' : 'appear';
 
-  const {
-    artifacts,
-    hydrated: artifactsHydrated,
-    append: appendArtifact,
-    update: updateArtifact,
-  } = useArtifacts(pubkey);
+  // Thread store snapshot (all identities) + background relay hydration into
+  // it. Hydration keeps its page-mount laziness (starts when the page's data
+  // is needed, exactly as the retired artifact hydration did).
+  const { entries: threadEntries, loaded: threadLoaded } = useChatThread(pubkey);
+  const { hydrating } = useChatHydration(isValidPubkey ? pubkey : '');
+  const identityEntries = useMemo(
+    () => identityThreadEntries(threadEntries, idCtx.publicKey),
+    [threadEntries, idCtx.publicKey],
+  );
+
   const tabsContainerRef = useRef<HTMLDivElement | null>(null);
-  const { artifacts: nostrArtifacts, loading: nostrArtifactsLoading } = useNostrArtifacts(pubkey);
   const nostrBanner = agent?.banner;
-  const { client } = useElisymClient();
-  const [ratedArtifacts, setRatedArtifacts] = useState<Set<string>>(new Set());
-  const [thanksVisible, setThanksVisible] = useState<Set<string>>(new Set());
-  const [thanksMounted, setThanksMounted] = useState<Set<string>>(new Set());
-  const [newArtifactIds, setNewArtifactIds] = useState<Set<string>>(new Set());
+
+  // Unseen badge: the `elisym:unseen-artifacts:<agentPubkey>` store keeps its
+  // key; its reader is now the dot on the Chat tab label. The store is
+  // agent-keyed and survives logout, so the reader intersects the stored ids
+  // with the current identity's rendered entries - identity B never shows a
+  // badge for identity A's completions, and purged/trimmed ids are inert.
   const unseenStorageKey = `elisym:unseen-artifacts:${pubkey}`;
   const [unseenArtifactIds, setUnseenArtifactIds] = useState<Set<string>>(new Set());
   useEffect(() => {
@@ -420,86 +307,84 @@ export default function AgentPage() {
     [unseenStorageKey],
   );
 
+  // Page-owned completion observer (replacing the retired ArtifactCapturer's
+  // bridge role): watch the thread store for pending/failed -> completed
+  // transitions and, when one fires while the Chat tab is not active AND the
+  // entry is stamped with the current identity, record the id as unseen.
+  // BuyContext keeps zero knowledge of tabs.
+  const prevStatusRef = useRef<Map<string, string> | null>(null);
   useEffect(() => {
-    if (artifacts.length === 0) {
+    if (!threadLoaded) {
       return;
     }
-    let cancelled = false;
-    Promise.all(
-      artifacts.map(async (artifact) =>
-        (await cacheGet<boolean>(`rated:${artifact.id}`)) ? artifact.id : null,
-      ),
-    ).then((ids) => {
-      if (cancelled) {
-        return;
+    const prev = prevStatusRef.current;
+    const next = new Map<string, string>();
+    for (const entry of threadEntries) {
+      next.set(entry.jobEventId, entry.status ?? 'completed');
+    }
+    prevStatusRef.current = next;
+    if (prev === null) {
+      // First snapshot: nothing transitioned within this tab's observation.
+      return;
+    }
+    const completedNow: string[] = [];
+    for (const entry of threadEntries) {
+      if (entry.customerPubkey !== idCtx.publicKey || entry.status !== undefined) {
+        continue;
       }
-      const ratedSet = new Set(ids.filter((id): id is string => id !== null));
-      if (ratedSet.size > 0) {
-        setRatedArtifacts(ratedSet);
+      const before = prev.get(entry.jobEventId);
+      if (before !== undefined && before !== 'completed') {
+        completedNow.push(entry.jobEventId);
       }
+    }
+    if (completedNow.length === 0 || activeTab === 'chat') {
+      return;
+    }
+    setUnseenArtifactIds((prevIds) => {
+      const nextIds = new Set(prevIds);
+      for (const id of completedNow) {
+        nextIds.add(id);
+      }
+      persistUnseen(nextIds);
+      return nextIds;
     });
-    return () => {
-      cancelled = true;
-    };
-  }, [artifacts]);
+  }, [threadEntries, threadLoaded, activeTab, idCtx.publicKey, persistUnseen]);
 
-  useHydrateArtifacts(artifacts, pubkey, updateArtifact);
-
-  const mergedArtifacts = useMemo(
-    () => mergeArtifacts(artifacts, nostrArtifacts, agentData?.cards ?? []),
-    [artifacts, nostrArtifacts, agentData],
-  );
-
-  const rateArtifact = useCallback(
-    async (artifact: Artifact, positive: boolean) => {
-      const identity = idCtx.identity;
-      if (!artifact.capability || !identity || ratedArtifacts.has(artifact.id)) {
-        return;
+  // The badge clears when the Chat tab becomes active (the messenger unread
+  // pattern). Only the current identity's rendered ids are cleared - other
+  // identities' stored ids stay for their own next visit.
+  useEffect(() => {
+    if (activeTab !== 'chat') {
+      return;
+    }
+    setUnseenArtifactIds((prev) => {
+      if (prev.size === 0) {
+        return prev;
       }
-      setRatedArtifacts((prev) => new Set(prev).add(artifact.id));
-      setThanksMounted((prev) => new Set(prev).add(artifact.id));
-      setThanksVisible((prev) => new Set(prev).add(artifact.id));
-      setTimeout(() => {
-        setThanksVisible((prev) => {
-          const next = new Set(prev);
-          next.delete(artifact.id);
-          return next;
-        });
-      }, THANKS_VISIBLE_MS);
-      setTimeout(() => {
-        setThanksMounted((prev) => {
-          const next = new Set(prev);
-          next.delete(artifact.id);
-          return next;
-        });
-      }, THANKS_MOUNT_MS);
-      try {
-        await client.marketplace.submitFeedback(
-          identity,
-          artifact.id,
-          pubkey,
-          positive,
-          artifact.capability,
-          { txSignature: txHashByJobId.get(artifact.id), network: SOLANA_CLUSTER },
-        );
-        await cacheSet(`rated:${artifact.id}`, true);
-        track('rate-result', { rating: positive ? 'good' : 'bad' });
-      } catch {
-        // silent fail
+      const rendered = new Set(identityEntries.map((entry) => entry.jobEventId));
+      const next = new Set([...prev].filter((id) => !rendered.has(id)));
+      if (next.size === prev.size) {
+        return prev;
       }
-    },
-    [client, idCtx.identity, pubkey, ratedArtifacts, txHashByJobId],
-  );
+      persistUnseen(next);
+      return next;
+    });
+  }, [activeTab, identityEntries, persistUnseen]);
 
-  // ?tab=history lands the user straight on the History tab. Used by the
-  // `Result received` toast's "View" action, which fires while the user is
-  // somewhere else in the app and needs the artifact view ready on arrival.
-  // The artifact may already be saved (e.g. they revisited after the first
-  // capture), so the ArtifactCapturer auto-switch alone is not enough.
+  const chatDot = useMemo(() => {
+    if (unseenArtifactIds.size === 0 || activeTab === 'chat') {
+      return false;
+    }
+    return identityEntries.some((entry) => unseenArtifactIds.has(entry.jobEventId));
+  }, [unseenArtifactIds, identityEntries, activeTab]);
+
+  // ?tab=history lands the user straight on the Chat tab (the History tab it
+  // used to point at is now the chat). Kept as an alias so old links and the
+  // `Result received` toast's "View" action keep working.
   useEffect(() => {
     const params = new URLSearchParams(search);
     if (params.get('tab') === 'history') {
-      setActiveTab('artifacts');
+      setActiveTab('chat');
       // Strip the param so a refresh / back-nav doesn't keep forcing the
       // tab and the URL stays clean once the intent has been honored.
       params.delete('tab');
@@ -522,6 +407,18 @@ export default function AgentPage() {
     agentPicture: agentData?.picture,
     card: currentCard,
   });
+
+  // A send from the Products tab jumps to the Chat tab, once per job - the
+  // message and its live status render there (the messenger pattern).
+  const switchedJobRef = useRef<string | null>(null);
+  useEffect(() => {
+    const jobId = buyState?.jobId ?? null;
+    if (!buyState?.buying || jobId === null || switchedJobRef.current === jobId) {
+      return;
+    }
+    switchedJobRef.current = jobId;
+    setActiveTab((current) => (current === 'products' ? 'chat' : current));
+  }, [buyState?.buying, buyState?.jobId]);
 
   // A malformed pubkey can never resolve to an agent and would crash the
   // `nip19.npubEncode` paths below, so route it straight to NotFound.
@@ -547,9 +444,6 @@ export default function AgentPage() {
     displayName.length > MAX_DISPLAY_NAME
       ? `${displayName.slice(0, MAX_DISPLAY_NAME)}…`
       : displayName;
-  const openArtifact = openArtifactId
-    ? mergedArtifacts.find((artifact) => artifact.id === openArtifactId)
-    : undefined;
 
   function handleBackClick() {
     setLocation('/');
@@ -561,27 +455,6 @@ export default function AgentPage() {
     }
     await navigator.clipboard.writeText(agentData.walletAddress);
     toast.success('Wallet address copied');
-  }
-
-  function handleCloseArtifact(artifactId: string) {
-    setOpenArtifactId(null);
-    setNewArtifactIds((prev) => {
-      if (!prev.has(artifactId)) {
-        return prev;
-      }
-      const next = new Set(prev);
-      next.delete(artifactId);
-      return next;
-    });
-    setUnseenArtifactIds((prev) => {
-      if (!prev.has(artifactId)) {
-        return prev;
-      }
-      const next = new Set(prev);
-      next.delete(artifactId);
-      persistUnseen(next);
-      return next;
-    });
   }
 
   return (
@@ -800,168 +673,106 @@ export default function AgentPage() {
           </div>
         </div>
 
-        {/* 2-column layout */}
-        <div className="agent-page-grid items-start">
-          {/* Left column */}
-          <div className="order-2 flex min-w-0 flex-col gap-16 lg:order-1">
-            {/* Tabs + content */}
-            <div
-              ref={tabsContainerRef}
-              className={cn(
-                appearCls,
-                'scroll-mt-16 rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
-              )}
-            >
-              <TabsBar activeTab={activeTab} onSelect={setActiveTab} />
+        {/* Single-column layout: About lives on its own tab, so every tab -
+            the chat especially - gets the full page width. */}
+        <div className="flex min-w-0 flex-col gap-16">
+          {/* Tabs + content */}
+          <div
+            ref={tabsContainerRef}
+            className={cn(
+              appearCls,
+              'scroll-mt-16 rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
+            )}
+          >
+            <TabsBar activeTab={activeTab} onSelect={setActiveTab} chatDot={chatDot} />
 
-              {activeTab === 'products' && (
-                <ProductsTab
-                  cards={cards}
-                  selectedCardIndex={selectedCardIndex}
-                  onSelect={setSelectedCardIndex}
-                />
-              )}
-
-              {activeTab === 'artifacts' && (
-                <ArtifactsTab
-                  artifacts={mergedArtifacts}
-                  loading={!artifactsHydrated || (artifacts.length === 0 && nostrArtifactsLoading)}
-                  newArtifactIds={newArtifactIds}
-                  unseenArtifactIds={unseenArtifactIds}
-                  onOpenArtifact={setOpenArtifactId}
-                  onAnimationEnd={(artifactId) =>
-                    setNewArtifactIds((prev) => {
-                      if (!prev.has(artifactId)) {
-                        return prev;
-                      }
-                      const next = new Set(prev);
-                      next.delete(artifactId);
-                      return next;
-                    })
-                  }
-                />
-              )}
-
-              {activeTab === 'activity' && (
-                <AgentActivity agentPubkey={pubkey} productCount={cards.length} />
-              )}
-
-              {activeTab === 'policies' && <PoliciesPanel pubkey={pubkey} />}
-            </div>
-
-            {cards.length > 0 && activeTab === 'products' && (
-              <>
-                <div
-                  className={cn(
-                    appearCls,
-                    'relative sticky bottom-[var(--devnet-banner-h,0px)] z-40 -mx-12 [animation-delay:160ms] lg:static lg:bottom-auto lg:mx-0',
-                  )}
-                >
-                  <div
-                    aria-hidden
-                    className="pointer-events-none absolute -top-20 right-0 left-0 h-20 bg-gradient-to-t from-bg-page to-transparent lg:hidden"
-                  />
-                  <div className="bg-bg-page px-12 pb-[max(env(safe-area-inset-bottom),10px)] lg:bg-transparent lg:p-0">
-                    <JobInput
-                      agentPubkey={pubkey}
-                      agentName={agentData.name}
-                      pingStatus={pingStatus}
-                      cards={cards}
-                      selectedIndex={currentCardIndex}
-                      onSelectIndex={setSelectedCardIndex}
-                      buyState={buyState}
-                    />
-                  </div>
-                </div>
-                <p className="-mt-8 px-16 text-center text-[11px] text-text-2/50">
-                  Agents on Elisym can make mistakes. Always verify important information.
-                </p>
-              </>
+            {activeTab === 'products' && (
+              <ProductsTab
+                cards={cards}
+                selectedCardIndex={selectedCardIndex}
+                onSelect={setSelectedCardIndex}
+              />
             )}
 
-            <ArtifactCapturer
-              buyState={artifactsHydrated ? buyState : null}
-              card={currentCard}
-              onCapture={(artifact) => {
-                // Skip side effects when the session result was already
-                // captured on a prior mount. BuyProvider lives at the app
-                // root now, so session.result/jobId persist across
-                // navigation - revisiting an agent would otherwise re-flip
-                // the tab and re-fire the "new" animation every time.
-                if (artifacts.some((existing) => existing.id === artifact.id)) {
-                  return;
-                }
-                appendArtifact(artifact);
-                setActiveTab('artifacts');
-                // Defer to next frame so the History content has rendered
-                // before we scroll, otherwise the browser measures the
-                // outgoing Products height and lands the user mid-page.
-                requestAnimationFrame(() => {
-                  tabsContainerRef.current?.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'start',
-                  });
-                });
-                setNewArtifactIds((prev) => {
-                  const next = new Set(prev);
-                  next.add(artifact.id);
-                  return next;
-                });
-                setUnseenArtifactIds((prev) => {
-                  const next = new Set(prev);
-                  next.add(artifact.id);
-                  persistUnseen(next);
-                  return next;
-                });
-              }}
-            />
+            {activeTab === 'chat' && (
+              <ChatTab
+                agentPubkey={pubkey}
+                agentName={agentData.name}
+                agentPicture={agentData.picture}
+                pingStatus={pingStatus}
+                cards={cards}
+                selectedIndex={currentCardIndex}
+                onSelectIndex={setSelectedCardIndex}
+                buyState={buyState}
+                entries={identityEntries}
+                loading={!threadLoaded || (identityEntries.length === 0 && hydrating)}
+              />
+            )}
+
+            {activeTab === 'activity' && (
+              <AgentActivity agentPubkey={pubkey} productCount={cards.length} />
+            )}
+
+            {activeTab === 'about' && (
+              <AboutTab description={agentData.description} tags={agentData.tags} />
+            )}
+
+            {activeTab === 'policies' && <PoliciesPanel pubkey={pubkey} />}
           </div>
 
-          {/* Right column */}
-          <div className="order-1 flex min-w-0 flex-col gap-16 lg:sticky lg:top-16 lg:order-2">
-            {(agentData.description || agentData.tags.length > 0) && (
+          {cards.length > 0 && activeTab === 'products' && (
+            <>
               <div
                 className={cn(
                   appearCls,
-                  'rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:120ms] sm:p-20',
+                  'relative sticky bottom-[var(--devnet-banner-h,0px)] z-40 -mx-12 [animation-delay:160ms] lg:static lg:bottom-auto lg:mx-0',
                 )}
               >
-                <h2 className="mb-12 text-base font-semibold sm:mb-16">About</h2>
-                {agentData.description && (
-                  <p className="m-0 text-sm leading-relaxed text-text-2">{agentData.description}</p>
-                )}
-                {agentData.tags.length > 0 && (
-                  <div
-                    className={cn(
-                      'flex flex-wrap items-center gap-6',
-                      agentData.description && 'mt-16',
-                    )}
-                  >
-                    {agentData.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="inline-flex h-24 items-center rounded-full bg-tag-bg px-10 font-mono text-[11px] leading-none font-medium tracking-wide text-text-2 uppercase"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute -top-20 right-0 left-0 h-20 bg-gradient-to-t from-bg-page to-transparent lg:hidden"
+                />
+                <div className="bg-bg-page px-12 pb-[max(env(safe-area-inset-bottom),10px)] lg:bg-transparent lg:p-0">
+                  <JobInput
+                    agentPubkey={pubkey}
+                    agentName={agentData.name}
+                    pingStatus={pingStatus}
+                    cards={cards}
+                    selectedIndex={currentCardIndex}
+                    onSelectIndex={setSelectedCardIndex}
+                    buyState={buyState}
+                  />
+                </div>
               </div>
-            )}
-          </div>
+              <p className="-mt-8 px-16 text-center text-[11px] text-text-2/50">
+                Agents on Elisym can make mistakes. Always verify important information.
+              </p>
+            </>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
 
-      {openArtifact && (
-        <ArtifactModal
-          artifact={openArtifact}
-          onClose={() => handleCloseArtifact(openArtifact.id)}
-          isRated={ratedArtifacts.has(openArtifact.id)}
-          thanksMounted={thanksMounted.has(openArtifact.id)}
-          thanksVisible={thanksVisible.has(openArtifact.id)}
-          onRate={(positive) => void rateArtifact(openArtifact, positive)}
-        />
+function AboutTab({ description, tags }: { description: string; tags: string[] }) {
+  if (!description && tags.length === 0) {
+    return <p className="py-24 text-center text-sm text-text-2">No description yet.</p>;
+  }
+  return (
+    <div className="max-w-[720px]">
+      {description && <p className="m-0 text-sm leading-relaxed text-text-2">{description}</p>}
+      {tags.length > 0 && (
+        <div className={cn('flex flex-wrap items-center gap-6', description && 'mt-16')}>
+          {tags.map((tag) => (
+            <span
+              key={tag}
+              className="inline-flex h-24 items-center rounded-full bg-tag-bg px-10 font-mono text-[11px] leading-none font-medium tracking-wide text-text-2 uppercase"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -990,174 +801,5 @@ function ProductsTab({
         />
       ))}
     </div>
-  );
-}
-
-interface ArtifactsTabProps {
-  artifacts: Artifact[];
-  loading: boolean;
-  newArtifactIds: Set<string>;
-  unseenArtifactIds: Set<string>;
-  onOpenArtifact: (id: string) => void;
-  onAnimationEnd: (id: string) => void;
-}
-
-function ArtifactsTab({
-  artifacts,
-  loading,
-  newArtifactIds,
-  unseenArtifactIds,
-  onOpenArtifact,
-  onAnimationEnd,
-}: ArtifactsTabProps) {
-  if (loading) {
-    return <ArtifactsTabSkeleton />;
-  }
-
-  if (artifacts.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center px-16 py-56">
-        <p className="m-0 text-sm text-text-2">No history yet</p>
-        <p className="m-0 mt-4 text-center text-sm text-text-2/60">
-          Results from your jobs will appear here
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="grid grid-cols-1 gap-12 sm:grid-cols-2">
-      {artifacts.map((artifact) => (
-        <ArtifactTile
-          key={artifact.id}
-          artifact={artifact}
-          isNew={newArtifactIds.has(artifact.id)}
-          isUnseen={unseenArtifactIds.has(artifact.id)}
-          onClick={() => onOpenArtifact(artifact.id)}
-          onAnimationEnd={() => onAnimationEnd(artifact.id)}
-        />
-      ))}
-    </div>
-  );
-}
-
-const ARTIFACT_SKELETON_COUNT = 4;
-
-function ArtifactsTabSkeleton() {
-  return (
-    <div className="grid grid-cols-1 gap-12 sm:grid-cols-2">
-      {Array.from({ length: ARTIFACT_SKELETON_COUNT }).map((_, index) => (
-        <ArtifactTileSkeleton key={index} />
-      ))}
-    </div>
-  );
-}
-
-function ArtifactTileSkeleton() {
-  return (
-    <div className="flex flex-col overflow-hidden rounded-3xl border border-black/7 bg-surface p-16 shadow-[0_2px_8px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] sm:p-24">
-      <div className="mb-12 flex items-center gap-12">
-        <div className="skeleton size-28 rounded-full" />
-        <div className="skeleton h-12 w-96 rounded-full" />
-      </div>
-      <div className="flex flex-1 flex-col gap-12">
-        <div className="flex flex-col gap-6">
-          <div className="skeleton h-10 w-48 rounded-full" />
-          <div className="skeleton h-12 w-full rounded-full" />
-          <div className="skeleton h-12 w-4/5 rounded-full" />
-        </div>
-        <div className="flex flex-col gap-6">
-          <div className="skeleton h-10 w-48 rounded-full" />
-          <div className="skeleton h-12 w-full rounded-full" />
-          <div className="skeleton h-12 w-3/4 rounded-full" />
-        </div>
-      </div>
-      <div className="mt-16 flex items-center gap-8 border-t border-black/6 pt-12">
-        <div className="skeleton h-10 w-64 rounded-full" />
-        <div className="skeleton ml-auto h-10 w-48 rounded-full" />
-      </div>
-    </div>
-  );
-}
-
-interface ArtifactTileProps {
-  artifact: Artifact;
-  isNew: boolean;
-  isUnseen: boolean;
-  onClick: () => void;
-  onAnimationEnd: () => void;
-}
-
-const SOL_DECIMALS = 9;
-
-function ArtifactTile({ artifact, isNew, isUnseen, onClick, onAnimationEnd }: ArtifactTileProps) {
-  const preview = cleanPreviewText(artifact.result);
-  const hasPrice = artifact.priceLamports !== undefined && artifact.priceLamports > 0;
-  const knownPrice = artifact.priceLamports !== undefined;
-
-  let priceNode: ReactNode = null;
-  if (knownPrice && artifact.priceLamports !== undefined) {
-    if (!hasPrice) {
-      priceNode = <span className="ml-auto font-semibold">Free</span>;
-    } else {
-      const asset = artifact.asset;
-      const known = asset ? resolveKnownAsset(asset.chain, asset.token, asset.mint) : undefined;
-      const decimals = asset?.decimals ?? SOL_DECIMALS;
-      const symbol = known?.symbol ?? asset?.token.toUpperCase() ?? 'SOL';
-      const formatted = compactZeros(formatDecimal(artifact.priceLamports, decimals));
-      priceNode = (
-        <span className="ml-auto inline-flex items-center gap-6 font-semibold">
-          <span className="tabular-nums">{formatted}</span>
-          <span>{symbol}</span>
-        </span>
-      );
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group relative flex cursor-pointer flex-col overflow-hidden rounded-3xl border border-black/7 bg-surface p-16 text-left shadow-[0_2px_8px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] transition-all hover:-translate-y-2 hover:shadow-[0_6px_20px_rgba(0,0,0,0.08)] sm:p-24"
-    >
-      {isNew && (
-        <span
-          aria-hidden
-          onAnimationEnd={onAnimationEnd}
-          className="pointer-events-none absolute top-0 bottom-0 w-[60%] [animation:artifact-shimmer-sweep_1.4s_ease-out_0.15s_both] [background:linear-gradient(100deg,transparent_20%,rgba(255,255,255,0.65)_50%,transparent_80%)]"
-        />
-      )}
-      <div className="mb-12 flex min-w-0 items-center gap-12">
-        <ProductAvatar name={artifact.cardName} size={28} />
-        <div className="truncate text-xs font-medium text-text-2">{artifact.cardName}</div>
-        {isUnseen && (
-          <span className="shrink-0 rounded-full border border-stat-emerald/20 bg-stat-emerald-bg px-10 py-2 font-mono text-[10px] font-medium tracking-wide text-stat-emerald uppercase">
-            New
-          </span>
-        )}
-      </div>
-      <div className="flex flex-1 flex-col gap-12">
-        {artifact.prompt && (
-          <div className="w-full rounded-xl py-8 pr-12 pl-12 prompt-block">
-            <div className="mb-2 text-xs text-text-2">Prompt</div>
-            <div className="line-clamp-2 text-[13px] leading-relaxed break-words text-text">
-              {artifact.prompt}
-            </div>
-          </div>
-        )}
-        {preview && (
-          <div>
-            <div className="mb-2 text-xs text-text-2">Answer</div>
-            <div className="line-clamp-2 text-[13px] leading-relaxed break-words text-text">
-              {preview}
-            </div>
-          </div>
-        )}
-      </div>
-      <div className="mt-16 flex items-center gap-8 border-t border-black/6 pt-12 text-[11px] text-text-2/70">
-        <span>{formatArtifactTime(artifact.createdAt)}</span>
-        {priceNode}
-      </div>
-    </button>
   );
 }

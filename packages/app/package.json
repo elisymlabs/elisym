@@ -1,19 +1,20 @@
 {
   "name": "@elisym/app",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "vitest run",
     "lint": "oxlint",
     "typecheck": "tsc --noEmit",
-    "qa": "vite build && tsc --noEmit && oxlint app/ && oxfmt --check app/",
+    "qa": "vite build && vitest run && tsc --noEmit && oxlint app/ tests/ && oxfmt --check app/ tests/",
     "clean": "rm -rf build dist"
   },
   "dependencies": {
-    "@elisym/sdk": "~0.28.0",
+    "@elisym/sdk": "~0.29.0",
     "@solana-program/memo": "~0.11.0",
     "@solana-program/token": "~0.5.0",
     "@solana/kit": "~6.8.0",
@@ -47,6 +48,7 @@
     "typescript": "~5.7.0",
     "vite": "~6.4.0",
     "vite-plugin-node-polyfills": "~0.25.0",
-    "vite-tsconfig-paths": "~4.3.0"
+    "vite-tsconfig-paths": "~4.3.0",
+    "vitest": "~3.0.0"
   }
 }

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type { Asset } from '../payment/assets';
+import { resolveInsidePathReal } from './path-safety';
 import type {
   Skill,
   SkillContext,
@@ -22,6 +23,8 @@ export interface StaticFileSkillParams {
   asset: Asset;
   /** Absolute path to the file whose contents are returned on each job. */
   outputFilePath: string;
+  /** Skill directory the output file must stay inside (re-checked per read). */
+  skillDir: string;
   image?: string;
   imageFile?: string;
   /**
@@ -48,6 +51,7 @@ export class StaticFileSkill implements Skill {
   imageFile?: string;
   llmOverride?: SkillLlmOverride;
   private outputFilePath: string;
+  private skillDir: string;
 
   constructor(params: StaticFileSkillParams) {
     this.name = params.name;
@@ -59,12 +63,20 @@ export class StaticFileSkill implements Skill {
     this.imageFile = params.imageFile;
     this.llmOverride = params.llmOverride;
     this.outputFilePath = params.outputFilePath;
+    this.skillDir = params.skillDir;
   }
 
   async execute(_input: SkillInput, _ctx: SkillContext): Promise<SkillOutput> {
+    // Load-time containment cannot see a symlink swapped in after load (TOCTOU):
+    // re-run the symlink-aware check at every read, since the file's contents
+    // are handed to a paying customer.
+    const safePath = resolveInsidePathReal(this.skillDir, this.outputFilePath);
+    if (safePath === null) {
+      throw new Error('static-file "output_file" escapes the skill directory');
+    }
     // Measure UTF-8 bytes, not JS string length: relays reject by byte size,
     // and a non-ASCII file is 1.5-4x its char count in UTF-8.
-    const buffer = await readFile(this.outputFilePath);
+    const buffer = await readFile(safePath);
     if (buffer.length > MAX_STATIC_FILE_SIZE) {
       throw new Error(
         `static-file output exceeds ${MAX_STATIC_FILE_SIZE} bytes (got ${buffer.length})`,

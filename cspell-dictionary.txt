@@ -1,5 +1,6 @@
 accum
 acks
+affordances
 agentskills
 antipattern
 autolinks
@@ -36,6 +37,7 @@ elisym
 elisymlabs
 elizaos
 eose
+evictable
 exfil
 exfiltration
 eykt
@@ -81,6 +83,7 @@ npub
 npubs
 nsec
 oneose
+oneshot
 onevent
 openclaw
 oxfmt
@@ -106,8 +109,10 @@ smol
 solana
 solflare
 solscan
+spoofable
 ssrf
 stablecoins
+statelessly
 stderr
 stdin
 stdout
@@ -129,7 +134,10 @@ turborepo
 tweened
 twoslash
 umami
+uncompacted
 undecryptable
+undercount
+undercounts
 unparseable
 unreads
 untargeted

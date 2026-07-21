@@ -2,13 +2,19 @@ import {
   prepareEncryptedFileInput,
   buildPaymentInstructions,
   classifyJobError,
+  encodeJobPayload,
   estimatePriorityFeeMicroLamports,
   getProtocolConfig,
   getProtocolProgramId,
+  LIMITS,
+  resolveKnownAsset,
   SolanaPaymentStrategy,
   toDTag,
+  utf8ByteLength,
   type CapabilityCard,
   type FileAttachment,
+  type PaymentAssetRef,
+  type PaymentInfo,
   type PaymentRequestData,
   type TransportKind,
 } from '@elisym/sdk';
@@ -51,10 +57,13 @@ import { useIdentity } from '~/hooks/useIdentity';
 import { useJobHistory } from '~/hooks/useJobHistory';
 import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
+import { clearInFlight, recordCompletion } from '~/lib/chatSession';
+import { appendPendingEntry, completeEntry, failEntry, recordEntryTxHash } from '~/lib/chatThread';
 import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
+import { rememberJobFile } from '~/lib/retryFiles';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
 const PRIORITY_FEE_PERCENTILE = 75;
@@ -68,7 +77,8 @@ const WEB_ACCEPT_TRANSPORTS: TransportKind[] = ['blossom'];
 
 // Sync subscription window before a paid job flips to background polling.
 // Matches the MCP 10-min cap; the result (kind 6100) persists on the relays.
-const JOB_WAIT_TIMEOUT_MS = 600_000;
+// Exported for the Chat tab-open reconcile's re-subscription window.
+export const JOB_WAIT_TIMEOUT_MS = 600_000;
 // Cadence for re-polling the relays for a paid-but-not-yet-delivered result.
 const PENDING_POLL_INTERVAL_MS = 120_000;
 // Stop polling a pending job after this age (mirrors the provider MAX_PAID_AGE).
@@ -142,6 +152,36 @@ async function buildVersionedPaymentTransaction(
   };
 }
 
+/**
+ * Coarse live phase of the in-flight buy, mirrored from the toast updates so
+ * the Chat tab's pending bubble can show a status line without re-deriving it
+ * from the 7000 feedback stream.
+ */
+export type BuyPhase = 'submitting' | 'awaiting-provider' | 'paying' | 'processing';
+
+/**
+ * Map a card's payment block to the thread entry's asset descriptor.
+ * Undefined => native SOL (back-compat with the price display).
+ */
+function paymentToAsset(payment: PaymentInfo | undefined): PaymentAssetRef | undefined {
+  if (!payment || !payment.token || payment.token === 'sol') {
+    return undefined;
+  }
+  const known = resolveKnownAsset(payment.chain, payment.token, payment.mint);
+  if (known) {
+    return { chain: known.chain, token: known.token, mint: known.mint, decimals: known.decimals };
+  }
+  if (payment.decimals === undefined) {
+    return undefined;
+  }
+  return {
+    chain: payment.chain,
+    token: payment.token,
+    mint: payment.mint,
+    decimals: payment.decimals,
+  };
+}
+
 export interface ActiveBuySession {
   agentPubkey: string;
   agentName: string;
@@ -149,6 +189,8 @@ export interface ActiveBuySession {
   cardName: string;
   jobId: string | null;
   buying: boolean;
+  /** Present only while `buying`; cleared implicitly by the terminal states. */
+  phase?: BuyPhase;
   result: string | null;
   error: string | null;
   /**
@@ -191,9 +233,28 @@ interface BuyArgs {
   card: CapabilityCard;
 }
 
+/**
+ * Session behavior of one send (the stage-2 two-surface rule): `sessionId` is
+ * a UUID for a Chat-tab send against a context-capable card, or `null` for a
+ * deliberate stateless one-shot (every Products-tab buy, and chat sends on
+ * context-off cards) - recorded as such in the thread entry. `token` is the
+ * `inFlight` element appended by `resolveSessionForSend`; `buy()` clears it on
+ * every exit that did not produce a pending thread entry, and hands off to the
+ * pending entry (the durable in-flight signal) once one lands.
+ */
+export interface BuySessionOptions {
+  sessionId: string | null;
+  token?: string;
+}
+
 interface BuyCtx {
   session: ActiveBuySession | null;
-  buy: (args: BuyArgs, input: string, file?: File) => Promise<void>;
+  buy: (
+    args: BuyArgs,
+    input: string,
+    file: File | undefined,
+    session: BuySessionOptions,
+  ) => Promise<void>;
   rate: (positive: boolean) => Promise<void>;
 }
 
@@ -236,14 +297,31 @@ export function BuyProvider({ children }: { children: ReactNode }) {
   }, [buying]);
 
   const buy = useCallback(
-    async (args: BuyArgs, input: string, file?: File) => {
+    async (args: BuyArgs, input: string, file: File | undefined, buySession: BuySessionOptions) => {
+      const { agentPubkey, agentName, agentPicture, card } = args;
+      const identityPubkey = idCtx.identity.publicKey;
+      const { sessionId, token: sessionToken } = buySession;
+      // The chat composer resolves the session + `inFlight` token BEFORE
+      // calling buy(), so every exit that does not produce a pending thread
+      // entry must clear the token here (buy()'s silent early returns
+      // included); once the pending entry lands it becomes the durable
+      // in-flight signal and the token is released.
+      let sessionTokenReleased = false;
+      const releaseSessionToken = async () => {
+        if (sessionTokenReleased || sessionToken === undefined) {
+          return;
+        }
+        sessionTokenReleased = true;
+        await clearInFlight(identityPubkey, agentPubkey, sessionToken);
+      };
       if (session?.buying) {
+        await releaseSessionToken();
         return;
       }
-      const { agentPubkey, agentName, agentPicture, card } = args;
       const isFree = (card.payment?.job_price ?? 0) === 0;
       if (!isFree && !publicKey) {
         toast.error('Connect your wallet first');
+        await releaseSessionToken();
         return;
       }
 
@@ -265,6 +343,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         cardName,
         jobId: null,
         buying: true,
+        phase: 'submitting',
         result: null,
         error: null,
         paid: false,
@@ -274,6 +353,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       });
 
       const toastId = toast.loading('Submitting job...');
+
+      // Set once the pending thread entry has been written, so the outer catch
+      // can fail the entry (job submitted, then client-side failure) while
+      // pre-jobEventId failures stay composer-only (no thread entry).
+      let threadEntryJobEventId: string | null = null;
 
       try {
         const identity = idCtx.identity;
@@ -311,14 +395,37 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           );
         }
 
+        // Envelope-aware pre-submit check: a session-carrying or file job is
+        // wrapped in the payload envelope, and JSON escaping can inflate an
+        // input that passes the composer's raw-byte check past the NIP-44
+        // backstop at submit. Measure the EXACT envelope (the descriptor now
+        // exists) against the inline cap, before submit and before any payment.
+        if (sessionId !== null || attachment !== undefined) {
+          const envelopeBytes = utf8ByteLength(
+            encodeJobPayload({
+              text: input || undefined,
+              attachment,
+              session: sessionId !== null ? { id: sessionId } : undefined,
+            }),
+          );
+          if (envelopeBytes > LIMITS.MAX_ENCRYPTED_INLINE_BYTES) {
+            throw new Error(
+              'Input is too large once wrapped for sending - shorten the message or use the elisym CLI.',
+            );
+          }
+        }
+
         const jobEventId = await client.marketplace.submitJobRequest(identity, {
           input,
           capability,
           providerPubkey: agentPubkey,
           acceptTransports: WEB_ACCEPT_TRANSPORTS,
           ...(attachment ? { attachment } : {}),
+          ...(sessionId !== null ? { sessionId } : {}),
         });
-        setSession((prev) => (sessionMatches(prev) ? { ...prev, jobId: jobEventId } : prev));
+        setSession((prev) =>
+          sessionMatches(prev) ? { ...prev, jobId: jobEventId, phase: 'awaiting-provider' } : prev,
+        );
 
         snapshotSaveJob({
           jobEventId,
@@ -329,6 +436,49 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           status: 'submitted',
           createdAt: Date.now(),
         });
+
+        // Submit-time thread entry (stage 2): pending until an outcome
+        // transition completes or fails it. `sessionId` is recorded as given -
+        // a UUID for context sends, `null` as the deliberate one-shot marker.
+        const cardAsset = paymentToAsset(card.payment);
+        await appendPendingEntry(agentPubkey, {
+          jobEventId,
+          customerPubkey: identityPubkey,
+          sessionId,
+          capability,
+          prompt: input,
+          ...(attachment ? { promptAttachment: attachment } : {}),
+          ...(card.payment?.job_price !== undefined
+            ? { priceLamports: card.payment.job_price }
+            : {}),
+          ...(cardAsset ? { asset: cardAsset } : {}),
+          ts: Date.now(),
+        });
+        threadEntryJobEventId = jobEventId;
+        if (file) {
+          rememberJobFile(jobEventId, file);
+        }
+        // The pending entry is now the durable in-flight signal - release the
+        // token AFTER the entry lands so there is no zero-signal window.
+        await releaseSessionToken();
+
+        // Completes the thread entry and, when the completion transition
+        // actually fired for a UUID-carrying entry, bumps the active session's
+        // completedCount (current-id match enforced inside recordCompletion).
+        // Sequential awaits keep the thread-store and chat-session lock
+        // families from ever being held simultaneously.
+        const settleThreadCompletion = async (
+          resultText: string,
+          attachments: FileAttachment[],
+        ) => {
+          const fired = await completeEntry(agentPubkey, jobEventId, {
+            result: resultText,
+            ...(attachments.length > 0 ? { resultAttachments: attachments } : {}),
+          });
+          if (fired && typeof sessionId === 'string') {
+            await recordCompletion(identityPubkey, agentPubkey, sessionId);
+          }
+        };
 
         toast.loading('Waiting for provider...', { id: toastId });
 
@@ -361,6 +511,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               if (!publicKey) {
                 toast.error('Wallet disconnected - reconnect and retry', { id: toastId });
                 setSession((prev) => (sessionMatches(prev) ? { ...prev, buying: false } : prev));
+                // Terminal, unpaid exit: the job will never be paid, so the
+                // pending entry gains the Retry affordance now instead of
+                // waiting out the 24h unpaid-aging rule.
+                void failEntry(agentPubkey, jobEventId);
                 cleanupRef.current?.();
                 cleanupRef.current = null;
                 return;
@@ -371,6 +525,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 return;
               }
               paymentInitiated = true;
+              setSession((prev) => (sessionMatches(prev) ? { ...prev, phase: 'paying' } : prev));
 
               try {
                 // Refuse to pay a card whose recipient we cannot verify: no
@@ -481,6 +636,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // 'error', but this merge keeps the signature so a successful payment is
                 // never discarded and can be reconciled from history.
                 snapshotUpdateJob(jobEventId, { txHash: signature });
+                // Same rule for the thread entry: a paid `pending` entry (txHash
+                // present) is exempt from unpaid-aging and trimming - money was
+                // sent, the state must stay visible.
+                void recordEntryTxHash(agentPubkey, jobEventId, signature);
                 // Strategy form (blockhash + lastValidBlockHeight) so a dropped tx rejects
                 // at blockhash expiry instead of hanging `buying` forever - the deprecated
                 // single-signature form has no expiry. Then inspect the result: a tx can
@@ -514,7 +673,9 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 });
                 paidLocally = true;
                 setSession((prev) =>
-                  sessionMatches(prev) ? { ...prev, paid: true, txHash: signature } : prev,
+                  sessionMatches(prev)
+                    ? { ...prev, paid: true, txHash: signature, phase: 'processing' }
+                    : prev,
                 );
 
                 toast.loading('Payment sent, waiting for result...', { id: toastId });
@@ -545,6 +706,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                     ? { status: 'error', txHash: undefined }
                     : { status: 'error' },
                 );
+                // Terminal payment failure (never broadcast, or reverted with no
+                // funds moved): the thread entry gains the Retry affordance. The
+                // resumable branch above deliberately leaves it paid-`pending`.
+                void failEntry(agentPubkey, jobEventId);
                 setSession((prev) =>
                   sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
                 );
@@ -557,7 +722,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
 
             onResult: (
               content: string,
-              eventId: string,
+              _eventId: string,
               _attachment?: FileAttachment,
               attachments?: FileAttachment[],
             ) => {
@@ -574,11 +739,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // invariant: a provider that splits signing/encryption keys would break this.
               const resultProviderPubkey = resultAttachments.length > 0 ? agentPubkey : undefined;
               snapshotUpdateJob(jobEventId, { status: 'completed', result });
-              cacheSet(`purchase:${jobEventId}`, {
-                result,
-                eventId,
-                receivedAt: Date.now(),
-              });
+              void settleThreadCompletion(result, resultAttachments);
               setSession((prev) =>
                 sessionMatches(prev)
                   ? {
@@ -643,6 +804,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
 
             onError: (errMsg: string) => {
               snapshotUpdateJob(jobEventId, { status: 'error' });
+              // A provider error feedback (incl. "session busy") becomes an
+              // ordinary failed bubble with Retry. If the provider completes
+              // the job later anyway (crash-recovery re-execution), hydration
+              // flips the failed entry back to completed.
+              void failEntry(agentPubkey, jobEventId);
               setSession((prev) =>
                 sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
               );
@@ -680,6 +846,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   return;
                 }
                 snapshotUpdateJob(jobEventId, { status: 'error' });
+                // Unpaid timeout is terminal for the thread entry (the design's
+                // aging rule, applied eagerly while the tab is still open). A
+                // paid timeout above stays `pending` - money was sent.
+                void failEntry(agentPubkey, jobEventId);
                 setSession((prev) =>
                   sessionMatches(prev)
                     ? { ...prev, buying: false, error: 'Timed out waiting for the provider' }
@@ -713,6 +883,13 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         cleanupRef.current = cleanup;
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Failed to submit job';
+        // A failure before a jobEventId/thread entry exists stays composer-only
+        // (nothing was submitted); after the entry landed it becomes a failed
+        // bubble with Retry.
+        if (threadEntryJobEventId !== null) {
+          void failEntry(agentPubkey, threadEntryJobEventId);
+        }
+        await releaseSessionToken();
         setSession((prev) =>
           sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
         );
@@ -814,12 +991,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             const result = resultDisplay(decoded);
             const resultAttachments = decoded.attachments;
             const resultProviderPubkey = resultAttachments.length > 0 ? job.agentPubkey : undefined;
+            // Wallet job history only - deliberately NO thread-store write here:
+            // a poller-recovered result reaches the thread via the Chat tab's
+            // hydration/reconcile (the stated eventual-consistency window).
             updateJob(job.jobEventId, { status: 'completed', result });
-            cacheSet(`purchase:${job.jobEventId}`, {
-              result,
-              eventId: job.jobEventId,
-              receivedAt: Date.now(),
-            });
             setSession((prev) =>
               prev && prev.jobId === job.jobEventId
                 ? {
@@ -869,7 +1044,9 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         await cacheSet(`rated:${jobId}`, true);
         track('rate-result', { rating: positive ? 'good' : 'bad' });
       } catch {
-        // silent fail
+        // The rating never reached the network - roll back the optimistic
+        // `rated` stamp so the affordance comes back and a retry stays possible.
+        setSession((prev) => (prev && prev.jobId === jobId ? { ...prev, rated: false } : prev));
       }
     },
     [session, client, idCtx.identity],
@@ -896,7 +1073,11 @@ interface UseBuyForCardArgs {
 }
 
 export interface ScopedBuyState {
-  buy: (input?: string, file?: File) => Promise<void>;
+  /**
+   * Omitted `session` defaults to a stateless one-shot (`sessionId: null`) -
+   * the Products-tab rule. Chat sends resolve a session first and pass it.
+   */
+  buy: (input?: string, file?: File, session?: BuySessionOptions) => Promise<void>;
   buying: boolean;
   result: string | null;
   /** When the job carried a file INPUT, its descriptor (for the live input preview). */
@@ -941,11 +1122,11 @@ export function useBuyForCard(args: UseBuyForCardArgs): ScopedBuyState | null {
   );
 
   const buy = useCallback(
-    async (input = '', file?: File) => {
+    async (input = '', file?: File, buySession: BuySessionOptions = { sessionId: null }) => {
       if (!card) {
         return;
       }
-      await globalBuy({ agentPubkey, agentName, agentPicture, card }, input, file);
+      await globalBuy({ agentPubkey, agentName, agentPicture, card }, input, file, buySession);
     },
     [globalBuy, agentPubkey, agentName, agentPicture, card],
   );

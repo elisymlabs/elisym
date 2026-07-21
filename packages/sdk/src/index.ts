@@ -17,6 +17,7 @@ export {
   attachmentsOf,
   ENVELOPE_VERSION,
   ACCEPT_TRANSPORTS_TAG,
+  SESSION_ID_REGEX,
   buildAcceptTransportsTag,
   readAcceptedTransports,
 } from './transport/attachment';
@@ -26,6 +27,7 @@ export type {
   TransportKind,
   JobPayloadEnvelope,
   DecodedJobPayload,
+  SessionRef,
 } from './transport/attachment';
 // Encrypted Blossom/HTTP file transport (browser-safe peer to the Node-only iroh transport).
 export { createBlossomTransport } from './transport/blossom-transport';

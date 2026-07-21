@@ -1,17 +1,5 @@
 @import 'tailwindcss';
 
-@utility agent-page-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1fr);
-  @media (min-width: 640px) {
-    gap: 1rem;
-  }
-  @media (min-width: 1024px) {
-    grid-template-columns: minmax(0, 1fr) 340px;
-  }
-}
-
 @utility no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;

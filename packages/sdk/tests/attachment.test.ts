@@ -6,6 +6,7 @@ import {
   attachmentsOf,
   ENVELOPE_VERSION,
   ACCEPT_TRANSPORTS_TAG,
+  SESSION_ID_REGEX,
   buildAcceptTransportsTag,
   readAcceptedTransports,
   type FileAttachment,
@@ -223,5 +224,68 @@ describe('multi-attachment envelope (attachments[] + attachmentsOf)', () => {
   it('attachmentsOf returns [] for a text-only payload', () => {
     expect(attachmentsOf({ text: 'hi' })).toEqual([]);
     expect(attachmentsOf(decodeJobPayload('plain text'))).toEqual([]);
+  });
+});
+
+describe('session ref in the envelope', () => {
+  const SESSION_ID = '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c';
+
+  it('round-trips a session-only payload (text + session, no attachment)', () => {
+    const decoded = decodeJobPayload(
+      encodeJobPayload({ text: 'turn 2', session: { id: SESSION_ID } }),
+    );
+    expect(decoded.text).toBe('turn 2');
+    expect(decoded.session).toEqual({ id: SESSION_ID });
+    expect(decoded.attachment).toBeUndefined();
+  });
+
+  it('round-trips session + attachment together', () => {
+    const decoded = decodeJobPayload(
+      encodeJobPayload({ text: 'note', attachment, session: { id: SESSION_ID } }),
+    );
+    expect(decoded.session).toEqual({ id: SESSION_ID });
+    expect(decoded.attachment).toEqual(attachment);
+  });
+
+  it('omits the session key entirely when not provided', () => {
+    const parsed = JSON.parse(encodeJobPayload({ text: 'hi' })) as Record<string, unknown>;
+    expect('session' in parsed).toBe(false);
+  });
+
+  it('decodes an invalid session shape as absent instead of throwing (lenient)', () => {
+    const cases: unknown[] = [
+      { id: 'not-a-uuid' },
+      { id: SESSION_ID.toUpperCase() },
+      { id: '../../etc/passwd' },
+      { id: 42 },
+      'bare-string',
+      { nested: { id: SESSION_ID } },
+    ];
+    for (const session of cases) {
+      const raw = JSON.stringify({ v: ENVELOPE_VERSION, text: 'x', session });
+      const decoded = decodeJobPayload(raw);
+      expect(decoded.session, JSON.stringify(session)).toBeUndefined();
+      expect(decoded.text).toBe('x');
+    }
+  });
+
+  it('rejects a non-v4 or wrong-variant UUID', () => {
+    expect(SESSION_ID_REGEX.test('3f2b8c1a-9d4e-1f6a-8b2c-1d3e5f7a9b0c')).toBe(false);
+    expect(SESSION_ID_REGEX.test('3f2b8c1a-9d4e-4f6a-cb2c-1d3e5f7a9b0c')).toBe(false);
+    expect(SESSION_ID_REGEX.test(SESSION_ID)).toBe(true);
+  });
+
+  it('an old decoder shape (unknown keys stripped) still parses text and attachment', () => {
+    // Simulates the reverse direction: a NEWER envelope with extra keys decodes
+    // fine because the schema strips unknown keys instead of rejecting.
+    const raw = JSON.stringify({
+      v: ENVELOPE_VERSION,
+      text: 'hello',
+      session: { id: SESSION_ID },
+      some_future_key: { a: 1 },
+    });
+    const decoded = decodeJobPayload(raw);
+    expect(decoded.text).toBe('hello');
+    expect(decoded.session).toEqual({ id: SESSION_ID });
   });
 });

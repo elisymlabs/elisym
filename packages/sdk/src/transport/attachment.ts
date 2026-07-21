@@ -24,6 +24,21 @@ const ENVELOPE_NAMESPACE_PREFIX = 'elisym-job/';
 /** Upper bound on a serialized transport locator (e.g. an iroh BlobTicket string). */
 const MAX_TICKET_LENGTH = 4096;
 
+/**
+ * Session ids are client-generated UUID v4, lowercase. Strict on purpose: the id
+ * becomes a filename component in the provider's session store, so anything that
+ * is not exactly this shape must never reach the filesystem layer.
+ */
+export const SESSION_ID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+const SessionRefSchema = z.object({
+  id: z.string().regex(SESSION_ID_REGEX),
+});
+
+/** Reference to a conversation session carried inside the job-payload envelope. */
+export type SessionRef = z.infer<typeof SessionRefSchema>;
+
 const FileTransportSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('iroh'),
@@ -85,6 +100,17 @@ const JobPayloadEnvelopeSchema = z.object({
   attachment: FileAttachmentSchema.optional(),
   // Multiple result/input files. Additive; old decoders strip this unknown key.
   attachments: z.array(FileAttachmentSchema).optional(),
+  // Conversation session reference. Additive; old decoders strip this unknown key.
+  // Lenient on decode: an invalid shape becomes `undefined` (stateless processing)
+  // instead of throwing - a throw in decodeJobPayload silently drops the whole job
+  // in the provider transport, which would give the customer no feedback at all.
+  session: z
+    .unknown()
+    .optional()
+    .transform((value): SessionRef | undefined => {
+      const parsed = SessionRefSchema.safeParse(value);
+      return parsed.success ? parsed.data : undefined;
+    }),
 });
 
 export type FileTransport = z.infer<typeof FileTransportSchema>;
@@ -141,13 +167,19 @@ export function readAcceptedTransports(tags: string[][]): TransportKind[] | unde
   return out.length > 0 ? out : undefined;
 }
 
-/** Decoded job payload: a free-text note and/or file attachment(s). */
+/** Decoded job payload: a free-text note, file attachment(s), and/or a session ref. */
 export interface DecodedJobPayload {
   text?: string;
   /** Legacy single attachment (also mirrors `attachments[0]`). */
   attachment?: FileAttachment;
   /** All attachments when a job carries multiple files. */
   attachments?: FileAttachment[];
+  /**
+   * Conversation session this job belongs to. Only meaningful on NIP-44-encrypted
+   * requests - providers ignore a cleartext session id (transport rule); the SDK
+   * enforces the matching submit-side rule in `submitJobRequest`.
+   */
+  session?: SessionRef;
 }
 
 /**
@@ -179,6 +211,9 @@ export function encodeJobPayload(payload: DecodedJobPayload): string {
     envelope.attachment = payload.attachments[0];
   } else if (payload.attachment !== undefined) {
     envelope.attachment = payload.attachment;
+  }
+  if (payload.session !== undefined) {
+    envelope.session = payload.session;
   }
   return JSON.stringify(envelope);
 }
@@ -227,5 +262,6 @@ export function decodeJobPayload(content: string): DecodedJobPayload {
     text: result.data.text,
     attachment: result.data.attachment,
     attachments: result.data.attachments,
+    session: result.data.session,
   };
 }

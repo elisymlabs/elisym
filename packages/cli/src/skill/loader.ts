@@ -11,14 +11,37 @@ import { join } from 'node:path';
 import {
   DEFAULT_SCRIPT_TIMEOUT_MS,
   parseSkillMd,
-  resolveInsidePath,
+  resolveInsidePathReal,
   validateSkillFrontmatter,
   type ParsedSkill,
 } from '@elisym/sdk/skills';
+import { listLlmProviders } from '../llm/index.js';
 import { DynamicScriptSkill, StaticFileSkill, StaticScriptSkill } from './non-llm-skills.js';
 import { ScriptSkill } from './script-skill.js';
 import { X402Skill } from './x402-skill.js';
 import type { Skill } from './index.js';
+
+/**
+ * Per-skill LLM-key scoping: a script skill receives ONLY the key of the
+ * provider its SKILL.md declares (`llm.provider` - the documented "this script
+ * depends on this LLM API key" contract), never the operator's whole key ring.
+ * Undeclared -> no LLM keys at all.
+ */
+function scopeLlmKeys(
+  scriptEnv: NodeJS.ProcessEnv | undefined,
+  declaredProvider: string | undefined,
+): NodeJS.ProcessEnv | undefined {
+  if (scriptEnv === undefined) {
+    return undefined;
+  }
+  const env = { ...scriptEnv };
+  for (const descriptor of listLlmProviders()) {
+    if (descriptor.id !== declaredProvider) {
+      delete env[descriptor.envVar];
+    }
+  }
+  return env;
+}
 
 function buildCliSkill(
   parsed: ParsedSkill,
@@ -31,9 +54,9 @@ function buildCliSkill(
   // `start`. Drop a traversing value rather than fail the whole skill - the image
   // is cosmetic, the way output_file/script (load-bearing) hard-fail instead.
   let safeImageFile = parsed.imageFile;
-  if (safeImageFile !== undefined && resolveInsidePath(entryPath, safeImageFile) === null) {
+  if (safeImageFile !== undefined && resolveInsidePathReal(entryPath, safeImageFile) === null) {
     console.warn(
-      `SKILL.md "${parsed.name}": ignoring "image_file" that resolves outside the skill directory: ${safeImageFile}`,
+      `SKILL.md "${parsed.name}": ignoring "image_file" that resolves outside the skill directory (directly or via symlink): ${safeImageFile}`,
     );
     safeImageFile = undefined;
   }
@@ -54,6 +77,7 @@ function buildCliSkill(
         parsed.tools,
         parsed.maxToolRounds,
         parsed.llmOverride,
+        parsed.context,
       );
       break;
     case 'static-file': {
@@ -62,7 +86,9 @@ function buildCliSkill(
           `SKILL.md "${parsed.name}": internal error - outputFile missing for mode 'static-file'`,
         );
       }
-      const outputFilePath = resolveInsidePath(entryPath, parsed.outputFile);
+      // Symlink-aware: this path is read on every paid job and returned to the
+      // customer, so a planted symlink would exfiltrate whatever it points at.
+      const outputFilePath = resolveInsidePathReal(entryPath, parsed.outputFile);
       if (!outputFilePath) {
         throw new Error(
           `SKILL.md "${parsed.name}": "output_file" must stay inside the skill directory`,
@@ -89,7 +115,9 @@ function buildCliSkill(
           `SKILL.md "${parsed.name}": internal error - script missing for mode '${parsed.mode}'`,
         );
       }
-      const scriptPath = resolveInsidePath(entryPath, parsed.script);
+      // Symlink-aware like output_file/image_file: a script symlink escaping the
+      // skill directory is rejected at load time rather than executed.
+      const scriptPath = resolveInsidePathReal(entryPath, parsed.script);
       if (!scriptPath) {
         throw new Error(`SKILL.md "${parsed.name}": "script" must stay inside the skill directory`);
       }
@@ -102,7 +130,7 @@ function buildCliSkill(
         scriptPath,
         scriptArgs: parsed.scriptArgs,
         scriptTimeoutMs: parsed.scriptTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
-        scriptEnv,
+        scriptEnv: scopeLlmKeys(scriptEnv, parsed.llmOverride?.provider),
         image: parsed.image,
         imageFile: safeImageFile,
         dir: entryPath,
@@ -117,6 +145,7 @@ function buildCliSkill(
               outputMime: parsed.outputMime,
               inputMime: parsed.inputMime,
               inputText: parsed.inputText,
+              context: parsed.context,
             })
           : new StaticScriptSkill(scriptParams);
       break;
@@ -155,8 +184,9 @@ export interface LoadSkillsOptions {
   /**
    * Env propagated into script-mode skills (`static-script`, `dynamic-script`).
    * Typically `{ ...process.env, <PROVIDER_KEY>: <decrypted-secret>, ... }`
-   * built from the agent's encrypted secrets, so scripts get the same
-   * provider keys that LLM-mode skills already enjoy.
+   * built from the agent's encrypted secrets. Per skill, every LLM provider
+   * key except the one its SKILL.md declares (`llm.provider`) is stripped
+   * before the env reaches the script - see `scopeLlmKeys`.
    */
   scriptEnv?: NodeJS.ProcessEnv;
 }

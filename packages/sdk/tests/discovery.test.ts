@@ -198,6 +198,51 @@ describe('DiscoveryService.fetchAgentsPage', () => {
     expect(agents[0]!.cards[0]!.inputText).toBeUndefined();
   });
 
+  it('round-trips context: true on the parsed card', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    const card = makeCard({ context: true });
+    const ev = makeCapabilityEvent(agent, card);
+
+    (pool.querySync as any).mockResolvedValue([ev]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(1);
+    expect(agents[0]!.cards[0]!.context).toBe(true);
+  });
+
+  it('parses a card without context (absent stays absent)', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+    const card = makeCard();
+    const ev = makeCapabilityEvent(agent, card);
+
+    (pool.querySync as any).mockResolvedValue([ev]);
+    const svc = new DiscoveryService(pool as any);
+
+    const { agents } = await svc.fetchAgentsPage('devnet');
+    expect(agents.length).toBe(1);
+    expect(agents[0]!.cards[0]!.context).toBeUndefined();
+  });
+
+  it('keeps the card but coerces a non-true context value to absent', async () => {
+    const pool = createMockPool();
+    const agent = ElisymIdentity.generate();
+
+    for (const bad of ['true', 1, false, {}] as unknown[]) {
+      const card = makeCard({ context: bad as any });
+      const ev = makeCapabilityEvent(agent, card);
+
+      (pool.querySync as any).mockResolvedValue([ev]);
+      const svc = new DiscoveryService(pool as any);
+
+      const { agents } = await svc.fetchAgentsPage('devnet');
+      expect(agents.length).toBe(1);
+      expect(agents[0]!.cards[0]!.context).toBeUndefined();
+    }
+  });
+
   it('drops a card whose inputMime is not a string', async () => {
     const pool = createMockPool();
     const agent = ElisymIdentity.generate();

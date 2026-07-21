@@ -18,8 +18,8 @@ describe('tool registry', () => {
     expect(unique.size).toBe(names.length);
   });
 
-  it('registers exactly 25 tools (ping_agent folded into search/pre-ping; estimate_payment_cost added with USDC; submit_feedback / add_contact / remove_contact / list_contacts added; submit_and_pay_job_from_file and submit_diff_review added; get_agent_policies added; fetch_job_file added for iroh file results)', () => {
-    expect(registeredTools).toHaveLength(28);
+  it('registers exactly 29 tools (ping_agent folded into search/pre-ping; estimate_payment_cost added with USDC; submit_feedback / add_contact / remove_contact / list_contacts added; submit_and_pay_job_from_file and submit_diff_review added; get_agent_policies added; fetch_job_file added for iroh file results; list_job_sessions added for conversations)', () => {
+    expect(registeredTools).toHaveLength(29);
   });
 
   it('every registered tool has a Zod schema and a handler', () => {

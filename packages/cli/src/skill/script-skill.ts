@@ -36,6 +36,7 @@ export class ScriptSkill implements Skill {
   asset: Asset;
   mode: SkillMode = 'llm';
   readonly llmOverride?: SkillLlmOverride;
+  readonly context?: boolean;
   image?: string;
   imageFile?: string;
   dir: string;
@@ -54,6 +55,7 @@ export class ScriptSkill implements Skill {
     toolsOrRounds: SkillToolDef[] | number,
     rounds?: number,
     llmOverride?: SkillLlmOverride,
+    context?: boolean,
   ) {
     // Detect the new-style (asset passed as 5th arg) vs legacy-style (asset
     // omitted, image at 5th arg). An Asset has the shape { chain, token, decimals, symbol }.
@@ -91,6 +93,7 @@ export class ScriptSkill implements Skill {
     this.priceSubunits = priceSubunits;
     this.asset = asset;
     this.llmOverride = llmOverride;
+    this.context = context;
     this.image = image;
     this.imageFile = imageFile;
     this.dir = skillDir;
@@ -105,6 +108,7 @@ export class ScriptSkill implements Skill {
       tools,
       maxToolRounds,
       llmOverride,
+      context,
       image,
       imageFile,
     });

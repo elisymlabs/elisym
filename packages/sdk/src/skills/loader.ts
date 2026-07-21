@@ -11,7 +11,7 @@ import {
   resolveKnownAsset,
 } from '../payment/assets';
 import { DynamicScriptSkill } from './dynamicScriptSkill';
-import { resolveInsidePath } from './path-safety';
+import { resolveInsidePathReal } from './path-safety';
 import { DEFAULT_SCRIPT_TIMEOUT_MS, ScriptSkill, type SkillToolDef } from './scriptSkill';
 import { StaticFileSkill } from './staticFileSkill';
 import { StaticScriptSkill } from './staticScriptSkill';
@@ -63,6 +63,12 @@ export interface SkillFrontmatter {
   model?: unknown;
   /** Per-skill max_tokens override. Only valid for `mode: 'llm'`. */
   max_tokens?: unknown;
+  /**
+   * Conversation-context participation (default false). Only valid for
+   * `mode: 'llm'` - declaring it on any other mode is a parse-time error,
+   * mirroring the `max_tokens` rule.
+   */
+  context?: unknown;
   /** Execution mode. Default 'llm'. */
   mode?: unknown;
   /** Required when mode === 'static-file'. Path relative to skill dir. */
@@ -147,6 +153,8 @@ export interface ParsedSkill {
    * script depends on so the agent can health-monitor it.
    */
   llmOverride?: SkillLlmOverride;
+  /** Conversation-context participation (`context: true`, llm mode only). */
+  context: boolean;
   image?: string;
   imageFile?: string;
   /** Set when mode === 'static-file'. */
@@ -210,6 +218,13 @@ export interface LoadSkillsOptions {
    * `loadSkillsFromDir` then skips the skill with a warning.
    */
   allowX402Skills?: boolean;
+  /**
+   * Env for script-mode skills (`static-script`, `dynamic-script`). When
+   * omitted, script subprocesses fall back to a scoped copy of `process.env`
+   * with known secret env vars stripped (see `scopedToolEnv`) - never the raw
+   * parent env.
+   */
+  scriptEnv?: NodeJS.ProcessEnv;
   logger?: LoaderLogger;
 }
 
@@ -295,7 +310,13 @@ export function parseSkillMd(content: string): {
   }
 
   const yamlStr = lines.slice(start + 1, end).join('\n');
-  const frontmatter = YAML.parse(yamlStr) as SkillFrontmatter;
+  const parsedYaml: unknown = YAML.parse(yamlStr);
+  // Empty or scalar frontmatter parses to null/string/number - fail with the
+  // intended message instead of a TypeError deep inside field validation.
+  if (parsedYaml === null || typeof parsedYaml !== 'object' || Array.isArray(parsedYaml)) {
+    throw new Error('SKILL.md: frontmatter must be a YAML mapping');
+  }
+  const frontmatter = parsedYaml as SkillFrontmatter;
   const systemPrompt = lines
     .slice(end + 1)
     .join('\n')
@@ -470,6 +491,30 @@ function validateLlmOverride(
   }
 
   return override;
+}
+
+/**
+ * Parse the optional `context` frontmatter flag (conversation-context
+ * participation). Valid on the modes that consume customer input per message:
+ * `llm` (history goes into the LLM messages) and `dynamic-script` (history is
+ * handed to the script via `ELISYM_HISTORY_FILE`). Static modes ignore input
+ * entirely and `x402` state belongs to the upstream, so a declared flag would
+ * silently do nothing there; rejecting it at parse time mirrors the
+ * `max_tokens` rule above.
+ */
+function validateContext(skillName: string, value: unknown, mode: SkillMode): boolean {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (typeof value !== 'boolean') {
+    throw new Error(`SKILL.md "${skillName}": "context" must be a boolean`);
+  }
+  if (mode !== 'llm' && mode !== 'dynamic-script') {
+    throw new Error(
+      `SKILL.md "${skillName}": "context" is only valid in modes 'llm' and 'dynamic-script' (got '${mode}')`,
+    );
+  }
+  return value;
 }
 
 const MAX_RATE_LIMIT_WINDOW_SECS = 86400;
@@ -951,6 +996,7 @@ export function validateSkillFrontmatter(
   const imageFile = typeof frontmatter.image_file === 'string' ? frontmatter.image_file : undefined;
 
   const llmOverride = validateLlmOverride(frontmatter.name, frontmatter, mode);
+  const context = validateContext(frontmatter.name, frontmatter.context, mode);
   const rateLimit = validateRateLimit(frontmatter.name, frontmatter.rate_limit);
   const executionTimeoutSecs = validateMaxExecutionSecs(
     frontmatter.name,
@@ -969,6 +1015,7 @@ export function validateSkillFrontmatter(
     tools,
     maxToolRounds,
     llmOverride,
+    context,
     image,
     imageFile,
     outputFile,
@@ -986,16 +1033,21 @@ export function validateSkillFrontmatter(
   };
 }
 
-function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: LoaderLogger): Skill {
+function buildSkillFromParsed(
+  parsed: ParsedSkill,
+  skillDir: string,
+  logger: LoaderLogger,
+  scriptEnv?: NodeJS.ProcessEnv,
+): Skill {
   // Containment for `image_file`, matching `script`/`output_file` (which throw).
   // The image is decorative, so an out-of-dir path is dropped with a warning
   // rather than failing the load. Without this, `image_file: ../../.secrets.json`
   // would be read and uploaded to a public media host at startup (exfiltration).
   let imageFile = parsed.imageFile;
-  if (imageFile !== undefined && resolveInsidePath(skillDir, imageFile) === null) {
+  if (imageFile !== undefined && resolveInsidePathReal(skillDir, imageFile) === null) {
     logger.warn?.(
       { skill: parsed.name, imageFile },
-      'SKILL.md "image_file" escapes the skill directory; ignoring it',
+      'SKILL.md "image_file" escapes the skill directory (directly or via symlink); ignoring it',
     );
     imageFile = undefined;
   }
@@ -1012,6 +1064,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         tools: parsed.tools,
         maxToolRounds: parsed.maxToolRounds,
         llmOverride: parsed.llmOverride,
+        context: parsed.context,
         image: parsed.image,
         imageFile,
         logger,
@@ -1022,7 +1075,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
           `SKILL.md "${parsed.name}": internal error - outputFile missing for mode 'static-file'`,
         );
       }
-      const outputFilePath = resolveInsidePath(skillDir, parsed.outputFile);
+      const outputFilePath = resolveInsidePathReal(skillDir, parsed.outputFile);
       if (!outputFilePath) {
         throw new Error(
           `SKILL.md "${parsed.name}": "output_file" must stay inside the skill directory`,
@@ -1035,6 +1088,7 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         priceSubunits: parsed.priceSubunits,
         asset: parsed.asset,
         outputFilePath,
+        skillDir,
         image: parsed.image,
         imageFile,
         llmOverride: parsed.llmOverride,
@@ -1047,7 +1101,9 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
           `SKILL.md "${parsed.name}": internal error - script missing for mode '${parsed.mode}'`,
         );
       }
-      const scriptPath = resolveInsidePath(skillDir, parsed.script);
+      // Symlink-aware like output_file/image_file: a script symlink escaping the
+      // skill directory is rejected at load time rather than executed.
+      const scriptPath = resolveInsidePathReal(skillDir, parsed.script);
       if (!scriptPath) {
         throw new Error(`SKILL.md "${parsed.name}": "script" must stay inside the skill directory`);
       }
@@ -1060,14 +1116,20 @@ function buildSkillFromParsed(parsed: ParsedSkill, skillDir: string, logger: Loa
         scriptPath,
         scriptArgs: parsed.scriptArgs,
         scriptTimeoutMs: parsed.scriptTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
+        scriptEnv,
         image: parsed.image,
         imageFile,
         llmOverride: parsed.llmOverride,
       };
-      // Only dynamic-script supports a file result, so `outputMime` is threaded
-      // only there (StaticScriptSkill has no such param).
+      // Only dynamic-script supports a file result and conversation context,
+      // so `outputMime`/`context` are threaded only there (StaticScriptSkill
+      // has no such params).
       return parsed.mode === 'dynamic-script'
-        ? new DynamicScriptSkill({ ...scriptParams, outputMime: parsed.outputMime })
+        ? new DynamicScriptSkill({
+            ...scriptParams,
+            outputMime: parsed.outputMime,
+            context: parsed.context,
+          })
         : new StaticScriptSkill(scriptParams);
     }
     case 'x402': {
@@ -1122,7 +1184,7 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions 
       const content = readFileSync(skillMdPath, 'utf-8');
       const { frontmatter, systemPrompt } = parseSkillMd(content);
       const parsed = validateSkillFrontmatter(frontmatter, systemPrompt, options);
-      skills.push(buildSkillFromParsed(parsed, entryPath, logger));
+      skills.push(buildSkillFromParsed(parsed, entryPath, logger, options.scriptEnv));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn?.({ dir: entry, err: message }, 'skipping malformed skill directory');
