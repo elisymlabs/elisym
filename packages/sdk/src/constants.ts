@@ -57,6 +57,22 @@ export const KIND_DM_SEAL = 13;
 export const KIND_DM_RUMOR = 14;
 /** NIP-17/NIP-51 DM inbox relay list (replaceable). */
 export const KIND_DM_INBOX_RELAYS = 10050;
+/** NIP-39 external identity claims (`i` tags; normal-replaceable, newest wins). */
+export const KIND_EXTERNAL_IDENTITIES = 10011;
+
+// External-identity handle/proof-id formats, enforced symmetrically like the
+// payment fields: `ElisymYamlSchema` + `publishExternalIdentities` reject on
+// write, the kind-10011 parser rejects on read. The strict charsets are the
+// URL-injection guard - handles and proof ids are embedded into proof-fetch
+// URLs, so anything outside these patterns is dropped at every boundary.
+/** GitHub username (also the gist URL path segment). */
+export const GITHUB_USERNAME_REGEX = /^[a-zA-Z0-9-]{1,39}$/;
+/** X / Twitter username (on-wire NIP-39 platform name stays `twitter`). */
+export const X_USERNAME_REGEX = /^[A-Za-z0-9_]{1,15}$/;
+/** GitHub gist id (lowercase hex). */
+export const GIST_ID_REGEX = /^[a-f0-9]{1,64}$/;
+/** Tweet status id. Always a string - tweet ids overflow IEEE-754 doubles. */
+export const TWEET_ID_REGEX = /^[0-9]{1,25}$/;
 /** Marker tag on SDK-published kind 10050 events: `['client', 'elisym']`.
  * Present = SDK-managed default list (safe to refresh when the relay set
  * changes); absent = operator-managed (never overwritten by the SDK). */
@@ -143,6 +159,15 @@ export const DEFAULTS = {
   DM_FUTURE_SKEW_SECS: 600,
   // Default fetchHistory window when the caller passes no `since` (30 days).
   DM_HISTORY_WINDOW_SECS: 2_592_000,
+  // Per-request ceiling for a single external-identity proof fetch (gist raw /
+  // X oEmbed / NIP-05 nostr.json). Verification is lazy and on-demand, so a
+  // hanging host must fail into `unverifiable` quickly.
+  IDENTITY_PROOF_FETCH_TIMEOUT_MS: 10_000,
+  // Identity verification results cache (in-process, per claim set): 1 h for
+  // definitive results, 5 min for `unverifiable` so transient failures
+  // (429/5xx/timeouts) retry sooner.
+  IDENTITY_VERIFY_CACHE_TTL_MS: 3_600_000,
+  IDENTITY_VERIFY_NEGATIVE_CACHE_TTL_MS: 300_000,
 } as const;
 
 /** Protocol limits for input validation. */
@@ -198,6 +223,21 @@ export const LIMITS = {
   // 2.23.3).
   MAX_MESSAGE_LENGTH: 10_000,
   MAX_MESSAGE_JSON_BYTES: 40_000,
+  // External identities (NIP-39 kind 10011 + NIP-05). The tag cap is counted
+  // AFTER the platform whitelist filter, so a foreign multi-platform event
+  // cannot starve a claim behind unrelated platforms.
+  MAX_IDENTITY_TAGS: 8,
+  // Streamed-byte cap on a fetched proof body. A body over the cap maps to
+  // `unverifiable` - a truncated body must never be substring-searched into a
+  // false npub mismatch.
+  MAX_IDENTITY_PROOF_BYTES: 65_536, // 64 KiB
+  MAX_IDENTITY_VERIFY_CACHE_ENTRIES: 256,
+  // Pre-regex length guards for identity handles / proof ids (GitHub username
+  // max 39, gist hex max 64; the per-platform regexes narrow further).
+  MAX_IDENTITY_HANDLE_LENGTH: 39,
+  MAX_IDENTITY_PROOF_ID_LENGTH: 64,
+  /** Full `local@domain` NIP-05 identifier length cap. */
+  MAX_IDENTITY_NIP05_LENGTH: 254,
 } as const;
 
 const UTF8_ENCODER = new TextEncoder();

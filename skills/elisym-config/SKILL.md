@@ -67,6 +67,7 @@ Source of truth: `ElisymYamlSchema` in [`packages/sdk/src/agent-store/schema.ts`
 | `llm`                    | `{ provider, model, max_tokens }`                         | no       | Optional. Provider mode needs this; customer mode does not.                                                                             |
 | `security`               | `{ withdrawals_enabled, agent_switch_enabled }` (partial) | no       | Defaults to `{}`. Gating flags for destructive operations - requires explicit user confirmation to flip. See Security subsection.       |
 | `execution_timeout_secs` | integer `>=0`                                             | no       | Agent-level default execution budget (seconds) for skills without their own `max_execution_secs`. `0` = unlimited. Omitted = unlimited. |
+| `identities`             | `{ github?, x?, website? }`                               | no       | Linked external identities (NIP-39 + NIP-05). Managed by `elisym identity link` - do not hand-edit. See Identities subsection.          |
 
 <!-- fields:end -->
 
@@ -85,6 +86,12 @@ The same address receives every supported asset on the chain: native SOL directl
 - `provider: "anthropic" | "openai"`
 - `model: string` (e.g. `claude-sonnet-4-6`, `claude-opus-4-7`, `gpt-4o`)
 - `max_tokens: number` (integer, 1..200000, defaults to `4096`)
+
+**`IdentitiesEntry`** (all keys optional; prefer `npx @elisym/cli identity link` over hand-edits - it verifies the proof live and republishes the claims)
+
+- `github: { username, gist }` - GitHub username (`[a-zA-Z0-9-]`, 1-39 chars) + public gist id (lowercase hex)
+- `x: { username, tweet }` - X username (`[A-Za-z0-9_]`, 1-15 chars) + tweet status id. The tweet id MUST stay a quoted string - an unquoted all-digit scalar loses precision at YAML parse time and the schema rejects it
+- `website: string` - NIP-05 identifier `name@domain` or a bare domain (published as `_@domain`). ASCII hostname labels only, no IP literals
 
 **`SecurityFlags`** (both default to `false`)
 

@@ -18,6 +18,7 @@ export {
   PaymentSchema,
   LlmSchema,
   SecurityFlagsSchema,
+  IdentitiesSchema,
   MediaCacheSchema,
   MediaCacheEntrySchema,
   AgentNameSchema,
@@ -28,6 +29,7 @@ export type {
   PaymentEntry,
   LlmEntry,
   SecurityFlags,
+  IdentitiesEntry,
   MediaCache,
   MediaCacheEntry,
 } from './schema';

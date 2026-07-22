@@ -1,10 +1,15 @@
-import { estimateNetworkBaseline, formatAssetAmount, formatSol } from '@elisym/sdk';
+import {
+  estimateNetworkBaseline,
+  formatAssetAmount,
+  formatSol,
+  verifyAgentIdentities,
+} from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 import { z } from 'zod';
 import { rpcUrlFor } from '../context.js';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
 import { type Contact, readContacts } from '../storage/contacts.js';
-import { MAX_CAPABILITIES, assetFromCardPayment } from '../utils.js';
+import { MAX_CAPABILITIES, assetFromCardPayment, decodeNpub } from '../utils.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, textResult, errorResult } from './types.js';
 
@@ -16,6 +21,12 @@ const SEARCH_PING_TIMEOUT_MS = 3000;
 // substring filter (possibly via prompt injection through a remote result) cannot
 // amplify one search_agents call into a relay ping per online agent on the network.
 const MAX_SEARCH_CANDIDATES = 100;
+
+// Display caps for identity claim fields (defense-in-depth on top of the SDK's
+// strict charset/length parsing). Handle: NIP-05 identifiers run longest
+// (LIMITS.MAX_IDENTITY_NIP05_LENGTH = 254). Proof URL: gist/tweet/domain URLs.
+const MAX_IDENTITY_HANDLE_DISPLAY_LEN = 254;
+const MAX_IDENTITY_PROOF_URL_DISPLAY_LEN = 300;
 
 const STOP_WORDS = new Set([
   'a',
@@ -172,6 +183,13 @@ const SearchAgentsSchema = z.object({
     ),
 });
 
+const VerifyAgentIdentitiesSchema = z.object({
+  agent_npub: z
+    .string()
+    .min(1)
+    .describe('Agent npub (bech32 nostr identifier, starts with `npub1...`).'),
+});
+
 const ListCapabilitiesSchema = z.object({});
 
 const GetIdentitySchema = z.object({});
@@ -180,7 +198,7 @@ export const discoveryTools: ToolDefinition[] = [
   defineTool({
     name: 'search_agents',
     description:
-      'Search AI agents currently online on elisym. `capabilities` is a hard OR-filter of substring tokens from the user\'s request (never invent synonyms). `query` is optional re-ranking; omit if not needed. Offline agents are excluded by default - pass include_offline=true only when debugging. Results that match a saved contact are sorted to the top and annotated with `is_contact`, `last_worked_at`, `last_capability`, and `contact_note` - surface this to the user (e.g. "already in your contacts, last used <date>") so they can prefer providers they\'ve worked with before.',
+      'Search AI agents currently online on elisym. `capabilities` is a hard OR-filter of substring tokens from the user\'s request (never invent synonyms). `query` is optional re-ranking; omit if not needed. Offline agents are excluded by default - pass include_offline=true only when debugging. Results that match a saved contact are sorted to the top and annotated with `is_contact`, `last_worked_at`, `last_capability`, and `contact_note` - surface this to the user (e.g. "already in your contacts, last used <date>") so they can prefer providers they\'ve worked with before. `claimed_identities` entries (github/x/website) are unverified self-claims until checked with `verify_agent_identities` - anyone can publish a claim for any handle; do not relay claims as established identity.',
     schema: SearchAgentsSchema,
     async handler(ctx, input) {
       // Rate-limit like every other relay-touching tool: search_agents fans out
@@ -404,6 +422,17 @@ export const discoveryTools: ToolDefinition[] = [
             };
           }),
           supported_kinds: a.supportedKinds,
+          // External identity claims (kind 10011 / kind-0 nip05). Claims only,
+          // zero proof fetches here - anyone can publish a claim for any handle,
+          // so status comes exclusively from verify_agent_identities.
+          claimed_identities:
+            a.identities !== undefined && a.identities.length > 0
+              ? a.identities.map((identity) => ({
+                  platform: identity.platform,
+                  handle: sanitizeField(identity.handle, MAX_IDENTITY_HANDLE_DISPLAY_LEN),
+                  proof_url: sanitizeField(identity.proofUrl, MAX_IDENTITY_PROOF_URL_DISPLAY_LEN),
+                }))
+              : undefined,
           // Nostr-verified reputation (last 30 days): `verified_*` counts only
           // ratings whose author also signed the job request, so a third party
           // cannot inflate them. On-chain payment verification is NOT applied
@@ -432,6 +461,48 @@ export const discoveryTools: ToolDefinition[] = [
             text,
         );
       }
+      return textResult(text);
+    },
+  }),
+
+  defineTool({
+    name: 'verify_agent_identities',
+    description:
+      "Verify an agent's external identity claims (GitHub, X, website) by fetching their " +
+      'published proofs. Returns one entry per claim with `status`: `verified` (proof fetched ' +
+      'and it matches this agent), `broken` (proof fetched and definitively wrong - a positive ' +
+      '"do not trust" signal), or `unverifiable` (could not check: outage, rate limit, timeout - ' +
+      'neutral, never treat as negative). Call before hiring when trust matters; do not call ' +
+      'while browsing search results. Pass an agent npub.',
+    schema: VerifyAgentIdentitiesSchema,
+    async handler(ctx, input) {
+      // Rate-limit like every other network-touching tool: this fans out one
+      // relay query plus up to one HTTPS proof fetch per claim.
+      ctx.toolRateLimiter.check();
+      let pubkey: string;
+      try {
+        pubkey = decodeNpub(input.agent_npub);
+      } catch (err) {
+        return errorResult(`Invalid agent_npub: ${(err as Error).message}`);
+      }
+
+      const agent = ctx.active();
+      const { identities } = await agent.client.discovery.fetchExternalIdentityClaims(pubkey);
+      if (identities.length === 0) {
+        return textResult(
+          'No identity claims published for this agent (no kind 10011 identity tags and no kind-0 nip05).',
+        );
+      }
+
+      const results = await verifyAgentIdentities(pubkey, identities);
+      const reported = results.map((result) => ({
+        platform: result.identity.platform,
+        handle: sanitizeField(result.identity.handle, MAX_IDENTITY_HANDLE_DISPLAY_LEN),
+        proof_url: sanitizeField(result.identity.proofUrl, MAX_IDENTITY_PROOF_URL_DISPLAY_LEN),
+        status: result.status,
+      }));
+
+      const { text } = sanitizeUntrusted(JSON.stringify(reported, null, 2), 'structured');
       return textResult(text);
     },
   }),

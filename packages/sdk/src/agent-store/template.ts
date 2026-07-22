@@ -131,5 +131,21 @@ export function renderInitialYaml(yaml: ElisymYaml): string {
     },
   ];
 
+  // Value-passthrough only, no commented placeholder when unset: identities
+  // are linked via `elisym identity`, not hand-filled at init. But a
+  // schema-valid operator template (`elisym init --config`) carrying
+  // `identities` must not be silently dropped, so the block is appended
+  // conditionally instead of using the always-emitting FieldBlock scaffold.
+  if (yaml.identities !== undefined) {
+    blocks.push({
+      description:
+        'Linked external identities (NIP-39): github/x proof claims and the ' +
+        'NIP-05 website identifier. Managed by `elisym identity link`.',
+      key: 'identities',
+      value: yaml.identities,
+      placeholder: yaml.identities,
+    });
+  }
+
   return blocks.map(renderBlock).join('\n\n') + '\n';
 }

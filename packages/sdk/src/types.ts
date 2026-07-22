@@ -101,6 +101,64 @@ export interface PolicyInput {
   content: string;
 }
 
+/**
+ * External identity claim (NIP-39 kind 10011 for github/x, NIP-05 for
+ * website) attached to an agent. A claim is self-published and proves nothing
+ * by itself - anyone can claim any handle. Status comes only from
+ * `verifyAgentIdentities`.
+ */
+export interface AgentExternalIdentity {
+  platform: 'github' | 'x' | 'website';
+  /** Username (github/x) or normalized NIP-05 identifier (website). */
+  handle: string;
+  /** Public proof artifact: gist URL, tweet URL, or `https://<domain>`. */
+  proofUrl: string;
+}
+
+/**
+ * Input claim for `publishExternalIdentities`. The website claim does not ride
+ * kind 10011 - it is the kind-0 `nip05` field (see `publishProfile`).
+ */
+export interface ExternalIdentityClaimInput {
+  platform: 'github' | 'x';
+  handle: string;
+  /** Proof artifact id: gist id (github) or tweet status id (x). */
+  proofId: string;
+}
+
+export type IdentityVerifyStatus = 'verified' | 'broken' | 'unverifiable';
+
+/** Per-identity outcome of `verifyAgentIdentities`. */
+export interface VerifiedIdentityResult {
+  identity: AgentExternalIdentity;
+  /**
+   * `verified` - proof fetched, author matches the handle, body matches the
+   * platform proof template with this agent's npub (or the NIP-05 mapping
+   * equals the pubkey). `broken` - proof fetched and definitively wrong or
+   * absent; a positive "do not trust" signal. `unverifiable` - could not
+   * check (network error, rate limit, CORS, timeout, oversize body); neutral,
+   * never rendered as negative.
+   */
+  status: IdentityVerifyStatus;
+}
+
+/**
+ * Result of `DiscoveryService.fetchExternalIdentityClaims` - parsed claims
+ * plus the newest kind-0 profile fields from the same relay query, so CLI
+ * kind-0 republishes can carry over picture/banner without a second fetch.
+ */
+export interface ExternalIdentityClaimsResult {
+  identities: AgentExternalIdentity[];
+  profile: {
+    name?: string;
+    about?: string;
+    picture?: string;
+    banner?: string;
+    /** Normalized NIP-05 identifier from kind 0, when present and valid. */
+    nip05?: string;
+  };
+}
+
 /** Agent discovered from the network. */
 export interface Agent {
   pubkey: string;
@@ -148,6 +206,8 @@ export interface Agent {
   banner?: string;
   name?: string;
   about?: string;
+  /** External identity claims (github/x from kind 10011, website from kind-0 nip05). Unverified self-claims - status only via `verifyAgentIdentities`. */
+  identities?: AgentExternalIdentity[];
 }
 
 export type Network = 'mainnet' | 'devnet';

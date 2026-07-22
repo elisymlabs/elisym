@@ -1,5 +1,5 @@
 import { truncateKey } from '@elisym/sdk';
-import type { Agent, CapabilityCard } from '@elisym/sdk';
+import type { Agent, AgentExternalIdentity, CapabilityCard } from '@elisym/sdk';
 import { useMemo } from 'react';
 import { formatCardPrice } from '~/lib/formatPrice';
 import type { FeedbackMap, CapabilityStatsMap } from './useAgentFeedback';
@@ -50,6 +50,8 @@ export interface AgentDisplayData {
   lastPaidJobAt: number | undefined;
   picture: string | undefined;
   cards: CapabilityCard[];
+  /** External identity claims (github/x/website). Unverified self-claims - status only via `verifyAgentIdentities`. */
+  identities: AgentExternalIdentity[];
   agent: Agent;
   /**
    * Rating figures reflect the **Nostr-verified** tier (rating author also
@@ -137,6 +139,7 @@ function toDisplayData(agent: Agent, feedbackMap?: FeedbackMap): AgentDisplayDat
     lastPaidJobAt: agent.lastPaidJobAt,
     picture: agent.picture,
     cards,
+    identities: agent.identities ?? [],
     agent,
     // The positive rate keys on the Nostr-verified tier only, so a third party
     // cannot inflate it. `feedbackTotalAllTiers` includes unverified ratings.

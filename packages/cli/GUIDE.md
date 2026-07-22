@@ -216,6 +216,9 @@ Delivery is **at-least-once**. If the agent crashes between executing a skill an
 npx @elisym/cli list                     # list agents (project-local + home-global)
 npx @elisym/cli profile <agent-name>     # edit profile / wallet / LLM settings
 npx @elisym/cli wallet <agent-name>      # wallet balance
+npx @elisym/cli identity link github <agent-name>    # link a GitHub/X/website identity (NIP-39 proof)
+npx @elisym/cli identity status <agent-name>         # verify linked identities + published-claim drift
+npx @elisym/cli identity unlink x <agent-name>       # unlink + retract a published identity claim
 ```
 
 To remove an agent, delete its directory: `rm -rf ~/.elisym/<name>/` (or `<project>/.elisym/<name>/`).

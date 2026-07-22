@@ -1,6 +1,7 @@
 import { nip19, finalizeEvent, verifyEvent, type Filter, type Event } from 'nostr-tools';
 import {
   KIND_APP_HANDLER,
+  KIND_EXTERNAL_IDENTITIES,
   KIND_JOB_FEEDBACK,
   KIND_JOB_REQUEST,
   KIND_JOB_REQUEST_BASE,
@@ -8,11 +9,25 @@ import {
   KIND_JOB_RESULT_BASE,
   jobResultKind,
   DEFAULT_KIND_OFFSET,
+  DEFAULTS,
+  GIST_ID_REGEX,
+  GITHUB_USERNAME_REGEX,
   LIMITS,
+  TWEET_ID_REGEX,
+  X_USERNAME_REGEX,
 } from '../constants';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
-import type { Agent, CapabilityCard, Network, SubCloser } from '../types';
+import type {
+  Agent,
+  AgentExternalIdentity,
+  CapabilityCard,
+  ExternalIdentityClaimInput,
+  ExternalIdentityClaimsResult,
+  Network,
+  SubCloser,
+} from '../types';
+import { normalizeNip05Identifier, splitNip05Identifier } from './identity-verify';
 import type { MessagesService } from './messages';
 import { requestJobIds, tallyReputation } from './reputation';
 
@@ -284,6 +299,145 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
 }
 
 /**
+ * Parse a kind-10011 (NIP-39) event into external identity claims.
+ *
+ * Strict by design - the charset regexes are the URL-injection guard (handles
+ * and proof ids are embedded into proof-fetch URLs):
+ * - platform whitelist `github` / `twitter`; other platforms are ignored;
+ * - `i` tags with more than 2 values are accepted (params 1-2 read, extras
+ *   ignored - NIP-39 forward compatibility);
+ * - at most `LIMITS.MAX_IDENTITY_TAGS` tags are scanned, counted AFTER the
+ *   whitelist filter (a foreign multi-platform event with mastodon/telegram
+ *   tags ahead of its github tag must not lose the claim to a scan cap);
+ * - first valid claim per platform wins.
+ */
+export function parseExternalIdentityEvent(event: Event): AgentExternalIdentity[] {
+  // Deliberately re-verifies even though enrichment already gated the event:
+  // this is a public API and must stay safe for callers that skip that gate.
+  if (!verifyEvent(event) || !isWithinClockSkew(event)) {
+    return [];
+  }
+  const claims: AgentExternalIdentity[] = [];
+  const seenPlatforms = new Set<string>();
+  let whitelistedCount = 0;
+  for (const tag of event.tags) {
+    if (tag[0] !== 'i' || typeof tag[1] !== 'string') {
+      continue;
+    }
+    const separatorIndex = tag[1].indexOf(':');
+    if (separatorIndex === -1) {
+      continue;
+    }
+    const platform = tag[1].slice(0, separatorIndex);
+    const handle = tag[1].slice(separatorIndex + 1);
+    if (platform !== 'github' && platform !== 'twitter') {
+      continue;
+    }
+    whitelistedCount += 1;
+    if (whitelistedCount > LIMITS.MAX_IDENTITY_TAGS) {
+      break;
+    }
+    if (seenPlatforms.has(platform)) {
+      continue;
+    }
+    const proofId = tag[2];
+    if (typeof proofId !== 'string') {
+      continue;
+    }
+    if (
+      handle.length > LIMITS.MAX_IDENTITY_HANDLE_LENGTH ||
+      proofId.length > LIMITS.MAX_IDENTITY_PROOF_ID_LENGTH
+    ) {
+      continue;
+    }
+    if (platform === 'github') {
+      if (!GITHUB_USERNAME_REGEX.test(handle) || !GIST_ID_REGEX.test(proofId)) {
+        continue;
+      }
+      seenPlatforms.add(platform);
+      claims.push({
+        platform: 'github',
+        handle,
+        proofUrl: `https://gist.github.com/${encodeURIComponent(handle)}/${encodeURIComponent(proofId)}`,
+      });
+    } else {
+      if (!X_USERNAME_REGEX.test(handle) || !TWEET_ID_REGEX.test(proofId)) {
+        continue;
+      }
+      seenPlatforms.add(platform);
+      claims.push({
+        platform: 'x',
+        handle,
+        proofUrl: `https://x.com/${encodeURIComponent(handle)}/status/${encodeURIComponent(proofId)}`,
+      });
+    }
+  }
+  return claims;
+}
+
+/** Kind-0 profile fields after field-by-field guarded parsing. */
+interface ParsedProfileMetadata {
+  name?: string;
+  about?: string;
+  picture?: string;
+  banner?: string;
+  /** Normalized NIP-05 identifier, present only when valid. */
+  nip05?: string;
+}
+
+/**
+ * Guarded parse of kind-0 content. Same skip-on-invalid posture per field as
+ * the historical `enrichWithMetadata` inline parsing: kind-0 content is
+ * unauthenticated remote data, so bad fields are dropped, never retained.
+ */
+function parseProfileMetadata(event: Event): ParsedProfileMetadata {
+  const parsed: ParsedProfileMetadata = {};
+  let meta: unknown;
+  try {
+    meta = JSON.parse(event.content);
+  } catch {
+    return parsed;
+  }
+  if (meta === null || typeof meta !== 'object') {
+    return parsed;
+  }
+  const candidate = meta as Record<string, unknown>;
+  if (typeof candidate.picture === 'string' && isSafeImageUrl(candidate.picture)) {
+    parsed.picture = candidate.picture;
+  }
+  if (typeof candidate.banner === 'string' && isSafeImageUrl(candidate.banner)) {
+    parsed.banner = candidate.banner;
+  }
+  // A blank name never beats the capability-derived one - skip it too.
+  if (
+    typeof candidate.name === 'string' &&
+    candidate.name.trim().length > 0 &&
+    candidate.name.length <= LIMITS.MAX_AGENT_NAME_LENGTH
+  ) {
+    parsed.name = candidate.name;
+  }
+  if (
+    typeof candidate.about === 'string' &&
+    candidate.about.length <= LIMITS.MAX_DESCRIPTION_LENGTH
+  ) {
+    parsed.about = candidate.about;
+  }
+  if (typeof candidate.nip05 === 'string') {
+    const identifier = normalizeNip05Identifier(candidate.nip05);
+    if (identifier !== null) {
+      parsed.nip05 = identifier;
+    }
+  }
+  return parsed;
+}
+
+/** The website claim derived from a valid kind-0 `nip05` identifier. */
+function websiteClaimFromNip05(identifier: string): AgentExternalIdentity {
+  const { domain } = splitNip05Identifier(identifier);
+  return { platform: 'website', handle: identifier, proofUrl: `https://${domain}` };
+}
+
+/**
  * Deduplicate events by (pubkey, d-tag) keeping only the newest,
  * then build an Agent map filtered by network.
  */
@@ -430,63 +584,128 @@ export class DiscoveryService {
     return { agents, oldestCreatedAt, rawEventCount };
   }
 
-  /** Enrich agents with kind:0 metadata (name, picture, about). Mutates in place and returns the same array. */
+  /**
+   * Enrich agents with kind:0 metadata (name, picture, about, nip05) and
+   * kind-10011 external identity claims. Mutates in place and returns the
+   * same array. Claims ride this one batched relay query - no HTTP proof
+   * fetches ever happen here (cheapness contract).
+   */
   async enrichWithMetadata(agents: Agent[]): Promise<Agent[]> {
     const pubkeys = agents.map((a) => a.pubkey);
     if (pubkeys.length === 0) {
       return agents;
     }
 
+    // Both kinds are replaceable, but the two-kind query doubles the
+    // per-filter worst case (500 events at BATCH_SIZE 250) - halve the batch
+    // so relays with lower server-side caps do not silently truncate.
     const metaEvents = await this.pool.queryBatched(
-      { kinds: [0] } as Omit<Filter, 'authors'>,
+      { kinds: [0, KIND_EXTERNAL_IDENTITIES] } as Omit<Filter, 'authors'>,
       pubkeys,
+      Math.floor(DEFAULTS.BATCH_SIZE / 2),
     );
-    const latestMeta = new Map<string, (typeof metaEvents)[0]>();
+    // Newest-wins split per (pubkey, kind): kind 0 routes to the profile
+    // parser and kind 10011 to the identity parser. Keying by pubkey alone
+    // would drop whichever of the two kinds is older.
+    // Clock-skew gate matches every other newest-wins pick in this file: a
+    // validly-signed event with a far-future created_at would otherwise pin
+    // the profile against all later legitimate updates.
+    const latestPerKind = new Map<string, Event>();
     for (const ev of metaEvents) {
-      // Clock-skew gate matches every other newest-wins pick in this file: a
-      // validly-signed event with a far-future created_at would otherwise pin
-      // the profile against all later legitimate updates.
       if (!verifyEvent(ev) || !isWithinClockSkew(ev)) {
         continue;
       }
-      const prev = latestMeta.get(ev.pubkey);
+      const key = `${ev.pubkey}:${ev.kind}`;
+      const prev = latestPerKind.get(key);
       if (!prev || ev.created_at > prev.created_at) {
-        latestMeta.set(ev.pubkey, ev);
+        latestPerKind.set(key, ev);
       }
     }
-    const agentLookup = new Map(agents.map((a) => [a.pubkey, a]));
-    for (const [pubkey, ev] of latestMeta) {
-      const agent = agentLookup.get(pubkey);
-      if (!agent) {
-        continue;
+    for (const agent of agents) {
+      const metaEvent = latestPerKind.get(`${agent.pubkey}:0`);
+      const identityEvent = latestPerKind.get(`${agent.pubkey}:${KIND_EXTERNAL_IDENTITIES}`);
+      let websiteClaim: AgentExternalIdentity | undefined;
+      if (metaEvent) {
+        const profile = parseProfileMetadata(metaEvent);
+        if (profile.picture !== undefined) {
+          agent.picture = profile.picture;
+        }
+        if (profile.banner !== undefined) {
+          agent.banner = profile.banner;
+        }
+        if (profile.name !== undefined) {
+          agent.name = profile.name;
+        }
+        if (profile.about !== undefined) {
+          agent.about = profile.about;
+        }
+        if (profile.nip05 !== undefined) {
+          websiteClaim = websiteClaimFromNip05(profile.nip05);
+        }
       }
-      try {
-        const meta = JSON.parse(ev.content);
-        if (typeof meta.picture === 'string' && isSafeImageUrl(meta.picture)) {
-          agent.picture = meta.picture;
+      // Contract: `identities` is the per-pass snapshot of the claims derivable
+      // from the metadata events THIS query returned. Assign only when at least
+      // one of the two events came back; a TOTAL miss (both absent - timeout, or
+      // relays not holding either event) leaves the key undefined so spread-
+      // merging consumers ({...cached, ...fresh}) keep prior claims, matching how
+      // the kind-0 fields above omit keys they could not populate. A retraction
+      // still ships an event (empty-tag kind 10011, kind 0 without nip05), so it
+      // produces a DEFINED empty set and correctly drops stale claims.
+      //
+      // Trade-off: the claim set spans two events but lands in one array, so a
+      // PARTIAL miss (one kind returns, the other times out) snapshots only the
+      // returned kind and can transiently drop the other kind's cached claims
+      // until a pass that returns both. This is rare (both kinds ride one filter
+      // to the same relays, so a relay holding the author usually returns both)
+      // and self-heals; splitting the public claim set per source to preserve it
+      // is not worth the API surface for an unverified display hint.
+      if (metaEvent || identityEvent) {
+        const claims = identityEvent ? parseExternalIdentityEvent(identityEvent) : [];
+        if (websiteClaim) {
+          claims.push(websiteClaim);
         }
-        if (typeof meta.banner === 'string' && isSafeImageUrl(meta.banner)) {
-          agent.banner = meta.banner;
-        }
-        // Same skip-on-invalid shape as picture/banner above: kind:0 content
-        // is unauthenticated remote data, so cap free-text fields instead of
-        // retaining a multi-KB name/about in every discovered Agent. A blank
-        // name never beats the capability-derived one - skip it too.
-        if (
-          typeof meta.name === 'string' &&
-          meta.name.trim().length > 0 &&
-          meta.name.length <= LIMITS.MAX_AGENT_NAME_LENGTH
-        ) {
-          agent.name = meta.name;
-        }
-        if (typeof meta.about === 'string' && meta.about.length <= LIMITS.MAX_DESCRIPTION_LENGTH) {
-          agent.about = meta.about;
-        }
-      } catch {
-        // skip malformed metadata
+        agent.identities = claims;
       }
     }
     return agents;
+  }
+
+  /**
+   * Fetch one agent's external identity claims (kind 10011 + kind-0 nip05)
+   * with a single direct author-scoped relay query. Deliberately NOT built on
+   * `fetchAgents`/`fetchAgent`: those are card-gated, so a pubkey with no
+   * surviving kind-31990 cards (customer agents, a provider before its first
+   * start) would appear claim-less. Also returns the newest kind-0 profile
+   * fields so a CLI kind-0 republish can carry over picture/banner without a
+   * second fetch.
+   */
+  async fetchExternalIdentityClaims(pubkey: string): Promise<ExternalIdentityClaimsResult> {
+    const events = await this.pool.queryBatched(
+      { kinds: [0, KIND_EXTERNAL_IDENTITIES] } as Omit<Filter, 'authors'>,
+      [pubkey],
+    );
+    const latestPerKind = new Map<number, Event>();
+    for (const ev of events) {
+      // The query is author-scoped; verify authorship anyway.
+      if (ev.pubkey !== pubkey) {
+        continue;
+      }
+      if (!verifyEvent(ev) || !isWithinClockSkew(ev)) {
+        continue;
+      }
+      const prev = latestPerKind.get(ev.kind);
+      if (!prev || ev.created_at > prev.created_at) {
+        latestPerKind.set(ev.kind, ev);
+      }
+    }
+    const metaEvent = latestPerKind.get(0);
+    const identityEvent = latestPerKind.get(KIND_EXTERNAL_IDENTITIES);
+    const profile: ParsedProfileMetadata = metaEvent ? parseProfileMetadata(metaEvent) : {};
+    const identities = identityEvent ? parseExternalIdentityEvent(identityEvent) : [];
+    if (profile.nip05 !== undefined) {
+      identities.push(websiteClaimFromNip05(profile.nip05));
+    }
+    return { identities, profile };
   }
 
   /**
@@ -928,6 +1147,74 @@ export class DiscoveryService {
     return event.id;
   }
 
+  /**
+   * Publish external identity claims (kind 10011, NIP-39) as a provider.
+   * Normal-replaceable: every publish overwrites the previous claim set, and
+   * an EMPTY claim list is published too - that is how an unlink propagates.
+   *
+   * Write-side mirror of `parseExternalIdentityEvent` (same shared regexes):
+   * consumers silently drop violating tags, so a hand-edited bad handle must
+   * fail loud here, not ship a claim no SDK client ever surfaces.
+   */
+  async publishExternalIdentities(
+    identity: ElisymIdentity,
+    claims: ExternalIdentityClaimInput[],
+  ): Promise<string> {
+    if (claims.length > LIMITS.MAX_IDENTITY_TAGS) {
+      throw new Error(
+        `Too many identity claims: ${claims.length} (max ${LIMITS.MAX_IDENTITY_TAGS}).`,
+      );
+    }
+    const seenPlatforms = new Set<string>();
+    const tags: string[][] = [];
+    for (const claim of claims) {
+      if (seenPlatforms.has(claim.platform)) {
+        throw new Error(
+          `Duplicate identity claim for platform "${claim.platform}": readers keep the first tag per platform only.`,
+        );
+      }
+      switch (claim.platform) {
+        case 'github':
+          if (!GITHUB_USERNAME_REGEX.test(claim.handle)) {
+            throw new Error(`Invalid GitHub username: ${claim.handle}`);
+          }
+          if (!GIST_ID_REGEX.test(claim.proofId)) {
+            throw new Error(`Invalid GitHub gist id: ${claim.proofId}`);
+          }
+          tags.push(['i', `github:${claim.handle}`, claim.proofId]);
+          break;
+        case 'x':
+          if (!X_USERNAME_REGEX.test(claim.handle)) {
+            throw new Error(`Invalid X username: ${claim.handle}`);
+          }
+          if (!TWEET_ID_REGEX.test(claim.proofId)) {
+            throw new Error(`Invalid tweet id: ${claim.proofId}`);
+          }
+          // On-wire platform name stays `twitter` (NIP-39 interop).
+          tags.push(['i', `twitter:${claim.handle}`, claim.proofId]);
+          break;
+        default:
+          throw new Error(
+            `Unsupported identity platform: ${String((claim as { platform: unknown }).platform)}`,
+          );
+      }
+      seenPlatforms.add(claim.platform);
+    }
+
+    const event = finalizeEvent(
+      {
+        kind: KIND_EXTERNAL_IDENTITIES,
+        created_at: Math.floor(Date.now() / 1000),
+        tags,
+        content: '',
+      },
+      identity.secretKey,
+    );
+
+    await this.pool.publishAll(event);
+    return event.id;
+  }
+
   /** Publish a Nostr profile (kind:0) as a provider. */
   async publishProfile(
     identity: ElisymIdentity,
@@ -935,6 +1222,7 @@ export class DiscoveryService {
     about: string,
     picture?: string,
     banner?: string,
+    nip05?: string,
   ): Promise<string> {
     if (name.length > LIMITS.MAX_AGENT_NAME_LENGTH) {
       throw new Error(
@@ -955,12 +1243,28 @@ export class DiscoveryService {
     if (banner && !isSafeImageUrl(banner)) {
       throw new Error('Profile banner must be a bounded https: URL.');
     }
+    // Same loud-on-write posture as the image fields: readers drop an invalid
+    // nip05, so publishing one would silently ship a dead website claim. The
+    // bare-domain form is normalized to the `_@domain` NIP-05 root identifier.
+    let normalizedNip05: string | undefined;
+    if (nip05 !== undefined) {
+      const identifier = normalizeNip05Identifier(nip05);
+      if (identifier === null) {
+        throw new Error(
+          `Invalid nip05 identifier: ${nip05}. Expected name@domain or a bare domain with ASCII hostname labels (no IP literals).`,
+        );
+      }
+      normalizedNip05 = identifier;
+    }
     const content: Record<string, string> = { name, about };
     if (picture) {
       content.picture = picture;
     }
     if (banner) {
       content.banner = banner;
+    }
+    if (normalizedNip05 !== undefined) {
+      content.nip05 = normalizedNip05;
     }
 
     const event = finalizeEvent(
