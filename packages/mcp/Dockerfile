@@ -1,4 +1,6 @@
-FROM oven/bun:1-slim AS base
+# Pin bun to the lockfile's version (same as CI). A floating `1` tag drifts to
+# newer patches whose resolver rejects the committed lockfile under --frozen-lockfile.
+FROM oven/bun:1.3.11-slim AS base
 
 WORKDIR /app
 
