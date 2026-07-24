@@ -56,7 +56,7 @@ Omit `<agent-name>` to pick interactively. Skills load from `<agentDir>/skills/`
 
 ### Skill runtime dependencies
 
-The base image ships Node and the elisym runtime only — no Python, no `ffmpeg`, no other interpreters. If your skills shell out to `python3`, `bash`, `yt-dlp`, etc., extend the image:
+The base image ships Node and the elisym runtime only - no Python, no `ffmpeg`, no other interpreters. If your skills shell out to `python3`, `bash`, `yt-dlp`, etc., extend the image:
 
 ```dockerfile
 FROM ghcr.io/elisymlabs/cli:latest
@@ -89,17 +89,20 @@ docker run --rm -it \
 
 ## Commands
 
-| Command                                  | Description                                                                                                                                                                         |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `elisym init [name]`                     | Interactive wizard - create agent identity                                                                                                                                          |
-| `elisym init [name] --config <path>`     | Non-interactive - load fields from an `elisym.yaml` template                                                                                                                        |
-| `elisym init [name] --defaults`          | Non-interactive - skip every prompt and use wizard defaults (description, default relays, no payments, no LLM, no encryption). Mutually exclusive with `--config`; implies `--yes`. |
-| `elisym init [name] --local`             | Create in project `.elisym/<name>/` (default: `~/.elisym/<name>/`)                                                                                                                  |
-| `npx @elisym/cli start [name]`           | Start agent in provider mode                                                                                                                                                        |
-| `npx @elisym/cli start [name] --verbose` | Start with structured debug logs to stderr (publish acks, pool resets, config resolution). Also togglable via `ELISYM_DEBUG=1` or `LOG_LEVEL=debug`.                                |
-| `elisym list`                            | List all agents (project-local + home-global)                                                                                                                                       |
-| `elisym profile [name]`                  | Edit agent profile, wallet, and LLM settings                                                                                                                                        |
-| `elisym wallet [name]`                   | Show Solana wallet balance                                                                                                                                                          |
+| Command                                              | Description                                                                                                                                                                         |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `elisym init [name]`                                 | Interactive wizard - create agent identity                                                                                                                                          |
+| `elisym init [name] --config <path>`                 | Non-interactive - load fields from an `elisym.yaml` template                                                                                                                        |
+| `elisym init [name] --defaults`                      | Non-interactive - skip every prompt and use wizard defaults (description, default relays, no payments, no LLM, no encryption). Mutually exclusive with `--config`; implies `--yes`. |
+| `elisym init [name] --local`                         | Create in project `.elisym/<name>/` (default: `~/.elisym/<name>/`)                                                                                                                  |
+| `npx @elisym/cli start [name]`                       | Start agent in provider mode                                                                                                                                                        |
+| `npx @elisym/cli start [name] --verbose`             | Start with structured debug logs to stderr (publish acks, pool resets, config resolution). Also togglable via `ELISYM_DEBUG=1` or `LOG_LEVEL=debug`.                                |
+| `elisym list`                                        | List all agents (project-local + home-global)                                                                                                                                       |
+| `elisym profile [name]`                              | Edit agent profile, wallet, and LLM settings                                                                                                                                        |
+| `elisym wallet [name]`                               | Show Solana wallet balance                                                                                                                                                          |
+| `elisym identity link <github\|x\|website> [name]`   | Link an external identity - prints the NIP-39 proof template, verifies the proof live, writes `elisym.yaml`, publishes the claim (kind 10011 / kind-0 `nip05`)                      |
+| `elisym identity status [name]`                      | List linked identities with live proof verification and published-claim drift check                                                                                                 |
+| `elisym identity unlink <github\|x\|website> [name]` | Remove a linked identity and retract the published claim                                                                                                                            |
 
 Skills live inside each agent directory at `<agentDir>/skills/<skill-name>/SKILL.md`:
 

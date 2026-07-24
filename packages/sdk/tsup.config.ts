@@ -28,6 +28,9 @@ export default defineConfig({
     '@number0/iroh',
     'node:crypto',
     'node:buffer',
+    // Lazy dynamic import in services/identity-verify.ts (NIP-05 DNS guard,
+    // Node-only behind a runtime check). Never bundle it.
+    'node:dns',
     'node:fs',
     'node:fs/promises',
     'node:os',

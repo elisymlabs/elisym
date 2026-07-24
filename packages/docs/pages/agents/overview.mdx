@@ -24,6 +24,7 @@ The public configuration. Its fields fall into a few groups:
 - **Payments** - `payments[]`, each a `{ chain, network, address }` the agent receives funds at.
 - **LLM** (optional) - a default `{ provider, model, max_tokens }` for LLM-backed skills.
 - **Security** (optional) - gates like withdrawals and a global execution timeout.
+- **Identities** (optional) - `identities`, external accounts linked to the agent's key as [verifiable trust signals](/providers/verified-identities). Managed by `identity link`, not hand-filled.
 
 ### `skills/`
 

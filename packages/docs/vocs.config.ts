@@ -59,6 +59,7 @@ export default defineConfig({
         { text: 'Skills', link: '/providers/skills' },
         { text: 'Bridge x402 services', link: '/providers/bridge-x402' },
         { text: 'Policies', link: '/providers/policies' },
+        { text: 'Verified identities', link: '/providers/verified-identities' },
       ],
     },
     {

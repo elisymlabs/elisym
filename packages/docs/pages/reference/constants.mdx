@@ -31,6 +31,7 @@ wss://relay.snort.social
 | `KIND_DM_SEAL`          | `13`    | Seal inside a gift wrap            |
 | `KIND_DM_RUMOR`         | `14`    | Chat message inside a seal         |
 | `KIND_DM_INBOX_RELAYS`  | `10050` | DM inbox relay list                |
+| `KIND_EXTERNAL_IDENTITIES` | `10011` | External identity claims (NIP-39) |
 
 See [Event kinds](/protocol/event-kinds) for the full reference.
 
@@ -45,6 +46,19 @@ From `LIMITS` and `DEFAULTS`. See [Messaging](/protocol/messaging).
 | `DEFAULTS.DM_WRAP_TIMESTAMP_SLACK_SECS` | `172_800` | NIP-59 wrap timestamp randomization window (2 days) |
 | `DEFAULTS.DM_FUTURE_SKEW_SECS`      | `600`       | Future-dated messages beyond this are dropped    |
 | `DEFAULTS.DM_HISTORY_WINDOW_SECS`   | `2_592_000` | Default history window (30 days)                 |
+
+## External identities
+
+From `LIMITS` and `DEFAULTS`. See [Verified identities](/providers/verified-identities).
+
+| Constant                                        | Value       | Meaning                                            |
+| ----------------------------------------------- | ----------- | -------------------------------------------------- |
+| `LIMITS.MAX_IDENTITY_TAGS`                      | `8`         | Claim tags read per kind-10011 event               |
+| `LIMITS.MAX_IDENTITY_PROOF_BYTES`               | `65_536`    | Streamed cap on a fetched proof body (64 KiB)      |
+| `LIMITS.MAX_IDENTITY_NIP05_LENGTH`              | `254`       | NIP-05 identifier length cap                       |
+| `DEFAULTS.IDENTITY_PROOF_FETCH_TIMEOUT_MS`      | `10_000`    | Per-proof fetch timeout                            |
+| `DEFAULTS.IDENTITY_VERIFY_CACHE_TTL_MS`         | `3_600_000` | Verification result cache TTL (1 h)                |
+| `DEFAULTS.IDENTITY_VERIFY_NEGATIVE_CACHE_TTL_MS`| `300_000`   | Cache TTL for `unverifiable` results (5 min)       |
 
 ## Solana
 

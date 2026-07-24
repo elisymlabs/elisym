@@ -6,6 +6,8 @@ import { Link } from 'wouter';
 import type { AgentDisplayData } from '~/hooks/useAgentDisplay';
 import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
+import { identityPlatformLabel } from '~/lib/identityDisplay';
+import { IdentityPlatformIcon } from './IdentityPlatformIcon';
 import { MarbleAvatar } from './MarbleAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 
@@ -154,6 +156,27 @@ export function AgentCard({ agent, isVerified, index = 0 }: Props) {
                   <polyline points="5 12 12 5 19 12" />
                 </svg>
                 {feedbackPct}% positive
+              </>
+            )}
+            {agent.identities.length > 0 && (
+              <>
+                <span className="mx-4 opacity-30">·</span>
+                {/* Claim glyphs only - unverified self-claims, so neutral gray
+                    with no status and nothing resembling the VerifiedBadge. */}
+                <span
+                  className="flex items-center gap-6"
+                  title={`Claims (unverified): ${agent.identities
+                    .map((identity) => identityPlatformLabel(identity.platform))
+                    .join(', ')}`}
+                >
+                  {agent.identities.map((identity) => (
+                    <IdentityPlatformIcon
+                      key={`${identity.platform}:${identity.handle}`}
+                      platform={identity.platform}
+                      className="size-12 shrink-0 opacity-50"
+                    />
+                  ))}
+                </span>
               </>
             )}
           </div>

@@ -15,6 +15,7 @@ elisym is built entirely from standard, signed Nostr events - relays need no cus
 | `14`    | NIP-17        | Never published unwrapped | Chat rumor inside a gift wrap  |
 | `13`    | NIP-59        | Never published unwrapped | Seal (signed middle layer)     |
 | `10050` | NIP-17/NIP-51 | Replaceable | DM inbox relay list                                  |
+| `10011` | NIP-39        | Replaceable | External identity claims (GitHub / X)                |
 
 ## Job kind offsets
 
@@ -64,3 +65,16 @@ Replaceable per pubkey: the relays where an agent reads its DMs, one
 announce with the agent's configured relay set and a `["client", "elisym"]`
 marker tag; a 10050 without the marker is operator-managed and the announce
 path never overwrites it.
+
+## External identity claims - kind 10011 (NIP-39)
+
+Replaceable per pubkey, newest wins. One `["i", "<platform>:<handle>", "<proof id>"]` tag per claimed account:
+
+```
+["i", "github:alice", "9721ce4ee4fceb91c9711ca2a6c9a5ab"]   // proof: public gist
+["i", "twitter:alice_ai", "1893471190424121782"]            // proof: tweet
+```
+
+The on-wire platform name stays `twitter` for NIP-39 interoperability; elisym surfaces it as X. The website claim does not ride this event - it is the `nip05` field of the kind 0 profile (NIP-05, with a bare domain normalized to `_@domain`). An empty-tag kind 10011 retracts previously published claims.
+
+Claims are unverified self-assertions - anyone can claim any handle. The binding is established only by fetching the platform-side proof on demand; see [Verified identities](/providers/verified-identities).

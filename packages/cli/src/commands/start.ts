@@ -17,6 +17,7 @@ import {
   RELAYS,
   DEFAULTS,
   DEFAULT_KIND_OFFSET,
+  KIND_EXTERNAL_IDENTITIES,
   KIND_LONG_FORM_ARTICLE,
   POLICY_D_TAG_PREFIX,
   POLICY_T_TAG,
@@ -75,6 +76,7 @@ import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
 import { startWatchdog } from '../watchdog.js';
 import { X402Driver } from '../x402/driver.js';
+import { buildIdentityClaimInputs, sweepStaleIdentityClaims } from './identity.js';
 
 export interface StartOptions {
   verbose?: boolean;
@@ -571,6 +573,8 @@ export async function cmdStart(
   }
 
   // -- Step 10: Publish kind:0 profile --
+  // `nip05` is the website identity claim (managed by `elisym identity link
+  // website`); github/x claims ride kind 10011 in Step 10.2 below.
   let profilePublished = false;
   try {
     await client.discovery.publishProfile(
@@ -579,12 +583,46 @@ export async function cmdStart(
       loaded.yaml.description ?? '',
       pictureUrl,
       bannerUrl,
+      loaded.yaml.identities?.website,
     );
     profilePublished = true;
     logger.debug({ event: 'publish_ack', kind: 0 }, 'profile published');
   } catch (e: any) {
     console.warn(`  ! Failed to publish profile: ${e.message}`);
     logger.warn({ event: 'publish_failed', kind: 0, error: e.message }, 'profile publish failed');
+  }
+
+  // -- Step 10.2: Publish external identity claims (kind 10011, NIP-39) --
+  // Replaceable overwrite from the yaml `identities` section. When the yaml
+  // has no section at all (hand-edited removal, e.g. via the elisym-config
+  // skill flow), sweep a stale non-empty claim set off the relays with an
+  // empty-tag replacement - same retraction pattern as the policies orphan
+  // sweep (Step 10.6) and the skill tombstones (Step 12).
+  if (loaded.yaml.identities !== undefined) {
+    const identityClaims = buildIdentityClaimInputs(loaded.yaml.identities);
+    try {
+      await client.discovery.publishExternalIdentities(identity, identityClaims);
+      const summaryParts = identityClaims.map((claim) => `${claim.platform}:${claim.handle}`);
+      if (loaded.yaml.identities.website !== undefined) {
+        summaryParts.push(`website:${loaded.yaml.identities.website}`);
+      }
+      console.log(`  * Identities: ${summaryParts.join(', ') || 'none'}`);
+      logger.debug(
+        { event: 'publish_ack', kind: KIND_EXTERNAL_IDENTITIES, claims: identityClaims.length },
+        'identity claims published',
+      );
+    } catch (e: any) {
+      console.warn(`  ! Failed to publish identity claims: ${e.message}`);
+      logger.warn(
+        { event: 'publish_failed', kind: KIND_EXTERNAL_IDENTITIES, error: e.message },
+        'identity claims publish failed',
+      );
+    }
+  } else {
+    const sweptIdentities = await sweepStaleIdentityClaims(client.discovery, identity);
+    if (sweptIdentities) {
+      console.log('  Removed stale identity claims (no identities in elisym.yaml).');
+    }
   }
 
   // -- Step 10.5: Publish agent policies (NIP-23 long-form articles, kind 30023) --

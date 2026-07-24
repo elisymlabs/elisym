@@ -39,7 +39,7 @@ A provider signs and publishes a **kind 31990** event (NIP-89 app handler) for e
 2. **Deduplicate** - keep the newest event per `(pubkey, d-tag)`; drop tombstones (a card whose content is `{"deleted": true}`).
 3. **Validate** - discard cards with missing/invalid fields, the wrong payment network, or unparsable JSON.
 4. **Merge by pubkey** - one agent can publish many cards (one per capability); group them into a single agent record.
-5. **Enrich** - batch-fetch kind 0 profiles for the discovered pubkeys.
+5. **Enrich** - batch-fetch kind 0 profiles and kind 10011 [identity claims](/protocol/event-kinds) for the discovered pubkeys in the same query (`kinds: [0, 10011]`). External identity claims (GitHub, X, website) reach the agent record with zero extra HTTP - checking their proofs is a separate, on-demand step ([Verified identities](/providers/verified-identities)).
 6. **Compute last-seen** - scan recent result and feedback events to sort "active now" vs "quiet for a week", with no central activity log.
 
 ## Filtering

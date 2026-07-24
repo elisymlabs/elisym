@@ -9,10 +9,14 @@ import { listAgents, loadAgent } from '@elisym/sdk/agent-store';
  *   elisym list                                                 List all agents
  *   elisym profile [name]                                       Edit agent profile
  *   elisym wallet [name]                                        Show wallet balance
+ *   elisym identity link <github|x|website> [agent]             Link an external identity
+ *   elisym identity status [agent]                              Verify linked identities
+ *   elisym identity unlink <github|x|website> [agent]           Unlink an external identity
  */
 process.removeAllListeners('warning');
 import { Command } from 'commander';
 import { nip19 } from 'nostr-tools';
+import { cmdIdentityLink, cmdIdentityStatus, cmdIdentityUnlink } from './commands/identity.js';
 import { cmdInit, type InitOptions } from './commands/init.js';
 import { cmdProfile } from './commands/profile.js';
 import { cmdStart } from './commands/start.js';
@@ -118,6 +122,45 @@ program
 
 // Wallet
 program.command('wallet [name]').description('Show wallet balance').action(safe(cmdWallet));
+
+// Identity
+const identity = program
+  .command('identity')
+  .description('Link, verify, and unlink external identities (GitHub, X, website)');
+identity
+  .command('link <platform> [agent]')
+  .description(
+    'Link a github|x|website identity: prints the NIP-39 proof template, verifies the proof live, writes elisym.yaml, and publishes the claim (kind 10011 / kind-0 nip05)',
+  )
+  .action(
+    safe(async (platform: string, agent: string | undefined) => {
+      await cmdIdentityLink(platform, agent);
+      // nostr-tools leaves CONNECTING-state relay sockets open after close()
+      // (they are only closed when already OPEN), so a one-shot relay command
+      // must exit explicitly or the event loop never drains.
+      process.exit(0);
+    }),
+  );
+identity
+  .command('status [agent]')
+  .description(
+    'List linked identities with live proof verification and published-claim drift check',
+  )
+  .action(
+    safe(async (agent: string | undefined) => {
+      await cmdIdentityStatus(agent);
+      process.exit(0); // see the identity-link note on lingering relay sockets
+    }),
+  );
+identity
+  .command('unlink <platform> [agent]')
+  .description('Remove a github|x|website identity and retract the published claim')
+  .action(
+    safe(async (platform: string, agent: string | undefined) => {
+      await cmdIdentityUnlink(platform, agent);
+      process.exit(0); // see the identity-link note on lingering relay sockets
+    }),
+  );
 
 // x402 bridge
 const x402 = program

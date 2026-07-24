@@ -92,6 +92,83 @@ describe('ElisymYamlSchema', () => {
   });
 });
 
+describe('ElisymYamlSchema identities', () => {
+  const VALID_IDENTITIES = {
+    github: { username: 'alice', gist: '9721ce4ee4fceb91c9711ca2a6c9a5ab' },
+    x: { username: 'alice_ai', tweet: '1893471190424121782' },
+    website: 'agent@example.com',
+  };
+
+  it('accepts a full identities section and round-trips through YAML', () => {
+    const parsed = ElisymYamlSchema.parse({ description: 'hi', identities: VALID_IDENTITIES });
+    expect(parsed.identities).toEqual(VALID_IDENTITIES);
+
+    const reparsed = ElisymYamlSchema.parse(
+      YAML.parse(YAML.stringify({ description: 'hi', identities: VALID_IDENTITIES })),
+    );
+    expect(reparsed.identities).toEqual(VALID_IDENTITIES);
+  });
+
+  it('accepts partial sections and a bare-domain website', () => {
+    const parsed = ElisymYamlSchema.parse({
+      description: 'hi',
+      identities: { website: 'example.com' },
+    });
+    expect(parsed.identities?.website).toBe('example.com');
+  });
+
+  it('rejects a numeric tweet id (hand-edited unquoted scalar lost precision at YAML parse)', () => {
+    // YAML parses the unquoted digits into a double BEFORE zod sees them -
+    // the value is already corrupt (...121782 became ...121900 territory), so
+    // the schema must fail loud instead of coercing.
+    const fromYaml = YAML.parse(
+      'identities:\n  x:\n    username: alice\n    tweet: 1893471190424121782\n',
+    );
+    expect(typeof fromYaml.identities.x.tweet).toBe('number');
+    expect(() => ElisymYamlSchema.parse({ description: 'hi', ...fromYaml })).toThrow();
+  });
+
+  it('rejects a numeric gist id (all-digit or <digits>e<digits> YAML scalars)', () => {
+    const fromYaml = YAML.parse(
+      'identities:\n  github:\n    username: alice\n    gist: 123456789\n',
+    );
+    expect(() => ElisymYamlSchema.parse({ description: 'hi', ...fromYaml })).toThrow();
+    const floatYaml = YAML.parse('identities:\n  github:\n    username: alice\n    gist: 123e45\n');
+    expect(() => ElisymYamlSchema.parse({ description: 'hi', ...floatYaml })).toThrow();
+  });
+
+  it('rejects bad handles and proof ids (same regexes as the wire parser)', () => {
+    expect(() =>
+      ElisymYamlSchema.parse({
+        identities: { github: { username: 'bad handle', gist: 'abc123' } },
+      }),
+    ).toThrow();
+    expect(() =>
+      ElisymYamlSchema.parse({
+        identities: { github: { username: 'alice', gist: 'NOTHEX' } },
+      }),
+    ).toThrow();
+    expect(() =>
+      ElisymYamlSchema.parse({
+        identities: { x: { username: 'way_too_long_for_x_', tweet: '123' } },
+      }),
+    ).toThrow();
+  });
+
+  it('rejects website IP literals and Unicode hosts', () => {
+    expect(() => ElisymYamlSchema.parse({ identities: { website: '192.168.1.1' } })).toThrow();
+    expect(() =>
+      ElisymYamlSchema.parse({ identities: { website: 'agent@exämple.com' } }),
+    ).toThrow();
+  });
+
+  it('rejects unknown keys inside identities (strict)', () => {
+    expect(() =>
+      ElisymYamlSchema.parse({ identities: { mastodon: { username: 'a', proof: 'b' } } }),
+    ).toThrow();
+  });
+});
+
 describe('SecretsSchema', () => {
   it('requires nostr_secret_key', () => {
     expect(() => SecretsSchema.parse({})).toThrow();
@@ -538,6 +615,28 @@ describe('renderInitialYaml', () => {
     expect(reparsed.display_name).toBeUndefined();
     expect(reparsed.picture).toBeUndefined();
     expect(reparsed.llm).toBeUndefined();
+  });
+
+  it('emits NOTHING for identities when unset - no commented placeholder', () => {
+    const yaml = ElisymYamlSchema.parse({ description: 'hi' });
+    const text = renderInitialYaml(yaml);
+    expect(text).not.toContain('identities');
+  });
+
+  it('passes identities through when set (schema-valid operator template must not be dropped)', () => {
+    const identities = {
+      github: { username: 'alice', gist: '9721ce4ee4fceb91c9711ca2a6c9a5ab' },
+      x: { username: 'alice_ai', tweet: '1893471190424121782' },
+      website: 'agent@example.com',
+    };
+    const yaml = ElisymYamlSchema.parse({ description: 'hi', identities });
+    const text = renderInitialYaml(yaml);
+
+    expect(text).toMatch(/^identities:$/m);
+    const reparsed = ElisymYamlSchema.parse(YAML.parse(text));
+    expect(reparsed.identities).toEqual(identities);
+    // The numeric-looking tweet id survives as a string (yaml lib quotes it).
+    expect(typeof YAML.parse(text).identities.x.tweet).toBe('string');
   });
 });
 

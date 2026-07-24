@@ -12,6 +12,8 @@ blockhash
 bundler
 CAIP
 cashu
+CGNAT
+charsets
 ciphertext
 clap
 codama
@@ -46,6 +48,8 @@ freetext
 frontmatter
 fsmonitor
 helius
+hextet
+hextets
 homoglyphs
 Idempotently
 idiv
@@ -105,6 +109,7 @@ roleplay
 rpc
 serde
 shebang
+SIIT
 smol
 solana
 solflare

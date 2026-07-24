@@ -4,7 +4,14 @@
  */
 
 import { z } from 'zod';
-import { LIMITS } from '../constants';
+import {
+  GIST_ID_REGEX,
+  GITHUB_USERNAME_REGEX,
+  LIMITS,
+  TWEET_ID_REGEX,
+  X_USERNAME_REGEX,
+} from '../constants';
+import { normalizeNip05Identifier } from '../services/identity-verify';
 
 const AGENT_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
@@ -38,6 +45,52 @@ export const SecurityFlagsSchema = z.object({
 });
 
 /**
+ * External identity claims (NIP-39 kind 10011 for github/x, kind-0 `nip05`
+ * for website). Same regexes as the read-side kind-10011 parser - symmetric
+ * enforcement, a hand-edited bad handle fails loud at load/publish instead of
+ * being silently dropped by every consumer.
+ *
+ * `gist` and `tweet` are strict `z.string()` - never coerced. An unquoted
+ * `tweet: 1893471190424121782` has already lost precision at YAML parse time
+ * (tweet ids overflow doubles), and an all-digit or `<digits>e<digits>` gist
+ * id hits the same YAML number/float pattern; coercion would silently publish
+ * a corrupt id, strict string fails loud instead.
+ */
+export const IdentitiesSchema = z
+  .object({
+    github: z
+      .object({
+        username: z
+          .string()
+          .regex(GITHUB_USERNAME_REGEX, 'GitHub username: alphanumeric or hyphen, 1-39 chars'),
+        gist: z.string().regex(GIST_ID_REGEX, 'gist id: lowercase hex, 1-64 chars'),
+      })
+      .strict()
+      .optional(),
+    x: z
+      .object({
+        username: z
+          .string()
+          .regex(X_USERNAME_REGEX, 'X username: alphanumeric or underscore, 1-15 chars'),
+        tweet: z
+          .string()
+          .regex(TWEET_ID_REGEX, 'tweet id: digits only, 1-25 chars, quoted as a string'),
+      })
+      .strict()
+      .optional(),
+    /** `name@domain` or bare domain (published as the `_@domain` NIP-05 root). */
+    website: z
+      .string()
+      .max(LIMITS.MAX_IDENTITY_NIP05_LENGTH)
+      .refine(
+        (value) => normalizeNip05Identifier(value) !== null,
+        'website: name@domain or bare domain; ASCII hostname labels only, no IP literals',
+      )
+      .optional(),
+  })
+  .strict();
+
+/**
  * elisym.yaml schema. Public - committed to git.
  * Agent name NOT stored here - derived from containing folder name.
  *
@@ -65,6 +118,11 @@ export const ElisymYamlSchema = z
      * unlimited (the operator owns this; the protocol imposes no default).
      */
     execution_timeout_secs: z.number().int().min(0).max(LIMITS.MAX_EXECUTION_SECS).optional(),
+    /**
+     * Linked external identities (github/x/website). Managed by
+     * `elisym identity link`, not hand-filled at init.
+     */
+    identities: IdentitiesSchema.optional(),
   })
   .strict();
 
@@ -72,6 +130,7 @@ export type ElisymYaml = z.infer<typeof ElisymYamlSchema>;
 export type PaymentEntry = z.infer<typeof PaymentSchema>;
 export type LlmEntry = z.infer<typeof LlmSchema>;
 export type SecurityFlags = z.infer<typeof SecurityFlagsSchema>;
+export type IdentitiesEntry = z.infer<typeof IdentitiesSchema>;
 
 /**
  * secrets.json schema. Private - .gitignore.

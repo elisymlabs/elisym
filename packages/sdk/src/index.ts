@@ -46,8 +46,17 @@ export {
   toDTag,
   computeRankKey,
   compareAgentsByRank,
+  parseExternalIdentityEvent,
 } from './services/discovery';
 export type { RankKey } from './services/discovery';
+export {
+  verifyAgentIdentities,
+  clearIdentityVerifyCache,
+  normalizeNip05Identifier,
+  splitNip05Identifier,
+  isPrivateAddress,
+} from './services/identity-verify';
+export type { VerifyIdentitiesOptions, HostAddressResolver } from './services/identity-verify';
 export { tallyReputation, requestJobIds } from './services/reputation';
 export type {
   AgentReputation,
@@ -173,6 +182,11 @@ export {
   KIND_DM_SEAL,
   KIND_DM_RUMOR,
   KIND_DM_INBOX_RELAYS,
+  KIND_EXTERNAL_IDENTITIES,
+  GITHUB_USERNAME_REGEX,
+  X_USERNAME_REGEX,
+  GIST_ID_REGEX,
+  TWEET_ID_REGEX,
   DM_INBOX_MARKER_TAG,
   DM_INBOX_MARKER_VALUE,
   POLICY_T_TAG,
@@ -194,6 +208,11 @@ export type {
   PaymentInfo,
   CapabilityCard,
   Agent,
+  AgentExternalIdentity,
+  ExternalIdentityClaimInput,
+  ExternalIdentityClaimsResult,
+  IdentityVerifyStatus,
+  VerifiedIdentityResult,
   AgentPolicy,
   PolicyInput,
   Network,

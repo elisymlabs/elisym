@@ -17,6 +17,7 @@ import { useScrollEdges } from '~/hooks/useScrollEdges';
 import { cn } from '~/lib/cn';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
 import { AgentActivity } from './AgentActivity';
+import { AgentIdentities } from './AgentIdentities';
 import { ChatTab } from './ChatTab';
 import { FadeInImage } from './FadeInImage';
 import { JobInput } from './JobInput';
@@ -637,6 +638,7 @@ export default function AgentPage() {
                     </span>
                   )}
                 </div>
+                <AgentIdentities pubkey={pubkey} identities={agentData.identities} />
               </div>
 
               <div className="flex shrink-0 flex-col items-start gap-8 sm:items-end">
