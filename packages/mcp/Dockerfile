@@ -1,16 +1,14 @@
-# Pin bun to the lockfile's version (same as CI). A floating `1` tag drifts to
-# newer patches whose resolver rejects the committed lockfile under --frozen-lockfile.
+# syntax=docker/dockerfile:1
+# Pin bun to the lockfile / CI version (1.3.11) for reproducible installs.
 FROM oven/bun:1.3.11-slim AS base
 
 WORKDIR /app
 
-# Install root workspace files
+# Root manifests + every workspace package.json. `--parents` keeps the
+# packages/<name>/ layout and globs all members, so bun's frozen install always
+# sees the full workspace and a new package needs no Dockerfile edit.
 COPY package.json bun.lock turbo.json ./
-COPY packages/config-client/package.json packages/config-client/package.json
-COPY packages/sdk/package.json packages/sdk/package.json
-COPY packages/mcp/package.json packages/mcp/package.json
-COPY packages/cli/package.json packages/cli/package.json
-COPY packages/app/package.json packages/app/package.json
+COPY --parents packages/*/package.json ./
 
 # Install production dependencies
 RUN bun install --frozen-lockfile --production
