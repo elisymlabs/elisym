@@ -191,6 +191,27 @@ max_execution_secs: 1800 # 30 min; 0 = unlimited
 
 Non-negative integer. `0` means explicitly unlimited (and overrides any agent-level cap). When omitted, the runtime falls through to the agent's `execution_timeout_secs` (in `elisym.yaml`); if that is unset too, execution is unlimited - the protocol imposes no default, so the operator/author owns this. Only `skill.execute` is bounded - payment collection and result delivery run on their own timeouts. Exceeding the budget marks the job failed and sends an "execution exceeded budget" error to the customer.
 
+## Delegated execution (`spl-approve`)
+
+Applies to **any** mode. Opts the capability into bounded autonomous spend: the customer `approve`s the agent's dedicated delegate key for up to `cap` USDC on their own token account, and the agent then transfers up to that cap without the customer signing each action (v1 mechanism: `spl-approve`).
+
+```yaml
+delegation:
+  mechanism: spl-approve
+  suggested_cap_subunits: '50000000' # 50 USDC (6-decimal subunits), display default only
+  expires_at: null # advisory revoke reminder; SPL approve has no on-chain expiry
+```
+
+| Field                    | Type              | Required | Notes                                                                                                                                                                        |
+| ------------------------ | ----------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mechanism`              | string            | yes      | Only `spl-approve` in v1.                                                                                                                                                    |
+| `suggested_cap_subunits` | numeric string    | yes      | Non-binding display default in the delegated asset's subunits (6-decimal USDC). The owner always sets and confirms the real cap; a client must never auto-submit this value. |
+| `expires_at`             | integer \| `null` | no       | Advisory only. Rendered as a client-side revoke reminder, never enforced (SPL `approve` has no on-chain expiry).                                                             |
+
+- **No `delegate_pubkey` here.** It is derived from the agent's `solana_delegate_secret_key` and injected into the capability card at `elisym start` (`buildCard`). An agent that declares `delegation` without a delegate key cannot advertise it - the card ships without the delegation field and `start` warns. Generate the key with `npx @elisym/cli delegate-key <agent>`.
+- **Honest bound: max loss <= cap.** An SPL delegate can only `Transfer`/`Burn` up to the approved amount and can never `Approve`/`SetAuthority`/`CloseAccount` (all owner-only). It is bounded-trust, not "can't steal": within the cap the agent chooses the destination, including its own account. A fresh `approve` REPLACES the remaining allowance (re-arms the full cap) - a "top-up" is a re-grant. Revoke stops only FUTURE spend once it lands.
+- **USDC-only** (devnet today). What the agent composes with the authority (pay providers, convert, swap) is application-layer and not built by elisym - the rail is exactly `Transfer USDC <= cap`.
+
 ## Imagery
 
 | Field        | Type   | Notes                                                                                  |

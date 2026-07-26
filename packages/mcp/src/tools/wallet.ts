@@ -4,9 +4,11 @@ import {
   KIND_JOB_RESULT_BASE,
   USDC_SOLANA_DEVNET,
   assetKey,
+  deriveOwnerDelegationAta,
   estimateSolFeeLamports,
   formatAssetAmount,
   formatFeeBreakdown,
+  getDelegation,
   NATIVE_SOL,
   SolanaPaymentStrategy,
   parseAssetAmount,
@@ -159,6 +161,8 @@ async function linkManualPayment(
 }
 
 const GetBalanceSchema = z.object({});
+
+const GetDelegationSchema = z.object({});
 
 const EstimatePaymentCostSchema = z.object({
   payment_request: z
@@ -340,6 +344,72 @@ export const walletTools: ToolDefinition[] = [
           `Balance: ${formatSol(balanceLamports)} (${balanceLamports.toString()} lamports)\n` +
           usdcLine +
           sessionBlock,
+      );
+    },
+  }),
+
+  defineTool({
+    name: 'get_delegation',
+    description:
+      'Read the current spl-approve delegation on YOUR USDC account: the delegate (if any) ' +
+      'and the remaining approved cap. Read-only - does not sign or send anything. Honest bound: ' +
+      'max loss <= remaining approved; the delegate can spend up to that (including to itself). ' +
+      'Revoke stops only future spend once it lands.',
+    schema: GetDelegationSchema,
+    async handler(ctx) {
+      ctx.toolRateLimiter.check();
+      const agent = ctx.active();
+      if (!agent.solanaKeypair) {
+        return errorResult('Solana payments not configured for this agent.');
+      }
+
+      const rpc = rpcFor(agent);
+      let ownerAta: ReturnType<typeof address>;
+      try {
+        ownerAta = await deriveOwnerDelegationAta(agent.solanaKeypair.publicKey, agent.network);
+      } catch (e) {
+        return errorResult(
+          `Failed to derive USDC account: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+
+      // getDelegation returns null when the ATA does not exist yet (no USDC,
+      // hence no delegation) but THROWS on a real RPC failure. Distinguishing
+      // them matters: this is the tool a customer uses to check their exposure,
+      // so an outage must surface as an error, never as a false "no delegate".
+      let status: Awaited<ReturnType<typeof getDelegation>>;
+      try {
+        status = await getDelegation(rpc, ownerAta);
+      } catch (e) {
+        return errorResult(
+          `Failed to read delegation (RPC error): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      if (status === null) {
+        return textResult(
+          `USDC account: ${ownerAta}\n` +
+            `Network: ${agent.network}\n` +
+            `Delegate: none (account not initialized - no USDC delegated yet)`,
+        );
+      }
+
+      const balanceLine = `Balance: ${formatAssetAmount(USDC_SOLANA_DEVNET, status.balance)}`;
+      if (!status.delegate) {
+        return textResult(
+          `USDC account: ${ownerAta}\n` +
+            `Network: ${agent.network}\n` +
+            `Delegate: none\n` +
+            balanceLine,
+        );
+      }
+      return textResult(
+        `USDC account: ${ownerAta}\n` +
+          `Network: ${agent.network}\n` +
+          `Delegate: ${status.delegate}\n` +
+          `Remaining approved: ${formatAssetAmount(USDC_SOLANA_DEVNET, status.remainingCap)}\n` +
+          `${balanceLine}\n\n` +
+          `Max loss <= remaining approved. The delegate spends up to that autonomously (including ` +
+          `to its own account). Revoke stops future spend once it lands.`,
       );
     },
   }),

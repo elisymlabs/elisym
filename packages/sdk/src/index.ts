@@ -134,6 +134,32 @@ export {
   signerFromSecretKeyBase58,
 } from './payment/wallet';
 
+// --- Delegated execution (spl-approve bounded spend) ---
+export {
+  DELEGATION_MECHANISM,
+  DelegationDescriptorSchema,
+  SkillDelegationSchema,
+  parseDelegationDescriptor,
+  validateSkillDelegation,
+  resolveDelegationAsset,
+  deriveOwnerDelegationAta,
+  buildApproveDelegate,
+  buildRevokeDelegate,
+  buildDelegatedTransfer,
+  getDelegation,
+  decodeApproveDelegate,
+  formatDelegationGrant,
+} from './delegation';
+export type {
+  DelegationDescriptor,
+  SkillDelegation,
+  BuildApproveDelegateArgs,
+  BuildRevokeDelegateArgs,
+  BuildDelegatedTransferArgs,
+  DelegationStatus,
+  ApproveDelegateView,
+} from './delegation';
+
 // --- On-chain protocol config ---
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
 export type { GetProtocolConfigOptions, ProtocolConfig } from './config/onchain';

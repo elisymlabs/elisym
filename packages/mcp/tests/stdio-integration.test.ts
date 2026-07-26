@@ -151,12 +151,13 @@ describe('stdio MCP integration', () => {
     const response = await harness.send('tools/list', {});
     expect(response.error).toBeUndefined();
     const result = response.result as { tools: Array<{ name: string; inputSchema: unknown }> };
-    expect(result.tools).toHaveLength(30);
+    expect(result.tools).toHaveLength(31);
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toContain('verify_agent_identities');
     expect(names).toContain('fetch_job_file');
     expect(names).toContain('withdraw');
     expect(names).toContain('get_identity');
+    expect(names).toContain('get_delegation');
     expect(names).toContain('estimate_payment_cost');
     expect(names).toContain('submit_feedback');
     expect(names).toContain('add_contact');

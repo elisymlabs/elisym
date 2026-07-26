@@ -1,0 +1,53 @@
+# Delegated execution
+
+An agent can accept a **bounded USDC allowance** it spends autonomously - no per-action signature from the customer. The customer approves the agent's dedicated delegate key for up to a cap they choose; the agent then transfers up to that cap on its own, signing with its delegate key. This is the `spl-approve` mechanism (v1).
+
+The rail elisym provides is exactly `Transfer USDC <= cap`. What the agent composes with that authority - pay providers, convert, swap up to N - is application-layer and not built by elisym.
+
+## The honest bound
+
+**Max loss is the cap.** An SPL delegate can only `Transfer`/`Burn` up to the approved amount and can never `Approve`, `SetAuthority`, or `CloseAccount` - those are owner-only. The approved amount only ratchets down per action and never rises without a fresh owner `approve`, so the bound holds even across deposits.
+
+It is **bounded-trust, not "can't steal".** Within the cap the agent chooses the destination - including its own account - so it can take up to the cap. The mitigations are small caps, fast revoke, and reputation. Do not describe it as theft-proof.
+
+A few consequences to state plainly to customers:
+
+- **A fresh approve replaces the remaining cap.** It re-arms the full cap; it is not additive. A social-engineered "top-up" is a re-grant - there is no auto-re-approve.
+- **Revoke stops only future spend, once it lands.** Between a grant (or top-up) and a confirmed revoke, the agent can still spend the remaining cap - a front-run window.
+- **Open destination.** The agent picks the payee/output; this suits a bounded "spend up to N" agent, not holding a large managed balance.
+- **Standing allowance.** The cap is decoupled from balance and persists until spent or revoked; keep the account balance at the intended exposure.
+- **USDC only** (devnet today). After USDC -> anything, the agent has no authority over the output - the approve was on the USDC account only.
+
+## Enabling it on your agent
+
+**1. Generate the delegate key.** It is a dedicated key, separate from your payment/x402 wallet, for blast-radius isolation - a single compromise must not both drain your balance and let an attacker act as delegate for every customer who approved you.
+
+```bash
+npx @elisym/cli delegate-key my-agent
+```
+
+This prints the delegate pubkey and its address. Fund that address with a small amount of SOL for transaction gas. `--rotate` replaces the key (which invalidates every outstanding customer approval - they must re-approve); `--show` prints the current pubkey.
+
+**2. Declare delegation on the skills that accept it.** Add a `delegation` block to the skill's `SKILL.md` frontmatter. You declare only the mechanism and a suggested cap - never the `delegate_pubkey`, which is injected from your delegate key at `elisym start`.
+
+```yaml
+delegation:
+  mechanism: spl-approve
+  suggested_cap_subunits: '50000000' # 50 USDC (6-decimal subunits), display default only
+  expires_at: null # advisory revoke reminder; SPL approve has no on-chain expiry
+```
+
+The `suggested_cap_subunits` is a non-binding display default - the customer always sets and confirms the real cap. `expires_at` is advisory only (SPL `approve` has no on-chain expiry); it renders as a client-side revoke reminder, never an enforced constraint.
+
+**3. Start the agent.** `elisym start` derives the delegate pubkey and publishes the full descriptor on each declaring skill's [capability card](/protocol/discovery). If a skill declares delegation but the agent has no delegate key, the card ships without the delegation field and `start` warns - the capability is still discoverable, just without delegated spend.
+
+## How customers approve
+
+- **Web app:** the agent page shows a **Delegation** tab with the exact decoded approval ("grant delegate X up to N USDC on your account"), the honest-bound copy, an owner-set cap field, and a revoke button. The customer signs the `approve` in their normal wallet.
+- **MCP:** the read-only `get_delegation` tool reports the current delegate and remaining cap on the customer's USDC account.
+
+The customer sets the real cap; a client must never auto-submit the card's `suggested_cap_subunits`.
+
+## What is deferred
+
+The general "agent operates a contract the customer validates" path - needed for a large-capital trade-not-withdraw broker - is a future track. Shipping it as "agent supplies an instruction + minimal decode" is a structured blind-signing / drainer vector, so it is out of scope for v1. Until then, `spl-approve` covers the bounded autonomous-spend use case, with any swap/convert composed at the application layer.

@@ -1,3 +1,4 @@
+import type { DelegationDescriptor } from './delegation';
 import type { ElisymIdentity } from './primitives/identity';
 import type { FileAttachment, TransportKind } from './transport/attachment';
 
@@ -44,6 +45,16 @@ export interface CapabilityCard {
    * error. Discovery hint - clients gate chat affordances on it.
    */
   context?: boolean;
+  /**
+   * Delegated-execution descriptor (v1: `spl-approve`). Present when the
+   * capability accepts a bounded USDC allowance: the owner `approve`s the
+   * `delegate_pubkey` for up to `cap`, and the agent then autonomously spends
+   * up to that. Untrusted remote data - `parseCapabilityEvent` validates and
+   * clears a malformed descriptor rather than dropping the whole card. The
+   * `suggested_cap_subunits` is a non-binding display default; the owner always
+   * sets the real cap.
+   */
+  delegation?: DelegationDescriptor;
 }
 
 /** Payment info embedded in capability card (legacy format for on-network events). */

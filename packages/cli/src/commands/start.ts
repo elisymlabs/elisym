@@ -732,6 +732,49 @@ export async function cmdStart(
   // -- Step 11: Publish per-skill capability cards (kind:31990) --
   const kinds = [jobRequestKind(DEFAULT_KIND_OFFSET)];
 
+  // Derive the delegate pubkey once for any skill that declares `spl-approve`
+  // delegation. The key is dedicated (separate from the payment/x402 signer)
+  // for blast-radius isolation; without it a delegation-declaring skill still
+  // publishes, just WITHOUT the delegation field (unusable-not-stealable, so
+  // fail-safe to omit rather than block the skill).
+  const declaresDelegation = allSkills.some((skill) => skill.delegation !== undefined);
+  let delegatePubkey: string | undefined;
+  if (declaresDelegation && walletNetwork !== 'devnet') {
+    // Delegation rails are USDC/devnet-only today (resolveDelegationAsset throws
+    // otherwise), so an owner could never exercise a mainnet grant. Do not
+    // advertise a capability that cannot be used - omit it and warn.
+    console.warn(
+      `  ! A skill declares delegation but it is devnet-only today (network: ${walletNetwork}) - ` +
+        'omitted from its card(s).',
+    );
+  } else if (declaresDelegation) {
+    const delegateSecret = loaded.secrets.solana_delegate_secret_key;
+    if (delegateSecret && delegateSecret.length > 0) {
+      try {
+        const delegateSigner = await signerFromSecretKeyBase58(delegateSecret);
+        delegatePubkey = delegateSigner.address;
+        console.log(`  Delegate (spl-approve)  ${delegatePubkey}`);
+      } catch (error) {
+        // A present-but-unreadable delegate key (corruption / partial write)
+        // must not take down `start` for every non-delegation skill: fail-safe
+        // to omitting the delegation field, exactly like a missing key.
+        console.warn(
+          '  ! Delegate key is present but unreadable - the delegation field is omitted from ' +
+            `its card(s). ${error instanceof Error ? error.message : String(error)}`,
+        );
+        console.warn(
+          `  ! Run \`npx @elisym/cli delegate-key ${loaded.name} --rotate\` to replace it.`,
+        );
+      }
+    } else {
+      console.warn(
+        '  ! A skill declares delegation but this agent has no delegate key - ' +
+          'the delegation field is omitted from its card(s).',
+      );
+      console.warn(`  ! Run \`npx @elisym/cli delegate-key ${loaded.name}\` to enable it.`);
+    }
+  }
+
   function buildCard(skill: (typeof allSkills)[0]): CapabilityCard {
     // `noInput` covers an x402 GET bridge without a query param: it consumes
     // no buyer input, so the web app must hide its input box (`card.static`)
@@ -752,6 +795,12 @@ export async function cmdStart(
       // Conversation-context flag: clients gate chat affordances (session-carrying
       // sends) on it. Strict true only - the read side coerces anything else away.
       ...(skill.context === true ? { context: true } : {}),
+      // Delegation descriptor: only when the skill opts in AND a delegate key
+      // exists (delegatePubkey resolved). The pubkey is injected here, never
+      // taken from the SKILL.md - the operator declares only the cap/mechanism.
+      ...(skill.delegation && delegatePubkey
+        ? { delegation: { ...skill.delegation, delegate_pubkey: delegatePubkey } }
+        : {}),
       payment: solanaAddress
         ? {
             chain: 'solana',

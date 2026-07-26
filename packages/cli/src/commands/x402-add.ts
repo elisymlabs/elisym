@@ -387,6 +387,24 @@ export async function cmdX402Add(
         fail(error instanceof Error ? error.message : String(error));
       }
     }
+    // Isolation invariant (reciprocal of `delegate-key`'s guard): the payment
+    // wallet must differ from the dedicated delegate key, else a single
+    // compromise both drains the wallet AND acts as delegate for every owner
+    // who approved it. `delegate-key` blocks a colliding delegate; block the
+    // colliding payment key here too, so importing the delegate key as the
+    // wallet cannot slip through in the reverse order.
+    if (loaded.secrets.solana_delegate_secret_key) {
+      const paymentSigner = await signerFromSecretKeyBase58(solanaSecretKey);
+      const delegateSigner = await signerFromSecretKeyBase58(
+        loaded.secrets.solana_delegate_secret_key,
+      );
+      if (paymentSigner.address === delegateSigner.address) {
+        fail(
+          'the wallet key equals this agent delegate key (solana_delegate_secret_key). ' +
+            'They must differ for blast-radius isolation - import a different wallet key or rotate the delegate key.',
+        );
+      }
+    }
     await writeSecrets(
       loaded.dir,
       { ...loaded.secrets, solana_secret_key: solanaSecretKey },

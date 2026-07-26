@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { LIMITS } from '../constants';
+import { type SkillDelegation, validateSkillDelegation } from '../delegation';
 import type { SkillRateLimit } from '../llm-health/types';
 import {
   type Asset,
@@ -130,6 +131,14 @@ export interface SkillFrontmatter {
    * `DEFAULT_X402_MAX_INPUT_BYTES`; hard cap `LIMITS.MAX_REINLINE_TEXT_BYTES`.
    */
   x402_max_input_bytes?: unknown;
+  /**
+   * Optional delegated-execution descriptor (v1: `spl-approve`). Declares that
+   * the agent accepts a bounded USDC allowance for this capability. The
+   * `delegate_pubkey` is NOT written here - it is derived from the agent's
+   * `solana_delegate_secret_key` and injected into the card at `buildCard`.
+   * Applies to any skill mode.
+   */
+  delegation?: unknown;
 }
 
 export interface ParsedSkill {
@@ -196,6 +205,12 @@ export interface ParsedSkill {
    * box instead of silently dropping what the buyer typed.
    */
   noInput?: boolean;
+  /**
+   * Delegated-execution descriptor declared in frontmatter (no
+   * `delegate_pubkey`). Present when the skill opts into `spl-approve` bounded
+   * delegation; the host injects the delegate pubkey at `buildCard`.
+   */
+  delegation?: SkillDelegation;
 }
 
 export interface LoaderLogger {
@@ -1003,6 +1018,7 @@ export function validateSkillFrontmatter(
     frontmatter.max_execution_secs,
   );
   const x402 = validateX402Config(frontmatter.name, frontmatter, mode, options);
+  const delegation = validateSkillDelegation(frontmatter.name, frontmatter.delegation);
 
   return {
     name: frontmatter.name,
@@ -1030,6 +1046,7 @@ export function validateSkillFrontmatter(
     x402,
     noInput:
       x402 === undefined ? undefined : x402.method === 'GET' && x402.queryParam === undefined,
+    delegation,
   };
 }
 
