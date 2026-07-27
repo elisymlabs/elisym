@@ -364,7 +364,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
           />
           <button
             type="button"
-            disabled={busy || !ownerAddress || capInput.trim().length === 0}
+            disabled={busy || !ownerAddress || !/\d/.test(capInput)}
             onClick={handleApprove}
             className="inline-flex h-36 cursor-pointer items-center justify-center rounded-12 bg-accent px-14 text-[13px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           >

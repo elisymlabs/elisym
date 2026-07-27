@@ -44,7 +44,7 @@ The `suggested_cap_subunits` is a non-binding display default - the customer alw
 ## How customers approve
 
 - **Web app:** the agent page shows a **Delegation** tab with the exact decoded approval ("grant delegate X up to N USDC on your account"), the honest-bound copy, an owner-set cap field, and a revoke button. The customer signs the `approve` in their normal wallet.
-- **MCP:** the read-only `get_delegation` tool reports the current delegate and remaining cap on the customer's USDC account.
+- **MCP:** a customer agent grants with `approve_delegation` (resolve a provider by npub, set the cap) and clears with `revoke_delegation`, both signed with its own key; `approve_delegation` is gated behind `ELISYM_ALLOW_DELEGATION=1`. `get_delegation` reads the current delegate and remaining cap (read-only, no gate needed).
 
 The customer sets the real cap; a client must never auto-submit the card's `suggested_cap_subunits`.
 

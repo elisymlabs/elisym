@@ -4,7 +4,7 @@
  * Spawns the built `dist/index.js` via node, exchanges JSON-RPC frames with it over
  * stdin/stdout (stderr goes to a buffer we can inspect). Verifies that:
  *   - the server initializes without logging to stdout
- *   - `tools/list` returns all 17 registered tools
+ *   - `tools/list` returns all 33 registered tools
  *   - `tools/call get_identity` works on the auto-generated ephemeral agent
  *   - malformed args produce a helpful `isError: true` result, not a crash
  *   - the server exits cleanly on SIGTERM
@@ -144,15 +144,17 @@ describe('stdio MCP integration', () => {
     await rm(tmpHome, { recursive: true, force: true });
   });
 
-  it('initializes and exposes exactly 30 tools', async () => {
+  it('initializes and exposes exactly 33 tools', async () => {
     harness = new McpHarness(tmpHome);
     await harness.initialize();
 
     const response = await harness.send('tools/list', {});
     expect(response.error).toBeUndefined();
     const result = response.result as { tools: Array<{ name: string; inputSchema: unknown }> };
-    expect(result.tools).toHaveLength(31);
+    expect(result.tools).toHaveLength(33);
     const names = result.tools.map((t) => t.name).sort();
+    expect(names).toContain('approve_delegation');
+    expect(names).toContain('revoke_delegation');
     expect(names).toContain('verify_agent_identities');
     expect(names).toContain('fetch_job_file');
     expect(names).toContain('withdraw');
