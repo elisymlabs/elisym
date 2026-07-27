@@ -86,6 +86,26 @@ async function buildVersionedTx(
   };
 }
 
+/**
+ * Keep only what forms a valid USDC amount: digits and a single decimal point,
+ * with at most `decimals` fractional digits. Strips letters, spaces, and extra
+ * dots so the field can never hold a non-numeric string that `parseAssetAmount`
+ * would later reject.
+ */
+function sanitizeCapInput(raw: string, decimals: number): string {
+  const digitsAndDots = raw.replace(/[^0-9.]/g, '');
+  const firstDot = digitsAndDots.indexOf('.');
+  if (firstDot === -1) {
+    return digitsAndDots;
+  }
+  const intPart = digitsAndDots.slice(0, firstDot);
+  const fracPart = digitsAndDots
+    .slice(firstDot + 1)
+    .replace(/\./g, '')
+    .slice(0, decimals);
+  return `${intPart}.${fracPart}`;
+}
+
 interface Props {
   delegation: DelegationDescriptor;
   agentName: string;
@@ -131,11 +151,6 @@ export function DelegationPanel({ delegation, agentName }: Props) {
   useEffect(() => {
     void refreshStatus();
   }, [refreshStatus]);
-
-  const suggestedCap = formatAssetAmount(
-    USDC_SOLANA_DEVNET,
-    BigInt(delegation.suggested_cap_subunits),
-  );
 
   async function handleApprove() {
     if (!ownerAddress) {
@@ -321,7 +336,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
             type="button"
             disabled={busy}
             onClick={handleRevoke}
-            className="mt-12 h-32 btn btn-outline px-14 text-[13px]"
+            className="mt-12 inline-flex h-36 cursor-pointer items-center justify-center rounded-12 border border-border bg-transparent px-14 text-[13px] font-semibold text-text transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             Revoke allowance
           </button>
@@ -330,8 +345,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
 
       <div className="mt-16">
         <label htmlFor="delegation-cap" className="block text-[12px] font-medium text-text-2">
-          Cap (USDC){' '}
-          <span className="font-normal text-text-2/70">- suggested {suggestedCap}, you decide</span>
+          Cap (USDC) <span className="font-normal text-text-2/70">- you set the limit</span>
         </label>
         <div className="mt-6 flex items-center gap-8">
           <input
@@ -339,10 +353,12 @@ export function DelegationPanel({ delegation, agentName }: Props) {
             inputMode="decimal"
             value={capInput}
             disabled={busy || !ownerAddress}
-            onChange={(event) => setCapInput(event.target.value)}
+            onChange={(event) =>
+              setCapInput(sanitizeCapInput(event.target.value, USDC_SOLANA_DEVNET.decimals))
+            }
             placeholder="e.g. 5"
             className={cn(
-              'h-36 w-160 rounded-10 border border-border bg-surface px-12 text-sm text-text',
+              'h-36 w-160 rounded-12 border border-border bg-surface px-12 text-[13px] text-text',
               'outline-none focus:border-accent',
             )}
           />
@@ -350,7 +366,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
             type="button"
             disabled={busy || !ownerAddress || capInput.trim().length === 0}
             onClick={handleApprove}
-            className="h-36 btn-primary btn px-16 text-[13px]"
+            className="inline-flex h-36 cursor-pointer items-center justify-center rounded-12 bg-accent px-14 text-[13px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {activeDelegate ? 'Replace allowance' : 'Grant allowance'}
           </button>
