@@ -48,11 +48,14 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from '@solana/kit';
+import { getProtocolConfig } from '../src/config/onchain';
+import { getProtocolProgramId } from '../src/constants';
 import {
   buildApproveDelegate,
   buildDelegatedTransfer,
   buildRevokeDelegate,
   type DelegationStatus,
+  delegationApproveFeeSubunits,
   deriveOwnerDelegationAta,
   getDelegation,
 } from '../src/delegation';
@@ -200,7 +203,30 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 1. approve
+  // Protocol fee config (treasury + feeBps). Fall back to a test feeBps if the
+  // on-chain rate is 0 so the approve-fee path is still exercised on devnet. If the
+  // config program is unreadable, skip the fee entirely so invariants 1-6 still run.
+  let feeBps = 0;
+  let treasury: string | null = null;
+  try {
+    const feeConfig = await getProtocolConfig(rpc, getProtocolProgramId(NETWORK));
+    treasury = feeConfig.treasury;
+    feeBps =
+      feeConfig.feeBps > 0 ? feeConfig.feeBps : Number(process.env.DELEGATION_TEST_FEE_BPS ?? 100);
+  } catch {
+    console.warn('  ! could not read protocol config - running without the approve-fee checks\n');
+  }
+  const feeArg = treasury !== null ? { feeBps, treasury } : undefined;
+  const treasuryAta = treasury !== null ? await deriveOwnerDelegationAta(treasury, NETWORK) : null;
+  const expectedFee = treasury !== null ? delegationApproveFeeSubunits(cap, feeBps) : 0n;
+  if (treasury !== null) {
+    console.log(
+      `  approve fee: ${feeBps} bps of cap = ${expectedFee} subunits -> treasury ${treasury}\n`,
+    );
+  }
+
+  // 1. approve (with the protocol fee charged at approve time)
+  const treasuryBefore1 = treasuryAta !== null ? await usdcBalance(treasuryAta) : 0n;
   await sendInstructions(
     owner,
     await buildApproveDelegate({
@@ -208,6 +234,7 @@ async function main(): Promise<void> {
       delegate: delegate.address,
       capSubunits: cap,
       network: NETWORK,
+      fee: feeArg,
     }),
   );
   const afterApprove = await readDelegation(ownerAta);
@@ -215,6 +242,14 @@ async function main(): Promise<void> {
     ok(`approve: delegate set, remainingCap == cap (${cap})`);
   } else {
     bad('approve', `got delegate=${afterApprove.delegate} remaining=${afterApprove.remainingCap}`);
+  }
+  if (treasuryAta !== null) {
+    const delta = (await usdcBalance(treasuryAta)) - treasuryBefore1;
+    if (delta === expectedFee) {
+      ok(`approve fee: treasury received ${expectedFee} subunits (${feeBps} bps of cap)`);
+    } else {
+      bad('approve fee', `treasury delta ${delta} != expected ${expectedFee}`);
+    }
   }
 
   // 2. transfer within cap
@@ -280,7 +315,8 @@ async function main(): Promise<void> {
     ]),
   );
 
-  // 5. fresh approve REPLACES the remaining cap (re-arm, not additive)
+  // 5. fresh approve REPLACES the remaining cap (re-arm, not additive) + re-charges the fee
+  const treasuryBefore2 = treasuryAta !== null ? await usdcBalance(treasuryAta) : 0n;
   await sendInstructions(
     owner,
     await buildApproveDelegate({
@@ -288,6 +324,7 @@ async function main(): Promise<void> {
       delegate: delegate.address,
       capSubunits: cap,
       network: NETWORK,
+      fee: feeArg,
     }),
   );
   const afterReArm = await readDelegation(ownerAta);
@@ -295,6 +332,14 @@ async function main(): Promise<void> {
     ok(`re-approve REPLACES remaining cap (re-armed to ${cap}, not ${cap + (cap - within)})`);
   } else {
     bad('re-approve replace', `remaining=${afterReArm.remainingCap}, expected ${cap}`);
+  }
+  if (treasuryAta !== null) {
+    const delta = (await usdcBalance(treasuryAta)) - treasuryBefore2;
+    if (delta === expectedFee) {
+      ok(`re-approve fee: treasury re-charged ${expectedFee} subunits`);
+    } else {
+      bad('re-approve fee', `treasury delta ${delta} != expected ${expectedFee}`);
+    }
   }
 
   // 6. revoke clears the delegate

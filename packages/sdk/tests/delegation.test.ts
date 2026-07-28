@@ -4,6 +4,8 @@ import {
   buildDelegatedTransfer,
   buildRevokeDelegate,
   decodeApproveDelegate,
+  decodeDelegationFeeTransfer,
+  delegationApproveFeeSubunits,
   deriveOwnerDelegationAta,
   formatDelegationGrant,
   parseDelegationDescriptor,
@@ -11,6 +13,7 @@ import {
   validateSkillDelegation,
 } from '../src/delegation';
 import { USDC_SOLANA_DEVNET } from '../src/payment/assets';
+import { calculateProtocolFee } from '../src/payment/fee';
 import { generateSolanaWallet } from '../src/payment/wallet';
 
 async function twoSigners() {
@@ -304,5 +307,99 @@ describe('buildDelegatedTransfer', () => {
         network: 'devnet',
       }),
     ).rejects.toThrow(/destination/);
+  });
+});
+
+describe('delegation approve fee', () => {
+  it('appends a treasury fee transfer when a fee is charged', async () => {
+    const { owner, delegate } = await twoSigners();
+    const treasury = (await generateSolanaWallet()).signer;
+    const cap = 50_000_000n; // 50 USDC
+    const feeBps = 250; // 2.5%
+    const instructions = await buildApproveDelegate({
+      owner,
+      delegate: delegate.address,
+      capSubunits: cap,
+      network: 'devnet',
+      fee: { feeBps, treasury: treasury.address },
+    });
+    // [0]=createOwnerAta, [1]=approveChecked, [2]=createTreasuryAta, [3]=feeTransfer
+    expect(instructions).toHaveLength(4);
+    // approve leg still decodes at [1]
+    expect(decodeApproveDelegate(instructions[1]).capSubunits).toBe(cap);
+    // fee leg at [3]: amount = feeBps of cap, to the treasury's USDC ATA
+    const expectedFee = delegationApproveFeeSubunits(cap, feeBps);
+    expect(expectedFee).toBe(BigInt(calculateProtocolFee(Number(cap), feeBps)));
+    expect(expectedFee).toBe(1_250_000n); // 2.5% of 50 USDC
+    const feeLeg = decodeDelegationFeeTransfer(instructions[3]);
+    expect(feeLeg.amount).toBe(expectedFee);
+    expect(feeLeg.mint).toBe(USDC_SOLANA_DEVNET.mint);
+    expect(feeLeg.destination).toBe(await deriveOwnerDelegationAta(treasury.address, 'devnet'));
+    expect(feeLeg.source).toBe(await deriveOwnerDelegationAta(owner.address, 'devnet'));
+  });
+
+  it('appends no fee leg when feeBps is 0', async () => {
+    const { owner, delegate } = await twoSigners();
+    const treasury = (await generateSolanaWallet()).signer;
+    const instructions = await buildApproveDelegate({
+      owner,
+      delegate: delegate.address,
+      capSubunits: 50_000_000n,
+      network: 'devnet',
+      fee: { feeBps: 0, treasury: treasury.address },
+    });
+    expect(instructions).toHaveLength(2);
+  });
+
+  it('appends no fee leg when fee is omitted', async () => {
+    const { owner, delegate } = await twoSigners();
+    const instructions = await buildApproveDelegate({
+      owner,
+      delegate: delegate.address,
+      capSubunits: 50_000_000n,
+      network: 'devnet',
+    });
+    expect(instructions).toHaveLength(2);
+  });
+
+  it('delegationApproveFeeSubunits rounds up like the payment fee', () => {
+    expect(delegationApproveFeeSubunits(1n, 1)).toBe(1n); // ceil(1*1/10000) never rounds to 0
+    expect(delegationApproveFeeSubunits(0n, 250)).toBe(0n);
+    expect(delegationApproveFeeSubunits(1_000_000n, 250)).toBe(25_000n);
+  });
+
+  it('delegationApproveFeeSubunits throws above the safe-integer bound', () => {
+    expect(() => delegationApproveFeeSubunits(BigInt(Number.MAX_SAFE_INTEGER) + 1n, 250)).toThrow(
+      /safe-integer/,
+    );
+  });
+
+  it('rejects an invalid fee treasury address', async () => {
+    const { owner, delegate } = await twoSigners();
+    await expect(
+      buildApproveDelegate({
+        owner,
+        delegate: delegate.address,
+        capSubunits: 50_000_000n,
+        network: 'devnet',
+        fee: { feeBps: 250, treasury: 'not-base58-0OIl' },
+      }),
+    ).rejects.toThrow(/treasury/);
+  });
+
+  it('decodeDelegationFeeTransfer rejects a non-transfer instruction (anti-masquerade)', async () => {
+    const { owner, delegate } = await twoSigners();
+    const instructions = await buildApproveDelegate({
+      owner,
+      delegate: delegate.address,
+      capSubunits: 50_000_000n,
+      network: 'devnet',
+    });
+    // [1] is the approveChecked, not a transferChecked - the discriminator guard must reject it.
+    expect(() => decodeDelegationFeeTransfer(instructions[1])).toThrow(
+      /TransferChecked|discriminator/,
+    );
+    expect(() => decodeDelegationFeeTransfer(null)).toThrow(/transferChecked/i);
+    expect(() => decodeDelegationFeeTransfer(undefined)).toThrow(/transferChecked/i);
   });
 });

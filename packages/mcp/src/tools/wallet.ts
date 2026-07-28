@@ -7,6 +7,8 @@ import {
   buildApproveDelegate,
   buildRevokeDelegate,
   decodeApproveDelegate,
+  decodeDelegationFeeTransfer,
+  delegationApproveFeeSubunits,
   deriveOwnerDelegationAta,
   estimateSolFeeLamports,
   formatAssetAmount,
@@ -594,21 +596,55 @@ export const walletTools: ToolDefinition[] = [
         );
       }
 
+      // Signer + protocol fee config (fail-closed). After the guards so the
+      // pre-signing unit tests (which return before / throw at agentSigner) never
+      // hit the network; a config-fetch throw becomes a clean errorResult.
+      let signer: Awaited<ReturnType<typeof agentSigner>>;
+      let feeBps: number;
+      let treasury: string;
+      try {
+        signer = await agentSigner(agent.solanaKeypair.secretKey);
+        ({ feeBps, treasury } = await fetchProtocolConfig(agent.network));
+      } catch (e) {
+        return errorResult(`Approve failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+
+      // Protocol fee at approve time: feeBps of the cap, owner -> treasury USDC in
+      // the same tx. It is a real outflow from the agent wallet, so it counts
+      // against the session cap. Reserve in its OWN try (no release on the over-cap
+      // throw); releaseSpend lives only in the build/sign catch below.
+      let feeSubunits: bigint;
+      try {
+        feeSubunits = feeBps > 0 ? delegationApproveFeeSubunits(capSubunits, feeBps) : 0n;
+      } catch (e) {
+        return errorResult(e instanceof Error ? e.message : String(e));
+      }
+      if (feeSubunits > 0n) {
+        try {
+          reserveSpend(ctx, USDC_SOLANA_DEVNET, feeSubunits);
+        } catch (e) {
+          return errorResult(e instanceof Error ? e.message : String(e));
+        }
+      }
+
       let signature: Signature;
       try {
-        const signer = await agentSigner(agent.solanaKeypair.secretKey);
         const instructions = await buildApproveDelegate({
           owner: signer,
           delegate: delegatePubkey,
           capSubunits,
           network: agent.network,
+          fee: feeSubunits > 0n ? { feeBps, treasury } : undefined,
         });
-        // Regression guard (NOT anti-injection): confirm the built instruction encodes
-        // exactly the intended delegate/cap/mint before signing. buildApproveDelegate
-        // returns [createAta, approveChecked]; assert the shape before indexing.
-        if (instructions.length !== 2) {
+        // Shape: 2 (no fee) or 4 (fee). Assert it agrees with the reservation, else a
+        // reserved fee could commit with no fee transfer (over-counting session spend).
+        if (instructions.length !== 2 && instructions.length !== 4) {
           throw new Error('Unexpected approve instruction shape.');
         }
+        if (feeSubunits > 0n !== (instructions.length === 4)) {
+          throw new Error('Fee reservation and built instruction shape disagree.');
+        }
+        // Regression guard (NOT anti-injection): confirm exactly what is signed.
         const decoded = decodeApproveDelegate(instructions[1]);
         if (
           decoded.delegate !== delegatePubkey ||
@@ -618,8 +654,27 @@ export const walletTools: ToolDefinition[] = [
         ) {
           throw new Error('Built approval did not match the requested grant.');
         }
+        // The fee leg moves USDC and there is no wallet simulation headless - verify it.
+        if (instructions.length === 4) {
+          const [treasuryAta] = await findAssociatedTokenPda({
+            owner: address(treasury),
+            tokenProgram: TOKEN_PROGRAM_ADDRESS,
+            mint: address(USDC_SOLANA_DEVNET.mint ?? ''),
+          });
+          const feeLeg = decodeDelegationFeeTransfer(instructions[3]);
+          if (
+            feeLeg.destination !== String(treasuryAta) ||
+            feeLeg.amount !== feeSubunits ||
+            feeLeg.mint !== USDC_SOLANA_DEVNET.mint
+          ) {
+            throw new Error('Built fee transfer did not match the expected protocol fee.');
+          }
+        }
         signature = await signSendConfirm(agent, instructions, signer);
       } catch (e) {
+        if (feeSubunits > 0n) {
+          releaseSpend(ctx, USDC_SOLANA_DEVNET, feeSubunits);
+        }
         return errorResult(`Approve failed: ${e instanceof Error ? e.message : String(e)}`);
       }
 
@@ -631,13 +686,18 @@ export const walletTools: ToolDefinition[] = [
       } else {
         replacementLine = `replaced prior delegate ${priorDelegate}`;
       }
+      const feeLine =
+        feeSubunits > 0n
+          ? `Protocol fee charged now: ${formatAssetAmount(USDC_SOLANA_DEVNET, feeSubunits)} to treasury.\n`
+          : '';
       return textResult(
         `Granted delegate ${delegatePubkey} up to ${formatAssetAmount(USDC_SOLANA_DEVNET, capSubunits)} ` +
           `on your USDC account (${replacementLine}).\n` +
           `Network: ${agent.network}\n` +
           `Signature: ${signature}\n` +
-          `Explorer: ${explorerUrl(agent, signature)}\n\n` +
-          `Bounded trust: the delegate can spend up to the cap autonomously, to ANY destination ` +
+          `Explorer: ${explorerUrl(agent, signature)}\n` +
+          feeLine +
+          `\nBounded trust: the delegate can spend up to the cap autonomously, to ANY destination ` +
           `including itself. The cap is decoupled from your balance - it can drain USDC that arrives ` +
           `later, up to the cap, until you revoke. Revoke with revoke_delegation.`,
       );

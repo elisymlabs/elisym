@@ -23,6 +23,8 @@ export {
   buildDelegatedTransfer,
   getDelegation,
   decodeApproveDelegate,
+  decodeDelegationFeeTransfer,
+  delegationApproveFeeSubunits,
   formatDelegationGrant,
 } from './spl-approve';
 export type {
@@ -31,4 +33,5 @@ export type {
   BuildDelegatedTransferArgs,
   DelegationStatus,
   ApproveDelegateView,
+  DelegationFeeTransferView,
 } from './spl-approve';

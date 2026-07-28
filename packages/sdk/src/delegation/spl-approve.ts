@@ -29,6 +29,7 @@ import {
   APPROVE_CHECKED_DISCRIMINATOR,
   ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
   TOKEN_PROGRAM_ADDRESS,
+  TRANSFER_CHECKED_DISCRIMINATOR,
   fetchMaybeToken,
   findAssociatedTokenPda,
   getApproveCheckedInstruction,
@@ -36,6 +37,7 @@ import {
   getRevokeInstruction,
   getTransferCheckedInstruction,
   parseApproveCheckedInstruction,
+  parseTransferCheckedInstruction,
 } from '@solana-program/token';
 import {
   type Address,
@@ -46,6 +48,7 @@ import {
   unwrapOption,
 } from '@solana/kit';
 import { type Asset, KNOWN_ASSETS, USDC_SOLANA_DEVNET, formatAssetAmount } from '../payment/assets';
+import { calculateProtocolFee } from '../payment/fee';
 import type { Signer } from '../payment/strategy';
 import type { Network } from '../types';
 
@@ -125,6 +128,29 @@ export interface BuildApproveDelegateArgs {
   capSubunits: bigint;
   /** Selects the canonical USDC mint. */
   network: Network;
+  /**
+   * Optional protocol fee charged to the owner at approve time: `feeBps` of the
+   * cap, transferred owner -> `treasury` in USDC within the same transaction.
+   * Source `feeBps`/`treasury` from `getProtocolConfig`. Omit (or feeBps 0) for
+   * no fee. When charged it is a real USDC transfer, so the owner must hold it.
+   */
+  fee?: { feeBps: number; treasury: string };
+}
+
+/**
+ * The protocol fee (USDC subunits) charged to the owner when approving a
+ * delegate: `feeBps` of the cap, rounded up like the payment fee. Exact only for
+ * `feeBps <= 10000` (on-chain `MAX_FEE_BPS` is 1000). Guards the cap against
+ * `Number.MAX_SAFE_INTEGER` before the `number`-based fee math, since a u64 cap
+ * can otherwise exceed a safe double. Returns `0n` for `feeBps` 0 or a zero cap.
+ */
+export function delegationApproveFeeSubunits(capSubunits: bigint, feeBps: number): bigint {
+  if (capSubunits > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      `delegation cap ${capSubunits} exceeds the safe-integer bound for fee computation`,
+    );
+  }
+  return BigInt(calculateProtocolFee(Number(capSubunits), feeBps));
 }
 
 /**
@@ -155,7 +181,7 @@ export async function buildApproveDelegate(
     tokenProgram: TOKEN_PROGRAM_ADDRESS,
     mint,
   });
-  return [
+  const instructions: unknown[] = [
     getCreateAssociatedTokenIdempotentInstruction(
       {
         payer: args.owner,
@@ -174,6 +200,40 @@ export async function buildApproveDelegate(
       decimals: asset.decimals,
     }),
   ];
+
+  // Optional protocol fee (owner -> treasury, feeBps of the cap) appended AFTER
+  // the approve so `approveChecked` stays at index [1] for `decodeApproveDelegate`.
+  // The fee `transferChecked` uses the OWNER authority (not the delegate), so it
+  // never touches `delegated_amount`; it just moves balance in the same tx.
+  if (args.fee) {
+    const feeSubunits = delegationApproveFeeSubunits(args.capSubunits, args.fee.feeBps);
+    if (feeSubunits > 0n) {
+      if (!isAddress(args.fee.treasury)) {
+        throw new Error(`Invalid fee treasury address: ${args.fee.treasury}`);
+      }
+      const treasury = address(args.fee.treasury);
+      const [treasuryAta] = await findAssociatedTokenPda({
+        owner: treasury,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        mint,
+      });
+      instructions.push(
+        getCreateAssociatedTokenIdempotentInstruction(
+          { payer: args.owner, ata: treasuryAta, owner: treasury, mint },
+          { programAddress: ASSOCIATED_TOKEN_PROGRAM_ADDRESS },
+        ),
+        getTransferCheckedInstruction({
+          source: ownerAta,
+          mint,
+          destination: treasuryAta,
+          authority: args.owner,
+          amount: feeSubunits,
+          decimals: asset.decimals,
+        }),
+      );
+    }
+  }
+  return instructions;
 }
 
 export interface BuildRevokeDelegateArgs {
@@ -354,6 +414,51 @@ export function decodeApproveDelegate(instruction: unknown): ApproveDelegateView
     decimals: parsed.data.decimals,
     symbol: known?.symbol ?? 'tokens',
     recognized: known !== undefined,
+  };
+}
+
+export interface DelegationFeeTransferView {
+  /** Owner's token account the fee leaves (the delegated ATA). */
+  source: string;
+  /** The treasury's token account receiving the fee. */
+  destination: string;
+  /** The token mint (on-chain truth). */
+  mint: string;
+  /** Fee amount in subunits. */
+  amount: bigint;
+  /** Decimals encoded in the checked instruction. */
+  decimals: number;
+}
+
+/**
+ * Decode the built fee-transfer instruction (the `transferChecked` appended to a
+ * fee-bearing approve) so a caller can verify EXACTLY what the owner signs -
+ * destination treasury ATA, amount, mint - before sending. Mirrors
+ * {@link decodeApproveDelegate}: asserts the SPL Token program + TransferChecked
+ * discriminator so an arbitrary instruction cannot masquerade as the fee. This
+ * matters most on the headless MCP path, which has no wallet simulation.
+ */
+export function decodeDelegationFeeTransfer(instruction: unknown): DelegationFeeTransferView {
+  if (instruction === null || typeof instruction !== 'object') {
+    throw new Error(
+      'decodeDelegationFeeTransfer expects a built transferChecked instruction object.',
+    );
+  }
+  const parsed = parseTransferCheckedInstruction(
+    instruction as Parameters<typeof parseTransferCheckedInstruction>[0],
+  );
+  if (String(parsed.programAddress) !== TOKEN_PROGRAM_ADDRESS) {
+    throw new Error('Instruction is not an SPL Token instruction (unexpected program address).');
+  }
+  if (parsed.data.discriminator !== TRANSFER_CHECKED_DISCRIMINATOR) {
+    throw new Error('Instruction is not an SPL Token TransferChecked (unexpected discriminator).');
+  }
+  return {
+    source: String(parsed.accounts.source.address),
+    destination: String(parsed.accounts.destination.address),
+    mint: String(parsed.accounts.mint.address),
+    amount: parsed.data.amount,
+    decimals: parsed.data.decimals,
   };
 }
 

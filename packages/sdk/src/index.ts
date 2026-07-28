@@ -148,6 +148,8 @@ export {
   buildDelegatedTransfer,
   getDelegation,
   decodeApproveDelegate,
+  decodeDelegationFeeTransfer,
+  delegationApproveFeeSubunits,
   formatDelegationGrant,
 } from './delegation';
 export type {
@@ -158,6 +160,7 @@ export type {
   BuildDelegatedTransferArgs,
   DelegationStatus,
   ApproveDelegateView,
+  DelegationFeeTransferView,
 } from './delegation';
 
 // --- On-chain protocol config ---

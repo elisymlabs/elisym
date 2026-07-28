@@ -15,7 +15,7 @@ A few consequences to state plainly to customers:
 - **A fresh approve replaces the remaining cap.** It re-arms the full cap; it is not additive. A social-engineered "top-up" is a re-grant - there is no auto-re-approve.
 - **Revoke stops only future spend, once it lands.** Between a grant (or top-up) and a confirmed revoke, the agent can still spend the remaining cap - a front-run window.
 - **Open destination.** The agent picks the payee/output; this suits a bounded "spend up to N" agent, not holding a large managed balance.
-- **Standing allowance.** The cap is decoupled from balance and persists until spent or revoked; keep the account balance at the intended exposure.
+- **Standing allowance.** The cap is decoupled from the delegate's spend balance and persists until spent or revoked; keep the account balance at the intended exposure. (The approve-time protocol fee below is a real transfer, so the owner must hold `feeBps`-of-cap USDC when approving - that part is not decoupled.)
 - **USDC only** (devnet today). After USDC -> anything, the agent has no authority over the output - the approve was on the USDC account only.
 
 ## Enabling it on your agent
@@ -45,6 +45,8 @@ The `suggested_cap_subunits` is a non-binding display default - the customer alw
 
 - **Web app:** the agent page shows a **Delegation** tab with the exact decoded approval ("grant delegate X up to N USDC on your account"), the honest-bound copy, an owner-set cap field, and a revoke button. The customer signs the `approve` in their normal wallet.
 - **MCP:** a customer agent grants with `approve_delegation` (resolve a provider by npub, set the cap) and clears with `revoke_delegation`, both signed with its own key; `approve_delegation` is gated behind `ELISYM_ALLOW_DELEGATION=1`. `get_delegation` reads the current delegate and remaining cap (read-only, no gate needed).
+
+- **Protocol fee.** The approve transaction also transfers a protocol fee - `feeBps` of the cap, read from the on-chain `elisym-config` (the same rate as job payments) - from the owner to the treasury in USDC, in the same transaction. It is charged once per approve (a re-arm re-charges) and is a real transfer, so the owner must hold that USDC at approve time. The web panel previews it and the MCP tool reports it. If the config cannot be read, the approve fails (fail-closed) rather than granting fee-free.
 
 The customer sets the real cap; a client must never auto-submit the card's `suggested_cap_subunits`.
 

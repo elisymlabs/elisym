@@ -2,11 +2,15 @@ import {
   buildApproveDelegate,
   buildRevokeDelegate,
   decodeApproveDelegate,
+  decodeDelegationFeeTransfer,
+  delegationApproveFeeSubunits,
   deriveOwnerDelegationAta,
   estimatePriorityFeeMicroLamports,
   formatAssetAmount,
   formatDelegationGrant,
   getDelegation,
+  getProtocolConfig,
+  getProtocolProgramId,
   parseAssetAmount,
   truncateKey,
   USDC_SOLANA_DEVNET,
@@ -32,17 +36,18 @@ import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 // wallet-adapter `sendTransaction` accepts it. Same bridge as BuyContext; do not
 // grow web3.js usage, everything else is Kit.
 import { VersionedTransaction } from '@solana/web3.js';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
-import { SOLANA_RPC_URL } from '~/lib/cluster';
+import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
 const PRIORITY_FEE_PERCENTILE = 75;
 const NETWORK = 'devnet' as const;
 const kitRpc = createSolanaRpc(SOLANA_RPC_URL);
+const PROTOCOL_PROGRAM_ID = getProtocolProgramId(SDK_CLUSTER);
 
 interface VersionedTx {
   tx: VersionedTransaction;
@@ -125,6 +130,14 @@ export function DelegationPanel({ delegation, agentName }: Props) {
 
   const ownerAddress = publicKey?.toBase58();
 
+  // Protocol fee config for the live preview + fail-closed approve. Fetched on
+  // mount / cluster change; the authoritative value is re-read at approve time.
+  const { data: protocolConfig, isError: configError } = useQuery({
+    queryKey: ['delegation-protocol-config', SDK_CLUSTER],
+    queryFn: () => getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID),
+    staleTime: 60_000,
+  });
+
   const refreshStatus = useCallback(async () => {
     const requestId = ++requestIdRef.current;
     if (!ownerAddress) {
@@ -168,16 +181,29 @@ export function DelegationPanel({ delegation, agentName }: Props) {
     setBusy(true);
     const toastId = 'delegation-approve';
     try {
+      // Fail-closed: the approve charges the protocol fee, so a config we cannot
+      // read means we cannot know the fee - refuse rather than approve fee-free.
+      let feeBps: number;
+      let treasury: string;
+      try {
+        const cfg = await getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID);
+        feeBps = cfg.feeBps;
+        treasury = cfg.treasury;
+      } catch {
+        throw new Error('Could not read the protocol fee config. Try again.');
+      }
+      const feeSubunits = feeBps > 0 ? delegationApproveFeeSubunits(capSubunits, feeBps) : 0n;
+
       const instructions = await buildApproveDelegate({
         owner: createNoopSigner(address(ownerAddress)),
         delegate: delegation.delegate_pubkey,
         capSubunits,
         network: NETWORK,
+        fee: feeSubunits > 0n ? { feeBps, treasury } : undefined,
       });
       // Independent transparency check: decode the exact approveChecked we built
-      // and confirm it grants what the owner asked - delegate, cap, AND that the
-      // asset is the recognized USDC mint (never a relabeled token). The wallet's
-      // own simulation is the final check.
+      // and confirm it grants what the owner asked - delegate, cap, AND the
+      // recognized USDC mint. The wallet's own simulation is the final check.
       const decoded = decodeApproveDelegate(instructions[1]);
       if (
         decoded.delegate !== delegation.delegate_pubkey ||
@@ -187,7 +213,26 @@ export function DelegationPanel({ delegation, agentName }: Props) {
       ) {
         throw new Error('Built approval did not match the requested grant. Aborting.');
       }
-      toast.loading(`${formatDelegationGrant(decoded)} Approve in your wallet...`, { id: toastId });
+      // Verify the fee leg too (defense-in-depth). deriveOwnerDelegationAta(addr)
+      // is the USDC ATA of `addr`, so it yields the treasury's fee ATA.
+      if (instructions.length === 4) {
+        const treasuryAta = await deriveOwnerDelegationAta(treasury, NETWORK);
+        const feeLeg = decodeDelegationFeeTransfer(instructions[3]);
+        if (
+          feeLeg.destination !== String(treasuryAta) ||
+          feeLeg.amount !== feeSubunits ||
+          feeLeg.mint !== USDC_SOLANA_DEVNET.mint
+        ) {
+          throw new Error('Built fee transfer did not match the expected protocol fee. Aborting.');
+        }
+      }
+      const feeNote =
+        feeSubunits > 0n
+          ? ` (+ ${formatAssetAmount(USDC_SOLANA_DEVNET, feeSubunits)} protocol fee)`
+          : '';
+      toast.loading(`${formatDelegationGrant(decoded)}${feeNote} Approve in your wallet...`, {
+        id: toastId,
+      });
 
       const { tx, blockhash, lastValidBlockHeight } = await buildVersionedTx(
         instructions,
@@ -267,6 +312,34 @@ export function DelegationPanel({ delegation, agentName }: Props) {
     loaded && loaded.delegate !== null && loaded.delegate !== delegation.delegate_pubkey
       ? loaded
       : null;
+
+  // Live fee preview + balance pre-check. The fee is feeBps of the cap, a real USDC
+  // transfer at approve, so the owner must hold it now (the cap stays decoupled from
+  // balance, but the FEE does not). Guard the compute so an unparsed / absurd cap
+  // cannot throw during render.
+  const feeBps = protocolConfig?.feeBps ?? 0;
+  let feePreviewSubunits: bigint | null = null;
+  try {
+    if (/\d/.test(capInput)) {
+      feePreviewSubunits =
+        feeBps > 0
+          ? delegationApproveFeeSubunits(parseAssetAmount(USDC_SOLANA_DEVNET, capInput), feeBps)
+          : 0n;
+    }
+  } catch {
+    feePreviewSubunits = null;
+  }
+  const usdcBalance = loaded?.balance ?? 0n;
+  // Only assert insufficiency when the balance is actually KNOWN: a resolved read
+  // (a DelegationStatus, or null=no-ATA which is a genuine 0). During loading/error
+  // the balance is unknown, so do not block/warn on a false 0 - the action-time
+  // config read and the atomic on-chain revert are the backstop.
+  const balanceKnown = ownerAddress !== undefined && status !== 'loading' && status !== 'error';
+  const insufficientForFee =
+    balanceKnown &&
+    feePreviewSubunits !== null &&
+    feePreviewSubunits > 0n &&
+    usdcBalance < feePreviewSubunits;
 
   return (
     <div className="max-w-[640px]">
@@ -364,7 +437,9 @@ export function DelegationPanel({ delegation, agentName }: Props) {
           />
           <button
             type="button"
-            disabled={busy || !ownerAddress || !/\d/.test(capInput)}
+            disabled={
+              busy || !ownerAddress || !/\d/.test(capInput) || configError || insufficientForFee
+            }
             onClick={handleApprove}
             className="inline-flex h-36 cursor-pointer items-center justify-center rounded-12 bg-accent px-14 text-[13px] font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -374,6 +449,24 @@ export function DelegationPanel({ delegation, agentName }: Props) {
         {!ownerAddress && (
           <p className="mt-8 text-[12px] text-text-2">Connect a wallet to set an allowance.</p>
         )}
+        {ownerAddress && feeBps > 0 && feePreviewSubunits !== null && feePreviewSubunits > 0n ? (
+          <p className="mt-8 text-[12px] text-text-2">
+            Protocol fee: {formatAssetAmount(USDC_SOLANA_DEVNET, feePreviewSubunits)}, charged now
+            to the treasury (+ ~one-time ATA rent if the treasury account is new). You must hold
+            this USDC.
+          </p>
+        ) : null}
+        {insufficientForFee ? (
+          <p className="mt-8 text-[12px] font-medium text-warning">
+            Your USDC balance ({formatAssetAmount(USDC_SOLANA_DEVNET, usdcBalance)}) is below the
+            protocol fee - deposit USDC to approve.
+          </p>
+        ) : null}
+        {configError ? (
+          <p className="mt-8 text-[12px] font-medium text-feedback-negative">
+            Could not load the protocol fee - approve is disabled. Reconnect the wallet or retry.
+          </p>
+        ) : null}
       </div>
     </div>
   );

@@ -78,7 +78,7 @@ The tools group by what they do.
 - `estimate_payment_cost` - preview the SOL cost of an invoice (base fee + priority fee + token-account rent).
 - `send_payment` - sign and send a payment transaction.
 - `get_delegation` - read the current [delegated-execution](/providers/delegated-execution) allowance on your USDC account (the delegate and remaining cap). Read-only.
-- `approve_delegation` - grant a discovered provider a bounded USDC allowance it can spend autonomously (spl-approve). You pass the provider npub and set the cap. Re-granting the same delegate re-arms it; replacing a _different_ existing delegate requires `replace_existing: true`. Gated behind `ELISYM_ALLOW_DELEGATION=1`.
+- `approve_delegation` - grant a discovered provider a bounded USDC allowance it can spend autonomously (spl-approve). You pass the provider npub and set the cap. Re-granting the same delegate re-arms it; replacing a _different_ existing delegate requires `replace_existing: true`. Charges a protocol fee (`feeBps` of the cap) to the treasury at approve time, so your account must hold that USDC; the fee counts against the MCP session spend cap. Gated behind `ELISYM_ALLOW_DELEGATION=1`.
 - `revoke_delegation` - clear the delegate on your USDC account, stopping future delegated spend.
 - `withdraw` - move funds out (two-step confirmation; gated, see below).
 

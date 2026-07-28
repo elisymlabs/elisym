@@ -5,15 +5,21 @@
  * the rest of `@elisym/sdk` kept real) so the refuse-replace and session-budget
  * paths are drivable without decoding a live SPL token account.
  */
-import { getDelegation, USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import { assetKey, generateSolanaWallet, getDelegation, USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import { address, getBase58Encoder } from '@solana/kit';
 import { nip19 } from 'nostr-tools';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AgentContext, type AgentInstance } from '../src/context.js';
+import { AgentContext, fetchProtocolConfig, type AgentInstance } from '../src/context.js';
 import { walletTools } from '../src/tools/wallet.js';
 
 vi.mock('@elisym/sdk', async (importActual) => {
   const actual = await importActual<typeof import('@elisym/sdk')>();
   return { ...actual, getDelegation: vi.fn() };
+});
+
+vi.mock('../src/context.js', async (importActual) => {
+  const actual = await importActual<typeof import('../src/context.js')>();
+  return { ...actual, fetchProtocolConfig: vi.fn() };
 });
 
 const OWNER = '9vSzxkCJiEuGwYnJGo17XsofAANM5GMzBg5rJquejs7o';
@@ -81,6 +87,7 @@ function ctxWith(agent: AgentInstance): AgentContext {
 afterEach(() => {
   delete process.env.ELISYM_ALLOW_DELEGATION;
   vi.mocked(getDelegation).mockReset();
+  vi.mocked(fetchProtocolConfig).mockReset();
 });
 
 describe('approve_delegation guards', () => {
@@ -193,6 +200,26 @@ describe('approve_delegation guards', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).not.toMatch(/already delegates to a different key/);
     expect(result.content[0]?.text).toMatch(/Approve failed/);
+  });
+
+  it('rejects an approve whose protocol fee exceeds the session USDC cap', async () => {
+    process.env.ELISYM_ALLOW_DELEGATION = '1';
+    vi.mocked(getDelegation).mockResolvedValue(null);
+    vi.mocked(fetchProtocolConfig).mockResolvedValue({ feeBps: 500, treasury: address(OWNER) });
+    const fetchAgent = vi.fn(async () => providerWithDelegation([DELEGATE_A]));
+    // A real keypair so agentSigner succeeds and the flow reaches reserveSpend.
+    const wallet = await generateSolanaWallet();
+    const secretKey = new Uint8Array(getBase58Encoder().encode(wallet.secretKeyBase58));
+    const agent = buildStubAgent({ fetchAgent, walletPubkey: wallet.signer.address, secretKey });
+    const ctx = ctxWith(agent);
+    ctx.sessionSpendLimits.set(assetKey(USDC_SOLANA_DEVNET), 1_000n); // 0.001 USDC session cap
+    // cap 5 USDC at feeBps 500 (5%) -> fee 0.25 USDC = 250_000 subunits, far over the cap.
+    const result = await tool.handler(
+      ctx,
+      tool.schema.parse({ provider: PROVIDER_HEX, cap_usdc: '5' }),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/Session spend limit reached/);
   });
 });
 
