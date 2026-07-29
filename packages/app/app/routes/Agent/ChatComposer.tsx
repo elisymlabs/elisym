@@ -9,6 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import { useDelegatedBuyMode } from '~/hooks/useDelegationStatus';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import { track } from '~/lib/analytics';
 import {
@@ -72,7 +73,19 @@ export function ChatComposer({
   const [input, setInput] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const { buying, error, paid, jobId } = buyState;
-  const gate = useJobGating({ card, agentPubkey, pingStatus, input, file, buying });
+  // Chat sends resolve their rail at click time, and a covering allowance
+  // means the send needs no per-job SOL - so the wallet-balance gate must not
+  // block (or mis-tooltip) it, same as the Products-tab Use button.
+  const buyMode = useDelegatedBuyMode(card);
+  const gate = useJobGating({
+    card,
+    agentPubkey,
+    pingStatus,
+    input,
+    file,
+    buying,
+    delegatedCovers: buyMode === 'use',
+  });
 
   // Clear the draft only once this composer's send has produced a job id
   // (submit success); a pre-submit failure keeps the text for correction.

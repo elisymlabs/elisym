@@ -1,4 +1,5 @@
 import { toDTag, type CapabilityCard } from '@elisym/sdk';
+import { useDelegatedBuyMode } from '~/hooks/useDelegationStatus';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import type { ChatThreadEntry } from '~/lib/chatThread';
 import { recallJobFile } from '~/lib/retryFiles';
@@ -37,6 +38,9 @@ function ChatRetryButtonInner({
   // Full JobInput-style gating, recomputed at render and re-checked at click.
   // `static` cards submit `card.name`, like a normal send.
   const retryInput = card.static === true ? card.name : entry.prompt;
+  // Same delegated-coverage bypass as the composer: a retry that will settle
+  // from the allowance needs no per-job SOL.
+  const buyMode = useDelegatedBuyMode(card);
   const gate = useJobGating({
     card,
     agentPubkey,
@@ -44,6 +48,7 @@ function ChatRetryButtonInner({
     input: retryInput,
     file: file ?? null,
     buying,
+    delegatedCovers: buyMode === 'use',
   });
 
   async function handleRetry() {

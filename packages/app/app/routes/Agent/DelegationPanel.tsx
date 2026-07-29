@@ -39,6 +39,7 @@ import { VersionedTransaction } from '@solana/web3.js';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { invalidateDelegationStatus } from '~/hooks/useDelegationStatus';
 import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
 import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
@@ -254,6 +255,8 @@ export function DelegationPanel({ delegation, agentName }: Props) {
       );
       setCapInput('');
       invalidateWalletBalances(queryClient, ownerAddress);
+      // Flip Use/Delegate buy buttons that key off the cached allowance read.
+      invalidateDelegationStatus(queryClient, ownerAddress);
       await refreshStatus();
     } catch (error) {
       // Dismiss-then-error, not a same-id swap: Sonner does not reliably swap a
@@ -292,6 +295,8 @@ export function DelegationPanel({ delegation, agentName }: Props) {
       }
       toast.success('Allowance revoked. Future spend is stopped.', { id: toastId });
       invalidateWalletBalances(queryClient, ownerAddress);
+      // Flip Use buttons back to Delegate - the allowance is gone.
+      invalidateDelegationStatus(queryClient, ownerAddress);
       await refreshStatus();
     } catch (error) {
       // Dismiss-then-error (see handleApprove): a same-id swap can leave the

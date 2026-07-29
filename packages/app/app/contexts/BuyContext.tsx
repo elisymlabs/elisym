@@ -58,6 +58,7 @@ import {
 } from 'react';
 import { toast } from 'sonner';
 import { useLocation } from 'wouter';
+import { invalidateDelegationStatus } from '~/hooks/useDelegationStatus';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useJobHistory } from '~/hooks/useJobHistory';
@@ -251,6 +252,15 @@ interface BuyArgs {
 export interface BuySessionOptions {
   sessionId: string | null;
   token?: string;
+  /**
+   * Explicit payment rail from the Products buy button: 'delegated' submits
+   * from the allowance or fails loudly (never a silent per-job payment the
+   * user did not choose); 'per-job' pays per job even when a delegation
+   * would be discovered at click time (the button advertised a per-job
+   * payment). Absent = resolve automatically at click time - chat/retry
+   * sends, which carry no rail label.
+   */
+  payment?: 'delegated' | 'per-job';
 }
 
 interface BuyCtx {
@@ -431,14 +441,26 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // The proof is a wallet `signMessage` over the SAME shared
         // `buildAuthMessage` bytes the SDK signs/verifies (single-use nonce,
         // short expiry), base58-encoded identically.
+        const requestedDelegated = buySession.payment === 'delegated';
         let delegatedPayment:
           | { owner: string; expiryUnix: number; nonce: string; proof: string }
           | undefined;
         const delegationDescriptor = card.delegation;
-        if (!isFree && delegationDescriptor && publicKey && signMessage) {
+        // USDC-only mirrors the provider-side load guard - a delegation block
+        // on a card priced in any other asset would compare mismatched
+        // subunits and submit a job the provider rejects anyway.
+        if (
+          !isFree &&
+          delegationDescriptor &&
+          publicKey &&
+          signMessage &&
+          card.payment?.token === 'usdc' &&
+          buySession.payment !== 'per-job'
+        ) {
           const owner = publicKey.toBase58();
           const price = BigInt(card.payment?.job_price ?? 0);
           let delegationActive = false;
+          let delegationReadFailed = false;
           try {
             const ownerAta = await deriveOwnerDelegationAta(owner, SOLANA_CLUSTER);
             const delegationStatus = await getDelegation(kitRpc, ownerAta);
@@ -449,7 +471,22 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               delegationStatus.remainingCap >= price &&
               delegationStatus.balance >= price;
           } catch {
-            // RPC failure reading the delegation - fall back to per-job payment.
+            // RPC failure reading the delegation - fall back to per-job
+            // payment (or abort an explicit Use, below).
+            delegationReadFailed = true;
+          }
+          if (requestedDelegated && !delegationActive) {
+            // The user clicked Use: surprising them with a per-job payment
+            // prompt they did not choose is worse than failing loudly. Drop
+            // the cached allowance read the label was painted from - without
+            // this the button stays 'Use' (staleness alone never refetches)
+            // and every re-click repeats the same error.
+            invalidateDelegationStatus(queryClient, owner);
+            throw new Error(
+              delegationReadFailed
+                ? 'Could not verify your delegated allowance (network error) - try again.'
+                : 'Your delegated allowance no longer covers this job - top it up in the Delegation tab.',
+            );
           }
           if (delegationActive) {
             // Sign OUTSIDE the fallback catch: a user who rejects the
@@ -480,6 +517,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             }
             toast.loading('Submitting delegated job...', { id: toastId });
           }
+        } else if (requestedDelegated) {
+          // Unreachable from the UI (the Use button only renders with a
+          // delegation-advertising card and a connected signMessage-capable
+          // wallet) - fail closed rather than silently paying per-job.
+          throw new Error('Delegated payment is not available for this job.');
         }
 
         const jobEventId = await client.marketplace.submitJobRequest(identity, {
@@ -827,6 +869,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               if (delegatedTxHash !== undefined) {
                 void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash);
               }
+              if (delegatedPayment !== undefined) {
+                // The provider's pull reduced the remaining allowance - drop
+                // the cached read so Use/Delegate buttons recompute.
+                invalidateDelegationStatus(queryClient, delegatedPayment.owner);
+              }
               void settleThreadCompletion(result, resultAttachments);
               setSession((prev) =>
                 sessionMatches(prev)
@@ -1090,6 +1137,12 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             // a poller-recovered result reaches the thread via the Chat tab's
             // hydration/reconcile (the stated eventual-consistency window).
             updateJob(job.jobEventId, { status: 'completed', result });
+            // The job may have settled by a delegated pull that reduced the
+            // allowance; the poller has no per-job rail marker, so drop the
+            // cached read unconditionally for the connected wallet.
+            if (wallet) {
+              invalidateDelegationStatus(queryClient, wallet);
+            }
             setSession((prev) =>
               prev && prev.jobId === job.jobEventId
                 ? {
@@ -1116,7 +1169,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [wallet, idCtx.identity, client, updateJob]);
+  }, [wallet, idCtx.identity, client, updateJob, queryClient]);
 
   const rate = useCallback(
     async (positive: boolean) => {

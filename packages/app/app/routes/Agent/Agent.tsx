@@ -781,6 +781,7 @@ export default function AgentPage() {
                     selectedIndex={currentCardIndex}
                     onSelectIndex={setSelectedCardIndex}
                     buyState={buyState}
+                    onOpenDelegation={() => setActiveTab('delegation')}
                   />
                 </div>
               </div>

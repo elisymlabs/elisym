@@ -64,7 +64,7 @@ A customer who has approved your delegate key can **order jobs that settle from 
 
 **Crash safety.** The pull signature and its blockhash lifetime are persisted before the transaction is broadcast, and the result is persisted before the pull. A crash at any point resolves on restart: a landed pull re-delivers the stored result (never re-executes, never re-pulls); a provably dead pull fails the job with no charge; an ambiguous one is re-checked until the blockhash lifetime settles it. One bound on that guarantee: "provably dead" is only as strong as your RPC node's retained transaction history. If the agent stays down longer than that retention (a few days on typical non-archive RPCs), a landed pull can be misread as absent on restart. For mainnet, configure an archive RPC via `SOLANA_RPC_URL` or avoid extended downtime - the same bound as regular paid-job payment re-verification.
 
-**Customer side.** The web app's Buy button automatically pays from a delegation when one is active for the card's delegate key (a wallet `signMessage` prompt replaces the payment approval); the MCP tool is `submit_delegated_job`. Either way the result carries the pull's transaction signature for transparency.
+**Customer side.** On a delegation-capable card the web app splits the action explicitly: the button reads **Use** when the connected wallet holds an active allowance covering the price (submitting spends it - a wallet `signMessage` prompt replaces the payment approval), and **Delegate** when it does not, routing to the Delegation tab to grant one. The MCP tool is `submit_delegated_job`. Either way the result carries the pull's transaction signature for transparency.
 
 ## What is deferred
 
