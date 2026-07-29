@@ -12,7 +12,6 @@ import {
   getProtocolConfig,
   getProtocolProgramId,
   parseAssetAmount,
-  truncateKey,
   USDC_SOLANA_DEVNET,
   type DelegationDescriptor,
   type DelegationStatus,
@@ -352,8 +351,8 @@ export function DelegationPanel({ delegation, agentName }: Props) {
       <p className="mt-8 text-sm leading-relaxed text-text-2">
         Grant {agentName} a bounded USDC allowance it can spend autonomously - no per-action
         signature. You approve delegate{' '}
-        <span className="font-mono text-[12px]">{truncateKey(delegation.delegate_pubkey)}</span> for
-        a cap you choose.
+        <span className="font-mono text-[12px] break-all">{delegation.delegate_pubkey}</span> for a
+        cap you choose.
       </p>
 
       <div className="mt-16 rounded-12 border border-border bg-surface-2 p-14">
@@ -387,10 +386,8 @@ export function DelegationPanel({ delegation, agentName }: Props) {
           <p className="m-0 text-[12px] leading-relaxed text-text-2">
             <span className="font-semibold text-text">Heads up:</span> this account already
             delegates to a different key (
-            <span className="font-mono text-[12px]">
-              {truncateKey(otherDelegate.delegate ?? '')}
-            </span>
-            ) with {formatAssetAmount(USDC_SOLANA_DEVNET, otherDelegate.remainingCap)} remaining.
+            <span className="font-mono text-[12px] break-all">{otherDelegate.delegate ?? ''}</span>)
+            with {formatAssetAmount(USDC_SOLANA_DEVNET, otherDelegate.remainingCap)} remaining.
             Granting {agentName} an allowance here will{' '}
             <span className="font-semibold">replace</span> that delegation - an account can have
             only one delegate at a time.
