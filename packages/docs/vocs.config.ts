@@ -90,10 +90,7 @@ export default defineConfig({
     },
     {
       text: 'Reference',
-      items: [
-        { text: 'Constants', link: '/reference/constants' },
-        { text: 'Changelog', link: '/reference/changelog' },
-      ],
+      items: [{ text: 'Constants', link: '/reference/constants' }],
     },
   ],
 });
