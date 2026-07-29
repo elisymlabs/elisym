@@ -64,7 +64,8 @@ export type {
   CapabilityTiers,
   TallyInput,
 } from './services/reputation';
-export { MarketplaceService } from './services/marketplace';
+export { MarketplaceService, parseDelegatedPayment } from './services/marketplace';
+export type { DelegatedPaymentRequest } from './services/marketplace';
 export { classifyJobError, JobWaitTimeoutError } from './services/jobErrors';
 export type { JobErrorKind } from './services/jobErrors';
 export { MediaService } from './services/media';
@@ -109,6 +110,17 @@ export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
 export { verifyJobPaymentQuick, clearQuickVerifyCache } from './payment/quick-verify';
 export type { QuickVerifyResult, QuickVerifyReason } from './payment/quick-verify';
+export {
+  isDefinitelyUnpaid,
+  buildSignedPull,
+  sendConfirmToTerminal,
+  confirmPullToTerminal,
+} from './payment/settlement';
+export type {
+  SignedPullTransaction,
+  PullTerminalOutcome,
+  ConfirmToTerminalOptions,
+} from './payment/settlement';
 export { aggregateNetworkStats, getNetworkStats } from './payment/analytics';
 export type {
   AggregateNetworkStatsOptions,
@@ -151,6 +163,20 @@ export {
   decodeDelegationFeeTransfer,
   delegationApproveFeeSubunits,
   formatDelegationGrant,
+  DELEGATED_PAYMENT_TAG,
+  DELEGATED_PAYMENT_MODE,
+  DELEGATION_OWNER_TAG,
+  DELEGATION_EXPIRY_TAG,
+  DELEGATION_NONCE_TAG,
+  DELEGATION_PROOF_TAG,
+  DELEGATION_NONCE_REGEX,
+  DELEGATION_PROOF_REGEX,
+  MAX_PROOF_TTL_SECS,
+  PROOF_CLOCK_SKEW_SECS,
+  buildAuthMessage,
+  mintDelegationNonce,
+  buildDelegationAuthProof,
+  verifyDelegationAuthProof,
 } from './delegation';
 export type {
   DelegationDescriptor,
@@ -161,6 +187,9 @@ export type {
   DelegationStatus,
   ApproveDelegateView,
   DelegationFeeTransferView,
+  DelegationAuthFields,
+  BuildDelegationAuthProofArgs,
+  VerifyDelegationAuthProofArgs,
 } from './delegation';
 
 // --- On-chain protocol config ---

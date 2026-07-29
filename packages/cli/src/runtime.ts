@@ -6,25 +6,41 @@ import { basename, extname, join } from 'node:path';
  * Supports per-capability pricing: each capability can have a different price.
  */
 import {
+  MAX_PROOF_TTL_SECS,
   NATIVE_SOL,
+  PROOF_CLOCK_SKEW_SECS,
   SolanaPaymentStrategy,
+  buildDelegatedTransfer,
+  buildSignedPull,
   calculateProtocolFee,
+  confirmPullToTerminal,
   createSlidingWindowLimiter,
   decodeJobPayload,
+  deriveOwnerDelegationAta,
   formatAssetAmount,
+  getDelegation,
   getProtocolConfig,
   getProtocolProgramId,
+  isDefinitelyUnpaid,
   LIMITS,
+  parseDelegatedPayment,
   readAcceptedTransports,
+  resolveDelegationAsset,
+  sendConfirmToTerminal,
   utf8ByteLength,
+  verifyDelegationAuthProof,
 } from '@elisym/sdk';
 import type {
   Asset,
   BlossomBlobTransport,
+  DelegatedPaymentRequest,
   ElisymIdentity,
   FileAttachment,
   FileTransport,
+  Network,
   ProtocolConfigInput,
+  PullTerminalOutcome,
+  Signer,
   SlidingWindowLimiter,
   TransportKind,
 } from '@elisym/sdk';
@@ -40,10 +56,11 @@ import {
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
 import type { ChatTurn } from '@elisym/sdk/skills';
-import { createSolanaRpc } from '@solana/kit';
+import { createSolanaRpc, signature as asSignature } from '@solana/kit';
+import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import pLimit from 'p-limit';
 import { getRpcUrl } from './helpers.js';
-import { JobLedger } from './ledger.js';
+import { JobLedger, UsedNonceStore } from './ledger.js';
 import {
   SESSION_MAX_CONCURRENT_JOBS,
   type RecoverySessionRef,
@@ -86,6 +103,14 @@ export interface RuntimeConfig {
    * `executionTimeoutSecs` takes precedence over this.
    */
   executionTimeoutSecs?: number;
+  /**
+   * The agent's dedicated delegate signer for delegated job payment
+   * (spl-approve pulls). Deliberately NOT the payment key - the runtime holds
+   * only the delegate key, so a runtime compromise is bounded by the on-chain
+   * `delegated_amount`, never the revenue wallet. Absent => delegated jobs are
+   * rejected at pre-check.
+   */
+  delegateSigner?: Signer;
 }
 
 export interface RuntimeCallbacks {
@@ -378,6 +403,33 @@ function resolveHealthPair(
   return null;
 }
 
+/**
+ * Customer-facing rejection prefix for the delegated pre-check. Reasons appended
+ * to it are fixed, internal-free strings (safe to send verbatim via feedback).
+ */
+const DELEGATED_REJECTED_PREFIX = 'Delegated payment rejected';
+
+/**
+ * Reconcile re-poll depth for a persisted pull signature. Deliberately deeper
+ * than the live path's default: a false "absent" during reconcile means a
+ * customer was charged with no result, so absence must be proven harder.
+ */
+const RECONCILE_RECHECK_ATTEMPTS = 6;
+
+/** Everything the delegated pull needs, resolved ONCE at pre-check. */
+interface DelegatedPullContext {
+  request: DelegatedPaymentRequest;
+  delegateSigner: Signer;
+  /** The owner's delegated USDC ATA (source of funds). */
+  ownerAta: string;
+  /** The skill price - the exact pull amount (no per-job protocol fee). */
+  priceSubunits: bigint;
+  rpc: Rpc<SolanaRpcApi>;
+  network: Network;
+  /** Set after phase A (sign + persist); rides the result event as a `tx` tag. */
+  pullSignature?: string;
+}
+
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 // Free-skill caps: tight, because there is no economic deterrent against
 // loop/Sybil spam. With window == paymentTimeoutSecs (both 10 min by
@@ -441,6 +493,14 @@ export class AgentRuntime {
    */
   private freeLlmLimiters: FreeLlmLimiterSet = createFreeLlmLimiterSet();
 
+  /**
+   * Per-owner in-flight delegated reservations (subunits). A concurrency gate,
+   * NOT a budget: released on success AND failure (unlike the MCP session-spend
+   * reservation, which sticks on success). Process-local by design - the
+   * on-chain `delegated_amount` is the real ceiling.
+   */
+  private delegationInFlight = new Map<string, bigint>();
+
   constructor(
     private transport: NostrTransport,
     private skills: SkillRegistry,
@@ -453,6 +513,7 @@ export class AgentRuntime {
     private identity?: ElisymIdentity,
     private blossomTransport?: BlossomBlobTransport,
     private sessionStore?: SessionStore,
+    private nonceStore?: UsedNonceStore,
   ) {
     this.limit = pLimit(config.maxConcurrentJobs);
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
@@ -802,6 +863,11 @@ export class AgentRuntime {
     // (mirrors the ledger prune-before-recovery ordering above).
     this.sessionStore?.init();
 
+    // Reconcile the durable used-nonce set from persisted raw events BEFORE
+    // `transport.start` below, so a replay presenting an already-burned nonce
+    // is rejected at pre-check even when the nonce-set flush was lost.
+    this.reconcileUsedNonces();
+
     // Recover pending jobs from previous sessions
     await this.recoverPendingJobs();
 
@@ -822,6 +888,11 @@ export class AgentRuntime {
         this.sessionStore?.gc();
       } catch (e: any) {
         log(`Session GC error: ${e.message}`);
+      }
+      try {
+        this.nonceStore?.prune();
+      } catch (e: any) {
+        log(`Nonce GC error: ${e.message}`);
       }
       this.cleanupRateLimits();
       if (!this.transport.isHealthy()) {
@@ -1244,7 +1315,18 @@ export class AgentRuntime {
       created_at: Math.floor(Date.now() / 1000),
     });
 
-    if (jobPrice > 0) {
+    // Delegated mode routes AWAY from collectPayment entirely: the money move
+    // is the provider's post-work pull, gated by the pre-check below.
+    const claimsDelegated = job.delegated !== undefined || job.delegatedRejected !== undefined;
+    let delegatedPull: DelegatedPullContext | undefined;
+    if (claimsDelegated) {
+      delegatedPull = await this.delegatedPreCheck(job, matched, log);
+      if (delegatedPull === undefined) {
+        return; // rejected: entry markFailed + error feedback already sent
+      }
+      // The pull moves the full price (protocol fee was charged at approve).
+      netAmount = Number(delegatedPull.priceSubunits);
+    } else if (jobPrice > 0) {
       const result = await this.collectPayment(job, jobPrice, jobAsset, signal);
       netAmount = result.netAmount;
       paymentRequest = result.paymentRequest;
@@ -1259,166 +1341,610 @@ export class AgentRuntime {
       this.callbacks.onPaymentReceived?.(job.jobId, netAmount);
     }
 
-    // Fetch a file input (if any) AFTER payment is confirmed - never before, so an
-    // unpaid request can't make the provider download attacker-hosted data.
-    const inputFile = await this.resolveInputFile(job.attachment, job.customerId, signal);
+    // The per-owner reservation must release on EVERY path out of work+pull -
+    // success, pull failure, and a skill throw unwinding to processJob's catch.
+    try {
+      // Fetch a file input (if any) AFTER payment is confirmed - never before, so an
+      // unpaid request can't make the provider download attacker-hosted data.
+      const inputFile = await this.resolveInputFile(job.attachment, job.customerId, signal);
 
-    // ── Step 2: Send Processing feedback ──
-    await this.transport.sendFeedback(job, { type: 'processing' }).catch(() => {});
+      // ── Step 2: Send Processing feedback ──
+      await this.transport.sendFeedback(job, { type: 'processing' }).catch(() => {});
 
-    // ── Step 3: Route to skill ──
-    const skill = this.skills.route(job.tags);
-    if (!skill) {
-      throw new Error('No skill matched for tags: ' + job.tags.join(', '));
-    }
-
-    log(`[${job.jobId.slice(0, 8)}] Executing skill: ${skill.name}`);
-
-    // ── Step 4: Execute skill ──
-    // Wrapped so a billing/invalid signal surfaced *during* execution
-    // (script exit 42 or LLM 402/401) flips the matching health pair to
-    // unhealthy. The next job hitting the same pair will be refused at
-    // the preflight gate before payment, instead of sailing through and
-    // failing again. Recovery happens via the lazy recovery loop, which
-    // re-probes only while the pair is unhealthy.
-    // Execution budget (if any) is scoped to `skill.execute` only - payment
-    // collection above and delivery below run on their own bounds. The budget
-    // timer aborts a dedicated `execAbort` chained to the incoming `signal`
-    // (so `stop()` still propagates), and sets `budgetExceeded` so the catch
-    // can tell a budget abort apart from a real skill failure - the latter
-    // would otherwise flip the health pair via `markHealthFromExecuteError`.
-    const budgetMs = this.resolveExecutionBudgetMs(skill);
-    // Resolved BEFORE the execute closure so the closure can stamp the session
-    // id into SkillInput (dynamic scripts receive it as ELISYM_SESSION_ID).
-    const jobSession = this.resolveJobSession(job, skill);
-    const runExecution = async (history?: ChatTurn[]): Promise<SkillOutput> => {
-      let budgetExceeded = false;
-      const execAbort = new AbortController();
-      const onOuterAbort = (): void => execAbort.abort();
-      if (signal) {
-        if (signal.aborted) {
-          execAbort.abort();
-        } else {
-          signal.addEventListener('abort', onOuterAbort);
-        }
+      // ── Step 3: Route to skill ──
+      const skill = this.skills.route(job.tags);
+      if (!skill) {
+        throw new Error('No skill matched for tags: ' + job.tags.join(', '));
       }
-      let budgetTimer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const execPromise = skill.execute(
-          {
-            data: inputFile?.inlineText ?? job.input,
-            inputType: job.inputType,
-            tags: job.tags,
-            jobId: job.jobId,
-            filePath: inputFile?.filePath,
-            history,
-            ...(jobSession !== null ? { sessionId: jobSession.sessionId } : {}),
-          },
-          { ...this.skillCtx, signal: execAbort.signal },
-        );
-        // If the budget race rejects first, the skill may settle later; a no-op
-        // handler keeps that late settlement from surfacing as an unhandled
-        // rejection.
-        execPromise.catch(() => {});
-        if (budgetMs > 0) {
-          // Race the skill against its budget so a skill that ignores the abort
-          // signal (or is stuck on a non-abortable await) cannot run past the
-          // budget and hold the job slot. `abort()` still asks it to stop
-          // (SIGKILL for scripts, next-round check for LLM skills); the race only
-          // bounds how long we wait.
-          return await Promise.race([
-            execPromise,
-            new Promise<never>((_resolve, reject) => {
-              budgetTimer = setTimeout(() => {
-                budgetExceeded = true;
-                execAbort.abort();
-                reject(new ExecutionBudgetExceededError(budgetMs));
-              }, budgetMs);
-            }),
-          ]);
-        }
-        return await execPromise;
-      } catch (err) {
-        // A budget abort is a clean operator/author limit, not a provider fault:
-        // mark it distinctly so it never trips the health monitor.
-        if (budgetExceeded) {
-          log(`[${job.jobId.slice(0, 8)}] Execution exceeded budget (${budgetMs / 1000}s)`);
-          throw new ExecutionBudgetExceededError(budgetMs);
-        }
-        const flippedToUnhealthy = this.markHealthFromExecuteError(skill, err, log, job.jobId);
-        // When the skill failure was the trigger that flipped the health
-        // pair to unhealthy, surface a stable "agent unavailable" message
-        // to the customer rather than the sanitized "Internal processing
-        // error" string the leaky-API masker would otherwise produce.
-        // Recovery happens through the lazy recovery loop.
-        if (flippedToUnhealthy) {
-          throw new AgentUnavailableError();
-        }
-        throw err;
-      } finally {
-        if (budgetTimer) {
-          clearTimeout(budgetTimer);
-        }
+
+      log(`[${job.jobId.slice(0, 8)}] Executing skill: ${skill.name}`);
+
+      // ── Step 4: Execute skill ──
+      // Wrapped so a billing/invalid signal surfaced *during* execution
+      // (script exit 42 or LLM 402/401) flips the matching health pair to
+      // unhealthy. The next job hitting the same pair will be refused at
+      // the preflight gate before payment, instead of sailing through and
+      // failing again. Recovery happens via the lazy recovery loop, which
+      // re-probes only while the pair is unhealthy.
+      // Execution budget (if any) is scoped to `skill.execute` only - payment
+      // collection above and delivery below run on their own bounds. The budget
+      // timer aborts a dedicated `execAbort` chained to the incoming `signal`
+      // (so `stop()` still propagates), and sets `budgetExceeded` so the catch
+      // can tell a budget abort apart from a real skill failure - the latter
+      // would otherwise flip the health pair via `markHealthFromExecuteError`.
+      const budgetMs = this.resolveExecutionBudgetMs(skill);
+      // Resolved BEFORE the execute closure so the closure can stamp the session
+      // id into SkillInput (dynamic scripts receive it as ELISYM_SESSION_ID).
+      const jobSession = this.resolveJobSession(job, skill);
+      const runExecution = async (history?: ChatTurn[]): Promise<SkillOutput> => {
+        let budgetExceeded = false;
+        const execAbort = new AbortController();
+        const onOuterAbort = (): void => execAbort.abort();
         if (signal) {
-          signal.removeEventListener('abort', onOuterAbort);
+          if (signal.aborted) {
+            execAbort.abort();
+          } else {
+            signal.addEventListener('abort', onOuterAbort);
+          }
         }
-        // Remove the fetched input file (and its temp dir) once execution is done.
-        if (inputFile) {
-          await inputFile.cleanup().catch(() => {});
+        let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const execPromise = skill.execute(
+            {
+              data: inputFile?.inlineText ?? job.input,
+              inputType: job.inputType,
+              tags: job.tags,
+              jobId: job.jobId,
+              filePath: inputFile?.filePath,
+              history,
+              ...(jobSession !== null ? { sessionId: jobSession.sessionId } : {}),
+            },
+            { ...this.skillCtx, signal: execAbort.signal },
+          );
+          // If the budget race rejects first, the skill may settle later; a no-op
+          // handler keeps that late settlement from surfacing as an unhandled
+          // rejection.
+          execPromise.catch(() => {});
+          if (budgetMs > 0) {
+            // Race the skill against its budget so a skill that ignores the abort
+            // signal (or is stuck on a non-abortable await) cannot run past the
+            // budget and hold the job slot. `abort()` still asks it to stop
+            // (SIGKILL for scripts, next-round check for LLM skills); the race only
+            // bounds how long we wait.
+            return await Promise.race([
+              execPromise,
+              new Promise<never>((_resolve, reject) => {
+                budgetTimer = setTimeout(() => {
+                  budgetExceeded = true;
+                  execAbort.abort();
+                  reject(new ExecutionBudgetExceededError(budgetMs));
+                }, budgetMs);
+              }),
+            ]);
+          }
+          return await execPromise;
+        } catch (err) {
+          // A budget abort is a clean operator/author limit, not a provider fault:
+          // mark it distinctly so it never trips the health monitor.
+          if (budgetExceeded) {
+            log(`[${job.jobId.slice(0, 8)}] Execution exceeded budget (${budgetMs / 1000}s)`);
+            throw new ExecutionBudgetExceededError(budgetMs);
+          }
+          const flippedToUnhealthy = this.markHealthFromExecuteError(skill, err, log, job.jobId);
+          // When the skill failure was the trigger that flipped the health
+          // pair to unhealthy, surface a stable "agent unavailable" message
+          // to the customer rather than the sanitized "Internal processing
+          // error" string the leaky-API masker would otherwise produce.
+          // Recovery happens through the lazy recovery loop.
+          if (flippedToUnhealthy) {
+            throw new AgentUnavailableError();
+          }
+          throw err;
+        } finally {
+          if (budgetTimer) {
+            clearTimeout(budgetTimer);
+          }
+          if (signal) {
+            signal.removeEventListener('abort', onOuterAbort);
+          }
+          // Remove the fetched input file (and its temp dir) once execution is done.
+          if (inputFile) {
+            await inputFile.cleanup().catch(() => {});
+          }
+        }
+      };
+
+      // Session path: history load -> execute -> append run under the session
+      // mutex; stateless jobs call the closure directly.
+      const output =
+        jobSession === null
+          ? await runExecution()
+          : await this.runSessionExchange({
+              session: jobSession,
+              jobId: job.jobId,
+              userRecord: buildUserRecord(
+                inputFile?.inlineText ?? job.input,
+                inputFile?.filePath !== undefined
+                  ? (job.attachment?.name ?? 'attachment')
+                  : undefined,
+              ),
+              signal,
+              log,
+              execute: runExecution,
+            });
+
+      // ── Step 5: Seed any spilled payload (file or large text), THEN cache ──
+      // buildResultAttachment runs before markExecuted: a seed failure leaves the
+      // job `paid` so recovery re-executes. `deliveredContent` is empty whenever the
+      // payload was spilled to iroh, so the result event carries only the ticket.
+      const { attachments, deliveredContent } = await this.buildResultAttachment(
+        job.jobId,
+        output,
+        job.customerId,
+        readAcceptedTransports(job.rawEvent.tags),
+      );
+
+      // ── Step 5b (delegated): persist result state, then the two-phase pull ──
+      // ALL result state (`delivered_content` here; `result_attachments` inside
+      // buildResultAttachment above) is flushed STRICTLY before the phase-A
+      // pull-signature flush, so a persisted `pull_signature` always implies the
+      // result is recoverable and reconcile never delivers an empty result.
+      // Status stays `paid` throughout - `executed` would re-route recovery to
+      // the re-delivery path for a result whose pull never landed.
+      if (delegatedPull !== undefined) {
+        // Deliverability gate BEFORE any money moves: the SDK rejects an empty
+        // result at delivery (`submitJobResult` throws), so pulling for one
+        // would charge the customer for a result that can never be delivered -
+        // and the pull-signature recovery exemption would then retry the
+        // undeliverable entry forever. Script modes throw on empty output at
+        // the source, but llm/x402 modes can legitimately return '' (e.g. a
+        // completion with no text block), so the money boundary must re-check.
+        if (deliveredContent === '' && attachments.length === 0) {
+          this.ledger.markFailed(job.jobId);
+          await this.transport
+            .sendFeedback(job, {
+              type: 'error',
+              message: `${DELEGATED_REJECTED_PREFIX}: the skill produced empty output - you were not charged. Please re-submit.`,
+            })
+            .catch(() => {});
+          return;
+        }
+        this.ledger.recordDeliveredContent(job.jobId, deliveredContent);
+        const outcome = await this.executeDelegatedPull(job, delegatedPull, log);
+        if (outcome === 'dead') {
+          // Provably no funds moved: error feedback, NO delivery, nonce stays
+          // burned - the customer re-submits with a fresh proof.
+          this.ledger.markFailed(job.jobId);
+          await this.transport
+            .sendFeedback(job, {
+              type: 'error',
+              message: `${DELEGATED_REJECTED_PREFIX}: the delegated transfer did not land - you were not charged. Please re-submit.`,
+            })
+            .catch(() => {});
+          return;
+        }
+        if (outcome === 'unresolved') {
+          // Nothing proven either way (persistent RPC failure before the
+          // terminal bound). Leave the entry `paid` with its persisted pull
+          // signature - the recovery loop reconciles it to a terminal and then
+          // delivers or fails. Withhold the result until then.
+          log(
+            `[${job.jobId.slice(0, 8)}] Delegated pull unresolved before terminal; recovery will reconcile.`,
+          );
+          return;
         }
       }
+
+      // NOTE: At-least-once delivery. A crash between execute() return and markExecuted()
+      // flush leaves the job as 'paid' - recovery will re-execute. Skills must be idempotent
+      // or tolerant of re-execution.
+      this.ledger.markExecuted(job.jobId, deliveredContent);
+
+      log(`[${job.jobId.slice(0, 8)}] Skill completed, delivering result`);
+
+      // ── Step 6: Deliver result ──
+      const eventId = await this.transport.deliverResult(
+        job,
+        deliveredContent,
+        netAmount,
+        attachments.length > 0 ? attachments : undefined,
+        delegatedPull?.pullSignature,
+      );
+      this.ledger.markDelivered(job.jobId);
+
+      log(`[${job.jobId.slice(0, 8)}] Delivered: ${eventId.slice(0, 16)}...`);
+      // onJobCompleted is local-only (TUI/dashboard), never encrypted or delivered,
+      // so it keeps the full `output.data` for operator visibility.
+      this.callbacks.onJobCompleted?.(job.jobId, output.data);
+    } finally {
+      if (delegatedPull !== undefined) {
+        this.releaseDelegationReservation(delegatedPull.request.owner, delegatedPull.priceSubunits);
+      }
+    }
+  }
+
+  private reserveDelegation(owner: string, amount: bigint): void {
+    this.delegationInFlight.set(owner, (this.delegationInFlight.get(owner) ?? 0n) + amount);
+  }
+
+  /** Saturates at zero; drops the key when the owner has nothing in flight. */
+  private releaseDelegationReservation(owner: string, amount: bigint): void {
+    const current = this.delegationInFlight.get(owner) ?? 0n;
+    const next = current > amount ? current - amount : 0n;
+    if (next === 0n) {
+      this.delegationInFlight.delete(owner);
+    } else {
+      this.delegationInFlight.set(owner, next);
+    }
+  }
+
+  /**
+   * Delegated pre-check: fail-closed gates from format to funds, then the
+   * atomic nonce burn, then the on-chain delegation check + per-owner
+   * reservation. Returns the pull context, or `undefined` after rejecting
+   * (entry marked failed + error feedback sent). Runs AFTER `recordPaid`, so
+   * every reject must `markFailed` to avoid a dangling `paid` entry.
+   */
+  private async delegatedPreCheck(
+    job: IncomingJob,
+    skill: Skill | null,
+    log: (msg: string) => void,
+  ): Promise<DelegatedPullContext | undefined> {
+    const reject = async (operatorDetail: string, customerReason: string): Promise<undefined> => {
+      log(`[${job.jobId.slice(0, 8)}] Delegated payment rejected: ${operatorDetail}`);
+      this.ledger.markFailed(job.jobId);
+      await this.transport
+        .sendFeedback(job, {
+          type: 'error',
+          message: `${DELEGATED_REJECTED_PREFIX}: ${customerReason}`,
+        })
+        .catch(() => {});
+      return undefined;
     };
 
-    // Session path: history load -> execute -> append run under the session
-    // mutex; stateless jobs call the closure directly.
-    const output =
-      jobSession === null
-        ? await runExecution()
-        : await this.runSessionExchange({
-            session: jobSession,
-            jobId: job.jobId,
-            userRecord: buildUserRecord(
-              inputFile?.inlineText ?? job.input,
-              inputFile?.filePath !== undefined
-                ? (job.attachment?.name ?? 'attachment')
-                : undefined,
-            ),
-            signal,
-            log,
-            execute: runExecution,
-          });
+    if (job.delegatedRejected !== undefined || job.delegated === undefined) {
+      return reject(
+        `malformed delegation tags (${job.delegatedRejected ?? 'missing struct'})`,
+        'malformed delegation tags.',
+      );
+    }
+    const request = job.delegated;
+    const delegateSigner = this.config.delegateSigner;
+    if (delegateSigner === undefined || this.nonceStore === undefined) {
+      return reject(
+        'agent has no delegate key configured',
+        'this agent does not accept delegated payment.',
+      );
+    }
+    if (this.config.network !== 'devnet') {
+      return reject(
+        `delegation is devnet-only (network: ${this.config.network})`,
+        'this agent does not accept delegated payment.',
+      );
+    }
+    const network: Network = this.config.network;
+    if (!skill || skill.delegation === undefined || skill.priceSubunits <= 0) {
+      return reject(
+        'skill does not accept delegated payment',
+        'this skill does not accept delegated payment.',
+      );
+    }
+    // Defense-in-depth behind the load-time USDC invariant in
+    // `validateSkillFrontmatter`: the pull moves `priceSubunits` as USDC
+    // subunits, so the skill asset MUST be the canonical delegation asset.
+    const delegationAsset = resolveDelegationAsset(network);
+    if (skill.asset.mint !== delegationAsset.mint) {
+      return reject(
+        `skill asset ${skill.asset.symbol} is not the delegation asset`,
+        'this skill does not accept delegated payment.',
+      );
+    }
+    if (!this.config.solanaAddress) {
+      return reject(
+        'no solana payment address configured',
+        'this agent does not accept delegated payment.',
+      );
+    }
 
-    // ── Step 5: Seed any spilled payload (file or large text), THEN cache ──
-    // buildResultAttachment runs before markExecuted: a seed failure leaves the
-    // job `paid` so recovery re-executes. `deliveredContent` is empty whenever the
-    // payload was spilled to iroh, so the result event carries only the ticket.
-    const { attachments, deliveredContent } = await this.buildResultAttachment(
+    // Expiry is a bounded deadline, not a skew tolerance: the horizon check
+    // caps the phishing window; the skew clamp applies only to "now".
+    const nowSecs = Math.floor(Date.now() / 1000);
+    if (request.expiryUnix <= nowSecs) {
+      return reject('proof expired', 'the payment proof has expired - re-submit the job.');
+    }
+    if (request.expiryUnix > nowSecs + MAX_PROOF_TTL_SECS + PROOF_CLOCK_SKEW_SECS) {
+      return reject(
+        'proof expiry beyond the allowed horizon',
+        'the payment proof expiry is too far in the future.',
+      );
+    }
+
+    // Verify BEFORE the nonce mark so a valid-format but unauthenticated event
+    // never writes to the durable used-set.
+    const proofValid = await verifyDelegationAuthProof({
+      agentDelegate: delegateSigner.address,
+      nostrAuthor: job.customerId,
+      owner: request.owner,
+      expiryUnix: request.expiryUnix,
+      nonce: request.nonce,
+      proof: request.proof,
+    });
+    if (!proofValid) {
+      return reject('proof verification failed', 'invalid payment proof.');
+    }
+
+    // Atomic single-use nonce burn: ONE synchronous block, no await between
+    // `has` and `markUsed` - JS single-threading then guarantees exactly-once
+    // across N concurrent same-nonce events (event-id dedup cannot: each event
+    // has a distinct id). The `delegated` discriminator flushes in the same
+    // breath. Every failure AFTER this point leaves the nonce burned -
+    // fail-closed; only the legitimately-bound author could re-present it.
+    const nonceKey = `${request.owner}:${request.nonce}`;
+    if (this.nonceStore.has(nonceKey)) {
+      return reject('nonce already used', 'this payment proof was already used.');
+    }
+    this.nonceStore.markUsed(nonceKey, request.expiryUnix + PROOF_CLOCK_SKEW_SECS);
+    this.ledger.markDelegated(job.jobId);
+
+    // On-chain pre-check (async, after the mark). `deriveOwnerDelegationAta`
+    // throws on a non-address owner - caught here as a clean reject, never a
+    // job-loop crash.
+    let ownerAta: string;
+    try {
+      ownerAta = await deriveOwnerDelegationAta(request.owner, network);
+    } catch (error) {
+      return reject(
+        `owner ATA derivation failed: ${error instanceof Error ? error.message : String(error)}`,
+        'invalid delegation owner address.',
+      );
+    }
+    const rpc = createSolanaRpc(getRpcUrl(this.config.network));
+    let status;
+    try {
+      status = await getDelegation(rpc, ownerAta);
+    } catch (error) {
+      return reject(
+        `getDelegation failed: ${error instanceof Error ? error.message : String(error)}`,
+        'could not verify the delegation on-chain - try again later.',
+      );
+    }
+    if (status === null || status.delegate !== delegateSigner.address) {
+      return reject(
+        `no active delegation for this delegate (current: ${status?.delegate ?? 'none'})`,
+        'no active delegation for this agent - approve it first.',
+      );
+    }
+    const priceSubunits = BigInt(skill.priceSubunits);
+    // Exclude THIS job's own (not-yet-acquired) reservation: check first, THEN
+    // reserve - else the exact-cap single-job case (cap == price) would
+    // falsely reject.
+    const otherInFlight = this.delegationInFlight.get(request.owner) ?? 0n;
+    if (status.remainingCap - otherInFlight < priceSubunits) {
+      return reject(
+        `remaining cap ${status.remainingCap} minus in-flight ${otherInFlight} below price ${priceSubunits}`,
+        'the remaining delegated allowance is below this skill price.',
+      );
+    }
+    if (status.balance < priceSubunits) {
+      return reject(
+        `owner balance ${status.balance} below price ${priceSubunits}`,
+        'the delegation account balance is below this skill price.',
+      );
+    }
+    this.reserveDelegation(request.owner, priceSubunits);
+    log(
+      `[${job.jobId.slice(0, 8)}] Delegated pre-check ok: ${formatAssetAmount(
+        delegationAsset,
+        priceSubunits,
+      )} from ${request.owner.slice(0, 8)}... (pull after work)`,
+    );
+    return { request, delegateSigner, ownerAta, priceSubunits, rpc, network };
+  }
+
+  /**
+   * The two-phase pull - the ONLY money move of a delegated job. Phase A signs
+   * and PERSISTS `{signature, lastValidBlockHeight}` (+ the amount) before any
+   * bytes hit the network; phase B sends and polls to a provable terminal.
+   * Never throws past phase A: the outcome routes the caller.
+   */
+  private async executeDelegatedPull(
+    job: IncomingJob,
+    ctx: DelegatedPullContext,
+    log: (msg: string) => void,
+  ): Promise<PullTerminalOutcome> {
+    if (!this.config.solanaAddress) {
+      throw new Error('Solana address not configured');
+    }
+    // The provider's own USDC ATA - the pinned destination of every pull.
+    const destinationAta = await deriveOwnerDelegationAta(this.config.solanaAddress, ctx.network);
+    const instructions = await buildDelegatedTransfer({
+      delegate: ctx.delegateSigner,
+      source: ctx.ownerAta,
+      destination: destinationAta,
+      amount: ctx.priceSubunits,
+      network: ctx.network,
+      // Idempotent create (delegate-paid rent) so a fresh provider wallet's
+      // first delegated job does not dead-letter on a missing ATA.
+      ensureDestination: { owner: this.config.solanaAddress },
+    });
+    const pull = await buildSignedPull(ctx.rpc, ctx.delegateSigner, instructions);
+    this.ledger.recordPullSignature(
       job.jobId,
-      output,
-      job.customerId,
-      readAcceptedTransports(job.rawEvent.tags),
+      pull.signature,
+      Number(pull.lastValidBlockHeight),
+      Number(ctx.priceSubunits),
     );
+    ctx.pullSignature = pull.signature;
+    const outcome = await sendConfirmToTerminal(ctx.rpc, pull, {});
+    log(`[${job.jobId.slice(0, 8)}] Delegated pull ${outcome}: ${pull.signature.slice(0, 16)}...`);
+    return outcome;
+  }
 
-    // NOTE: At-least-once delivery. A crash between execute() return and markExecuted()
-    // flush leaves the job as 'paid' - recovery will re-execute. Skills must be idempotent
-    // or tolerant of re-execution.
-    this.ledger.markExecuted(job.jobId, deliveredContent);
+  /**
+   * Restart reconciliation of the durable used-nonce set: re-burn every nonce
+   * found in persisted raw events (any status - a nonce is burned the moment
+   * its event entered the ledger's delegated path; fail-closed re-covers even
+   * pre-mark rejects). Runs BEFORE `transport.start`.
+   */
+  private reconcileUsedNonces(): void {
+    if (this.nonceStore === undefined) {
+      return;
+    }
+    const nowSecs = Math.floor(Date.now() / 1000);
+    let changed = false;
+    for (const entry of this.ledger.allEntries()) {
+      if (entry.raw_event_json === undefined) {
+        continue;
+      }
+      try {
+        const parsed = parseDelegatedPayment(JSON.parse(entry.raw_event_json));
+        if (parsed === null) {
+          continue;
+        }
+        const retainUntil = parsed.expiryUnix + PROOF_CLOCK_SKEW_SECS;
+        if (retainUntil <= nowSecs) {
+          continue;
+        }
+        const key = `${parsed.owner}:${parsed.nonce}`;
+        if (!this.nonceStore.has(key)) {
+          this.nonceStore.markUsed(key, retainUntil, { persist: false });
+          changed = true;
+        }
+      } catch {
+        // Malformed persisted event / tags - nothing to reconcile for it.
+      }
+    }
+    if (changed) {
+      try {
+        this.nonceStore.flush();
+      } catch {
+        /* disk full - in-memory set still enforces single-use */
+      }
+    }
+  }
 
-    log(`[${job.jobId.slice(0, 8)}] Skill completed, delivering result`);
+  /**
+   * Delegated discriminator for recovery routing. The ledger flag is primary;
+   * the persisted raw event's top-level `payment` tag is the fallback for an
+   * entry whose flag write was lost.
+   */
+  private isDelegatedEntry(entry: { delegated?: boolean; raw_event_json?: string }): boolean {
+    if (entry.delegated === true) {
+      return true;
+    }
+    if (entry.raw_event_json === undefined) {
+      return false;
+    }
+    try {
+      const raw = JSON.parse(entry.raw_event_json) as { tags?: unknown };
+      return (
+        Array.isArray(raw.tags) &&
+        raw.tags.some((tag) => Array.isArray(tag) && tag[0] === 'payment' && tag[1] === 'delegated')
+      );
+    } catch {
+      return false;
+    }
+  }
 
-    // ── Step 6: Deliver result ──
-    const eventId = await this.transport.deliverResult(
-      job,
-      deliveredContent,
-      netAmount,
+  /**
+   * Reconcile a delegated `paid` entry to its terminal - the FIRST action in
+   * the recovery `paid` branch, BEFORE skill.route/health/preflight gates: a
+   * renamed skill or an unhealthy LLM must never strand an already-charged
+   * pull, and redelivering a persisted result needs none of them. Operates
+   * purely on persisted state - never re-executes, never re-signs.
+   */
+  private async reconcileDelegatedEntry(
+    entry: ReturnType<JobLedger['pendingJobs']>[number],
+    fakeJob: IncomingJob,
+    log: (msg: string) => void,
+  ): Promise<void> {
+    if (entry.pull_signature === undefined) {
+      // No pull was ever signed: no charge occurred. The proof is single-use
+      // and stale by now - fail terminally; the customer re-submits fresh.
+      log(`[${entry.job_id.slice(0, 8)}] Recovery: delegated entry has no pull, marking failed`);
+      this.ledger.markFailed(entry.job_id);
+      await this.transport
+        .sendFeedback(fakeJob, {
+          type: 'error',
+          message: `${DELEGATED_REJECTED_PREFIX}: the job did not complete - you were not charged. Please re-submit.`,
+        })
+        .catch(() => {});
+      return;
+    }
+
+    const rpc = createSolanaRpc(getRpcUrl(this.config.network));
+    const pullSignature = asSignature(entry.pull_signature);
+    let outcome: PullTerminalOutcome;
+    if (entry.pull_last_valid_block_height !== undefined) {
+      outcome = await confirmPullToTerminal(
+        rpc,
+        pullSignature,
+        BigInt(entry.pull_last_valid_block_height),
+        { recheckAttempts: RECONCILE_RECHECK_ATTEMPTS },
+      );
+    } else {
+      // Defensive: the height flushes atomically with the signature, so this
+      // is unreachable in practice - but with no terminal bound the only safe
+      // read is the deep history re-poll.
+      outcome = (await isDefinitelyUnpaid(rpc, pullSignature, {
+        recheckAttempts: RECONCILE_RECHECK_ATTEMPTS,
+      }))
+        ? 'dead'
+        : 'assume-landed';
+    }
+
+    if (outcome === 'unresolved') {
+      log(
+        `[${entry.job_id.slice(0, 8)}] Recovery: delegated pull still unresolved; retrying next tick`,
+      );
+      return; // stays `paid`; the Fix-A exemption keeps it alive past 24h
+    }
+    if (outcome === 'dead') {
+      log(`[${entry.job_id.slice(0, 8)}] Recovery: delegated pull provably dead, marking failed`);
+      this.ledger.markFailed(entry.job_id);
+      await this.transport
+        .sendFeedback(fakeJob, {
+          type: 'error',
+          message: `${DELEGATED_REJECTED_PREFIX}: the delegated transfer did not land - you were not charged. Please re-submit.`,
+        })
+        .catch(() => {});
+      return;
+    }
+
+    // Landed (or indeterminate => assume landed): the customer is charged, so
+    // deliver the persisted result. Re-share attachments BEFORE markExecuted -
+    // a gone blob must fail TERMINALLY (charged, result lost - bounded
+    // residual), never stay `paid` to re-reconcile forever.
+    let attachments: FileAttachment[];
+    try {
+      attachments = await this.reShareResultAttachments(entry);
+    } catch {
+      log(
+        `[${entry.job_id.slice(0, 8)}] Recovery: delegated result blob unavailable, marking failed`,
+      );
+      this.ledger.markFailed(entry.job_id);
+      // The one CHARGED terminal on this path (pull landed, result lost) must
+      // not be silent - both no-charge terminals above send feedback, and
+      // without a signal the customer's client waits out its own timeout never
+      // learning the money moved. Include the tx so they can verify the pull.
+      await this.transport
+        .sendFeedback(fakeJob, {
+          type: 'error',
+          message: `Job permanently failed: the result could not be recovered after an agent restart. The delegated transfer landed (tx ${pullSignature}) - contact the provider to resolve.`,
+        })
+        .catch(() => {});
+      return;
+    }
+    this.ledger.markExecuted(entry.job_id, entry.delivered_content ?? '');
+    await this.transport.deliverResult(
+      fakeJob,
+      entry.delivered_content ?? '',
+      entry.net_amount,
       attachments.length > 0 ? attachments : undefined,
+      entry.pull_signature,
     );
-    this.ledger.markDelivered(job.jobId);
-
-    log(`[${job.jobId.slice(0, 8)}] Delivered: ${eventId.slice(0, 16)}...`);
-    // onJobCompleted is local-only (TUI/dashboard), never encrypted or delivered,
-    // so it keeps the full `output.data` for operator visibility.
-    this.callbacks.onJobCompleted?.(job.jobId, output.data);
+    this.ledger.markDelivered(entry.job_id);
+    log(`[${entry.job_id.slice(0, 8)}] Recovery: delegated pull ${outcome}, result delivered`);
   }
 
   /**
@@ -2206,7 +2732,16 @@ export class AgentRuntime {
       // result; they are bounded by the 24h expiry alone.
       const exhaustedRetries =
         entry.status === 'paid' && entry.retry_count >= this.config.recoveryMaxRetries;
-      if (expired || exhaustedRetries) {
+      // Fix A (status-AGNOSTIC): a persisted `pull_signature` means the
+      // customer was (or may have been) CHARGED by a delegated pull - only the
+      // delegated pull path ever writes it, so it is a precise discriminator.
+      // Force-failing such an entry on age/retries would throw away a landed
+      // pull ("charged, no result"). Exempt it: an exempted `paid` entry flows
+      // to the delegated reconcile, an exempted `executed` one to the existing
+      // re-delivery branch. Delegated entries with NO pull signature carry no
+      // charge and force-fail like any other.
+      const hasPullSignature = entry.pull_signature !== undefined;
+      if ((expired || exhaustedRetries) && !hasPullSignature) {
         this.ledger.markFailed(entry.job_id);
         const reason = expired
           ? 'Job permanently failed: agent did not recover within 24 hours'
@@ -2294,6 +2829,16 @@ export class AgentRuntime {
         } catch {
           log(`[${entry.job_id.slice(0, 8)}] Recovery: result blob unavailable, marking failed`);
           this.ledger.markFailed(entry.job_id);
+          // Losing an `executed` entry's result must not be silent: for paid
+          // and delegated entries the customer was already charged (upfront
+          // payment or a landed pull); free entries just get the same notice.
+          await this.transport
+            .sendFeedback(fakeJob, {
+              type: 'error',
+              message:
+                'Job permanently failed: the result data was lost after an agent restart - contact the provider to resolve.',
+            })
+            .catch(() => {});
           return;
         }
         await this.transport.deliverResult(
@@ -2301,10 +2846,20 @@ export class AgentRuntime {
           entry.result,
           entry.net_amount,
           attachments.length > 0 ? attachments : undefined,
+          entry.pull_signature,
         );
         this.ledger.markDelivered(entry.job_id);
         log(`[${entry.job_id.slice(0, 8)}] Recovery: re-delivered`);
       } else if (entry.status === 'paid') {
+        // Fix B: delegated reconcile-and-deliver is the FIRST action - BEFORE
+        // skill.route/health/preflight/incrementRetry. A renamed skill or an
+        // unhealthy LLM must not strand an already-charged pull; redelivering
+        // a persisted result needs neither. Also keeps delegated entries away
+        // from `reVerifyPayment` (whose `payment_request` parse would throw).
+        if (this.isDelegatedEntry(entry)) {
+          await this.reconcileDelegatedEntry(entry, fakeJob, log);
+          return;
+        }
         const skill = this.skills.route(entry.tags);
         if (!skill) {
           log(`[${entry.job_id.slice(0, 8)}] Recovery: no skill for tags, marking failed`);

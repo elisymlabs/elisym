@@ -1,12 +1,17 @@
 import {
   prepareEncryptedFileInput,
+  buildAuthMessage,
   buildPaymentInstructions,
   classifyJobError,
+  deriveOwnerDelegationAta,
   encodeJobPayload,
   estimatePriorityFeeMicroLamports,
+  getDelegation,
   getProtocolConfig,
   getProtocolProgramId,
   LIMITS,
+  MAX_PROOF_TTL_SECS,
+  mintDelegationNonce,
   resolveKnownAsset,
   SolanaPaymentStrategy,
   toDTag,
@@ -25,6 +30,7 @@ import {
   createNoopSigner,
   createSolanaRpc,
   createTransactionMessage,
+  getBase58Decoder,
   getBase64EncodedWireTransaction,
   pipe,
   setTransactionMessageComputeUnitLimit,
@@ -263,7 +269,9 @@ const Ctx = createContext<BuyCtx | null>(null);
 export function BuyProvider({ children }: { children: ReactNode }) {
   const { client } = useElisymClient();
   const idCtx = useIdentity();
-  const { publicKey, sendTransaction } = useWallet();
+  // `signMessage` is optional in the adapter contract - wallets lacking it
+  // simply never take the delegated-payment path and pay per-job instead.
+  const { publicKey, sendTransaction, signMessage } = useWallet();
   const { connection } = useConnection();
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
@@ -415,6 +423,65 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           }
         }
 
+        // Delegated payment mode: when the card advertises an spl-approve
+        // delegation AND this wallet holds an ACTIVE matching allowance
+        // covering the advertised price, the buy skips the per-job payment tx
+        // entirely - the provider pulls the price from the delegation AFTER
+        // delivering. Same button, no extra gate: consent was given at approve.
+        // The proof is a wallet `signMessage` over the SAME shared
+        // `buildAuthMessage` bytes the SDK signs/verifies (single-use nonce,
+        // short expiry), base58-encoded identically.
+        let delegatedPayment:
+          | { owner: string; expiryUnix: number; nonce: string; proof: string }
+          | undefined;
+        const delegationDescriptor = card.delegation;
+        if (!isFree && delegationDescriptor && publicKey && signMessage) {
+          const owner = publicKey.toBase58();
+          const price = BigInt(card.payment?.job_price ?? 0);
+          let delegationActive = false;
+          try {
+            const ownerAta = await deriveOwnerDelegationAta(owner, SOLANA_CLUSTER);
+            const delegationStatus = await getDelegation(kitRpc, ownerAta);
+            delegationActive =
+              delegationStatus !== null &&
+              delegationStatus.delegate === delegationDescriptor.delegate_pubkey &&
+              price > 0n &&
+              delegationStatus.remainingCap >= price &&
+              delegationStatus.balance >= price;
+          } catch {
+            // RPC failure reading the delegation - fall back to per-job payment.
+          }
+          if (delegationActive) {
+            // Sign OUTSIDE the fallback catch: a user who rejects the
+            // authorization aborts the buy (outer catch), rather than being
+            // silently re-prompted for a per-job payment they just declined.
+            toast.loading('Approve the delegated-payment authorization in your wallet...', {
+              id: toastId,
+            });
+            const expiryUnix = Math.floor(Date.now() / 1000) + MAX_PROOF_TTL_SECS;
+            const nonce = mintDelegationNonce();
+            const authMessage = buildAuthMessage({
+              agentDelegate: delegationDescriptor.delegate_pubkey,
+              nostrAuthor: identity.publicKey,
+              owner,
+              expiryUnix,
+              nonce,
+            });
+            const signatureBytes = await signMessage(authMessage);
+            const proof = getBase58Decoder().decode(signatureBytes);
+            delegatedPayment = { owner, expiryUnix, nonce, proof };
+            // No payment-required quote will ever arrive on the delegated
+            // path, so the deferred input upload must happen NOW, pre-submit -
+            // the provider fetches the file right after its own pre-check.
+            if (uploadInput) {
+              toast.loading('Uploading file...', { id: toastId });
+              await retryWithBackoff(uploadInput);
+              uploadInput = undefined;
+            }
+            toast.loading('Submitting delegated job...', { id: toastId });
+          }
+        }
+
         const jobEventId = await client.marketplace.submitJobRequest(identity, {
           input,
           capability,
@@ -422,6 +489,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           acceptTransports: WEB_ACCEPT_TRANSPORTS,
           ...(attachment ? { attachment } : {}),
           ...(sessionId !== null ? { sessionId } : {}),
+          ...(delegatedPayment ? { delegatedPayment } : {}),
         });
         setSession((prev) =>
           sessionMatches(prev) ? { ...prev, jobId: jobEventId, phase: 'awaiting-provider' } : prev,
@@ -505,6 +573,13 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           customerPublicKey: identity.publicKey,
           callbacks: {
             onFeedback: async (status: string, amount?: number, paymentRequestJson?: string) => {
+              // A delegated job never pays per-job: the provider settles by
+              // pulling from the delegation after delivering. A rogue
+              // payment-required on this path is out-of-protocol - ignore it
+              // (a real rejection arrives as error feedback instead).
+              if (delegatedPayment !== undefined) {
+                return;
+              }
               if (status !== 'payment-required' || !paymentRequestJson) {
                 return;
               }
@@ -725,6 +800,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               _eventId: string,
               _attachment?: FileAttachment,
               attachments?: FileAttachment[],
+              paymentTx?: string,
             ) => {
               // The subscription already decoded the envelope, so `content` is the
               // text and `attachments` the file descriptor(s) - do NOT re-decode here.
@@ -738,7 +814,19 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // same identity, so agentPubkey is the decrypt sender. Cross-package
               // invariant: a provider that splits signing/encryption keys would break this.
               const resultProviderPubkey = resultAttachments.length > 0 ? agentPubkey : undefined;
-              snapshotUpdateJob(jobEventId, { status: 'completed', result });
+              // Delegated jobs settle at delivery: the result event carries the
+              // provider's pull signature (transparency data - the on-chain
+              // delegation remains the truth).
+              const delegatedTxHash =
+                delegatedPayment !== undefined && paymentTx !== undefined ? paymentTx : undefined;
+              snapshotUpdateJob(jobEventId, {
+                status: 'completed',
+                result,
+                ...(delegatedTxHash !== undefined ? { txHash: delegatedTxHash } : {}),
+              });
+              if (delegatedTxHash !== undefined) {
+                void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash);
+              }
               void settleThreadCompletion(result, resultAttachments);
               setSession((prev) =>
                 sessionMatches(prev)
@@ -749,6 +837,9 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                       result,
                       resultAttachments,
                       resultProviderPubkey,
+                      ...(delegatedPayment !== undefined
+                        ? { paid: true, ...(delegatedTxHash ? { txHash: delegatedTxHash } : {}) }
+                        : {}),
                     }
                   : prev,
               );
@@ -831,8 +922,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // provider may run longer than the sync window and the result
               // persists on the relays. Flip to `pending` and let the
               // background poller pick it up. A timeout before payment means
-              // nothing settled - surface it as an error.
-              if (!paidLocally) {
+              // nothing settled - surface it as an error. A DELEGATED job has
+              // no customer-side payment step at all: the provider may still
+              // deliver (and pull) after the window, so it takes the pending
+              // path too.
+              if (!paidLocally && delegatedPayment === undefined) {
                 if (paymentSubmitted) {
                   // Tx broadcast but not yet confirmed when the wait window elapsed -
                   // the payment may still land, so mark it resumable-pending (the txHash
@@ -905,6 +999,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       idCtx.identity,
       connection,
       sendTransaction,
+      signMessage,
       saveJob,
       updateJob,
       queryClient,

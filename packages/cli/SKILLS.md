@@ -193,7 +193,7 @@ Non-negative integer. `0` means explicitly unlimited (and overrides any agent-le
 
 ## Delegated execution (`spl-approve`)
 
-Applies to **any** mode. Opts the capability into bounded autonomous spend: the customer `approve`s the agent's dedicated delegate key for up to `cap` USDC on their own token account, and the agent then transfers up to that cap without the customer signing each action (v1 mechanism: `spl-approve`).
+Applies to **any** mode, but only to a **USDC-priced** skill (`token: usdc`). Opts the capability into bounded autonomous spend: the customer `approve`s the agent's dedicated delegate key for up to `cap` USDC on their own token account, and the agent then transfers up to that cap without the customer signing each action (v1 mechanism: `spl-approve`).
 
 ```yaml
 delegation:
@@ -211,6 +211,7 @@ delegation:
 - **No `delegate_pubkey` here.** It is derived from the agent's `solana_delegate_secret_key` and injected into the capability card at `elisym start` (`buildCard`). An agent that declares `delegation` without a delegate key cannot advertise it - the card ships without the delegation field and `start` warns. Generate the key with `npx @elisym/cli delegate-key <agent>`.
 - **Honest bound: max loss <= cap.** An SPL delegate can only `Transfer`/`Burn` up to the approved amount and can never `Approve`/`SetAuthority`/`CloseAccount` (all owner-only). It is bounded-trust, not "can't steal": within the cap the agent chooses the destination, including its own account. A fresh `approve` REPLACES the remaining allowance (re-arms the full cap) - a "top-up" is a re-grant. Revoke stops only FUTURE spend once it lands.
 - **USDC-only** (devnet today). What the agent composes with the authority (pay providers, convert, swap) is application-layer and not built by elisym - the rail is exactly `Transfer USDC <= cap`.
+- **The skill's own price must be in USDC.** A `delegation` block on a skill priced in any other token (e.g. `token: sol`) fails at load and the skill is skipped (the agent exits only if it was the agent's only skill): a delegated pull transfers `price` as USDC subunits, so a non-USDC price would move a wildly wrong amount.
 
 ## Imagery
 

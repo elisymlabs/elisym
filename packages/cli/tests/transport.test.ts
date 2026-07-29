@@ -378,6 +378,37 @@ describe('NostrTransport', () => {
         3,
         undefined, // baseDelayMs (default)
         undefined, // attachment (text result)
+        undefined, // options (no payment tx)
+      );
+    });
+
+    it('threads a delegated pull signature through as result options', async () => {
+      const transport = new NostrTransport(
+        mockClient as unknown as ElisymClient,
+        mockIdentity as unknown as ElisymIdentity,
+        [100],
+      );
+      const job: IncomingJob = {
+        jobId: 'j2',
+        input: 'test',
+        inputType: 'text',
+        tags: ['elisym'],
+        customerId: 'cust1',
+        encrypted: false,
+        rawEvent: makeEvent(),
+      };
+
+      await transport.deliverResult(job, 'result text', 100_000, undefined, 'pull-sig-1');
+
+      expect(mockClient.marketplace.submitJobResultWithRetry).toHaveBeenCalledWith(
+        mockIdentity,
+        job.rawEvent,
+        'result text',
+        100_000,
+        3,
+        undefined,
+        undefined,
+        { paymentTx: 'pull-sig-1' },
       );
     });
   });
@@ -579,5 +610,65 @@ describe('session decode (encrypted-only)', () => {
     const job: IncomingJob = onJob.mock.calls[0][0];
     expect(job.session).toBeUndefined();
     expect(job.input).toBe('turn two');
+  });
+});
+
+describe('delegated payment tags (parse-once in transport)', () => {
+  const DELEGATED_TAGS = [
+    ['i', 'test input', 'text'],
+    ['t', 'elisym'],
+    ['t', 'text-gen'],
+    ['payment', 'delegated'],
+    ['delegation_owner', 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH'],
+    ['delegation_expiry', '1900000000'],
+    ['delegation_nonce', 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH'],
+    ['delegation_proof', '1'.repeat(87)],
+  ];
+
+  it('parses the delegated tag set into job.delegated exactly once', () => {
+    const transport = new NostrTransport(
+      mockClient as unknown as ElisymClient,
+      mockIdentity as unknown as ElisymIdentity,
+      [100],
+    );
+    const onJob = vi.fn();
+    transport.start(onJob);
+    capturedCallback!(makeEvent({ tags: DELEGATED_TAGS }));
+    const job: IncomingJob = onJob.mock.calls[0][0];
+    expect(job.delegated).toEqual({
+      owner: 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH',
+      expiryUnix: 1_900_000_000,
+      nonce: 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH',
+      proof: '1'.repeat(87),
+    });
+    expect(job.delegatedRejected).toBeUndefined();
+  });
+
+  it('flags a malformed delegated claim (duplicate tag) instead of dropping it silently', () => {
+    const transport = new NostrTransport(
+      mockClient as unknown as ElisymClient,
+      mockIdentity as unknown as ElisymIdentity,
+      [100],
+    );
+    const onJob = vi.fn();
+    transport.start(onJob);
+    capturedCallback!(makeEvent({ tags: [...DELEGATED_TAGS, ['payment', 'delegated']] }));
+    const job: IncomingJob = onJob.mock.calls[0][0];
+    expect(job.delegated).toBeUndefined();
+    expect(job.delegatedRejected).toMatch(/Duplicate/);
+  });
+
+  it('leaves both fields unset on a non-delegated job', () => {
+    const transport = new NostrTransport(
+      mockClient as unknown as ElisymClient,
+      mockIdentity as unknown as ElisymIdentity,
+      [100],
+    );
+    const onJob = vi.fn();
+    transport.start(onJob);
+    capturedCallback!(makeEvent());
+    const job: IncomingJob = onJob.mock.calls[0][0];
+    expect(job.delegated).toBeUndefined();
+    expect(job.delegatedRejected).toBeUndefined();
   });
 });

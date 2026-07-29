@@ -56,6 +56,7 @@ vi.mock('@solana/kit', () => ({
   createSolanaRpc: vi.fn().mockReturnValue({
     getTransaction: vi.fn(),
   }),
+  signature: vi.fn((value: string) => value),
 }));
 
 let agentDir: string;
@@ -188,6 +189,7 @@ describe('AgentRuntime', () => {
         'hello world',
         undefined,
         undefined, // attachment (text result)
+        undefined, // paymentTx (not delegated)
       );
       expect(onCompleted).toHaveBeenCalledWith('free-job-1', 'hello world');
       expect(ledger.getStatus('free-job-1')).toBe('delivered');
@@ -1069,6 +1071,7 @@ describe('AgentRuntime', () => {
         '',
         undefined,
         undefined, // attachment (text result, no result_attachment stored)
+        undefined, // paymentTx (not delegated)
       );
       expect(ledger.getStatus('empty-result-job')).toBe('delivered');
       // Skill should NOT have been called (re-deliver only)

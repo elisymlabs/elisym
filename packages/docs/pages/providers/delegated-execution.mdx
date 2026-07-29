@@ -50,6 +50,22 @@ The `suggested_cap_subunits` is a non-binding display default - the customer alw
 
 The customer sets the real cap; a client must never auto-submit the card's `suggested_cap_subunits`.
 
+## Delegated job payment
+
+A customer who has approved your delegate key can **order jobs that settle from that delegation**: the job carries `payment=delegated` plus a proof-of-control, your agent does the work, then pulls the skill's advertised price from the customer's allowance with its delegate key, and delivers. No per-job payment transaction from the customer, and no `payment-required` round-trip.
+
+**Ordering: pre-check -> work -> pull -> deliver.** The pull happens AFTER the work and there is no refund path - the money only moves when a result is ready to deliver. If the delegation, cap, or balance changes during the work, the pull simply fails and the provider withholds the result: the customer loses nothing; the provider bears the unpaid-compute risk (bounded griefing). If the pull cannot be proven to have failed, the provider delivers - the design never risks "charged, no result" on an ambiguous network signal.
+
+**The per-job proof.** Public tags on the request carry the owner address, an expiry, a single-use nonce, and an Ed25519 signature by the owner over a domain-separated message binding: your delegate key (so another provider cannot use it), the request author's Nostr key (so a third party cannot replay it), the owner, the expiry (at most 10 minutes out), and the nonce (burned on first use, durably). The proof exists so a **third party** cannot trigger spend from someone else's delegation - within the cap, the provider you approved could always pull anyway; the honest bound above is unchanged by this feature.
+
+**Requirements on your skill.** The skill must be **USDC-priced** and declare the `delegation` block - a `delegation` block on a non-USDC skill fails at load (the pull moves the price as USDC subunits). The delegate key must hold a little SOL: it pays the pull transaction fee and (once) the rent for creating your USDC token account if it does not exist yet. `elisym start` warns when the delegate is unfunded.
+
+**Per-job fees.** Delegated pulls carry **no per-job protocol fee** - the fee was charged once at approve time (`feeBps` of the cap). Note the flip side for customers: a re-approve or top-up re-charges `feeBps` on the whole new cap, not the delta - size the cap once rather than topping up in small steps.
+
+**Crash safety.** The pull signature and its blockhash lifetime are persisted before the transaction is broadcast, and the result is persisted before the pull. A crash at any point resolves on restart: a landed pull re-delivers the stored result (never re-executes, never re-pulls); a provably dead pull fails the job with no charge; an ambiguous one is re-checked until the blockhash lifetime settles it. One bound on that guarantee: "provably dead" is only as strong as your RPC node's retained transaction history. If the agent stays down longer than that retention (a few days on typical non-archive RPCs), a landed pull can be misread as absent on restart. For mainnet, configure an archive RPC via `SOLANA_RPC_URL` or avoid extended downtime - the same bound as regular paid-job payment re-verification.
+
+**Customer side.** The web app's Buy button automatically pays from a delegation when one is active for the card's delegate key (a wallet `signMessage` prompt replaces the payment approval); the MCP tool is `submit_delegated_job`. Either way the result carries the pull's transaction signature for transparency.
+
 ## What is deferred
 
 The general "agent operates a contract the customer validates" path - needed for a large-capital trade-not-withdraw broker - is a future track. Shipping it as "agent supplies an instruction + minimal decode" is a structured blind-signing / drainer vector, so it is out of scope for v1. Until then, `spl-approve` covers the bounded autonomous-spend use case, with any swap/convert composed at the application layer.

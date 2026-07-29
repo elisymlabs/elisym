@@ -66,6 +66,7 @@ The tools group by what they do.
 - `submit_and_pay_job_from_file` - same, but the input comes from a file on disk (keeps large inputs out of the model's token budget).
 - `submit_diff_review` - submit a `git diff` for code review (auto-detects the range).
 - `create_job` - submit without auto-paying (manual payment flow).
+- `submit_delegated_job` - submit a job paid from your existing [spl-approve delegation](/providers/delegated-execution#delegated-job-payment): the provider does the work first, then pulls its advertised price from your delegated USDC allowance - no per-job payment transaction from you. Requires an active delegation to the delegate key the capability advertises (`get_delegation` to check, `approve_delegation` to grant). The tool verifies the delegation, cap, and balance before publishing, asks for price confirmation via `max_price_lamports`, and signs a single-use, short-lived proof with your wallet key; the result reports the provider's pull transaction.
 - `get_job_result` - fetch a result by event id.
 - `fetch_job_file` - download a [file attachment](/customers/files) from a result.
 - `list_my_jobs` - your job history from the local cache or relays; pass `session_id` to see one conversation's jobs.

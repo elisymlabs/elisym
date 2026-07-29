@@ -274,6 +274,14 @@ export interface BuildDelegatedTransferArgs {
   amount: bigint;
   /** Selects the canonical USDC mint / decimals. */
   network: Network;
+  /**
+   * When set, prepend an idempotent create for the destination ATA (fee-paid by
+   * the delegate). `owner` is the WALLET that owns `destination` - required
+   * because ATA creation needs the owner, not just the derived account. Use for
+   * pulls to an account that may not exist yet (e.g. the provider's own USDC
+   * ATA on a fresh wallet); harmless when it already does.
+   */
+  ensureDestination?: { owner: string };
 }
 
 /**
@@ -298,7 +306,24 @@ export async function buildDelegatedTransfer(
   if (!isAddress(args.destination)) {
     throw new Error(`Invalid destination token account: ${args.destination}`);
   }
-  return [
+  const instructions: unknown[] = [];
+  if (args.ensureDestination) {
+    if (!isAddress(args.ensureDestination.owner)) {
+      throw new Error(`Invalid destination owner address: ${args.ensureDestination.owner}`);
+    }
+    instructions.push(
+      getCreateAssociatedTokenIdempotentInstruction(
+        {
+          payer: args.delegate,
+          ata: address(args.destination),
+          owner: address(args.ensureDestination.owner),
+          mint,
+        },
+        { programAddress: ASSOCIATED_TOKEN_PROGRAM_ADDRESS },
+      ),
+    );
+  }
+  instructions.push(
     getTransferCheckedInstruction({
       source: address(args.source),
       mint,
@@ -307,7 +332,8 @@ export async function buildDelegatedTransfer(
       amount: args.amount,
       decimals: asset.decimals,
     }),
-  ];
+  );
+  return instructions;
 }
 
 export interface DelegationStatus {

@@ -301,6 +301,8 @@ describe('createAgentDir', () => {
     expect(gitignore).toContain('.jobs.json');
     // The iroh blob store holds cleartext job payloads - must be ignored.
     expect(gitignore).toContain('.iroh/');
+    // The delegation nonce set maps which customer wallets delegated here.
+    expect(gitignore).toContain('.delegation-nonces.json*');
   });
 
   it('reuses existing .elisym dir when creating additional agent', async () => {

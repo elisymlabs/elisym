@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { JobLedger } from '../src/ledger.js';
+import { JobLedger, UsedNonceStore } from '../src/ledger.js';
 
 let tmpDir: string;
 let ledgerPath: string;
@@ -274,5 +274,81 @@ describe('JobLedger', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('delegated payment ledger fields', () => {
+  it('persists discriminator, delivered_content, and the pull idempotency pair', () => {
+    const ledger = new JobLedger(ledgerPath);
+    ledger.recordPaid(makeEntry('delegated-1'));
+    ledger.markDelegated('delegated-1');
+    ledger.recordDeliveredContent('delegated-1', 'the result');
+    ledger.recordPullSignature('delegated-1', 'sig-1', 424_242, 50_000);
+
+    const reloaded = new JobLedger(ledgerPath);
+    const entry = reloaded.allEntries().find((candidate) => candidate.job_id === 'delegated-1');
+    expect(entry?.status).toBe('paid');
+    expect(entry?.delegated).toBe(true);
+    expect(entry?.delivered_content).toBe('the result');
+    expect(entry?.pull_signature).toBe('sig-1');
+    expect(entry?.pull_last_valid_block_height).toBe(424_242);
+    expect(entry?.net_amount).toBe(50_000);
+  });
+
+  it('markDelivered/markFailed clear delivered_content but keep the pull signature', () => {
+    const ledger = new JobLedger(ledgerPath);
+    ledger.recordPaid(makeEntry('delegated-2'));
+    ledger.recordDeliveredContent('delegated-2', 'the result');
+    ledger.recordPullSignature('delegated-2', 'sig-2', 1, 1);
+    ledger.markExecuted('delegated-2', 'the result');
+    ledger.markDelivered('delegated-2');
+    const entry = ledger.allEntries().find((candidate) => candidate.job_id === 'delegated-2');
+    expect(entry?.delivered_content).toBeUndefined();
+    expect(entry?.pull_signature).toBe('sig-2');
+  });
+});
+
+describe('UsedNonceStore', () => {
+  it('marks, persists, and reloads burned nonces', () => {
+    const storePath = join(tmpDir, '.delegation-nonces.json');
+    const store = new UsedNonceStore(storePath);
+    const retainUntil = Math.floor(Date.now() / 1000) + 600;
+    expect(store.has('owner:nonce1')).toBe(false);
+    store.markUsed('owner:nonce1', retainUntil);
+    expect(store.has('owner:nonce1')).toBe(true);
+
+    const reloaded = new UsedNonceStore(storePath);
+    expect(reloaded.has('owner:nonce1')).toBe(true);
+  });
+
+  it('prunes entries past retain-until, keeps live ones', () => {
+    const store = new UsedNonceStore(join(tmpDir, '.nonces-prune.json'));
+    const now = Math.floor(Date.now() / 1000);
+    store.markUsed('owner:old', now - 10);
+    store.markUsed('owner:live', now + 600);
+    expect(store.prune(now)).toBe(1);
+    expect(store.has('owner:old')).toBe(false);
+    expect(store.has('owner:live')).toBe(true);
+  });
+
+  it('evicts the OLDEST entry on overflow instead of rejecting', () => {
+    const store = new UsedNonceStore(join(tmpDir, '.nonces-cap.json'), 3);
+    const retainUntil = Math.floor(Date.now() / 1000) + 600;
+    store.markUsed('owner:a', retainUntil);
+    store.markUsed('owner:b', retainUntil);
+    store.markUsed('owner:c', retainUntil);
+    store.markUsed('owner:d', retainUntil);
+    expect(store.size()).toBe(3);
+    expect(store.has('owner:a')).toBe(false); // oldest evicted
+    expect(store.has('owner:d')).toBe(true); // newest always accepted
+  });
+
+  it('survives a corrupt store file (backs it up, starts empty)', () => {
+    const storePath = join(tmpDir, '.nonces-corrupt.json');
+    writeFileSync(storePath, 'not json');
+    const store = new UsedNonceStore(storePath);
+    expect(store.size()).toBe(0);
+    store.markUsed('owner:x', Math.floor(Date.now() / 1000) + 600);
+    expect(new UsedNonceStore(storePath).has('owner:x')).toBe(true);
   });
 });

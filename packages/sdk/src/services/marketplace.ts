@@ -10,6 +10,16 @@ import {
   jobResultKind,
   utf8ByteLength,
 } from '../constants';
+import {
+  DELEGATED_PAYMENT_MODE,
+  DELEGATED_PAYMENT_TAG,
+  DELEGATION_EXPIRY_TAG,
+  DELEGATION_NONCE_REGEX,
+  DELEGATION_NONCE_TAG,
+  DELEGATION_OWNER_TAG,
+  DELEGATION_PROOF_REGEX,
+  DELEGATION_PROOF_TAG,
+} from '../delegation/auth-proof';
 import { assertLamports } from '../payment/fee';
 import { parsePaymentRequest } from '../payment/schema';
 import { nip44Encrypt, nip44Decrypt } from '../primitives/crypto';
@@ -69,6 +79,106 @@ function toJobStatus(raw: string): JobStatus {
   return VALID_JOB_STATUSES.has(raw) ? (raw as JobStatus) : 'unknown';
 }
 
+/** base58 Solana address (32-44 chars). Format-only; on-chain code re-validates. */
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/**
+ * On-chain transaction signature shape (base58, 64 bytes -> 86-88 chars; lower
+ * bound loose for safety). A result event's `tx` tag is provider-controlled
+ * relay data that consumers surface in TRUSTED framing (tool results, history),
+ * so anything not shaped like a signature is dropped at this boundary rather
+ * than forwarded as free text.
+ */
+const SOLANA_TX_SIGNATURE_REGEX = /^[1-9A-HJ-NP-Za-km-z]{64,88}$/;
+
+/** Expiry bound well clear of anything a `Number` could mangle (year ~5138). */
+const MAX_DELEGATION_EXPIRY_UNIX = 100_000_000_000;
+
+/**
+ * The delegated-payment tag set of a job request, parsed EXACTLY once into the
+ * single struct that proof verification, `deriveOwnerDelegationAta`, and the
+ * pull all consume - callers must never re-`.find()` these tags later.
+ */
+export interface DelegatedPaymentRequest {
+  /** Owner base58 Solana address - source of funds AND the verify key. */
+  owner: string;
+  /** Unix seconds after which the proof is dead. */
+  expiryUnix: number;
+  /** Single-use base58 nonce (32-44 chars). */
+  nonce: string;
+  /** base58 Ed25519 signature by the owner over the shared auth message. */
+  proof: string;
+}
+
+/**
+ * Read the delegated-payment tags off a job request event. Returns `null` when
+ * the event does not claim delegated payment (no `payment` tag, or a different
+ * mode). THROWS on a malformed claim - duplicate `payment`/`delegation_*` tags
+ * (an injection/confusion attempt is a hard reject, never a pick-first), a
+ * missing companion tag, or a value failing its strict format. The expiry
+ * check here is format + bounds only; the time-window check is the caller's.
+ */
+export function parseDelegatedPayment(event: Event): DelegatedPaymentRequest | null {
+  const tagNames = [
+    DELEGATED_PAYMENT_TAG,
+    DELEGATION_OWNER_TAG,
+    DELEGATION_EXPIRY_TAG,
+    DELEGATION_NONCE_TAG,
+    DELEGATION_PROOF_TAG,
+  ];
+  const found = new Map<string, string>();
+  for (const tag of event.tags) {
+    const name = tag[0];
+    if (name === undefined || !tagNames.includes(name)) {
+      continue;
+    }
+    if (found.has(name)) {
+      throw new Error(`Duplicate "${name}" tag on a delegated payment request.`);
+    }
+    if (typeof tag[1] !== 'string') {
+      throw new Error(`Missing value on the "${name}" tag.`);
+    }
+    found.set(name, tag[1]);
+  }
+  const mode = found.get(DELEGATED_PAYMENT_TAG);
+  if (mode === undefined || mode !== DELEGATED_PAYMENT_MODE) {
+    return null;
+  }
+  const owner = found.get(DELEGATION_OWNER_TAG);
+  const expiryRaw = found.get(DELEGATION_EXPIRY_TAG);
+  const nonce = found.get(DELEGATION_NONCE_TAG);
+  const proof = found.get(DELEGATION_PROOF_TAG);
+  if (
+    owner === undefined ||
+    expiryRaw === undefined ||
+    nonce === undefined ||
+    proof === undefined
+  ) {
+    throw new Error('Delegated payment request is missing one of the delegation_* tags.');
+  }
+  if (!SOLANA_ADDRESS_REGEX.test(owner)) {
+    throw new Error('delegation_owner is not a base58 Solana address.');
+  }
+  if (!/^\d+$/.test(expiryRaw)) {
+    throw new Error('delegation_expiry must be a non-negative integer (unix seconds).');
+  }
+  const expiryUnix = Number(expiryRaw);
+  if (
+    !Number.isSafeInteger(expiryUnix) ||
+    expiryUnix <= 0 ||
+    expiryUnix > MAX_DELEGATION_EXPIRY_UNIX
+  ) {
+    throw new Error('delegation_expiry is out of bounds.');
+  }
+  if (!DELEGATION_NONCE_REGEX.test(nonce)) {
+    throw new Error('delegation_nonce must be base58 with 32-44 characters.');
+  }
+  if (!DELEGATION_PROOF_REGEX.test(proof)) {
+    throw new Error('delegation_proof must be a base58 Ed25519 signature.');
+  }
+  return { owner, expiryUnix, nonce, proof };
+}
+
 export class MarketplaceService {
   constructor(private pool: NostrPool) {}
 
@@ -102,6 +212,27 @@ export class MarketplaceService {
         throw new Error(
           'sessionId requires providerPubkey (sessions are encrypted, targeted jobs).',
         );
+      }
+    }
+    if (options.delegatedPayment !== undefined) {
+      // The proof binds ONE provider's delegate key, so a broadcast delegated
+      // job could never be settled by anyone - refuse at submit (mirrors the
+      // sessionId guard above).
+      if (!options.providerPubkey) {
+        throw new Error('delegatedPayment requires providerPubkey (targeted jobs only).');
+      }
+      const { owner, expiryUnix, nonce, proof } = options.delegatedPayment;
+      if (!SOLANA_ADDRESS_REGEX.test(owner)) {
+        throw new Error('delegatedPayment.owner must be a base58 Solana address.');
+      }
+      if (!Number.isSafeInteger(expiryUnix) || expiryUnix <= 0) {
+        throw new Error('delegatedPayment.expiryUnix must be a positive unix-seconds integer.');
+      }
+      if (!DELEGATION_NONCE_REGEX.test(nonce)) {
+        throw new Error('delegatedPayment.nonce must be base58 with 32-44 characters.');
+      }
+      if (!DELEGATION_PROOF_REGEX.test(proof)) {
+        throw new Error('delegatedPayment.proof must be a base58 Ed25519 signature.');
       }
     }
     // A file or session job wraps the (optional) text note + attachment + session
@@ -149,6 +280,16 @@ export class MarketplaceService {
       if (acceptTag.length > 1) {
         tags.push(acceptTag);
       }
+    }
+
+    if (options.delegatedPayment !== undefined) {
+      // Public top-level tags (targeted jobs encrypt only `content`, not tags):
+      // the provider must read them BEFORE decrypting to route payment mode.
+      tags.push([DELEGATED_PAYMENT_TAG, DELEGATED_PAYMENT_MODE]);
+      tags.push([DELEGATION_OWNER_TAG, options.delegatedPayment.owner]);
+      tags.push([DELEGATION_EXPIRY_TAG, String(options.delegatedPayment.expiryUnix)]);
+      tags.push([DELEGATION_NONCE_TAG, options.delegatedPayment.nonce]);
+      tags.push([DELEGATION_PROOF_TAG, options.delegatedPayment.proof]);
     }
 
     const kind = jobRequestKind(options.kindOffset ?? DEFAULT_KIND_OFFSET);
@@ -256,8 +397,22 @@ export class MarketplaceService {
         // For a file result, surface the text note (or '') plus the attachment
         // descriptor(s); the file(s) are fetched separately, never inlined here.
         // 3rd arg stays the single attachment (= attachments[0]) for back-compat;
-        // 4th arg is the full list for multi-file results.
-        cb.onResult?.(decoded.text ?? '', ev.id, decoded.attachment, attachmentsOf(decoded));
+        // 4th arg is the full list for multi-file results. 5th arg surfaces the
+        // provider's settlement `tx` tag (delegated pull transparency) - shape-
+        // gated so a hostile tag can never smuggle free text into the trusted
+        // framing consumers render it in.
+        const txTagValue = ev.tags.find((tag) => tag[0] === 'tx')?.[1];
+        const paymentTxTag =
+          txTagValue !== undefined && SOLANA_TX_SIGNATURE_REGEX.test(txTagValue)
+            ? txTagValue
+            : undefined;
+        cb.onResult?.(
+          decoded.text ?? '',
+          ev.id,
+          decoded.attachment,
+          attachmentsOf(decoded),
+          paymentTxTag,
+        );
       } catch {
         /* caller error - don't crash subscription */
       } finally {
@@ -491,13 +646,19 @@ export class MarketplaceService {
     );
   }
 
-  /** Submit a job result with NIP-44 encrypted content. Result kind is derived from the request kind. */
+  /**
+   * Submit a job result with NIP-44 encrypted content. Result kind is derived
+   * from the request kind. `options.paymentTx` attaches the on-chain
+   * settlement signature (e.g. a delegated pull) as a public `tx` tag for
+   * customer-side transparency.
+   */
   async submitJobResult(
     identity: ElisymIdentity,
     requestEvent: Event,
     content: string,
     amount?: number,
     attachments?: FileAttachment[],
+    options?: { paymentTx?: string },
   ): Promise<string> {
     const hasAttachment = attachments !== undefined && attachments.length > 0;
     if (!content && !hasAttachment) {
@@ -548,6 +709,10 @@ export class MarketplaceService {
       tags.push(['amount', String(amount)]);
     }
 
+    if (options?.paymentTx) {
+      tags.push(['tx', options.paymentTx, 'solana']);
+    }
+
     const event = finalizeEvent(
       {
         kind: resultKind,
@@ -576,11 +741,19 @@ export class MarketplaceService {
     maxAttempts: number = DEFAULTS.RESULT_RETRY_COUNT,
     baseDelayMs: number = DEFAULTS.RESULT_RETRY_BASE_MS,
     attachments?: FileAttachment[],
+    options?: { paymentTx?: string },
   ): Promise<string> {
     const attempts = Math.max(1, maxAttempts);
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
-        return await this.submitJobResult(identity, requestEvent, content, amount, attachments);
+        return await this.submitJobResult(
+          identity,
+          requestEvent,
+          content,
+          amount,
+          attachments,
+          options,
+        );
       } catch (e: unknown) {
         if (attempt >= attempts - 1) {
           throw e;

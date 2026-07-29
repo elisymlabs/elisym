@@ -30,6 +30,7 @@ import {
 } from '@elisym/sdk';
 import {
   agentPaths,
+  ensureGitignoreHasDelegationNoncesEntry,
   ensureGitignoreHasIrohEntry,
   ensureGitignoreHasSessionsEntry,
   ensureGitignoreHasX402Entries,
@@ -54,7 +55,7 @@ import {
   RECOVERY_MAX_RETRIES,
   RECOVERY_INTERVAL_SECS,
 } from '../helpers.js';
-import { JobLedger } from '../ledger.js';
+import { JobLedger, UsedNonceStore } from '../ledger.js';
 import {
   createLlmClient,
   getLlmProvider,
@@ -162,36 +163,7 @@ export async function cmdStart(
   // Skills load before the LLM check so a fully-non-LLM agent can start
   // without an API key. The LLM block below runs only when at least one
   // skill has `mode === 'llm'`.
-  //
-  // `scriptEnv` propagates decrypted per-provider keys (e.g. ANTHROPIC_API_KEY)
-  // into `dynamic-script` / `static-script` subprocesses. The skill loader then
-  // scopes the set per skill: only the key of the provider a SKILL.md declares
-  // (`llm.provider`) survives into that script's env - least privilege over the
-  // operator's key ring. Existing process.env values win when no per-agent
-  // secret is set, matching the priority used by resolveProviderApiKey for
-  // LLM-mode skills.
-  const scriptEnv: NodeJS.ProcessEnv = { ...process.env };
-  // ELISYM_PASSPHRASE decrypts `.secrets.json` (Nostr + Solana secret keys) at rest.
-  // A skill script - which may be third-party SKILL.md installed under the agent dir -
-  // has no legitimate use for it, and leaking it would let the script read the on-disk
-  // secrets and defeat the AES-256-GCM + scrypt at-rest encryption entirely. The
-  // per-provider LLM keys added below ARE intentional (scripts proxy to LLMs); the
-  // passphrase is not. (The LLM-tool subprocess path already strips secrets via
-  // scriptSkill's SECRET_ENV_VARS; this closes the same gap on the script path.)
-  delete scriptEnv.ELISYM_PASSPHRASE;
-  // A third-party SOLANA_RPC_URL (Helius/Alchemy/QuickNode) embeds an API key in
-  // the URL itself - a skill script has no claim on that paid credential. Public
-  // api.*.solana.com endpoints carry no secret and pass through unchanged.
-  if (scriptEnv.SOLANA_RPC_URL !== undefined && !isPublicSolanaRpcUrl(scriptEnv.SOLANA_RPC_URL)) {
-    delete scriptEnv.SOLANA_RPC_URL;
-  }
-  const llmKeys = loaded.secrets.llm_api_keys ?? {};
-  for (const descriptor of listLlmProviders()) {
-    const secretValue = llmKeys[descriptor.id];
-    if (typeof secretValue === 'string' && secretValue.length > 0) {
-      scriptEnv[descriptor.envVar] = secretValue;
-    }
-  }
+  const scriptEnv = buildScriptEnv(loaded.secrets);
   const paths = agentPaths(loaded.dir);
   const skillsDir = paths.skills;
   const allSkills = loadSkillsFromDir(skillsDir, { scriptEnv });
@@ -739,6 +711,10 @@ export async function cmdStart(
   // fail-safe to omit rather than block the skill).
   const declaresDelegation = allSkills.some((skill) => skill.delegation !== undefined);
   let delegatePubkey: string | undefined;
+  // Hoisted alongside `delegatePubkey`: the runtime needs the SIGNER (not just
+  // the pubkey) to execute delegated job-payment pulls. Still never the
+  // payment key - blast-radius isolation holds.
+  let delegateSigner: Awaited<ReturnType<typeof signerFromSecretKeyBase58>> | undefined;
   if (declaresDelegation && walletNetwork !== 'devnet') {
     // Delegation rails are USDC/devnet-only today (resolveDelegationAsset throws
     // otherwise), so an owner could never exercise a mainnet grant. Do not
@@ -751,13 +727,31 @@ export async function cmdStart(
     const delegateSecret = loaded.secrets.solana_delegate_secret_key;
     if (delegateSecret && delegateSecret.length > 0) {
       try {
-        const delegateSigner = await signerFromSecretKeyBase58(delegateSecret);
+        delegateSigner = await signerFromSecretKeyBase58(delegateSecret);
         delegatePubkey = delegateSigner.address;
         console.log(`  Delegate (spl-approve)  ${delegatePubkey}`);
+        // The delegate pays the pull tx fee + the idempotent ATA-create rent.
+        // An unfunded delegate makes every delegated pull positively-absent
+        // (provider self-grief, never customer harm) - warn loudly at startup.
+        try {
+          const { value: delegateLamports } = await createSolanaRpc(getRpcUrl(walletNetwork))
+            .getBalance(address(delegatePubkey))
+            .send();
+          if (delegateLamports === 0n) {
+            console.warn(
+              '  ! Delegate key holds no SOL - delegated job pulls will fail on tx fees. ' +
+                'Fund it: https://faucet.solana.com',
+            );
+          }
+        } catch {
+          /* balance probe is best-effort */
+        }
       } catch (error) {
         // A present-but-unreadable delegate key (corruption / partial write)
         // must not take down `start` for every non-delegation skill: fail-safe
         // to omitting the delegation field, exactly like a missing key.
+        delegateSigner = undefined;
+        delegatePubkey = undefined;
         console.warn(
           '  ! Delegate key is present but unreadable - the delegation field is omitted from ' +
             `its card(s). ${error instanceof Error ? error.message : String(error)}`,
@@ -943,7 +937,23 @@ export async function cmdStart(
     // Agent-level default execution budget; per-skill `max_execution_secs`
     // overrides it. Undefined => unlimited (operator-owned, no protocol default).
     executionTimeoutSecs: loaded.yaml.execution_timeout_secs,
+    // Delegated job payment: the runtime holds ONLY the delegate signer (never
+    // the payment key) to execute post-work pulls from customer delegations.
+    delegateSigner,
   };
+
+  // Durable single-use nonce set for delegated job payment - only wired when
+  // the agent can actually settle delegated jobs (delegate key resolved).
+  const nonceStore =
+    delegateSigner !== undefined
+      ? new UsedNonceStore(join(loaded.dir, '.delegation-nonces.json'))
+      : undefined;
+  if (nonceStore !== undefined) {
+    // Same gitignore migration as the other private stores: the nonce set is
+    // keyed by customer owner addresses and must never be committable from a
+    // project-local agent dir.
+    await ensureGitignoreHasDelegationNoncesEntry(dirname(loaded.dir));
+  }
 
   // Custom SOLANA_RPC_URL values (Helius, Alchemy, QuickNode) routinely
   // embed API keys in the query string. Strip query + auth before logging
@@ -1031,11 +1041,45 @@ export async function cmdStart(
     identity,
     blossomTransport,
     sessionStore,
+    nonceStore,
   );
 
   // -- Step 15: Run --
   console.log('  * Running. Press Ctrl+C to stop.\n');
   await runtime.run();
+}
+
+/**
+ * Build the env for `dynamic-script` / `static-script` skill subprocesses.
+ *
+ * Propagates decrypted per-provider LLM keys (e.g. ANTHROPIC_API_KEY); the
+ * skill loader then scopes the set per skill: only the key of the provider a
+ * SKILL.md declares (`llm.provider`) survives into that script's env - least
+ * privilege over the operator's key ring. Existing process.env values win when
+ * no per-agent secret is set, matching resolveProviderApiKey's priority.
+ *
+ * NOTHING ELSE from `.secrets.json` may reach a script: not the Nostr/Solana
+ * secret keys, not `solana_delegate_secret_key` (a leaked delegate key spends
+ * every customer delegation up to its cap), and not ELISYM_PASSPHRASE (which
+ * would let a script read the on-disk secrets and defeat the at-rest
+ * encryption). A third-party SOLANA_RPC_URL (Helius/Alchemy/QuickNode) embeds
+ * an API key in the URL itself, so only public api.*.solana.com endpoints pass
+ * through. Exported for the leak-regression tests.
+ */
+export function buildScriptEnv(secrets: LoadedAgent['secrets']): NodeJS.ProcessEnv {
+  const scriptEnv: NodeJS.ProcessEnv = { ...process.env };
+  delete scriptEnv.ELISYM_PASSPHRASE;
+  if (scriptEnv.SOLANA_RPC_URL !== undefined && !isPublicSolanaRpcUrl(scriptEnv.SOLANA_RPC_URL)) {
+    delete scriptEnv.SOLANA_RPC_URL;
+  }
+  const llmKeys = secrets.llm_api_keys ?? {};
+  for (const descriptor of listLlmProviders()) {
+    const secretValue = llmKeys[descriptor.id];
+    if (typeof secretValue === 'string' && secretValue.length > 0) {
+      scriptEnv[descriptor.envVar] = secretValue;
+    }
+  }
+  return scriptEnv;
 }
 
 /**

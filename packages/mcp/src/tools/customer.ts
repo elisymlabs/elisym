@@ -2,15 +2,20 @@ import { randomUUID } from 'node:crypto';
 import {
   assetKey,
   attachmentsOf,
+  buildDelegationAuthProof,
   decodeJobPayload,
+  deriveOwnerDelegationAta,
   encodeJobPayload,
   estimateNetworkBaseline,
   formatAssetAmount,
   formatNetworkBaseline,
+  getDelegation,
+  mintDelegationNonce,
   toDTag,
   DEFAULT_KIND_OFFSET,
   JobWaitTimeoutError,
   LIMITS,
+  MAX_PROOF_TTL_SECS,
   SESSION_ID_REGEX,
   SolanaPaymentStrategy,
   utf8ByteLength,
@@ -226,6 +231,22 @@ const SubmitAndPayJobSchema = z.object({
   timeout_secs: z.number().int().min(1).max(600).default(300),
   max_price_lamports: z.number().int().optional(),
   session_id: SessionIdSchema,
+});
+
+const SubmitDelegatedJobSchema = z.object({
+  input: z.string(),
+  provider_npub: z.string(),
+  capability: z.string().min(1).max(64).default('general'),
+  kind_offset: z.number().int().min(0).max(999).default(DEFAULT_KIND_OFFSET),
+  timeout_secs: z.number().int().min(1).max(600).default(300),
+  max_price_lamports: z
+    .number()
+    .int()
+    .optional()
+    .describe(
+      'Confirmation cap in the card asset subunits (USDC has 6 decimals). The advertised ' +
+        'price must not exceed it. Omit to get a price confirmation without publishing.',
+    ),
 });
 
 const BuyCapabilitySchema = z.object({
@@ -617,7 +638,8 @@ type ConfirmGateToolName =
   | 'buy_capability'
   | 'submit_and_pay_job'
   | 'submit_and_pay_job_from_file'
-  | 'submit_diff_review';
+  | 'submit_diff_review'
+  | 'submit_delegated_job';
 
 /**
  * Confirm-before-publish gate shared by buy_capability and the submit_and_pay_* tools.
@@ -1614,6 +1636,251 @@ export const customerTools: ToolDefinition[] = [
           2,
         ),
       );
+    },
+  }),
+
+  defineTool({
+    name: 'submit_delegated_job',
+    description:
+      'Submit a job paid from your existing spl-approve USDC delegation: the provider does ' +
+      'the work FIRST, then pulls its advertised price from your delegated allowance - no ' +
+      'per-job payment transaction from you. Requires an ACTIVE delegation to the delegate ' +
+      'key this capability advertises (check with get_delegation). Within the approved cap ' +
+      'the delegate can pull without your signature, so treat the cap as the max loss. ' +
+      'If max_price_lamports is not set, returns the advertised price for confirmation ' +
+      'without publishing anything.',
+    schema: SubmitDelegatedJobSchema,
+    async handler(ctx, input) {
+      ctx.toolRateLimiter.check();
+      checkLen('input', input.input, MAX_INPUT_LEN);
+      checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
+
+      const agent = ctx.active();
+      if (!agent.solanaKeypair) {
+        return errorResult(
+          'Solana wallet not configured for this agent - delegated payment signs the ' +
+            'proof with the owner (wallet) key.',
+        );
+      }
+      const providerPubkey = decodeNpub(input.provider_npub);
+      const dTag = toDTag(input.capability);
+      const timeoutMs = Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000;
+
+      // Pre-ping: a delegated job burns a single-use proof when the provider
+      // picks it up; refuse to publish toward an offline provider.
+      const ping = await agent.client.ping.pingAgent(providerPubkey, PRE_PING_TIMEOUT_MS);
+      if (!ping.online) {
+        return errorResult(
+          `Provider ${input.provider_npub} is offline. ` +
+            `Run search_agents to find currently-online providers.`,
+        );
+      }
+
+      const providers = await agent.client.discovery.fetchAgents(agent.network);
+      const provider = providers.find((candidate) => candidate.npub === input.provider_npub);
+      if (!provider) {
+        return errorResult(
+          `Provider ${input.provider_npub} not found on ${agent.network}. ` +
+            `Refresh discovery (e.g. search_agents) or verify the npub is correct.`,
+        );
+      }
+
+      const card = paymentCardForCapability(provider, dTag);
+      const descriptor = card?.delegation;
+      if (!descriptor) {
+        return errorResult(
+          `Capability "${input.capability}" of ${input.provider_npub} does not advertise ` +
+            `delegated payment. Use submit_and_pay_job instead.`,
+        );
+      }
+      const { price, asset } = advertisedPriceForCapability(provider, dTag);
+      if (price <= 0) {
+        return errorResult(
+          `Capability "${input.capability}" advertises no price - delegated payment ` +
+            `needs a priced skill. Use create_job for free capabilities.`,
+        );
+      }
+      if (asset.symbol !== 'USDC') {
+        // The pull moves USDC subunits; a non-USDC price would be a different amount.
+        const { text } = sanitizeUntrusted(
+          `Delegated payment is USDC-only, but this capability is priced in ${asset.symbol}.`,
+          'text',
+        );
+        return errorResult(text);
+      }
+      const priceSubunits = BigInt(price);
+
+      // Verify the ACTIVE delegation covers this provider + price BEFORE
+      // publishing (and before burning a proof). The card's delegate key is the
+      // one the proof will be bound to; the on-chain delegate must match it.
+      const rpc = createSolanaRpc(rpcUrlFor(agent.network));
+      const ownerAta = await deriveOwnerDelegationAta(agent.solanaKeypair.publicKey, agent.network);
+      let delegation: Awaited<ReturnType<typeof getDelegation>>;
+      try {
+        delegation = await getDelegation(rpc, ownerAta);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return errorResult(`Could not read your delegation on-chain: ${message}`);
+      }
+      if (delegation === null || delegation.delegate === null) {
+        return errorResult(
+          'No active delegation from this wallet. Approve one first (web app Delegation ' +
+            'tab, or the approve flow), then retry.',
+        );
+      }
+      if (delegation.delegate !== descriptor.delegate_pubkey) {
+        const { text } = sanitizeUntrusted(
+          `Your delegation is granted to ${delegation.delegate}, but this capability ` +
+            `advertises delegate ${descriptor.delegate_pubkey} (the provider may have ` +
+            `rotated its key). Re-approve the delegation, then retry.`,
+          'text',
+        );
+        return errorResult(text);
+      }
+      if (delegation.remainingCap < priceSubunits) {
+        return errorResult(
+          `Remaining delegated cap ${formatAssetAmount(asset, delegation.remainingCap)} is ` +
+            `below the price ${formatAssetAmount(asset, priceSubunits)}. Top up the ` +
+            `delegation (re-approve) first.`,
+        );
+      }
+      if (delegation.balance < priceSubunits) {
+        return errorResult(
+          `Delegation account balance ${formatAssetAmount(asset, delegation.balance)} is ` +
+            `below the price ${formatAssetAmount(asset, priceSubunits)}. Fund the wallet first.`,
+        );
+      }
+
+      // Confirm-before-submit: the same single gate as the paying tools. No
+      // second customer-side gate beyond this - consent was given at approve.
+      const priceGate = await confirmPriceGate({
+        agent,
+        providerLabel: sanitizeField(provider.name || input.provider_npub, 64),
+        capability: input.capability,
+        price,
+        asset,
+        maxPriceLamports: input.max_price_lamports,
+        toolName: 'submit_delegated_job',
+      });
+      if (priceGate) {
+        return priceGate;
+      }
+
+      // Mint the single-use, short-lived proof over the SHARED auth message:
+      // bound to THIS provider's delegate key and THIS Nostr author.
+      const ownerSigner = await createKeyPairSignerFromBytes(agent.solanaKeypair.secretKey);
+      const expiryUnix = Math.floor(Date.now() / 1000) + MAX_PROOF_TTL_SECS;
+      const nonce = mintDelegationNonce();
+      const proof = await buildDelegationAuthProof({
+        ownerSigner,
+        agentDelegate: descriptor.delegate_pubkey,
+        nostrAuthor: agent.identity.publicKey,
+        owner: agent.solanaKeypair.publicKey,
+        expiryUnix,
+        nonce,
+      });
+
+      const submittedAt = Date.now();
+      const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
+        input: input.input,
+        capability: dTag,
+        providerPubkey,
+        kindOffset: input.kind_offset,
+        acceptTransports: MCP_ACCEPT_TRANSPORTS,
+        delegatedPayment: {
+          owner: agent.solanaKeypair.publicKey,
+          expiryUnix,
+          nonce,
+          proof,
+        },
+      });
+
+      let resultAttachment: FileAttachment | undefined;
+      let pullTx: string | undefined;
+      try {
+        const result = await awaitJobResult<string>(
+          agent,
+          {} as never,
+          ({ resolve, reject }) => ({
+            jobEventId: jobId,
+            providerPubkey,
+            customerPublicKey: agent.identity.publicKey,
+            callbacks: {
+              onResult(
+                content: string,
+                _eventId: string,
+                attachment?: FileAttachment,
+                _attachments?: FileAttachment[],
+                paymentTx?: string,
+              ) {
+                pullTx = paymentTx;
+                if (attachment) {
+                  resultAttachment = attachment;
+                  resolve(formatFileResultMetadata(jobId, attachment));
+                  return;
+                }
+                const sanitized = sanitizeResultContent(content);
+                resolve(`Job completed.\n\n${sanitized.text}`);
+              },
+              onError(error: string) {
+                rejectWithProviderError(reject, error);
+              },
+              onTimeout(waitedMs: number) {
+                reject(new JobWaitTimeoutError(waitedMs));
+              },
+            },
+            timeoutMs,
+            customerSecretKey: agent.identity.secretKey,
+          }),
+          timeoutMs + 5_000,
+        );
+
+        await recordJobOutcome(agent, {
+          jobEventId: jobId,
+          capability: dTag,
+          providerPubkey,
+          providerName: clipProviderName(provider.name),
+          paidAmountSubunits: String(price),
+          assetKey: assetKey(asset),
+          status: 'completed',
+          submittedAt,
+          completedAt: Date.now(),
+          resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
+          paymentSig: pullTx,
+          attachmentJson: resultAttachment ? JSON.stringify(resultAttachment) : undefined,
+        });
+        // The pull signature is provider-reported transparency data (the result
+        // event's `tx` tag) - the on-chain delegation itself remains the truth.
+        const pullLine = pullTx !== undefined ? `pull_tx=${pullTx}\n` : '';
+        const tip = buildJobCompletionTip(jobId, input.provider_npub);
+        return textResult(`event_id=${jobId}\n${pullLine}${result}${tip}`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const isTimeout = e instanceof JobWaitTimeoutError;
+        await recordJobOutcome(agent, {
+          jobEventId: jobId,
+          capability: dTag,
+          providerPubkey,
+          providerName: clipProviderName(provider.name),
+          status: isTimeout ? 'timeout' : 'failed',
+          submittedAt,
+          completedAt: Date.now(),
+        });
+        if (isTimeout) {
+          return textResult(
+            `event_id=${jobId}\nStill processing (delegated: the provider pulls payment ` +
+              `only after delivering the result). This is NOT an error - retry ` +
+              `get_job_result with event_id="${jobId}" later. If the provider never ` +
+              `starts, the proof expires within ${MAX_PROOF_TTL_SECS / 60} minutes with ` +
+              `no charge.`,
+          );
+        }
+        const safeMsg = sanitizeUntrusted(msg, 'text').text;
+        return errorResult(
+          `Job ${jobId} failed: ${safeMsg}. Delegated jobs charge only on delivery - ` +
+            `no charge occurred unless a pull was reported.`,
+        );
+      }
     },
   }),
 

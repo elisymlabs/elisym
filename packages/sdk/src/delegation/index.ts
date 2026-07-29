@@ -27,6 +27,28 @@ export {
   delegationApproveFeeSubunits,
   formatDelegationGrant,
 } from './spl-approve';
+
+export {
+  DELEGATED_PAYMENT_TAG,
+  DELEGATED_PAYMENT_MODE,
+  DELEGATION_OWNER_TAG,
+  DELEGATION_EXPIRY_TAG,
+  DELEGATION_NONCE_TAG,
+  DELEGATION_PROOF_TAG,
+  DELEGATION_NONCE_REGEX,
+  DELEGATION_PROOF_REGEX,
+  MAX_PROOF_TTL_SECS,
+  PROOF_CLOCK_SKEW_SECS,
+  buildAuthMessage,
+  mintDelegationNonce,
+  buildDelegationAuthProof,
+  verifyDelegationAuthProof,
+} from './auth-proof';
+export type {
+  DelegationAuthFields,
+  BuildDelegationAuthProofArgs,
+  VerifyDelegationAuthProofArgs,
+} from './auth-proof';
 export type {
   BuildApproveDelegateArgs,
   BuildRevokeDelegateArgs,

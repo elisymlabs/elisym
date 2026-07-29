@@ -1019,6 +1019,20 @@ export function validateSkillFrontmatter(
   );
   const x402 = validateX402Config(frontmatter.name, frontmatter, mode, options);
   const delegation = validateSkillDelegation(frontmatter.name, frontmatter.delegation);
+  // LOAD-TIME money invariant: a delegated pull moves `priceSubunits` as USDC
+  // subunits (`buildDelegatedTransfer`), so a skill priced in any other asset
+  // (e.g. SOL lamports, 9 decimals) would pull a wildly wrong USDC amount.
+  // Enforced here - not in `validateSkillDelegation`, which cannot see the
+  // asset - so a mis-priced skill fails loud at load and never reaches the
+  // NIP-89 card. Symbol comparison is network-independent and mainnet-safe
+  // (`network` is not in scope here). The runtime keeps its own asset guard as
+  // defense-in-depth.
+  if (delegation !== undefined && asset.symbol !== 'USDC') {
+    throw new Error(
+      `SKILL.md "${frontmatter.name}": a "delegation" block requires a USDC-priced skill ` +
+        `(got ${asset.symbol}). Delegated pulls transfer the price in USDC subunits.`,
+    );
+  }
 
   return {
     name: frontmatter.name,
