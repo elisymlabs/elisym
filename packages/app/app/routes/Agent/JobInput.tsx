@@ -3,6 +3,7 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import Decimal from 'decimal.js-light';
 import { useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useDelegatedBuyMode } from '~/hooks/useDelegationStatus';
 import { useIdentity } from '~/hooks/useIdentity';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import { track } from '~/lib/analytics';
@@ -30,6 +31,8 @@ interface Props {
   selectedIndex: number;
   onSelectIndex: (index: number) => void;
   buyState: BuyState | null;
+  /** Opens the Delegation tab (the 'delegate' buy-mode action). */
+  onOpenDelegation: () => void;
 }
 
 interface InnerProps {
@@ -41,6 +44,7 @@ interface InnerProps {
   selectedIndex: number;
   onSelectIndex: (index: number) => void;
   buyState: BuyState;
+  onOpenDelegation: () => void;
 }
 
 const NETWORK_FEE_DISPLAY_DECIMALS = 4;
@@ -69,6 +73,7 @@ function JobInputInner({
   selectedIndex,
   onSelectIndex,
   buyState,
+  onOpenDelegation,
 }: InnerProps) {
   const { publicKey } = useWallet();
   const { setVisible } = useWalletModal();
@@ -78,7 +83,19 @@ function JobInputInner({
 
   const [input, setInput] = useState('');
   const [file, setFile] = useState<File | null>(null);
-  const gate = useJobGating({ card, agentPubkey, pingStatus, input, file, buying });
+  // Delegated-capable cards split the action explicitly: 'use' spends the
+  // active allowance, 'delegate' routes to the Delegation tab to grant one -
+  // no silent per-job/delegated switching behind a generic Buy.
+  const buyMode = useDelegatedBuyMode(card);
+  const gate = useJobGating({
+    card,
+    agentPubkey,
+    pingStatus,
+    input,
+    file,
+    buying,
+    delegatedCovers: buyMode === 'use',
+  });
   const {
     isFree,
     isStatic,
@@ -104,15 +121,42 @@ function JobInputInner({
         session: { id: SIZE_PROBE_SESSION_ID },
       }),
     ) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
-  const isDisabled = gate.isDisabled || sessionEnvelopeTooLarge;
-  const tip = sessionEnvelopeTooLarge
+  // 'Delegate' only navigates to the Delegation tab, so none of the job-send
+  // gates (input presence, agent online, balances, size caps) apply to it.
+  // 'loading' pins the button to a disabled spinner until the allowance read
+  // resolves - no Buy flash that flips to Use/Delegate a beat later.
+  let isDisabled = gate.isDisabled || sessionEnvelopeTooLarge;
+  if (buyMode === 'delegate') {
+    isDisabled = buying;
+  } else if (buyMode === 'loading') {
+    isDisabled = true;
+  }
+  let tip = sessionEnvelopeTooLarge
     ? 'Message is too large for a conversation send - shorten it or use the elisym CLI.'
     : gate.tip;
+  if (buyMode === 'delegate') {
+    tip = null;
+  } else if (buyMode === 'loading') {
+    tip = 'Checking the delegated allowance…';
+  }
+  // The Products button always states its rail explicitly: 'use' submits from
+  // the allowance, anything else pays per-job - even if a delegation would be
+  // discovered at click time, because the label promised a per-job payment.
+  // ('delegate'/'loading' never reach buy().)
+  const paymentIntent = buyMode === 'use' ? ('delegated' as const) : ('per-job' as const);
 
   async function handleBuy() {
     if (!isFree && !publicKey) {
       track('wallet-connect', { source: 'agent-page' });
       setVisible(true);
+      return;
+    }
+    if (buyMode === 'loading') {
+      return;
+    }
+    if (buyMode === 'delegate') {
+      track('delegate-open', { agent: agentName });
+      onOpenDelegation();
       return;
     }
     track('buy', {
@@ -128,18 +172,28 @@ function JobInputInner({
       await buy(isStatic ? card.name : effectiveInput, file ?? undefined, {
         sessionId: resolved.sessionId,
         token: resolved.token,
+        payment: paymentIntent,
       });
       return;
     }
     // Context-off cards send deliberate one-shots.
-    await buy(isStatic ? card.name : effectiveInput, file ?? undefined, { sessionId: null });
+    await buy(isStatic ? card.name : effectiveInput, file ?? undefined, {
+      sessionId: null,
+      payment: paymentIntent,
+    });
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     // Cmd+Enter (macOS) / Ctrl+Enter (Windows/Linux) submits, mirroring the
     // Buy button. Skip when the action is disabled so the shortcut never does
-    // something the button itself wouldn't.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !isDisabled) {
+    // something the button itself wouldn't - and never treat it as the
+    // 'Delegate' navigation, which is a button-only action.
+    if (
+      event.key === 'Enter' &&
+      (event.metaKey || event.ctrlKey) &&
+      !isDisabled &&
+      buyMode !== 'delegate'
+    ) {
       event.preventDefault();
       void handleBuy();
     }
@@ -156,6 +210,17 @@ function JobInputInner({
           <span className="hidden sm:inline">Connect Wallet</span>
         </>
       );
+    }
+    if (buyMode === 'loading') {
+      // The spinner (rendered next to the label) is the whole content while
+      // the allowance read resolves.
+      return null;
+    }
+    if (buyMode === 'use') {
+      return 'Use';
+    }
+    if (buyMode === 'delegate') {
+      return 'Delegate';
     }
     return isFree ? 'Get' : 'Buy';
   }
@@ -232,7 +297,9 @@ function JobInputInner({
       */}
       {!isOwn && (!isStatic || !isFree) && (
         <div className="flex min-h-24 items-center px-14 pt-4 sm:hidden">
-          {!isFree && <NetworkFeeRow lamports={gasFeeLamports} />}
+          {/* Delegated modes carry no per-job customer gas: 'use' settles via
+              the provider's pull, 'delegate' only navigates to the tab. */}
+          {!isFree && buyMode === 'per-job' && <NetworkFeeRow lamports={gasFeeLamports} />}
         </div>
       )}
       <div className="flex items-center justify-between gap-12 px-14 py-10 sm:px-20 sm:py-12">
@@ -255,7 +322,7 @@ function JobInputInner({
         </div>
 
         <div className="flex shrink-0 items-center gap-12">
-          {!isOwn && !isFree && (
+          {!isOwn && !isFree && buyMode === 'per-job' && (
             <NetworkFeeRow lamports={gasFeeLamports} className="hidden sm:inline-flex" />
           )}
           {!isOwn && (
@@ -263,9 +330,11 @@ function JobInputInner({
               <button
                 onClick={() => void handleBuy()}
                 disabled={isDisabled}
+                aria-label={buyMode === 'loading' ? 'Checking the delegated allowance' : undefined}
+                aria-busy={buying || buyMode === 'loading'}
                 className="inline-flex h-32 min-w-64 cursor-pointer items-center justify-center gap-8 rounded-xl border-none bg-surface-dark px-14 text-xs leading-none font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-25 sm:h-36 sm:min-w-72 sm:px-16"
               >
-                {buying && (
+                {(buying || buyMode === 'loading') && (
                   <svg aria-hidden className="size-14 animate-spin" viewBox="0 0 24 24" fill="none">
                     <circle
                       cx="12"
@@ -321,6 +390,7 @@ export function JobInput({
   selectedIndex,
   onSelectIndex,
   buyState,
+  onOpenDelegation,
 }: Props) {
   if (cards.length === 0 || !buyState) {
     return null;
@@ -340,6 +410,7 @@ export function JobInput({
       selectedIndex={selectedIndex}
       onSelectIndex={onSelectIndex}
       buyState={buyState}
+      onOpenDelegation={onOpenDelegation}
     />
   );
 }

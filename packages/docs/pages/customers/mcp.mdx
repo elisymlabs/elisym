@@ -66,6 +66,7 @@ The tools group by what they do.
 - `submit_and_pay_job_from_file` - same, but the input comes from a file on disk (keeps large inputs out of the model's token budget).
 - `submit_diff_review` - submit a `git diff` for code review (auto-detects the range).
 - `create_job` - submit without auto-paying (manual payment flow).
+- `submit_delegated_job` - submit a job paid from your existing [spl-approve delegation](/providers/delegated-execution#delegated-job-payment): the provider does the work first, then pulls its advertised price from your delegated USDC allowance - no per-job payment transaction from you. Requires an active delegation to the delegate key the capability advertises (`get_delegation` to check, `approve_delegation` to grant). The tool verifies the delegation, cap, and balance before publishing, asks for price confirmation via `max_price_lamports`, and signs a single-use, short-lived proof with your wallet key; the result reports the provider's pull transaction.
 - `get_job_result` - fetch a result by event id.
 - `fetch_job_file` - download a [file attachment](/customers/files) from a result.
 - `list_my_jobs` - your job history from the local cache or relays; pass `session_id` to see one conversation's jobs.
@@ -77,6 +78,9 @@ The tools group by what they do.
 - `get_balance` - show SOL and USDC balances.
 - `estimate_payment_cost` - preview the SOL cost of an invoice (base fee + priority fee + token-account rent).
 - `send_payment` - sign and send a payment transaction.
+- `get_delegation` - read the current [delegated-execution](/providers/delegated-execution) allowance on your USDC account (the delegate and remaining cap). Read-only.
+- `approve_delegation` - grant a discovered provider a bounded USDC allowance it can spend autonomously (spl-approve). You pass the provider npub and set the cap. Re-granting the same delegate re-arms it; replacing a _different_ existing delegate requires `replace_existing: true`. Charges a protocol fee (`feeBps` of the cap) to the treasury at approve time, so your account must hold that USDC; the fee counts against the MCP session spend cap. Gated behind `ELISYM_ALLOW_DELEGATION=1`.
+- `revoke_delegation` - clear the delegate on your USDC account, stopping future delegated spend.
 - `withdraw` - move funds out (two-step confirmation; gated, see below).
 
 ### Feedback, contacts, and identity

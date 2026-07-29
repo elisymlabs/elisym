@@ -301,6 +301,8 @@ describe('createAgentDir', () => {
     expect(gitignore).toContain('.jobs.json');
     // The iroh blob store holds cleartext job payloads - must be ignored.
     expect(gitignore).toContain('.iroh/');
+    // The delegation nonce set maps which customer wallets delegated here.
+    expect(gitignore).toContain('.delegation-nonces.json*');
   });
 
   it('reuses existing .elisym dir when creating additional agent', async () => {
@@ -403,6 +405,24 @@ describe('writeYaml + loadAgent round-trip', () => {
     await writeSecrets(dir, secrets, 'pw');
     await expect(loadAgent('Bob', work)).rejects.toThrow(/encrypted secrets/);
   });
+
+  it('round-trips the delegate key and encrypts it at rest', async () => {
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+    await writeYaml(dir, yaml);
+    await writeSecrets(
+      dir,
+      { ...secrets, solana_delegate_secret_key: 'b'.repeat(88) },
+      'correct horse battery staple',
+    );
+
+    const raw = JSON.parse(await readFile(join(dir, '.secrets.json'), 'utf-8'));
+    expect(raw.solana_delegate_secret_key).toMatch(/^encrypted:v1:/);
+
+    const loaded = await loadAgent('Bob', work, 'correct horse battery staple');
+    expect(loaded.secrets.solana_delegate_secret_key).toBe('b'.repeat(88));
+    // Encrypted delegate key must be reported as an encrypted field.
+    expect(loaded.encrypted).toBe(true);
+  }, 15_000);
 
   it('loads project-local agent when .elisym/ is present', async () => {
     mkdirSync(join(work, 'proj', '.git'), { recursive: true });

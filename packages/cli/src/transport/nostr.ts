@@ -2,8 +2,15 @@
  * NostrTransport - listens for targeted jobs on Nostr relays, delivers results.
  * Handles NIP-44 decryption, dedup, and retried delivery.
  */
-import { BoundedSet, KIND_JOB_FEEDBACK, decodeJobPayload, jobRequestKind } from '@elisym/sdk';
+import {
+  BoundedSet,
+  KIND_JOB_FEEDBACK,
+  decodeJobPayload,
+  jobRequestKind,
+  parseDelegatedPayment,
+} from '@elisym/sdk';
 import type {
+  DelegatedPaymentRequest,
   ElisymClient,
   ElisymIdentity,
   FileAttachment,
@@ -30,6 +37,19 @@ export interface IncomingJob {
    * contradict that posture, so the transport ignores it there.
    */
   session?: SessionRef;
+  /**
+   * Delegated-payment tag set (`payment=delegated` + delegation_* TOP-LEVEL
+   * tags, not the `t`-tag map), parsed EXACTLY once here - the runtime's
+   * verify, ATA derivation, and pull all consume this struct and never
+   * re-`.find()` the tags.
+   */
+  delegated?: DelegatedPaymentRequest;
+  /**
+   * Set when the event CLAIMS delegated payment but its tag set is malformed
+   * (duplicate tags, bad formats). The runtime must reject such a job outright
+   * rather than fall through to another payment mode.
+   */
+  delegatedRejected?: string;
 }
 
 export type JobFeedbackStatus =
@@ -124,6 +144,18 @@ export class NostrTransport {
           return;
         }
 
+        // Delegated-payment tags are PUBLIC top-level tags (only content is
+        // encrypted). Parse-once: a malformed claim is carried as a rejection
+        // marker so the runtime hard-rejects instead of treating the job as a
+        // normal paid one.
+        let delegated: DelegatedPaymentRequest | undefined;
+        let delegatedRejected: string | undefined;
+        try {
+          delegated = parseDelegatedPayment(event) ?? undefined;
+        } catch (error) {
+          delegatedRejected = error instanceof Error ? error.message : String(error);
+        }
+
         onJob({
           jobId: event.id,
           input,
@@ -135,6 +167,8 @@ export class NostrTransport {
           rawEvent: event,
           attachment,
           session,
+          delegated,
+          delegatedRejected,
         });
       },
     );
@@ -252,12 +286,17 @@ export class NostrTransport {
     }
   }
 
-  /** Deliver result to customer. Retries with exponential backoff via SDK. */
+  /**
+   * Deliver result to customer. Retries with exponential backoff via SDK.
+   * `paymentTx` attaches an on-chain settlement signature (the delegated pull)
+   * to the result event for customer-side transparency.
+   */
   async deliverResult(
     job: IncomingJob,
     content: string,
     amount?: number,
     attachments?: FileAttachment[],
+    paymentTx?: string,
     retries = 3,
   ): Promise<string> {
     return this.client.marketplace.submitJobResultWithRetry(
@@ -268,6 +307,7 @@ export class NostrTransport {
       retries,
       undefined,
       attachments,
+      paymentTx !== undefined ? { paymentTx } : undefined,
     );
   }
 

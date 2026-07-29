@@ -115,6 +115,50 @@ describe('DiscoveryService.fetchAgentsPage - future timestamp eviction', () => {
   });
 });
 
+// --- delegation descriptor (coerce-don't-drop) ---
+
+describe('parseCapabilityEvent - delegation', () => {
+  const validDelegation = {
+    mechanism: 'spl-approve' as const,
+    delegate_pubkey: 'HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH',
+    suggested_cap_subunits: '50000000',
+    expires_at: null,
+  };
+
+  it('preserves a valid delegation descriptor on the parsed card', () => {
+    const agent = ElisymIdentity.generate();
+    const ev = makeCapabilityEvent(agent, makeCard({ delegation: validDelegation }));
+    const parsed = parseCapabilityEvent(ev, 'devnet');
+    expect(parsed?.cards[0]?.delegation?.delegate_pubkey).toBe(validDelegation.delegate_pubkey);
+    expect(parsed?.cards[0]?.delegation?.suggested_cap_subunits).toBe('50000000');
+  });
+
+  it('strips unknown delegation keys but keeps the descriptor', () => {
+    const agent = ElisymIdentity.generate();
+    const ev = makeCapabilityEvent(
+      agent,
+      makeCard({ delegation: { ...validDelegation, future_field: 'x' } as any }),
+    );
+    const parsed = parseCapabilityEvent(ev, 'devnet');
+    expect(parsed?.cards[0]?.delegation).toBeDefined();
+    expect((parsed?.cards[0]?.delegation as any)?.future_field).toBeUndefined();
+  });
+
+  it('clears a malformed delegation but keeps the card discoverable', () => {
+    const agent = ElisymIdentity.generate();
+    const ev = makeCapabilityEvent(
+      agent,
+      makeCard({
+        delegation: { mechanism: 'spl-approve', delegate_pubkey: 'not-base58-0OIl' } as any,
+      }),
+    );
+    const parsed = parseCapabilityEvent(ev, 'devnet');
+    expect(parsed).not.toBeNull();
+    expect(parsed?.cards[0]?.delegation).toBeUndefined();
+    expect(parsed?.cards[0]?.name).toBe('test-agent');
+  });
+});
+
 // --- toDTag ---
 
 describe('toDTag', () => {

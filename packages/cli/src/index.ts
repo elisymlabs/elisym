@@ -16,6 +16,7 @@ import { listAgents, loadAgent } from '@elisym/sdk/agent-store';
 process.removeAllListeners('warning');
 import { Command } from 'commander';
 import { nip19 } from 'nostr-tools';
+import { cmdDelegateKey, type DelegateKeyOptions } from './commands/delegate-key.js';
 import { cmdIdentityLink, cmdIdentityStatus, cmdIdentityUnlink } from './commands/identity.js';
 import { cmdInit, type InitOptions } from './commands/init.js';
 import { cmdProfile } from './commands/profile.js';
@@ -122,6 +123,23 @@ program
 
 // Wallet
 program.command('wallet [name]').description('Show wallet balance').action(safe(cmdWallet));
+
+// Delegate key (spl-approve delegated execution)
+program
+  .command('delegate-key [name]')
+  .description("Generate, show, or rotate the agent's dedicated delegate signing key (spl-approve)")
+  .option('--show', 'Print the existing delegate pubkey/address only')
+  .option(
+    '--import',
+    'Import an existing key (solana-keygen JSON path or base58) instead of generating',
+  )
+  .option('--rotate', 'Replace an existing delegate key (invalidates outstanding owner approvals)')
+  .option('--yes', 'Skip confirmation prompts (requires an explicit agent argument)')
+  .action(
+    safe(async (name: string | undefined, options: DelegateKeyOptions) => {
+      await cmdDelegateKey(name, options);
+    }),
+  );
 
 // Identity
 const identity = program

@@ -89,6 +89,12 @@ export async function loadResolvedAgent(
     if (decrypted.solana_secret_key && isEncrypted(decrypted.solana_secret_key)) {
       decrypted.solana_secret_key = decryptSecret(decrypted.solana_secret_key, effectivePassphrase);
     }
+    if (decrypted.solana_delegate_secret_key && isEncrypted(decrypted.solana_delegate_secret_key)) {
+      decrypted.solana_delegate_secret_key = decryptSecret(
+        decrypted.solana_delegate_secret_key,
+        effectivePassphrase,
+      );
+    }
     if (decrypted.llm_api_keys) {
       const decryptedKeys: Record<string, string> = {};
       for (const [providerId, value] of Object.entries(decrypted.llm_api_keys)) {
@@ -118,6 +124,9 @@ function listEncryptedFields(secrets: Secrets): string[] {
   }
   if (secrets.solana_secret_key && isEncrypted(secrets.solana_secret_key)) {
     out.push('solana_secret_key');
+  }
+  if (secrets.solana_delegate_secret_key && isEncrypted(secrets.solana_delegate_secret_key)) {
+    out.push('solana_delegate_secret_key');
   }
   if (secrets.llm_api_keys) {
     for (const [providerId, value] of Object.entries(secrets.llm_api_keys)) {

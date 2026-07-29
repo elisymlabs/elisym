@@ -145,6 +145,17 @@ export const SecretsSchema = z
   .object({
     nostr_secret_key: z.string().min(1),
     solana_secret_key: z.string().optional(),
+    /**
+     * Dedicated delegate signing key for `spl-approve` delegated execution.
+     * Kept SEPARATE from `solana_secret_key` for blast-radius isolation:
+     * reusing the payment/x402 key would mean a single compromise drains the
+     * agent's own balance AND lets an attacker act as delegate for every owner
+     * who approved it. Encrypted at rest like the other keys. Generated on
+     * demand (`elisym delegate-key`); an agent without it cannot advertise
+     * delegation. Its pubkey is published on the capability card and needs a
+     * small SOL gas float on its own address.
+     */
+    solana_delegate_secret_key: z.string().optional(),
     /** Per-provider LLM API keys, keyed by descriptor id (e.g. `anthropic`, `openai`). */
     llm_api_keys: z.record(z.string(), z.string()).optional(),
   })

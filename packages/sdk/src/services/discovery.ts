@@ -16,6 +16,7 @@ import {
   TWEET_ID_REGEX,
   X_USERNAME_REGEX,
 } from '../constants';
+import { parseDelegationDescriptor } from '../delegation';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type {
@@ -268,6 +269,14 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
   // the card - same forward-compat posture as `inputText`.
   if (card.context !== undefined && card.context !== true) {
     card.context = undefined;
+  }
+
+  // Delegation descriptor: validate (`.strip()`) and CLEAR on failure rather
+  // than dropping the card - a malformed/forward-incompatible delegation must
+  // never hide an otherwise valid agent. A cleared descriptor just means the
+  // capability's delegation is unusable, not that the agent is gone.
+  if (card.delegation !== undefined) {
+    card.delegation = parseDelegationDescriptor(card.delegation) ?? undefined;
   }
 
   if (
@@ -1110,6 +1119,14 @@ export class DiscoveryService {
     // images, so publishing one would silently ship a card with no image.
     if (card.image !== undefined && !isSafeImageUrl(card.image)) {
       throw new Error('Capability image must be a bounded https: URL.');
+    }
+    // Write-side mirror of the delegation coercion: readers clear a malformed
+    // descriptor, so publishing one would silently ship an unusable delegation.
+    // Fail loud instead - a bad descriptor is an operator/host bug.
+    if (card.delegation !== undefined && parseDelegationDescriptor(card.delegation) === null) {
+      throw new Error(
+        'Capability delegation descriptor is malformed (mechanism/delegate_pubkey/cap).',
+      );
     }
 
     const tags: string[][] = [

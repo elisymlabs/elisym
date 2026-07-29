@@ -19,6 +19,7 @@ import { VERIFIED_PUBKEYS } from '~/lib/verified';
 import { AgentActivity } from './AgentActivity';
 import { AgentIdentities } from './AgentIdentities';
 import { ChatTab } from './ChatTab';
+import { DelegationPanel } from './DelegationPanel';
 import { FadeInImage } from './FadeInImage';
 import { JobInput } from './JobInput';
 import { STATUS_DOT } from './lib/status';
@@ -113,6 +114,25 @@ const TABS = [
     ),
   },
   {
+    id: 'delegation' as const,
+    label: 'Delegation',
+    icon: (
+      <svg
+        aria-hidden
+        className="size-14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="3" y="11" width="18" height="10" rx="2" />
+        <path d="M7 11V7a5 5 0 0 1 10 0" />
+      </svg>
+    ),
+  },
+  {
     id: 'policies' as const,
     label: 'Policies',
     icon: (
@@ -163,10 +183,12 @@ function NotFound() {
 }
 
 function TabsBar({
+  tabs,
   activeTab,
   onSelect,
   chatDot,
 }: {
+  tabs: typeof TABS;
   activeTab: TabId;
   onSelect: (tab: TabId) => void;
   chatDot: boolean;
@@ -176,10 +198,10 @@ function TabsBar({
   return (
     <div className="relative -mx-4 mb-16 sm:mb-20">
       <div ref={scrollRef} className="no-scrollbar flex items-center gap-4 overflow-x-auto px-4">
-        {TABS.map((tab, index) => {
+        {tabs.map((tab, index) => {
           const active = activeTab === tab.id;
           const isFirst = index === 0;
-          const isLast = index === TABS.length - 1;
+          const isLast = index === tabs.length - 1;
           return (
             <button
               key={tab.id}
@@ -402,6 +424,13 @@ export default function AgentPage() {
   const cards = agentData?.cards ?? [];
   const currentCardIndex = Math.min(selectedCardIndex, Math.max(0, cards.length - 1));
   const currentCard = cards[currentCardIndex];
+  // All of an agent's cards share the same delegate key, so any declaring card
+  // defines the agent-level descriptor. Prefer the currently-viewed card's own
+  // descriptor (its suggested cap is per-skill) and fall back to the first card
+  // that opts in. The Delegation tab is hidden entirely when no card opts in.
+  const delegationDescriptor =
+    currentCard?.delegation ?? cards.find((card) => card.delegation)?.delegation;
+  const visibleTabs = delegationDescriptor ? TABS : TABS.filter((tab) => tab.id !== 'delegation');
   const buyState = useBuyForCard({
     agentPubkey: pubkey,
     agentName: agentData?.name ?? '',
@@ -686,7 +715,12 @@ export default function AgentPage() {
               'scroll-mt-16 rounded-3xl border border-black/7 bg-surface p-14 shadow-[0_1px_8px_rgba(0,0,0,0.05)] [animation-delay:80ms] sm:p-20',
             )}
           >
-            <TabsBar activeTab={activeTab} onSelect={setActiveTab} chatDot={chatDot} />
+            <TabsBar
+              tabs={visibleTabs}
+              activeTab={activeTab}
+              onSelect={setActiveTab}
+              chatDot={chatDot}
+            />
 
             {activeTab === 'products' && (
               <ProductsTab
@@ -719,6 +753,10 @@ export default function AgentPage() {
               <AboutTab description={agentData.description} tags={agentData.tags} />
             )}
 
+            {activeTab === 'delegation' && delegationDescriptor && (
+              <DelegationPanel delegation={delegationDescriptor} agentName={agentData.name} />
+            )}
+
             {activeTab === 'policies' && <PoliciesPanel pubkey={pubkey} />}
           </div>
 
@@ -743,6 +781,7 @@ export default function AgentPage() {
                     selectedIndex={currentCardIndex}
                     onSelectIndex={setSelectedCardIndex}
                     buyState={buyState}
+                    onOpenDelegation={() => setActiveTab('delegation')}
                   />
                 </div>
               </div>

@@ -39,6 +39,29 @@ export interface LedgerEntry {
    * single field for jobs recorded before multi-file support.
    */
   result_attachments?: string[];
+  /**
+   * Delegated-payment discriminator, flushed at the pre-check nonce mark.
+   * WITHOUT it a pre-pull delegated entry is structurally identical to a
+   * normal paid-but-unconfirmed entry and recovery would mis-route it through
+   * `reVerifyPayment`. Fallback when this write was lost: re-parse the
+   * `payment` top-level tag from `raw_event_json`.
+   */
+  delegated?: boolean;
+  /**
+   * Delegated jobs: the result text persisted BEFORE the pull while status
+   * stays `paid`, so crash recovery can deliver without re-executing. May be
+   * the empty string (spilled results ride `result_attachments`).
+   */
+  delivered_content?: string;
+  /**
+   * Delegated pull idempotency key + terminal bound, flushed together in phase
+   * A of the two-phase pull (sign -> persist -> send). `pull_signature`
+   * present implies the result state above is fully persisted. The height is a
+   * `number` (JSON cannot serialize bigint; ~330M fits a double exactly) -
+   * compare via `BigInt(entry.pull_last_valid_block_height)`.
+   */
+  pull_signature?: string;
+  pull_last_valid_block_height?: number;
   created_at: number;
   retry_count: number;
 }
@@ -121,6 +144,48 @@ export class JobLedger {
     }
   }
 
+  /** Flush the delegated discriminator (called inside the atomic nonce mark). */
+  markDelegated(jobId: string): void {
+    const entry = this.entries.get(jobId);
+    if (entry) {
+      entry.delegated = true;
+      this.flush();
+    }
+  }
+
+  /**
+   * Persist a delegated job's result text BEFORE the pull, while status stays
+   * `paid`. MUST be flushed strictly before `recordPullSignature` so a
+   * persisted pull signature always implies the result is recoverable.
+   */
+  recordDeliveredContent(jobId: string, deliveredContent: string): void {
+    const entry = this.entries.get(jobId);
+    if (entry) {
+      entry.delivered_content = deliveredContent;
+      this.flush();
+    }
+  }
+
+  /**
+   * Phase-A persist of the two-phase pull: the signature (durable idempotency
+   * key), its blockhash terminal bound, and the amount the pull moves - one
+   * flush, BEFORE any bytes hit the network.
+   */
+  recordPullSignature(
+    jobId: string,
+    pullSignature: string,
+    pullLastValidBlockHeight: number,
+    netAmount: number,
+  ): void {
+    const entry = this.entries.get(jobId);
+    if (entry) {
+      entry.pull_signature = pullSignature;
+      entry.pull_last_valid_block_height = pullLastValidBlockHeight;
+      entry.net_amount = netAmount;
+      this.flush();
+    }
+  }
+
   /** Attempt a state transition. Returns the entry if valid, undefined otherwise. */
   private transition(jobId: string, to: LedgerStatus): LedgerEntry | undefined {
     const entry = this.entries.get(jobId);
@@ -167,6 +232,7 @@ export class JobLedger {
     const entry = this.transition(jobId, 'delivered');
     if (entry) {
       entry.result = undefined; // Free memory
+      entry.delivered_content = undefined;
       this.flush();
     }
   }
@@ -175,6 +241,7 @@ export class JobLedger {
     const entry = this.transition(jobId, 'failed');
     if (entry) {
       entry.result = undefined; // Free memory
+      entry.delivered_content = undefined;
       try {
         this.flush();
       } catch {
@@ -197,6 +264,11 @@ export class JobLedger {
 
   pendingJobs(): LedgerEntry[] {
     return [...this.entries.values()].filter((e) => e.status === 'paid' || e.status === 'executed');
+  }
+
+  /** Every entry, any status. Used to reconcile the used-nonce set on restart. */
+  allEntries(): LedgerEntry[] {
+    return [...this.entries.values()];
   }
 
   /** Remove old delivered/failed entries (default: 7 days). */
@@ -228,5 +300,119 @@ export class JobLedger {
       this.flush();
     }
     return deleted;
+  }
+}
+
+/**
+ * Defensive size cap for the used-nonce set. Sized well above
+ * `paid-global-rate x MAX_PROOF_TTL` (2000 jobs / 10 min) so it is never hit
+ * in normal operation; overflow evicts the OLDEST entry (never reject-on-full,
+ * which would DoS a legitimate job). Process-local, like the reservation - see
+ * the accepted-residual notes in docs/plans/delegated-job-payment.md.
+ */
+const NONCE_STORE_MAX_ENTRIES = 10_000;
+
+/**
+ * Durable single-use nonce set for delegated job payment. Keyed
+ * `owner + ':' + nonce` (`:` is outside base58, so keys cannot alias). Each
+ * entry is retained until its proof's `expiry + skew` - at least its maximum
+ * acceptance time, so a pruned entry can never correspond to a
+ * still-acceptable proof. The runtime's pre-check does a SYNCHRONOUS
+ * `has` -> `markUsed` pair (no await between them), which is what makes the
+ * nonce exactly-once across N concurrent same-nonce events.
+ */
+export class UsedNonceStore {
+  /** key -> retain-until (unix seconds). Map order doubles as mark order for evict-oldest. */
+  private entries = new Map<string, number>();
+  private path: string;
+  private maxEntries: number;
+
+  constructor(noncePath: string, maxEntries = NONCE_STORE_MAX_ENTRIES) {
+    this.path = noncePath;
+    this.maxEntries = maxEntries;
+    this.load();
+  }
+
+  private load(): void {
+    try {
+      const raw = readFileSync(this.path, 'utf-8');
+      const data = JSON.parse(raw) as Record<string, number>;
+      for (const [key, retainUntil] of Object.entries(data)) {
+        if (typeof retainUntil === 'number' && Number.isFinite(retainUntil)) {
+          this.entries.set(key, retainUntil);
+        }
+      }
+    } catch (e: any) {
+      if (e?.code !== 'ENOENT') {
+        console.warn(`  ! Nonce store load warning: ${e?.message ?? 'unknown error'}`);
+        try {
+          const backupPath = this.path + '.corrupt.' + Date.now();
+          renameSync(this.path, backupPath);
+          chmodSync(backupPath, LEDGER_FILE_MODE);
+        } catch {
+          /* best effort backup */
+        }
+      }
+    }
+  }
+
+  flush(): void {
+    const dir = dirname(this.path);
+    mkdirSync(dir, { recursive: true, mode: LEDGER_DIR_MODE });
+    const obj = Object.fromEntries(this.entries);
+    const tmp = this.path + '.tmp';
+    writeFileSync(tmp, JSON.stringify(obj), { mode: LEDGER_FILE_MODE });
+    renameSync(tmp, this.path);
+    chmodSync(this.path, LEDGER_FILE_MODE);
+  }
+
+  has(key: string): boolean {
+    return this.entries.has(key);
+  }
+
+  /**
+   * Burn a nonce. Flushes by default; pass `persist: false` during bulk
+   * restart reconciliation and call {@link flush} once at the end. Evicts the
+   * oldest entry on overflow rather than rejecting.
+   */
+  markUsed(key: string, retainUntilSecs: number, opts: { persist?: boolean } = {}): void {
+    while (this.entries.size >= this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      this.entries.delete(oldest.value);
+    }
+    this.entries.set(key, retainUntilSecs);
+    if (opts.persist !== false) {
+      try {
+        this.flush();
+      } catch {
+        /* disk full - the in-memory set still enforces single-use this process */
+      }
+    }
+  }
+
+  /** Drop entries past their retain-until. Returns the number pruned. */
+  prune(nowSecs = Math.floor(Date.now() / 1000)): number {
+    let pruned = 0;
+    for (const [key, retainUntil] of this.entries) {
+      if (retainUntil <= nowSecs) {
+        this.entries.delete(key);
+        pruned += 1;
+      }
+    }
+    if (pruned > 0) {
+      try {
+        this.flush();
+      } catch {
+        /* disk full - in-memory state is still correct */
+      }
+    }
+    return pruned;
+  }
+
+  size(): number {
+    return this.entries.size;
   }
 }

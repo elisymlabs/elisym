@@ -8,13 +8,13 @@
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.20.2",
+  "version": "0.21.0",
   "websiteUrl": "https://www.elisym.network",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@elisym/mcp",
-      "version": "0.20.2",
+      "version": "0.21.0",
       "transport": {
         "type": "stdio"
       },
@@ -58,6 +58,12 @@
         {
           "name": "ELISYM_ALLOW_AGENT_SWITCH",
           "description": "Set to '1' to override per-agent security.agent_switch_enabled flag",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ELISYM_ALLOW_DELEGATION",
+          "description": "Set to '1' to enable the approve_delegation tool (grants a provider a USDC allowance)",
           "isRequired": false,
           "isSecret": false
         }

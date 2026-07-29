@@ -72,6 +72,7 @@ export {
   ensureGitignoreHasMessagesEntry,
   ensureGitignoreHasSessionsEntry,
   ensureGitignoreHasJobSessionsEntry,
+  ensureGitignoreHasDelegationNoncesEntry,
 } from './writer';
 export type { CreateAgentDirOptions, CreatedAgentDir } from './writer';
 

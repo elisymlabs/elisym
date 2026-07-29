@@ -1,3 +1,4 @@
+import type { DelegationDescriptor } from './delegation';
 import type { ElisymIdentity } from './primitives/identity';
 import type { FileAttachment, TransportKind } from './transport/attachment';
 
@@ -44,6 +45,16 @@ export interface CapabilityCard {
    * error. Discovery hint - clients gate chat affordances on it.
    */
   context?: boolean;
+  /**
+   * Delegated-execution descriptor (v1: `spl-approve`). Present when the
+   * capability accepts a bounded USDC allowance: the owner `approve`s the
+   * `delegate_pubkey` for up to `cap`, and the agent then autonomously spends
+   * up to that. Untrusted remote data - `parseCapabilityEvent` validates and
+   * clears a malformed descriptor rather than dropping the whole card. The
+   * `suggested_cap_subunits` is a non-binding display default; the owner always
+   * sets the real cap.
+   */
+  delegation?: DelegationDescriptor;
 }
 
 /** Payment info embedded in capability card (legacy format for on-network events). */
@@ -284,6 +295,25 @@ export interface SubmitJobOptions {
    * disable sessions strip the field and process the job statelessly.
    */
   sessionId?: string;
+  /**
+   * Delegated payment mode: the job carries `payment=delegated` + the owner
+   * address and a single-use, short-lived owner-signed proof; the provider
+   * settles by pulling its skill price from the customer's existing spl-approve
+   * USDC delegation instead of a per-job payment. Requires `providerPubkey`
+   * (the proof binds THIS provider's delegate key; a broadcast delegated job is
+   * meaningless and refused at submit). Build the proof with
+   * `buildDelegationAuthProof` / the shared `buildAuthMessage`.
+   */
+  delegatedPayment?: {
+    /** Owner base58 Solana address - source of funds AND the verify key. */
+    owner: string;
+    /** Unix seconds after which the proof is dead (<= now + MAX_PROOF_TTL_SECS). */
+    expiryUnix: number;
+    /** Single-use base58 nonce (32-44 chars). */
+    nonce: string;
+    /** base58 Ed25519 signature by the owner over the shared auth message. */
+    proof: string;
+  };
 }
 
 export interface JobUpdateCallbacks {
@@ -298,13 +328,16 @@ export interface JobUpdateCallbacks {
    * envelope's text note, or `''`); `attachment` is the FIRST file descriptor
    * (= `attachments[0]`, kept for back-compat); `attachments` is the full list for
    * a multi-file result. Files are fetched separately (P2P via iroh / Blossom),
-   * never inlined here.
+   * never inlined here. `paymentTx` is the result event's `tx` tag when present
+   * (the provider's on-chain settlement signature, e.g. a delegated pull) -
+   * transparency data from the provider, NOT verified on-chain here.
    */
   onResult?: (
     content: string,
     eventId: string,
     attachment?: FileAttachment,
     attachments?: FileAttachment[],
+    paymentTx?: string,
   ) => void;
   onError?: (error: string) => void;
   /**

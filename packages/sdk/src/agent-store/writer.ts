@@ -28,6 +28,13 @@ const SESSIONS_GITIGNORE_ENTRY = '.sessions/';
 /** Customer-side session bookkeeping: session ids + first-prompt clips per provider. */
 const JOB_SESSIONS_GITIGNORE_ENTRY = '.job-sessions.json';
 
+/**
+ * Delegated-payment nonce burn set (plus its `.tmp`/`.corrupt.*` siblings):
+ * keyed by customer owner addresses, i.e. it maps which wallets delegated to
+ * this agent.
+ */
+const DELEGATION_NONCES_GITIGNORE_ENTRY = '.delegation-nonces.json*';
+
 const GITIGNORE_CONTENT = [
   '# elisym private state - do not commit.',
   '.secrets.json',
@@ -39,6 +46,7 @@ const GITIGNORE_CONTENT = [
   MESSAGES_GITIGNORE_ENTRY,
   SESSIONS_GITIGNORE_ENTRY,
   JOB_SESSIONS_GITIGNORE_ENTRY,
+  DELEGATION_NONCES_GITIGNORE_ENTRY,
   IROH_GITIGNORE_ENTRY,
   ...X402_GITIGNORE_ENTRIES,
   '',
@@ -133,6 +141,17 @@ export async function ensureGitignoreHasSessionsEntry(elisymRoot: string): Promi
  */
 export async function ensureGitignoreHasJobSessionsEntry(elisymRoot: string): Promise<void> {
   await ensureGitignoreHasEntries(elisymRoot, [JOB_SESSIONS_GITIGNORE_ENTRY]);
+}
+
+/**
+ * Ensure the project-local `.elisym/.gitignore` ignores the delegated-payment
+ * nonce store. Idempotent migration for agents created before delegated job
+ * payment existed - `GITIGNORE_CONTENT` only lands at dir creation. The store
+ * is keyed by customer owner addresses, i.e. it maps which wallets delegated
+ * to this agent, and must never be committable from a project-local dir.
+ */
+export async function ensureGitignoreHasDelegationNoncesEntry(elisymRoot: string): Promise<void> {
+  await ensureGitignoreHasEntries(elisymRoot, [DELEGATION_NONCES_GITIGNORE_ENTRY]);
 }
 
 export interface CreateAgentDirOptions {
@@ -391,6 +410,9 @@ export async function writeSecrets(
     nostr_secret_key: maybeEncrypt(validated.nostr_secret_key, passphrase),
     solana_secret_key: validated.solana_secret_key
       ? maybeEncrypt(validated.solana_secret_key, passphrase)
+      : undefined,
+    solana_delegate_secret_key: validated.solana_delegate_secret_key
+      ? maybeEncrypt(validated.solana_delegate_secret_key, passphrase)
       : undefined,
     llm_api_keys: encryptedLlmKeys,
   };

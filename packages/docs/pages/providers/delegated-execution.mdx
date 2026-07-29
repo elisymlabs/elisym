@@ -1,0 +1,71 @@
+# Delegated execution
+
+An agent can accept a **bounded USDC allowance** it spends autonomously - no per-action signature from the customer. The customer approves the agent's dedicated delegate key for up to a cap they choose; the agent then transfers up to that cap on its own, signing with its delegate key. This is the `spl-approve` mechanism (v1).
+
+The rail elisym provides is exactly `Transfer USDC <= cap`. What the agent composes with that authority - pay providers, convert, swap up to N - is application-layer and not built by elisym.
+
+## The honest bound
+
+**Max loss is the cap.** An SPL delegate can only `Transfer`/`Burn` up to the approved amount and can never `Approve`, `SetAuthority`, or `CloseAccount` - those are owner-only. The approved amount only ratchets down per action and never rises without a fresh owner `approve`, so the bound holds even across deposits.
+
+It is **bounded-trust, not "can't steal".** Within the cap the agent chooses the destination - including its own account - so it can take up to the cap. The mitigations are small caps, fast revoke, and reputation. Do not describe it as theft-proof.
+
+A few consequences to state plainly to customers:
+
+- **A fresh approve replaces the remaining cap.** It re-arms the full cap; it is not additive. A social-engineered "top-up" is a re-grant - there is no auto-re-approve.
+- **Revoke stops only future spend, once it lands.** Between a grant (or top-up) and a confirmed revoke, the agent can still spend the remaining cap - a front-run window.
+- **Open destination.** The agent picks the payee/output; this suits a bounded "spend up to N" agent, not holding a large managed balance.
+- **Standing allowance.** The cap is decoupled from the delegate's spend balance and persists until spent or revoked; keep the account balance at the intended exposure. (The approve-time protocol fee below is a real transfer, so the owner must hold `feeBps`-of-cap USDC when approving - that part is not decoupled.)
+- **USDC only** (devnet today). After USDC -> anything, the agent has no authority over the output - the approve was on the USDC account only.
+
+## Enabling it on your agent
+
+**1. Generate the delegate key.** It is a dedicated key, separate from your payment/x402 wallet, for blast-radius isolation - a single compromise must not both drain your balance and let an attacker act as delegate for every customer who approved you.
+
+```bash
+npx @elisym/cli delegate-key my-agent
+```
+
+This prints the delegate pubkey and its address. Fund that address with a small amount of SOL for transaction gas. `--rotate` replaces the key (which invalidates every outstanding customer approval - they must re-approve); `--show` prints the current pubkey.
+
+**2. Declare delegation on the skills that accept it.** Add a `delegation` block to the skill's `SKILL.md` frontmatter. You declare only the mechanism and a suggested cap - never the `delegate_pubkey`, which is injected from your delegate key at `elisym start`.
+
+```yaml
+delegation:
+  mechanism: spl-approve
+  suggested_cap_subunits: '50000000' # 50 USDC (6-decimal subunits), display default only
+  expires_at: null # advisory revoke reminder; SPL approve has no on-chain expiry
+```
+
+The `suggested_cap_subunits` is a non-binding display default - the customer always sets and confirms the real cap. `expires_at` is advisory only (SPL `approve` has no on-chain expiry); it renders as a client-side revoke reminder, never an enforced constraint.
+
+**3. Start the agent.** `elisym start` derives the delegate pubkey and publishes the full descriptor on each declaring skill's [capability card](/protocol/discovery). If a skill declares delegation but the agent has no delegate key, the card ships without the delegation field and `start` warns - the capability is still discoverable, just without delegated spend.
+
+## How customers approve
+
+- **Web app:** the agent page shows a **Delegation** tab with the exact decoded approval ("grant delegate X up to N USDC on your account"), the honest-bound copy, an owner-set cap field, and a revoke button. The customer signs the `approve` in their normal wallet.
+- **MCP:** a customer agent grants with `approve_delegation` (resolve a provider by npub, set the cap) and clears with `revoke_delegation`, both signed with its own key; `approve_delegation` is gated behind `ELISYM_ALLOW_DELEGATION=1`. `get_delegation` reads the current delegate and remaining cap (read-only, no gate needed).
+
+- **Protocol fee.** The approve transaction also transfers a protocol fee - `feeBps` of the cap, read from the on-chain `elisym-config` (the same rate as job payments) - from the owner to the treasury in USDC, in the same transaction. It is charged once per approve (a re-arm re-charges) and is a real transfer, so the owner must hold that USDC at approve time. The web panel previews it and the MCP tool reports it. If the config cannot be read, the approve fails (fail-closed) rather than granting fee-free.
+
+The customer sets the real cap; a client must never auto-submit the card's `suggested_cap_subunits`.
+
+## Delegated job payment
+
+A customer who has approved your delegate key can **order jobs that settle from that delegation**: the job carries `payment=delegated` plus a proof-of-control, your agent does the work, then pulls the skill's advertised price from the customer's allowance with its delegate key, and delivers. No per-job payment transaction from the customer, and no `payment-required` round-trip.
+
+**Ordering: pre-check -> work -> pull -> deliver.** The pull happens AFTER the work and there is no refund path - the money only moves when a result is ready to deliver. If the delegation, cap, or balance changes during the work, the pull simply fails and the provider withholds the result: the customer loses nothing; the provider bears the unpaid-compute risk (bounded griefing). If the pull cannot be proven to have failed, the provider delivers - the design never risks "charged, no result" on an ambiguous network signal.
+
+**The per-job proof.** Public tags on the request carry the owner address, an expiry, a single-use nonce, and an Ed25519 signature by the owner over a domain-separated message binding: your delegate key (so another provider cannot use it), the request author's Nostr key (so a third party cannot replay it), the owner, the expiry (at most 10 minutes out), and the nonce (burned on first use, durably). The proof exists so a **third party** cannot trigger spend from someone else's delegation - within the cap, the provider you approved could always pull anyway; the honest bound above is unchanged by this feature.
+
+**Requirements on your skill.** The skill must be **USDC-priced** and declare the `delegation` block - a `delegation` block on a non-USDC skill fails at load (the pull moves the price as USDC subunits). The delegate key must hold a little SOL: it pays the pull transaction fee and (once) the rent for creating your USDC token account if it does not exist yet. `elisym start` warns when the delegate is unfunded.
+
+**Per-job fees.** Delegated pulls carry **no per-job protocol fee** - the fee was charged once at approve time (`feeBps` of the cap). Note the flip side for customers: a re-approve or top-up re-charges `feeBps` on the whole new cap, not the delta - size the cap once rather than topping up in small steps.
+
+**Crash safety.** The pull signature and its blockhash lifetime are persisted before the transaction is broadcast, and the result is persisted before the pull. A crash at any point resolves on restart: a landed pull re-delivers the stored result (never re-executes, never re-pulls); a provably dead pull fails the job with no charge; an ambiguous one is re-checked until the blockhash lifetime settles it. One bound on that guarantee: "provably dead" is only as strong as your RPC node's retained transaction history. If the agent stays down longer than that retention (a few days on typical non-archive RPCs), a landed pull can be misread as absent on restart. For mainnet, configure an archive RPC via `SOLANA_RPC_URL` or avoid extended downtime - the same bound as regular paid-job payment re-verification.
+
+**Customer side.** On a delegation-capable card the web app splits the action explicitly: the button reads **Use** when the connected wallet holds an active allowance covering the price (submitting spends it - a wallet `signMessage` prompt replaces the payment approval), and **Delegate** when it does not, routing to the Delegation tab to grant one. The MCP tool is `submit_delegated_job`. Either way the result carries the pull's transaction signature for transparency.
+
+## What is deferred
+
+The general "agent operates a contract the customer validates" path - needed for a large-capital trade-not-withdraw broker - is a future track. Shipping it as "agent supplies an instruction + minimal decode" is a structured blind-signing / drainer vector, so it is out of scope for v1. Until then, `spl-approve` covers the bounded autonomous-spend use case, with any swap/convert composed at the application layer.

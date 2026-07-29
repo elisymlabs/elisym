@@ -2,7 +2,7 @@
  * Skill interface and registry.
  */
 
-import { toDTag, type Asset } from '@elisym/sdk';
+import { toDTag, type Asset, type SkillDelegation } from '@elisym/sdk';
 import type { SkillRateLimit } from '@elisym/sdk/llm-health';
 import type { ChatTurn, SkillLlmOverride, SkillMode, X402SkillParams } from '@elisym/sdk/skills';
 
@@ -258,6 +258,13 @@ export interface Skill {
    * the input box instead of silently dropping what the buyer typed.
    */
   noInput?: boolean;
+  /**
+   * Delegated-execution descriptor from SKILL.md `delegation` frontmatter
+   * (no `delegate_pubkey`; the host injects it at `buildCard` from the agent's
+   * `solana_delegate_secret_key`). Present when the skill opts into
+   * `spl-approve` bounded delegation. Advertised on the capability card.
+   */
+  delegation?: SkillDelegation;
   /**
    * Optional pre-payment gate. The runtime calls it BEFORE `recordPaid` /
    * payment collection (and in the recovery path BEFORE a retry slot is

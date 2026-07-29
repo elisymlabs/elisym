@@ -16,6 +16,12 @@ interface Args {
   input: string;
   file: File | null;
   buying: boolean;
+  /**
+   * An active delegated allowance covers this card's price: the send needs no
+   * per-job payment tx (the provider pulls from the delegation after the
+   * work), so wallet-balance affordability must not gate it.
+   */
+  delegatedCovers?: boolean;
 }
 
 export interface JobGate {
@@ -53,6 +59,7 @@ export function useJobGating({
   input,
   file,
   buying,
+  delegatedCovers,
 }: Args): JobGate {
   const { publicKey } = useWallet();
   const { relaysConnected } = useElisymClient();
@@ -94,7 +101,7 @@ export function useJobGating({
       ? checkSelfPayment({ card, buyerWallet: publicKey.toBase58() })
       : { ok: true as const };
   const affordability =
-    !isFree && !!publicKey && !buying && selfPayment.ok
+    !isFree && !!publicKey && !buying && !delegatedCovers && selfPayment.ok
       ? checkBuyAffordability({ card, solLamports, usdcRaw, gasLamports: gasFeeLamports })
       : { ok: true as const };
 

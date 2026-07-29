@@ -886,3 +886,41 @@ script: ../../../bin/sh
     expect(loadSkillsFromDir(tmpDir)).toEqual([]);
   });
 });
+
+describe('delegation block requires a USDC-priced skill (load-time money invariant)', () => {
+  const delegationBlock = {
+    mechanism: 'spl-approve',
+    suggested_cap_subunits: '50000000',
+  };
+
+  it('rejects a SOL-priced skill with a delegation block', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        {
+          name: 'x',
+          description: 'y',
+          capabilities: ['cap'],
+          price: 0.002,
+          delegation: delegationBlock,
+        },
+        'prompt',
+      ),
+    ).toThrow(/USDC/);
+  });
+
+  it('accepts a USDC-priced skill with a delegation block', () => {
+    const parsed = validateSkillFrontmatter(
+      {
+        name: 'x',
+        description: 'y',
+        capabilities: ['cap'],
+        price: 0.05,
+        token: 'usdc',
+        delegation: delegationBlock,
+      },
+      'prompt',
+    );
+    expect(parsed.delegation?.mechanism).toBe('spl-approve');
+    expect(parsed.asset.symbol).toBe('USDC');
+  });
+});
