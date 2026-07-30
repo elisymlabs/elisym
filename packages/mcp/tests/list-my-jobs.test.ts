@@ -71,7 +71,7 @@ describe('list_my_jobs', () => {
     expect(text).not.toContain('"event_id": "j4"');
   });
 
-  it('over-fetches to avoid truncating past the customer filter', async () => {
+  it('queries with the relay-side customer filter and the plain limit', async () => {
     const fetchRecentJobs = vi.fn(async () => []);
     const agent = buildStubAgent({ fetchRecentJobs });
     const ctx = new AgentContext();
@@ -80,8 +80,9 @@ describe('list_my_jobs', () => {
     const tool = findTool('list_my_jobs');
     const input = tool.schema.parse({ limit: 20, include_nostr: true });
     await tool.handler(ctx, input);
-    // overFetchFactor is 5x: 20 * 5 = 100 (capped at 500).
-    expect(fetchRecentJobs).toHaveBeenCalledWith(undefined, 100, undefined, [100]);
+    // The authors filter replaces the old 5x over-fetch: the relay narrows to
+    // our own requests, so the tool passes the caller's limit through.
+    expect(fetchRecentJobs).toHaveBeenCalledWith(undefined, 20, undefined, [100], MY_PUBKEY);
   });
 
   it('decrypts targeted results via queryJobResults', async () => {

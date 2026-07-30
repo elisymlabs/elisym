@@ -10,6 +10,7 @@ import { Providers } from '~/components/Providers';
 import { TermsModal } from '~/components/TermsModal';
 import AgentPage from '~/routes/Agent/Agent';
 import Home from '~/routes/Home/Home';
+import JobsPage from '~/routes/Jobs/Jobs';
 import MessagesPage from '~/routes/Messages/Messages';
 import Terms from '~/routes/Terms/Terms';
 
@@ -34,6 +35,7 @@ export function App() {
               <Route path="/agent/:pubkey">{(params) => <AgentPage key={params?.pubkey} />}</Route>
               <Route path="/messages" component={MessagesPage} />
               <Route path="/messages/:pubkey" component={MessagesPage} />
+              <Route path="/jobs" component={JobsPage} />
               <Route path="/terms" component={Terms} />
               <Route>
                 <div className="flex min-h-[60vh] items-center justify-center">

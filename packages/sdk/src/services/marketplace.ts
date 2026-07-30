@@ -971,10 +971,15 @@ export class MarketplaceService {
     since?: number,
     /** Kind offsets to query (default [100]). */
     kindOffsets?: number[],
+    /** Only return job requests authored by this customer pubkey. */
+    customerPubkey?: string,
   ): Promise<Job[]> {
     const offsets = kindOffsets ?? [DEFAULT_KIND_OFFSET];
     if (offsets.length === 0) {
       throw new Error('kindOffsets must not be empty.');
+    }
+    if (customerPubkey !== undefined && !/^[0-9a-f]{64}$/.test(customerPubkey)) {
+      throw new Error('Invalid customer pubkey: expected 64 hex characters.');
     }
     const requestKinds = offsets.map(jobRequestKind);
     const resultKinds = offsets.map(jobResultKind);
@@ -982,6 +987,7 @@ export class MarketplaceService {
     const reqFilter: Filter = {
       kinds: requestKinds,
       '#t': ['elisym'],
+      ...(customerPubkey !== undefined && { authors: [customerPubkey] }),
       ...(limit !== null && limit !== undefined && { limit }),
       ...(since !== null && since !== undefined && { since }),
     };

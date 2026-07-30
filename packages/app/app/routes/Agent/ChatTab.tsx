@@ -1,10 +1,12 @@
 import { type CapabilityCard, toDTag } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useLocation, useSearch } from 'wouter';
 import { useBuy } from '~/contexts/BuyContext';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useJobHistory } from '~/hooks/useJobHistory';
+import { usePageVisible } from '~/hooks/usePageVisible';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import { track } from '~/lib/analytics';
 import {
@@ -16,6 +18,7 @@ import {
 } from '~/lib/chatSession';
 import type { ChatThreadEntry } from '~/lib/chatThread';
 import { SOLANA_CLUSTER } from '~/lib/cluster';
+import { clearUnseen, jobHistoryVersion, subscribeJobHistory } from '~/lib/jobHistory';
 import { cacheGet, cacheSet } from '~/lib/localCache';
 import { ArtifactModal } from './ArtifactModal';
 import { ChatComposer } from './ChatComposer';
@@ -116,7 +119,24 @@ export function ChatTab({
   // a rating can carry the payment proof for the future indexer (the entry's
   // own txHash is NOT used - a reverted tx must never ride a rating as proof).
   const { publicKey: walletPublicKey } = useWallet();
-  const { jobs: walletJobs } = useJobHistory({ wallet: walletPublicKey?.toBase58() ?? '' });
+  const wallet = walletPublicKey?.toBase58() ?? '';
+  const { jobs: walletJobs } = useJobHistory({ wallet });
+
+  // The unseen-badge's second clear site: viewing this agent's Chat tab
+  // clears its rows' flags on mount and while mounted AND visible - the
+  // result toast's "View" action lands here, and without this the badge
+  // would stay lit after the user has read the result. The visibility gate
+  // keeps a background tab left on this Chat tab from eating flags stamped
+  // by the active tab (storage events land here too). Keyed on (wallet,
+  // store version, visibility); the store's no-op-write guard breaks the
+  // version self-loop.
+  const chatTabVisible = usePageVisible();
+  const jobHistoryStoreVersion = useSyncExternalStore(subscribeJobHistory, jobHistoryVersion);
+  useEffect(() => {
+    if (wallet && chatTabVisible) {
+      clearUnseen(wallet, agentPubkey);
+    }
+  }, [wallet, agentPubkey, jobHistoryStoreVersion, chatTabVisible]);
   const txHashByJobId = useMemo(() => {
     const map = new Map<string, string>();
     for (const job of walletJobs) {
@@ -262,6 +282,82 @@ export function ChatTab({
   // exists (the composer would continue it, so the view must show the draft -
   // never the newest chat over an invisible session), else the newest chat,
   // else the draft.
+  const selectSessionChat = useCallback(
+    async (item: ChatListItem, sessionId: string): Promise<boolean> => {
+      // Make the clicked conversation the active session FIRST - the view must
+      // never switch while the composer would still send into another session.
+      // A refusal (a sibling tab's send is resolving, or its crashed token is
+      // not yet stale) keeps the current chat; the click can be retried.
+      const selected = await selectSession(identityPubkey, agentPubkey, {
+        sessionId,
+        ts: item.lastTs,
+      });
+      if (!selected) {
+        return false;
+      }
+      setManualKey(item.key);
+      // Bind the composer to the chat's last used capability.
+      const lastEntry = item.entries[item.entries.length - 1];
+      const cardIndex = cards.findIndex(
+        (candidate) => toDTag(candidate.name) === lastEntry?.capability,
+      );
+      if (cardIndex !== -1) {
+        onSelectIndex(cardIndex);
+      }
+      return true;
+    },
+    [identityPubkey, agentPubkey, cards, onSelectIndex],
+  );
+
+  // /jobs deep-link: `?job=<jobEventId>` selects the chat containing that
+  // entry and hands the id to the thread for the focus scroll. Applied only
+  // once the hydrated thread actually contains the entry (hydration may
+  // still be running - the effect re-runs on `entries` changes), then the
+  // param is stripped (the `?tab=history` precedent in Agent.tsx) so
+  // back-nav and manual chat switching are not re-forced. A session chat is
+  // ACTIVATED via selectSessionChat, not merely displayed - the composer
+  // sends into the stored active session, so showing chat B over active
+  // session A would route the user's reply into another conversation's
+  // context. A selection refusal leaves the param in place; the effect
+  // retries on the next entries/store change.
+  const search = useSearch();
+  const [, setLocation] = useLocation();
+  const [focusJobId, setFocusJobId] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    const jobParam = params.get('job');
+    if (!jobParam) {
+      return;
+    }
+    const entry = entries.find((candidate) => candidate.jobEventId === jobParam);
+    if (!entry) {
+      return;
+    }
+    let cancelled = false;
+    const applyDeepLink = async () => {
+      const item = items.find((candidate) => candidate.key === chatKeyOf(entry));
+      if (item === undefined) {
+        return;
+      }
+      if (item.kind === 'session' && item.sessionId !== undefined) {
+        const switched = await selectSessionChat(item, item.sessionId);
+        if (!switched || cancelled) {
+          return;
+        }
+      } else {
+        setManualKey(item.key);
+      }
+      setFocusJobId(jobParam);
+      params.delete('job');
+      const remaining = params.toString();
+      setLocation(`/agent/${agentPubkey}${remaining ? `?${remaining}` : ''}`, { replace: true });
+    };
+    void applyDeepLink();
+    return () => {
+      cancelled = true;
+    };
+  }, [search, entries, items, agentPubkey, selectSessionChat, setLocation]);
+
   let selectedKey = NEW_CHAT_KEY;
   const manualValid =
     manualKey !== null &&
@@ -299,6 +395,9 @@ export function ChatTab({
 
   // Follow a live send once per job id (the messenger pattern: jump to the
   // chat you just messaged) - covers draft sends, retries, and one-shots.
+  // A send also releases the deep-link focus: the thread holds its viewport
+  // at the focused entry while the focus is set, and the user's own message
+  // must scroll normally.
   const followedJobRef = useRef<string | null>(null);
   useEffect(() => {
     if (liveJobEventId === null || followedJobRef.current === liveJobEventId) {
@@ -307,37 +406,18 @@ export function ChatTab({
     const entry = entries.find((candidate) => candidate.jobEventId === liveJobEventId);
     if (entry !== undefined) {
       followedJobRef.current = liveJobEventId;
+      setFocusJobId(null);
       setManualKey(chatKeyOf(entry));
     }
   }, [liveJobEventId, entries]);
-
-  async function selectSessionChat(item: ChatListItem, sessionId: string) {
-    // Make the clicked conversation the active session FIRST - the view must
-    // never switch while the composer would still send into another session.
-    // A refusal (a sibling tab's send is resolving, or its crashed token is
-    // not yet stale) keeps the current chat; the click can be retried.
-    const selected = await selectSession(identityPubkey, agentPubkey, {
-      sessionId,
-      ts: item.lastTs,
-    });
-    if (!selected) {
-      return;
-    }
-    setManualKey(item.key);
-    // Bind the composer to the chat's last used capability.
-    const lastEntry = item.entries[item.entries.length - 1];
-    const cardIndex = cards.findIndex(
-      (candidate) => toDTag(candidate.name) === lastEntry?.capability,
-    );
-    if (cardIndex !== -1) {
-      onSelectIndex(cardIndex);
-    }
-  }
 
   function handleSelectChat(item: ChatListItem) {
     if (buying) {
       return;
     }
+    // A manual chat switch releases the deep-link focus - the thread must
+    // resume its normal newest-message scroll in the newly selected chat.
+    setFocusJobId(null);
     if (item.kind === 'session' && item.sessionId !== undefined) {
       void selectSessionChat(item, item.sessionId);
       return;
@@ -349,6 +429,7 @@ export function ChatTab({
     if (buying) {
       return;
     }
+    setFocusJobId(null);
     setManualKey(NEW_CHAT_KEY);
   }
 
@@ -404,6 +485,7 @@ export function ChatTab({
           onOpen={(entry) => setOpenEntryId(entry.jobEventId)}
           onSelectCardIndex={onSelectIndex}
           send={send}
+          focusJobEventId={focusJobId}
         />
 
         {readOnly ? (

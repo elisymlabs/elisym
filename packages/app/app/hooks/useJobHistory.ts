@@ -1,67 +1,43 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
+import {
+  flipTerminal as storeFlipTerminal,
+  readJobs,
+  saveJob as storeSaveJob,
+  subscribeJobHistory,
+  unseenJobsCount,
+  updateJob as storeUpdateJob,
+  type StoredJob,
+} from '~/lib/jobHistory';
 
-export interface StoredJob {
-  jobEventId: string;
-  agentPubkey: string;
-  agentName: string;
-  agentPicture?: string;
-  capability: string;
-  status: string;
-  paymentAmount?: number;
-  txHash?: string;
-  result?: string;
-  createdAt: number;
-}
+export type { StoredJob } from '~/lib/jobHistory';
 
-const STORAGE_KEY = 'elisym:job-history';
-
-function loadJobs(wallet: string): StoredJob[] {
-  try {
-    const raw = localStorage.getItem(`${STORAGE_KEY}:${wallet}`);
-    return raw ? (JSON.parse(raw) as StoredJob[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function persistJobs(wallet: string, jobs: StoredJob[]) {
-  localStorage.setItem(`${STORAGE_KEY}:${wallet}`, JSON.stringify(jobs));
-}
-
+/**
+ * Thin `useSyncExternalStore` view over the shared job-history store
+ * (`~/lib/jobHistory`). The callbacks close over `wallet`, so a caller that
+ * snapshots them (BuyContext's mid-job closures) keeps writing under the
+ * wallet the job was bought with even if the wallet disconnects mid-job.
+ */
 export function useJobHistory({ wallet }: { wallet: string }) {
-  const [jobs, setJobs] = useState<StoredJob[]>(() => (wallet ? loadJobs(wallet) : []));
+  const jobs = useSyncExternalStore(subscribeJobHistory, () => readJobs(wallet));
 
-  useEffect(() => {
-    setJobs(wallet ? loadJobs(wallet) : []);
-  }, [wallet]);
-
-  const saveJob = useCallback(
-    (job: StoredJob) => {
-      if (!wallet) {
-        return;
-      }
-      setJobs((prev) => {
-        const next = [job, ...prev.filter((j) => j.jobEventId !== job.jobEventId)];
-        persistJobs(wallet, next);
-        return next;
-      });
-    },
-    [wallet],
-  );
+  const saveJob = useCallback((job: StoredJob) => storeSaveJob(wallet, job), [wallet]);
 
   const updateJob = useCallback(
-    (jobEventId: string, patch: Partial<StoredJob>) => {
-      if (!wallet) {
-        return;
-      }
-      setJobs((prev) => {
-        const next = prev.map((j) => (j.jobEventId === jobEventId ? { ...j, ...patch } : j));
-        persistJobs(wallet, next);
-        return next;
-      });
-    },
+    (jobEventId: string, patch: Partial<StoredJob>) => storeUpdateJob(wallet, jobEventId, patch),
     [wallet],
   );
 
-  return { jobs, saveJob, updateJob };
+  /** Terminal flip with the store-side freshly-read-row guard (plan decision 4/5). */
+  const flipJob = useCallback(
+    (jobEventId: string, patch: Partial<StoredJob>, opts: { stampUnseen: boolean }) =>
+      storeFlipTerminal(wallet, jobEventId, patch, opts),
+    [wallet],
+  );
+
+  return { jobs, saveJob, updateJob, flipJob };
+}
+
+/** Live `unseen` badge count for the header (number snapshots are stable). */
+export function useUnseenJobsCount(wallet: string): number {
+  return useSyncExternalStore(subscribeJobHistory, () => unseenJobsCount(wallet));
 }

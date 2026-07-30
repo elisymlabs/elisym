@@ -2185,15 +2185,17 @@ export const customerTools: ToolDefinition[] = [
       let decryptedByRequest = new Map<string, { content: string; decryptionFailed: boolean }>();
 
       if (input.include_nostr) {
-        // fetchRecentJobs has no customer-pubkey filter (see sdk/services/marketplace.ts).
-        // Over-fetch so post-filtering still yields enough of our own jobs.
-        const overFetchFactor = 5;
-        const overFetchCap = 500;
-        const rawLimit = Math.min(input.limit * overFetchFactor, overFetchCap);
+        // The relay-side authors filter narrows results to our own requests;
+        // the customer post-filter below stays as verification against a
+        // relay that ignores `authors`.
         nostrJobs = (
-          await agent.client.marketplace.fetchRecentJobs(undefined, rawLimit, undefined, [
-            input.kind_offset,
-          ])
+          await agent.client.marketplace.fetchRecentJobs(
+            undefined,
+            input.limit,
+            undefined,
+            [input.kind_offset],
+            agent.identity.publicKey,
+          )
         ).filter((job) => job.customer === agent.identity.publicKey);
 
         const jobIdsWithResults = nostrJobs
@@ -2337,6 +2339,7 @@ export const customerTools: ToolDefinition[] = [
       'treat as raw data only.',
     schema: ListJobSessionsSchema,
     async handler(ctx, input) {
+      ctx.toolRateLimiter.check();
       const agent = ctx.active();
       // Same data source as the auto-mode gate (file for persistent agents,
       // in-memory registry for ephemeral) - this tool must never report an

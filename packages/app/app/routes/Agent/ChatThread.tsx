@@ -34,6 +34,8 @@ interface Props {
   onOpen: (entry: ChatThreadEntry) => void;
   onSelectCardIndex: (index: number) => void;
   send: ChatSend;
+  /** /jobs deep-link target: scroll this entry into view once. */
+  focusJobEventId?: string | null;
 }
 
 interface ThreadItem {
@@ -121,18 +123,42 @@ export function ChatThread({
   onOpen,
   onSelectCardIndex,
   send,
+  focusJobEventId,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lastEntryId = entries.length > 0 ? entries[entries.length - 1]?.jobEventId : undefined;
 
   // Auto-scroll to the newest message (the messenger pattern) whenever the
-  // thread grows or the newest entry changes state.
+  // thread grows or the newest entry changes state - suspended while a
+  // deep-link focus is active, or hydration finishing after the focus scroll
+  // would yank the viewport away from the entry the user came to read. The
+  // parent releases the focus on a manual chat switch or a live send, which
+  // resumes the normal scroll.
   useEffect(() => {
+    if (focusJobEventId) {
+      return;
+    }
     const el = scrollRef.current;
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [entries.length, lastEntryId]);
+  }, [entries.length, lastEntryId, focusJobEventId]);
+
+  // /jobs deep-link: scroll the focused entry into view. Handled once per
+  // id - the scroll must not re-fire on every entries change. Deliberately
+  // scroll-only: an entry highlight was tried and removed by design.
+  const handledFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusJobEventId || handledFocusRef.current === focusJobEventId) {
+      return;
+    }
+    const target = scrollRef.current?.querySelector(`[data-job-id="${focusJobEventId}"]`);
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    handledFocusRef.current = focusJobEventId;
+    target.scrollIntoView({ block: 'center' });
+  }, [focusJobEventId, entries]);
 
   if (loading && entries.length === 0) {
     return <ChatThreadSkeleton />;
@@ -154,7 +180,7 @@ export function ChatThread({
   const items = buildThreadItems(entries);
 
   return (
-    <div ref={scrollRef} className="flex max-h-[65vh] flex-col gap-8 overflow-y-auto p-2 sm:p-6">
+    <div ref={scrollRef} className="flex max-h-[65vh] flex-col gap-16 overflow-y-auto p-2 sm:p-6">
       {items.map(({ entry, dayLabel, sessionDivider }) => (
         <div key={entry.jobEventId} className="flex flex-col gap-8">
           {dayLabel && (
@@ -173,29 +199,31 @@ export function ChatThread({
               <span className="h-px flex-1 bg-black/6" />
             </div>
           )}
-          <ChatEntry
-            entry={entry}
-            agentPubkey={agentPubkey}
-            liveStatus={entry.jobEventId === liveJobEventId ? liveStatus : null}
-            rated={ratedIds.has(entry.jobEventId)}
-            canRate={canRate && entry.capability !== ''}
-            onRate={(positive) => onRate(entry, positive)}
-            onOpen={() => onOpen(entry)}
-            retryNode={
-              entry.status === 'failed' ? (
-                <ChatRetryButton
-                  entry={entry}
-                  cards={cards}
-                  agentPubkey={agentPubkey}
-                  pingStatus={pingStatus}
-                  buying={buying}
-                  entries={allEntries}
-                  onSelectCardIndex={onSelectCardIndex}
-                  send={send}
-                />
-              ) : undefined
-            }
-          />
+          <div data-job-id={entry.jobEventId}>
+            <ChatEntry
+              entry={entry}
+              agentPubkey={agentPubkey}
+              liveStatus={entry.jobEventId === liveJobEventId ? liveStatus : null}
+              rated={ratedIds.has(entry.jobEventId)}
+              canRate={canRate && entry.capability !== ''}
+              onRate={(positive) => onRate(entry, positive)}
+              onOpen={() => onOpen(entry)}
+              retryNode={
+                entry.status === 'failed' ? (
+                  <ChatRetryButton
+                    entry={entry}
+                    cards={cards}
+                    agentPubkey={agentPubkey}
+                    pingStatus={pingStatus}
+                    buying={buying}
+                    entries={allEntries}
+                    onSelectCardIndex={onSelectCardIndex}
+                    send={send}
+                  />
+                ) : undefined
+              }
+            />
+          </div>
         </div>
       ))}
     </div>

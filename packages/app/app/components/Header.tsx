@@ -7,6 +7,7 @@ import { track } from '~/lib/analytics';
 import { cn } from '~/lib/cn';
 import { ConnectMenu } from './ConnectMenu';
 import { truncateMiddle } from './CopyRow';
+import { JobsNavLink } from './JobsNavLink';
 import { MarbleAvatar } from './MarbleAvatar';
 import { MessagesNavLink } from './MessagesNavLink';
 import { ProviderKeyDialog } from './ProviderKeyDialog';
@@ -231,9 +232,11 @@ export function Header() {
               <span className="hidden sm:inline">Run AI Agent</span>
             </a>
 
-            {/* Messages are gated behind a wallet OR provider session;
-                unmounting also stops the live DM subscription for
-                signed-out visitors. */}
+            {/* Messages and Jobs are gated behind a wallet OR provider
+                session; unmounting also stops the live DM subscription for
+                signed-out visitors. The /jobs page itself stays reachable
+                by URL without a wallet - it just has no badge. */}
+            {(address || providerSession) && <JobsNavLink dark={dark} />}
             {(address || providerSession) && <MessagesNavLink dark={dark} />}
 
             {accountNode}
