@@ -12,6 +12,7 @@ import {
   LIMITS,
   MAX_PROOF_TTL_SECS,
   mintDelegationNonce,
+  assetKey,
   resolveKnownAsset,
   SolanaPaymentStrategy,
   toDTag,
@@ -100,6 +101,24 @@ const RESUMABLE_PENDING_STATUSES = new Set(['pending', 'payment-completed']);
  * (not recoverable) while a maybe-landed failure becomes resumable 'pending'.
  */
 class PaymentRevertedError extends Error {}
+
+/**
+ * The unseen-badge in-view criterion: a terminal flip stamps `unseen` only
+ * when the user is NOT looking at this agent's page - which requires the tab
+ * to be visible, not merely on the right path (a result landing in a hidden
+ * tab was not seen; the Chat tab's clear effect wipes the flag the moment
+ * the tab becomes visible again). Read live inside the callback - never
+ * decide against the effect-closure `session`, which survives route
+ * navigation by design and would suppress the stamp for the most recent job
+ * forever.
+ */
+function agentPageInView(agentPubkey: string): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    document.visibilityState === 'visible' &&
+    window.location.pathname === `/agent/${agentPubkey}`
+  );
+}
 
 async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -286,7 +305,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const wallet = publicKey?.toBase58() ?? '';
-  const { jobs, saveJob, updateJob } = useJobHistory({ wallet });
+  const { jobs, saveJob, updateJob, flipJob } = useJobHistory({ wallet });
 
   const [session, setSession] = useState<ActiveBuySession | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -349,6 +368,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       // here keeps writing to the wallet that was connected at click.
       const snapshotSaveJob = saveJob;
       const snapshotUpdateJob = updateJob;
+      const snapshotFlipJob = flipJob;
 
       const cardName = card.name;
       const sessionMatches = (s: ActiveBuySession | null): s is ActiveBuySession =>
@@ -626,7 +646,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 return;
               }
               if (!publicKey) {
-                toast.error('Wallet disconnected - reconnect and retry', { id: toastId });
+                // Dismiss-then-toast, not a same-id swap - see the sonner
+                // spinner-stick note in onError below.
+                toast.dismiss(toastId);
+                toast.error('Wallet disconnected - reconnect and retry');
                 setSession((prev) => (sessionMatches(prev) ? { ...prev, buying: false } : prev));
                 // Terminal, unpaid exit: the job will never be paid, so the
                 // pending entry gains the Retry affordance now instead of
@@ -751,8 +774,24 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // If confirmTransaction throws (an RPC hiccup after the tx landed) or the
                 // confirmation publish below exhausts its retries, the catch marks the job
                 // 'error', but this merge keeps the signature so a successful payment is
-                // never discarded and can be reconciled from history.
-                snapshotUpdateJob(jobEventId, { txHash: signature });
+                // never discarded and can be reconciled from history. The charge fields
+                // ride the same write: this is the only point where a charge is certain
+                // AND `paymentRequest` is in scope - a resumable-paid job recovered by
+                // the poller never reaches the post-confirmation update, so stamping
+                // there would leave it amount-less forever.
+                const chargedAsset = resolveKnownAsset(
+                  paymentRequest.asset?.chain ?? 'solana',
+                  paymentRequest.asset?.token ?? 'sol',
+                  paymentRequest.asset?.mint,
+                );
+                snapshotUpdateJob(jobEventId, {
+                  txHash: signature,
+                  // Always resolvable in practice - an unknown asset cannot pass
+                  // validatePaymentRequest above; the guard is honest typing.
+                  ...(chargedAsset !== undefined
+                    ? { paymentAmount: paymentRequest.amount, assetKey: assetKey(chargedAsset) }
+                    : {}),
+                });
                 // Same rule for the thread entry: a paid `pending` entry (txHash
                 // present) is exempt from unpaid-aging and trimming - money was
                 // sent, the state must stay visible.
@@ -783,9 +822,16 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   ),
                 );
 
+                // `paymentAmount` is NOT written here: the broadcast point above is
+                // the only amount writer (the feedback-advertised `amount` may be
+                // undefined/0 and would clobber the real charge). If a provider
+                // error feedback flipped the row terminal mid-confirm, the store's
+                // sticky-terminal guard keeps `error` and only the txHash lands -
+                // accepted: the job did fail as far as anyone knows, and should the
+                // provider crash-recover and complete it later, the /jobs merge
+                // folds the relay-side success over the local row for display.
                 snapshotUpdateJob(jobEventId, {
                   status: 'payment-completed',
-                  paymentAmount: amount,
                   txHash: signature,
                 });
                 paidLocally = true;
@@ -817,11 +863,22 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // A confirmed on-chain revert moved no funds, so drop the signature we
                 // optimistically persisted before confirmation - otherwise it could later
                 // ride a rating as false payment proof for a payment that never landed.
-                snapshotUpdateJob(
+                // The charge fields stamped at broadcast go with it: a reverted job
+                // must not display a charge. The cleanup rides `updateJob`, NOT the
+                // flip: a provider error feedback can flip this row terminal while
+                // confirmTransaction is in flight, and flipTerminal's guard would then
+                // drop the whole patch, leaving the reverted signature persisted.
+                if (err instanceof PaymentRevertedError) {
+                  snapshotUpdateJob(jobEventId, {
+                    txHash: undefined,
+                    paymentAmount: undefined,
+                    assetKey: undefined,
+                  });
+                }
+                snapshotFlipJob(
                   jobEventId,
-                  err instanceof PaymentRevertedError
-                    ? { status: 'error', txHash: undefined }
-                    : { status: 'error' },
+                  { status: 'error' },
+                  { stampUnseen: !agentPageInView(agentPubkey) },
                 );
                 // Terminal payment failure (never broadcast, or reverted with no
                 // funds moved): the thread entry gains the Retry affordance. The
@@ -861,11 +918,19 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // delegation remains the truth).
               const delegatedTxHash =
                 delegatedPayment !== undefined && paymentTx !== undefined ? paymentTx : undefined;
-              snapshotUpdateJob(jobEventId, {
-                status: 'completed',
-                result,
-                ...(delegatedTxHash !== undefined ? { txHash: delegatedTxHash } : {}),
-              });
+              const alreadyOnAgentPage = agentPageInView(agentPubkey);
+              if (delegatedTxHash !== undefined) {
+                // Unconditional stamp: if the /jobs merge in another tab or the
+                // poller already flipped this row terminal, flipTerminal's guard
+                // would drop the whole patch and the settlement signature would
+                // never reach wallet history (the rating's payment proof).
+                snapshotUpdateJob(jobEventId, { txHash: delegatedTxHash });
+              }
+              snapshotFlipJob(
+                jobEventId,
+                { status: 'completed', result },
+                { stampUnseen: !alreadyOnAgentPage },
+              );
               if (delegatedTxHash !== undefined) {
                 void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash);
               }
@@ -892,9 +957,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               );
               cleanupRef.current = null;
               const agentPath = `/agent/${agentPubkey}`;
-              const alreadyOnAgentPage = window.location.pathname === agentPath;
+              // Dismiss-then-toast, not a same-id swap - see the sonner
+              // spinner-stick note in onError below.
+              toast.dismiss(toastId);
               toast.success(`Result received from ${agentName}`, {
-                id: toastId,
                 // Override the global 1500ms default so the user has time to
                 // notice the result and click through to the provider's page.
                 duration: 8000,
@@ -941,7 +1007,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             },
 
             onError: (errMsg: string) => {
-              snapshotUpdateJob(jobEventId, { status: 'error' });
+              snapshotFlipJob(
+                jobEventId,
+                { status: 'error' },
+                { stampUnseen: !agentPageInView(agentPubkey) },
+              );
               // A provider error feedback (incl. "session busy") becomes an
               // ordinary failed bubble with Retry. If the provider completes
               // the job later anyway (crash-recovery re-execution), hydration
@@ -986,7 +1056,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   toast('Payment sent - still confirming; check job history shortly.');
                   return;
                 }
-                snapshotUpdateJob(jobEventId, { status: 'error' });
+                snapshotFlipJob(
+                  jobEventId,
+                  { status: 'error' },
+                  { stampUnseen: !agentPageInView(agentPubkey) },
+                );
                 // Unpaid timeout is terminal for the thread entry (the design's
                 // aging rule, applied eagerly while the tab is still open). A
                 // paid timeout above stays `pending` - money was sent.
@@ -1049,6 +1123,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       signMessage,
       saveJob,
       updateJob,
+      flipJob,
       queryClient,
       setLocation,
     ],
@@ -1136,7 +1211,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             // Wallet job history only - deliberately NO thread-store write here:
             // a poller-recovered result reaches the thread via the Chat tab's
             // hydration/reconcile (the stated eventual-consistency window).
-            updateJob(job.jobEventId, { status: 'completed', result });
+            flipJob(
+              job.jobEventId,
+              { status: 'completed', result },
+              { stampUnseen: !agentPageInView(job.agentPubkey) },
+            );
             // The job may have settled by a delegated pull that reduced the
             // allowance; the poller has no per-job rail marker, so drop the
             // cached read unconditionally for the connected wallet.
@@ -1169,7 +1248,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [wallet, idCtx.identity, client, updateJob, queryClient]);
+  }, [wallet, idCtx.identity, client, flipJob, queryClient]);
 
   const rate = useCallback(
     async (positive: boolean) => {

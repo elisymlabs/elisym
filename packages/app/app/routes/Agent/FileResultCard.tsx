@@ -33,7 +33,12 @@ const ICON_PATHS: Record<MediaKind, string> = {
 export function FileResultCard({ attachment, providerPubkey }: Props) {
   const { client } = useElisymClient();
   const idCtx = useIdentity();
-  const [loading, setLoading] = useState(false);
+  // The label swaps to "Loading…" only on the button that initiated the
+  // fetch (the auto-preview counts as 'preview') - there is one underlying
+  // fetch, so BOTH buttons disable, but two simultaneous "Loading…" labels
+  // read as a broken card.
+  const [loadingAction, setLoadingAction] = useState<'preview' | 'download' | null>(null);
+  const loading = loadingAction !== null;
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const loadedRef = useRef<Loaded | null>(null);
   const unmountedRef = useRef(false);
@@ -44,12 +49,13 @@ export function FileResultCard({ attachment, providerPubkey }: Props) {
   // path passes the small cap as `maxBytes` too - otherwise a provider that lies about
   // the size could make opening the modal silently fetch+decrypt up to 100 MiB.
   async function load(
+    action: 'preview' | 'download',
     maxBytes: number = LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES,
   ): Promise<Loaded | null> {
     if (loadedRef.current) {
       return loadedRef.current;
     }
-    setLoading(true);
+    setLoadingAction(action);
     try {
       const out = await fetchEncryptedFileOutput({
         attachment,
@@ -78,12 +84,12 @@ export function FileResultCard({ attachment, providerPubkey }: Props) {
       toast.error(err instanceof Error ? err.message : 'Failed to fetch the file');
       return null;
     } finally {
-      setLoading(false);
+      setLoadingAction(null);
     }
   }
 
   async function handleDownload() {
-    const data = await load();
+    const data = await load('download');
     if (data) {
       saveDecryptedFile(data.bytes, data.name, data.mime);
     }
@@ -95,7 +101,7 @@ export function FileResultCard({ attachment, providerPubkey }: Props) {
     // fetch would see `unmounted` and bail, leaving the auto-preview blank.
     unmountedRef.current = false;
     if (kind === 'image' && attachment.size <= AUTO_PREVIEW_MAX_BYTES) {
-      void load(AUTO_PREVIEW_MAX_BYTES);
+      void load('preview', AUTO_PREVIEW_MAX_BYTES);
     }
     return () => {
       unmountedRef.current = true;
@@ -146,11 +152,11 @@ export function FileResultCard({ attachment, providerPubkey }: Props) {
         <div className="flex shrink-0 items-center gap-8">
           {showPreviewButton && (
             <button
-              onClick={() => void load()}
+              onClick={() => void load('preview')}
               disabled={loading}
               className="cursor-pointer rounded-xl border border-black/10 bg-surface px-12 py-8 text-xs font-medium text-text transition-colors hover:bg-black/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {loading ? 'Loading…' : 'Preview'}
+              {loadingAction === 'preview' ? 'Loading…' : 'Preview'}
             </button>
           )}
           <button
@@ -158,7 +164,7 @@ export function FileResultCard({ attachment, providerPubkey }: Props) {
             disabled={loading}
             className="cursor-pointer rounded-xl border-none bg-surface-dark px-14 py-8 text-xs font-semibold text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {loading ? 'Loading…' : 'Download'}
+            {loadingAction === 'download' ? 'Loading…' : 'Download'}
           </button>
         </div>
       </div>

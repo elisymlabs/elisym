@@ -103,7 +103,7 @@ export function ChatEntry({
     // max-w-[85%] resolve against its own content width, collapsing short
     // results into a one-word-per-line sliver.
     assistantBubble = (
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-8">
         <ChatBubble side="assistant" onClick={onOpen}>
           <p className="m-0 line-clamp-6 break-words whitespace-pre-wrap">
             {resultPreview || 'Result received'}
@@ -159,7 +159,7 @@ export function ChatEntry({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-8">
       {(entry.prompt || promptFileChip) && (
         <ChatBubble side="user" onClick={completed ? onOpen : undefined}>
           {entry.prompt && (

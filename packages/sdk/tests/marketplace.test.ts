@@ -1640,6 +1640,60 @@ describe('MarketplaceService.fetchRecentJobs author binding', () => {
   });
 });
 
+describe('MarketplaceService.fetchRecentJobs customer filter', () => {
+  function makePool(): NostrPool {
+    return {
+      querySync: vi.fn().mockResolvedValue([]),
+      queryBatched: vi.fn().mockResolvedValue([]),
+      queryBatchedByTag: vi.fn().mockResolvedValue([]),
+      publish: vi.fn(),
+      publishAll: vi.fn(),
+      subscribe: vi.fn(),
+      subscribeAndWait: vi.fn(),
+      probe: vi.fn(),
+      reset: vi.fn(),
+      getRelays: vi.fn().mockReturnValue([]),
+      close: vi.fn(),
+    } as unknown as NostrPool;
+  }
+
+  it('adds an authors filter when customerPubkey is passed', async () => {
+    const customer = ElisymIdentity.generate();
+    const pool = makePool();
+    await new MarketplaceService(pool).fetchRecentJobs(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      customer.publicKey,
+    );
+    const filter = (pool.querySync as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Filter;
+    expect(filter.authors).toEqual([customer.publicKey]);
+    expect(filter['#t']).toEqual(['elisym']);
+  });
+
+  it('omits the authors filter when customerPubkey is absent', async () => {
+    const pool = makePool();
+    await new MarketplaceService(pool).fetchRecentJobs();
+    const filter = (pool.querySync as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Filter;
+    expect(filter.authors).toBeUndefined();
+  });
+
+  it('rejects a malformed customer pubkey before querying', async () => {
+    const pool = makePool();
+    await expect(
+      new MarketplaceService(pool).fetchRecentJobs(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'not-a-pubkey',
+      ),
+    ).rejects.toThrow('Invalid customer pubkey');
+    expect(pool.querySync).not.toHaveBeenCalled();
+  });
+});
+
 describe('MarketplaceService.submitJobRequest - sessions', () => {
   const SESSION_ID = '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c';
 
