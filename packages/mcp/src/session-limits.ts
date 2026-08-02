@@ -10,6 +10,7 @@ import {
   assetKey,
   NATIVE_SOL,
   USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
   parseAssetAmount,
   resolveKnownAsset,
   type Asset,
@@ -29,9 +30,16 @@ export interface DefaultLimit {
  * `@elisym/sdk` KNOWN_ASSETS have no effect until both lists are updated
  * together.
  */
+// The limiter is keyed by `assetKey` (mint included), so USDC needs one entry
+// per network - `assertCanSpend` is a no-op for assets with no entry, and a
+// missing mainnet row would leave real-money USDC spending uncapped. Native
+// SOL has no mint and therefore ONE cap shared across networks: deliberate -
+// in a mixed-network process the shared draw-down can only under-allow, never
+// over-spend.
 export const DEFAULT_SESSION_LIMITS: readonly DefaultLimit[] = [
   { asset: NATIVE_SOL, humanAmount: '0.5' },
   { asset: USDC_SOLANA_DEVNET, humanAmount: '50' },
+  { asset: USDC_SOLANA_MAINNET, humanAmount: '50' },
 ];
 
 /** Materialize DEFAULT_SESSION_LIMITS into a Map<AssetKey, rawBigint>. */

@@ -5,7 +5,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assetKey, NATIVE_SOL, USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import { assetKey, NATIVE_SOL, USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AgentContext,
@@ -14,7 +14,11 @@ import {
   remainingForAsset,
   takeSpendWarnings,
 } from '../src/context.js';
-import { buildEffectiveLimits, defaultSpendLimitsMap } from '../src/session-limits.js';
+import {
+  buildEffectiveLimits,
+  DEFAULT_SESSION_LIMITS,
+  defaultSpendLimitsMap,
+} from '../src/session-limits.js';
 
 describe('defaultSpendLimitsMap', () => {
   it('contains 0.5 SOL as the default cap', () => {
@@ -22,10 +26,26 @@ describe('defaultSpendLimitsMap', () => {
     expect(map.get(assetKey(NATIVE_SOL))).toBe(500_000_000n);
   });
 
-  it('contains 50 USDC as the default cap', () => {
+  it('contains a 50 USDC cap PER NETWORK the asset exists on (H8)', () => {
     const map = defaultSpendLimitsMap();
-    // 50 USDC * 10^6 subunits = 50_000_000
+    // 50 USDC * 10^6 subunits = 50_000_000. assertCanSpend is a no-op for
+    // assets with no entry, so a missing mainnet row would leave real-money
+    // USDC spending uncapped while devnet stays capped.
     expect(map.get(assetKey(USDC_SOLANA_DEVNET))).toBe(50_000_000n);
+    expect(map.get(assetKey(USDC_SOLANA_MAINNET))).toBe(50_000_000n);
+    expect(assetKey(USDC_SOLANA_DEVNET)).not.toBe(assetKey(USDC_SOLANA_MAINNET));
+  });
+
+  it('keeps native SOL as a SINGLE cap shared across networks (deliberate)', () => {
+    // assetKey(NATIVE_SOL) has no mint, so there is no per-network variant:
+    // in a mixed-network process devnet and mainnet SOL spends draw down one
+    // shared cap. Conservative direction - it can only under-allow, never
+    // over-spend.
+    const solEntries = DEFAULT_SESSION_LIMITS.filter((entry) => entry.asset.token === 'sol');
+    expect(solEntries).toHaveLength(1);
+    expect(solEntries[0]?.asset.mint).toBeUndefined();
+    // Exactly three default entries: shared SOL + USDC per network.
+    expect(defaultSpendLimitsMap().size).toBe(3);
   });
 });
 

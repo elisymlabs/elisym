@@ -31,8 +31,9 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { getProtocolConfig } from '../config/onchain';
-import { DEFAULTS, ELISYM_PROTOCOL_TAG, LIMITS, getProtocolProgramId } from '../constants';
+import { DEFAULTS, ELISYM_PROTOCOL_TAG, LIMITS } from '../constants';
 import type {
+  Network,
   PaymentAssetRef,
   PaymentRequestData,
   PaymentValidationError,
@@ -98,6 +99,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     recipientAddress: string,
     amount: number,
     config: ProtocolConfigInput,
+    network: Network,
     options?: { expirySecs?: number; asset?: Asset },
   ): PaymentRequestData {
     assertConfig(config);
@@ -132,12 +134,14 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       created_at: Math.floor(Date.now() / 1000),
       expiry_secs: expirySecs,
       ...(assetRef ? { asset: assetRef } : {}),
+      network,
     };
   }
 
   validatePaymentRequest(
     requestJson: string,
     config: ProtocolConfigInput,
+    network: Network,
     expectedRecipient?: string,
     options?: { maxAmountLamports?: bigint },
   ): PaymentValidationError | null {
@@ -157,6 +161,19 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       return { code: 'invalid_amount', message: parsed.error.message };
     }
     const data: PaymentRequestData = parsed.data;
+
+    // Network gate FIRST, before any money check: a request settling on the
+    // other cluster must never proceed to fee/recipient validation, and a
+    // missing network means a pre-mainnet (devnet) provider (D7).
+    const requestNetwork = data.network ?? 'devnet';
+    if (requestNetwork !== network) {
+      return {
+        code: 'network_mismatch',
+        message:
+          `Network mismatch: this customer is on ${network}, but the payment request ` +
+          `settles on ${requestNetwork}. Cross-network payments are not possible.`,
+      };
+    }
 
     // Reject payment requests that reference an asset the SDK doesn't know
     // about - the customer cannot safely build a transaction without knowing
@@ -292,7 +309,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     payerSigner: Signer,
     rpc: Rpc<SolanaRpcApi>,
     config: ProtocolConfigInput,
-    options?: BuildTransactionOptions,
+    options: BuildTransactionOptions,
   ): Promise<Readonly<unknown>> {
     assertConfig(config);
     assertLamports(paymentRequest.amount, 'payment amount');
@@ -319,7 +336,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       );
     }
 
-    const computeUnitLimit = options?.computeUnitLimit ?? DEFAULT_COMPUTE_UNIT_LIMIT;
+    const computeUnitLimit = options.computeUnitLimit ?? DEFAULT_COMPUTE_UNIT_LIMIT;
     if (!Number.isInteger(computeUnitLimit) || computeUnitLimit <= 0) {
       throw new Error(`Invalid computeUnitLimit: ${computeUnitLimit}. Must be a positive integer.`);
     }
@@ -327,14 +344,15 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     // >= amount) and, for SPL assets, derives the ATAs, before any RPC
     // round-trip that depends on them.
     const paymentInstructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
-      jobEventId: options?.jobEventId,
-      programId: options?.programId,
+      jobEventId: options.jobEventId,
+      programId: options.programId,
     });
 
     const priorityFeeMicroLamports =
-      options?.priorityFeeMicroLamports ??
+      options.priorityFeeMicroLamports ??
       (await estimatePriorityFeeMicroLamports(rpc, {
-        percentile: options?.priorityFeePercentile ?? DEFAULT_PRIORITY_FEE_PERCENTILE,
+        network: options.network,
+        percentile: options.priorityFeePercentile ?? DEFAULT_PRIORITY_FEE_PERCENTILE,
       }));
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
@@ -766,12 +784,12 @@ function waitMs(ms: number): Promise<void> {
 export async function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
   payerSigner: Signer,
-  options?: { jobEventId?: string; programId?: Address },
+  options: { jobEventId?: string; programId: Address },
 ): Promise<readonly unknown[]> {
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);
   const protocolTag = address(ELISYM_PROTOCOL_TAG);
-  const programId = options?.programId ?? getProtocolProgramId('devnet');
+  const programId = options.programId;
   const feeAmount = paymentRequest.fee_amount ?? 0;
   const providerAmount =
     paymentRequest.fee_address && feeAmount > 0
@@ -797,7 +815,7 @@ export async function buildPaymentInstructions(
     );
   }
 
-  const memoInstruction = options?.jobEventId
+  const memoInstruction = options.jobEventId
     ? getAddMemoInstruction({ memo: `elisym:v1:${options.jobEventId}` })
     : null;
 
@@ -934,16 +952,18 @@ export async function buildPaymentInstructions(
 export async function createPaymentRequestWithOnchainConfig(
   rpc: Rpc<SolanaRpcApi>,
   programId: Address,
+  network: Network,
   recipient: string,
   amount: number,
   options?: { expirySecs?: number },
 ): Promise<PaymentRequestData> {
-  const config = await getProtocolConfig(rpc, programId);
+  const config = await getProtocolConfig(rpc, programId, network);
   const strategy = new SolanaPaymentStrategy();
   return strategy.createPaymentRequest(
     recipient,
     amount,
     { feeBps: config.feeBps, treasury: config.treasury },
+    network,
     options,
   );
 }

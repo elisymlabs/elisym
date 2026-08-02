@@ -1,8 +1,36 @@
+import type { Network } from '@elisym/sdk';
+
 /** CAIP-2 id of Solana devnet (genesis-hash form) - the canonical x402 v2 network id. */
 export const X402_SOLANA_DEVNET_CAIP2 = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 
 /** x402 v1 alias for Solana devnet (pre-CAIP string networks). */
 export const X402_SOLANA_DEVNET_V1 = 'solana-devnet';
+
+/** CAIP-2 id of Solana mainnet (genesis-hash form) - the canonical x402 v2 network id. */
+export const X402_SOLANA_MAINNET_CAIP2 = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+
+/**
+ * x402 v1 alias for Solana mainnet. Verified against the installed
+ * `@x402/svm` (`V1_TO_V2_NETWORK_MAP` in its constants: `solana` maps to the
+ * mainnet CAIP-2, `solana-devnet` to devnet).
+ */
+export const X402_SOLANA_MAINNET_V1 = 'solana';
+
+/**
+ * The x402 network identifiers (v2 CAIP-2 + v1 alias) for the agent's Solana
+ * network. Single source for the matcher's accepted-id set and the driver's
+ * scheme registration, so the two can never drift apart. The caip2 member
+ * keeps the `namespace:reference` template shape `@x402`'s scheme config
+ * requires.
+ */
+export function x402SolanaNetworkIds(network: Network): {
+  caip2: `${string}:${string}`;
+  v1: string;
+} {
+  return network === 'mainnet'
+    ? { caip2: X402_SOLANA_MAINNET_CAIP2, v1: X402_SOLANA_MAINNET_V1 }
+    : { caip2: X402_SOLANA_DEVNET_CAIP2, v1: X402_SOLANA_DEVNET_V1 };
+}
 
 /**
  * Ceiling on a GET input AFTER percent-encoding (bytes). Query strings above

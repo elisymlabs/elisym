@@ -1,5 +1,6 @@
 import type { Address, Rpc, SolanaRpcApi, TransactionSigner } from '@solana/kit';
 import type {
+  Network,
   PaymentRequestData,
   PaymentValidationError,
   VerifyOptions,
@@ -48,21 +49,33 @@ export interface PaymentStrategy {
   /** Calculate protocol fee using basis-point math. */
   calculateFee(amount: number, config: ProtocolConfigInput): number;
 
-  /** Create a payment request with auto-calculated protocol fee. */
+  /**
+   * Create a payment request with auto-calculated protocol fee. `network` is
+   * required on the write side (D7): the API cannot infer it - the program id
+   * is cluster-ambiguous - and a request without it would be auto-rejected as
+   * legacy-devnet by every mainnet customer.
+   */
   createPaymentRequest(
     recipientAddress: string,
     amount: number,
     config: ProtocolConfigInput,
+    network: Network,
     options?: { expirySecs?: number },
   ): PaymentRequestData;
 
   /**
    * Validate that a payment request has the correct recipient and protocol fee.
    * Returns a typed validation error if invalid, null if OK.
+   *
+   * `network` is the CUSTOMER's network and is required: a request whose
+   * `network` (absent = devnet, legacy) differs from it is rejected before any
+   * money check. An optional param that skips the check when absent would
+   * silently degrade to per-consumer enforcement.
    */
   validatePaymentRequest(
     requestJson: string,
     config: ProtocolConfigInput,
+    network: Network,
     expectedRecipient?: string,
     options?: { maxAmountLamports?: bigint },
   ): PaymentValidationError | null;
@@ -83,7 +96,7 @@ export interface PaymentStrategy {
     payerSigner: Signer,
     rpc: Rpc<SolanaRpcApi>,
     config: ProtocolConfigInput,
-    options?: BuildTransactionOptions,
+    options: BuildTransactionOptions,
   ): Promise<unknown>;
 
   /**
@@ -98,14 +111,27 @@ export interface PaymentStrategy {
 }
 
 /**
- * Optional knobs for `PaymentStrategy.buildTransaction`.
- *
- * Defaults are chosen for typical Solana mainnet conditions; override these
- * when the caller knows peak fees are elevated, when running against a
- * private cluster with no priority-fee samples, or when bundling multiple
- * payment instructions.
+ * Knobs for `PaymentStrategy.buildTransaction`. `programId` and `network` are
+ * required; the rest default to values chosen for typical Solana mainnet
+ * conditions - override those when the caller knows peak fees are elevated,
+ * when running against a private cluster with no priority-fee samples, or
+ * when bundling multiple payment instructions.
  */
 export interface BuildTransactionOptions {
+  /**
+   * elisym-config program ID for the active cluster (resolve via
+   * `getProtocolProgramId(network)`). Used to derive the `NetworkStats` PDA
+   * targeted by the appended `increment_stats` instruction. Required - a
+   * silent default would be a landmine for localnet and any future
+   * per-cluster id divergence.
+   */
+  programId: Address;
+  /**
+   * The cluster the supplied RPC points at. Threaded into the priority-fee
+   * estimator's cache discriminator - nothing else in the inputs identifies
+   * the cluster (the program id is cluster-ambiguous by D4).
+   */
+  network: Network;
   /**
    * Compute-unit limit attached to the transaction. Defaults to 200 000 -
    * comfortable headroom for two SystemProgram transfers + a few extra ops.
@@ -132,10 +158,4 @@ export interface BuildTransactionOptions {
    * attached either way.
    */
   jobEventId?: string;
-  /**
-   * elisym-config program ID. Used to derive the `NetworkStats` PDA targeted
-   * by the appended `increment_stats` instruction. Defaults to the devnet
-   * deployment when omitted.
-   */
-  programId?: Address;
 }

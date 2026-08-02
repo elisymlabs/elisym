@@ -12,7 +12,7 @@
 
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from '@solana-program/token';
 import { type Address, type Rpc, type SolanaRpcApi, address } from '@solana/kit';
-import type { PaymentRequestData } from '../types';
+import type { Network, PaymentRequestData } from '../types';
 import { resolveAssetFromPaymentRequest } from './assets';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
 
@@ -90,6 +90,7 @@ export async function estimateSolFeeLamports(
   rpc: Rpc<SolanaRpcApi>,
   paymentRequest: PaymentRequestData,
   _payerAddress: string,
+  network: Network,
   options?: EstimateSolFeeOptions,
 ): Promise<SolFeeEstimate> {
   const numSignatures = options?.numSignatures ?? 1;
@@ -97,6 +98,7 @@ export async function estimateSolFeeLamports(
   const priorityFeeMicroLamports =
     options?.priorityFeeMicroLamports ??
     (await estimatePriorityFeeMicroLamports(rpc, {
+      network,
       percentile: options?.priorityFeePercentile ?? DEFAULT_PRIORITY_FEE_PERCENTILE,
     }));
 
@@ -264,12 +266,14 @@ export interface NetworkBaselineOptions {
  */
 export async function estimateNetworkBaseline(
   rpc: Rpc<SolanaRpcApi>,
+  network: Network,
   options?: NetworkBaselineOptions,
 ): Promise<NetworkBaselineEstimate> {
   const computeUnitLimit = options?.computeUnitLimit ?? DEFAULT_COMPUTE_UNIT_LIMIT;
   const priorityFeeMicroLamports =
     options?.priorityFeeMicroLamports ??
     (await estimatePriorityFeeMicroLamports(rpc, {
+      network,
       percentile: options?.priorityFeePercentile ?? DEFAULT_PRIORITY_FEE_PERCENTILE,
     }));
   const baseFeeLamports = BASE_FEE_LAMPORTS_PER_SIGNATURE;

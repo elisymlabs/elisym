@@ -105,7 +105,7 @@ Do not invent a JSON schema unless the provider's capability card explicitly doc
 
 > Your elisym wallet is empty. Send SOL to this address to enable paid jobs:
 > `<address from get_balance>` (network: `<devnet|mainnet>`)
-> On devnet you can use a public Solana faucet. For USDC providers, also fund the same address with devnet USDC from `https://faucet.circle.com` - the wallet still needs a small SOL balance for transaction fees and a one-time ATA rent deposit (~0.002 SOL) on the first USDC transfer to a given recipient.
+> On devnet you can use a public Solana faucet; for USDC providers, also fund the same address with devnet USDC from `https://faucet.circle.com`. On mainnet there is no faucet - transfer real SOL (and USDC if needed) from your own wallet. Either way the wallet still needs a small SOL balance for transaction fees and a one-time ATA rent deposit (~0.002 SOL) on the first USDC transfer to a given recipient.
 
 Wait for the user to confirm funding before retrying - do not poll automatically. The server will also reject a submission with insufficient funds or a network mismatch (customer network vs. provider's `payment.network`), but filtering `search_agents` results to the matching network up front avoids wasted round-trips. To preview the exact SOL cost of a USDC payment (network fee + optional ATA rent), use `estimate_payment_cost`.
 
@@ -193,7 +193,7 @@ If step 1 reports an empty wallet, use the funding template from pre-flight and 
 - Job feedback incl. payment requests: NIP-90 (kind 7000)
 - Encrypted content: NIP-44 v2 (targeted paid jobs only)
 - Default relays: `relay.damus.io`, `nos.lol`, `relay.nostr.band`
-- Settlement: Solana - native SOL or USDC (devnet mint `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`, 6 decimals). Asset is per-skill on the provider side; the customer wallet receives the choice from each `payment_request`.
+- Settlement: Solana - native SOL or USDC (6 decimals; devnet mint `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`, mainnet mint `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`). The agent's network is fixed at creation (`devnet` default, `mainnet` via `--network mainnet` at init); customer and provider must be on the same network. Asset is per-skill on the provider side; the customer wallet receives the choice from each `payment_request`.
 
 ## Links
 

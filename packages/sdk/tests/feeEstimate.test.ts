@@ -79,6 +79,7 @@ describe('estimateSolFeeLamports', () => {
         expiry_secs: 600,
       },
       payer,
+      'devnet',
     );
     expect(est.rentLamports).toBe(0n);
     expect(est.totalLamports).toBe(est.baseFeeLamports + est.priorityFeeLamports);
@@ -87,14 +88,14 @@ describe('estimateSolFeeLamports', () => {
 
   it('USDC + both ATAs missing: rent = 2x rentPerAta', async () => {
     const rpc = createMockRpc({ atasExist: false });
-    const est = await estimateSolFeeLamports(rpc, usdcRequest(), payer);
+    const est = await estimateSolFeeLamports(rpc, usdcRequest(), payer, 'devnet');
     expect(est.breakdown.missingAtaCount).toBe(2);
     expect(est.rentLamports).toBe(2n * 2_039_280n);
   });
 
   it('USDC + both ATAs exist: rent is 0', async () => {
     const rpc = createMockRpc({ atasExist: true });
-    const est = await estimateSolFeeLamports(rpc, usdcRequest(), payer);
+    const est = await estimateSolFeeLamports(rpc, usdcRequest(), payer, 'devnet');
     expect(est.breakdown.missingAtaCount).toBe(0);
     expect(est.rentLamports).toBe(0n);
   });
@@ -113,6 +114,7 @@ describe('estimateSolFeeLamports', () => {
         asset: request.asset,
       },
       payer,
+      'devnet',
     );
     expect(est.breakdown.missingAtaCount).toBe(1);
     expect(est.rentLamports).toBe(2_039_280n);
@@ -130,6 +132,7 @@ describe('estimateSolFeeLamports', () => {
         expiry_secs: 600,
       },
       payer,
+      'devnet',
     );
     const formatted = formatFeeBreakdown(est);
     expect(formatted).toContain('Base fee:');

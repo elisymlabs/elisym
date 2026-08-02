@@ -1,7 +1,12 @@
-import { USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/sdk';
 import type { PaymentRequirements } from '@x402/fetch';
 import { describe, expect, it } from 'vitest';
-import { X402_SOLANA_DEVNET_CAIP2, X402_SOLANA_DEVNET_V1 } from '../src/x402/constants.js';
+import {
+  X402_SOLANA_DEVNET_CAIP2,
+  X402_SOLANA_DEVNET_V1,
+  X402_SOLANA_MAINNET_CAIP2,
+  X402_SOLANA_MAINNET_V1,
+} from '../src/x402/constants.js';
 import {
   buildRequirementsPolicy,
   isAcceptableRequirement,
@@ -11,6 +16,7 @@ import {
 } from '../src/x402/matcher.js';
 
 const USDC_MINT = USDC_SOLANA_DEVNET.mint ?? '';
+const USDC_MAINNET_MINT = USDC_SOLANA_MAINNET.mint ?? '';
 
 function requirement(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
   return {
@@ -25,7 +31,23 @@ function requirement(overrides: Partial<PaymentRequirements> = {}): PaymentRequi
   };
 }
 
-const RULE = { maxUpstreamSubunits: 10_000n };
+function mainnetRequirement(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
+  return requirement({
+    network: X402_SOLANA_MAINNET_CAIP2 as PaymentRequirements['network'],
+    asset: USDC_MAINNET_MINT,
+    ...overrides,
+  });
+}
+
+const RULE = { maxUpstreamSubunits: 10_000n, network: 'devnet' as const };
+const MAINNET_RULE = { maxUpstreamSubunits: 10_000n, network: 'mainnet' as const };
+
+describe('x402 network id constants', () => {
+  it('pins the wire-format literals (the matcher tests exercise them via the constants)', () => {
+    expect(X402_SOLANA_MAINNET_V1).toBe('solana');
+    expect(X402_SOLANA_MAINNET_CAIP2).toBe('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp');
+  });
+});
 
 describe('x402 requirement matcher', () => {
   it('accepts a devnet USDC exact requirement within the ceiling', () => {
@@ -48,17 +70,12 @@ describe('x402 requirement matcher', () => {
     expect(isAcceptableRequirement(requirement({ scheme: 'upto' }), RULE)).toBe(false);
     expect(
       isAcceptableRequirement(
-        requirement({ network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' }),
+        requirement({ network: X402_SOLANA_MAINNET_CAIP2 as PaymentRequirements['network'] }),
         RULE,
       ),
     ).toBe(false);
     expect(isAcceptableRequirement(requirement({ network: 'eip155:8453' }), RULE)).toBe(false);
-    expect(
-      isAcceptableRequirement(
-        requirement({ asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' }),
-        RULE,
-      ),
-    ).toBe(false);
+    expect(isAcceptableRequirement(requirement({ asset: USDC_MAINNET_MINT }), RULE)).toBe(false);
   });
 
   it('rejects a quote above the ceiling and malformed amounts (fail closed)', () => {
@@ -98,5 +115,46 @@ describe('x402 requirement matcher', () => {
     const good = requirement();
     expect(policy(2, [evm, over, good])).toEqual([good]);
     expect(policy(2, [evm, over])).toEqual([]);
+  });
+});
+
+describe('x402 requirement matcher (mainnet agent)', () => {
+  it('accepts a mainnet USDC exact requirement (CAIP-2 id + mainnet mint)', () => {
+    expect(isAcceptableRequirement(mainnetRequirement(), MAINNET_RULE)).toBe(true);
+  });
+
+  it('accepts the v1 mainnet network alias ("solana")', () => {
+    const v1 = mainnetRequirement({
+      network: X402_SOLANA_MAINNET_V1 as PaymentRequirements['network'],
+    });
+    expect(isAcceptableRequirement(v1, MAINNET_RULE)).toBe(true);
+  });
+
+  it('still rejects cross-network requirements (devnet ids / devnet mint)', () => {
+    // Devnet network id under a mainnet rule.
+    expect(
+      isAcceptableRequirement(
+        mainnetRequirement({ network: X402_SOLANA_DEVNET_CAIP2 as PaymentRequirements['network'] }),
+        MAINNET_RULE,
+      ),
+    ).toBe(false);
+    expect(
+      isAcceptableRequirement(
+        mainnetRequirement({ network: X402_SOLANA_DEVNET_V1 as PaymentRequirements['network'] }),
+        MAINNET_RULE,
+      ),
+    ).toBe(false);
+    // Mainnet network id but the devnet mint.
+    expect(isAcceptableRequirement(mainnetRequirement({ asset: USDC_MINT }), MAINNET_RULE)).toBe(
+      false,
+    );
+  });
+
+  it('policy under a mainnet rule signs only mainnet requirements', () => {
+    const policy = buildRequirementsPolicy(MAINNET_RULE);
+    const devnet = requirement();
+    const mainnet = mainnetRequirement();
+    expect(policy(2, [devnet, mainnet])).toEqual([mainnet]);
+    expect(policy(2, [devnet])).toEqual([]);
   });
 });

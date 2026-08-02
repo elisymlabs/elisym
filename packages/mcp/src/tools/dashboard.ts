@@ -27,7 +27,7 @@ function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
 const GetDashboardSchema = z.object({
   top_n: z.number().int().min(1).max(100).default(10),
   chain: z.enum(['solana']).default('solana'),
-  network: z.enum(['devnet']).optional(),
+  network: z.enum(['devnet', 'mainnet']).optional(),
   timeout_secs: z.number().int().min(1).max(60).default(15),
 });
 
@@ -40,6 +40,9 @@ export const dashboardTools: ToolDefinition[] = [
       'reputation, or activity. Agent metadata is user-generated.',
     schema: GetDashboardSchema,
     async handler(ctx, input) {
+      // Rate-limit like every other relay-touching tool: fetchAgents fans out
+      // to every configured relay, so an injected loop could amplify traffic.
+      ctx.toolRateLimiter.check();
       const agent = ctx.active();
       const network = input.network ?? agent.network;
 

@@ -1,7 +1,7 @@
 /**
  * Wallet command - show SOL and USDC balance.
  */
-import { USDC_SOLANA_DEVNET, formatAssetAmount, formatSol } from '@elisym/sdk';
+import { formatAssetAmount, formatSol, resolveUsdcAsset } from '@elisym/sdk';
 import { loadAgent, listAgents } from '@elisym/sdk/agent-store';
 import { address, createSolanaRpc } from '@solana/kit';
 import { fetchUsdcBalance, getRpcUrl } from '../helpers.js';
@@ -43,11 +43,13 @@ export async function cmdWallet(name: string | undefined): Promise<void> {
   const rpc = createSolanaRpc(rpcUrl);
   const walletAddress = address(solPayment.address);
   const { value: balance } = await rpc.getBalance(walletAddress).send();
-  const usdcBalance = await fetchUsdcBalance(rpc, walletAddress);
+  const usdcBalance = await fetchUsdcBalance(rpc, walletAddress, solPayment.network);
 
   console.log(`\n  Agent: ${name}`);
   console.log(`  Network: ${solPayment.network}`);
   console.log(`  Address: ${solPayment.address}`);
   console.log(`  SOL balance: ${formatSol(Number(balance))} (${balance} lamports)`);
-  console.log(`  USDC balance: ${formatAssetAmount(USDC_SOLANA_DEVNET, usdcBalance)}\n`);
+  console.log(
+    `  USDC balance: ${formatAssetAmount(resolveUsdcAsset(solPayment.network), usdcBalance)}\n`,
+  );
 }

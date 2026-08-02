@@ -8,6 +8,9 @@ skip-lint = false
 [programs.devnet]
 elisym_config = "BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE"
 
+[programs.mainnet]
+elisym_config = "BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE"
+
 [programs.localnet]
 elisym_config = "BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE"
 

@@ -1,17 +1,21 @@
 /**
- * One-shot script to call `initialize_stats` on the elisym-config program on devnet.
+ * One-shot script to call `initialize` on a freshly-deployed elisym-config program.
  *
- * Mirrors `initialize-devnet.ts` for the new `NetworkStats` PDA introduced
- * alongside the on-chain stats counter.
+ * Network-agnostic: the target cluster is whatever SOLANA_RPC_URL / RPC_URL points at
+ * (defaults to the public devnet endpoint). For the mainnet launch sequence see
+ * programs/elisym-config/DEPLOY.mainnet.md.
+ *
+ * Uses the Codama-generated client from @elisym/config-client and @solana/kit.
  *
  * Usage:
- *   bun run packages/config-client/scripts/initialize-stats-devnet.ts
+ *   INITIAL_TREASURY=<treasury-pubkey> \
+ *   bun run packages/config-client/scripts/initialize.ts
  *
  * Optional env:
- *   PROGRAM_ID          - defaults to the Codama-embedded program address
- *   RPC_URL             - defaults to https://api.devnet.solana.com
- *   ADMIN_KEYPAIR_PATH  - path to admin keypair JSON; defaults to ~/.config/solana/id.json.
- *                         Must equal the on-chain `Config.admin` (has_one check).
+ *   PROGRAM_ID         - defaults to the Codama-embedded program address
+ *   SOLANA_RPC_URL     - RPC endpoint (alias: RPC_URL); defaults to https://api.devnet.solana.com
+ *   INITIAL_FEE_BPS    - defaults to 300 (3%)
+ *   INITIAL_ADMIN      - defaults to the payer keypair pubkey
  */
 
 import { readFileSync } from 'node:fs';
@@ -33,27 +37,40 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from '@solana/kit';
-import { ELISYM_CONFIG_PROGRAM_ADDRESS, getInitializeStatsInstructionAsync } from '../src';
+import { getInitializeInstructionAsync, ELISYM_CONFIG_PROGRAM_ADDRESS } from '../src';
 
 const PROGRAM_ID: Address = process.env.PROGRAM_ID
   ? address(process.env.PROGRAM_ID)
   : ELISYM_CONFIG_PROGRAM_ADDRESS;
 
-const RPC_URL = process.env.RPC_URL ?? 'https://api.devnet.solana.com';
+const INITIAL_TREASURY_RAW = process.env.INITIAL_TREASURY;
+if (!INITIAL_TREASURY_RAW) {
+  console.error('INITIAL_TREASURY env var is required.');
+  process.exit(1);
+}
+const INITIAL_TREASURY = address(INITIAL_TREASURY_RAW);
+
+const RPC_URL =
+  process.env.SOLANA_RPC_URL ?? process.env.RPC_URL ?? 'https://api.devnet.solana.com';
 const WS_URL = RPC_URL.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 
-const ADMIN_KEYPAIR_PATH =
-  process.env.ADMIN_KEYPAIR_PATH ?? join(homedir(), '.config/solana/id.json');
+const INITIAL_FEE_BPS = Number(process.env.INITIAL_FEE_BPS ?? '300');
+if (!Number.isInteger(INITIAL_FEE_BPS) || INITIAL_FEE_BPS < 0 || INITIAL_FEE_BPS > 1000) {
+  console.error(`INITIAL_FEE_BPS must be an integer in [0, 1000]; got ${INITIAL_FEE_BPS}`);
+  process.exit(1);
+}
 
-const adminSecretKey = new Uint8Array(JSON.parse(readFileSync(ADMIN_KEYPAIR_PATH, 'utf8')));
+const payerSecretKey = new Uint8Array(
+  JSON.parse(readFileSync(join(homedir(), '.config/solana/id.json'), 'utf8')),
+);
 
 async function main(): Promise<void> {
-  const admin = await createKeyPairSignerFromBytes(adminSecretKey);
+  const payer = await createKeyPairSignerFromBytes(payerSecretKey);
 
-  const [statsPda] = await getProgramDerivedAddress({
-    programAddress: PROGRAM_ID,
-    seeds: [new TextEncoder().encode('network_stats')],
-  });
+  const INITIAL_ADMIN: Address = process.env.INITIAL_ADMIN
+    ? address(process.env.INITIAL_ADMIN)
+    : payer.address;
+
   const [configPda] = await getProgramDerivedAddress({
     programAddress: PROGRAM_ID,
     seeds: [new TextEncoder().encode('config')],
@@ -65,18 +82,21 @@ async function main(): Promise<void> {
 
   console.log('RPC:                ', RPC_URL);
   console.log('Program ID:         ', PROGRAM_ID);
-  console.log('Admin (signer):     ', admin.address);
+  console.log('Payer:              ', payer.address);
+  console.log('Initial admin:      ', INITIAL_ADMIN);
+  console.log('Initial treasury:   ', INITIAL_TREASURY);
+  console.log('Initial fee (bps):  ', INITIAL_FEE_BPS);
   console.log('Config PDA:         ', configPda);
-  console.log('Stats PDA:          ', statsPda);
   console.log('Event authority PDA:', eventAuthority);
 
-  const ix = await getInitializeStatsInstructionAsync(
+  const ix = await getInitializeInstructionAsync(
     {
-      admin,
-      stats: statsPda,
-      config: configPda,
+      payer,
       eventAuthority,
       program: PROGRAM_ID,
+      admin: INITIAL_ADMIN,
+      treasury: INITIAL_TREASURY,
+      feeBps: INITIAL_FEE_BPS,
     },
     { programAddress: PROGRAM_ID },
   );
@@ -86,7 +106,7 @@ async function main(): Promise<void> {
 
   const message = pipe(
     createTransactionMessage({ version: 0 }),
-    (msg) => setTransactionMessageFeePayerSigner(admin, msg),
+    (msg) => setTransactionMessageFeePayerSigner(payer, msg),
     (msg) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, msg),
     (msg) => appendTransactionMessageInstruction(ix, msg),
   );
@@ -101,7 +121,7 @@ async function main(): Promise<void> {
   const signature = getSignatureFromTransaction(
     signedTx as Parameters<typeof getSignatureFromTransaction>[0],
   );
-  console.log('initialize_stats signature:', signature);
+  console.log('Initialize signature:', signature);
 }
 
 main()

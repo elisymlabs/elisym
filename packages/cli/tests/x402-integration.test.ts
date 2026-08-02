@@ -10,7 +10,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { USDC_SOLANA_DEVNET, generateSolanaWallet } from '@elisym/sdk';
+import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET, generateSolanaWallet } from '@elisym/sdk';
 import { encodePaymentRequiredHeader } from '@x402/core/http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SkillInput, X402SkillJob } from '../src/skill/index.js';
@@ -56,6 +56,9 @@ const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
 class X402Fixture {
   private server: Server | undefined;
   quoteSubunits = 5_000n;
+  /** The settlement network id + asset the fixture advertises (default devnet). */
+  network = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+  asset = USDC_MINT;
   paidRequests = 0;
   unpaidRequests = 0;
 
@@ -90,9 +93,9 @@ class X402Fixture {
         accepts: [
           {
             scheme: 'exact',
-            network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+            network: this.network as never,
             amount: this.quoteSubunits.toString(),
-            asset: USDC_MINT,
+            asset: this.asset,
             payTo: '2wKupLR9q6wXYppw8Gr2NvWxKBUqm4PPJKkQfoxHDBg4',
             maxTimeoutSeconds: 60,
             extra: { feePayer: 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd' },
@@ -153,6 +156,7 @@ describe('x402 bridge integration (real wrapper + fixture)', () => {
       paymentsAddress: wallet.signer.address,
       solanaSecretKeyBase58: wallet.secretKeyBase58,
       rpcUrl: 'http://127.0.0.1:1/never-used',
+      network: 'devnet',
       getFeeBps: async () => 250,
       log: () => {},
     });
@@ -269,6 +273,8 @@ describe('x402 add full cycle (temp agent, live fixture)', () => {
     });
     mocks.fetchUsdcBalance.mockResolvedValue(1_000_000n);
     fixture.quoteSubunits = 5_000n;
+    fixture.network = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+    fixture.asset = USDC_MINT;
     clearProbeCache();
     process.chdir(projectDir);
   });
@@ -308,11 +314,58 @@ describe('x402 add full cycle (temp agent, live fixture)', () => {
     expect(skillMd).toContain('mode: x402');
     expect(skillMd).toContain('x402_max_upstream: 5000');
     const { loadSkillsFromDir } = await import('../src/skill/loader.js');
-    const skills = loadSkillsFromDir(join(agentDir, 'skills'));
+    const skills = loadSkillsFromDir(join(agentDir, 'skills'), { network: 'devnet' });
     expect(skills).toHaveLength(1);
     expect(skills[0]?.mode).toBe('x402');
     expect(skills[0]?.x402?.url).toBe(`${baseUrl}/premium-data`);
     // price = ceil(5000 * 11000 / 9750) = 5642 subunits
     expect(skills[0]?.priceSubunits).toBe(5_642);
+  });
+
+  it('bridges a mainnet-settling upstream for a mainnet-bound agent', async () => {
+    // Mainnet-bound agent: wallet key pre-written so payments[] can carry the
+    // matching address up front (the network prompt only runs interactively).
+    const wallet = await generateSolanaWallet();
+    const agentDir = join(projectDir, '.elisym', 'bridge-agent');
+    await writeFile(
+      join(agentDir, 'elisym.yaml'),
+      [
+        'description: bridge test agent',
+        'relays: []',
+        'payments:',
+        '  - chain: solana',
+        '    network: mainnet',
+        `    address: ${wallet.signer.address}`,
+      ].join('\n'),
+    );
+    await writeFile(
+      join(agentDir, '.secrets.json'),
+      JSON.stringify({
+        nostr_secret_key: '1'.repeat(64),
+        solana_secret_key: wallet.secretKeyBase58,
+      }),
+    );
+    fixture.network = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+    fixture.asset = USDC_SOLANA_MAINNET.mint ?? '';
+    clearProbeCache();
+
+    await cmdX402Add(`${baseUrl}/premium-data`, 'bridge-agent', {
+      yes: true,
+      name: 'mainnet-market-data',
+    });
+
+    // The agent's elisym.yaml is fixture-owned (pre-written as mainnet above,
+    // since the network prompt is interactive) - asserting on it would be
+    // tautological; the load-bearing checks are the SKILL.md round-trip below.
+    const skillMd = await readFile(
+      join(agentDir, 'skills', 'mainnet-market-data', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(skillMd).toContain('mode: x402');
+    const { loadSkillsFromDir } = await import('../src/skill/loader.js');
+    const skills = loadSkillsFromDir(join(agentDir, 'skills'), { network: 'mainnet' });
+    const mainnetSkill = skills.find((skill) => skill.name === 'mainnet-market-data');
+    expect(mainnetSkill?.mode).toBe('x402');
+    expect(mainnetSkill?.asset.mint).toBe(USDC_SOLANA_MAINNET.mint);
   });
 });

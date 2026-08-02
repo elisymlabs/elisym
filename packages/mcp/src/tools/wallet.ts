@@ -2,7 +2,6 @@ import { randomBytes } from 'node:crypto';
 import {
   KIND_JOB_REQUEST_BASE,
   KIND_JOB_RESULT_BASE,
-  USDC_SOLANA_DEVNET,
   assetKey,
   buildApproveDelegate,
   buildRevokeDelegate,
@@ -14,10 +13,12 @@ import {
   formatAssetAmount,
   formatFeeBreakdown,
   getDelegation,
+  getProtocolProgramId,
   NATIVE_SOL,
   SolanaPaymentStrategy,
   parseAssetAmount,
   resolveAssetFromPaymentRequest as sdkResolveAssetFromPaymentRequest,
+  resolveUsdcAsset,
   type Agent,
   type Asset,
 } from '@elisym/sdk';
@@ -49,10 +50,10 @@ import {
 } from '@solana/kit';
 import { verifyEvent } from 'nostr-tools';
 import { z } from 'zod';
-import type { AgentInstance } from '../context.js';
+import type { AgentInstance, SolanaNetwork } from '../context.js';
 import {
   AgentContext,
-  explorerClusterFor,
+  explorerQuerySuffixFor,
   fetchProtocolConfig,
   lookupAssetByKey,
   releaseSpend,
@@ -260,9 +261,9 @@ function wsUrlFor(httpUrl: string): string {
   return httpUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 }
 
-/** Explorer tx URL for the agent's network. */
+/** Explorer tx URL for the agent's network (mainnet links carry no cluster param). */
 function explorerUrl(agent: AgentInstance, signature: string): string {
-  return `https://explorer.solana.com/tx/${signature}?cluster=${explorerClusterFor(agent.network)}`;
+  return `https://explorer.solana.com/tx/${signature}${explorerQuerySuffixFor(agent.network)}`;
 }
 
 /** Validate that a string parses as a Solana address. */
@@ -321,14 +322,16 @@ async function signSendConfirm(
 const paymentStrategy = new SolanaPaymentStrategy();
 
 /**
- * Return the USDC balance (devnet mint) for `owner` as raw subunits (1e-6 USDC).
- * Returns 0n when the owner has no associated token account yet.
+ * Return the USDC balance (the network's canonical mint) for `owner` as raw
+ * subunits (1e-6 USDC). Returns 0n when the owner has no associated token
+ * account yet.
  */
 async function fetchUsdcBalance(
   rpc: Rpc<SolanaRpcApi>,
   owner: ReturnType<typeof address>,
+  network: SolanaNetwork,
 ): Promise<bigint> {
-  const mint = USDC_SOLANA_DEVNET.mint;
+  const mint = resolveUsdcAsset(network).mint;
   if (!mint) {
     return 0n;
   }
@@ -386,7 +389,7 @@ export const walletTools: ToolDefinition[] = [
     name: 'get_balance',
     description:
       'Get the Solana wallet balance for this agent. Returns address, network, SOL balance, ' +
-      'and USDC balance (devnet).',
+      "and USDC balance (the agent network's canonical mint).",
     schema: GetBalanceSchema,
     async handler(ctx) {
       ctx.toolRateLimiter.check();
@@ -401,8 +404,8 @@ export const walletTools: ToolDefinition[] = [
       // through Number() would lose precision past 2^53 lamports (money rule).
       const { value: balanceLamports } = await rpc.getBalance(walletAddress).send();
 
-      const usdcBalanceRaw = await fetchUsdcBalance(rpc, walletAddress);
-      const usdcLine = `USDC balance: ${formatAssetAmount(USDC_SOLANA_DEVNET, usdcBalanceRaw)}`;
+      const usdcBalanceRaw = await fetchUsdcBalance(rpc, walletAddress, agent.network);
+      const usdcLine = `USDC balance: ${formatAssetAmount(resolveUsdcAsset(agent.network), usdcBalanceRaw)}`;
 
       const sessionLines = formatSessionSpendLines(ctx);
       const sessionBlock = sessionLines.length > 0 ? `\n${sessionLines.join('\n')}` : '';
@@ -462,7 +465,8 @@ export const walletTools: ToolDefinition[] = [
         );
       }
 
-      const balanceLine = `Balance: ${formatAssetAmount(USDC_SOLANA_DEVNET, status.balance)}`;
+      const usdcAsset = resolveUsdcAsset(agent.network);
+      const balanceLine = `Balance: ${formatAssetAmount(usdcAsset, status.balance)}`;
       if (!status.delegate) {
         return textResult(
           `USDC account: ${ownerAta}\n` +
@@ -475,7 +479,7 @@ export const walletTools: ToolDefinition[] = [
         `USDC account: ${ownerAta}\n` +
           `Network: ${agent.network}\n` +
           `Delegate: ${status.delegate}\n` +
-          `Remaining approved: ${formatAssetAmount(USDC_SOLANA_DEVNET, status.remainingCap)}\n` +
+          `Remaining approved: ${formatAssetAmount(usdcAsset, status.remainingCap)}\n` +
           `${balanceLine}\n\n` +
           `Max loss <= remaining approved. The delegate spends up to that autonomously (including ` +
           `to its own account). Revoke stops future spend once it lands.`,
@@ -564,9 +568,10 @@ export const walletTools: ToolDefinition[] = [
 
       // Parse the cap. The user chooses the amount - no imposed default or ceiling
       // (matches the browser, where the owner types any cap). The gate is the barrier.
+      const usdcAsset = resolveUsdcAsset(agent.network);
       let capSubunits: bigint;
       try {
-        capSubunits = parseAssetAmount(USDC_SOLANA_DEVNET, input.cap_usdc);
+        capSubunits = parseAssetAmount(usdcAsset, input.cap_usdc);
       } catch (e) {
         return errorResult(e instanceof Error ? e.message : String(e));
       }
@@ -621,7 +626,7 @@ export const walletTools: ToolDefinition[] = [
       }
       if (feeSubunits > 0n) {
         try {
-          reserveSpend(ctx, USDC_SOLANA_DEVNET, feeSubunits);
+          reserveSpend(ctx, usdcAsset, feeSubunits);
         } catch (e) {
           return errorResult(e instanceof Error ? e.message : String(e));
         }
@@ -650,7 +655,7 @@ export const walletTools: ToolDefinition[] = [
           decoded.delegate !== delegatePubkey ||
           decoded.capSubunits !== capSubunits ||
           !decoded.recognized ||
-          decoded.mint !== USDC_SOLANA_DEVNET.mint
+          decoded.mint !== usdcAsset.mint
         ) {
           throw new Error('Built approval did not match the requested grant.');
         }
@@ -659,13 +664,13 @@ export const walletTools: ToolDefinition[] = [
           const [treasuryAta] = await findAssociatedTokenPda({
             owner: address(treasury),
             tokenProgram: TOKEN_PROGRAM_ADDRESS,
-            mint: address(USDC_SOLANA_DEVNET.mint ?? ''),
+            mint: address(usdcAsset.mint ?? ''),
           });
           const feeLeg = decodeDelegationFeeTransfer(instructions[3]);
           if (
             feeLeg.destination !== String(treasuryAta) ||
             feeLeg.amount !== feeSubunits ||
-            feeLeg.mint !== USDC_SOLANA_DEVNET.mint
+            feeLeg.mint !== usdcAsset.mint
           ) {
             throw new Error('Built fee transfer did not match the expected protocol fee.');
           }
@@ -673,7 +678,7 @@ export const walletTools: ToolDefinition[] = [
         signature = await signSendConfirm(agent, instructions, signer);
       } catch (e) {
         if (feeSubunits > 0n) {
-          releaseSpend(ctx, USDC_SOLANA_DEVNET, feeSubunits);
+          releaseSpend(ctx, usdcAsset, feeSubunits);
         }
         return errorResult(`Approve failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -688,10 +693,10 @@ export const walletTools: ToolDefinition[] = [
       }
       const feeLine =
         feeSubunits > 0n
-          ? `Protocol fee charged now: ${formatAssetAmount(USDC_SOLANA_DEVNET, feeSubunits)} to treasury.\n`
+          ? `Protocol fee charged now: ${formatAssetAmount(usdcAsset, feeSubunits)} to treasury.\n`
           : '';
       return textResult(
-        `Granted delegate ${delegatePubkey} up to ${formatAssetAmount(USDC_SOLANA_DEVNET, capSubunits)} ` +
+        `Granted delegate ${delegatePubkey} up to ${formatAssetAmount(usdcAsset, capSubunits)} ` +
           `on your USDC account (${replacementLine}).\n` +
           `Network: ${agent.network}\n` +
           `Signature: ${signature}\n` +
@@ -788,6 +793,7 @@ export const walletTools: ToolDefinition[] = [
           rpc,
           requestData,
           agent.solanaKeypair.publicKey,
+          agent.network,
         );
         return textResult(formatFeeBreakdown(estimate));
       } catch (e) {
@@ -838,6 +844,7 @@ export const walletTools: ToolDefinition[] = [
       const validation = payment().validatePaymentRequest(
         input.payment_request,
         protocolConfig,
+        agent.network,
         input.expected_solana_recipient,
       );
       if (validation !== null) {
@@ -878,10 +885,14 @@ export const walletTools: ToolDefinition[] = [
           signer,
           rpc,
           protocolConfig,
-          // The memo makes the payment linkable to its job for the future
-          // off-chain indexer. Omitted (no memo) when the caller does not pass
-          // a job_event_id, preserving the pure manual-transfer path.
-          input.job_event_id ? { jobEventId: input.job_event_id } : undefined,
+          {
+            programId: getProtocolProgramId(agent.network),
+            network: agent.network,
+            // The memo makes the payment linkable to its job for the future
+            // off-chain indexer. Omitted (no memo) when the caller does not pass
+            // a job_event_id, preserving the pure manual-transfer path.
+            ...(input.job_event_id ? { jobEventId: input.job_event_id } : {}),
+          },
         );
 
         // Derivable from the signed tx, so it is available even if confirmation
@@ -910,7 +921,10 @@ export const walletTools: ToolDefinition[] = [
         }
       } catch (e) {
         releaseSpend(ctx, sendAsset, sendAmount);
-        throw e;
+        // Same error surface as every other failure path in this file: an
+        // uncaught throw would bubble into the MCP framework's generic shape
+        // instead of the structured errorResult the LLM knows how to read.
+        return errorResult(`send_payment failed: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       // The payment already committed on-chain above. A failing balance fetch
@@ -1205,13 +1219,13 @@ async function handleUsdcWithdraw(
     nonce?: string;
   },
 ) {
-  const mint = USDC_SOLANA_DEVNET.mint;
+  const asset = resolveUsdcAsset(agent.network);
+  const mint = asset.mint;
   if (!mint) {
     return errorResult('USDC mint address is not configured.');
   }
-  const asset = USDC_SOLANA_DEVNET;
 
-  const usdcBalance = await fetchUsdcBalance(rpc, walletAddr);
+  const usdcBalance = await fetchUsdcBalance(rpc, walletAddr, agent.network);
   let subunits: bigint;
   try {
     if (amountRaw.trim().toLowerCase() === 'all') {
@@ -1365,7 +1379,7 @@ async function handleUsdcWithdraw(
     );
   }
 
-  const newUsdcBalance = await fetchUsdcBalance(rpc, walletAddr);
+  const newUsdcBalance = await fetchUsdcBalance(rpc, walletAddr, agent.network);
 
   return textResult(
     `Withdrawal complete.\n` +

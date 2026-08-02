@@ -438,6 +438,13 @@ export interface PaymentRequestData {
   expiry_secs: number;
   /** Optional asset identifier. Absent => native SOL (back-compat). */
   asset?: PaymentAssetRef;
+  /**
+   * Solana network the request settles on. Always written by the SDK's
+   * request-creation API; optional on the parse side - absent means devnet
+   * (requests from pre-mainnet providers). `validatePaymentRequest` rejects a
+   * request whose network differs from the customer's.
+   */
+  network?: Network;
 }
 
 export interface VerifyResult {
@@ -460,6 +467,7 @@ export type PaymentValidationCode =
   | 'missing_reference'
   | 'invalid_reference_address'
   | 'recipient_mismatch'
+  | 'network_mismatch'
   | 'expired'
   | 'future_timestamp'
   | 'fee_address_mismatch'

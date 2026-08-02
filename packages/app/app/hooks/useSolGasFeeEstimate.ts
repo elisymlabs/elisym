@@ -5,7 +5,7 @@ import {
 } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 import { useEffect, useState } from 'react';
-import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
+import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 
 /**
  * Base fee per signature (lamports) for a Solana transaction.
@@ -62,7 +62,10 @@ export function useSolGasFeeEstimate(card?: CapabilityCard): number {
   useEffect(() => {
     let cancelled = false;
     const tick = () => {
-      estimatePriorityFeeMicroLamports(rpc, { percentile: PRIORITY_FEE_PERCENTILE })
+      estimatePriorityFeeMicroLamports(rpc, {
+        network: SOLANA_CLUSTER,
+        percentile: PRIORITY_FEE_PERCENTILE,
+      })
         .then((microLamportsPerCu) => {
           if (cancelled) {
             return;

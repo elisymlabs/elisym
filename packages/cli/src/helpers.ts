@@ -1,7 +1,8 @@
 /**
  * Shared CLI helpers - RPC URLs, SOL formatting, price validation.
  */
-import { USDC_SOLANA_DEVNET, calculateProtocolFee } from '@elisym/sdk';
+import { calculateProtocolFee, resolveUsdcAsset } from '@elisym/sdk';
+import type { Network } from '@elisym/sdk';
 import { type Rpc, type SolanaRpcApi, address } from '@solana/kit';
 
 // --- Constants ---
@@ -27,27 +28,32 @@ export const WATCHDOG_SLEEP_DETECT_MULTIPLIER = 2;
 
 // --- Solana RPC ---
 
-export function getRpcUrl(_network: string): string {
+export function getRpcUrl(network: Network): string {
+  // CLI-only override (D9): `start <agent>` is one agent, one network per
+  // process, so a process-wide env override is unambiguous here.
   const envUrl = process.env.SOLANA_RPC_URL;
   if (envUrl) {
     return envUrl;
   }
-  // Only devnet is supported until the elisym-config program ships on mainnet.
-  return 'https://api.devnet.solana.com';
+  return network === 'mainnet'
+    ? 'https://api.mainnet-beta.solana.com'
+    : 'https://api.devnet.solana.com';
 }
 
 // --- USDC balance ---
 
 /**
  * Sum the agent's USDC token-account balances (raw subunits) on the connected
- * Solana RPC. Returns 0n on any error or when the asset has no mint configured;
- * callers display "0 USDC" rather than failing the whole banner.
+ * Solana RPC, querying the canonical USDC mint for `network`. Returns 0n on
+ * any error or when the asset has no mint configured; callers display
+ * "0 USDC" rather than failing the whole banner.
  */
 export async function fetchUsdcBalance(
   rpc: Rpc<SolanaRpcApi>,
   owner: ReturnType<typeof address>,
+  network: Network,
 ): Promise<bigint> {
-  const mint = USDC_SOLANA_DEVNET.mint;
+  const mint = resolveUsdcAsset(network).mint;
   if (!mint) {
     return 0n;
   }

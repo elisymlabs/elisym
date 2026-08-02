@@ -66,8 +66,12 @@ From `LIMITS` and `DEFAULTS`. See [Verified identities](/providers/verified-iden
 | ----------------------------- | ---------------------------------------------- |
 | `LAMPORTS_PER_SOL`            | `1_000_000_000`                                |
 | `PROTOCOL_PROGRAM_ID_DEVNET`  | `BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE` |
+| `PROTOCOL_PROGRAM_ID_MAINNET` | `BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE` |
 | `ELISYM_PROTOCOL_TAG`         | `ELiZksgwDt41LaeuPDLkUfWgFXhGgVayTMP7L5nTSEL8` |
 | USDC devnet mint              | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` |
+| USDC mainnet mint             | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` |
+
+The program is deliberately deployed at the **same address** on both clusters (`getProtocolProgramId(network)` resolves it), so the program id alone never identifies a network - see [Networks](/reference/networks). The USDC mints (both 6 decimals) resolve per network via `resolveUsdcAsset(network)`.
 
 The protocol fee rate and treasury address are **not** constants - they live on-chain in the `elisym-config` program and are read via `getProtocolConfig`. The `ELISYM_PROTOCOL_TAG` is a read-only marker that lets anyone audit elisym payment activity on-chain.
 

@@ -39,7 +39,7 @@ const restored = ElisymIdentity.fromHex('<hex secret>');
 
 ## Submit a job and await the result
 
-`submitJobRequest` returns the request event id; `subscribeToJobUpdates` streams feedback and the final result. Targeting a `providerPubkey` encrypts the job to that provider.
+`submitJobRequest` returns the request event id; `subscribeToJobUpdates` streams feedback and the final result. Targeting a `providerPubkey` encrypts the job to that provider. `fetchAgents` takes the Solana [network](/reference/networks) (`'devnet'` or `'mainnet'`) and only returns agents bound to it - the two marketplaces are strictly isolated.
 
 ```ts twoslash
 import { ElisymClient, ElisymIdentity } from '@elisym/sdk';

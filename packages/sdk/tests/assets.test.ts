@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   NATIVE_SOL,
+  USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
   KNOWN_ASSETS,
   assetKey,
   assetByKey,
   resolveKnownAsset,
+  resolveUsdcAsset,
   resolveAssetFromPaymentRequest,
   parseAssetAmount,
   formatAssetAmount,
@@ -41,11 +44,30 @@ describe('resolveKnownAsset / assetByKey', () => {
     expect(assetByKey('nope:nope')).toBeUndefined();
   });
 
-  it('KNOWN_ASSETS exposes SOL and USDC (devnet)', () => {
-    expect(KNOWN_ASSETS).toHaveLength(2);
+  it('KNOWN_ASSETS exposes SOL and USDC (devnet + mainnet)', () => {
+    expect(KNOWN_ASSETS).toHaveLength(3);
     expect(KNOWN_ASSETS[0]).toBe(NATIVE_SOL);
-    expect(KNOWN_ASSETS[1]?.token).toBe('usdc');
+    expect(KNOWN_ASSETS[1]).toBe(USDC_SOLANA_DEVNET);
     expect(KNOWN_ASSETS[1]?.mint).toBe('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
+    expect(KNOWN_ASSETS[2]).toBe(USDC_SOLANA_MAINNET);
+    expect(KNOWN_ASSETS[2]?.mint).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+  });
+});
+
+describe('resolveUsdcAsset', () => {
+  it('resolves the devnet USDC mint for devnet', () => {
+    expect(resolveUsdcAsset('devnet')).toBe(USDC_SOLANA_DEVNET);
+  });
+
+  it('resolves the mainnet USDC mint for mainnet', () => {
+    expect(resolveUsdcAsset('mainnet')).toBe(USDC_SOLANA_MAINNET);
+  });
+
+  it('the two mints differ and share token/decimals/symbol', () => {
+    expect(USDC_SOLANA_DEVNET.mint).not.toBe(USDC_SOLANA_MAINNET.mint);
+    expect(USDC_SOLANA_MAINNET.token).toBe('usdc');
+    expect(USDC_SOLANA_MAINNET.decimals).toBe(6);
+    expect(USDC_SOLANA_MAINNET.symbol).toBe('USDC');
   });
 });
 

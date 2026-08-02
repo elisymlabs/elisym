@@ -80,6 +80,7 @@ describe('buildSkillMd', () => {
     quote: 5_000n,
     marginPercent: '10',
     feePercent: '2.5',
+    network: 'devnet' as const,
   };
 
   function parseGenerated(content: string) {
@@ -88,6 +89,7 @@ describe('buildSkillMd', () => {
       frontmatter,
       systemPrompt,
       parsed: validateSkillFrontmatter(frontmatter, systemPrompt, {
+        network: 'devnet',
         allowFreeSkills: false,
         allowX402Skills: true,
       }),

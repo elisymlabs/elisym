@@ -8,6 +8,7 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Network } from '@elisym/sdk';
 import {
   DEFAULT_SCRIPT_TIMEOUT_MS,
   parseSkillMd,
@@ -185,6 +186,13 @@ function buildCliSkill(
 
 export interface LoadSkillsOptions {
   /**
+   * The agent's Solana network. Required (mirrors the SDK loader): `token:
+   * usdc` resolves to a different mint per cluster, and an explicit `mint:`
+   * must be canonical for this network - the SDK's canonical-mint gate fails
+   * loud at load on a wrong-network mint (D8).
+   */
+  network: Network;
+  /**
    * Env propagated into script-mode skills (`static-script`, `dynamic-script`).
    * Typically `{ ...process.env, <PROVIDER_KEY>: <decrypted-secret>, ... }`
    * built from the agent's encrypted secrets. Per skill, every LLM provider
@@ -194,7 +202,7 @@ export interface LoadSkillsOptions {
   scriptEnv?: NodeJS.ProcessEnv;
 }
 
-export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions = {}): Skill[] {
+export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions): Skill[] {
   const skills: Skill[] = [];
 
   let entries: string[];
@@ -219,6 +227,7 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions 
       const content = readFileSync(skillMdPath, 'utf-8');
       const { frontmatter, systemPrompt } = parseSkillMd(content);
       const parsed = validateSkillFrontmatter(frontmatter, systemPrompt, {
+        network: options.network,
         allowFreeSkills: true,
         // The CLI runtime wires an x402 driver into the skill context, so
         // x402 skills are executable here (SDK-only hosts reject them).

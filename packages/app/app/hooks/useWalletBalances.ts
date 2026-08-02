@@ -1,9 +1,14 @@
-import { USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import { resolveUsdcAsset } from '@elisym/sdk';
 import { findAssociatedTokenPda, TOKEN_PROGRAM_ADDRESS } from '@solana-program/token';
-import { address as toAddress, createSolanaRpc } from '@solana/kit';
+import {
+  address as toAddress,
+  createSolanaRpc,
+  isSolanaError,
+  SOLANA_ERROR__JSON_RPC__INVALID_PARAMS,
+} from '@solana/kit';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { SOLANA_RPC_URL } from '~/lib/cluster';
+import { SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { useWalletStandardChange } from './useWalletStandardChange';
 
 const BALANCE_STALE_MS = 1000 * 10;
@@ -30,6 +35,8 @@ export function invalidateWalletBalances(
 // Module-level Kit RPC singleton: balance queries fire from many components
 // and we want to share a single connection. Cluster comes from `~/lib/cluster`.
 const balanceRpc = createSolanaRpc(SOLANA_RPC_URL);
+// USDC mint differs per cluster (D8/H2) - resolve through the page's network.
+const USDC_ASSET = resolveUsdcAsset(SOLANA_CLUSTER);
 
 interface WalletBalances {
   solLamports: bigint | null;
@@ -88,7 +95,7 @@ export function useWalletBalances(): WalletBalances {
       if (!walletAddress) {
         return 0n;
       }
-      const mintAddress = USDC_SOLANA_DEVNET.mint;
+      const mintAddress = USDC_ASSET.mint;
       if (!mintAddress) {
         throw new Error('USDC asset missing mint');
       }
@@ -101,9 +108,20 @@ export function useWalletBalances(): WalletBalances {
       try {
         const { value } = await balanceRpc.getTokenAccountBalance(ata).send();
         return BigInt(value.amount);
-      } catch {
-        // No ATA for this owner yet => user has never held USDC.
-        return 0n;
+      } catch (error) {
+        // No ATA for this owner yet => user has never held USDC. Only the
+        // node's "could not find account" refusal (JSON-RPC -32602) maps to
+        // 0n - transient failures (network, 5xx, rate limits) re-throw so
+        // TanStack marks the query errored instead of rendering a false zero
+        // balance. Matched via the typed server message, not error.message,
+        // which collapses to an opaque error code in production builds.
+        if (
+          isSolanaError(error, SOLANA_ERROR__JSON_RPC__INVALID_PARAMS) &&
+          /could not find account/i.test(error.context.__serverMessage)
+        ) {
+          return 0n;
+        }
+        throw error;
       }
     },
     enabled: !!walletAddress,

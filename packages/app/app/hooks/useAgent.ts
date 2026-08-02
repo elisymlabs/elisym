@@ -2,7 +2,7 @@ import type { Agent } from '@elisym/sdk';
 import { useEffect, useState } from 'react';
 import { getAgentProfile, setAgentProfiles } from '~/lib/agentProfileCache';
 import { getAgentSnapshot, setAgentSnapshot } from '~/lib/agentSnapshotCache';
-import { NETWORK } from './useAgents';
+import { SOLANA_CLUSTER } from '~/lib/cluster';
 import { useElisymClient } from './useElisymClient';
 
 export type AgentFetchStatus = 'idle' | 'loading' | 'ready' | 'not-found';
@@ -43,13 +43,13 @@ const MAX_ATTEMPTS = 2;
 export function useAgent(pubkey: string): UseAgentResult {
   const { client } = useElisymClient();
   const [agent, setAgent] = useState<Agent | undefined>(() =>
-    pubkey ? getAgentSnapshot(NETWORK, pubkey) : undefined,
+    pubkey ? getAgentSnapshot(SOLANA_CLUSTER, pubkey) : undefined,
   );
   const [status, setStatus] = useState<AgentFetchStatus>(() => {
     if (!pubkey) {
       return 'idle';
     }
-    return getAgentSnapshot(NETWORK, pubkey) ? 'ready' : 'loading';
+    return getAgentSnapshot(SOLANA_CLUSTER, pubkey) ? 'ready' : 'loading';
   });
 
   useEffect(() => {
@@ -59,7 +59,7 @@ export function useAgent(pubkey: string): UseAgentResult {
       return;
     }
 
-    const initialSnapshot = getAgentSnapshot(NETWORK, pubkey);
+    const initialSnapshot = getAgentSnapshot(SOLANA_CLUSTER, pubkey);
     setAgent(initialSnapshot);
     setStatus(initialSnapshot ? 'ready' : 'loading');
 
@@ -82,7 +82,7 @@ export function useAgent(pubkey: string): UseAgentResult {
       timers.add(handle);
     };
 
-    void getAgentProfile(NETWORK, pubkey).then((cached) => {
+    void getAgentProfile(SOLANA_CLUSTER, pubkey).then((cached) => {
       if (cancelled || !cached || networkSettled) {
         return;
       }
@@ -96,7 +96,7 @@ export function useAgent(pubkey: string): UseAgentResult {
       // a transient metadata miss does not overwrite the cache with a
       // profile-less version. Mirrors the merge pattern in useAgents.ts
       // `onComplete`.
-      const cached = await getAgentProfile(NETWORK, pubkey);
+      const cached = await getAgentProfile(SOLANA_CLUSTER, pubkey);
       if (cancelled) {
         return;
       }
@@ -105,12 +105,12 @@ export function useAgent(pubkey: string): UseAgentResult {
       resolved = true;
       setAgent(merged);
       setStatus('ready');
-      void setAgentProfiles(NETWORK, [merged]);
-      setAgentSnapshot(NETWORK, merged);
+      void setAgentProfiles(SOLANA_CLUSTER, [merged]);
+      setAgentSnapshot(SOLANA_CLUSTER, merged);
     };
 
     const flipNotFoundIfFinal = async () => {
-      const cached = await getAgentProfile(NETWORK, pubkey);
+      const cached = await getAgentProfile(SOLANA_CLUSTER, pubkey);
       if (cancelled) {
         return;
       }
@@ -120,7 +120,7 @@ export function useAgent(pubkey: string): UseAgentResult {
         setStatus('ready');
         return;
       }
-      const snapshot = getAgentSnapshot(NETWORK, pubkey);
+      const snapshot = getAgentSnapshot(SOLANA_CLUSTER, pubkey);
       if (snapshot) {
         resolved = true;
         setAgent((prev) => prev ?? snapshot);
@@ -143,7 +143,7 @@ export function useAgent(pubkey: string): UseAgentResult {
       attemptCount += 1;
       attemptStartedAt = performance.now();
       try {
-        const fresh = await client.discovery.fetchAgent(NETWORK, pubkey);
+        const fresh = await client.discovery.fetchAgent(SOLANA_CLUSTER, pubkey);
         if (cancelled) {
           return;
         }
@@ -169,7 +169,7 @@ export function useAgent(pubkey: string): UseAgentResult {
     void attempt();
 
     const runCeilingFallback = async () => {
-      const cached = await getAgentProfile(NETWORK, pubkey);
+      const cached = await getAgentProfile(SOLANA_CLUSTER, pubkey);
       if (cancelled || resolved) {
         return;
       }
@@ -179,7 +179,7 @@ export function useAgent(pubkey: string): UseAgentResult {
         setStatus('ready');
         return;
       }
-      const snapshot = getAgentSnapshot(NETWORK, pubkey);
+      const snapshot = getAgentSnapshot(SOLANA_CLUSTER, pubkey);
       if (snapshot) {
         resolved = true;
         setAgent(snapshot);

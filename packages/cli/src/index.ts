@@ -56,6 +56,10 @@ program
   )
   .option('--local', 'Create in project <project>/.elisym/<name>/ (default: ~/.elisym/<name>/)')
   .option(
+    '--network <network>',
+    'Solana network for the wallet entry: devnet (default) or mainnet (REAL funds, no faucet). The network is fixed at init - to go mainnet later, create a new agent.',
+  )
+  .option(
     '--passphrase <value>',
     'Passphrase to encrypt secrets at rest. Empty string ("") skips encryption. Also reads ELISYM_PASSPHRASE env var. When neither is provided, prompts interactively.',
   )

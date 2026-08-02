@@ -64,7 +64,7 @@ describe('verifyJobPaymentQuick', () => {
         ),
     }));
 
-    const result = await verifyJobPaymentQuick(rpc, 'sig1', recipient);
+    const result = await verifyJobPaymentQuick(rpc, 'sig1', recipient, 'devnet');
     expect(result.receivedFunds).toBe(true);
     expect(result.txSignature).toBe('sig1');
   });
@@ -84,8 +84,8 @@ describe('verifyJobPaymentQuick', () => {
     }));
     const rpc = createMockRpc(getTx);
 
-    const first = await verifyJobPaymentQuick(rpc, 'cached-sig', recipient);
-    const second = await verifyJobPaymentQuick(rpc, 'cached-sig', recipient);
+    const first = await verifyJobPaymentQuick(rpc, 'cached-sig', recipient, 'devnet');
+    const second = await verifyJobPaymentQuick(rpc, 'cached-sig', recipient, 'devnet');
 
     expect(first.receivedFunds).toBe(true);
     expect(second.receivedFunds).toBe(true);
@@ -96,7 +96,7 @@ describe('verifyJobPaymentQuick', () => {
     const recipient = makeAddress();
     const rpc = createMockRpc(() => ({ send: () => Promise.resolve(null) }));
 
-    const result = await verifyJobPaymentQuick(rpc, 'missing-sig', recipient);
+    const result = await verifyJobPaymentQuick(rpc, 'missing-sig', recipient, 'devnet');
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('not_found');
   });
@@ -116,7 +116,7 @@ describe('verifyJobPaymentQuick', () => {
         ),
     }));
 
-    const result = await verifyJobPaymentQuick(rpc, 'sig-other', recipient);
+    const result = await verifyJobPaymentQuick(rpc, 'sig-other', recipient, 'devnet');
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('recipient_mismatch');
   });
@@ -136,7 +136,7 @@ describe('verifyJobPaymentQuick', () => {
         ),
     }));
 
-    const result = await verifyJobPaymentQuick(rpc, 'sig-failed', recipient);
+    const result = await verifyJobPaymentQuick(rpc, 'sig-failed', recipient, 'devnet');
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('tx_failed');
   });
@@ -147,7 +147,7 @@ describe('verifyJobPaymentQuick', () => {
       send: () => Promise.reject(new Error('rpc unavailable')),
     }));
 
-    const result = await verifyJobPaymentQuick(rpc, 'sig-throw', recipient);
+    const result = await verifyJobPaymentQuick(rpc, 'sig-throw', recipient, 'devnet');
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('rpc_error');
   });
@@ -157,6 +157,7 @@ describe('verifyJobPaymentQuick', () => {
       {} as unknown as Rpc<SolanaRpcApi>,
       'sig-bad-rpc',
       makeAddress(),
+      'devnet',
     );
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('rpc_error');
@@ -164,14 +165,19 @@ describe('verifyJobPaymentQuick', () => {
 
   it('rejects empty signature with invalid_input', async () => {
     const rpc = createMockRpc(() => ({ send: () => Promise.resolve(null) }));
-    const result = await verifyJobPaymentQuick(rpc, '', makeAddress());
+    const result = await verifyJobPaymentQuick(rpc, '', makeAddress(), 'devnet');
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('invalid_input');
   });
 
   it('rejects malformed recipient with invalid_input', async () => {
     const rpc = createMockRpc(() => ({ send: () => Promise.resolve(null) }));
-    const result = await verifyJobPaymentQuick(rpc, 'sig', 'not-a-real-address' as Address);
+    const result = await verifyJobPaymentQuick(
+      rpc,
+      'sig',
+      'not-a-real-address' as Address,
+      'devnet',
+    );
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('invalid_input');
   });
@@ -201,8 +207,39 @@ describe('verifyJobPaymentQuick', () => {
         ),
     }));
 
-    const result = await verifyJobPaymentQuick(rpc, 'spl-sig', recipient);
+    const result = await verifyJobPaymentQuick(rpc, 'spl-sig', recipient, 'devnet');
     expect(result.receivedFunds).toBe(true);
+  });
+
+  // H9: (txSignature, recipient) is cluster-ambiguous, so the cache must key
+  // on the network too - one cluster's verdict must never serve the other.
+  it('never serves one cluster cached verdict to the other', async () => {
+    const recipient = makeAddress();
+    const payer = makeAddress();
+    const getTx = vi
+      .fn()
+      // Devnet sees a successful payment; positive results are cached forever.
+      .mockReturnValueOnce({
+        send: () =>
+          Promise.resolve(
+            makeTx({
+              keys: [payer, recipient],
+              pre: [100_000, 0],
+              post: [99_000, 1_000],
+            }),
+          ),
+      })
+      // Mainnet has never seen this signature.
+      .mockReturnValueOnce({ send: () => Promise.resolve(null) });
+    const rpc = createMockRpc(getTx);
+
+    const devnet = await verifyJobPaymentQuick(rpc, 'same-sig', recipient, 'devnet');
+    expect(devnet.receivedFunds).toBe(true);
+
+    const mainnet = await verifyJobPaymentQuick(rpc, 'same-sig', recipient, 'mainnet');
+    expect(mainnet.receivedFunds).toBe(false);
+    expect(mainnet.reason).toBe('not_found');
+    expect(getTx).toHaveBeenCalledTimes(2);
   });
 
   it('negative cache expires after TTL so second call hits RPC again', async () => {
@@ -224,18 +261,18 @@ describe('verifyJobPaymentQuick', () => {
         });
       const rpc = createMockRpc(getTx);
 
-      const first = await verifyJobPaymentQuick(rpc, 'expiring-sig', recipient);
+      const first = await verifyJobPaymentQuick(rpc, 'expiring-sig', recipient, 'devnet');
       expect(first.receivedFunds).toBe(false);
       expect(first.reason).toBe('not_found');
 
       // Within TTL: cached negative
-      const second = await verifyJobPaymentQuick(rpc, 'expiring-sig', recipient);
+      const second = await verifyJobPaymentQuick(rpc, 'expiring-sig', recipient, 'devnet');
       expect(second.receivedFunds).toBe(false);
       expect(getTx).toHaveBeenCalledTimes(1);
 
       // Past TTL: re-queries
       vi.advanceTimersByTime(61_000);
-      const third = await verifyJobPaymentQuick(rpc, 'expiring-sig', recipient);
+      const third = await verifyJobPaymentQuick(rpc, 'expiring-sig', recipient, 'devnet');
       expect(third.receivedFunds).toBe(true);
       expect(getTx).toHaveBeenCalledTimes(2);
     } finally {

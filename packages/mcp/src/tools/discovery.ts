@@ -379,7 +379,9 @@ export const discoveryTools: ToolDefinition[] = [
           const rpc = createSolanaRpc(rpcUrlFor(agent.network));
           await Promise.all(
             Array.from(needsAtaSeen).map(async (needsAta) => {
-              const baseline = await estimateNetworkBaseline(rpc, { includeAtaRent: needsAta });
+              const baseline = await estimateNetworkBaseline(rpc, agent.network, {
+                includeAtaRent: needsAta,
+              });
               gasByAtaNeed.set(needsAta, formatSol(Number(baseline.totalLamports)));
             }),
           );

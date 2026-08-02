@@ -1,13 +1,20 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { NATIVE_SOL, USDC_SOLANA_DEVNET, generateSolanaWallet } from '@elisym/sdk';
+import {
+  NATIVE_SOL,
+  USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
+  generateSolanaWallet,
+} from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SkillInput, X402SkillJob } from '../src/skill/index.js';
 import {
   X402_MAX_PAID_ATTEMPTS,
   X402_MAX_PAYMENT_SIGNATURES,
   X402_SOLANA_DEVNET_CAIP2,
+  X402_SOLANA_MAINNET_CAIP2,
+  X402_SOLANA_MAINNET_V1,
 } from '../src/x402/constants.js';
 import { X402PermanentError, X402PreflightError, X402TransientError } from '../src/x402/errors.js';
 import { X402JobStore } from '../src/x402/store.js';
@@ -118,6 +125,7 @@ describe('X402Driver', () => {
       paymentsAddress: wallet.signer.address,
       solanaSecretKeyBase58: wallet.secretKeyBase58,
       rpcUrl: 'http://127.0.0.1:1/never-used',
+      network: 'devnet',
       getFeeBps: async () => 250,
       log: () => {},
       freeRetryDelaysMs: TEST_FREE_RETRY_DELAYS,
@@ -162,6 +170,7 @@ describe('X402Driver', () => {
         agentDir: dir,
         paymentsAddress: wallet.signer.address,
         rpcUrl: 'http://127.0.0.1:1',
+        network: 'devnet',
         getFeeBps: async () => 250,
         log: () => {},
       });
@@ -173,6 +182,7 @@ describe('X402Driver', () => {
         agentDir: dir,
         solanaSecretKeyBase58: wallet.secretKeyBase58,
         rpcUrl: 'http://127.0.0.1:1',
+        network: 'devnet',
         getFeeBps: async () => 250,
         log: () => {},
       });
@@ -186,6 +196,7 @@ describe('X402Driver', () => {
         paymentsAddress: other.signer.address,
         solanaSecretKeyBase58: wallet.secretKeyBase58,
         rpcUrl: 'http://127.0.0.1:1',
+        network: 'devnet',
         getFeeBps: async () => 250,
         log: () => {},
       });
@@ -432,6 +443,7 @@ describe('X402Driver', () => {
         paymentsAddress: wallet.signer.address,
         solanaSecretKeyBase58: wallet.secretKeyBase58,
         rpcUrl: 'http://127.0.0.1:1/never-used',
+        network: 'devnet',
         getFeeBps: async () => 250,
         log: () => {},
         freeRetryDelaysMs: [60_000],
@@ -588,5 +600,118 @@ describe('X402Driver', () => {
       );
       await expect(driver.execute(job, input)).rejects.toThrow(/upstream response too large/);
     });
+  });
+});
+
+describe('X402Driver (mainnet agent)', () => {
+  let dir: string;
+  let wallet: Awaited<ReturnType<typeof generateSolanaWallet>>;
+  let driver: X402Driver;
+  let job: X402SkillJob;
+
+  const input: SkillInput = {
+    data: 'hello mainnet upstream',
+    inputType: 'text',
+    tags: ['market-data'],
+    jobId: 'd'.repeat(64),
+  };
+
+  const MAINNET_MINT = USDC_SOLANA_MAINNET.mint ?? '';
+
+  function mainnetRequirement(network: string = X402_SOLANA_MAINNET_CAIP2) {
+    return {
+      scheme: 'exact',
+      network,
+      amount: '5000',
+      asset: MAINNET_MINT,
+      payTo: 'PayToAddress11111111111111111111111111111111',
+      maxTimeoutSeconds: 60,
+      extra: {},
+    };
+  }
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'elisym-x402-driver-mainnet-'));
+    wallet = await generateSolanaWallet();
+    driver = new X402Driver({
+      agentDir: dir,
+      paymentsAddress: wallet.signer.address,
+      solanaSecretKeyBase58: wallet.secretKeyBase58,
+      rpcUrl: 'http://127.0.0.1:1/never-used',
+      network: 'mainnet',
+      getFeeBps: async () => 250,
+      log: () => {},
+      freeRetryDelaysMs: TEST_FREE_RETRY_DELAYS,
+    });
+    job = {
+      skillName: 'market-data',
+      params: {
+        url: 'https://api.example.com/premium-data',
+        method: 'POST',
+        queryParam: undefined,
+        maxUpstreamSubunits: 10_000n,
+        maxInputBytes: 100_000,
+      },
+      priceSubunits: 60_000,
+      asset: USDC_SOLANA_MAINNET,
+    };
+    mocks.fetchUsdcBalance.mockResolvedValue(1_000_000n);
+    mocks.probePaymentRequiredCached.mockResolvedValue({
+      x402Version: 2,
+      accepts: [mainnetRequirement()],
+    });
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('preflight passes for a mainnet requirement (CAIP-2 id + mainnet mint)', async () => {
+    await expect(driver.preflight(job, input)).resolves.toBeUndefined();
+  });
+
+  it('preflight passes for the v1 mainnet alias ("solana")', async () => {
+    mocks.probePaymentRequiredCached.mockResolvedValue({
+      x402Version: 2,
+      accepts: [mainnetRequirement(X402_SOLANA_MAINNET_V1)],
+    });
+    await expect(driver.preflight(job, input)).resolves.toBeUndefined();
+  });
+
+  it('reads the float balance with the mainnet mint (network threaded through)', async () => {
+    await driver.preflight(job, input);
+    expect(mocks.fetchUsdcBalance).toHaveBeenCalledWith(
+      expect.anything(),
+      wallet.signer.address,
+      'mainnet',
+    );
+  });
+
+  it('refuses a skill priced in devnet USDC on a mainnet agent', async () => {
+    await expect(driver.preflight({ ...job, asset: USDC_SOLANA_DEVNET }, input)).rejects.toThrow(
+      /priced in mainnet USDC/,
+    );
+  });
+
+  it('refuses a devnet-settling upstream (cross-network requirement)', async () => {
+    mocks.probePaymentRequiredCached.mockResolvedValue({
+      x402Version: 2,
+      accepts: [
+        {
+          scheme: 'exact',
+          network: X402_SOLANA_DEVNET_CAIP2,
+          amount: '5000',
+          asset: USDC_SOLANA_DEVNET.mint ?? '',
+          payTo: 'PayToAddress11111111111111111111111111111111',
+          maxTimeoutSeconds: 60,
+          extra: {},
+        },
+      ],
+    });
+    await expect(driver.preflight(job, input)).rejects.toThrow(
+      /no acceptable upstream payment requirement/,
+    );
   });
 });

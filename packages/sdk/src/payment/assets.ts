@@ -10,6 +10,7 @@
  */
 
 import Decimal from 'decimal.js-light';
+import type { Network } from '../types';
 
 export type Chain = 'solana';
 
@@ -40,7 +41,24 @@ export const USDC_SOLANA_DEVNET: Asset = {
   symbol: 'USDC',
 };
 
-export const KNOWN_ASSETS: readonly Asset[] = [NATIVE_SOL, USDC_SOLANA_DEVNET];
+export const USDC_SOLANA_MAINNET: Asset = {
+  chain: 'solana',
+  token: 'usdc',
+  mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  decimals: 6,
+  symbol: 'USDC',
+};
+
+export const KNOWN_ASSETS: readonly Asset[] = [NATIVE_SOL, USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET];
+
+/**
+ * The canonical USDC asset for a network. The mint differs per cluster, so
+ * every USDC-touching path must resolve through the active network - a flat
+ * `KNOWN_ASSETS` lookup cannot distinguish the two.
+ */
+export function resolveUsdcAsset(network: Network): Asset {
+  return network === 'mainnet' ? USDC_SOLANA_MAINNET : USDC_SOLANA_DEVNET;
+}
 
 /** Stable Map key for `Asset`. Same shape regardless of Asset identity. */
 export function assetKey(a: Pick<Asset, 'chain' | 'token' | 'mint'>): string {

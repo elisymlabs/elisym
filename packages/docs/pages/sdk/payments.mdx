@@ -4,26 +4,29 @@ The SDK exposes the full [payment](/protocol/payments) machinery: reading the on
 
 ## Assets
 
-Amounts are denominated in an asset. SOL is native; USDC is supported on devnet. Each helper takes the asset first, then the amount.
+Amounts are denominated in an asset. SOL is native; USDC is an SPL token with a different mint per [network](/reference/networks), so USDC-touching code resolves the asset through the active network with `resolveUsdcAsset`. Each helper takes the asset first, then the amount.
 
 ```ts twoslash
-import { NATIVE_SOL, USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import { NATIVE_SOL, USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET, resolveUsdcAsset } from '@elisym/sdk';
 import { formatAssetAmount, parseAssetAmount } from '@elisym/sdk';
 
 // subunit -> display
 formatAssetAmount(NATIVE_SOL, 1_000_000_000n); // "1 SOL"
 // display -> subunit
 parseAssetAmount(USDC_SOLANA_DEVNET, '0.5'); // 500000n
+
+// the canonical USDC asset for a network
+resolveUsdcAsset('mainnet'); // USDC_SOLANA_MAINNET
 ```
 
-`KNOWN_ASSETS` is the registry of recognized assets; helpers like `resolveKnownAsset` and `assetByKey` look them up. All money math goes through `decimal.js-light` and basis points - never floats.
+`KNOWN_ASSETS` is the registry of recognized assets; helpers like `resolveKnownAsset` and `assetByKey` look them up - note both USDC mints are registered, so a flat lookup cannot distinguish networks; prefer `resolveUsdcAsset`. All money math goes through `decimal.js-light` and basis points - never floats.
 
 ## The on-chain fee config
 
-The protocol fee rate and treasury address live in the `elisym-config` Solana program, not in the SDK. Read them with `getProtocolConfig`, which takes a Solana RPC client and the program id (`PROTOCOL_PROGRAM_ID_DEVNET`); results are cached, and `clearProtocolConfigCache` resets the cache.
+The protocol fee rate and treasury address live in the `elisym-config` Solana program, not in the SDK. Read them with `getProtocolConfig`, which takes a Solana RPC client, the program id (`getProtocolProgramId(network)`), and the network - the program is deployed at the same address on both clusters, so the cache is keyed by `(programId, network)` and one cluster's snapshot never serves the other. `clearProtocolConfigCache` resets the cache.
 
 ```ts twoslash
-import { getProtocolConfig, clearProtocolConfigCache, PROTOCOL_PROGRAM_ID_DEVNET } from '@elisym/sdk';
+import { getProtocolConfig, clearProtocolConfigCache, getProtocolProgramId } from '@elisym/sdk';
 ```
 
 ## Building and validating payment
@@ -36,9 +39,11 @@ import { getProtocolConfig, clearProtocolConfigCache, PROTOCOL_PROGRAM_ID_DEVNET
 | `buildPaymentInstructions` / `SolanaPaymentStrategy` | Construct the two-transfer transaction.            |
 | `verifyJobPaymentQuick`               | Customer-side quick check that a payment landed.                 |
 
+These APIs are network-explicit: request creation stamps the provider's `network` into the request, `SolanaPaymentStrategy.validatePaymentRequest` takes the customer's network and rejects a cross-network request before any money check, and `buildPaymentInstructions` requires an explicit `programId` (no silent devnet default - the program id is cluster-ambiguous by design).
+
 ## Estimating cost
 
-Before paying, preview the real cost - base fee, priority fee, and any token-account rent:
+Before paying, preview the real cost - base fee, priority fee, and any token-account rent. Both estimators take the network (the priority-fee cache is cluster-keyed):
 
 ```ts twoslash
 import { estimateSolFeeLamports, estimatePriorityFeeMicroLamports } from '@elisym/sdk';

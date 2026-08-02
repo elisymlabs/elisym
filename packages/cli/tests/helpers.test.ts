@@ -1,22 +1,31 @@
+import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/sdk';
+import type { Rpc, SolanaRpcApi } from '@solana/kit';
+import { address } from '@solana/kit';
 import { describe, it, expect } from 'vitest';
-import { getRpcUrl, validateJobPrice, RENT_EXEMPT_MINIMUM } from '../src/helpers.js';
+import {
+  fetchUsdcBalance,
+  getRpcUrl,
+  validateJobPrice,
+  RENT_EXEMPT_MINIMUM,
+} from '../src/helpers.js';
+
+const OWNER = address('2wKupLR9q6wXYppw8Gr2NvWxKBUqm4PPJKkQfoxHDBg4');
 
 describe('getRpcUrl', () => {
-  it('returns devnet URL for devnet', () => {
+  it('returns the devnet URL for devnet', () => {
     expect(getRpcUrl('devnet')).toBe('https://api.devnet.solana.com');
   });
 
-  it('returns devnet URL regardless of input (only devnet is supported)', () => {
-    expect(getRpcUrl('mainnet')).toBe('https://api.devnet.solana.com');
-    expect(getRpcUrl('testnet')).toBe('https://api.devnet.solana.com');
-    expect(getRpcUrl('unknown')).toBe('https://api.devnet.solana.com');
+  it('returns the mainnet URL for mainnet', () => {
+    expect(getRpcUrl('mainnet')).toBe('https://api.mainnet-beta.solana.com');
   });
 
-  it('honours SOLANA_RPC_URL override', () => {
+  it('honours SOLANA_RPC_URL override on both networks', () => {
     const prev = process.env.SOLANA_RPC_URL;
     process.env.SOLANA_RPC_URL = 'https://custom.rpc';
     try {
       expect(getRpcUrl('devnet')).toBe('https://custom.rpc');
+      expect(getRpcUrl('mainnet')).toBe('https://custom.rpc');
     } finally {
       if (prev === undefined) {
         delete process.env.SOLANA_RPC_URL;
@@ -24,6 +33,30 @@ describe('getRpcUrl', () => {
         process.env.SOLANA_RPC_URL = prev;
       }
     }
+  });
+});
+
+describe('fetchUsdcBalance', () => {
+  /** Fake RPC that records the mint filter and returns no token accounts. */
+  function fakeRpc(capture: { mint?: string }): Rpc<SolanaRpcApi> {
+    return {
+      getTokenAccountsByOwner: (_owner: unknown, filter: { mint: string }) => {
+        capture.mint = filter.mint;
+        return { send: async () => ({ value: [] }) };
+      },
+    } as unknown as Rpc<SolanaRpcApi>;
+  }
+
+  it('queries the devnet USDC mint for a devnet agent', async () => {
+    const capture: { mint?: string } = {};
+    await fetchUsdcBalance(fakeRpc(capture), OWNER, 'devnet');
+    expect(capture.mint).toBe(USDC_SOLANA_DEVNET.mint);
+  });
+
+  it('queries the mainnet USDC mint for a mainnet agent', async () => {
+    const capture: { mint?: string } = {};
+    await fetchUsdcBalance(fakeRpc(capture), OWNER, 'mainnet');
+    expect(capture.mint).toBe(USDC_SOLANA_MAINNET.mint);
   });
 });
 

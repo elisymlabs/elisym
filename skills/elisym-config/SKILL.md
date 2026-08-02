@@ -76,10 +76,10 @@ Source of truth: `ElisymYamlSchema` in [`packages/sdk/src/agent-store/schema.ts`
 **`PaymentEntry`**
 
 - `chain: "solana"` (literal - only Solana is live today)
-- `network: "devnet"` (literal - only devnet is live in v0.6.x / 0.7.0 / 0.9.0)
+- `network: "devnet" | "mainnet"` (fixed at agent creation - to change networks, create a new agent; an in-place edit would replace the other network's published cards and mix history)
 - `address: string` (Base58 Solana pubkey, 32-44 chars, alphabet excludes `0OIl`)
 
-The same address receives every supported asset on the chain: native SOL directly, and SPL tokens (USDC devnet) via the Associated Token Account derived from `(address, mint)`. Per-asset pricing is declared in each skill's `SKILL.md` (`price` + optional `token: sol|usdc`), not here. There is no per-token field on the payment entry.
+The same address receives every supported asset on the chain: native SOL directly, and SPL tokens (USDC) via the Associated Token Account derived from `(address, mint)` - the USDC mint is resolved from the entry's `network`. Per-asset pricing is declared in each skill's `SKILL.md` (`price` + optional `token: sol|usdc`), not here. There is no per-token field on the payment entry.
 
 **`LlmEntry`**
 

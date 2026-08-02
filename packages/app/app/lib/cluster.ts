@@ -2,7 +2,28 @@ import type { ProtocolCluster } from '@elisym/sdk';
 
 export type SolanaCluster = 'devnet' | 'mainnet';
 
-export const SOLANA_CLUSTER: SolanaCluster = 'devnet';
+/** The only hostname that serves mainnet (exact-host allowlist, plan D10). */
+const MAINNET_HOSTNAME = 'app.elisym.network';
+
+/** Cross-domain switch targets - switching networks = following a link (D10/D11). */
+export const MAINNET_APP_URL = `https://${MAINNET_HOSTNAME}`;
+export const DEVNET_APP_URL = 'https://app-dev.elisym.network';
+
+/**
+ * Resolve the cluster from the page hostname. Mainnet ONLY on the exact
+ * production host; everything else - app-dev.elisym.network, localhost,
+ * 127.0.0.1, LAN IPs, *.vercel.app previews, unknown hosts - fails safe to
+ * devnet, so a preview URL can never surface real-money prompts (plan D10).
+ */
+export function resolveCluster(hostname: string): SolanaCluster {
+  return hostname === MAINNET_HOSTNAME ? 'mainnet' : 'devnet';
+}
+
+// The undefined-window branch (the app's vitest runs in a node environment)
+// is the same fail-safe-to-devnet rule as an unknown hostname. Fixed per page
+// load - the module-level RPC/program-id singletons derived from it are safe.
+export const SOLANA_CLUSTER: SolanaCluster =
+  typeof window === 'undefined' ? 'devnet' : resolveCluster(window.location.hostname);
 
 const RPC_URLS: Record<SolanaCluster, string> = {
   devnet: 'https://api.devnet.solana.com',

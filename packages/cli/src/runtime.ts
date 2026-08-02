@@ -93,7 +93,7 @@ export interface RuntimeConfig {
   maxConcurrentJobs: number;
   recoveryMaxRetries: number;
   recoveryIntervalSecs: number;
-  network: string;
+  network: Network;
   solanaAddress?: string;
   maxQueueSize?: number;
   /**
@@ -839,17 +839,11 @@ export class AgentRuntime {
 
   /** Fetch on-chain protocol config (fee, treasury). Always fetches fresh to avoid stale treasury. */
   private async fetchProtocolConfig(): Promise<ProtocolConfigInput> {
-    // Only devnet is supported until the elisym-config program ships on mainnet;
-    // agent configs pinned to other networks must be re-initialized explicitly.
-    if (this.config.network !== 'devnet') {
-      throw new Error(
-        `Network "${this.config.network}" is not supported. Only "devnet" is available ` +
-          `until the on-chain protocol program is deployed on mainnet.`,
-      );
-    }
-    const programId = getProtocolProgramId('devnet');
+    const programId = getProtocolProgramId(this.config.network);
     const rpc = createSolanaRpc(getRpcUrl(this.config.network));
-    const config = await getProtocolConfig(rpc, programId, { forceRefresh: true });
+    const config = await getProtocolConfig(rpc, programId, this.config.network, {
+      forceRefresh: true,
+    });
     return { feeBps: config.feeBps, treasury: config.treasury };
   }
 
@@ -1616,12 +1610,6 @@ export class AgentRuntime {
         'this agent does not accept delegated payment.',
       );
     }
-    if (this.config.network !== 'devnet') {
-      return reject(
-        `delegation is devnet-only (network: ${this.config.network})`,
-        'this agent does not accept delegated payment.',
-      );
-    }
     const network: Network = this.config.network;
     if (!skill || skill.delegation === undefined || skill.priceSubunits <= 0) {
       return reject(
@@ -2385,6 +2373,7 @@ export class AgentRuntime {
       this.config.solanaAddress,
       jobPrice,
       protocolConfig,
+      this.config.network,
       { expirySecs: this.config.paymentTimeoutSecs, asset: jobAsset },
     );
     const requestJson = JSON.stringify(request);

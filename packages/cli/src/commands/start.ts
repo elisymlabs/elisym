@@ -11,7 +11,7 @@ import {
   ElisymIdentity,
   type BlossomService,
   createBlossomTransport,
-  USDC_SOLANA_DEVNET,
+  resolveUsdcAsset,
   formatAssetAmount,
   formatSol,
   RELAYS,
@@ -27,6 +27,7 @@ import {
   signerFromSecretKeyBase58,
   toDTag,
   type CapabilityCard,
+  type Network,
 } from '@elisym/sdk';
 import {
   agentPaths,
@@ -71,7 +72,7 @@ import { createLogger, sanitizeForTerminal } from '../logging.js';
 import { mimeFromPath } from '../mime.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SessionStore } from '../sessions.js';
-import { SkillRegistry, type SkillContext, type SkillLlmOverride } from '../skill';
+import { SkillRegistry, type Skill, type SkillContext, type SkillLlmOverride } from '../skill';
 import type { LlmClient } from '../skill/index.js';
 import { loadSkillsFromDir } from '../skill/loader.js';
 import { NostrTransport } from '../transport/nostr.js';
@@ -132,7 +133,7 @@ export async function cmdStart(
       const walletAddress = address(solanaAddress);
       const [{ value: balanceLamports }, usdcBalance] = await Promise.all([
         rpc.getBalance(walletAddress).send(),
-        fetchUsdcBalance(rpc, walletAddress),
+        fetchUsdcBalance(rpc, walletAddress, walletNetwork),
       ]);
       const balance = Number(balanceLamports);
 
@@ -145,10 +146,16 @@ export async function cmdStart(
         console.log(`     RPC      ${stripRpcSecrets(process.env.SOLANA_RPC_URL)} (custom)`);
       }
       console.log(`     SOL      ${formatSol(balance)} (${balance} lamports)`);
-      console.log(`     USDC     ${formatAssetAmount(USDC_SOLANA_DEVNET, usdcBalance)}`);
+      console.log(
+        `     USDC     ${formatAssetAmount(resolveUsdcAsset(walletNetwork), usdcBalance)}`,
+      );
 
       if (balance === 0) {
-        console.log('  ! Wallet is empty. Get devnet SOL: https://faucet.solana.com');
+        if (walletNetwork === 'mainnet') {
+          console.log('  ! Wallet is empty. Fund it with real SOL to operate on mainnet.');
+        } else {
+          console.log('  ! Wallet is empty. Get devnet SOL: https://faucet.solana.com');
+        }
       }
       console.log();
     } catch (e: any) {
@@ -158,6 +165,12 @@ export async function cmdStart(
       console.warn(`  ! Wallet error: ${redactRpcUrlsInText(message)}\n`);
     }
   }
+  if (walletNetwork === 'mainnet') {
+    console.log(
+      '  ! Mainnet: per-skill prices are REAL funds. Review each SKILL.md price - ' +
+        'skills copied from a devnet agent keep their absolute amounts.\n',
+    );
+  }
 
   // -- Step 5: Load and register all skills --
   // Skills load before the LLM check so a fully-non-LLM agent can start
@@ -166,7 +179,7 @@ export async function cmdStart(
   const scriptEnv = buildScriptEnv(loaded.secrets);
   const paths = agentPaths(loaded.dir);
   const skillsDir = paths.skills;
-  const allSkills = loadSkillsFromDir(skillsDir, { scriptEnv });
+  const allSkills = loadSkillsFromDir(skillsDir, { network: walletNetwork, scriptEnv });
 
   if (allSkills.length === 0) {
     console.error(`  ! No skills found in ${skillsDir}\n`);
@@ -441,9 +454,9 @@ export async function cmdStart(
       }
     }
     for (const skill of x402Skills) {
-      if (skill.asset.mint !== USDC_SOLANA_DEVNET.mint) {
+      if (skill.asset.mint !== resolveUsdcAsset(walletNetwork).mint) {
         console.warn(
-          `  ! x402 skill "${skill.name}" is priced in ${skill.asset.symbol}, not devnet USDC - every job will be refused at preflight. Re-run \`npx @elisym/cli x402 add\`.`,
+          `  ! x402 skill "${skill.name}" is priced in ${skill.asset.symbol}, not ${walletNetwork} USDC - every job will be refused at preflight. Re-run \`npx @elisym/cli x402 add\`.`,
         );
       }
     }
@@ -453,24 +466,31 @@ export async function cmdStart(
         '  ! x402 skills will NOT be advertised and their jobs will be refused before payment.',
       );
       console.warn('  ! Fix: re-run `npx @elisym/cli x402 add` or align elisym.yaml with the key.');
+    } else {
+      // Construct the driver only when the invariant holds. A driver built on
+      // an undefined/mismatched key would never be invoked today (broken-
+      // invariant skills are not advertised), but that couples correctness to
+      // a distant guard - leave x402Driver undefined instead.
+      const x402RpcUrl = getRpcUrl(walletNetwork);
+      async function fetchLiveFeeBps(): Promise<number> {
+        const config = await getProtocolConfig(
+          createSolanaRpc(x402RpcUrl),
+          getProtocolProgramId(walletNetwork),
+          walletNetwork,
+          { forceRefresh: true },
+        );
+        return config.feeBps;
+      }
+      skillCtx.x402Driver = new X402Driver({
+        agentDir: loaded.dir,
+        paymentsAddress: solanaAddress,
+        solanaSecretKeyBase58: loaded.secrets.solana_secret_key,
+        rpcUrl: x402RpcUrl,
+        network: walletNetwork,
+        getFeeBps: fetchLiveFeeBps,
+        log: (message) => console.log(`  ${message}`),
+      });
     }
-    const x402RpcUrl = getRpcUrl(walletNetwork);
-    async function fetchLiveFeeBps(): Promise<number> {
-      const config = await getProtocolConfig(
-        createSolanaRpc(x402RpcUrl),
-        getProtocolProgramId('devnet'),
-        { forceRefresh: true },
-      );
-      return config.feeBps;
-    }
-    skillCtx.x402Driver = new X402Driver({
-      agentDir: loaded.dir,
-      paymentsAddress: solanaAddress,
-      solanaSecretKeyBase58: loaded.secrets.solana_secret_key,
-      rpcUrl: x402RpcUrl,
-      getFeeBps: fetchLiveFeeBps,
-      log: (message) => console.log(`  ${message}`),
-    });
   }
 
   // -- Step 8: Connect to relays --
@@ -715,15 +735,7 @@ export async function cmdStart(
   // the pubkey) to execute delegated job-payment pulls. Still never the
   // payment key - blast-radius isolation holds.
   let delegateSigner: Awaited<ReturnType<typeof signerFromSecretKeyBase58>> | undefined;
-  if (declaresDelegation && walletNetwork !== 'devnet') {
-    // Delegation rails are USDC/devnet-only today (resolveDelegationAsset throws
-    // otherwise), so an owner could never exercise a mainnet grant. Do not
-    // advertise a capability that cannot be used - omit it and warn.
-    console.warn(
-      `  ! A skill declares delegation but it is devnet-only today (network: ${walletNetwork}) - ` +
-        'omitted from its card(s).',
-    );
-  } else if (declaresDelegation) {
+  if (declaresDelegation) {
     const delegateSecret = loaded.secrets.solana_delegate_secret_key;
     if (delegateSecret && delegateSecret.length > 0) {
       try {
@@ -740,7 +752,9 @@ export async function cmdStart(
           if (delegateLamports === 0n) {
             console.warn(
               '  ! Delegate key holds no SOL - delegated job pulls will fail on tx fees. ' +
-                'Fund it: https://faucet.solana.com',
+                (walletNetwork === 'mainnet'
+                  ? 'Fund it with real SOL.'
+                  : 'Fund it: https://faucet.solana.com'),
             );
           }
         } catch {
@@ -769,46 +783,8 @@ export async function cmdStart(
     }
   }
 
-  function buildCard(skill: (typeof allSkills)[0]): CapabilityCard {
-    // `noInput` covers an x402 GET bridge without a query param: it consumes
-    // no buyer input, so the web app must hide its input box (`card.static`)
-    // instead of silently dropping whatever the buyer typed.
-    const isStatic =
-      skill.mode === 'static-file' || skill.mode === 'static-script' || skill.noInput === true;
-    return {
-      name: skill.name,
-      description: skill.description,
-      capabilities: skill.capabilities,
-      image: skill.image,
-      ...(isStatic ? { static: true } : {}),
-      // File-exchange hints (dynamic-script only). `inputMime` flags a file input;
-      // `inputText` tells the web whether to also show its text box for that file job.
-      ...(skill.inputMime ? { inputMime: skill.inputMime } : {}),
-      ...(skill.inputText ? { inputText: skill.inputText } : {}),
-      ...(skill.outputMime ? { outputMime: skill.outputMime } : {}),
-      // Conversation-context flag: clients gate chat affordances (session-carrying
-      // sends) on it. Strict true only - the read side coerces anything else away.
-      ...(skill.context === true ? { context: true } : {}),
-      // Delegation descriptor: only when the skill opts in AND a delegate key
-      // exists (delegatePubkey resolved). The pubkey is injected here, never
-      // taken from the SKILL.md - the operator declares only the cap/mechanism.
-      ...(skill.delegation && delegatePubkey
-        ? { delegation: { ...skill.delegation, delegate_pubkey: delegatePubkey } }
-        : {}),
-      payment: solanaAddress
-        ? {
-            chain: 'solana',
-            network: walletNetwork,
-            address: solanaAddress,
-            job_price: skill.priceSubunits,
-            token: skill.asset.token,
-            ...(skill.asset.mint ? { mint: skill.asset.mint } : {}),
-            decimals: skill.asset.decimals,
-            symbol: skill.asset.symbol,
-          }
-        : undefined,
-    };
-  }
+  const buildCard = (skill: (typeof allSkills)[0]): CapabilityCard =>
+    buildCapabilityCard(skill, { walletNetwork, solanaAddress, delegatePubkey });
 
   function retiredModelKeyForSkill(skill: (typeof allSkills)[0]): string | undefined {
     if (skill.resolvedTriple) {
@@ -1066,6 +1042,60 @@ export async function cmdStart(
  * an API key in the URL itself, so only public api.*.solana.com endpoints pass
  * through. Exported for the leak-regression tests.
  */
+export interface CapabilityCardInputs {
+  walletNetwork: Network;
+  solanaAddress: string | undefined;
+  delegatePubkey: string | undefined;
+}
+
+/**
+ * Module-scoped (not a closure) so the network stamping and the delegation
+ * descriptor are regression-testable: the descriptor must survive onto
+ * mainnet cards - the removed G11 guard used to strip it for any
+ * non-devnet network.
+ */
+export function buildCapabilityCard(skill: Skill, inputs: CapabilityCardInputs): CapabilityCard {
+  const { walletNetwork, solanaAddress, delegatePubkey } = inputs;
+  // `noInput` covers an x402 GET bridge without a query param: it consumes
+  // no buyer input, so the web app must hide its input box (`card.static`)
+  // instead of silently dropping whatever the buyer typed.
+  const isStatic =
+    skill.mode === 'static-file' || skill.mode === 'static-script' || skill.noInput === true;
+  return {
+    name: skill.name,
+    description: skill.description,
+    capabilities: skill.capabilities,
+    image: skill.image,
+    ...(isStatic ? { static: true } : {}),
+    // File-exchange hints (dynamic-script only). `inputMime` flags a file input;
+    // `inputText` tells the web whether to also show its text box for that file job.
+    ...(skill.inputMime ? { inputMime: skill.inputMime } : {}),
+    ...(skill.inputText ? { inputText: skill.inputText } : {}),
+    ...(skill.outputMime ? { outputMime: skill.outputMime } : {}),
+    // Conversation-context flag: clients gate chat affordances (session-carrying
+    // sends) on it. Strict true only - the read side coerces anything else away.
+    ...(skill.context === true ? { context: true } : {}),
+    // Delegation descriptor: only when the skill opts in AND a delegate key
+    // exists (delegatePubkey resolved). The pubkey is injected here, never
+    // taken from the SKILL.md - the operator declares only the cap/mechanism.
+    ...(skill.delegation && delegatePubkey
+      ? { delegation: { ...skill.delegation, delegate_pubkey: delegatePubkey } }
+      : {}),
+    payment: solanaAddress
+      ? {
+          chain: 'solana',
+          network: walletNetwork,
+          address: solanaAddress,
+          job_price: skill.priceSubunits,
+          token: skill.asset.token,
+          ...(skill.asset.mint ? { mint: skill.asset.mint } : {}),
+          decimals: skill.asset.decimals,
+          symbol: skill.asset.symbol,
+        }
+      : undefined,
+  };
+}
+
 export function buildScriptEnv(secrets: LoadedAgent['secrets']): NodeJS.ProcessEnv {
   const scriptEnv: NodeJS.ProcessEnv = { ...process.env };
   delete scriptEnv.ELISYM_PASSPHRASE;

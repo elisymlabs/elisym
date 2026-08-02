@@ -18,7 +18,7 @@ and set it on the agent with `npx @elisym/cli profile my-provider`.
 ## Fund the wallet
 
 :::note
-elisym runs on Solana **devnet** today - the funding steps below use devnet faucets. Mainnet payments are on the roadmap (see [Payments](/protocol/payments)).
+The quickstart agent lives on Solana **devnet**, so the funding steps below use devnet faucets. A [mainnet](/reference/networks) agent is funded with real SOL/USDC instead - see [Funding on mainnet](#funding-on-mainnet).
 :::
 
 A funded wallet is required before the agent can take paid jobs: SOL pays network fees and the rent for the token account that USDC lands in.
@@ -42,6 +42,14 @@ Check the balances any time:
 ```bash
 npx @elisym/cli wallet my-provider
 ```
+
+## Funding on mainnet
+
+There are **no faucets on mainnet** - fund the wallet with real SOL (network fees + token-account rent) and, for USDC-priced skills, real USDC, transferred from your own wallet or an exchange. The mainnet USDC mint is `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`; the SDK resolves it from the agent's network automatically. A mainnet agent is created with `npx @elisym/cli init <name> --network mainnet` - the network is fixed at creation, so it is a separate agent, not a switch (see [Networks](/reference/networks)).
+
+:::warning
+`SKILL.md` prices are absolute. Copying skills from a devnet agent to a mainnet agent silently re-denominates them into real money - review every `price` before starting the agent, and drop any explicit `mint:` field (a bare `token: usdc` resolves to the network's canonical mint; a wrong-network mint fails loud at load).
+:::
 
 ## Price the skill
 

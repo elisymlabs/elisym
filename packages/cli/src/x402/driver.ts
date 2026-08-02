@@ -16,11 +16,12 @@
  * maximum loss per attempt.
  */
 import {
-  USDC_SOLANA_DEVNET,
   calculateProtocolFee,
   formatAssetAmount,
+  resolveUsdcAsset,
   signerFromSecretKeyBase58,
 } from '@elisym/sdk';
+import type { Asset, Network } from '@elisym/sdk';
 import {
   address,
   createSolanaRpc,
@@ -41,8 +42,7 @@ import {
   X402_MAX_RESPONSE_BYTES,
   X402_PROBE_TTL_MS,
   X402_REFUNDED_RETRIES,
-  X402_SOLANA_DEVNET_CAIP2,
-  X402_SOLANA_DEVNET_V1,
+  x402SolanaNetworkIds,
 } from './constants.js';
 import { X402PermanentError, X402PreflightError, X402TransientError } from './errors.js';
 import { buildRequirementsPolicy, maxAcceptableQuote, type RequirementRule } from './matcher.js';
@@ -56,6 +56,12 @@ export interface X402DriverOptions {
   /** Decrypted at-rest base58 `solana_secret_key`; absent => every job refused at preflight. */
   solanaSecretKeyBase58?: string;
   rpcUrl: string;
+  /**
+   * The agent's Solana network. Drives the accepted x402 network-id set, the
+   * USDC mint every requirement is compared against, and the float-balance
+   * mint - all three must come from the same value (D15/H2).
+   */
+  network: Network;
   /** Live protocol fee accessor (bps) - fetched fresh, mirrors `collectPayment`. */
   getFeeBps: () => Promise<number>;
   log?: (message: string) => void;
@@ -171,12 +177,14 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<boolean> {
 export class X402Driver implements X402JobDriver {
   private readonly store: X402JobStore;
   private readonly rpc: Rpc<SolanaRpcApi>;
+  private readonly usdcAsset: Asset;
   private signerPromise: Promise<KeyPairSigner> | null = null;
   private readonly repriceHintLogged = new Set<string>();
 
   constructor(private readonly options: X402DriverOptions) {
     this.store = new X402JobStore(options.agentDir);
     this.rpc = createSolanaRpc(options.rpcUrl);
+    this.usdcAsset = resolveUsdcAsset(options.network);
     // Fire-and-forget retention sweep; a failed sweep only delays cleanup.
     this.store.sweepExpired().catch(() => {});
   }
@@ -248,16 +256,19 @@ export class X402Driver implements X402JobDriver {
 
     const signer = await this.assertWalletInvariant();
 
-    if (job.asset.mint !== USDC_SOLANA_DEVNET.mint || USDC_SOLANA_DEVNET.mint === undefined) {
+    if (job.asset.mint !== this.usdcAsset.mint || this.usdcAsset.mint === undefined) {
       throw new X402PreflightError(
-        `x402 skills must be priced in devnet USDC (skill "${job.skillName}" is priced in ${job.asset.symbol}); ` +
+        `x402 skills must be priced in ${this.options.network} USDC (skill "${job.skillName}" is priced in ${job.asset.symbol}); ` +
           'the margin check compares the elisym price to the upstream USDC quote - re-run `npx @elisym/cli x402 add`',
       );
     }
 
     this.assertInputRules(job, input);
 
-    const rule: RequirementRule = { maxUpstreamSubunits: job.params.maxUpstreamSubunits };
+    const rule: RequirementRule = {
+      maxUpstreamSubunits: job.params.maxUpstreamSubunits,
+      network: this.options.network,
+    };
     let probe;
     try {
       probe = await probePaymentRequiredCached(
@@ -286,17 +297,17 @@ export class X402Driver implements X402JobDriver {
     if (quote < job.params.maxUpstreamSubunits && !this.repriceHintLogged.has(job.skillName)) {
       this.repriceHintLogged.add(job.skillName);
       this.log(
-        `upstream for "${job.skillName}" now quotes ${formatAssetAmount(USDC_SOLANA_DEVNET, quote)} ` +
-          `(your price was computed from ${formatAssetAmount(USDC_SOLANA_DEVNET, job.params.maxUpstreamSubunits)}); ` +
+        `upstream for "${job.skillName}" now quotes ${formatAssetAmount(this.usdcAsset, quote)} ` +
+          `(your price was computed from ${formatAssetAmount(this.usdcAsset, job.params.maxUpstreamSubunits)}); ` +
           're-run `npx @elisym/cli x402 add` to reprice',
       );
     }
 
-    const balance = await fetchUsdcBalance(this.rpc, address(signer.address));
+    const balance = await fetchUsdcBalance(this.rpc, address(signer.address), this.options.network);
     if (balance < quote) {
       throw new X402PreflightError(
-        `bridge float insufficient: ${formatAssetAmount(USDC_SOLANA_DEVNET, balance)} USDC in ${signer.address}, ` +
-          `upstream quotes ${formatAssetAmount(USDC_SOLANA_DEVNET, quote)} - top up the wallet`,
+        `bridge float insufficient: ${formatAssetAmount(this.usdcAsset, balance)} USDC in ${signer.address}, ` +
+          `upstream quotes ${formatAssetAmount(this.usdcAsset, quote)} - top up the wallet`,
       );
     }
 
@@ -305,8 +316,8 @@ export class X402Driver implements X402JobDriver {
     const net = BigInt(job.priceSubunits - fee);
     if (net < quote) {
       throw new X402PreflightError(
-        `negative margin: net revenue ${formatAssetAmount(USDC_SOLANA_DEVNET, net)} (price minus ${feeBps} bps protocol fee) ` +
-          `is below the upstream quote ${formatAssetAmount(USDC_SOLANA_DEVNET, quote)} - re-run \`npx @elisym/cli x402 add\` to reprice`,
+        `negative margin: net revenue ${formatAssetAmount(this.usdcAsset, net)} (price minus ${feeBps} bps protocol fee) ` +
+          `is below the upstream quote ${formatAssetAmount(this.usdcAsset, quote)} - re-run \`npx @elisym/cli x402 add\` to reprice`,
       );
     }
   }
@@ -359,12 +370,13 @@ export class X402Driver implements X402JobDriver {
 
   private buildClient(signer: KeyPairSigner, rule: RequirementRule): x402Client {
     const scheme = new ExactSvmScheme(signer, { rpcUrl: this.options.rpcUrl });
+    const networkIds = x402SolanaNetworkIds(this.options.network);
     return x402Client
       .fromConfig({
-        schemes: [{ network: X402_SOLANA_DEVNET_CAIP2, client: scheme }],
+        schemes: [{ network: networkIds.caip2, client: scheme }],
         policies: [buildRequirementsPolicy(rule)],
       })
-      .registerV1(X402_SOLANA_DEVNET_V1, scheme);
+      .registerV1(networkIds.v1, scheme);
   }
 
   private classifyWrapperError(error: unknown): Error {
@@ -446,7 +458,10 @@ export class X402Driver implements X402JobDriver {
     }
 
     const signer = await this.assertWalletInvariant();
-    const rule: RequirementRule = { maxUpstreamSubunits: job.params.maxUpstreamSubunits };
+    const rule: RequirementRule = {
+      maxUpstreamSubunits: job.params.maxUpstreamSubunits,
+      network: this.options.network,
+    };
     const client = this.buildClient(signer, rule);
     const jobTag = input.jobId.slice(0, 8);
 

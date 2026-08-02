@@ -10,6 +10,7 @@ import {
   formatAssetAmount,
   formatNetworkBaseline,
   getDelegation,
+  getProtocolProgramId,
   mintDelegationNonce,
   toDTag,
   DEFAULT_KIND_OFFSET,
@@ -43,7 +44,7 @@ import {
 import { z } from 'zod';
 import type { AgentContext, AgentInstance } from '../context.js';
 import {
-  explorerClusterFor,
+  explorerQuerySuffixFor,
   fetchProtocolConfig,
   releaseSpend,
   reserveSpend,
@@ -624,7 +625,7 @@ async function gasHintForCardAsset(agent: AgentInstance, asset: Asset): Promise<
   }
   try {
     const rpc = createSolanaRpc(rpcUrlFor(agent.network));
-    const baseline = await estimateNetworkBaseline(rpc, {
+    const baseline = await estimateNetworkBaseline(rpc, agent.network, {
       includeAtaRent: asset.mint !== undefined,
     });
     return `\n${formatNetworkBaseline(baseline)}`;
@@ -727,10 +728,13 @@ async function executePaymentFlow(
 
   // the expected recipient MUST match what the provider advertised in its card.
   // Passing `undefined` here would skip the check and let a compromised provider
-  // redirect funds to an attacker address.
+  // redirect funds to an attacker address. The agent network is the customer
+  // side of the SDK's cross-network rejection (a request settling on the other
+  // cluster fails validation before any transaction is built).
   const validation = payment().validatePaymentRequest(
     paymentRequest,
     protocolConfig,
+    agent.network,
     expectedRecipient,
   );
   if (validation !== null) {
@@ -751,6 +755,8 @@ async function executePaymentFlow(
     rpc,
     protocolConfig,
     {
+      programId: getProtocolProgramId(agent.network),
+      network: agent.network,
       jobEventId: jobId,
     },
   );
@@ -2811,4 +2817,4 @@ export const customerTools: ToolDefinition[] = [
 ];
 
 /** Re-exported for tests and the stdio integration harness. */
-export { explorerClusterFor };
+export { explorerQuerySuffixFor };

@@ -1,5 +1,6 @@
 import { deriveConfigAddress, fetchConfig } from '@elisym/config-client';
 import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
+import type { Network } from '../types';
 
 const CACHE_TTL_MS = 60_000;
 
@@ -43,16 +44,21 @@ export interface GetProtocolConfigOptions {
 /**
  * Fetch the protocol config from the on-chain `elisym-config` program.
  *
- * Caches per-program-id with a TTL (default 60s). On RPC error, returns the
- * last known good snapshot from cache. If nothing is cached, throws - callers
- * must handle the error (e.g. refuse the payment, show a warning).
+ * Caches per `(programId, network)` with a TTL (default 60s) - the program id
+ * alone is cluster-ambiguous (devnet and mainnet share the address), so
+ * without the network discriminator one cluster's `{feeBps, treasury}`
+ * snapshot could serve the other in a multi-network process. On RPC error,
+ * returns the last known good snapshot from cache. If nothing is cached,
+ * throws - callers must handle the error (e.g. refuse the payment, show a
+ * warning).
  */
 export async function getProtocolConfig(
   rpc: Rpc<SolanaRpcApi>,
   programId: Address,
+  network: Network,
   options?: GetProtocolConfigOptions,
 ): Promise<ProtocolConfig> {
-  const key = programId.toString();
+  const key = `${programId.toString()}:${network}`;
   const ttl = options?.ttlMs ?? CACHE_TTL_MS;
   const cached = cache.get(key);
   if (!options?.forceRefresh && cached && Date.now() < cached.expires) {

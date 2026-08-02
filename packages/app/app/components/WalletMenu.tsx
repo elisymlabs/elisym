@@ -1,4 +1,4 @@
-import { USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import { resolveUsdcAsset } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useQueryClient } from '@tanstack/react-query';
 import Decimal from 'decimal.js-light';
@@ -9,7 +9,7 @@ import { useIdentity } from '~/hooks/useIdentity';
 import { purgeIdentityCaches } from '~/hooks/useMessages';
 import { useWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
-import { SOLANA_CLUSTER_LABEL } from '~/lib/cluster';
+import { DEVNET_APP_URL, SOLANA_CLUSTER, SOLANA_CLUSTER_LABEL } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
 import { CopyRow, truncateMiddle } from './CopyRow';
 import { MarbleAvatar } from './MarbleAvatar';
@@ -19,6 +19,7 @@ const IDENTITY_AVATAR_PX = 32;
 const COPY_FEEDBACK_MS = 1400;
 const SOL_DISPLAY_DECIMALS = 4;
 const USDC_DISPLAY_DECIMALS = 2;
+const USDC_ASSET = resolveUsdcAsset(SOLANA_CLUSTER);
 
 type CopyKey = 'identity' | 'wallet';
 
@@ -144,7 +145,7 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
     usdcRaw === null
       ? null
       : new Decimal(usdcRaw.toString())
-          .div(new Decimal(10).pow(USDC_SOLANA_DEVNET.decimals))
+          .div(new Decimal(10).pow(USDC_ASSET.decimals))
           .toDecimalPlaces(USDC_DISPLAY_DECIMALS)
           .toString();
 
@@ -205,6 +206,14 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
           <span className="rounded-12 bg-stat-indigo-bg px-8 py-5 font-mono text-[10px] leading-none font-medium tracking-wide text-stat-indigo uppercase">
             {SOLANA_CLUSTER_LABEL}
           </span>
+          {SOLANA_CLUSTER === 'mainnet' && (
+            <a
+              href={DEVNET_APP_URL}
+              className="font-mono text-[10px] leading-none tracking-wide text-text-2/70 underline transition-colors hover:text-text-2"
+            >
+              Devnet
+            </a>
+          )}
         </div>
         <div className="mt-14 grid grid-cols-2 items-center divide-x divide-black/5">
           <BalanceCell

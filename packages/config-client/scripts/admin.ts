@@ -14,7 +14,7 @@
  *
  * Optional env:
  *   PROGRAM_ID  - defaults to Codama-embedded program address
- *   RPC_URL     - defaults to https://api.devnet.solana.com
+ *   SOLANA_RPC_URL - RPC endpoint (alias: RPC_URL); defaults to https://api.devnet.solana.com
  *   KEYPAIR     - path to keypair JSON, defaults to ~/.config/solana/id.json
  */
 
@@ -40,6 +40,7 @@ import {
 import {
   ELISYM_CONFIG_PROGRAM_ADDRESS,
   fetchConfig,
+  fetchMaybeNetworkStats,
   getAcceptAdminInstructionAsync,
   getCancelPendingAdminInstructionAsync,
   getProposeAdminInstructionAsync,
@@ -61,7 +62,8 @@ const PROGRAM_ID: Address = process.env.PROGRAM_ID
   ? address(process.env.PROGRAM_ID)
   : ELISYM_CONFIG_PROGRAM_ADDRESS;
 
-const RPC_URL = process.env.RPC_URL ?? 'https://api.devnet.solana.com';
+const RPC_URL =
+  process.env.SOLANA_RPC_URL ?? process.env.RPC_URL ?? 'https://api.devnet.solana.com';
 const WS_URL = RPC_URL.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 
 const KEYPAIR_PATH = process.env.KEYPAIR ?? join(homedir(), '.config/solana/id.json');
@@ -117,6 +119,24 @@ async function show(): Promise<void> {
   console.log('Fee (bps):     ', data.feeBps, `(${(data.feeBps / 100).toFixed(2)}%)`);
   console.log('Paused:        ', data.paused);
   console.log('Last updated:  ', new Date(Number(data.lastUpdated) * 1000).toISOString());
+
+  // Every payment tx bundles increment_stats - a missing stats PDA fails all
+  // payments on this cluster, and the config account alone cannot reveal that.
+  const [statsPda] = await getProgramDerivedAddress({
+    programAddress: PROGRAM_ID,
+    seeds: [new TextEncoder().encode('network_stats')],
+  });
+  const statsAccount = await fetchMaybeNetworkStats(rpc, statsPda);
+  if (statsAccount.exists) {
+    console.log('Stats PDA:     ', statsPda, '(initialized)');
+    console.log('Job count:     ', statsAccount.data.jobCount);
+  } else {
+    console.log(
+      'Stats PDA:     ',
+      statsPda,
+      '(MISSING - run initialize-stats.ts, payments will fail until it exists)',
+    );
+  }
 }
 
 async function main(): Promise<void> {

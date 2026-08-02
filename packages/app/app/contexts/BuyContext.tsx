@@ -150,6 +150,7 @@ async function buildVersionedPaymentTransaction(
     programId: PROTOCOL_PROGRAM_ID,
   });
   const priorityFeeMicroLamports = await estimatePriorityFeeMicroLamports(kitRpc, {
+    network: SOLANA_CLUSTER,
     percentile: PRIORITY_FEE_PERCENTILE,
   });
   const { value: latestBlockhash } = await kitRpc.getLatestBlockhash().send();
@@ -565,6 +566,9 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           capability,
           status: 'submitted',
           createdAt: Date.now(),
+          // D13: stamp the cluster so the /jobs merge can scope history to
+          // the current network (legacy unstamped entries read as devnet).
+          network: SOLANA_CLUSTER,
         });
 
         // Submit-time thread entry (stage 2): pending until an outcome
@@ -686,7 +690,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   );
                 }
 
-                const protocolConfig = await getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID);
+                const protocolConfig = await getProtocolConfig(
+                  kitRpc,
+                  PROTOCOL_PROGRAM_ID,
+                  SOLANA_CLUSTER,
+                );
 
                 // Bound the charge to the advertised price (subunits). Without
                 // this a malicious provider can inflate `paymentRequest.amount`
@@ -697,9 +705,13 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // subunit value; coerce via BigInt with no float math.
                 const maxAmountLamports = BigInt(card.payment?.job_price ?? 0);
 
+                // The customer network is the page's cluster (D7): a request
+                // settling on the other cluster fails with `network_mismatch`
+                // before any transaction is built.
                 const validationError = payment.validatePaymentRequest(
                   paymentRequestJson,
                   { feeBps: protocolConfig.feeBps, treasury: protocolConfig.treasury },
+                  SOLANA_CLUSTER,
                   recipientAddress,
                   { maxAmountLamports },
                 );

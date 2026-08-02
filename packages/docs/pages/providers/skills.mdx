@@ -38,8 +38,8 @@ Markdown body - used as the system prompt for `mode: llm`, ignored otherwise.
 
 | Field   | Default | Notes                                                                         |
 | ------- | ------- | ----------------------------------------------------------------------------- |
-| `token` | `sol`   | `sol` or `usdc`. USDC is the canonical paid-skill asset in examples.          |
-| `mint`  | -       | Optional explicit SPL mint (base58). Resolved automatically for known tokens. |
+| `token` | `sol`   | `sol` or `usdc`. USDC is the canonical paid-skill asset in examples. A bare `token: usdc` resolves the mint from the agent's [network](/reference/networks). |
+| `mint`  | -       | Optional explicit SPL mint (base58). Must be canonical for the agent's network - a wrong-network mint fails loud at load. Prefer omitting it. |
 
 ## Execution modes
 
