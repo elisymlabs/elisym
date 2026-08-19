@@ -130,8 +130,12 @@ describe('parseCapabilityEvent - payment decimals', () => {
   it('rejects a decimals value that would shift the displayed price', () => {
     // A card claiming decimals 12 renders 250000000 USDC subunits as
     // "0.00025", a millionth of what a delegated pull actually moves.
+    //
+    // `null` stands in for the non-finite cases on purpose: the card reaches a
+    // reader as JSON, and `JSON.stringify` has already turned NaN and Infinity
+    // into null by then. They are exercised as themselves on the publish side.
     const agent = ElisymIdentity.generate();
-    for (const decimals of [19, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const decimals of [19, -1, 1.5, null]) {
       const event = makeCapabilityEvent(agent, cardWithDecimals(decimals));
       expect(parseCapabilityEvent(event, 'devnet')).toBeNull();
     }
@@ -742,6 +746,45 @@ describe('DiscoveryService.publishCapability', () => {
 
     const content = JSON.parse(ev.content);
     expect(content.name).toBe('test-agent');
+  });
+
+  it('rejects a decimals value the read side would drop', async () => {
+    // Write/read symmetry: parseCapabilityEvent returns null for these, so
+    // publishing one would ship a card no client ever displays - the provider
+    // would announce successfully and stay invisible with nothing to debug.
+    // NaN and Infinity are only reachable HERE: JSON.stringify turns both into
+    // null before a reader ever sees them.
+    const identity = ElisymIdentity.generate();
+    for (const decimals of [19, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const svc = new DiscoveryService(createMockPool() as any);
+      const card = makeCard({
+        payment: {
+          chain: 'solana',
+          network: 'devnet',
+          address: '11111111111111111111111111111111',
+          token: 'usdc',
+          decimals,
+        },
+      } as Partial<CapabilityCard>);
+      await expect(svc.publishCapability(identity, card)).rejects.toThrow('decimals');
+    }
+  });
+
+  it('publishes a card whose decimals are in range', async () => {
+    const pool = createMockPool();
+    const svc = new DiscoveryService(pool as any);
+    const identity = ElisymIdentity.generate();
+    const card = makeCard({
+      payment: {
+        chain: 'solana',
+        network: 'devnet',
+        address: '11111111111111111111111111111111',
+        token: 'usdc',
+        decimals: 6,
+      },
+    } as Partial<CapabilityCard>);
+
+    await expect(svc.publishCapability(identity, card)).resolves.toBeTruthy();
   });
 
   it('rejects missing payment address', async () => {
