@@ -1761,21 +1761,30 @@ export const customerTools: ToolDefinition[] = [
       // Requiring the network's canonical USDC also rejects the other
       // cluster's USDC mint, and guarantees the `asset` used for every
       // `formatAssetAmount` below is the registry entry, not card input.
-      // A card that names `usdc` without a mint is canonical by convention -
-      // there is exactly one USDC per cluster and the pull targets it - so
-      // accept it rather than reading "priced in USDC" back to the caller as a
-      // reason to refuse. Everything below then renders through
-      // `delegationAsset`, the registry entry, so a mint-less card cannot
-      // smuggle its own `decimals` into the displayed price either.
+      // Decide from the card's RAW payment block, not from the resolved asset:
+      // `assetFromCardPayment` only self-describes when the card carries both
+      // `symbol` and a numeric `decimals`, and otherwise degrades to
+      // NATIVE_SOL - so a minimal `{token: 'usdc'}` card would be refused with
+      // "priced in SOL", a reason that is simply false. Normalizing here also
+      // matches the web app's `resolvePaymentAsset`, which lowercases `token`
+      // and defaults an absent `chain`; without that the two surfaces disagree
+      // on the same card.
+      //
+      // A mint-less `usdc` card is canonical by convention: there is one USDC
+      // per cluster and the pull targets it. Everything below renders through
+      // `delegationAsset` (the registry entry), so accepting one cannot let a
+      // card smuggle its own `decimals` into a displayed price.
       const delegationAsset = resolveUsdcAsset(agent.network);
+      const cardPayment = paymentCardForCapability(provider, dTag)?.payment;
+      const cardMint = cardPayment?.mint;
       const isCanonicalUsdc =
-        assetKey(asset) === assetKey(delegationAsset) ||
-        (asset.mint === undefined &&
-          asset.chain === delegationAsset.chain &&
-          asset.token === delegationAsset.token);
+        (cardPayment?.chain ?? delegationAsset.chain) === delegationAsset.chain &&
+        cardPayment?.token?.toLowerCase() === delegationAsset.token &&
+        (cardMint === undefined || cardMint === delegationAsset.mint);
       if (!isCanonicalUsdc) {
+        const declared = cardPayment?.symbol ?? cardPayment?.token ?? asset.symbol;
         const { text } = sanitizeUntrusted(
-          `Delegated payment is USDC-only, but this capability is priced in ${asset.symbol}.`,
+          `Delegated payment is USDC-only, but this capability is priced in ${declared}.`,
           'text',
         );
         return errorResult(text);
@@ -1913,7 +1922,11 @@ export const customerTools: ToolDefinition[] = [
           providerPubkey,
           providerName: clipProviderName(provider.name),
           paidAmountSubunits: String(price),
-          assetKey: assetKey(asset),
+          // The registry key, not the card's. A mint-less `usdc` card is
+          // accepted by the gate above but keys as `solana:usdc`, which
+          // `assetByKey` cannot resolve and which splits any per-asset
+          // aggregation away from the canonical `solana:usdc:<mint>` rows.
+          assetKey: assetKey(delegationAsset),
           status: 'completed',
           submittedAt,
           completedAt: Date.now(),
