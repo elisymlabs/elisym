@@ -1,4 +1,4 @@
-import { assetKey, getNetworkStats, getProtocolProgramId, resolveLsmAsset } from '@elisym/sdk';
+import { getNetworkStats, getProtocolProgramId } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { useLocalQuery } from './useLocalQuery';
@@ -22,23 +22,15 @@ export interface UiNetworkStats {
   totalLamports: number;
   /** Total volume in USDC subunits (1e6 = 1 USDC). */
   totalUsdcMicro: number;
-  /**
-   * Total volume in LSM subunits (1e6 = 1 LSM). Always 0 on devnet - LSM is
-   * mainnet-only and the StatsBar hides the tile there.
-   */
-  totalLsmMicro: number;
 }
 
 const onchainRpc = createSolanaRpc(SOLANA_RPC_URL);
 const PROTOCOL_PROGRAM_ID = getProtocolProgramId(SDK_CLUSTER);
 
-const LSM_ASSET = resolveLsmAsset(SOLANA_CLUSTER);
-
 const EMPTY_STATS: UiNetworkStats = {
   jobCount: 0,
   totalLamports: 0,
   totalUsdcMicro: 0,
-  totalLsmMicro: 0,
 };
 
 async function fetchOnchainStats(): Promise<UiNetworkStats> {
@@ -54,7 +46,6 @@ async function fetchOnchainStats(): Promise<UiNetworkStats> {
     jobCount: stats.jobCount,
     totalLamports: Number(stats.volumeNative),
     totalUsdcMicro: Number(stats.volumeUsdc),
-    totalLsmMicro: LSM_ASSET ? Number(stats.volumeByAssetKey[assetKey(LSM_ASSET)] ?? 0n) : 0,
   };
 }
 

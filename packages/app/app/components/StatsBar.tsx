@@ -1,28 +1,15 @@
-import { resolveLsmAsset } from '@elisym/sdk';
 import Decimal from 'decimal.js-light';
 import { useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useStats } from '~/hooks/useStats';
 import { useTweenedNumber } from '~/hooks/useTweenedNumber';
-import { SOLANA_CLUSTER } from '~/lib/cluster';
-import { cn } from '~/lib/cn';
 import { SolIcon } from '~/routes/Agent/SolIcon';
-import { LsmIcon } from './LsmIcon';
 import { UsdcIcon } from './UsdcIcon';
 
-// LSM is mainnet-only; the tile renders only where the asset exists.
-const SHOW_LSM = resolveLsmAsset(SOLANA_CLUSTER) !== undefined;
-
 // The horizontal strip appears at the 800px `stats` breakpoint inside a
-// `stats:max-w-[780px]` wrapper. A fourth tile at the three-tile spacing needs
-// 1029px (4x180 tiles + 6x40 gaps + 3 dividers + 64 padding + 2 border), and
-// the hero clips rather than scrolls (`HeroSection` is `overflow-hidden`), so
-// the outer tiles would simply be cut off. These tightened values need 749px,
-// which fits like the 768px three-tile strip.
-const TILE_MIN_WIDTH = SHOW_LSM ? 'min-w-150' : 'min-w-180';
-const STRIP_GAP = SHOW_LSM ? 'gap-16' : 'gap-40';
-const STRIP_PADDING = SHOW_LSM ? 'px-24' : 'px-32';
-
+// `stats:max-w-[780px]` wrapper, and the hero clips rather than scrolls
+// (`HeroSection` is `overflow-hidden`). Three tiles at this spacing need 768px
+// and fit; a fourth would need 1029px and the outer tiles would be cut off.
 const ON_CHAIN_TOOLTIP_TEXT =
   'Approximate. A self-reported on-chain counter bumped by clients alongside each ' +
   'payment - not independently verified against actual token transfers.';
@@ -58,7 +45,7 @@ function formatCount(n: number | string): string {
 
 function StatSkeleton() {
   return (
-    <div className={cn('flex h-90 flex-col items-center justify-center gap-8', TILE_MIN_WIDTH)}>
+    <div className="flex h-90 min-w-180 flex-col items-center justify-center gap-8">
       <div className="h-28 w-96 animate-pulse rounded-lg bg-white/10" />
       <div className="h-10 w-64 animate-pulse rounded-full bg-white/7" />
     </div>
@@ -173,7 +160,7 @@ function StatItem({
   tooltipText: string;
 }) {
   return (
-    <div className={cn('flex flex-col items-center gap-8', TILE_MIN_WIDTH)}>
+    <div className="flex min-w-180 flex-col items-center gap-8">
       <StatValue>{value}</StatValue>
       <StatLabel icon={icon} label={label} tooltipText={tooltipText} />
     </div>
@@ -243,12 +230,10 @@ export function StatsBar() {
   const tweenedJobs = useTweenedNumber(data?.jobCount);
   const tweenedLamports = useTweenedNumber(data?.totalLamports);
   const tweenedUsdcMicro = useTweenedNumber(data?.totalUsdcMicro);
-  const tweenedLsmMicro = useTweenedNumber(data?.totalLsmMicro);
 
   const jobCount = data ? formatCount(Math.round(tweenedJobs)) : '-';
   const solVolume = data ? withCommas(new Decimal(tweenedLamports).div(1e9).toFixed(2)) : '-';
   const usdcVolume = data ? withCommas(new Decimal(tweenedUsdcMicro).div(1e6).toFixed(2)) : '-';
-  const lsmVolume = data ? withCommas(new Decimal(tweenedLsmMicro).div(1e6).toFixed(2)) : '-';
 
   return (
     <div className="mx-auto max-w-[480px] px-16 pb-72 sm:px-24 sm:pb-96 stats:max-w-[780px]">
@@ -261,12 +246,6 @@ export function StatsBar() {
             <MobileRowSkeleton />
             <MobileRowDivider />
             <MobileRowSkeleton />
-            {SHOW_LSM && (
-              <>
-                <MobileRowDivider />
-                <MobileRowSkeleton />
-              </>
-            )}
           </>
         ) : (
           <>
@@ -290,30 +269,14 @@ export function StatsBar() {
               value={usdcVolume}
               tooltipText={ON_CHAIN_TOOLTIP_TEXT}
             />
-            {SHOW_LSM && (
-              <>
-                <MobileRowDivider />
-                <MobileStatRow
-                  icon={<LsmIcon className="size-14" />}
-                  label="LSM Volume"
-                  value={lsmVolume}
-                  tooltipText={ON_CHAIN_TOOLTIP_TEXT}
-                />
-              </>
-            )}
           </>
         )}
       </div>
 
       {/* Desktop (>= 800px): glass card containing horizontal stat strip */}
       <div className="hidden justify-center stats:flex">
-        <div
-          className={cn(
-            'h-90 rounded-3xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-md',
-            STRIP_PADDING,
-          )}
-        >
-          <div className={cn('flex h-full items-center justify-center', STRIP_GAP)}>
+        <div className="h-90 rounded-3xl border border-white/[0.08] bg-white/[0.04] px-32 backdrop-blur-md">
+          <div className="flex h-full items-center justify-center gap-40">
             {isLoading ? (
               <>
                 <StatSkeleton />
@@ -321,12 +284,6 @@ export function StatsBar() {
                 <StatSkeleton />
                 <Divider />
                 <StatSkeleton />
-                {SHOW_LSM && (
-                  <>
-                    <Divider />
-                    <StatSkeleton />
-                  </>
-                )}
               </>
             ) : (
               <>
@@ -350,17 +307,6 @@ export function StatsBar() {
                   icon={<UsdcIcon className="size-14" />}
                   tooltipText={ON_CHAIN_TOOLTIP_TEXT}
                 />
-                {SHOW_LSM && (
-                  <>
-                    <Divider />
-                    <StatItem
-                      value={lsmVolume}
-                      label="LSM Volume"
-                      icon={<LsmIcon className="size-14" />}
-                      tooltipText={ON_CHAIN_TOOLTIP_TEXT}
-                    />
-                  </>
-                )}
               </>
             )}
           </div>
