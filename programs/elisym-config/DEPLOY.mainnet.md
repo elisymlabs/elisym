@@ -40,11 +40,13 @@ Launch sequence per `docs/plans/solana-mainnet.md` Phase 0 (D4/D5 as amended in 
 #    `-k` is load-bearing: it pins the FEE PAYER. Without it the payer is
 #    whatever `solana config get` points at, which also decides whose buffers
 #    `solana program show --buffers` lists later - see the abort section.
-#    Confirm the program keypair still derives the expected address first;
-#    a regenerated one deploys at a stranger address and every later step
-#    targets BrX1CRk... and finds nothing.
-test "$(solana-keygen pubkey target/deploy/elisym_config-keypair.json)" \
-  = BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE || echo "WRONG PROGRAM KEYPAIR - STOP"
+#    Confirm the program keypair still derives the expected address first. A
+#    regenerated one deploys at a stranger address, and every later step then
+#    targets BrX1CRk... and finds nothing. Read the output before continuing -
+#    this is a checkpoint, not a guard that can stop the block for you.
+solana-keygen pubkey target/deploy/elisym_config-keypair.json
+#    ^ must print BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE. If it does not,
+#      STOP: restore the backed-up keypair before spending anything.
 
 solana program deploy \
   --url <url> \
@@ -63,8 +65,12 @@ solana program deploy \
 #     refuses outside a workspace. It can only run once per program; use
 #     `anchor idl upgrade` afterwards. (It is a no-op against localnet, so this
 #     one step cannot be rehearsed locally.)
+#     `anchor idl init` has a `--priority-fee` knob, deliberately unused: its
+#     units are undocumented and unverifiable from the binary, and this is a
+#     handful of transactions rather than the ~325 of step 1. If it stalls on
+#     congestion, retry rather than guess at a unit.
 anchor idl init BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE \
-  -f target/idl/elisym_config.json --provider.cluster <url> --priority-fee 50000
+  -f target/idl/elisym_config.json --provider.cluster <url>
 
 # 1b. Confirm what actually landed, BEFORE trying to initialize. `initialize`
 #     reads the loader's ProgramData account, so this is also the check that it
