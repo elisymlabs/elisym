@@ -1,4 +1,4 @@
-import { resolveUsdcAsset } from '@elisym/sdk';
+import { assetKey, type Asset } from '@elisym/sdk';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useQueryClient } from '@tanstack/react-query';
 import Decimal from 'decimal.js-light';
@@ -7,19 +7,19 @@ import { toast } from 'sonner';
 import { useLocation } from 'wouter';
 import { useIdentity } from '~/hooks/useIdentity';
 import { purgeIdentityCaches } from '~/hooks/useMessages';
-import { useWalletBalances } from '~/hooks/useWalletBalances';
+import { SPL_WALLET_ASSETS, useWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
 import { DEVNET_APP_URL, SOLANA_CLUSTER, SOLANA_CLUSTER_LABEL } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
 import { CopyRow, truncateMiddle } from './CopyRow';
+import { LsmIcon } from './LsmIcon';
 import { MarbleAvatar } from './MarbleAvatar';
 import { WalletGlyph } from './WalletGlyph';
 
 const IDENTITY_AVATAR_PX = 32;
 const COPY_FEEDBACK_MS = 1400;
 const SOL_DISPLAY_DECIMALS = 4;
-const USDC_DISPLAY_DECIMALS = 2;
-const USDC_ASSET = resolveUsdcAsset(SOLANA_CLUSTER);
+const SPL_DISPLAY_DECIMALS = 2;
 
 type CopyKey = 'identity' | 'wallet';
 
@@ -35,6 +35,8 @@ interface BalanceCellProps {
   symbol: string;
   icon: React.ReactNode;
   isLoading: boolean;
+  /** The balance could not be read - shown as unknown, never as zero. */
+  isUnavailable?: boolean;
 }
 
 function KeyGlyph() {
@@ -55,7 +57,7 @@ function KeyGlyph() {
   );
 }
 
-function BalanceCell({ amount, symbol, icon, isLoading }: BalanceCellProps) {
+function BalanceCell({ amount, symbol, icon, isLoading, isUnavailable }: BalanceCellProps) {
   if (isLoading) {
     return (
       <div className="flex h-28 items-center justify-center">
@@ -65,8 +67,11 @@ function BalanceCell({ amount, symbol, icon, isLoading }: BalanceCellProps) {
   }
   return (
     <div className="flex h-28 items-center justify-center gap-7 tabular-nums">
-      <span className="truncate text-[24px] leading-none font-semibold tracking-[-0.02em] text-text">
-        {amount ?? '0'}
+      <span
+        className="truncate text-[24px] leading-none font-semibold tracking-[-0.02em] text-text"
+        title={isUnavailable ? `${symbol} balance could not be read` : undefined}
+      >
+        {isUnavailable ? '-' : (amount ?? '0')}
       </span>
       {icon}
       <span className="sr-only">{symbol}</span>
@@ -117,6 +122,21 @@ function UsdcMark({ className }: { className?: string }) {
   );
 }
 
+/**
+ * Per-asset mark for a balance row. LSM has no brand artwork yet, so it renders
+ * the shared placeholder from `LsmIcon` rather than a second local copy - one
+ * token must not read as two different assets across the app.
+ */
+function SplMark({ asset, className }: { asset: Asset; className?: string }) {
+  if (asset.token === 'usdc') {
+    return <UsdcMark className={className} />;
+  }
+  if (asset.token === 'lsm') {
+    return <LsmIcon className={cn('shrink-0', className)} />;
+  }
+  return <WalletGlyph className={className} />;
+}
+
 export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Props) {
   const { disconnect } = useWallet();
   const { npub, publicKey: nostrPubkey, providerSession, logoutProvider } = useIdentity();
@@ -133,7 +153,8 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
     };
   }, []);
 
-  const { solLamports, usdcRaw, isSolLoading, isUsdcLoading } = useWalletBalances();
+  const { solLamports, splRaw, isSolLoading, isSolError, isSplLoadingByAsset, isSplErrorByAsset } =
+    useWalletBalances();
   const solBalance =
     solLamports === null
       ? null
@@ -141,13 +162,16 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
           .div(1e9)
           .toDecimalPlaces(SOL_DISPLAY_DECIMALS)
           .toString();
-  const usdcBalance =
-    usdcRaw === null
-      ? null
-      : new Decimal(usdcRaw.toString())
-          .div(new Decimal(10).pow(USDC_ASSET.decimals))
-          .toDecimalPlaces(USDC_DISPLAY_DECIMALS)
-          .toString();
+  const splBalanceFor = (asset: Asset): string | null => {
+    const raw = splRaw[assetKey(asset)] ?? null;
+    if (raw === null) {
+      return null;
+    }
+    return new Decimal(raw.toString())
+      .div(new Decimal(10).pow(asset.decimals))
+      .toDecimalPlaces(SPL_DISPLAY_DECIMALS)
+      .toString();
+  };
 
   async function handleCopy(key: CopyKey, value: string, toastText: string) {
     try {
@@ -215,19 +239,35 @@ export function WalletMenu({ address, isClosing, onClose, onAnimationEnd }: Prop
             </a>
           )}
         </div>
-        <div className="mt-14 grid grid-cols-2 items-center divide-x divide-black/5">
+        <div
+          className={cn(
+            'mt-14 grid items-center',
+            // Two balances fit side by side in the 280px menu; beyond that a
+            // column is too narrow for the 24px figure and truncates it (a
+            // seven-figure LSM balance worst of all), so stack them as rows.
+            // Row form takes any number of assets - the column form does not.
+            SPL_WALLET_ASSETS.length > 1
+              ? 'grid-cols-1 divide-y divide-black/5'
+              : 'grid-cols-2 divide-x divide-black/5',
+          )}
+        >
           <BalanceCell
             amount={solBalance ?? null}
             symbol="SOL"
             icon={<SolMark className="size-14" />}
             isLoading={isSolLoading}
+            isUnavailable={isSolError}
           />
-          <BalanceCell
-            amount={usdcBalance ?? null}
-            symbol="USDC"
-            icon={<UsdcMark className="size-18" />}
-            isLoading={isUsdcLoading}
-          />
+          {SPL_WALLET_ASSETS.map((asset) => (
+            <BalanceCell
+              key={assetKey(asset)}
+              amount={splBalanceFor(asset)}
+              symbol={asset.symbol}
+              icon={<SplMark asset={asset} className="size-18" />}
+              isLoading={isSplLoadingByAsset[assetKey(asset)] ?? false}
+              isUnavailable={isSplErrorByAsset[assetKey(asset)] ?? false}
+            />
+          ))}
         </div>
       </div>
 

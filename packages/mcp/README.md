@@ -204,7 +204,7 @@ npx @elisym/mcp disable-agent-switch <agent>
 
 The MCP process enforces a shared cap on total amount spent per asset by `submit_and_pay_job`, `buy_capability`, and `send_payment`. `withdraw` is NOT counted (uses its own gate).
 
-Defaults (hardcoded): `0.5 SOL` and `50 USDC` per network (the limiter is mint-keyed, so devnet USDC and mainnet USDC each get their own cap). Native SOL has no mint, so its cap is a single entry shared across networks - deliberate: in a mixed-network process the shared draw-down can only under-allow, never over-spend.
+Defaults (hardcoded): `0.5 SOL` (shared), `50 USDC` per network, and `1,000,000 LSM` (mainnet-only) (the limiter is mint-keyed, so devnet USDC and mainnet USDC each get their own cap). Native SOL has no mint, so its cap is a single entry shared across networks - deliberate: in a mixed-network process the shared draw-down can only under-allow, never over-spend.
 
 Soft warnings fire once per process when committed spend first crosses 50% and 80% of the cap for an asset; the warning is appended to the tool result and logged at `warn` level. Crossing the cap is still a hard reject (the tool call fails).
 

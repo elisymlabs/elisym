@@ -10,10 +10,16 @@
  * function.
  */
 
+import { NATIVE_ASSET_SENTINEL, deriveAssetStatsAddress } from '@elisym/config-client';
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from '@solana-program/token';
 import { type Address, type Rpc, type SolanaRpcApi, address } from '@solana/kit';
+import { getProtocolProgramId } from '../constants';
 import type { Network, PaymentRequestData } from '../types';
-import { resolveAssetFromPaymentRequest } from './assets';
+import {
+  TOKEN_2022_PROGRAM_ADDRESS_STR,
+  resolveAssetFromPaymentRequest,
+  type Asset,
+} from './assets';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
 
 /**
@@ -39,6 +45,23 @@ const FALLBACK_ATA_RENT_LAMPORTS = 2_039_280n;
 /** SPL Token account size in bytes. */
 const SPL_TOKEN_ACCOUNT_SIZE = 165;
 
+/**
+ * A Token-2022 ATA always carries the mandatory `ImmutableOwner` extension:
+ * 165 base + 1 account-type byte + 4 TLV header = 170 bytes, rent-exempt at
+ * 2_074_080 lamports.
+ */
+const FALLBACK_T22_ATA_RENT_LAMPORTS = 2_074_080n;
+const T22_TOKEN_ACCOUNT_SIZE = 170;
+
+/**
+ * `AssetStats` PDA of the elisym-config program: 8-byte discriminator + 130
+ * bytes of state = 138 bytes, rent-exempt at 1_851_360 lamports. Charged once
+ * per mint network-wide when the payment self-registers a brand-new asset
+ * (ops pre-creates the PDAs for known assets, so this is normally 0).
+ */
+const FALLBACK_ASSET_STATS_RENT_LAMPORTS = 1_851_360n;
+const ASSET_STATS_ACCOUNT_SIZE = 138;
+
 export interface SolFeeEstimate {
   /** Base per-signature fee. Currently 5000 lamports * 1 signature. */
   baseFeeLamports: bigint;
@@ -55,7 +78,15 @@ export interface SolFeeEstimate {
    * ATA is missing only on the first-ever protocol fee into this mint.
    */
   rentLamports: bigint;
-  /** `baseFeeLamports + priorityFeeLamports + rentLamports`. */
+  /**
+   * Rent-exemption deposit for the per-mint `AssetStats` PDA the bundled
+   * `increment_stats_v2` instruction creates when this payment is the
+   * network's first in a brand-new asset (native SOL included, via the
+   * sentinel PDA). 0 whenever the PDA already exists - ops pre-creates it for
+   * every known asset, so a non-zero value here is exceptional.
+   */
+  assetStatsRentLamports: bigint;
+  /** `baseFeeLamports + priorityFeeLamports + rentLamports + assetStatsRentLamports`. */
   totalLamports: bigint;
   breakdown: {
     numSignatures: number;
@@ -78,6 +109,35 @@ export interface EstimateSolFeeOptions {
   priorityFeePercentile?: number;
   /** Override the number of signatures. Defaults to 1. */
   numSignatures?: number;
+}
+
+/**
+ * One-time lamports the payment transaction charges the payer to create the
+ * per-asset `AssetStats` PDA, or 0n when it already exists.
+ *
+ * Every payment bundles `increment_stats_v2`, which `init_if_needed`s that PDA
+ * - native SOL included, via the sentinel PDA - so a preview that omits this
+ * understates the first payment in an asset by ~0.0019 SOL. Surfaces exist
+ * (the web app's gas line) that estimate a fee without a payment request; they
+ * add this on top of their own base + priority + ATA math.
+ *
+ * `programId` must be the one the payment will be built against; it defaults to
+ * this network's protocol program, which is what `buildPaymentInstructions`
+ * uses unless a caller overrides it. Probing under a different program would
+ * quote 0 rent for a payment that still pays it.
+ */
+export async function estimateAssetStatsRentLamports(
+  rpc: Rpc<SolanaRpcApi>,
+  network: Network,
+  asset: Asset,
+  programId: Address = getProtocolProgramId(network),
+): Promise<bigint> {
+  const statsMint = asset.mint ? address(asset.mint) : NATIVE_ASSET_SENTINEL;
+  const assetStatsPda = await deriveAssetStatsAddress(programId, statsMint);
+  const missingAssetStatsCount = await countMissingAccounts(rpc, [assetStatsPda]);
+  return missingAssetStatsCount > 0
+    ? await fetchRentExemption(rpc, ASSET_STATS_ACCOUNT_SIZE, FALLBACK_ASSET_STATS_RENT_LAMPORTS)
+    : 0n;
 }
 
 /**
@@ -113,14 +173,17 @@ export async function estimateSolFeeLamports(
   let rentPerAtaLamports = 0n;
   let missingAtaCount = 0;
 
+  const assetStatsRentLamports = await estimateAssetStatsRentLamports(rpc, network, asset);
+
   if (asset.mint) {
-    rentPerAtaLamports = await fetchAtaRent(rpc);
+    rentPerAtaLamports = await fetchAtaRent(rpc, asset.tokenProgram);
     const mint = address(asset.mint);
+    const tokenProgram = asset.tokenProgram ? address(asset.tokenProgram) : TOKEN_PROGRAM_ADDRESS;
 
     const ataAccountsToCheck: Address[] = [];
     const [recipientAta] = await findAssociatedTokenPda({
       owner: address(paymentRequest.recipient),
-      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      tokenProgram,
       mint,
     });
     ataAccountsToCheck.push(recipientAta);
@@ -129,7 +192,7 @@ export async function estimateSolFeeLamports(
     if (paymentRequest.fee_address && feeAmount > 0) {
       const [treasuryAta] = await findAssociatedTokenPda({
         owner: address(paymentRequest.fee_address),
-        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        tokenProgram,
         mint,
       });
       ataAccountsToCheck.push(treasuryAta);
@@ -139,11 +202,13 @@ export async function estimateSolFeeLamports(
     rentLamports = rentPerAtaLamports * BigInt(missingAtaCount);
   }
 
-  const totalLamports = baseFeeLamports + priorityFeeLamports + rentLamports;
+  const totalLamports =
+    baseFeeLamports + priorityFeeLamports + rentLamports + assetStatsRentLamports;
   return {
     baseFeeLamports,
     priorityFeeLamports,
     rentLamports,
+    assetStatsRentLamports,
     totalLamports,
     breakdown: {
       numSignatures,
@@ -155,20 +220,35 @@ export async function estimateSolFeeLamports(
   };
 }
 
-async function fetchAtaRent(rpc: Rpc<SolanaRpcApi>): Promise<bigint> {
+/** ATA account size + fallback rent for the given owner token program. */
+function ataRentParams(tokenProgram?: string): { size: number; fallback: bigint } {
+  if (tokenProgram === TOKEN_2022_PROGRAM_ADDRESS_STR) {
+    return { size: T22_TOKEN_ACCOUNT_SIZE, fallback: FALLBACK_T22_ATA_RENT_LAMPORTS };
+  }
+  return { size: SPL_TOKEN_ACCOUNT_SIZE, fallback: FALLBACK_ATA_RENT_LAMPORTS };
+}
+
+async function fetchAtaRent(rpc: Rpc<SolanaRpcApi>, tokenProgram?: string): Promise<bigint> {
+  const { size, fallback } = ataRentParams(tokenProgram);
+  return fetchRentExemption(rpc, size, fallback);
+}
+
+async function fetchRentExemption(
+  rpc: Rpc<SolanaRpcApi>,
+  size: number,
+  fallback: bigint,
+): Promise<bigint> {
   try {
-    const lamports = await rpc
-      .getMinimumBalanceForRentExemption(BigInt(SPL_TOKEN_ACCOUNT_SIZE))
-      .send();
+    const lamports = await rpc.getMinimumBalanceForRentExemption(BigInt(size)).send();
     if (typeof lamports === 'bigint') {
       return lamports;
     }
     if (typeof lamports === 'number' && Number.isFinite(lamports) && lamports > 0) {
       return BigInt(lamports);
     }
-    return FALLBACK_ATA_RENT_LAMPORTS;
+    return fallback;
   } catch {
-    return FALLBACK_ATA_RENT_LAMPORTS;
+    return fallback;
   }
 }
 
@@ -222,6 +302,9 @@ export function formatFeeBreakdown(estimate: SolFeeEstimate): string {
   if (estimate.rentLamports > 0n) {
     lines.push(line('ATA rent:', estimate.rentLamports));
   }
+  if (estimate.assetStatsRentLamports > 0n) {
+    lines.push(line('Stats rent:', estimate.assetStatsRentLamports));
+  }
   lines.push(line('Total:', estimate.totalLamports));
   return lines.join('\n');
 }
@@ -245,8 +328,14 @@ export interface NetworkBaselineEstimate {
 }
 
 export interface NetworkBaselineOptions {
-  /** Add one ATA rent-exemption deposit to the total (USDC first-time payer). */
+  /** Add one ATA rent-exemption deposit to the total (SPL first-time payer). */
   includeAtaRent?: boolean;
+  /**
+   * Owner token program of the SPL asset the rent is quoted for. Selects the
+   * ATA account size (classic 165 bytes vs Token-2022 170 bytes). Ignored
+   * unless `includeAtaRent` is true.
+   */
+  ataTokenProgram?: string;
   /** Override the priority-fee percentile (default 75). */
   priorityFeePercentile?: number;
   /** Override the compute-unit limit (default 200_000). */
@@ -263,6 +352,12 @@ export interface NetworkBaselineOptions {
  *
  * Reuses the priority-fee cache in `estimatePriorityFeeMicroLamports`
  * (TTL 10s) so consecutive confirmations don't double-hit the RPC.
+ *
+ * This is a FLOOR, not the full invoice: it is asset-agnostic, so it cannot
+ * probe the per-mint `AssetStats` PDA and omits that one-time rent (~0.0019
+ * SOL, charged only to the first payer of an asset whose PDA has not been
+ * pre-created). `estimateSolFeeLamports` takes a concrete asset and includes
+ * it - use that whenever a payment request exists.
  */
 export async function estimateNetworkBaseline(
   rpc: Rpc<SolanaRpcApi>,
@@ -281,7 +376,9 @@ export async function estimateNetworkBaseline(
     priorityFeeMicroLamports * BigInt(computeUnitLimit),
     1_000_000n,
   );
-  const ataRentLamports = options?.includeAtaRent ? await fetchAtaRent(rpc) : undefined;
+  const ataRentLamports = options?.includeAtaRent
+    ? await fetchAtaRent(rpc, options?.ataTokenProgram)
+    : undefined;
   const totalLamports = baseFeeLamports + priorityFeeLamports + (ataRentLamports ?? 0n);
   return {
     baseFeeLamports,

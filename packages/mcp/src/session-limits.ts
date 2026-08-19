@@ -8,6 +8,7 @@
 
 import {
   assetKey,
+  LSM_SOLANA_MAINNET,
   NATIVE_SOL,
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
@@ -40,6 +41,7 @@ export const DEFAULT_SESSION_LIMITS: readonly DefaultLimit[] = [
   { asset: NATIVE_SOL, humanAmount: '0.5' },
   { asset: USDC_SOLANA_DEVNET, humanAmount: '50' },
   { asset: USDC_SOLANA_MAINNET, humanAmount: '50' },
+  { asset: LSM_SOLANA_MAINNET, humanAmount: '1000000' },
 ];
 
 /** Materialize DEFAULT_SESSION_LIMITS into a Map<AssetKey, rawBigint>. */

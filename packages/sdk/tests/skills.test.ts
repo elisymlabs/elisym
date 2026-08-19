@@ -9,7 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_MAX_TOOL_ROUNDS,
   loadSkillsFromDir,
@@ -314,6 +314,31 @@ body
     expect(skill.asset.token).toBe('usdc');
     expect(skill.asset.symbol).toBe('USDC');
     expect(skill.asset.decimals).toBe(6);
+  });
+
+  it('loads an LSM-priced skill on a mainnet agent (Token-2022)', () => {
+    writeSkill(
+      'lsm-summary',
+      `---
+name: lsm-summary
+description: Summarize text for LSM
+capabilities: [summarize]
+price: 12.5
+token: lsm
+---
+
+body
+`,
+    );
+    const skills = loadSkillsFromDir(tmpDir, { network: 'mainnet' });
+    expect(skills).toHaveLength(1);
+    const skill = skills[0]!;
+    expect(skill.priceSubunits).toBe(12_500_000n);
+    expect(skill.asset.token).toBe('lsm');
+    expect(skill.asset.symbol).toBe('LSM');
+    expect(skill.asset.decimals).toBe(6);
+    expect(skill.asset.mint).toBe('86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump');
+    expect(skill.asset.tokenProgram).toBe('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
   });
 
   it('rejects a skill with an unknown token', () => {
@@ -957,6 +982,114 @@ describe('delegation block requires a USDC-priced skill (load-time money invaria
     );
     expect(parsed.delegation?.mechanism).toBe('spl-approve');
     expect(parsed.asset.symbol).toBe('USDC');
+  });
+
+  it('rejects an LSM-priced mainnet skill with a delegation block (delegation stays USDC-only)', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        {
+          name: 'x',
+          description: 'y',
+          capabilities: ['cap'],
+          price: 25,
+          token: 'lsm',
+          delegation: delegationBlock,
+        },
+        'prompt',
+        { network: 'mainnet' },
+      ),
+    ).toThrow(/USDC/);
+  });
+
+  it('rejects a devnet lsm-fallback skill with a delegation block (falls back to SOL, still not USDC)', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        {
+          name: 'x',
+          description: 'y',
+          capabilities: ['cap'],
+          price: 25,
+          token: 'lsm',
+          delegation: delegationBlock,
+        },
+        'prompt',
+        { network: 'devnet' },
+      ),
+    ).toThrow(/USDC/);
+  });
+});
+
+// --- token: lsm - mainnet-only asset with a loud devnet fallback to SOL ---
+
+describe('token: lsm devnet fallback (mainnet-only asset)', () => {
+  const LSM_MINT = '86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump';
+
+  function lsmFrontmatter(mint?: string) {
+    return {
+      name: 'lsm-skill',
+      description: 'y',
+      capabilities: ['cap'],
+      price: 25,
+      token: 'lsm',
+      ...(mint ? { mint } : {}),
+    };
+  }
+
+  it('falls back to SOL at the same numeric price on devnet, warning through the logger', () => {
+    const warnings: Array<{ obj: Record<string, unknown>; msg?: string }> = [];
+    const parsed = validateSkillFrontmatter(lsmFrontmatter(), 'prompt', {
+      network: 'devnet',
+      logger: { warn: (obj, msg) => warnings.push({ obj, msg }) },
+    });
+    expect(parsed.asset.token).toBe('sol');
+    // price 25 reinterprets as 25 SOL (9 decimals), loudly.
+    expect(parsed.priceSubunits).toBe(25_000_000_000n);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.msg).toContain('mainnet-only');
+    expect(warnings[0]?.msg).toContain('falling back to SOL pricing');
+  });
+
+  it('explicit canonical LSM mint follows the same devnet fallback', () => {
+    const warnings: string[] = [];
+    const parsed = validateSkillFrontmatter(lsmFrontmatter(LSM_MINT), 'prompt', {
+      network: 'devnet',
+      logger: { warn: (_obj, msg) => warnings.push(msg ?? '') },
+    });
+    expect(parsed.asset.token).toBe('sol');
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('falls back to console.warn when the host supplies no logger', () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const parsed = validateSkillFrontmatter(lsmFrontmatter(), 'prompt', { network: 'devnet' });
+      expect(parsed.asset.token).toBe('sol');
+      expect(consoleWarn).toHaveBeenCalledTimes(1);
+      expect(String(consoleWarn.mock.calls[0]?.[0])).toContain('mainnet-only');
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it('a non-canonical mint claiming token lsm fails loud on both networks', () => {
+    const badMint = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+    for (const network of ['devnet', 'mainnet'] as const) {
+      expect(() =>
+        validateSkillFrontmatter(lsmFrontmatter(badMint), 'prompt', { network }),
+      ).toThrow(/canonical LSM mint/);
+    }
+  });
+
+  it('unknown-token error lists the deduped KNOWN_ASSETS token ids', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        { name: 'x', description: 'y', capabilities: ['cap'], price: 1, token: 'doge' },
+        'prompt',
+        { network: 'devnet' },
+      ),
+    ).toThrow(
+      /Known assets: sol, usdc, lsm \(mints resolve from the agent's network; omit "mint"\)/,
+    );
   });
 });
 

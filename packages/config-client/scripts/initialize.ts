@@ -29,6 +29,7 @@ import {
   createSolanaRpc,
   createSolanaRpcSubscriptions,
   createTransactionMessage,
+  getAddressEncoder,
   getProgramDerivedAddress,
   getSignatureFromTransaction,
   pipe,
@@ -42,6 +43,8 @@ import { getInitializeInstructionAsync, ELISYM_CONFIG_PROGRAM_ADDRESS } from '..
 const PROGRAM_ID: Address = process.env.PROGRAM_ID
   ? address(process.env.PROGRAM_ID)
   : ELISYM_CONFIG_PROGRAM_ADDRESS;
+
+const BPF_LOADER_UPGRADEABLE_PROGRAM_ID = address('BPFLoaderUpgradeab1e11111111111111111111111');
 
 const INITIAL_TREASURY_RAW = process.env.INITIAL_TREASURY;
 if (!INITIAL_TREASURY_RAW) {
@@ -79,6 +82,15 @@ async function main(): Promise<void> {
     programAddress: PROGRAM_ID,
     seeds: [new TextEncoder().encode('__event_authority')],
   });
+  // `initialize` requires the payer to be the program's upgrade authority, so
+  // the loader's ProgramData account rides along. Derived from PROGRAM_ID here
+  // rather than left to the generated client, whose fallback hardcodes the
+  // Codama-embedded address and would derive the wrong account under a
+  // PROGRAM_ID override.
+  const [programData] = await getProgramDerivedAddress({
+    programAddress: BPF_LOADER_UPGRADEABLE_PROGRAM_ID,
+    seeds: [getAddressEncoder().encode(PROGRAM_ID)],
+  });
 
   console.log('RPC:                ', RPC_URL);
   console.log('Program ID:         ', PROGRAM_ID);
@@ -88,10 +100,12 @@ async function main(): Promise<void> {
   console.log('Initial fee (bps):  ', INITIAL_FEE_BPS);
   console.log('Config PDA:         ', configPda);
   console.log('Event authority PDA:', eventAuthority);
+  console.log('ProgramData PDA:    ', programData);
 
   const ix = await getInitializeInstructionAsync(
     {
       payer,
+      programData,
       eventAuthority,
       program: PROGRAM_ID,
       admin: INITIAL_ADMIN,

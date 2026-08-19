@@ -1,10 +1,10 @@
 /**
- * Wallet command - show SOL and USDC balance.
+ * Wallet command - show SOL and the network's SPL balances (USDC; LSM on mainnet).
  */
-import { formatAssetAmount, formatSol, resolveUsdcAsset } from '@elisym/sdk';
+import { formatSol, splAssetsForNetwork } from '@elisym/sdk';
 import { loadAgent, listAgents } from '@elisym/sdk/agent-store';
 import { address, createSolanaRpc } from '@solana/kit';
-import { fetchUsdcBalance, getRpcUrl } from '../helpers.js';
+import { fetchSplBalance, formatSplBalanceValue, getRpcUrl } from '../helpers.js';
 
 export async function cmdWallet(name: string | undefined): Promise<void> {
   const cwd = process.cwd();
@@ -42,14 +42,18 @@ export async function cmdWallet(name: string | undefined): Promise<void> {
   const rpcUrl = getRpcUrl(solPayment.network);
   const rpc = createSolanaRpc(rpcUrl);
   const walletAddress = address(solPayment.address);
-  const { value: balance } = await rpc.getBalance(walletAddress).send();
-  const usdcBalance = await fetchUsdcBalance(rpc, walletAddress, solPayment.network);
+  const splAssets = splAssetsForNetwork(solPayment.network);
+  const [{ value: balance }, ...splBalances] = await Promise.all([
+    rpc.getBalance(walletAddress).send(),
+    ...splAssets.map((asset) => fetchSplBalance(rpc, walletAddress, asset)),
+  ]);
 
   console.log(`\n  Agent: ${name}`);
   console.log(`  Network: ${solPayment.network}`);
   console.log(`  Address: ${solPayment.address}`);
   console.log(`  SOL balance: ${formatSol(Number(balance))} (${balance} lamports)`);
-  console.log(
-    `  USDC balance: ${formatAssetAmount(resolveUsdcAsset(solPayment.network), usdcBalance)}\n`,
-  );
+  for (const [index, asset] of splAssets.entries()) {
+    console.log(`  ${asset.symbol} balance: ${formatSplBalanceValue(asset, splBalances[index])}`);
+  }
+  console.log();
 }

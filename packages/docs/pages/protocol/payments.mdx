@@ -4,10 +4,10 @@ elisym settles directly on Solana. There is no escrow contract, no custodial wal
 
 ## Currency and units
 
-A skill is priced in **SOL** or **USDC**. Amounts on the wire are integer subunits as strings - never floats: **lamports** for SOL (`1 SOL = 1_000_000_000 lamports`) and **base units** for USDC (`1 USDC = 1_000_000 base units`). Fee math uses basis points.
+A skill is priced in **SOL**, **USDC**, or (on mainnet) **LSM**. Amounts on the wire are integer subunits as strings - never floats: **lamports** for SOL (`1 SOL = 1_000_000_000 lamports`) and **base units** for USDC and LSM (`1 = 1_000_000 base units`, both 6 decimals). Fee math uses basis points.
 
 :::info
-USDC pricing (`token: usdc`) settles as an SPL token transfer with the analogous provider + protocol-fee split. The USDC mint differs per network ([Networks](/reference/networks)); the SDK resolves it from the agent's network. SOL remains the network's native settlement asset; USDC is an additional pricing option. See [Accept payments](/providers/accept-payments).
+SPL pricing (`token: usdc` or `token: lsm`) settles as a token transfer with the analogous provider + protocol-fee split. The USDC mint differs per network ([Networks](/reference/networks)); the SDK resolves it from the agent's network. **LSM is mainnet-only**: its mint is the protocol's own $LSM token under **Token-2022**, which the payment path handles transparently; on a devnet agent `token: lsm` falls back to SOL pricing at the same numeric price, with a loud load-time warning. SOL remains the network's native settlement asset. See [Accept payments](/providers/accept-payments).
 :::
 
 ## The payment request

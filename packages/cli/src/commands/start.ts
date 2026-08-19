@@ -12,6 +12,7 @@ import {
   type BlossomService,
   createBlossomTransport,
   resolveUsdcAsset,
+  splAssetsForNetwork,
   formatAssetAmount,
   formatSol,
   RELAYS,
@@ -50,7 +51,8 @@ import { createIrohTransport } from '@elisym/sdk/node';
 import { address, createSolanaRpc } from '@solana/kit';
 import { probeRelays } from '../diagnostics.js';
 import {
-  fetchUsdcBalance,
+  fetchSplBalance,
+  formatSplBalanceValue,
   getRpcUrl,
   MAX_CONCURRENT_JOBS,
   RECOVERY_MAX_RETRIES,
@@ -131,9 +133,10 @@ export async function cmdStart(
       const rpcUrl = getRpcUrl(walletNetwork);
       const rpc = createSolanaRpc(rpcUrl);
       const walletAddress = address(solanaAddress);
-      const [{ value: balanceLamports }, usdcBalance] = await Promise.all([
+      const splAssets = splAssetsForNetwork(walletNetwork);
+      const [{ value: balanceLamports }, ...splBalances] = await Promise.all([
         rpc.getBalance(walletAddress).send(),
-        fetchUsdcBalance(rpc, walletAddress, walletNetwork),
+        ...splAssets.map((asset) => fetchSplBalance(rpc, walletAddress, asset)),
       ]);
       const balance = Number(balanceLamports);
 
@@ -146,9 +149,10 @@ export async function cmdStart(
         console.log(`     RPC      ${stripRpcSecrets(process.env.SOLANA_RPC_URL)} (custom)`);
       }
       console.log(`     SOL      ${formatSol(balance)} (${balance} lamports)`);
-      console.log(
-        `     USDC     ${formatAssetAmount(resolveUsdcAsset(walletNetwork), usdcBalance)}`,
-      );
+      for (const [index, asset] of splAssets.entries()) {
+        const symbolColumn = asset.symbol.padEnd(8);
+        console.log(`     ${symbolColumn} ${formatSplBalanceValue(asset, splBalances[index])}`);
+      }
 
       if (balance === 0) {
         if (walletNetwork === 'mainnet') {

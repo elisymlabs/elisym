@@ -232,6 +232,11 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions)
         // The CLI runtime wires an x402 driver into the skill context, so
         // x402 skills are executable here (SDK-only hosts reject them).
         allowX402Skills: true,
+        // Surface SDK load-time warnings (e.g. the devnet lsm->SOL pricing
+        // fallback) in the start flow's ` !` console pattern.
+        logger: {
+          warn: (_obj, msg) => console.warn(`  ! ${msg ?? ''}`),
+        },
       });
       skills.push(buildCliSkill(parsed, entryPath, options.scriptEnv));
     } catch (e: unknown) {

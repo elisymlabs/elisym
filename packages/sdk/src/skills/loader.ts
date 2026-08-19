@@ -6,9 +6,12 @@ import { type SkillDelegation, validateSkillDelegation } from '../delegation';
 import type { SkillRateLimit } from '../llm-health/types';
 import {
   type Asset,
+  KNOWN_ASSETS,
+  LSM_SOLANA_MAINNET,
   NATIVE_SOL,
   parseAssetAmount,
   resolveKnownAsset,
+  resolveLsmAsset,
   resolveUsdcAsset,
 } from '../payment/assets';
 import type { Network } from '../types';
@@ -46,7 +49,11 @@ export interface SkillFrontmatter {
   description?: unknown;
   capabilities?: unknown;
   price?: unknown;
-  /** Lowercase token id ('sol', 'usdc'). Defaults to 'sol' for back-compat. */
+  /**
+   * Lowercase token id ('sol', 'usdc', 'lsm'). Defaults to 'sol' for
+   * back-compat. `lsm` is mainnet-only - on devnet it falls back to SOL
+   * pricing at the same numeric price, with a load-time warning.
+   */
   token?: unknown;
   /** SPL mint (base58). Optional - resolved from known assets when omitted. */
   mint?: unknown;
@@ -272,17 +279,22 @@ function solToLamports(sol: string | number): bigint {
  * - `token` absent or `'sol'` => native SOL (NATIVE_SOL).
  * - `token: 'usdc'` with `mint` omitted => the canonical USDC mint for
  *   `network` (operators don't need to memorize mint addresses).
- * - An explicit `mint:` must be canonical for `network` - `resolveKnownAsset`
- *   is network-blind, so without the gate a SKILL.md copied from an agent on
- *   the other network would load with that network's mint and publish an
- *   unpayable card. Fails loud at load, both directions.
- * - Any unknown `token` throws.
+ * - `token: 'lsm'` => the mainnet LSM asset on mainnet; on devnet (where LSM
+ *   does not exist) the skill FALLS BACK to native SOL at the same numeric
+ *   price, with a loud warning - never silently. An explicit `mint:` that is
+ *   not the canonical LSM mint fails loud on both networks.
+ * - Any other explicit `mint:` must be canonical for `network` -
+ *   `resolveKnownAsset` is network-blind, so without the gate a SKILL.md
+ *   copied from an agent on the other network would load with that network's
+ *   mint and publish an unpayable card. Fails loud at load, both directions.
+ * - Any unknown `token` throws, listing the current `KNOWN_ASSETS` token ids.
  */
 function resolveSkillAsset(
   skillName: string,
   token: unknown,
   mint: unknown,
   network: Network,
+  logger?: LoaderLogger,
 ): Asset {
   if (token === undefined || token === null) {
     return NATIVE_SOL;
@@ -306,17 +318,44 @@ function resolveSkillAsset(
   if (normalized === 'usdc' && mintString === undefined) {
     return resolveUsdcAsset(network);
   }
+  if (normalized === 'lsm') {
+    if (mintString !== undefined && mintString !== LSM_SOLANA_MAINNET.mint) {
+      throw new Error(
+        `SKILL.md "${skillName}": mint ${mintString} is not the canonical LSM mint ` +
+          `(expected ${LSM_SOLANA_MAINNET.mint}). Omit "mint" to resolve it automatically.`,
+      );
+    }
+    const lsm = resolveLsmAsset(network);
+    if (lsm) {
+      return lsm;
+    }
+    // LSM is mainnet-only; on devnet the skill degrades to default (SOL)
+    // pricing at the same numeric price - loud by design. When the host
+    // supplies no logger, console.warn is the documented fallback for this
+    // one warning: a silently reinterpreted price would be an invisible
+    // currency change.
+    const message =
+      `SKILL.md "${skillName}": token "lsm" is mainnet-only - falling back to SOL pricing ` +
+      `on this ${network} agent. The numeric price is charged in SOL (e.g. price 25 = 25 SOL).`;
+    if (logger?.warn) {
+      logger.warn({ skill: skillName, network }, message);
+    } else {
+      console.warn(message);
+    }
+    return NATIVE_SOL;
+  }
   const resolved = resolveKnownAsset('solana', normalized, mintString);
   if (!resolved) {
     const display = mintString ? `solana:${normalized}:${mintString}` : `solana:${normalized}`;
+    const knownTokens = [...new Set(KNOWN_ASSETS.map((asset) => asset.token))].join(', ');
     throw new Error(
       `SKILL.md "${skillName}": unknown asset ${display}. ` +
-        `Known assets: sol, usdc (mint resolved from the agent's network; omit "mint").`,
+        `Known assets: ${knownTokens} (mints resolve from the agent's network; omit "mint").`,
     );
   }
-  // Canonical-mint gate: USDC is the only SPL entry in KNOWN_ASSETS, so any
-  // resolved asset with a mint is a USDC variant and must match the agent's
-  // network. A future non-USDC SPL asset needs its own per-network canonical
+  // Canonical-mint gate: `lsm` resolves in its own arm above, so any minted
+  // asset reaching this flat path is a USDC variant and must match the
+  // agent's network. A future SPL asset needs its own per-network canonical
   // resolution here.
   if (resolved.mint !== undefined) {
     const canonical = resolveUsdcAsset(network);
@@ -860,6 +899,7 @@ export function validateSkillFrontmatter(
     frontmatter.token,
     frontmatter.mint,
     options.network,
+    options.logger,
   );
 
   let priceSubunits: bigint;

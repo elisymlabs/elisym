@@ -1,36 +1,34 @@
-import type { CapabilityCard } from '@elisym/sdk';
+import { assetKey, type Asset, type CapabilityCard, type Network } from '@elisym/sdk';
+import { resolvePaymentAsset } from '~/lib/cardAsset';
 import { compactZeros, formatDecimal } from '~/lib/formatPrice';
 
 const SOL_DECIMALS = 9;
-const USDC_DECIMALS = 6;
 
 export type BalanceCheckResult = { ok: true } | { ok: false; tooltip: string };
 
 interface BalanceCheckArgs {
   card: CapabilityCard;
   solLamports: bigint | null;
-  usdcRaw: bigint | null;
+  /** Raw SPL balances keyed by `assetKey`, as returned by `useWalletBalances`. */
+  splRaw: Record<string, bigint | null>;
   gasLamports: number;
-}
-
-function isUsdcCard(card: CapabilityCard): boolean {
-  const token = card.payment?.token;
-  return typeof token === 'string' && token.toLowerCase() === 'usdc';
+  /** The page's cluster - `splRaw` only carries assets that exist on it. */
+  network: Network;
 }
 
 function formatSolDeficit(deficit: bigint): string {
   return compactZeros(formatDecimal(Number(deficit), SOL_DECIMALS));
 }
 
-function formatUsdcDeficit(deficit: bigint): string {
-  return compactZeros(formatDecimal(Number(deficit), USDC_DECIMALS));
+function formatAssetDeficit(deficit: bigint, asset: Asset): string {
+  return compactZeros(formatDecimal(Number(deficit), asset.decimals));
 }
 
 /**
  * Two-tier affordability check for the connected wallet:
  *
  *   Tier 1 - payment token covers the product price.
- *   Tier 2 - SOL covers the network fee (gas + worst-case ATA rent for USDC).
+ *   Tier 2 - SOL covers the network fee (gas + worst-case ATA rent for SPL).
  *
  * Tiers are sequential: Tier 1 must pass before Tier 2 is shown. This keeps
  * the tooltip focused on the closest blocker.
@@ -46,27 +44,37 @@ function formatUsdcDeficit(deficit: bigint): string {
 export function checkBuyAffordability({
   card,
   solLamports,
-  usdcRaw,
+  splRaw,
   gasLamports,
+  network,
 }: BalanceCheckArgs): BalanceCheckResult {
   const price = BigInt(card.payment?.job_price ?? 0);
   const gas = BigInt(gasLamports);
-  const usdc = isUsdcCard(card);
+  const asset = resolvePaymentAsset(card.payment, network);
+  if (asset === null) {
+    // Asset this cluster cannot pay: abstain rather than block on
+    // uninterpretable math. This includes a hostile devnet-tagged card
+    // claiming a mainnet-only asset - no autonomous spend happens here, and
+    // the wallet simulation is the final arbiter of what actually gets signed.
+    return { ok: true };
+  }
+  const splAsset = asset.mint !== undefined;
+  const splBalance = splAsset ? (splRaw[assetKey(asset)] ?? null) : null;
 
   if (solLamports === null) {
     return { ok: true };
   }
-  if (usdc && usdcRaw === null) {
+  if (splAsset && splBalance === null) {
     return { ok: true };
   }
 
   // Tier 1: payment token covers the price.
-  if (usdc) {
-    if (usdcRaw !== null && usdcRaw < price) {
-      const deficit = formatUsdcDeficit(price - usdcRaw);
+  if (splAsset) {
+    if (splBalance !== null && splBalance < price) {
+      const deficit = formatAssetDeficit(price - splBalance, asset);
       return {
         ok: false,
-        tooltip: `Need ${deficit} USDC more to buy.`,
+        tooltip: `Need ${deficit} ${asset.symbol} more to buy.`,
       };
     }
   } else {
@@ -82,7 +90,7 @@ export function checkBuyAffordability({
   // Tier 2: SOL covers the network fee. For SOL cards we check what's left
   // after the price would be deducted, so balance must satisfy
   // `(balance - price) >= gas` (i.e. `balance >= price + gas`).
-  const solAfterPrice = usdc ? solLamports : solLamports - price;
+  const solAfterPrice = splAsset ? solLamports : solLamports - price;
   if (solAfterPrice < gas) {
     const deficit = formatSolDeficit(gas - solAfterPrice);
     return {

@@ -15,6 +15,7 @@ import {
   assetKey,
   resolveKnownAsset,
   SolanaPaymentStrategy,
+  splAssetsForNetwork,
   toDTag,
   utf8ByteLength,
   type CapabilityCard,
@@ -740,6 +741,25 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   throw new Error(
                     'Payment asset mismatch: the signed request charges a different asset than ' +
                       'the card advertises. Refusing to proceed.',
+                  );
+                }
+
+                // Per-network membership guard: a registry-known SPL asset whose
+                // mint does not exist on this page's cluster (LSM on devnet; the
+                // other network's USDC) is unpayable here. A hostile
+                // devnet-tagged card can claim such an asset and pass both the
+                // network gate above and the card-vs-request equality, so refuse
+                // before asking the wallet to sign rather than failing in
+                // on-chain simulation. Mirrors the MCP pay paths.
+                if (
+                  requestMint !== undefined &&
+                  !splAssetsForNetwork(SOLANA_CLUSTER).some(
+                    (networkAsset) => networkAsset.mint === requestMint,
+                  )
+                ) {
+                  throw new Error(
+                    `Payment asset is not available on ${SOLANA_CLUSTER} (mint ${requestMint}). ` +
+                      'Refusing to proceed.',
                   );
                 }
 

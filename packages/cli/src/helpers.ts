@@ -1,8 +1,13 @@
 /**
  * Shared CLI helpers - RPC URLs, SOL formatting, price validation.
  */
-import { calculateProtocolFee, resolveUsdcAsset } from '@elisym/sdk';
-import type { Network } from '@elisym/sdk';
+import {
+  type Asset,
+  type Network,
+  calculateProtocolFee,
+  formatAssetAmount,
+  resolveUsdcAsset,
+} from '@elisym/sdk';
 import { type Rpc, type SolanaRpcApi, address } from '@solana/kit';
 
 // --- Constants ---
@@ -40,20 +45,23 @@ export function getRpcUrl(network: Network): string {
     : 'https://api.devnet.solana.com';
 }
 
-// --- USDC balance ---
+// --- SPL balances ---
 
 /**
- * Sum the agent's USDC token-account balances (raw subunits) on the connected
- * Solana RPC, querying the canonical USDC mint for `network`. Returns 0n on
- * any error or when the asset has no mint configured; callers display
- * "0 USDC" rather than failing the whole banner.
+ * Sum the agent's token-account balances for an SPL asset (raw subunits) on
+ * the connected Solana RPC. Uses a mint-filtered `getTokenAccountsByOwner`,
+ * which is token-program-agnostic (covers Token-2022 mints like LSM) and sums
+ * non-ATA accounts too. An asset with no mint, or an owner with no token
+ * account, is 0n; `null` means the balance could not be read. Callers render
+ * that as unknown rather than failing the banner - printing "0 LSM" for a
+ * wallet that holds a fortune is worse than saying the read failed.
  */
-export async function fetchUsdcBalance(
+export async function fetchSplBalance(
   rpc: Rpc<SolanaRpcApi>,
   owner: ReturnType<typeof address>,
-  network: Network,
-): Promise<bigint> {
-  const mint = resolveUsdcAsset(network).mint;
+  asset: Asset,
+): Promise<bigint | null> {
+  const mint = asset.mint;
   if (!mint) {
     return 0n;
   }
@@ -77,8 +85,32 @@ export async function fetchUsdcBalance(
     }
     return total;
   } catch {
-    return 0n;
+    return null;
   }
+}
+
+/**
+ * Balance value for a banner - the bare amount, no symbol prefix (callers
+ * supply their own label). An unreadable balance never renders as zero.
+ */
+export function formatSplBalanceValue(asset: Asset, balance: bigint | null | undefined): string {
+  return balance === undefined || balance === null
+    ? 'unavailable (balance read failed)'
+    : formatAssetAmount(asset, balance);
+}
+
+/**
+ * The network's canonical-USDC balance via `fetchSplBalance` - kept for the
+ * x402 surfaces (driver float check, `x402 add` preflight, settle-check).
+ * `null` when the balance could not be read: the float checks refuse on an
+ * unknown balance rather than treating it as empty or as sufficient.
+ */
+export async function fetchUsdcBalance(
+  rpc: Rpc<SolanaRpcApi>,
+  owner: ReturnType<typeof address>,
+  network: Network,
+): Promise<bigint | null> {
+  return fetchSplBalance(rpc, owner, resolveUsdcAsset(network));
 }
 
 // --- Price validation ---

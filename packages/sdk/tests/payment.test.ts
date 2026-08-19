@@ -1,3 +1,4 @@
+import { NATIVE_ASSET_SENTINEL, deriveAssetStatsAddress } from '@elisym/config-client';
 import { getTransferSolInstructionDataDecoder } from '@solana-program/system';
 import {
   type Address,
@@ -5,11 +6,14 @@ import {
   type Rpc,
   type Signature,
   type SolanaRpcApi,
+  address,
   getAddressDecoder,
 } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ELISYM_PROTOCOL_TAG,
+  LSM_SOLANA_MAINNET,
+  TOKEN_2022_PROGRAM_ADDRESS_STR,
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
   calculateProtocolFee,
@@ -931,6 +935,82 @@ describe('USDC (SPL) payment flow', () => {
     expect(tail[0]?.role).toBe(0);
     expect(tail[1]?.address).toBe(ELISYM_PROTOCOL_TAG);
     expect(tail[1]?.role).toBe(0);
+  });
+
+  it('buildPaymentInstructions targets Token-2022 for LSM (mainnet)', async () => {
+    const signer = {
+      address: makeAddress(),
+    };
+    const recipient = makeAddress();
+    const reference = makeAddress();
+    const lsmMint = LSM_SOLANA_MAINNET.mint;
+    if (!lsmMint) {
+      throw new Error('LSM_SOLANA_MAINNET must declare a mint');
+    }
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient,
+        amount: 5_000_000,
+        reference,
+        fee_address: TEST_TREASURY,
+        fee_amount: calculateProtocolFee(5_000_000, TEST_FEE_BPS),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'lsm',
+          mint: lsmMint,
+          decimals: 6,
+        },
+        network: 'mainnet',
+      },
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+    expect(instructions.length).toBe(5);
+
+    interface IxLike {
+      programAddress: string;
+      accounts: ReadonlyArray<{ address: string; role: number }>;
+    }
+    const [createRecipientAta, createTreasuryAta, providerTransfer, feeTransfer, statsIx] =
+      instructions as IxLike[];
+    // ATA creates run under the ATA program but must reference the Token-2022
+    // program account, and both transfers must target Token-2022 directly.
+    const referencesT22 = (ix: IxLike | undefined): boolean =>
+      Boolean(ix?.accounts.some((meta) => meta.address === TOKEN_2022_PROGRAM_ADDRESS_STR));
+    expect(referencesT22(createRecipientAta)).toBe(true);
+    expect(referencesT22(createTreasuryAta)).toBe(true);
+    expect(providerTransfer?.programAddress).toBe(TOKEN_2022_PROGRAM_ADDRESS_STR);
+    expect(feeTransfer?.programAddress).toBe(TOKEN_2022_PROGRAM_ADDRESS_STR);
+    // Stats leg is increment_stats_v2 carrying the LSM AssetStats PDA and the
+    // payer as a writable signer (it funds init_if_needed rent).
+    const assetStatsPda = await deriveAssetStatsAddress(TEST_PROGRAM_ID, address(lsmMint));
+    expect(statsIx?.accounts.some((meta) => meta.address === assetStatsPda)).toBe(true);
+    expect(statsIx?.accounts.some((meta) => meta.address === signer.address)).toBe(true);
+  });
+
+  it('native SOL stats leg carries the sentinel AssetStats PDA', async () => {
+    const signer = {
+      address: makeAddress(),
+    };
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 1_000_000,
+        reference: makeAddress(),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+    interface IxLike {
+      accounts: ReadonlyArray<{ address: string; role: number }>;
+    }
+    const statsIx = instructions.at(-1) as IxLike;
+    const sentinelPda = await deriveAssetStatsAddress(TEST_PROGRAM_ID, NATIVE_ASSET_SENTINEL);
+    expect(statsIx.accounts.some((meta) => meta.address === sentinelPda)).toBe(true);
   });
 });
 

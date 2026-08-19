@@ -17,8 +17,6 @@ import {
   getProgramDerivedAddress,
   getStructDecoder,
   getStructEncoder,
-  getU16Decoder,
-  getU16Encoder,
   transformEncoder,
   type AccountMeta,
   type AccountSignerMeta,
@@ -36,21 +34,26 @@ import {
   type WritableSignerAccount,
 } from '@solana/kit';
 import { ELISYM_CONFIG_PROGRAM_ADDRESS } from '../programs';
-import { getAccountMetaFactory, type ResolvedAccount } from '../shared';
+import {
+  expectSome,
+  getAccountMetaFactory,
+  type ResolvedAccount,
+} from '../shared';
 
-export const INITIALIZE_DISCRIMINATOR = new Uint8Array([
-  175, 175, 109, 31, 13, 152, 155, 237,
+export const CREATE_ASSET_STATS_DISCRIMINATOR = new Uint8Array([
+  149, 81, 159, 235, 145, 229, 114, 102,
 ]);
 
-export function getInitializeDiscriminatorBytes() {
-  return fixEncoderSize(getBytesEncoder(), 8).encode(INITIALIZE_DISCRIMINATOR);
+export function getCreateAssetStatsDiscriminatorBytes() {
+  return fixEncoderSize(getBytesEncoder(), 8).encode(
+    CREATE_ASSET_STATS_DISCRIMINATOR
+  );
 }
 
-export type InitializeInstruction<
+export type CreateAssetStatsInstruction<
   TProgram extends string = typeof ELISYM_CONFIG_PROGRAM_ADDRESS,
-  TAccountConfig extends string | AccountMeta<string> = string,
+  TAccountAssetStats extends string | AccountMeta<string> = string,
   TAccountPayer extends string | AccountMeta<string> = string,
-  TAccountProgramData extends string | AccountMeta<string> = string,
   TAccountSystemProgram extends string | AccountMeta<string> =
     '11111111111111111111111111111111',
   TAccountEventAuthority extends string | AccountMeta<string> = string,
@@ -60,16 +63,13 @@ export type InitializeInstruction<
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
-      TAccountConfig extends string
-        ? WritableAccount<TAccountConfig>
-        : TAccountConfig,
+      TAccountAssetStats extends string
+        ? WritableAccount<TAccountAssetStats>
+        : TAccountAssetStats,
       TAccountPayer extends string
         ? WritableSignerAccount<TAccountPayer> &
             AccountSignerMeta<TAccountPayer>
         : TAccountPayer,
-      TAccountProgramData extends string
-        ? ReadonlyAccount<TAccountProgramData>
-        : TAccountProgramData,
       TAccountSystemProgram extends string
         ? ReadonlyAccount<TAccountSystemProgram>
         : TAccountSystemProgram,
@@ -83,104 +83,76 @@ export type InitializeInstruction<
     ]
   >;
 
-export type InitializeInstructionData = {
+export type CreateAssetStatsInstructionData = {
   discriminator: ReadonlyUint8Array;
-  admin: Address;
-  treasury: Address;
-  feeBps: number;
+  mint: Address;
 };
 
-export type InitializeInstructionDataArgs = {
-  admin: Address;
-  treasury: Address;
-  feeBps: number;
-};
+export type CreateAssetStatsInstructionDataArgs = { mint: Address };
 
-export function getInitializeInstructionDataEncoder(): FixedSizeEncoder<InitializeInstructionDataArgs> {
+export function getCreateAssetStatsInstructionDataEncoder(): FixedSizeEncoder<CreateAssetStatsInstructionDataArgs> {
   return transformEncoder(
     getStructEncoder([
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
-      ['admin', getAddressEncoder()],
-      ['treasury', getAddressEncoder()],
-      ['feeBps', getU16Encoder()],
+      ['mint', getAddressEncoder()],
     ]),
-    (value) => ({ ...value, discriminator: INITIALIZE_DISCRIMINATOR })
+    (value) => ({ ...value, discriminator: CREATE_ASSET_STATS_DISCRIMINATOR })
   );
 }
 
-export function getInitializeInstructionDataDecoder(): FixedSizeDecoder<InitializeInstructionData> {
+export function getCreateAssetStatsInstructionDataDecoder(): FixedSizeDecoder<CreateAssetStatsInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
-    ['admin', getAddressDecoder()],
-    ['treasury', getAddressDecoder()],
-    ['feeBps', getU16Decoder()],
+    ['mint', getAddressDecoder()],
   ]);
 }
 
-export function getInitializeInstructionDataCodec(): FixedSizeCodec<
-  InitializeInstructionDataArgs,
-  InitializeInstructionData
+export function getCreateAssetStatsInstructionDataCodec(): FixedSizeCodec<
+  CreateAssetStatsInstructionDataArgs,
+  CreateAssetStatsInstructionData
 > {
   return combineCodec(
-    getInitializeInstructionDataEncoder(),
-    getInitializeInstructionDataDecoder()
+    getCreateAssetStatsInstructionDataEncoder(),
+    getCreateAssetStatsInstructionDataDecoder()
   );
 }
 
-export type InitializeAsyncInput<
-  TAccountConfig extends string = string,
+export type CreateAssetStatsAsyncInput<
+  TAccountAssetStats extends string = string,
   TAccountPayer extends string = string,
-  TAccountProgramData extends string = string,
   TAccountSystemProgram extends string = string,
   TAccountEventAuthority extends string = string,
   TAccountProgram extends string = string,
 > = {
-  config?: Address<TAccountConfig>;
+  assetStats?: Address<TAccountAssetStats>;
   payer: TransactionSigner<TAccountPayer>;
-  /**
-   * Loader-v3 `ProgramData` for this program, used to require that the
-   * caller is the upgrade authority.
-   *
-   * Without it `initialize` is permissionless first-come: the config PDA
-   * uses `init`, so anyone who lands a call between deploy finalization and
-   * ours seizes `admin`/`treasury` permanently, and the only recovery is a
-   * migration upgrade. `seeds::program` pins the account to THIS program id
-   * and `Account<ProgramData>` enforces the loader as its owner, so another
-   * program's `ProgramData` cannot satisfy the check.
-   */
-  programData?: Address<TAccountProgramData>;
   systemProgram?: Address<TAccountSystemProgram>;
   eventAuthority: Address<TAccountEventAuthority>;
   program: Address<TAccountProgram>;
-  admin: InitializeInstructionDataArgs['admin'];
-  treasury: InitializeInstructionDataArgs['treasury'];
-  feeBps: InitializeInstructionDataArgs['feeBps'];
+  mint: CreateAssetStatsInstructionDataArgs['mint'];
 };
 
-export async function getInitializeInstructionAsync<
-  TAccountConfig extends string,
+export async function getCreateAssetStatsInstructionAsync<
+  TAccountAssetStats extends string,
   TAccountPayer extends string,
-  TAccountProgramData extends string,
   TAccountSystemProgram extends string,
   TAccountEventAuthority extends string,
   TAccountProgram extends string,
   TProgramAddress extends Address = typeof ELISYM_CONFIG_PROGRAM_ADDRESS,
 >(
-  input: InitializeAsyncInput<
-    TAccountConfig,
+  input: CreateAssetStatsAsyncInput<
+    TAccountAssetStats,
     TAccountPayer,
-    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
   >,
   config?: { programAddress?: TProgramAddress }
 ): Promise<
-  InitializeInstruction<
+  CreateAssetStatsInstruction<
     TProgramAddress,
-    TAccountConfig,
+    TAccountAssetStats,
     TAccountPayer,
-    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
@@ -192,9 +164,8 @@ export async function getInitializeInstructionAsync<
 
   // Original accounts.
   const originalAccounts = {
-    config: { value: input.config ?? null, isWritable: true },
+    assetStats: { value: input.assetStats ?? null, isWritable: true },
     payer: { value: input.payer ?? null, isWritable: true },
-    programData: { value: input.programData ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
     eventAuthority: { value: input.eventAuthority ?? null, isWritable: false },
     program: { value: input.program ?? null, isWritable: false },
@@ -208,26 +179,14 @@ export async function getInitializeInstructionAsync<
   const args = { ...input };
 
   // Resolve default values.
-  if (!accounts.config.value) {
-    accounts.config.value = await getProgramDerivedAddress({
+  if (!accounts.assetStats.value) {
+    accounts.assetStats.value = await getProgramDerivedAddress({
       programAddress,
       seeds: [
-        getBytesEncoder().encode(new Uint8Array([99, 111, 110, 102, 105, 103])),
-      ],
-    });
-  }
-  if (!accounts.programData.value) {
-    accounts.programData.value = await getProgramDerivedAddress({
-      programAddress:
-        'BPFLoaderUpgradeab1e11111111111111111111111' as Address<'BPFLoaderUpgradeab1e11111111111111111111111'>,
-      seeds: [
         getBytesEncoder().encode(
-          new Uint8Array([
-            161, 68, 64, 252, 198, 246, 174, 212, 239, 198, 11, 123, 42, 160,
-            40, 128, 152, 70, 172, 145, 138, 43, 242, 169, 115, 223, 161, 110,
-            202, 102, 149, 247,
-          ])
+          new Uint8Array([97, 115, 115, 101, 116, 95, 115, 116, 97, 116, 115])
         ),
+        getAddressEncoder().encode(expectSome(args.mint)),
       ],
     });
   }
@@ -239,22 +198,20 @@ export async function getInitializeInstructionAsync<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   const instruction = {
     accounts: [
-      getAccountMeta(accounts.config),
+      getAccountMeta(accounts.assetStats),
       getAccountMeta(accounts.payer),
-      getAccountMeta(accounts.programData),
       getAccountMeta(accounts.systemProgram),
       getAccountMeta(accounts.eventAuthority),
       getAccountMeta(accounts.program),
     ],
     programAddress,
-    data: getInitializeInstructionDataEncoder().encode(
-      args as InitializeInstructionDataArgs
+    data: getCreateAssetStatsInstructionDataEncoder().encode(
+      args as CreateAssetStatsInstructionDataArgs
     ),
-  } as InitializeInstruction<
+  } as CreateAssetStatsInstruction<
     TProgramAddress,
-    TAccountConfig,
+    TAccountAssetStats,
     TAccountPayer,
-    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
@@ -263,59 +220,41 @@ export async function getInitializeInstructionAsync<
   return instruction;
 }
 
-export type InitializeInput<
-  TAccountConfig extends string = string,
+export type CreateAssetStatsInput<
+  TAccountAssetStats extends string = string,
   TAccountPayer extends string = string,
-  TAccountProgramData extends string = string,
   TAccountSystemProgram extends string = string,
   TAccountEventAuthority extends string = string,
   TAccountProgram extends string = string,
 > = {
-  config: Address<TAccountConfig>;
+  assetStats: Address<TAccountAssetStats>;
   payer: TransactionSigner<TAccountPayer>;
-  /**
-   * Loader-v3 `ProgramData` for this program, used to require that the
-   * caller is the upgrade authority.
-   *
-   * Without it `initialize` is permissionless first-come: the config PDA
-   * uses `init`, so anyone who lands a call between deploy finalization and
-   * ours seizes `admin`/`treasury` permanently, and the only recovery is a
-   * migration upgrade. `seeds::program` pins the account to THIS program id
-   * and `Account<ProgramData>` enforces the loader as its owner, so another
-   * program's `ProgramData` cannot satisfy the check.
-   */
-  programData: Address<TAccountProgramData>;
   systemProgram?: Address<TAccountSystemProgram>;
   eventAuthority: Address<TAccountEventAuthority>;
   program: Address<TAccountProgram>;
-  admin: InitializeInstructionDataArgs['admin'];
-  treasury: InitializeInstructionDataArgs['treasury'];
-  feeBps: InitializeInstructionDataArgs['feeBps'];
+  mint: CreateAssetStatsInstructionDataArgs['mint'];
 };
 
-export function getInitializeInstruction<
-  TAccountConfig extends string,
+export function getCreateAssetStatsInstruction<
+  TAccountAssetStats extends string,
   TAccountPayer extends string,
-  TAccountProgramData extends string,
   TAccountSystemProgram extends string,
   TAccountEventAuthority extends string,
   TAccountProgram extends string,
   TProgramAddress extends Address = typeof ELISYM_CONFIG_PROGRAM_ADDRESS,
 >(
-  input: InitializeInput<
-    TAccountConfig,
+  input: CreateAssetStatsInput<
+    TAccountAssetStats,
     TAccountPayer,
-    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
   >,
   config?: { programAddress?: TProgramAddress }
-): InitializeInstruction<
+): CreateAssetStatsInstruction<
   TProgramAddress,
-  TAccountConfig,
+  TAccountAssetStats,
   TAccountPayer,
-  TAccountProgramData,
   TAccountSystemProgram,
   TAccountEventAuthority,
   TAccountProgram
@@ -326,9 +265,8 @@ export function getInitializeInstruction<
 
   // Original accounts.
   const originalAccounts = {
-    config: { value: input.config ?? null, isWritable: true },
+    assetStats: { value: input.assetStats ?? null, isWritable: true },
     payer: { value: input.payer ?? null, isWritable: true },
-    programData: { value: input.programData ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
     eventAuthority: { value: input.eventAuthority ?? null, isWritable: false },
     program: { value: input.program ?? null, isWritable: false },
@@ -350,22 +288,20 @@ export function getInitializeInstruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   const instruction = {
     accounts: [
-      getAccountMeta(accounts.config),
+      getAccountMeta(accounts.assetStats),
       getAccountMeta(accounts.payer),
-      getAccountMeta(accounts.programData),
       getAccountMeta(accounts.systemProgram),
       getAccountMeta(accounts.eventAuthority),
       getAccountMeta(accounts.program),
     ],
     programAddress,
-    data: getInitializeInstructionDataEncoder().encode(
-      args as InitializeInstructionDataArgs
+    data: getCreateAssetStatsInstructionDataEncoder().encode(
+      args as CreateAssetStatsInstructionDataArgs
     ),
-  } as InitializeInstruction<
+  } as CreateAssetStatsInstruction<
     TProgramAddress,
-    TAccountConfig,
+    TAccountAssetStats,
     TAccountPayer,
-    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
@@ -374,43 +310,30 @@ export function getInitializeInstruction<
   return instruction;
 }
 
-export type ParsedInitializeInstruction<
+export type ParsedCreateAssetStatsInstruction<
   TProgram extends string = typeof ELISYM_CONFIG_PROGRAM_ADDRESS,
   TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    config: TAccountMetas[0];
+    assetStats: TAccountMetas[0];
     payer: TAccountMetas[1];
-    /**
-     * Loader-v3 `ProgramData` for this program, used to require that the
-     * caller is the upgrade authority.
-     *
-     * Without it `initialize` is permissionless first-come: the config PDA
-     * uses `init`, so anyone who lands a call between deploy finalization and
-     * ours seizes `admin`/`treasury` permanently, and the only recovery is a
-     * migration upgrade. `seeds::program` pins the account to THIS program id
-     * and `Account<ProgramData>` enforces the loader as its owner, so another
-     * program's `ProgramData` cannot satisfy the check.
-     */
-
-    programData: TAccountMetas[2];
-    systemProgram: TAccountMetas[3];
-    eventAuthority: TAccountMetas[4];
-    program: TAccountMetas[5];
+    systemProgram: TAccountMetas[2];
+    eventAuthority: TAccountMetas[3];
+    program: TAccountMetas[4];
   };
-  data: InitializeInstructionData;
+  data: CreateAssetStatsInstructionData;
 };
 
-export function parseInitializeInstruction<
+export function parseCreateAssetStatsInstruction<
   TProgram extends string,
   TAccountMetas extends readonly AccountMeta[],
 >(
   instruction: Instruction<TProgram> &
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
-): ParsedInitializeInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 6) {
+): ParsedCreateAssetStatsInstruction<TProgram, TAccountMetas> {
+  if (instruction.accounts.length < 5) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -423,13 +346,12 @@ export function parseInitializeInstruction<
   return {
     programAddress: instruction.programAddress,
     accounts: {
-      config: getNextAccount(),
+      assetStats: getNextAccount(),
       payer: getNextAccount(),
-      programData: getNextAccount(),
       systemProgram: getNextAccount(),
       eventAuthority: getNextAccount(),
       program: getNextAccount(),
     },
-    data: getInitializeInstructionDataDecoder().decode(instruction.data),
+    data: getCreateAssetStatsInstructionDataDecoder().decode(instruction.data),
   };
 }
