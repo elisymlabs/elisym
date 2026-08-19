@@ -102,6 +102,15 @@ async function sendTransaction(
   return getSignatureFromTransaction(signedTx as Parameters<typeof getSignatureFromTransaction>[0]);
 }
 
+/** Scheme + host of an RPC URL, so a logged endpoint never carries its API key. */
+function rpcOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '(unparseable RPC URL)';
+  }
+}
+
 async function show(): Promise<void> {
   const rpc = createSolanaRpc(RPC_URL);
   const [configPda] = await getProgramDerivedAddress({
@@ -113,6 +122,12 @@ async function show(): Promise<void> {
   const data = account.data;
   const pendingAdmin = data.pendingAdmin.__option === 'Some' ? data.pendingAdmin.value : 'none';
 
+  // Cluster identity first, before anything green-looking. `show` is the
+  // mainnet release gate, the program id is identical on both clusters, and
+  // RPC_URL defaults to devnet when SOLANA_RPC_URL is unset - so without this
+  // the board reads the same whichever cluster answered it. Origin only: the
+  // full URL can carry an API key.
+  console.log('RPC:           ', rpcOrigin(RPC_URL));
   console.log('Program ID:    ', PROGRAM_ID);
   console.log('Config PDA:    ', configPda);
   console.log('Version:       ', data.version);

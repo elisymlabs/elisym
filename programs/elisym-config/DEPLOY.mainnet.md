@@ -21,15 +21,21 @@ Launch sequence per `docs/plans/solana-mainnet.md` Phase 0 (D4/D5 as amended in 
   **3 SOL does not fund a second attempt.** The deploy creates its write buffer at the full programdata rent (~2.2876 SOL) up front and only refunds it to you in the final transaction, so an aborted attempt leaves ~0.71 SOL against a retry that needs ~2.2888 again - and a plain re-run allocates a _new_ buffer rather than reusing the stranded one. After any abort, either resume into the existing buffer or close it first; see "If a deploy attempt aborts mid-way".
 
 - A reliable RPC endpoint, **and the tool that can actually route traffic to it.** The public `api.mainnet-beta.solana.com` rate-limits the hundreds of write transactions a deploy sends. Routing them elsewhere needs `--use-rpc`, which exists only on `solana program deploy` - writes go to validator TPUs over QUIC without it, where an unstaked deployer is throttled by stake-weighted QoS. **`anchor deploy` cannot do this**: anchor 1.0.0 deploys natively instead of shelling out to the solana CLI, `--use-rpc` is not in its binary at all, and it silently discards unrecognized arguments after `--` (a bogus flag still exits 0). Step 1 therefore calls the solana CLI directly and uploads the IDL separately.
-- Fresh build: `bun run program:build` (verify the binary hash matches what was reviewed).
+- Fresh build: `bun run program:build`, then record the hash you are about to ship: `shasum -a 256 target/deploy/elisym_config.so`. There is no verified-build pipeline and no reference hash checked in, so this is a record for after the fact, not a check that can pass or fail - compare it by hand against a build from the reviewed commit if you want the guarantee.
 
 ## Sequence (back-to-back)
 
-`initialize` requires the payer to be the program's **upgrade authority** (checked on-chain against the loader's `ProgramData` account), so the deploy-to-init gap is no longer front-runnable - a bystander calling it first is rejected with `Unauthorized`. Two consequences for this runbook: the deploy and the init must use the **same key** (`~/.config/solana/id.json` for both), and the program must still be **upgradeable** at init time under the upgradeable loader (v3), which is what `solana program deploy` uses - do not pass `--final` or hand the upgrade authority to Squads before step 2. Still run steps 1-3 in one sitting; the reason is now operational tidiness, not a race.
+`initialize` requires the payer to be the program's **upgrade authority** (checked on-chain against the loader's `ProgramData` account), so the deploy-to-init gap is no longer front-runnable - a bystander calling it first is rejected with `Unauthorized`. Two consequences for this runbook: the deploy and the init must use the **same key** (`~/.config/solana/id.json` for both), and the program must still be **upgradeable** at init time under the upgradeable loader (v3), which is what `solana program deploy` uses - do not pass `--final` or hand the upgrade authority to Squads before step 2. Still run steps 1-4 in one sitting; the reason is now operational tidiness, not a race.
 
 **Read first - deploy vs upgrade (LSM era):** the program source now includes `create_asset_stats` + `increment_stats_v2`, so a fresh deploy from this tree ships them day one and step 3b just works. If mainnet was deployed from an older tree, upgrade BEFORE running the block below (compare `solana program show` size against the new `.so`, then deploy at the same address; solana-cli 3.1.x auto-extends the programdata account, so a manual `solana program extend` is only needed on an older CLI). Either way, **an SDK that emits `increment_stats_v2` must not be released against a mainnet program that lacks it** - every payment would fail; the reverse is safe (the upgraded program keeps the legacy instruction for deployed clients). Step 3b is the detector: if it aborts with `InstructionFallbackNotFound`, the deployed program predates the instruction - upgrade and re-run 3b, and do not release the SDK until step 4 shows the PDAs.
 
+`<url>` below is the dedicated endpoint from the prerequisites, and it carries through **every** step - the public endpoint is no more reliable for the confirmations in 2/3/3b than it is for the writes in 1. One caveat when you substitute it: the three scripts derive their confirmation websocket from that URL by replacing `https:` with `wss:`, so a provider whose websocket lives on a different host will fail to confirm even though the transaction lands.
+
 ```bash
+# 0. Export once, for the whole sitting: steps 2 and 4 both read it, and a new
+#    terminal (or a break) silently loses it.
+DEPLOYER=$(solana-keygen pubkey ~/.config/solana/id.json)
+
 # 1. Deploy the program with the solana CLI, NOT `anchor deploy`. Anchor 1.0.0
 #    deploys natively, has no `--use-rpc`, and drops unknown args after `--`
 #    without warning - the routing flags below would be silently ignored.
@@ -78,12 +84,10 @@ anchor idl init BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE \
 #     can run at all: "Authority" must be $DEPLOYER and "ProgramData Address"
 #     must be present. If ProgramData is missing the program is not under the
 #     upgradeable loader and initialize cannot work at this address.
-solana program show BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE \
-  --url https://api.mainnet-beta.solana.com
+solana program show BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE --url <url>
 
 # 2. Initialize config: fee 0, admin/treasury = deployer (round-16 decision)
-DEPLOYER=$(solana-keygen pubkey ~/.config/solana/id.json)
-SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
+SOLANA_RPC_URL=<url> \
 INITIAL_TREASURY=$DEPLOYER \
 INITIAL_FEE_BPS=0 \
   bun run packages/config-client/scripts/initialize.ts
@@ -91,7 +95,7 @@ INITIAL_FEE_BPS=0 \
 # 3. Initialize stats (signed by admin = deployer). REQUIRED before any SDK release:
 #    every payment transaction bundles a stats instruction - a missing stats PDA
 #    fails all mainnet payments wholesale.
-SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
+SOLANA_RPC_URL=<url> \
   bun run packages/config-client/scripts/initialize-stats.ts
 
 # 3b. Pre-create the per-mint AssetStats PDAs (sentinel + mainnet USDC + LSM).
@@ -100,14 +104,15 @@ SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
 #     funds ~0.0019 SOL of PDA rent - functional, but not what we ship.
 #     SOLANA_NETWORK is explicit by design (never inferred from the RPC URL).
 SOLANA_NETWORK=mainnet \
-SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
+SOLANA_RPC_URL=<url> \
   bun run packages/config-client/scripts/create-asset-stats.ts
 
-# 4. Verify immediately: admin and treasury must equal $DEPLOYER,
+# 4. Verify immediately: admin and treasury must equal $DEPLOYER (step 0 -
+#    re-export it if this is a new shell), the printed RPC must be <url>,
 #    fee must be 0, the NetworkStats PDA must exist, and the three AssetStats
 #    PDAs must show as existing.
 SOLANA_NETWORK=mainnet \
-SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
+SOLANA_RPC_URL=<url> \
   bun run packages/config-client/scripts/admin.ts show
 ```
 
@@ -116,15 +121,35 @@ SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
 - `Unauthorized` (6000) on `program_data` - the init key is not the upgrade authority: wrong keypair, or the authority was already transferred or revoked. Fix the key; do not work around the check.
 - `AccountOwnedByWrongProgram` (3007) or `AccountNotInitialized` (3012) on `program_data` - the program is not deployed under the upgradeable loader (v3), so no `ProgramData` account exists at the derived address. This is what a `solana program-v4 deploy` produces. `initialize` is uncallable at this address until the program is closed and redeployed under v3; step 1b catches it first.
 
-**Accepted residual (env mismatch):** `SOLANA_NETWORK=mainnet` against a devnet RPC creates orphan PDAs and a falsely-green `show` - benign because `increment_stats_v2` is `init_if_needed`; genesis-hash verification is the future hardening if ever wanted.
+**Accepted residual (env mismatch):** `SOLANA_NETWORK=mainnet` against a devnet RPC creates orphan PDAs. Benign for on-chain state - `increment_stats_v2` is `init_if_needed` - but **not** benign for the gate above, which is a release decision made from that same output. `show` now prints the RPC origin as its first line for exactly this reason; read it before reading anything green. Genesis-hash verification is the future hardening if ever wanted.
+
+## If a step after the deploy fails
+
+The scripts confirm over a websocket, so a dropped subscription or an expired blockhash makes one print a raw error and exit non-zero **while its transaction landed**. Never retry blind.
+
+**Run step 4 first.** It is read-only, it names the cluster it queried, and it tells you exactly which of `Config`, `NetworkStats` and the three `AssetStats` exist. Retry only what is genuinely missing.
+
+Re-runnability differs per step, and only one of them is forgiving:
+
+| step                    | second run                                                                                                                                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1 deploy                | safe - upgrades in place (but allocates a new buffer; see the abort section)                                                                                                                                 |
+| 1a `anchor idl init`    | **fails** - one-shot per program; use `anchor idl upgrade`                                                                                                                                                   |
+| 2 `initialize`          | **fails** with `custom program error: 0x0` (`AccountAlreadyInUse`) - the config PDA uses `init`. That error means step 2 already succeeded; verify admin/treasury with step 4 rather than trying to force it |
+| 3 `initialize-stats`    | **fails** the same way once the PDA exists                                                                                                                                                                   |
+| 3b `create-asset-stats` | safe - pre-checks each PDA and skips the ones that exist                                                                                                                                                     |
+
+Record the signature each script prints. After a lost scrollback there is no other evidence of what landed, and step 4 shows only end state, not which attempt produced it.
 
 ## If a deploy attempt aborts mid-way
 
-First find out what landed - run step 1b. If `solana program show` reports the program, the deploy itself succeeded and only step 1a (the IDL) is left. Do not re-run step 1 "just in case": it would allocate another full buffer, and with ~0.71 SOL left after a successful deploy it fails outright at buffer creation.
+First find out what landed - run step 1b. **On a fresh deploy** the program account exists only if the final transaction succeeded, so `solana program show` reporting the program means the deploy is done and only step 1a (the IDL) is left. **On an upgrade** that test is worthless: the account already existed, so `show` reports it no matter how early the attempt died. There, compare `Data Length` against the local `.so` (`stat -f%z target/deploy/elisym_config.so`) and check `Last Deployed In Slot` moved - if the length still matches the old binary, nothing landed and the buffer is stranded.
+
+Either way, do not re-run step 1 "just in case": it allocates another full buffer, and with ~0.71 SOL left after a successful deploy it fails outright at buffer creation.
+
+**Before anything else: Ctrl-C does not stop a deploy.** `solana program deploy` ignores SIGINT - it keeps writing, and the prompt not returning is not evidence that it died. Terminate it deliberately with `kill -TERM <pid>` (dies in about a second) and **confirm the process is gone before running any command below**. Closing a buffer while its deploy is still writing destroys the buffer out from under it; re-running step 1 alongside it allocates a second 2.29 SOL buffer you cannot afford.
 
 If the program did not land, **do not just re-run step 1** - the interrupted attempt left ~2.2876 SOL locked in a write buffer, and a fresh run allocates another one. With 3 SOL funded that second allocation fails outright with `insufficient funds for spend`. Pick one:
-
-**First: Ctrl-C does not stop a deploy.** `solana program deploy` ignores SIGINT - it keeps writing, and the prompt not returning is not evidence that it died. Terminate it deliberately with `kill -TERM <pid>` (dies in about a second) and **confirm the process is gone before running any command below**. Closing a buffer while its deploy is still writing destroys the buffer out from under it; re-running step 1 alongside it allocates a second 2.29 SOL buffer you cannot afford.
 
 **Resume into the stranded buffer (cheaper - keeps the chunks already written).** Only available if **the CLI itself reported the failure**: it then prints `Recover the intermediate account's ephemeral keypair file with 'solana-keygen recover' and the following N-word seed phrase:` - a **seed phrase, not a path** - and, just below it, the buffer address with a ready-made `solana program close <BUFFER_ADDRESS>`. Copy both before clearing the terminal: the address closes the buffer directly, without depending on the authority filter or on `getProgramAccounts` succeeding against the rate-limited public endpoint. A `kill` prints neither, and the keypair is then unrecoverable: skip to closing by authority.
 
@@ -158,3 +183,9 @@ Two filters decide whether these commands see anything, and both fail the same s
 ## Post-launch follow-up (deferred, round 16)
 
 Squads migration: create the multisig, then `set_treasury` to the vault -> two-step `propose_admin`/`accept_admin` (vault CPI-signs the accept) -> transfer the upgrade authority to the vault.
+
+**What the handoff closes off, in order.** Do all of it before the last step, because each becomes a vault proposal afterwards rather than a command:
+
+- `accept_admin` cannot be run with `admin.ts`. That script signs with a local keypair; the vault has to CPI-sign the accept, so this needs Squads tooling and is not covered by anything in this repo.
+- once the upgrade authority is the vault, both `anchor idl upgrade` (it authorizes off that same authority) and any future step-1 upgrade require a vault-signed transaction. Neither is re-runnable from a laptop again.
+- so: land the deploy, the IDL and any pending program upgrade first, verify with step 4, and only then move the authority.
