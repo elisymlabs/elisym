@@ -1133,6 +1133,16 @@ export class DiscoveryService {
     if (card.payment.mint !== undefined && !PAYMENT_MINT_REGEX.test(card.payment.mint)) {
       throw new Error(`Invalid payment mint: ${card.payment.mint}`);
     }
+    if (
+      card.payment.decimals !== undefined &&
+      (!Number.isInteger(card.payment.decimals) ||
+        card.payment.decimals < 0 ||
+        card.payment.decimals > 18)
+    ) {
+      throw new Error(
+        `Invalid payment decimals: ${card.payment.decimals} (must be an integer in 0..18).`,
+      );
+    }
     if (card.name.length > LIMITS.MAX_AGENT_NAME_LENGTH) {
       throw new Error(
         `Agent name too long: ${card.name.length} chars (max ${LIMITS.MAX_AGENT_NAME_LENGTH}).`,

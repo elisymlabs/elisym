@@ -14,6 +14,7 @@ import {
   mintDelegationNonce,
   assetKey,
   resolveKnownAsset,
+  resolveUsdcAsset,
   SolanaPaymentStrategy,
   splAssetsForNetwork,
   toDTag,
@@ -66,6 +67,7 @@ import { useIdentity } from '~/hooks/useIdentity';
 import { useJobHistory } from '~/hooks/useJobHistory';
 import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
+import { resolvePaymentAsset } from '~/lib/cardAsset';
 import { clearInFlight, recordCompletion } from '~/lib/chatSession';
 import { appendPendingEntry, completeEntry, failEntry, recordEntryTxHash } from '~/lib/chatThread';
 import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
@@ -471,12 +473,21 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // USDC-only mirrors the provider-side load guard - a delegation block
         // on a card priced in any other asset would compare mismatched
         // subunits and submit a job the provider rejects anyway.
+        // Gate on asset IDENTITY, not the card's `token` string. The pull
+        // targets the canonical USDC ATA whatever the card claims, so a card
+        // that merely calls itself usdc while naming another mint would take
+        // the delegated path and spend real USDC against a price rendered
+        // from its own metadata. `resolvePaymentAsset` returns null for any
+        // mint that is not canonical on this cluster. Mirrors the MCP gate in
+        // `submit_delegated_job`.
+        const delegationAsset = resolvePaymentAsset(card.payment, SOLANA_CLUSTER);
         if (
           !isFree &&
           delegationDescriptor &&
           publicKey &&
           signMessage &&
-          card.payment?.token === 'usdc' &&
+          delegationAsset !== null &&
+          assetKey(delegationAsset) === assetKey(resolveUsdcAsset(SOLANA_CLUSTER)) &&
           buySession.payment !== 'per-job'
         ) {
           const owner = publicKey.toBase58();

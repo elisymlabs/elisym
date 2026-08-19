@@ -638,13 +638,20 @@ async function gasHintForCardAsset(agent: AgentInstance, asset: Asset): Promise<
     // this hint under-quotes the first payer of an asset by ~0.0019 SOL - and
     // under-quoting is the direction that strands a transaction. Ops pre-creates
     // the PDAs for known assets, so the probe normally returns 0 and the
-    // sentence never appears.
-    const statsRentLamports = await estimateAssetStatsRentLamports(rpc, agent.network, asset);
-    const statsHint =
-      statsRentLamports > 0n
-        ? ` Plus a one-time ${formatAssetAmount(NATIVE_SOL, statsRentLamports)} for this ` +
-          `asset's on-chain stats account, charged to the first payer network-wide.`
-        : '';
+    // sentence never appears. Its own try/catch: this is an extra RPC round
+    // trip on the confirmation path, and losing the whole gas line because the
+    // addendum failed would be a worse trade than omitting the addendum.
+    let statsHint = '';
+    try {
+      const statsRentLamports = await estimateAssetStatsRentLamports(rpc, agent.network, asset);
+      if (statsRentLamports > 0n) {
+        statsHint =
+          ` Plus a one-time ${formatAssetAmount(NATIVE_SOL, statsRentLamports)} for this ` +
+          `asset's on-chain stats account, charged to the first payer network-wide.`;
+      }
+    } catch {
+      // Probe unavailable - fall back to the baseline alone.
+    }
     return `\n${formatNetworkBaseline(baseline)}${statsHint}`;
   } catch {
     return '';
