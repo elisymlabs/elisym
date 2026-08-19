@@ -99,6 +99,45 @@ function makeTombstoneEvent(
   );
 }
 
+// --- payment.decimals bound (untrusted-input boundary) ---
+
+describe('parseCapabilityEvent - payment decimals', () => {
+  const solanaPayment = {
+    chain: 'solana',
+    network: 'devnet',
+    address: '11111111111111111111111111111111',
+    token: 'usdc',
+  };
+
+  function cardWithDecimals(decimals: unknown): CapabilityCard {
+    return makeCard({ payment: { ...solanaPayment, decimals } } as Partial<CapabilityCard>);
+  }
+
+  it('accepts a card that omits decimals', () => {
+    const agent = ElisymIdentity.generate();
+    const event = makeCapabilityEvent(agent, makeCard({ payment: solanaPayment }));
+    expect(parseCapabilityEvent(event, 'devnet')).not.toBeNull();
+  });
+
+  it('accepts the real range', () => {
+    const agent = ElisymIdentity.generate();
+    for (const decimals of [0, 6, 9, 18]) {
+      const event = makeCapabilityEvent(agent, cardWithDecimals(decimals));
+      expect(parseCapabilityEvent(event, 'devnet')).not.toBeNull();
+    }
+  });
+
+  it('rejects a decimals value that would shift the displayed price', () => {
+    // A card claiming decimals 12 renders 250000000 USDC subunits as
+    // "0.00025", a millionth of what a delegated pull actually moves.
+    const agent = ElisymIdentity.generate();
+    for (const decimals of [19, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const event = makeCapabilityEvent(agent, cardWithDecimals(decimals));
+      expect(parseCapabilityEvent(event, 'devnet')).toBeNull();
+    }
+  });
+});
+
 // --- clock skew (future-dated capability events) ---
 
 describe('parseCapabilityEvent - future timestamp', () => {

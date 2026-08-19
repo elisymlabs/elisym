@@ -7,18 +7,20 @@ Launch sequence per `docs/plans/solana-mainnet.md` Phase 0 (D4/D5 as amended in 
 - **Back up `target/deploy/elisym_config-keypair.json` first.** Losing it before the deploy loses the address; after the deploy it has no further security value (the upgrade authority is what matters).
 - A funded deployer key at `~/.config/solana/id.json`. The deployer becomes `admin`, `treasury`, and keeps the upgrade authority until the Squads migration. Budget, measured against the current 328,520-byte binary with `solana rent` (solana-cli 3.1.x sizes the programdata account at exactly the program length - it does NOT reserve 2x):
 
-  |                                                                            | SOL    |
-  | -------------------------------------------------------------------------- | ------ |
-  | programdata rent (328,565 bytes)                                           | 2.2877 |
-  | IDL account - `anchor deploy` uploads `idl.json` (26 KB) unless `--no-idl` | 0.1841 |
-  | program account                                                            | 0.0011 |
-  | `Config` + `NetworkStats` PDAs                                             | 0.0052 |
-  | three `AssetStats` PDAs (step 3b)                                          | 0.0056 |
-  | write-transaction fees                                                     | ~0.002 |
+  |                                                                                                 | SOL    |
+  | ----------------------------------------------------------------------------------------------- | ------ |
+  | programdata rent (328,565 bytes)                                                                | 2.2877 |
+  | IDL account - `anchor deploy` uploads `target/idl/elisym_config.json` (26 KB) unless `--no-idl` | 0.1841 |
+  | program account                                                                                 | 0.0011 |
+  | `Config` + `NetworkStats` PDAs                                                                  | 0.0052 |
+  | three `AssetStats` PDAs (step 3b)                                                               | 0.0056 |
+  | write-transaction fees                                                                          | ~0.002 |
 
-  About **2.5 SOL**; fund **3 SOL** so one aborted attempt can be retried before the stranded buffer is recovered. Re-measure with `solana rent $(( $(stat -f%z target/deploy/elisym_config.so) + 45 ))` if the binary has grown since.
+  About **2.5 SOL**; fund **3 SOL** for the success path. Re-measure with `solana rent $(( $(stat -f%z target/deploy/elisym_config.so) + 45 ))` if the binary has grown since.
 
-- A reliable RPC endpoint. The public `api.mainnet-beta.solana.com` routinely rate-limits the hundreds of buffer-write transactions a deploy sends; any free dedicated endpoint is fine here (the public-endpoints-at-launch decision binds client runtime, not one-off ops tooling).
+  **3 SOL does not fund a second attempt.** The deploy creates its write buffer at the full programdata rent (~2.2876 SOL) up front and only refunds it to you in the final transaction, so an aborted attempt leaves ~0.71 SOL against a retry that needs ~2.2888 again - and `anchor deploy` allocates a _new_ buffer rather than reusing the stranded one. After any abort, either resume into the existing buffer or close it first; see "If a deploy attempt aborts mid-way".
+
+- A reliable RPC endpoint, **and the flags that actually route traffic to it.** The public `api.mainnet-beta.solana.com` rate-limits the hundreds of write transactions a deploy sends - but `--provider.cluster` alone does not move them: `solana program deploy` sends writes to validator TPUs over QUIC by default and only routes them through the configured RPC when passed `--use-rpc`. An unstaked deployer gets throttled by stake-weighted QoS, so also price the writes. See step 1 for the full command.
 - Fresh build: `bun run program:build` (verify the binary hash matches what was reviewed).
 
 ## Sequence (back-to-back)
@@ -28,12 +30,16 @@ Launch sequence per `docs/plans/solana-mainnet.md` Phase 0 (D4/D5 as amended in 
 **Read first - deploy vs upgrade (LSM era):** the program source now includes `create_asset_stats` + `increment_stats_v2`, so a fresh deploy from this tree ships them day one and step 3b just works. If mainnet was deployed from an older tree, upgrade BEFORE running the block below (compare `solana program show` size against the new `.so`, then deploy at the same address; solana-cli 3.1.x auto-extends the programdata account, so a manual `solana program extend` is only needed on an older CLI). Either way, **an SDK that emits `increment_stats_v2` must not be released against a mainnet program that lacks it** - every payment would fail; the reverse is safe (the upgraded program keeps the legacy instruction for deployed clients). Step 3b is the detector: if it aborts with `InstructionFallbackNotFound`, the deployed program predates the instruction - upgrade and re-run 3b, and do not release the SDK until step 4 shows the PDAs.
 
 ```bash
-# 1. Deploy. If the public endpoint 429s the buffer writes, bypass the npm script
-#    and pass a dedicated RPC URL directly: anchor deploy --provider.cluster <url>
-#    NOTE: this also uploads the IDL. A non-zero exit does NOT mean the program
-#    failed to land - the IDL writes come after it. Check with step 1b before
-#    concluding anything; re-running step 1 is safe (it upgrades in place).
-bun run program:deploy:mainnet
+# 1. Deploy. Do NOT use the bare npm script on mainnet: `--use-rpc` is what
+#    actually sends the ~325 write transactions through <url> instead of to
+#    validator TPUs, and the compute-unit price is what gets an unstaked
+#    deployer past stake-weighted QoS. Everything after `--` is forwarded to
+#    `solana program deploy`.
+#    NOTE: this also uploads the IDL, AFTER the program. A non-zero exit does
+#    NOT mean the program failed to land - check with step 1b before concluding
+#    anything; re-running step 1 upgrades in place and is safe.
+anchor deploy --provider.cluster <url> -- \
+  --use-rpc --with-compute-unit-price 50000 --max-sign-attempts 20
 
 # 1b. Confirm what actually landed, BEFORE trying to initialize. `initialize`
 #     reads the loader's ProgramData account, so this is also the check that it
@@ -84,7 +90,18 @@ SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
 
 First find out what landed - run step 1b. `anchor deploy` uploads the IDL after the program, so a non-zero exit is just as likely to be a rate-limited IDL write on an already-deployed program as a failed deploy. If `solana program show` reports the program, re-running step 1 upgrades it in place and is safe.
 
-Then recover any rent-locked SOL stranded in a buffer account by the interrupted writes:
+If the program did not land, **do not just re-run step 1** - the interrupted attempt left ~2.2876 SOL locked in a write buffer, and a fresh run allocates another one. With 3 SOL funded that second allocation fails outright with `insufficient funds for spend`. Pick one:
+
+**Resume into the stranded buffer (cheaper - no second rent).** The CLI prints the buffer's recovery keypair path when it aborts; the writes already in it are kept.
+
+```bash
+solana program show --buffers -um            # confirm the buffer and its balance
+anchor deploy --provider.cluster <url> -- \
+  --use-rpc --with-compute-unit-price 50000 --max-sign-attempts 20 \
+  --buffer <recovered-buffer-keypair.json>
+```
+
+**Or close it and start over**, which refunds the rent to the deployer first:
 
 ```bash
 solana program show --buffers -um
