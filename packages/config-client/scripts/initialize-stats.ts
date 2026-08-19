@@ -51,6 +51,20 @@ const ADMIN_KEYPAIR_PATH =
 
 const adminSecretKey = new Uint8Array(JSON.parse(readFileSync(ADMIN_KEYPAIR_PATH, 'utf8')));
 
+/**
+ * An RPC endpoint safe to print: scheme, host and path, with credentials and
+ * query string dropped. Path is kept - providers that select the cluster by
+ * path collapse to one origin otherwise, and telling those apart is the point.
+ */
+function redactRpcUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+  } catch {
+    return '(unparseable RPC URL)';
+  }
+}
+
 async function main(): Promise<void> {
   const admin = await createKeyPairSignerFromBytes(adminSecretKey);
 
@@ -67,7 +81,7 @@ async function main(): Promise<void> {
     seeds: [new TextEncoder().encode('__event_authority')],
   });
 
-  console.log('RPC:                ', RPC_URL);
+  console.log('RPC:                ', redactRpcUrl(RPC_URL));
   console.log('Program ID:         ', PROGRAM_ID);
   console.log('Admin (signer):     ', admin.address);
   console.log('Config PDA:         ', configPda);

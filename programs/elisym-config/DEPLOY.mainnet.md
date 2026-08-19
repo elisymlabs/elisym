@@ -108,7 +108,7 @@ SOLANA_RPC_URL=<url> \
   bun run packages/config-client/scripts/create-asset-stats.ts
 
 # 4. Verify immediately: admin and treasury must equal $DEPLOYER (step 0 -
-#    re-export it if this is a new shell), the printed RPC must be <url>,
+#    re-export it if this is a new shell), the printed RPC must be the host and path of <url>,
 #    fee must be 0, the NetworkStats PDA must exist, and the three AssetStats
 #    PDAs must show as existing.
 SOLANA_NETWORK=mainnet \
@@ -133,7 +133,7 @@ Re-runnability differs per step, and only one of them is forgiving:
 
 | step                    | second run                                                                                                                                                                                                   |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1 deploy                | safe - upgrades in place (but allocates a new buffer; see the abort section)                                                                                                                                 |
+| 1 deploy                | not on the funded balance - it upgrades in place, but allocates another 2.29 SOL buffer first; see the abort section                                                                                         |
 | 1a `anchor idl init`    | **fails** - one-shot per program; use `anchor idl upgrade`                                                                                                                                                   |
 | 2 `initialize`          | **fails** with `custom program error: 0x0` (`AccountAlreadyInUse`) - the config PDA uses `init`. That error means step 2 already succeeded; verify admin/treasury with step 4 rather than trying to force it |
 | 3 `initialize-stats`    | **fails** the same way once the PDA exists                                                                                                                                                                   |
@@ -154,7 +154,7 @@ If the program did not land, **do not just re-run step 1** - the interrupted att
 **Resume into the stranded buffer (cheaper - keeps the chunks already written).** Only available if **the CLI itself reported the failure**: it then prints `Recover the intermediate account's ephemeral keypair file with 'solana-keygen recover' and the following N-word seed phrase:` - a **seed phrase, not a path** - and, just below it, the buffer address with a ready-made `solana program close <BUFFER_ADDRESS>`. Copy both before clearing the terminal: the address closes the buffer directly, without depending on the authority filter or on `getProgramAccounts` succeeding against the rate-limited public endpoint. A `kill` prints neither, and the keypair is then unrecoverable: skip to closing by authority.
 
 ```bash
-solana program show --buffers -k ~/.config/solana/id.json -um   # confirm it and its balance
+solana program show --buffers -k ~/.config/solana/id.json --url <url>   # confirm it and its balance
 solana-keygen recover -o /tmp/elisym-deploy-buffer.json prompt://   # paste the phrase
 solana program deploy \
   --url <url> \
@@ -171,13 +171,13 @@ solana program deploy \
 **Or close it and start over**, which refunds the rent to the deployer first. This path needs only the buffer's authority, not its keypair, so it always works:
 
 ```bash
-solana program show --buffers -k ~/.config/solana/id.json -um
-solana program close --buffers -k ~/.config/solana/id.json -um
+solana program show --buffers -k ~/.config/solana/id.json --url <url>
+solana program close --buffers -k ~/.config/solana/id.json --url <url>
 ```
 
 Two filters decide whether these commands see anything, and both fail the same silent way - an empty table that reads as "nothing stranded" while the rent stays locked:
 
-- `-um` pins mainnet; without it they target the solana CLI's default cluster. If the deploy used a dedicated RPC, pass `--url <that-rpc>` instead.
+- `--url` pins the cluster; without it they target the solana CLI's default. Use the same `<url>` as step 1: these commands are a `getProgramAccounts` scan over the loader, which is exactly the call the public endpoint is least likely to serve.
 - `-k` pins the authority they match on. The buffer's authority is step 1's `--upgrade-authority` signer, NOT the fee payer, so leaving `-k` off matches against whatever `solana config get` points at.
 
 ## Post-launch follow-up (deferred, round 16)

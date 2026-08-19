@@ -67,6 +67,20 @@ const payerSecretKey = new Uint8Array(
   JSON.parse(readFileSync(join(homedir(), '.config/solana/id.json'), 'utf8')),
 );
 
+/**
+ * An RPC endpoint safe to print: scheme, host and path, with credentials and
+ * query string dropped. Path is kept - providers that select the cluster by
+ * path collapse to one origin otherwise, and telling those apart is the point.
+ */
+function redactRpcUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+  } catch {
+    return '(unparseable RPC URL)';
+  }
+}
+
 async function main(): Promise<void> {
   const payer = await createKeyPairSignerFromBytes(payerSecretKey);
 
@@ -92,7 +106,7 @@ async function main(): Promise<void> {
     seeds: [getAddressEncoder().encode(PROGRAM_ID)],
   });
 
-  console.log('RPC:                ', RPC_URL);
+  console.log('RPC:                ', redactRpcUrl(RPC_URL));
   console.log('Program ID:         ', PROGRAM_ID);
   console.log('Payer:              ', payer.address);
   console.log('Initial admin:      ', INITIAL_ADMIN);

@@ -41,7 +41,7 @@ import {
   ELISYM_CONFIG_PROGRAM_ADDRESS,
   NATIVE_ASSET_SENTINEL,
   deriveAssetStatsAddress,
-  fetchConfig,
+  fetchMaybeConfig,
   fetchMaybeAssetStats,
   fetchMaybeNetworkStats,
   getAcceptAdminInstructionAsync,
@@ -68,6 +68,15 @@ const PROGRAM_ID: Address = process.env.PROGRAM_ID
 const RPC_URL =
   process.env.SOLANA_RPC_URL ?? process.env.RPC_URL ?? 'https://api.devnet.solana.com';
 const WS_URL = RPC_URL.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+
+// Resolved at module load: `show` prints it before its first fetch, and it -
+// not the RPC URL - selects which mints the AssetStats block checks.
+const NETWORK_ENV = process.env.SOLANA_NETWORK ?? 'devnet';
+if (NETWORK_ENV !== 'devnet' && NETWORK_ENV !== 'mainnet') {
+  console.error(`SOLANA_NETWORK must be 'devnet' or 'mainnet'; got "${NETWORK_ENV}".`);
+  process.exit(1);
+}
+const network = NETWORK_ENV;
 
 const KEYPAIR_PATH = process.env.KEYPAIR ?? join(homedir(), '.config/solana/id.json');
 
@@ -102,10 +111,16 @@ async function sendTransaction(
   return getSignatureFromTransaction(signedTx as Parameters<typeof getSignatureFromTransaction>[0]);
 }
 
-/** Scheme + host of an RPC URL, so a logged endpoint never carries its API key. */
-function rpcOrigin(url: string): string {
+/**
+ * An RPC endpoint safe to print: scheme, host and path, with credentials and
+ * query string dropped. Path is kept deliberately - providers that select the
+ * cluster by path (`/solana` vs `/solana_devnet`) collapse to one origin, and
+ * telling those two apart is the whole point of logging it here.
+ */
+export function redactRpcUrl(url: string): string {
   try {
-    return new URL(url).origin;
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname === '/' ? '' : parsed.pathname}`;
   } catch {
     return '(unparseable RPC URL)';
   }
@@ -118,25 +133,37 @@ async function show(): Promise<void> {
     seeds: [new TextEncoder().encode('config')],
   });
 
-  const account = await fetchConfig(rpc, configPda);
-  const data = account.data;
-  const pendingAdmin = data.pendingAdmin.__option === 'Some' ? data.pendingAdmin.value : 'none';
-
-  // Cluster identity first, before anything green-looking. `show` is the
-  // mainnet release gate, the program id is identical on both clusters, and
-  // RPC_URL defaults to devnet when SOLANA_RPC_URL is unset - so without this
-  // the board reads the same whichever cluster answered it. Origin only: the
-  // full URL can carry an API key.
-  console.log('RPC:           ', rpcOrigin(RPC_URL));
+  // Identity BEFORE any fetch. `show` is the release gate and the state it is
+  // most often run in is "something failed and I do not know what landed" - so
+  // it must never die before saying which cluster and program it is reading.
+  // The program id is identical on both clusters and RPC_URL defaults to
+  // devnet when SOLANA_RPC_URL is unset, so the board is meaningless without
+  // these three lines. `network` is separate from the RPC on purpose: it, not
+  // the endpoint, selects which mints the AssetStats block below checks.
+  console.log('RPC:           ', redactRpcUrl(RPC_URL));
+  console.log('SOLANA_NETWORK:', network);
   console.log('Program ID:    ', PROGRAM_ID);
   console.log('Config PDA:    ', configPda);
-  console.log('Version:       ', data.version);
-  console.log('Admin:         ', data.admin);
-  console.log('Pending admin: ', pendingAdmin);
-  console.log('Treasury:      ', data.treasury);
-  console.log('Fee (bps):     ', data.feeBps, `(${(data.feeBps / 100).toFixed(2)}%)`);
-  console.log('Paused:        ', data.paused);
-  console.log('Last updated:  ', new Date(Number(data.lastUpdated) * 1000).toISOString());
+
+  // `fetchMaybeConfig`, not `fetchConfig`: the asserting variant throws before
+  // anything is printed when the config is absent, which is exactly the
+  // post-failed-`initialize` state an operator runs this to diagnose. A
+  // missing config also must not hide the rest - `create_asset_stats` takes no
+  // config account, so 3b can have landed while step 2 has not.
+  const account = await fetchMaybeConfig(rpc, configPda);
+  if (!account.exists) {
+    console.log('Config:         (MISSING - initialize has not landed on this cluster)');
+  } else {
+    const data = account.data;
+    const pendingAdmin = data.pendingAdmin.__option === 'Some' ? data.pendingAdmin.value : 'none';
+    console.log('Version:       ', data.version);
+    console.log('Admin:         ', data.admin);
+    console.log('Pending admin: ', pendingAdmin);
+    console.log('Treasury:      ', data.treasury);
+    console.log('Fee (bps):     ', data.feeBps, `(${(data.feeBps / 100).toFixed(2)}%)`);
+    console.log('Paused:        ', data.paused);
+    console.log('Last updated:  ', new Date(Number(data.lastUpdated) * 1000).toISOString());
+  }
 
   // Every payment tx bundles increment_stats - a missing stats PDA fails all
   // payments on this cluster, and the config account alone cannot reveal that.
@@ -163,12 +190,6 @@ async function show(): Promise<void> {
   // program that predates the instruction it means every payment fails, and
   // the two look identical from here - hence the message below points at the
   // release gate rather than just at the rent.
-  const networkEnv = process.env.SOLANA_NETWORK ?? 'devnet';
-  if (networkEnv !== 'devnet' && networkEnv !== 'mainnet') {
-    console.error(`SOLANA_NETWORK must be 'devnet' or 'mainnet'; got "${networkEnv}".`);
-    process.exit(1);
-  }
-  const network = networkEnv;
   const assetTargets: Array<{ label: string; mint: string }> = [
     { label: 'native (sentinel)', mint: NATIVE_ASSET_SENTINEL },
     {
@@ -216,7 +237,7 @@ async function main(): Promise<void> {
   });
   const programOpts = { programAddress: PROGRAM_ID };
 
-  console.log('RPC:    ', RPC_URL);
+  console.log('RPC:    ', redactRpcUrl(RPC_URL));
   console.log('Signer: ', payer.address);
 
   let signature: string;

@@ -82,6 +82,20 @@ const USDC_DEVNET_MINT = address('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU')
 const USDC_MAINNET_MINT = address('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 const LSM_MAINNET_MINT = address('86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump');
 
+/**
+ * An RPC endpoint safe to print: scheme, host and path, with credentials and
+ * query string dropped. Path is kept - providers that select the cluster by
+ * path collapse to one origin otherwise, and telling those apart is the point.
+ */
+function redactRpcUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+  } catch {
+    return '(unparseable RPC URL)';
+  }
+}
+
 async function main(): Promise<void> {
   const payerSecretKey = new Uint8Array(JSON.parse(readFileSync(PAYER_KEYPAIR_PATH, 'utf8')));
   const payer = await createKeyPairSignerFromBytes(payerSecretKey);
@@ -107,7 +121,7 @@ async function main(): Promise<void> {
   ];
 
   console.log('Network:   ', NETWORK);
-  console.log('RPC:       ', RPC_URL);
+  console.log('RPC:       ', redactRpcUrl(RPC_URL));
   console.log('Program ID:', PROGRAM_ID);
   console.log('Payer:     ', payer.address);
 
