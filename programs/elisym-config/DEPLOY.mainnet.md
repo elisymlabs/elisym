@@ -37,9 +37,10 @@ Launch sequence per `docs/plans/solana-mainnet.md` Phase 0 (D4/D5 as amended in 
 #    compute-unit price gets an unstaked deployer past stake-weighted QoS.
 #    Re-running this on an already-deployed program upgrades it in place and is
 #    safe - but read the abort section first if a previous attempt died.
-#    `-k` is load-bearing: it pins the FEE PAYER. Without it the payer is
-#    whatever `solana config get` points at, which also decides whose buffers
-#    `solana program show --buffers` lists later - see the abort section.
+#    `-k` pins the FEE PAYER; `--upgrade-authority` pins who OWNS the write
+#    buffer, and therefore who can find or close it after an abort. They are
+#    the same file here on purpose - keep it that way, or the abort section's
+#    `-k` stops matching. See the note at the end of that section.
 #    Confirm the program keypair still derives the expected address first. A
 #    regenerated one deploys at a stranger address, and every later step then
 #    targets BrX1CRk... and finds nothing. Read the output before continuing -
@@ -123,7 +124,9 @@ First find out what landed - run step 1b. If `solana program show` reports the p
 
 If the program did not land, **do not just re-run step 1** - the interrupted attempt left ~2.2876 SOL locked in a write buffer, and a fresh run allocates another one. With 3 SOL funded that second allocation fails outright with `insufficient funds for spend`. Pick one:
 
-**Resume into the stranded buffer (cheaper - keeps the chunks already written).** Only available if **the CLI itself reported the failure**: it then prints `Recover the intermediate account's ephemeral keypair file with 'solana-keygen recover' and the following N-word seed phrase:` - a **seed phrase, not a path**. Copy it before clearing the terminal. If you killed the process yourself (Ctrl-C), nothing is printed and the keypair is gone: skip to closing the buffer.
+**First: Ctrl-C does not stop a deploy.** `solana program deploy` ignores SIGINT - it keeps writing, and the prompt not returning is not evidence that it died. Terminate it deliberately with `kill -TERM <pid>` (dies in about a second) and **confirm the process is gone before running any command below**. Closing a buffer while its deploy is still writing destroys the buffer out from under it; re-running step 1 alongside it allocates a second 2.29 SOL buffer you cannot afford.
+
+**Resume into the stranded buffer (cheaper - keeps the chunks already written).** Only available if **the CLI itself reported the failure**: it then prints `Recover the intermediate account's ephemeral keypair file with 'solana-keygen recover' and the following N-word seed phrase:` - a **seed phrase, not a path** - and, just below it, the buffer address with a ready-made `solana program close <BUFFER_ADDRESS>`. Copy both before clearing the terminal: the address closes the buffer directly, without depending on the authority filter or on `getProgramAccounts` succeeding against the rate-limited public endpoint. A `kill` prints neither, and the keypair is then unrecoverable: skip to closing by authority.
 
 ```bash
 solana program show --buffers -k ~/.config/solana/id.json -um   # confirm it and its balance
