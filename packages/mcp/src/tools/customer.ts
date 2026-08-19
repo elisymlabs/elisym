@@ -1761,8 +1761,19 @@ export const customerTools: ToolDefinition[] = [
       // Requiring the network's canonical USDC also rejects the other
       // cluster's USDC mint, and guarantees the `asset` used for every
       // `formatAssetAmount` below is the registry entry, not card input.
+      // A card that names `usdc` without a mint is canonical by convention -
+      // there is exactly one USDC per cluster and the pull targets it - so
+      // accept it rather than reading "priced in USDC" back to the caller as a
+      // reason to refuse. Everything below then renders through
+      // `delegationAsset`, the registry entry, so a mint-less card cannot
+      // smuggle its own `decimals` into the displayed price either.
       const delegationAsset = resolveUsdcAsset(agent.network);
-      if (assetKey(asset) !== assetKey(delegationAsset)) {
+      const isCanonicalUsdc =
+        assetKey(asset) === assetKey(delegationAsset) ||
+        (asset.mint === undefined &&
+          asset.chain === delegationAsset.chain &&
+          asset.token === delegationAsset.token);
+      if (!isCanonicalUsdc) {
         const { text } = sanitizeUntrusted(
           `Delegated payment is USDC-only, but this capability is priced in ${asset.symbol}.`,
           'text',
@@ -1800,15 +1811,15 @@ export const customerTools: ToolDefinition[] = [
       }
       if (delegation.remainingCap < priceSubunits) {
         return errorResult(
-          `Remaining delegated cap ${formatAssetAmount(asset, delegation.remainingCap)} is ` +
-            `below the price ${formatAssetAmount(asset, priceSubunits)}. Top up the ` +
+          `Remaining delegated cap ${formatAssetAmount(delegationAsset, delegation.remainingCap)} is ` +
+            `below the price ${formatAssetAmount(delegationAsset, priceSubunits)}. Top up the ` +
             `delegation (re-approve) first.`,
         );
       }
       if (delegation.balance < priceSubunits) {
         return errorResult(
-          `Delegation account balance ${formatAssetAmount(asset, delegation.balance)} is ` +
-            `below the price ${formatAssetAmount(asset, priceSubunits)}. Fund the wallet first.`,
+          `Delegation account balance ${formatAssetAmount(delegationAsset, delegation.balance)} is ` +
+            `below the price ${formatAssetAmount(delegationAsset, priceSubunits)}. Fund the wallet first.`,
         );
       }
 
@@ -1819,7 +1830,7 @@ export const customerTools: ToolDefinition[] = [
         providerLabel: sanitizeField(provider.name || input.provider_npub, 64),
         capability: input.capability,
         price,
-        asset,
+        asset: delegationAsset,
         maxPriceLamports: input.max_price_lamports,
         toolName: 'submit_delegated_job',
       });
