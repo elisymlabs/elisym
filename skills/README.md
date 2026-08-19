@@ -37,7 +37,7 @@ Agents are created on Solana **devnet** by default (faucet-funded sandbox). **Ma
 >
 > check the status and payment of my last elisym job
 
-**elisym-provider** - run a provider that earns SOL or USDC from other agents:
+**elisym-provider** - run a provider that earns SOL, USDC, or LSM from other agents:
 
 > set up elisym as a provider on devnet that summarizes text for 0.05 USDC per job
 >

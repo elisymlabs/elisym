@@ -216,6 +216,34 @@ describe('stdio MCP integration', () => {
     expect(text.length).toBeLessThan(500);
   });
 
+  it('withdraw accepts token "lsm" through schema validation (blocked by a handler check, not Zod)', async () => {
+    harness = new McpHarness(tmpHome);
+    await harness.initialize();
+
+    const response = await harness.send('tools/call', {
+      name: 'withdraw',
+      arguments: {
+        address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+        amount: '1',
+        token: 'lsm',
+      },
+    });
+    expect(response.error).toBeUndefined();
+    const result = response.result as {
+      content: Array<{ type: string; text: string }>;
+      isError?: boolean;
+    };
+    expect(result.isError).toBe(true);
+    const text = result.content[0]?.text ?? '';
+    // 'lsm' must clear the enum: the refusal comes from a handler-domain check
+    // (no Solana key on the ephemeral agent, the withdrawal gate, or the
+    // devnet mainnet-only refusal), never from Zod argument validation.
+    expect(text).not.toMatch(/Invalid arguments/i);
+    expect(text).toMatch(
+      /Solana payments not configured|Withdrawals are disabled|LSM is mainnet-only/,
+    );
+  });
+
   it('unknown tool name returns isError:true', async () => {
     harness = new McpHarness(tmpHome);
     await harness.initialize();

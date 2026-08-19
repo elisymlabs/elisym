@@ -37,7 +37,7 @@ import { address, createSolanaRpc } from '@solana/kit';
 import chalk from 'chalk';
 import Decimal from 'decimal.js-light';
 import YAML from 'yaml';
-import { fetchUsdcBalance, getRpcUrl } from '../helpers.js';
+import { fetchUsdcBalance, formatSplBalanceValue, getRpcUrl } from '../helpers.js';
 import { x402SolanaNetworkIds } from '../x402/constants.js';
 import { requirementAmount, selectAcceptableRequirement } from '../x402/matcher.js';
 import { X402ProbeError, probePaymentRequired, type X402ProbeResult } from '../x402/probe.js';
@@ -603,8 +603,10 @@ export async function cmdX402Add(
     `  Your price   ${formatAssetAmount(usdcAsset, priceSubunits)}  (margin ${marginPercent}% + protocol fee ${feePercent}%)`,
   );
   console.log(`  Net margin   ${formatAssetAmount(usdcAsset, netMargin)} per job`);
-  console.log(`  Float        ${formatAssetAmount(usdcAsset, balance)} in ${signer.address}`);
-  if (balance < quote) {
+  console.log(`  Float        ${formatSplBalanceValue(usdcAsset, balance)} in ${signer.address}`);
+  // An unreadable float is not a low float: say nothing about funding rather
+  // than send the operator to a faucet over an RPC hiccup.
+  if (balance !== null && balance < quote) {
     console.log(
       chalk.yellow(
         agentNetwork === 'mainnet'
@@ -653,7 +655,7 @@ export async function cmdX402Add(
   await ensureGitignoreHasX402Entries(dirname(loaded.dir));
 
   console.log(`\n  Wrote ${join(targetDir, 'SKILL.md')}`);
-  if (balance < quote) {
+  if (balance !== null && balance < quote) {
     console.log(
       agentNetwork === 'mainnet'
         ? '  Next: fund the float with USDC on mainnet (REAL funds).'

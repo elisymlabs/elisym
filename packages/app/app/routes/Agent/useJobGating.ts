@@ -5,6 +5,7 @@ import { useIdentity } from '~/hooks/useIdentity';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import { useSolGasFeeEstimate } from '~/hooks/useSolGasFeeEstimate';
 import { useWalletBalances } from '~/hooks/useWalletBalances';
+import { SOLANA_CLUSTER } from '~/lib/cluster';
 import { formatCardPrice } from '~/lib/formatPrice';
 import { checkBuyAffordability, checkSelfPayment } from './lib/balanceCheck';
 
@@ -95,14 +96,21 @@ export function useJobGating({
   const fileTooLarge = !!file && file.size > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES;
   const gasFeeLamports = useSolGasFeeEstimate(card);
   const priceLabel = isFree ? null : formatCardPrice(card.payment, price);
-  const { solLamports, usdcRaw } = useWalletBalances();
+  const { solLamports, splRaw } = useWalletBalances();
   const selfPayment =
     !isFree && !!publicKey && !buying
       ? checkSelfPayment({ card, buyerWallet: publicKey.toBase58() })
       : { ok: true as const };
   const affordability =
     !isFree && !!publicKey && !buying && !delegatedCovers && selfPayment.ok
-      ? checkBuyAffordability({ card, solLamports, usdcRaw, gasLamports: gasFeeLamports })
+      ? checkBuyAffordability({
+          card,
+          solLamports,
+          splRaw,
+          gasLamports: gasFeeLamports,
+          // Same cluster constant `useWalletBalances` keys `splRaw` by.
+          network: SOLANA_CLUSTER,
+        })
       : { ok: true as const };
 
   // The browser submits encrypted jobs and cannot spill large input to iroh

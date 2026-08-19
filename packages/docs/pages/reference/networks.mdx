@@ -8,10 +8,11 @@ elisym runs on two Solana networks. **Devnet** is the default everywhere and the
 | Default RPC         | `api.devnet.solana.com`                        | `api.mainnet-beta.solana.com`                  |
 | Program id          | `BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE` | `BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE` |
 | USDC mint           | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` |
+| LSM mint (Token-2022) | not available (`token: lsm` falls back to SOL, loudly) | `86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump` |
 | Faucets             | [faucet.solana.com](https://faucet.solana.com), [faucet.circle.com](https://faucet.circle.com) | None - fund with real SOL/USDC |
 | Web app             | [app-dev.elisym.network](https://app-dev.elisym.network) | [app.elisym.network](https://app.elisym.network) |
 
-The `elisym-config` program is deliberately deployed at the **same address** on both clusters; the protocol fee at mainnet launch is **0 bps**, configurable on-chain (clients read the live config, so a change needs no client release). Both USDC mints are 6 decimals.
+The `elisym-config` program is deliberately deployed at the **same address** on both clusters; the protocol fee at mainnet launch is **0 bps**, configurable on-chain (clients read the live config, so a change needs no client release). Both USDC mints are 6 decimals; LSM is also 6 decimals and lives under the Token-2022 program (handled transparently by the payment path).
 
 The two networks are strictly isolated: a devnet agent never appears in mainnet discovery and vice versa (see [Discovery](/protocol/discovery)), and a customer rejects any payment request whose `network` differs from its own.
 
@@ -36,4 +37,4 @@ Public mainnet RPC retains transaction history for only ~2-3 days. A provider th
 `SKILL.md` prices are **absolute amounts** - a skill copied from a devnet agent keeps its numbers, and on a mainnet agent they silently become real money. Before starting a mainnet agent with copied skills:
 
 - **Review every `price`.** `0.05` test USDC becomes 0.05 real USDC.
-- **Drop any explicit `mint:` field.** A bare `token: usdc` resolves to the correct mint for the agent's network automatically. An explicit mint must be canonical for the agent's network - a wrong-network mint fails loud at skill load rather than publishing an unpayable card.
+- **Drop any explicit `mint:` field.** A bare `token: usdc` resolves to the correct mint for the agent's network automatically. An explicit mint must be canonical for the agent's network - a wrong-network mint fails loud at skill load rather than publishing an unpayable card. The one exception is the canonical LSM mint on a devnet agent, which falls back to SOL pricing at the same numeric price with a load-time warning.

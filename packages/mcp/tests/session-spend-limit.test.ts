@@ -5,7 +5,14 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assetKey, NATIVE_SOL, USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/sdk';
+import {
+  KNOWN_ASSETS,
+  LSM_SOLANA_MAINNET,
+  assetKey,
+  NATIVE_SOL,
+  USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
+} from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AgentContext,
@@ -44,8 +51,76 @@ describe('defaultSpendLimitsMap', () => {
     const solEntries = DEFAULT_SESSION_LIMITS.filter((entry) => entry.asset.token === 'sol');
     expect(solEntries).toHaveLength(1);
     expect(solEntries[0]?.asset.mint).toBeUndefined();
-    // Exactly three default entries: shared SOL + USDC per network.
-    expect(defaultSpendLimitsMap().size).toBe(3);
+    // Exactly four default entries: shared SOL + USDC per network + mainnet LSM.
+    expect(defaultSpendLimitsMap().size).toBe(4);
+  });
+
+  it('contains 1,000,000 LSM as the mainnet-only default cap', () => {
+    const map = defaultSpendLimitsMap();
+    // 1_000_000 LSM * 10^6 subunits = 1_000_000_000_000.
+    expect(map.get(assetKey(LSM_SOLANA_MAINNET))).toBe(1_000_000_000_000n);
+    // Single row - LSM has no devnet variant to cap.
+    const lsmEntries = DEFAULT_SESSION_LIMITS.filter((entry) => entry.asset.token === 'lsm');
+    expect(lsmEntries).toHaveLength(1);
+  });
+
+  it('caps EVERY known asset - an asset with no row spends uncapped', () => {
+    // `assertCanSpend` returns early when an asset has no limit, so a new
+    // KNOWN_ASSETS member added without a DEFAULT_SESSION_LIMITS row would be
+    // spendable without any session cap. This fails the moment that happens.
+    const map = defaultSpendLimitsMap();
+    for (const asset of KNOWN_ASSETS) {
+      expect(map.has(assetKey(asset)), `${assetKey(asset)} has no default session cap`).toBe(true);
+    }
+  });
+});
+
+describe('LSM cap enforcement', () => {
+  it('rejects an LSM spend that would exceed the default cap', () => {
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits.set(assetKey(LSM_SOLANA_MAINNET), 1_000_000_000_000n);
+    ctx.sessionSpent.set(assetKey(LSM_SOLANA_MAINNET), 999_999_000_000n);
+    expect(() => assertCanSpend(ctx, LSM_SOLANA_MAINNET, 2_000_000_000n)).toThrow(
+      /Session spend limit reached/,
+    );
+  });
+});
+
+describe('formatSessionSpendLines network filtering', () => {
+  it('shows only the assets that exist on the agent network (caps stay global)', async () => {
+    const { formatSessionSpendLines } = await import('../src/tools/wallet.js');
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits = defaultSpendLimitsMap();
+
+    const devnetLines = formatSessionSpendLines(ctx, 'devnet');
+    expect(devnetLines.join('\n')).not.toContain('LSM');
+    // Exactly SOL + devnet USDC (the mainnet-USDC row is filtered from display too).
+    expect(devnetLines).toHaveLength(2);
+
+    const mainnetLines = formatSessionSpendLines(ctx, 'mainnet');
+    expect(mainnetLines.join('\n')).toContain('LSM');
+    expect(mainnetLines).toHaveLength(3);
+  });
+});
+
+describe('formatSplBalanceLine', () => {
+  it('renders a read balance in whole units', async () => {
+    const { formatSplBalanceLine } = await import('../src/tools/wallet.js');
+    expect(formatSplBalanceLine(LSM_SOLANA_MAINNET, 25_000_000n)).toBe('LSM balance: 25 LSM');
+    // A genuine zero still reads as zero.
+    expect(formatSplBalanceLine(LSM_SOLANA_MAINNET, 0n)).toBe('LSM balance: 0 LSM');
+  });
+
+  it('says the read failed rather than claiming an empty wallet', async () => {
+    // A rate-limited RPC returns null; rendering that as "0 LSM" would tell an
+    // agent holding a fortune that its wallet is empty.
+    const { formatSplBalanceLine } = await import('../src/tools/wallet.js');
+    expect(formatSplBalanceLine(LSM_SOLANA_MAINNET, null)).toBe(
+      'LSM balance: unavailable (balance read failed)',
+    );
+    expect(formatSplBalanceLine(LSM_SOLANA_MAINNET, undefined)).toBe(
+      'LSM balance: unavailable (balance read failed)',
+    );
   });
 });
 

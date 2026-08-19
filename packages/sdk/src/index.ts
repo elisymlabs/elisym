@@ -95,6 +95,7 @@ export {
 } from './payment/priorityFee';
 export type { EstimatePriorityFeeOptions } from './payment/priorityFee';
 export {
+  estimateAssetStatsRentLamports,
   estimateSolFeeLamports,
   formatFeeBreakdown,
   estimateNetworkBaseline,
@@ -131,11 +132,15 @@ export {
   NATIVE_SOL,
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
+  LSM_SOLANA_MAINNET,
+  TOKEN_2022_PROGRAM_ADDRESS_STR,
   KNOWN_ASSETS,
   assetKey,
   assetByKey,
   resolveKnownAsset,
   resolveUsdcAsset,
+  resolveLsmAsset,
+  splAssetsForNetwork,
   resolveAssetFromPaymentRequest,
   parseAssetAmount,
   formatAssetAmount,

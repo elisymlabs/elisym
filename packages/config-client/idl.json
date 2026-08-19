@@ -101,6 +101,70 @@
       "args": []
     },
     {
+      "name": "create_asset_stats",
+      "discriminator": [
+        149,
+        81,
+        159,
+        235,
+        145,
+        229,
+        114,
+        102
+      ],
+      "accounts": [
+        {
+          "name": "asset_stats",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "mint",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "increment_stats",
       "discriminator": [
         145,
@@ -158,6 +222,100 @@
       ]
     },
     {
+      "name": "increment_stats_v2",
+      "discriminator": [
+        59,
+        252,
+        76,
+        120,
+        173,
+        113,
+        197,
+        249
+      ],
+      "accounts": [
+        {
+          "name": "stats",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  101,
+                  116,
+                  119,
+                  111,
+                  114,
+                  107,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  115
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_stats",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "mint",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "initialize",
       "discriminator": [
         175,
@@ -193,6 +351,98 @@
           "name": "payer",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "program_data",
+          "docs": [
+            "Loader-v3 `ProgramData` for this program, used to require that the",
+            "caller is the upgrade authority.",
+            "",
+            "Without it `initialize` is permissionless first-come: the config PDA",
+            "uses `init`, so anyone who lands a call between deploy finalization and",
+            "ours seizes `admin`/`treasury` permanently, and the only recovery is a",
+            "migration upgrade. `seeds::program` pins the account to THIS program id",
+            "and `Account<ProgramData>` enforces the loader as its owner, so another",
+            "program's `ProgramData` cannot satisfy the check."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  161,
+                  68,
+                  64,
+                  252,
+                  198,
+                  246,
+                  174,
+                  212,
+                  239,
+                  198,
+                  11,
+                  123,
+                  42,
+                  160,
+                  40,
+                  128,
+                  152,
+                  70,
+                  172,
+                  145,
+                  138,
+                  43,
+                  242,
+                  169,
+                  115,
+                  223,
+                  161,
+                  110,
+                  202,
+                  102,
+                  149,
+                  247
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                2,
+                168,
+                246,
+                145,
+                78,
+                136,
+                161,
+                176,
+                226,
+                16,
+                21,
+                62,
+                247,
+                99,
+                174,
+                43,
+                0,
+                194,
+                185,
+                61,
+                22,
+                193,
+                36,
+                210,
+                192,
+                83,
+                122,
+                16,
+                4,
+                128,
+                0,
+                0
+              ]
+            }
+          }
         },
         {
           "name": "system_program",
@@ -460,6 +710,19 @@
   ],
   "accounts": [
     {
+      "name": "AssetStats",
+      "discriminator": [
+        44,
+        24,
+        137,
+        137,
+        250,
+        226,
+        23,
+        118
+      ]
+    },
+    {
       "name": "Config",
       "discriminator": [
         155,
@@ -527,6 +790,19 @@
       ]
     },
     {
+      "name": "AssetStatsCreated",
+      "discriminator": [
+        98,
+        153,
+        79,
+        242,
+        134,
+        202,
+        72,
+        114
+      ]
+    },
+    {
       "name": "ConfigInitialized",
       "discriminator": [
         181,
@@ -563,6 +839,19 @@
         251,
         224,
         31
+      ]
+    },
+    {
+      "name": "StatsIncrementedV2",
+      "discriminator": [
+        33,
+        165,
+        171,
+        182,
+        152,
+        136,
+        203,
+        245
       ]
     },
     {
@@ -696,6 +985,84 @@
       }
     },
     {
+      "name": "AssetStats",
+      "docs": [
+        "Per-mint payment counter and volume aggregator (native SOL uses",
+        "`NATIVE_ASSET_SENTINEL` as the mint key).",
+        "",
+        "Same best-effort trust model as `NetworkStats`: incremented by clients",
+        "alongside each payment via `increment_stats_v2`, unauthenticated, so totals",
+        "can be inflated cheaply. Unlike the fixed `NetworkStats` volume slots, a",
+        "PDA per mint means new payment assets are counted automatically - no",
+        "program upgrade per token. `increment_stats_v2` self-registers an unknown",
+        "mint on first use (`init_if_needed`, payer funds rent); `create_asset_stats`",
+        "pre-creates a PDA so ordinary payers never hit the rent path. A spammer can",
+        "create PDAs for arbitrary fake mints, but pays their rent and readers only",
+        "query known mints."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "mint",
+            "docs": [
+              "Token mint, or `NATIVE_ASSET_SENTINEL` for native SOL."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "job_count",
+            "type": "u64"
+          },
+          {
+            "name": "volume",
+            "type": "u128"
+          },
+          {
+            "name": "last_updated",
+            "type": "i64"
+          },
+          {
+            "name": "_reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "AssetStatsCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "payer",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
       "name": "Config",
       "type": {
         "kind": "struct",
@@ -728,6 +1095,13 @@
           },
           {
             "name": "paused",
+            "docs": [
+              "Reserved kill-switch flag, inert today: `initialize` writes `false` and",
+              "no instruction can flip it, so a reader must never take `false` here as",
+              "evidence that the protocol is live. Wiring it up needs an admin-gated",
+              "`set_paused` plus client-side enforcement - the payment flow runs",
+              "outside this program, so the flag can only ever be advisory."
+            ],
             "type": "bool"
           },
           {
@@ -860,6 +1234,41 @@
           {
             "name": "is_native",
             "type": "bool"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StatsIncrementedV2",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "asset_job_count",
+            "docs": [
+              "Jobs paid in THIS mint (the per-mint `AssetStats` counter)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "network_job_count",
+            "docs": [
+              "Jobs paid across all assets (the global `NetworkStats` counter, which",
+              "stays continuous across legacy and v2 clients)."
+            ],
+            "type": "u64"
           },
           {
             "name": "timestamp",

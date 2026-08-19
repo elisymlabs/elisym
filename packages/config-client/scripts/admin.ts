@@ -39,7 +39,10 @@ import {
 } from '@solana/kit';
 import {
   ELISYM_CONFIG_PROGRAM_ADDRESS,
+  NATIVE_ASSET_SENTINEL,
+  deriveAssetStatsAddress,
   fetchConfig,
+  fetchMaybeAssetStats,
   fetchMaybeNetworkStats,
   getAcceptAdminInstructionAsync,
   getCancelPendingAdminInstructionAsync,
@@ -135,6 +138,46 @@ async function show(): Promise<void> {
       'Stats PDA:     ',
       statsPda,
       '(MISSING - run initialize-stats.ts, payments will fail until it exists)',
+    );
+  }
+
+  // Per-mint AssetStats PDAs for the network's assets (SOLANA_NETWORK env,
+  // default devnet - explicit by design, never inferred from the RPC URL).
+  // A missing PDA on a program that HAS increment_stats_v2 only costs the
+  // first payer ~0.0019 SOL of rent (the instruction self-registers). On a
+  // program that predates the instruction it means every payment fails, and
+  // the two look identical from here - hence the message below points at the
+  // release gate rather than just at the rent.
+  const networkEnv = process.env.SOLANA_NETWORK ?? 'devnet';
+  if (networkEnv !== 'devnet' && networkEnv !== 'mainnet') {
+    console.error(`SOLANA_NETWORK must be 'devnet' or 'mainnet'; got "${networkEnv}".`);
+    process.exit(1);
+  }
+  const network = networkEnv;
+  const assetTargets: Array<{ label: string; mint: string }> = [
+    { label: 'native (sentinel)', mint: NATIVE_ASSET_SENTINEL },
+    {
+      label: `USDC ${network}`,
+      mint:
+        network === 'mainnet'
+          ? 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+          : '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    },
+    ...(network === 'mainnet'
+      ? [{ label: 'LSM mainnet', mint: '86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump' }]
+      : []),
+  ];
+  for (const target of assetTargets) {
+    const assetStatsPda = await deriveAssetStatsAddress(PROGRAM_ID, address(target.mint));
+    const assetAccount = await fetchMaybeAssetStats(rpc, assetStatsPda);
+    console.log(
+      `AssetStats ${target.label}:`,
+      assetStatsPda,
+      assetAccount.exists
+        ? `(exists, volume ${assetAccount.data.volume})`
+        : '(MISSING - run create-asset-stats.ts; if that aborts with ' +
+            'InstructionFallbackNotFound the program predates increment_stats_v2 and the ' +
+            'SDK must NOT be released against it)',
     );
   }
 }

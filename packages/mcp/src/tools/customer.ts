@@ -7,6 +7,7 @@ import {
   deriveOwnerDelegationAta,
   encodeJobPayload,
   estimateNetworkBaseline,
+  splAssetsForNetwork,
   formatAssetAmount,
   formatNetworkBaseline,
   getDelegation,
@@ -627,6 +628,7 @@ async function gasHintForCardAsset(agent: AgentInstance, asset: Asset): Promise<
     const rpc = createSolanaRpc(rpcUrlFor(agent.network));
     const baseline = await estimateNetworkBaseline(rpc, agent.network, {
       includeAtaRent: asset.mint !== undefined,
+      ataTokenProgram: asset.tokenProgram,
     });
     return `\n${formatNetworkBaseline(baseline)}`;
   } catch {
@@ -952,6 +954,25 @@ export function makePaymentFeedbackHandler(opts: {
       asset = resolveAssetFromPaymentRequest(parsedRequest as PaymentRequestData);
     } catch (e) {
       opts.rejectPayment(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
+    // Per-network membership guard: a registry-known SPL asset whose mint does
+    // not exist on this agent's network (LSM on devnet; the other network's
+    // USDC) is unpayable here. A hostile devnet-tagged card can claim such an
+    // asset and pass both the network gate and the expected-asset equality -
+    // refuse before signing instead of failing in on-chain simulation.
+    if (
+      asset.mint !== undefined &&
+      !splAssetsForNetwork(opts.agent.network).some(
+        (networkAsset) => networkAsset.mint === asset.mint,
+      )
+    ) {
+      opts.rejectPayment(
+        new Error(
+          `Asset ${asset.symbol} (mint ${asset.mint}) is not available on ` +
+            `${opts.agent.network}. Refusing to proceed.`,
+        ),
+      );
       return;
     }
     // Asset bait-and-switch guard: the card advertised a price in one asset, so a

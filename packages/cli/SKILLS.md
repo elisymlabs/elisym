@@ -29,8 +29,10 @@ The fence delimiters (`---`) are required. Frontmatter is parsed as YAML.
 
 | Field   | Type   | Default | Notes                                                                                                                                                                                                   |
 | ------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `token` | string | `sol`   | Lowercase token id. `sol` and `usdc` are recognised. USDC is the canonical paid-skill asset for examples. A bare `token: usdc` resolves to the USDC mint of the agent's network.                        |
+| `token` | string | `sol`   | Lowercase token id. `sol`, `usdc`, and `lsm` are recognised. USDC is the canonical paid-skill asset for examples. A bare `token: usdc` resolves to the USDC mint of the agent's network.                |
 | `mint`  | string | -       | Optional explicit SPL mint (base58). Must be canonical for the agent's network - a wrong-network mint (e.g. a devnet mint in a skill copied to a mainnet agent) fails loud at load. Prefer omitting it. |
+
+`token: lsm` prices the skill in the $LSM token - **mainnet only** (Token-2022, 6 decimals; e.g. `price: 25` charges 25 LSM per job). On a devnet agent the skill still loads but FALLS BACK to default SOL pricing at the same numeric price, with a loud load-time warning: `price: 25` then charges 25 devnet SOL. One edge: a price above ~9,007,199 (valid for LSM's 6 decimals) overflows SOL's 9 decimals on devnet - that skill is skipped with a warning, and the agent starts with the skills that did load (if it was the only one, startup fails with `No skills found`). One skill carries exactly one `(token, price)` pair - to offer the same service in a second asset, publish a second skill under a distinct `name`. Delegation (`delegation:` block) and `mode: x402` remain USDC-only.
 
 ## Execution mode
 

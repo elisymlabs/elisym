@@ -59,6 +59,46 @@ afterEach(() => {
   vi.mocked(fetchProtocolConfig).mockReset();
 });
 
+describe('send_payment per-network asset membership (M4)', () => {
+  const tool = findTool('send_payment');
+  const LSM_MINT = '86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump';
+  const MAINNET_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  it('devnet agent refuses an LSM request even when the caller expects lsm', async () => {
+    vi.mocked(fetchProtocolConfig).mockResolvedValue({ feeBps: 0, treasury: TREASURY });
+    const result = await tool.handler(
+      ctxWith(stubAgent('devnet')),
+      tool.schema.parse({
+        payment_request: requestJson({
+          network: 'devnet',
+          asset: { chain: 'solana', token: 'lsm', mint: LSM_MINT, decimals: 6 },
+        }),
+        expected_solana_recipient: RECIPIENT,
+        expected_asset: 'lsm',
+      }),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/not available on devnet/);
+  });
+
+  it('devnet agent refuses the wrong-network USDC variant (mainnet mint, devnet-tagged request)', async () => {
+    vi.mocked(fetchProtocolConfig).mockResolvedValue({ feeBps: 0, treasury: TREASURY });
+    const result = await tool.handler(
+      ctxWith(stubAgent('devnet')),
+      tool.schema.parse({
+        payment_request: requestJson({
+          network: 'devnet',
+          asset: { chain: 'solana', token: 'usdc', mint: MAINNET_USDC_MINT, decimals: 6 },
+        }),
+        expected_solana_recipient: RECIPIENT,
+        expected_asset: 'usdc',
+      }),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/not available on devnet/);
+  });
+});
+
 describe('send_payment cross-network rejection', () => {
   const tool = findTool('send_payment');
 

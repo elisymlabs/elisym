@@ -3,11 +3,15 @@ import {
   NATIVE_SOL,
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
+  LSM_SOLANA_MAINNET,
+  TOKEN_2022_PROGRAM_ADDRESS_STR,
   KNOWN_ASSETS,
   assetKey,
   assetByKey,
   resolveKnownAsset,
   resolveUsdcAsset,
+  resolveLsmAsset,
+  splAssetsForNetwork,
   resolveAssetFromPaymentRequest,
   parseAssetAmount,
   formatAssetAmount,
@@ -44,13 +48,44 @@ describe('resolveKnownAsset / assetByKey', () => {
     expect(assetByKey('nope:nope')).toBeUndefined();
   });
 
-  it('KNOWN_ASSETS exposes SOL and USDC (devnet + mainnet)', () => {
-    expect(KNOWN_ASSETS).toHaveLength(3);
+  it('KNOWN_ASSETS exposes SOL, USDC (devnet + mainnet), and LSM (mainnet)', () => {
+    expect(KNOWN_ASSETS).toHaveLength(4);
     expect(KNOWN_ASSETS[0]).toBe(NATIVE_SOL);
     expect(KNOWN_ASSETS[1]).toBe(USDC_SOLANA_DEVNET);
     expect(KNOWN_ASSETS[1]?.mint).toBe('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
     expect(KNOWN_ASSETS[2]).toBe(USDC_SOLANA_MAINNET);
     expect(KNOWN_ASSETS[2]?.mint).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+    expect(KNOWN_ASSETS[3]).toBe(LSM_SOLANA_MAINNET);
+    expect(KNOWN_ASSETS[3]?.mint).toBe('86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump');
+    expect(KNOWN_ASSETS[3]?.decimals).toBe(6);
+    expect(KNOWN_ASSETS[3]?.tokenProgram).toBe(TOKEN_2022_PROGRAM_ADDRESS_STR);
+    // Classic-program assets never declare a tokenProgram.
+    expect(KNOWN_ASSETS[1]?.tokenProgram).toBeUndefined();
+    expect(KNOWN_ASSETS[2]?.tokenProgram).toBeUndefined();
+  });
+
+  it('resolves LSM by (chain, token, mint) and from a payment request', () => {
+    const lsmMint = '86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump';
+    const resolved = resolveKnownAsset('solana', 'lsm', lsmMint);
+    expect(resolved?.symbol).toBe('LSM');
+    expect(resolved?.tokenProgram).toBe(TOKEN_2022_PROGRAM_ADDRESS_STR);
+    const fromRequest = resolveAssetFromPaymentRequest({
+      asset: { chain: 'solana', token: 'lsm', mint: lsmMint },
+    });
+    expect(fromRequest.token).toBe('lsm');
+    expect(fromRequest.decimals).toBe(6);
+  });
+});
+
+describe('resolveLsmAsset / splAssetsForNetwork', () => {
+  it('resolves LSM on mainnet only', () => {
+    expect(resolveLsmAsset('mainnet')).toBe(LSM_SOLANA_MAINNET);
+    expect(resolveLsmAsset('devnet')).toBeUndefined();
+  });
+
+  it('lists per-network SPL assets: devnet = USDC, mainnet = USDC + LSM', () => {
+    expect(splAssetsForNetwork('devnet')).toEqual([USDC_SOLANA_DEVNET]);
+    expect(splAssetsForNetwork('mainnet')).toEqual([USDC_SOLANA_MAINNET, LSM_SOLANA_MAINNET]);
   });
 });
 
@@ -156,5 +191,33 @@ describe('formatAssetAmount', () => {
     const formatted = formatAssetAmount(NATIVE_SOL, raw);
     expect(formatted).toBe('0.5 SOL');
     expect(parseAssetAmount(NATIVE_SOL, '0.5')).toBe(raw);
+  });
+});
+
+describe('ops scripts cover every known asset', () => {
+  // The AssetStats design counts new assets without a program upgrade, but the
+  // two ops scripts that pre-create and audit those PDAs carry their own mint
+  // literals (config-client is dependency-light and cannot import the SDK -
+  // the SDK depends on it). Without this check, adding an asset to
+  // KNOWN_ASSETS would silently leave its PDA uncreated, and the first real
+  // payer in that asset would fund the rent.
+  const SCRIPTS = [
+    'packages/config-client/scripts/create-asset-stats.ts',
+    'packages/config-client/scripts/admin.ts',
+  ];
+
+  it.each(SCRIPTS)('%s lists every KNOWN_ASSETS mint', async (scriptPath) => {
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(new URL(`../../../${scriptPath}`, import.meta.url), 'utf8');
+    for (const asset of KNOWN_ASSETS) {
+      if (!asset.mint) {
+        // Native SOL is covered by the sentinel PDA, referenced by name.
+        expect(source).toContain('NATIVE_ASSET_SENTINEL');
+        continue;
+      }
+      expect(source, `${asset.symbol} (${asset.mint}) missing from ${scriptPath}`).toContain(
+        asset.mint,
+      );
+    }
   });
 });

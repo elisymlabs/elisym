@@ -20,6 +20,11 @@ export interface ProtocolConfig {
   treasury: Address;
   admin: Address;
   pendingAdmin: Address | null;
+  /**
+   * On-chain kill-switch flag - inert today. The program has no instruction
+   * that can set it, so this always reads `false`; do not gate any flow on it
+   * until an admin-gated `set_paused` lands on-chain.
+   */
   paused: boolean;
   version: number;
   source: 'onchain' | 'cache';

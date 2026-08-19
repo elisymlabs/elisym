@@ -1,6 +1,6 @@
 import { type Address, type Rpc, type SolanaRpcApi, getAddressDecoder } from '@solana/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearQuickVerifyCache, verifyJobPaymentQuick } from '../src';
+import { LSM_SOLANA_MAINNET, clearQuickVerifyCache, verifyJobPaymentQuick } from '../src';
 
 const RANDOM_ADDRESS_BYTES = 32;
 const ADDRESS_DECODER = getAddressDecoder();
@@ -208,6 +208,34 @@ describe('verifyJobPaymentQuick', () => {
     }));
 
     const result = await verifyJobPaymentQuick(rpc, 'spl-sig', recipient, 'devnet');
+    expect(result.receivedFunds).toBe(true);
+  });
+
+  it('verifies a Token-2022 recipient (LSM) - balance matching is owner+mint only', async () => {
+    const recipient = makeAddress();
+    const payer = makeAddress();
+    const recipientAta = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer, recipientAta],
+            pre: [100_000_000, 0],
+            post: [100_000_000, 0],
+            preTokenBalances: [],
+            postTokenBalances: [
+              {
+                accountIndex: 1,
+                mint: LSM_SOLANA_MAINNET.mint ?? '',
+                owner: recipient as string,
+                uiTokenAmount: { amount: '12500000' },
+              },
+            ],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'lsm-sig', recipient, 'mainnet');
     expect(result.receivedFunds).toBe(true);
   });
 

@@ -75,7 +75,7 @@ Client sends a task (NIP-90)
         |
 Your agent receives the task
         |
-Sends a payment request (Solana, SOL or USDC)
+Sends a payment request (Solana - SOL, USDC, or LSM)
         |
 Client pays -> agent sees the transaction
         |

@@ -1,7 +1,9 @@
 import {
+  NATIVE_ASSET_SENTINEL,
+  deriveAssetStatsAddress,
   deriveEventAuthorityAddress,
   deriveNetworkStatsAddress,
-  getIncrementStatsInstruction,
+  getIncrementStatsV2Instruction,
 } from '@elisym/config-client';
 import { getAddMemoInstruction } from '@solana-program/memo';
 import { getTransferSolInstruction } from '@solana-program/system';
@@ -759,7 +761,7 @@ function waitMs(ms: number): Promise<void> {
  * read-only, non-signer account so providers can detect the payment via
  * `getSignaturesForAddress(reference)`.
  *
- * For SPL assets (USDC on Solana), emits:
+ * For SPL assets (USDC, LSM on Solana), emits:
  *   1. `CreateAssociatedTokenIdempotent` for the recipient ATA (funded by payer);
  *   2. `CreateAssociatedTokenIdempotent` for the treasury ATA if a protocol fee applies;
  *   3. `TransferChecked` from payer ATA to recipient ATA, with `reference` as an
@@ -796,15 +798,20 @@ export async function buildPaymentInstructions(
       ? paymentRequest.amount - feeAmount
       : paymentRequest.amount;
 
+  const asset = resolveAssetFromPaymentRequest(paymentRequest);
+  const statsMint = asset.mint ? address(asset.mint) : NATIVE_ASSET_SENTINEL;
   const statsPda = await deriveNetworkStatsAddress(programId);
+  const assetStatsPda = await deriveAssetStatsAddress(programId, statsMint);
   const eventAuthority = await deriveEventAuthorityAddress(programId);
-  const incrementStatsIx = getIncrementStatsInstruction(
+  const incrementStatsIx = getIncrementStatsV2Instruction(
     {
       stats: statsPda,
+      assetStats: assetStatsPda,
+      payer: payerSigner,
       eventAuthority,
       program: programId,
       amount: BigInt(paymentRequest.amount),
-      isNative: !resolveAssetFromPaymentRequest(paymentRequest).mint,
+      mint: statsMint,
     },
     { programAddress: programId },
   );
@@ -820,7 +827,6 @@ export async function buildPaymentInstructions(
     : null;
 
   // Native SOL path - unchanged from the pre-USDC behaviour.
-  const asset = resolveAssetFromPaymentRequest(paymentRequest);
   if (!asset.mint) {
     const providerTransferIx = getTransferSolInstruction({
       source: payerSigner,
@@ -854,17 +860,19 @@ export async function buildPaymentInstructions(
     return instructions;
   }
 
-  // SPL path.
+  // SPL path. The owner token program comes from the asset registry: classic
+  // SPL Token unless the asset declares a Token-2022 mint (LSM).
   const mint = address(asset.mint);
+  const tokenProgram = asset.tokenProgram ? address(asset.tokenProgram) : TOKEN_PROGRAM_ADDRESS;
   const payerAddress = payerSigner.address;
   const [payerAta] = await findAssociatedTokenPda({
     owner: payerAddress,
-    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    tokenProgram,
     mint,
   });
   const [recipientAta] = await findAssociatedTokenPda({
     owner: recipient,
-    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    tokenProgram,
     mint,
   });
 
@@ -879,6 +887,7 @@ export async function buildPaymentInstructions(
         ata: recipientAta,
         owner: recipient,
         mint,
+        tokenProgram,
       },
       { programAddress: ASSOCIATED_TOKEN_PROGRAM_ADDRESS },
     ),
@@ -889,7 +898,7 @@ export async function buildPaymentInstructions(
     const treasuryOwner = address(paymentRequest.fee_address);
     [treasuryAta] = await findAssociatedTokenPda({
       owner: treasuryOwner,
-      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      tokenProgram,
       mint,
     });
     instructions.push(
@@ -899,20 +908,24 @@ export async function buildPaymentInstructions(
           ata: treasuryAta,
           owner: treasuryOwner,
           mint,
+          tokenProgram,
         },
         { programAddress: ASSOCIATED_TOKEN_PROGRAM_ADDRESS },
       ),
     );
   }
 
-  const providerTransferIx = getTransferCheckedInstruction({
-    source: payerAta,
-    mint,
-    destination: recipientAta,
-    authority: payerSigner,
-    amount: BigInt(providerAmount),
-    decimals: asset.decimals,
-  });
+  const providerTransferIx = getTransferCheckedInstruction(
+    {
+      source: payerAta,
+      mint,
+      destination: recipientAta,
+      authority: payerSigner,
+      amount: BigInt(providerAmount),
+      decimals: asset.decimals,
+    },
+    { programAddress: tokenProgram },
+  );
   const providerTransferIxWithMarkers = {
     ...providerTransferIx,
     accounts: [
@@ -925,14 +938,17 @@ export async function buildPaymentInstructions(
 
   if (treasuryAta && paymentRequest.fee_address && feeAmount > 0) {
     instructions.push(
-      getTransferCheckedInstruction({
-        source: payerAta,
-        mint,
-        destination: treasuryAta,
-        authority: payerSigner,
-        amount: BigInt(feeAmount),
-        decimals: asset.decimals,
-      }),
+      getTransferCheckedInstruction(
+        {
+          source: payerAta,
+          mint,
+          destination: treasuryAta,
+          authority: payerSigner,
+          amount: BigInt(feeAmount),
+          decimals: asset.decimals,
+        },
+        { programAddress: tokenProgram },
+      ),
     );
   }
 

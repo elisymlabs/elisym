@@ -70,8 +70,10 @@ From `LIMITS` and `DEFAULTS`. See [Verified identities](/providers/verified-iden
 | `ELISYM_PROTOCOL_TAG`         | `ELiZksgwDt41LaeuPDLkUfWgFXhGgVayTMP7L5nTSEL8` |
 | USDC devnet mint              | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` |
 | USDC mainnet mint             | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` |
+| LSM mainnet mint (Token-2022) | `86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump` |
+| `TOKEN_2022_PROGRAM_ADDRESS_STR` | `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` |
 
-The program is deliberately deployed at the **same address** on both clusters (`getProtocolProgramId(network)` resolves it), so the program id alone never identifies a network - see [Networks](/reference/networks). The USDC mints (both 6 decimals) resolve per network via `resolveUsdcAsset(network)`.
+The program is deliberately deployed at the **same address** on both clusters (`getProtocolProgramId(network)` resolves it), so the program id alone never identifies a network - see [Networks](/reference/networks). The USDC mints (both 6 decimals) resolve per network via `resolveUsdcAsset(network)`; LSM (also 6 decimals, Token-2022) resolves via `resolveLsmAsset(network)` - mainnet only, `undefined` on devnet - and `splAssetsForNetwork(network)` lists the SPL assets a network supports.
 
 The protocol fee rate and treasury address are **not** constants - they live on-chain in the `elisym-config` program and are read via `getProtocolConfig`. The `ELISYM_PROTOCOL_TAG` is a read-only marker that lets anyone audit elisym payment activity on-chain.
 

@@ -123,9 +123,9 @@ export interface WithdrawalNonce {
   /** Raw amount string as provided by the user (e.g. "0.5" or "all"). */
   amountRaw: string;
   /** Asset to withdraw. Defaults to 'sol' for back-compat with pre-USDC nonces. */
-  token?: 'sol' | 'usdc';
+  token?: 'sol' | 'usdc' | 'lsm';
   /**
-   * Amount resolved at preview time (SOL: lamports; USDC: 1e-6 USDC). Authoritative
+   * Amount resolved at preview time (SOL: lamports; USDC/LSM: 1e-6). Authoritative
    * for execution at confirm time: re-parsing `amountRaw` (especially "all") could
    * move a different amount if the balance shifted between preview and confirm. NOT
    * used for nonce match verification - that is `amountRaw`.

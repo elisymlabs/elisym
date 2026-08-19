@@ -1,15 +1,24 @@
 import {
+  type AssetStatsArgs,
+  NATIVE_ASSET_SENTINEL,
+  deriveAssetStatsAddress,
   deriveNetworkStatsAddress,
+  getAssetStatsEncoder,
   getNetworkStatsEncoder,
   type NetworkStatsArgs,
 } from '@elisym/config-client';
 import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
+import { address } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ELISYM_PROTOCOL_TAG,
+  LSM_SOLANA_MAINNET,
+  NATIVE_SOL,
   PROTOCOL_PROGRAM_ID_DEVNET,
   USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
   aggregateNetworkStats,
+  assetKey,
   getNetworkStats,
 } from '../src';
 
@@ -106,6 +115,30 @@ describe('aggregateNetworkStats', () => {
     });
     const result = await aggregateNetworkStats(rpc);
     expect(result.volumeByAsset.native).toBe(200_000_000n);
+  });
+
+  it('excludes the AssetStats PDA rent deposit from native volume', async () => {
+    // The first native payment on a cluster self-registers the sentinel
+    // AssetStats PDA via increment_stats_v2, crediting it rent from the payer.
+    // That is money spent, but it is not payment volume.
+    const sentinelPda = await deriveAssetStatsAddress(
+      PROTOCOL_PROGRAM_ID_DEVNET,
+      NATIVE_ASSET_SENTINEL,
+    );
+    const rpc = makeRpc([{ signature: 'native-first', err: null }], {
+      'native-first': {
+        meta: {
+          err: null,
+          preBalances: [1_000_000_000n, 0n, 0n],
+          postBalances: [797_925_920n, 194_000_000n, 1_851_360n],
+        },
+        transaction: {
+          message: { accountKeys: ['payer', 'recipient', sentinelPda as string] },
+        },
+      },
+    });
+    const result = await aggregateNetworkStats(rpc);
+    expect(result.volumeByAsset.native).toBe(194_000_000n);
   });
 
   it('sums positive token-balance deltas per mint (SPL) and ignores native lamport deltas (ATA rent)', async () => {
@@ -229,7 +262,7 @@ describe('getNetworkStats', () => {
 
   it('returns null when the stats PDA is not initialized', async () => {
     const rpc = makeAccountInfoRpc(null);
-    const result = await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET);
+    const result = await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET, 'devnet');
     expect(result).toBeNull();
   });
 
@@ -247,16 +280,85 @@ describe('getNetworkStats', () => {
       owner: PROTOCOL_PROGRAM_ID_DEVNET,
     });
 
-    const result = await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET);
+    const result = await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET, 'devnet');
     expect(result).not.toBeNull();
     expect(result!.jobCount).toBe(42);
     expect(result!.volumeNative).toBe(5_000_000_000n);
     expect(result!.volumeUsdc).toBe(1_234_567n);
   });
 
+  it('merges legacy volume slots with per-mint AssetStats PDAs, keyed by network (no double count)', async () => {
+    const statsData = makeNetworkStatsBase64({
+      version: 1,
+      bump: 255,
+      jobCount: 10n,
+      volumeNative: 100n,
+      volumeUsdc: 200n,
+      lastUpdated: 1_700_000_000n,
+    });
+    const usdcDevnetMint = USDC_SOLANA_DEVNET.mint ?? '';
+    const usdcMainnetMint = USDC_SOLANA_MAINNET.mint ?? '';
+    const lsmMint = LSM_SOLANA_MAINNET.mint ?? '';
+    const makeAssetStatsBase64 = (mint: string, volume: bigint): string => {
+      const args: AssetStatsArgs = {
+        version: 1,
+        bump: 255,
+        mint: address(mint === 'sentinel' ? NATIVE_ASSET_SENTINEL : mint),
+        jobCount: 1n,
+        volume,
+        lastUpdated: 1_700_000_000n,
+        reserved: new Uint8Array(64),
+      };
+      return Buffer.from(getAssetStatsEncoder().encode(args)).toString('base64');
+    };
+    const makeMultiAccount = (data: string) => ({
+      data: [data, 'base64'],
+      owner: PROTOCOL_PROGRAM_ID_DEVNET,
+      lamports: 1_851_360n,
+      executable: false,
+      rentEpoch: 0n,
+      space: 138n,
+    });
+    const rpc = {
+      getAccountInfo: vi.fn(() => ({
+        send: () =>
+          Promise.resolve({
+            value: { data: [statsData, 'base64'], owner: PROTOCOL_PROGRAM_ID_DEVNET },
+          }),
+      })),
+      // KNOWN_ASSETS order: sol (sentinel), usdc devnet, usdc mainnet, lsm.
+      getMultipleAccounts: vi.fn(() => ({
+        send: () =>
+          Promise.resolve({
+            value: [
+              makeMultiAccount(makeAssetStatsBase64('sentinel', 11n)),
+              makeMultiAccount(makeAssetStatsBase64(usdcDevnetMint, 22n)),
+              makeMultiAccount(makeAssetStatsBase64(usdcMainnetMint, 44n)),
+              makeMultiAccount(makeAssetStatsBase64(lsmMint, 33n)),
+            ],
+          }),
+      })),
+    } as unknown as Rpc<SolanaRpcApi>;
+
+    // Queried as MAINNET: the legacy volume_usdc slot folds into the MAINNET
+    // USDC key - a devnet-keyed fold would silently drop mainnet v2 volume.
+    const result = await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET, 'mainnet');
+    expect(result).not.toBeNull();
+    expect(result!.volumeByAssetKey[assetKey(NATIVE_SOL)]).toBe(111n);
+    expect(result!.volumeByAssetKey[assetKey(USDC_SOLANA_MAINNET)]).toBe(244n);
+    expect(result!.volumeByAssetKey[assetKey(USDC_SOLANA_DEVNET)]).toBe(22n);
+    expect(result!.volumeByAssetKey[assetKey(LSM_SOLANA_MAINNET)]).toBe(33n);
+    expect(result!.volumeNative).toBe(111n);
+    expect(result!.volumeUsdc).toBe(244n);
+    // The batched read targets the canonical AssetStats PDAs.
+    const lsmPda = await deriveAssetStatsAddress(PROTOCOL_PROGRAM_ID_DEVNET, address(lsmMint));
+    const calls = (rpc.getMultipleAccounts as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0]?.[0]).toContain(lsmPda);
+  });
+
   it('queries the canonical NetworkStats PDA derived from the program id', async () => {
     const rpc = makeAccountInfoRpc(null);
-    await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET);
+    await getNetworkStats(rpc, PROTOCOL_PROGRAM_ID_DEVNET, 'devnet');
     const expectedPda: Address = await deriveNetworkStatsAddress(PROTOCOL_PROGRAM_ID_DEVNET);
     const calls = (rpc.getAccountInfo as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls[0]?.[0]).toBe(expectedPda);

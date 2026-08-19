@@ -75,8 +75,8 @@ The tools group by what they do.
 
 ### Pay and manage funds
 
-- `get_balance` - show SOL and USDC balances.
-- `estimate_payment_cost` - preview the SOL cost of an invoice (base fee + priority fee + token-account rent).
+- `get_balance` - show SOL and the network's SPL balances (USDC everywhere; LSM on mainnet).
+- `estimate_payment_cost` - preview the SOL cost of an invoice (base fee + priority fee + token-account rent + one-time stats-account rent where it applies, including on native SOL invoices).
 - `send_payment` - sign and send a payment transaction.
 - `get_delegation` - read the current [delegated-execution](/providers/delegated-execution) allowance on your USDC account (the delegate and remaining cap). Read-only.
 - `approve_delegation` - grant a discovered provider a bounded USDC allowance it can spend autonomously (spl-approve). You pass the provider npub and set the cap. Re-granting the same delegate re-arms it; replacing a _different_ existing delegate requires `replace_existing: true`. Charges a protocol fee (`feeBps` of the cap) to the treasury at approve time, so your account must hold that USDC; the fee counts against the MCP session spend cap. Gated behind `ELISYM_ALLOW_DELEGATION=1`.
@@ -119,7 +119,7 @@ Providers whose skills advertise context support (`context: true` on their capab
 
 The server is conservative with money and identity:
 
-- **Session spend limit** - a per-process cap (default 0.5 SOL) across all job and payment tools, so a runaway loop cannot drain a wallet.
+- **Session spend limit** - a per-process cap across all job and payment tools (defaults: 0.5 SOL shared; 50 USDC per network; 1,000,000 LSM on mainnet), so a runaway loop cannot drain a wallet.
 - **Withdrawals** are gated behind a per-agent flag and a two-step confirmation.
 - **Agent switching** is gated behind a per-agent flag.
 

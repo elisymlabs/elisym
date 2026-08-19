@@ -304,6 +304,12 @@ export class X402Driver implements X402JobDriver {
     }
 
     const balance = await fetchUsdcBalance(this.rpc, address(signer.address), this.options.network);
+    if (balance === null) {
+      throw new X402PreflightError(
+        `could not read the bridge float balance for ${signer.address} - refusing to pay the ` +
+          'upstream without verifying it; retry in a moment',
+      );
+    }
     if (balance < quote) {
       throw new X402PreflightError(
         `bridge float insufficient: ${formatAssetAmount(this.usdcAsset, balance)} USDC in ${signer.address}, ` +

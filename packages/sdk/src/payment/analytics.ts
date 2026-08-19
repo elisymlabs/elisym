@@ -1,7 +1,20 @@
-import { deriveNetworkStatsAddress, fetchMaybeNetworkStats } from '@elisym/config-client';
+import {
+  NATIVE_ASSET_SENTINEL,
+  deriveAssetStatsAddress,
+  deriveNetworkStatsAddress,
+  fetchAllMaybeAssetStats,
+  fetchMaybeNetworkStats,
+} from '@elisym/config-client';
 import type { Address, Rpc, Signature, SolanaRpcApi } from '@solana/kit';
 import { address } from '@solana/kit';
-import { DEFAULTS, ELISYM_PROTOCOL_TAG } from '../constants';
+import {
+  DEFAULTS,
+  ELISYM_PROTOCOL_TAG,
+  PROTOCOL_PROGRAM_ID_DEVNET,
+  PROTOCOL_PROGRAM_ID_MAINNET,
+} from '../constants';
+import type { Network } from '../types';
+import { KNOWN_ASSETS, NATIVE_SOL, assetKey, resolveUsdcAsset } from './assets';
 
 /**
  * Aggregated on-chain stats across the entire elisym network. Volume is
@@ -43,9 +56,10 @@ interface TokenBalanceEntry {
  * Implementation detail: for SPL txs we sum positive token-balance deltas per
  * mint (ignores ATA rent that would inflate native lamport deltas in the same
  * tx). For native SOL txs we sum positive lamport deltas across all non-payer
- * accounts - elisym native txs only emit provider + optional fee transfers,
- * so this equals gross volume. The `tx_fee` paid by the fee-payer never shows
- * up as a positive delta, so it is naturally excluded.
+ * accounts except the protocol's stats PDAs, whose one-time rent deposit is
+ * not volume - what remains is the provider + optional fee transfers, i.e.
+ * gross volume. The `tx_fee` paid by the fee-payer never shows up as a
+ * positive delta, so it is naturally excluded.
  */
 export async function aggregateNetworkStats(
   rpc: Rpc<SolanaRpcApi>,
@@ -65,6 +79,7 @@ export async function aggregateNetworkStats(
   }
 
   const volumeByAsset: Record<string, bigint> = {};
+  const bookkeepingAddresses = await protocolBookkeepingAddresses();
   let jobCount = 0;
 
   for (let start = 0; start < validSigs.length; start += concurrency) {
@@ -87,7 +102,7 @@ export async function aggregateNetworkStats(
         continue;
       }
       jobCount += 1;
-      accumulateTransfers(tx, volumeByAsset);
+      accumulateTransfers(tx, volumeByAsset, bookkeepingAddresses);
     }
   }
 
@@ -117,7 +132,29 @@ interface RawTransaction {
   };
 }
 
-function accumulateTransfers(tx: unknown, volumeByAsset: Record<string, bigint>): void {
+/**
+ * The protocol's own bookkeeping PDAs. `increment_stats_v2` creates the
+ * per-mint `AssetStats` PDA inside the payment transaction when it does not
+ * exist yet, so its rent-exemption deposit lands as a positive lamport delta
+ * on a non-payer account - real money leaving the payer, but not payment
+ * volume. Both cluster program ids are covered: they are the same address
+ * today and the constants exist so that can change.
+ */
+async function protocolBookkeepingAddresses(): Promise<Set<string>> {
+  const programIds = [...new Set([PROTOCOL_PROGRAM_ID_DEVNET, PROTOCOL_PROGRAM_ID_MAINNET])];
+  const addresses = new Set<string>();
+  for (const programId of programIds) {
+    addresses.add(await deriveNetworkStatsAddress(programId));
+    addresses.add(await deriveAssetStatsAddress(programId, NATIVE_ASSET_SENTINEL));
+  }
+  return addresses;
+}
+
+function accumulateTransfers(
+  tx: unknown,
+  volumeByAsset: Record<string, bigint>,
+  bookkeepingAddresses: ReadonlySet<string>,
+): void {
   const raw = tx as RawTransaction;
   const meta = raw.meta;
   if (!meta) {
@@ -133,7 +170,13 @@ function accumulateTransfers(tx: unknown, volumeByAsset: Record<string, bigint>)
     return;
   }
 
-  accumulateNativeDeltas(meta.preBalances, meta.postBalances, volumeByAsset);
+  accumulateNativeDeltas(
+    meta.preBalances,
+    meta.postBalances,
+    raw.transaction.message.accountKeys,
+    bookkeepingAddresses,
+    volumeByAsset,
+  );
 }
 
 function accumulateSplDeltas(
@@ -155,11 +198,19 @@ function accumulateSplDeltas(
 function accumulateNativeDeltas(
   pre: readonly bigint[],
   post: readonly bigint[],
+  accountKeys: readonly string[],
+  bookkeepingAddresses: ReadonlySet<string>,
   volumeByAsset: Record<string, bigint>,
 ): void {
   // accountKeys[0] is the fee payer; its negative delta covers gross + tx_fee.
-  // Skip it and sum positive deltas of every other account - equals gross.
+  // Skip it and sum positive deltas of every other account - equals gross,
+  // except for the protocol's own stats PDAs, whose one-time rent deposit is
+  // not volume.
   for (let i = 1; i < post.length; i++) {
+    const accountKey = accountKeys[i];
+    if (accountKey !== undefined && bookkeepingAddresses.has(accountKey)) {
+      continue;
+    }
     const preValue = pre[i] ?? 0n;
     const postValue = post[i] ?? 0n;
     const delta = BigInt(postValue) - BigInt(preValue);
@@ -189,22 +240,82 @@ function accumulateNativeDeltas(
  */
 export interface OnchainNetworkStats {
   jobCount: number;
+  /** Total SOL volume: legacy `volume_native` slot + the sentinel `AssetStats` PDA. */
   volumeNative: bigint;
+  /**
+   * Total USDC volume for the queried network: the legacy `volume_usdc` slot
+   * + the network's canonical USDC `AssetStats` PDA.
+   */
   volumeUsdc: bigint;
+  /**
+   * Per-asset volumes for every `KNOWN_ASSETS` member, keyed by `assetKey`.
+   * SOL and the network's USDC merge their legacy fixed slots (still written
+   * by deployed old clients) with the per-mint PDAs (written by
+   * `increment_stats_v2`); each payment carries exactly one of the two
+   * instructions, so the sum never double-counts. Other assets read their
+   * PDA alone.
+   */
+  volumeByAssetKey: Record<string, bigint>;
 }
 
 export async function getNetworkStats(
   rpc: Rpc<SolanaRpcApi>,
   programId: Address,
+  network: Network,
 ): Promise<OnchainNetworkStats | null> {
   const statsPda = await deriveNetworkStatsAddress(programId);
   const account = await fetchMaybeNetworkStats(rpc, statsPda);
   if (!account.exists) {
     return null;
   }
+
+  const targets = await Promise.all(
+    KNOWN_ASSETS.map(async (asset) => ({
+      key: assetKey(asset),
+      pda: await deriveAssetStatsAddress(
+        programId,
+        asset.mint ? address(asset.mint) : NATIVE_ASSET_SENTINEL,
+      ),
+    })),
+  );
+
+  // Seeded up front so every known asset is present as 0n no matter how the
+  // batch read below turns out - a short RPC response must not leave an asset
+  // key absent on the success path while the catch path fills it in.
+  const volumeByAssetKey: Record<string, bigint> = {};
+  for (const target of targets) {
+    volumeByAssetKey[target.key] = 0n;
+  }
+  try {
+    const assetAccounts = await fetchAllMaybeAssetStats(
+      rpc,
+      targets.map((target) => target.pda),
+    );
+    for (const [index, assetAccount] of assetAccounts.entries()) {
+      const target = targets[index];
+      if (target) {
+        volumeByAssetKey[target.key] = assetAccount.exists ? assetAccount.data.volume : 0n;
+      }
+    }
+  } catch {
+    // Per-mint PDAs unreadable (RPC hiccup or pre-upgrade program): keep the
+    // seeded zeros and fall back to the legacy slots alone rather than failing
+    // the whole read.
+  }
+
+  // The legacy fixed slots keep accruing from deployed old clients. The
+  // `volume_usdc` slot belongs to the QUERIED network's canonical USDC -
+  // folding it into a hardcoded mint key would silently drop the other
+  // network's v2 volume from the merged view.
+  const solKey = assetKey(NATIVE_SOL);
+  const usdcKey = assetKey(resolveUsdcAsset(network));
+  volumeByAssetKey[solKey] = (volumeByAssetKey[solKey] ?? 0n) + account.data.volumeNative;
+  volumeByAssetKey[usdcKey] = (volumeByAssetKey[usdcKey] ?? 0n) + account.data.volumeUsdc;
+
   return {
     jobCount: Number(account.data.jobCount),
-    volumeNative: account.data.volumeNative,
-    volumeUsdc: account.data.volumeUsdc,
+    volumeNative: volumeByAssetKey[solKey] ?? 0n,
+    volumeUsdc: volumeByAssetKey[usdcKey] ?? 0n,
+    volumeByAssetKey,
   };
 }

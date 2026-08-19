@@ -50,6 +50,7 @@ export type InitializeInstruction<
   TProgram extends string = typeof ELISYM_CONFIG_PROGRAM_ADDRESS,
   TAccountConfig extends string | AccountMeta<string> = string,
   TAccountPayer extends string | AccountMeta<string> = string,
+  TAccountProgramData extends string | AccountMeta<string> = string,
   TAccountSystemProgram extends string | AccountMeta<string> =
     '11111111111111111111111111111111',
   TAccountEventAuthority extends string | AccountMeta<string> = string,
@@ -66,6 +67,9 @@ export type InitializeInstruction<
         ? WritableSignerAccount<TAccountPayer> &
             AccountSignerMeta<TAccountPayer>
         : TAccountPayer,
+      TAccountProgramData extends string
+        ? ReadonlyAccount<TAccountProgramData>
+        : TAccountProgramData,
       TAccountSystemProgram extends string
         ? ReadonlyAccount<TAccountSystemProgram>
         : TAccountSystemProgram,
@@ -126,12 +130,25 @@ export function getInitializeInstructionDataCodec(): FixedSizeCodec<
 export type InitializeAsyncInput<
   TAccountConfig extends string = string,
   TAccountPayer extends string = string,
+  TAccountProgramData extends string = string,
   TAccountSystemProgram extends string = string,
   TAccountEventAuthority extends string = string,
   TAccountProgram extends string = string,
 > = {
   config?: Address<TAccountConfig>;
   payer: TransactionSigner<TAccountPayer>;
+  /**
+   * Loader-v3 `ProgramData` for this program, used to require that the
+   * caller is the upgrade authority.
+   *
+   * Without it `initialize` is permissionless first-come: the config PDA
+   * uses `init`, so anyone who lands a call between deploy finalization and
+   * ours seizes `admin`/`treasury` permanently, and the only recovery is a
+   * migration upgrade. `seeds::program` pins the account to THIS program id
+   * and `Account<ProgramData>` enforces the loader as its owner, so another
+   * program's `ProgramData` cannot satisfy the check.
+   */
+  programData?: Address<TAccountProgramData>;
   systemProgram?: Address<TAccountSystemProgram>;
   eventAuthority: Address<TAccountEventAuthority>;
   program: Address<TAccountProgram>;
@@ -143,6 +160,7 @@ export type InitializeAsyncInput<
 export async function getInitializeInstructionAsync<
   TAccountConfig extends string,
   TAccountPayer extends string,
+  TAccountProgramData extends string,
   TAccountSystemProgram extends string,
   TAccountEventAuthority extends string,
   TAccountProgram extends string,
@@ -151,6 +169,7 @@ export async function getInitializeInstructionAsync<
   input: InitializeAsyncInput<
     TAccountConfig,
     TAccountPayer,
+    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
@@ -161,6 +180,7 @@ export async function getInitializeInstructionAsync<
     TProgramAddress,
     TAccountConfig,
     TAccountPayer,
+    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
@@ -174,6 +194,7 @@ export async function getInitializeInstructionAsync<
   const originalAccounts = {
     config: { value: input.config ?? null, isWritable: true },
     payer: { value: input.payer ?? null, isWritable: true },
+    programData: { value: input.programData ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
     eventAuthority: { value: input.eventAuthority ?? null, isWritable: false },
     program: { value: input.program ?? null, isWritable: false },
@@ -195,6 +216,21 @@ export async function getInitializeInstructionAsync<
       ],
     });
   }
+  if (!accounts.programData.value) {
+    accounts.programData.value = await getProgramDerivedAddress({
+      programAddress:
+        'BPFLoaderUpgradeab1e11111111111111111111111' as Address<'BPFLoaderUpgradeab1e11111111111111111111111'>,
+      seeds: [
+        getBytesEncoder().encode(
+          new Uint8Array([
+            161, 68, 64, 252, 198, 246, 174, 212, 239, 198, 11, 123, 42, 160,
+            40, 128, 152, 70, 172, 145, 138, 43, 242, 169, 115, 223, 161, 110,
+            202, 102, 149, 247,
+          ])
+        ),
+      ],
+    });
+  }
   if (!accounts.systemProgram.value) {
     accounts.systemProgram.value =
       '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
@@ -205,6 +241,7 @@ export async function getInitializeInstructionAsync<
     accounts: [
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.payer),
+      getAccountMeta(accounts.programData),
       getAccountMeta(accounts.systemProgram),
       getAccountMeta(accounts.eventAuthority),
       getAccountMeta(accounts.program),
@@ -217,6 +254,7 @@ export async function getInitializeInstructionAsync<
     TProgramAddress,
     TAccountConfig,
     TAccountPayer,
+    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
@@ -228,12 +266,25 @@ export async function getInitializeInstructionAsync<
 export type InitializeInput<
   TAccountConfig extends string = string,
   TAccountPayer extends string = string,
+  TAccountProgramData extends string = string,
   TAccountSystemProgram extends string = string,
   TAccountEventAuthority extends string = string,
   TAccountProgram extends string = string,
 > = {
   config: Address<TAccountConfig>;
   payer: TransactionSigner<TAccountPayer>;
+  /**
+   * Loader-v3 `ProgramData` for this program, used to require that the
+   * caller is the upgrade authority.
+   *
+   * Without it `initialize` is permissionless first-come: the config PDA
+   * uses `init`, so anyone who lands a call between deploy finalization and
+   * ours seizes `admin`/`treasury` permanently, and the only recovery is a
+   * migration upgrade. `seeds::program` pins the account to THIS program id
+   * and `Account<ProgramData>` enforces the loader as its owner, so another
+   * program's `ProgramData` cannot satisfy the check.
+   */
+  programData: Address<TAccountProgramData>;
   systemProgram?: Address<TAccountSystemProgram>;
   eventAuthority: Address<TAccountEventAuthority>;
   program: Address<TAccountProgram>;
@@ -245,6 +296,7 @@ export type InitializeInput<
 export function getInitializeInstruction<
   TAccountConfig extends string,
   TAccountPayer extends string,
+  TAccountProgramData extends string,
   TAccountSystemProgram extends string,
   TAccountEventAuthority extends string,
   TAccountProgram extends string,
@@ -253,6 +305,7 @@ export function getInitializeInstruction<
   input: InitializeInput<
     TAccountConfig,
     TAccountPayer,
+    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
@@ -262,6 +315,7 @@ export function getInitializeInstruction<
   TProgramAddress,
   TAccountConfig,
   TAccountPayer,
+  TAccountProgramData,
   TAccountSystemProgram,
   TAccountEventAuthority,
   TAccountProgram
@@ -274,6 +328,7 @@ export function getInitializeInstruction<
   const originalAccounts = {
     config: { value: input.config ?? null, isWritable: true },
     payer: { value: input.payer ?? null, isWritable: true },
+    programData: { value: input.programData ?? null, isWritable: false },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
     eventAuthority: { value: input.eventAuthority ?? null, isWritable: false },
     program: { value: input.program ?? null, isWritable: false },
@@ -297,6 +352,7 @@ export function getInitializeInstruction<
     accounts: [
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.payer),
+      getAccountMeta(accounts.programData),
       getAccountMeta(accounts.systemProgram),
       getAccountMeta(accounts.eventAuthority),
       getAccountMeta(accounts.program),
@@ -309,6 +365,7 @@ export function getInitializeInstruction<
     TProgramAddress,
     TAccountConfig,
     TAccountPayer,
+    TAccountProgramData,
     TAccountSystemProgram,
     TAccountEventAuthority,
     TAccountProgram
@@ -325,9 +382,22 @@ export type ParsedInitializeInstruction<
   accounts: {
     config: TAccountMetas[0];
     payer: TAccountMetas[1];
-    systemProgram: TAccountMetas[2];
-    eventAuthority: TAccountMetas[3];
-    program: TAccountMetas[4];
+    /**
+     * Loader-v3 `ProgramData` for this program, used to require that the
+     * caller is the upgrade authority.
+     *
+     * Without it `initialize` is permissionless first-come: the config PDA
+     * uses `init`, so anyone who lands a call between deploy finalization and
+     * ours seizes `admin`/`treasury` permanently, and the only recovery is a
+     * migration upgrade. `seeds::program` pins the account to THIS program id
+     * and `Account<ProgramData>` enforces the loader as its owner, so another
+     * program's `ProgramData` cannot satisfy the check.
+     */
+
+    programData: TAccountMetas[2];
+    systemProgram: TAccountMetas[3];
+    eventAuthority: TAccountMetas[4];
+    program: TAccountMetas[5];
   };
   data: InitializeInstructionData;
 };
@@ -340,7 +410,7 @@ export function parseInitializeInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedInitializeInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 5) {
+  if (instruction.accounts.length < 6) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -355,6 +425,7 @@ export function parseInitializeInstruction<
     accounts: {
       config: getNextAccount(),
       payer: getNextAccount(),
+      programData: getNextAccount(),
       systemProgram: getNextAccount(),
       eventAuthority: getNextAccount(),
       program: getNextAccount(),
