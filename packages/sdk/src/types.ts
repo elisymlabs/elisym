@@ -474,7 +474,8 @@ export type PaymentValidationCode =
   | 'fee_amount_mismatch'
   | 'missing_fee'
   | 'invalid_fee_params'
-  | 'invalid_asset';
+  | 'invalid_asset'
+  | 'asset_mismatch';
 
 export interface PaymentValidationError {
   code: PaymentValidationCode;

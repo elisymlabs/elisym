@@ -279,28 +279,29 @@ export async function getNetworkStats(
     })),
   );
 
-  // Seeded up front so every known asset is present as 0n no matter how the
-  // batch read below turns out - a short RPC response must not leave an asset
-  // key absent on the success path while the catch path fills it in.
+  // Seeded up front so every known asset is present as 0n regardless of what
+  // the batch read returns - a short response must not leave an asset key
+  // absent from the record, which callers index by `assetKey`.
   const volumeByAssetKey: Record<string, bigint> = {};
   for (const target of targets) {
     volumeByAssetKey[target.key] = 0n;
   }
-  try {
-    const assetAccounts = await fetchAllMaybeAssetStats(
-      rpc,
-      targets.map((target) => target.pda),
-    );
-    for (const [index, assetAccount] of assetAccounts.entries()) {
-      const target = targets[index];
-      if (target) {
-        volumeByAssetKey[target.key] = assetAccount.exists ? assetAccount.data.volume : 0n;
-      }
+  // A PDA that does not exist yet reads back as `exists: false`, so a program
+  // that predates `AssetStats` needs no special handling here. Anything that
+  // throws is an RPC failure, and it propagates: swallowing it would return
+  // zeros that are indistinguishable from "no volume", and on mainnet - where
+  // the legacy slots are permanently 0 because the cluster shipped with v2 -
+  // that renders a whole dashboard empty with no error. The `NetworkStats`
+  // read above is unguarded for the same reason.
+  const assetAccounts = await fetchAllMaybeAssetStats(
+    rpc,
+    targets.map((target) => target.pda),
+  );
+  for (const [index, assetAccount] of assetAccounts.entries()) {
+    const target = targets[index];
+    if (target) {
+      volumeByAssetKey[target.key] = assetAccount.exists ? assetAccount.data.volume : 0n;
     }
-  } catch {
-    // Per-mint PDAs unreadable (RPC hiccup or pre-upgrade program): keep the
-    // seeded zeros and fall back to the legacy slots alone rather than failing
-    // the whole read.
   }
 
   // The legacy fixed slots keep accruing from deployed old clients. The

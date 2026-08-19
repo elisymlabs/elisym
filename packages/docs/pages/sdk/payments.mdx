@@ -51,6 +51,8 @@ import { getProtocolConfig, clearProtocolConfigCache, getProtocolProgramId } fro
 
 These APIs are network-explicit: request creation stamps the provider's `network` into the request, `SolanaPaymentStrategy.validatePaymentRequest` takes the customer's network and rejects a cross-network request before any money check, and `buildPaymentInstructions` requires an explicit `programId` (no silent devnet default - the program id is cluster-ambiguous by design).
 
+`validatePaymentRequest` also binds the asset. It refuses any asset that does not exist on the customer's network (the other cluster's USDC, or a mainnet-only asset quoted to a devnet customer), and `options.expectedAsset` closes the currency bait-and-switch the same way `expectedRecipient` closes payment redirection - pass the asset you agreed to pay and a request debiting a different one is rejected with `asset_mismatch`. The membership check alone cannot catch that: USDC and LSM are both mainnet assets with 6 decimals, so the same number in the wrong currency passes everything else.
+
 ## Estimating cost
 
 Before paying, preview the real cost - base fee, priority fee, and any token-account rent. Both estimators take the network (the priority-fee cache is cluster-keyed):

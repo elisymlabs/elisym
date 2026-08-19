@@ -54,16 +54,21 @@ function StepDescription({ children }: { children: ReactNode }) {
 }
 
 function Divider() {
-  return <div className="w-[1px] shrink-0 self-stretch bg-white/10" />;
+  return <div className="w-1 shrink-0 self-stretch bg-white/10" />;
 }
 
 function MobileRowDivider() {
   return <div className="mx-16 h-px bg-white/[0.06]" />;
 }
 
+// `strip:px-0` is load-bearing: the desktop card is sized to exactly the 780px
+// the wrapper allows, so any inline padding here would eat into that budget and
+// shrink the tiles (they are flex items, so it shows up as a silent 12px
+// squeeze rather than a clip). Below the breakpoint the card is fluid and the
+// padding is what keeps it off the screen edge.
 export function HowItWorks() {
   return (
-    <div className="mx-auto max-w-[480px] px-16 pb-72 sm:px-24 sm:pb-96 strip:max-w-[780px]">
+    <div className="mx-auto max-w-480 px-16 pb-72 sm:px-24 sm:pb-96 strip:max-w-780 strip:px-0">
       {/* Mobile / narrow desktop (< 800px): glass card with stacked rows */}
       <div className={cn('overflow-hidden strip:hidden', CARD_CLASSES)}>
         {STEPS.map((step, index) => (
@@ -88,9 +93,13 @@ export function HowItWorks() {
               <Fragment key={step.index}>
                 {index > 0 && <Divider />}
                 {/* Fixed, not min-, width: the descriptions are long enough to
-                    size the tile past the 780px wrapper otherwise, and the hero
-                    clips rather than scrolls. 3x180 + 4x40 gaps + 2 dividers +
-                    64 padding + 2 border = 768px. */}
+                    size the tile past the wrapper otherwise. The card is built
+                    to 3x180 tiles + 4x40 gaps + 2 dividers + 64 padding + 2
+                    border = 768px, which fits the wrapper's 780px only because
+                    it carries no inline padding at this breakpoint. Anything
+                    that grows this past 780 squeezes the tiles instead of
+                    wrapping - they are flex items and only the dividers are
+                    `shrink-0`. */}
                 <div className="flex w-180 flex-col items-center gap-8 text-center">
                   <StepIndex>{step.index}</StepIndex>
                   <StepTitle>{step.title}</StepTitle>

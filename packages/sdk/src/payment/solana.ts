@@ -42,7 +42,13 @@ import type {
   VerifyOptions,
   VerifyResult,
 } from '../types';
-import { type Asset, NATIVE_SOL, resolveAssetFromPaymentRequest } from './assets';
+import {
+  type Asset,
+  NATIVE_SOL,
+  assetKey,
+  resolveAssetFromPaymentRequest,
+  splAssetsForNetwork,
+} from './assets';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
 import { parsePaymentRequest } from './schema';
@@ -145,7 +151,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     config: ProtocolConfigInput,
     network: Network,
     expectedRecipient?: string,
-    options?: { maxAmountLamports?: bigint },
+    options?: { maxAmountLamports?: bigint; expectedAsset?: Asset },
   ): PaymentValidationError | null {
     assertConfig(config);
     const parsed = parsePaymentRequest(requestJson, {
@@ -180,15 +186,45 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     // Reject payment requests that reference an asset the SDK doesn't know
     // about - the customer cannot safely build a transaction without knowing
     // the wire format (System transfer vs SPL TransferChecked).
-    if (data.asset) {
-      try {
-        resolveAssetFromPaymentRequest(data);
-      } catch (error) {
-        return {
-          code: 'invalid_asset',
-          message: error instanceof Error ? error.message : String(error),
-        };
-      }
+    let requestAsset: Asset;
+    try {
+      requestAsset = resolveAssetFromPaymentRequest(data);
+    } catch (error) {
+      return {
+        code: 'invalid_asset',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    // Per-network membership. `resolveKnownAsset` is network-blind, so an asset
+    // that exists only on the other cluster (the other network's USDC, or a
+    // mainnet-only asset quoted to a devnet customer) resolves fine above and
+    // would only fail in on-chain simulation - after the customer signed.
+    if (
+      requestAsset.mint !== undefined &&
+      !splAssetsForNetwork(network).some((asset) => asset.mint === requestAsset.mint)
+    ) {
+      return {
+        code: 'invalid_asset',
+        message:
+          `Asset ${requestAsset.symbol} (mint ${requestAsset.mint}) is not available on ` +
+          `${network}. Refusing to proceed.`,
+      };
+    }
+
+    // Currency bait-and-switch. The membership gate alone cannot catch this:
+    // USDC and LSM are both legal on mainnet and both carry 6 decimals, so a
+    // request that swaps one for the other passes every check above while
+    // debiting a different currency for the same number. Callers that know
+    // which asset they agreed to pay pass it here.
+    const expectedAsset = options?.expectedAsset;
+    if (expectedAsset && assetKey(requestAsset) !== assetKey(expectedAsset)) {
+      return {
+        code: 'asset_mismatch',
+        message:
+          `Asset mismatch: expected to pay ${expectedAsset.symbol}, but the payment request ` +
+          `debits ${requestAsset.symbol}. Provider may be attempting a currency swap.`,
+      };
     }
 
     // Defense in depth: the Zod schema only enforces base58 + length, not

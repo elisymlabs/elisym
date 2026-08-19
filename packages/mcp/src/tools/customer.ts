@@ -6,12 +6,15 @@ import {
   decodeJobPayload,
   deriveOwnerDelegationAta,
   encodeJobPayload,
+  NATIVE_SOL,
+  estimateAssetStatsRentLamports,
   estimateNetworkBaseline,
   splAssetsForNetwork,
   formatAssetAmount,
   formatNetworkBaseline,
   getDelegation,
   getProtocolProgramId,
+  resolveUsdcAsset,
   mintDelegationNonce,
   toDTag,
   DEFAULT_KIND_OFFSET,
@@ -630,7 +633,19 @@ async function gasHintForCardAsset(agent: AgentInstance, asset: Asset): Promise<
       includeAtaRent: asset.mint !== undefined,
       ataTokenProgram: asset.tokenProgram,
     });
-    return `\n${formatNetworkBaseline(baseline)}`;
+    // `estimateNetworkBaseline` is asset-agnostic and therefore cannot see the
+    // per-mint `AssetStats` PDA that every payment `init_if_needed`s. Left out,
+    // this hint under-quotes the first payer of an asset by ~0.0019 SOL - and
+    // under-quoting is the direction that strands a transaction. Ops pre-creates
+    // the PDAs for known assets, so the probe normally returns 0 and the
+    // sentence never appears.
+    const statsRentLamports = await estimateAssetStatsRentLamports(rpc, agent.network, asset);
+    const statsHint =
+      statsRentLamports > 0n
+        ? ` Plus a one-time ${formatAssetAmount(NATIVE_SOL, statsRentLamports)} for this ` +
+          `asset's on-chain stats account, charged to the first payer network-wide.`
+        : '';
+    return `\n${formatNetworkBaseline(baseline)}${statsHint}`;
   } catch {
     return '';
   }
@@ -1727,8 +1742,20 @@ export const customerTools: ToolDefinition[] = [
             `needs a priced skill. Use create_job for free capabilities.`,
         );
       }
-      if (asset.symbol !== 'USDC') {
-        // The pull moves USDC subunits; a non-USDC price would be a different amount.
+      // Gate on asset IDENTITY, not the display symbol. `assetFromCardPayment`
+      // falls back to a self-describing asset for tokens the registry does not
+      // know, taking `symbol` and `decimals` from the card verbatim - so a
+      // symbol compare accepts a hostile card that merely calls itself "USDC".
+      // That matters here because the pull is against the canonical USDC ATA
+      // (`deriveOwnerDelegationAta` below) whatever the card claims, while
+      // every price shown to the customer is rendered with the card's
+      // decimals: a card with decimals 12 displays 250 USDC as "0.00025 USDC"
+      // and the customer confirms a spend 10^6 times larger than they read.
+      // Requiring the network's canonical USDC also rejects the other
+      // cluster's USDC mint, and guarantees the `asset` used for every
+      // `formatAssetAmount` below is the registry entry, not card input.
+      const delegationAsset = resolveUsdcAsset(agent.network);
+      if (assetKey(asset) !== assetKey(delegationAsset)) {
         const { text } = sanitizeUntrusted(
           `Delegated payment is USDC-only, but this capability is priced in ${asset.symbol}.`,
           'text',

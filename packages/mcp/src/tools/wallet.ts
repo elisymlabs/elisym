@@ -323,46 +323,6 @@ async function signSendConfirm(
 
 const paymentStrategy = new SolanaPaymentStrategy();
 
-/**
- * Return `owner`'s balance in an SPL asset (USDC, LSM, ...) as raw subunits.
- * Mint-filtered `getTokenAccountsByOwner` is token-program-agnostic (covers
- * Token-2022 mints like LSM) and sums non-ATA accounts too. An owner with no
- * token account is 0n; `null` means the balance could not be read, which
- * callers must render as unknown rather than as an empty wallet.
- */
-async function fetchSplBalance(
-  rpc: Rpc<SolanaRpcApi>,
-  owner: ReturnType<typeof address>,
-  asset: Asset,
-): Promise<bigint | null> {
-  const mint = asset.mint;
-  if (!mint) {
-    return 0n;
-  }
-  try {
-    const response = await rpc
-      .getTokenAccountsByOwner(
-        owner,
-        { mint: address(mint) },
-        { encoding: 'jsonParsed', commitment: 'confirmed' },
-      )
-      .send();
-    let total = 0n;
-    for (const entry of response.value) {
-      const parsed = entry.account.data as
-        | { parsed?: { info?: { tokenAmount?: { amount?: string } } } }
-        | undefined;
-      const raw = parsed?.parsed?.info?.tokenAmount?.amount;
-      if (typeof raw === 'string') {
-        total += BigInt(raw);
-      }
-    }
-    return total;
-  } catch {
-    return null;
-  }
-}
-
 interface SplBalanceBreakdown {
   /** The owner's ATA - the only account `withdraw` can debit. */
   ata: bigint;
@@ -408,8 +368,14 @@ async function fetchSplBalanceBreakdown(
         | { parsed?: { info?: { tokenAmount?: { amount?: string } } } }
         | undefined;
       const raw = parsed?.parsed?.info?.tokenAmount?.amount;
+      // An entry the node returned unparsed is a FAILED read, not an empty
+      // account: it falls back to base64 when it cannot parse the owning
+      // program, which a node without the Token-2022 parser does for LSM.
+      // Skipping it would be worse here than in a pure display path -
+      // `withdraw` SIZES against `ata`, so a skipped entry can turn a funded
+      // account into "nothing to withdraw" or hide the off-ATA disclosure.
       if (typeof raw !== 'string') {
-        continue;
+        return null;
       }
       const amount = BigInt(raw);
       total += amount;
@@ -440,11 +406,20 @@ function offAtaSuffixFor(asset: Asset, balances: SplBalanceBreakdown): string {
  * One `get_balance` line per SPL asset. An unreadable balance says so instead
  * of rendering as "0" - a rate-limited read must never tell the agent its
  * wallet is empty.
+ *
+ * Takes the breakdown, not a bare sum: every spending path debits the ATA
+ * (`send_payment` builds `transferChecked` from the payer ATA, `withdraw`
+ * sizes against it), so reporting the mint-wide total unqualified hands the
+ * model a number larger than it can spend and invites a transaction that
+ * reverts for insufficient funds. Mirrors what the withdraw preview prints.
  */
-export function formatSplBalanceLine(asset: Asset, balance: bigint | null | undefined): string {
-  return balance === undefined || balance === null
+export function formatSplBalanceLine(
+  asset: Asset,
+  balances: SplBalanceBreakdown | null | undefined,
+): string {
+  return balances === undefined || balances === null
     ? `${asset.symbol} balance: unavailable (balance read failed)`
-    : `${asset.symbol} balance: ${formatAssetAmount(asset, balance)}`;
+    : `${asset.symbol} balance: ${formatAssetAmount(asset, balances.ata)}${offAtaSuffixFor(asset, balances)}`;
 }
 
 /**
@@ -503,7 +478,7 @@ export const walletTools: ToolDefinition[] = [
 
       const splAssets = splAssetsForNetwork(agent.network);
       const splBalances = await Promise.all(
-        splAssets.map((asset) => fetchSplBalance(rpc, walletAddress, asset)),
+        splAssets.map((asset) => fetchSplBalanceBreakdown(rpc, walletAddress, asset)),
       );
       const splLines = splAssets
         .map((asset, index) => formatSplBalanceLine(asset, splBalances[index]))

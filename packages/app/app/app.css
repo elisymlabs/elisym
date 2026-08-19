@@ -11,7 +11,7 @@
 @theme {
   /* Tiny-phone breakpoint: anything below 380px (iPhone SE 1, Galaxy Fold) */
   --breakpoint-xs: 23.75rem;
-  /* Stats-strip breakpoint: switch from stacked card to horizontal strip at 800px */
+  /* Hero-strip breakpoint: switch from stacked card to horizontal strip at 800px */
   --breakpoint-strip: 50rem;
 
   /* Page surfaces */

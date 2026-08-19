@@ -79,9 +79,15 @@ export async function fetchSplBalance(
         | { parsed?: { info?: { tokenAmount?: { amount?: string } } } }
         | undefined;
       const raw = parsed?.parsed?.info?.tokenAmount?.amount;
-      if (typeof raw === 'string') {
-        total += BigInt(raw);
+      // An entry the node returned unparsed (it falls back to base64 when it
+      // cannot parse the owning program - a node without the Token-2022 parser
+      // does this for LSM) is a FAILED read, not an empty account. Skipping it
+      // would silently under-report, which is the "0 LSM for a funded wallet"
+      // outcome this function exists to avoid.
+      if (typeof raw !== 'string') {
+        return null;
       }
+      total += BigInt(raw);
     }
     return total;
   } catch {

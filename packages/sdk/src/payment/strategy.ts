@@ -6,6 +6,7 @@ import type {
   VerifyOptions,
   VerifyResult,
 } from '../types';
+import type { Asset } from './assets';
 
 /**
  * Pluggable signer used by `PaymentStrategy.buildTransaction`.
@@ -71,13 +72,18 @@ export interface PaymentStrategy {
    * `network` (absent = devnet, legacy) differs from it is rejected before any
    * money check. An optional param that skips the check when absent would
    * silently degrade to per-consumer enforcement.
+   *
+   * `options.expectedAsset` binds the currency the same way `expectedRecipient`
+   * binds the destination: pass the asset the caller agreed to pay and a
+   * request debiting a different one is refused. Assets that do not exist on
+   * `network` are rejected regardless, with or without it.
    */
   validatePaymentRequest(
     requestJson: string,
     config: ProtocolConfigInput,
     network: Network,
     expectedRecipient?: string,
-    options?: { maxAmountLamports?: bigint },
+    options?: { maxAmountLamports?: bigint; expectedAsset?: Asset },
   ): PaymentValidationError | null;
 
   /**

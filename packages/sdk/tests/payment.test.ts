@@ -1076,6 +1076,71 @@ describe('payment request network (D7)', () => {
     ).toBeNull();
   });
 
+  function assetRef(asset: { chain: string; token: string; mint?: string; decimals: number }) {
+    return {
+      chain: asset.chain,
+      token: asset.token,
+      ...(asset.mint ? { mint: asset.mint } : {}),
+      decimals: asset.decimals,
+    };
+  }
+
+  it('rejects a mainnet-only asset quoted to a devnet customer', () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'devnet', asset: assetRef(LSM_SOLANA_MAINNET) })),
+      CONFIG,
+      'devnet',
+    );
+    expect(result?.code).toBe('invalid_asset');
+    expect(result?.message).toContain('not available on devnet');
+  });
+
+  it("rejects the other cluster's USDC even when the request network matches", () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'mainnet', asset: assetRef(USDC_SOLANA_DEVNET) })),
+      CONFIG,
+      'mainnet',
+    );
+    expect(result?.code).toBe('invalid_asset');
+  });
+
+  it('refuses a currency swap between two assets that are both legal on the network', () => {
+    // USDC and LSM are both mainnet and both 6 decimals, so the membership
+    // gate cannot separate them - only the expected-asset binding can.
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'mainnet', asset: assetRef(LSM_SOLANA_MAINNET) })),
+      CONFIG,
+      'mainnet',
+      undefined,
+      { expectedAsset: USDC_SOLANA_MAINNET },
+    );
+    expect(result?.code).toBe('asset_mismatch');
+    expect(result?.message).toContain('USDC');
+    expect(result?.message).toContain('LSM');
+  });
+
+  it('refuses a native-SOL request when the caller expected an SPL asset', () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'mainnet' })),
+      CONFIG,
+      'mainnet',
+      undefined,
+      { expectedAsset: USDC_SOLANA_MAINNET },
+    );
+    expect(result?.code).toBe('asset_mismatch');
+  });
+
+  it('accepts the expected asset', () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'mainnet', asset: assetRef(LSM_SOLANA_MAINNET) })),
+      CONFIG,
+      'mainnet',
+      undefined,
+      { expectedAsset: LSM_SOLANA_MAINNET },
+    );
+    expect(result).toBeNull();
+  });
+
   it('checks the network BEFORE any money check (tampered fee still reports network_mismatch)', () => {
     const tampered = baseRequest({
       network: 'mainnet',

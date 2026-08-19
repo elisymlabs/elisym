@@ -106,9 +106,22 @@ describe('formatSessionSpendLines network filtering', () => {
 describe('formatSplBalanceLine', () => {
   it('renders a read balance in whole units', async () => {
     const { formatSplBalanceLine } = await import('../src/tools/wallet.js');
-    expect(formatSplBalanceLine(LSM_SOLANA_MAINNET, 25_000_000n)).toBe('LSM balance: 25 LSM');
+    expect(formatSplBalanceLine(LSM_SOLANA_MAINNET, { ata: 25_000_000n, total: 25_000_000n })).toBe(
+      'LSM balance: 25 LSM',
+    );
     // A genuine zero still reads as zero.
-    expect(formatSplBalanceLine(LSM_SOLANA_MAINNET, 0n)).toBe('LSM balance: 0 LSM');
+    expect(formatSplBalanceLine(LSM_SOLANA_MAINNET, { ata: 0n, total: 0n })).toBe(
+      'LSM balance: 0 LSM',
+    );
+  });
+
+  it('reports the spendable ATA balance and discloses the rest', async () => {
+    // Every spending path debits the ATA, so the mint-wide total unqualified
+    // would hand the model more than it can actually spend.
+    const { formatSplBalanceLine } = await import('../src/tools/wallet.js');
+    expect(formatSplBalanceLine(LSM_SOLANA_MAINNET, { ata: 10_000_000n, total: 25_000_000n })).toBe(
+      'LSM balance: 10 LSM (15 LSM sits in non-ATA token accounts and cannot be withdrawn)',
+    );
   });
 
   it('says the read failed rather than claiming an empty wallet', async () => {

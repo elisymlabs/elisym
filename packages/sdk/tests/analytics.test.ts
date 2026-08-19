@@ -252,10 +252,19 @@ describe('getNetworkStats', () => {
     return Buffer.from(buf).toString('base64');
   }
 
+  /**
+   * `getMultipleAccounts` is part of the contract, not optional: `getNetworkStats`
+   * batch-reads the per-mint `AssetStats` PDAs and lets an RPC failure propagate.
+   * A mock without it makes the call throw rather than quietly return zeros.
+   * Here every PDA reads back as absent, which is the pre-creation state.
+   */
   function makeAccountInfoRpc(value: { data: [string, 'base64']; owner: string } | null) {
     return {
       getAccountInfo: vi.fn(() => ({
         send: () => Promise.resolve({ value }),
+      })),
+      getMultipleAccounts: vi.fn((addresses: readonly string[]) => ({
+        send: () => Promise.resolve({ value: addresses.map(() => null) }),
       })),
     } as unknown as Rpc<SolanaRpcApi>;
   }
