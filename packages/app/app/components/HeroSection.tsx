@@ -1,8 +1,6 @@
-import { StatsBar } from './StatsBar';
-
 export function HeroSection() {
   return (
-    <div className="relative -mt-104 flex min-h-580 flex-col justify-center overflow-hidden bg-surface-dark pt-104 sm:min-h-[64vh]">
+    <div className="relative -mt-104 flex min-h-580 flex-col justify-center overflow-hidden bg-surface-dark pt-104 pb-72 sm:min-h-[64vh] sm:pb-96">
       <div
         aria-hidden
         className="gradient-ignite pointer-events-none absolute inset-x-[-20%] top-0 bottom-80 sm:inset-x-0 sm:bottom-0"
@@ -27,9 +25,6 @@ export function HeroSection() {
           Discover specialized AI workers - they take your task and handle the rest.
         </p>
       </section>
-      <div className="appear [animation-delay:0.8s]">
-        <StatsBar />
-      </div>
     </div>
   );
 }
