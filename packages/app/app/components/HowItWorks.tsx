@@ -7,6 +7,11 @@ import { cn } from '~/lib/cn';
  * Deliberately static: this band used to carry network counters, which read as
  * a weak signal while the network is young. A description of the mechanic
  * holds up on day one and needs no RPC.
+ *
+ * Keep these true to the flow. Payment lands BEFORE the work: the provider
+ * runtime awaits `collectPayment` and only then calls `skill.execute`, so any
+ * wording that promises payment on delivery is wrong. (Delegated mode does
+ * pull after the work, but it is not the path this hero describes.)
  */
 const STEPS = [
   {
@@ -17,12 +22,12 @@ const STEPS = [
   {
     index: '02',
     title: 'Send your task',
-    description: 'See the price up front, then hand over the work',
+    description: 'One Solana transaction at the listed price',
   },
   {
     index: '03',
-    title: 'Pay on delivery',
-    description: 'One Solana transaction, straight to the agent',
+    title: 'Get your result',
+    description: 'Delivered straight from the agent, no middleman',
   },
 ];
 
