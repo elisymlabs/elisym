@@ -10,13 +10,13 @@ Launch sequence per `docs/plans/solana-mainnet.md` Phase 0 (D4/D5 as amended in 
   |                                                                            | SOL    |
   | -------------------------------------------------------------------------- | ------ |
   | programdata rent (328,565 bytes)                                           | 2.2877 |
-  | IDL account - `target/idl/elisym_config.json` (26 KB), uploaded by step 1a | 0.1841 |
+  | IDL metadata account - step 1a; the 26 KB JSON is stored gzipped (~3.6 KB) | 0.031  |
   | program account                                                            | 0.0011 |
   | `Config` + `NetworkStats` PDAs                                             | 0.0052 |
   | three `AssetStats` PDAs (step 3b)                                          | 0.0056 |
   | write-transaction fees                                                     | ~0.002 |
 
-  About **2.5 SOL**; fund **3 SOL** for the success path. Re-measure with `solana rent $(( $(stat -f%z target/deploy/elisym_config.so) + 45 ))` if the binary has grown since.
+  About **2.35 SOL**; fund **3 SOL** for the success path. Re-measure with `solana rent $(( $(stat -f%z target/deploy/elisym_config.so) + 45 ))` if the binary has grown since.
 
   **3 SOL does not fund a second attempt.** The deploy creates its write buffer at the full programdata rent (~2.2876 SOL) up front and only refunds it to you in the final transaction, so an aborted attempt leaves ~0.71 SOL against a retry that needs ~2.2888 again - and a plain re-run allocates a _new_ buffer rather than reusing the stranded one. After any abort, either resume into the existing buffer or close it first; see "If a deploy attempt aborts mid-way".
 
@@ -37,19 +37,34 @@ Launch sequence per `docs/plans/solana-mainnet.md` Phase 0 (D4/D5 as amended in 
 #    compute-unit price gets an unstaked deployer past stake-weighted QoS.
 #    Re-running this on an already-deployed program upgrades it in place and is
 #    safe - but read the abort section first if a previous attempt died.
+#    `-k` is load-bearing: it pins the FEE PAYER. Without it the payer is
+#    whatever `solana config get` points at, which also decides whose buffers
+#    `solana program show --buffers` lists later - see the abort section.
+#    Confirm the program keypair still derives the expected address first;
+#    a regenerated one deploys at a stranger address and every later step
+#    targets BrX1CRk... and finds nothing.
+test "$(solana-keygen pubkey target/deploy/elisym_config-keypair.json)" \
+  = BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE || echo "WRONG PROGRAM KEYPAIR - STOP"
+
 solana program deploy \
   --url <url> \
   --use-rpc \
   --with-compute-unit-price 50000 \
   --max-sign-attempts 20 \
+  -k ~/.config/solana/id.json \
   --program-id target/deploy/elisym_config-keypair.json \
   --upgrade-authority ~/.config/solana/id.json \
   target/deploy/elisym_config.so
 
-# 1a. Upload the IDL - `solana program deploy` does not, and `anchor idl init`
-#     can only run ONCE per program (use `anchor idl upgrade` afterwards).
+# 1a. Upload the IDL - `solana program deploy` does not. In anchor 1.0 this
+#     writes a gzipped copy to the external Program Metadata program
+#     (ProgM6JC...), authorized off the loader's upgrade authority - so it must
+#     run BEFORE the Squads handoff. Run it from the MONOREPO ROOT: `anchor idl`
+#     refuses outside a workspace. It can only run once per program; use
+#     `anchor idl upgrade` afterwards. (It is a no-op against localnet, so this
+#     one step cannot be rehearsed locally.)
 anchor idl init BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE \
-  -f target/idl/elisym_config.json --provider.cluster <url>
+  -f target/idl/elisym_config.json --provider.cluster <url> --priority-fee 50000
 
 # 1b. Confirm what actually landed, BEFORE trying to initialize. `initialize`
 #     reads the loader's ProgramData account, so this is also the check that it
@@ -98,33 +113,38 @@ SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
 
 ## If a deploy attempt aborts mid-way
 
-First find out what landed - run step 1b. If `solana program show` reports the program, the deploy itself succeeded and only step 1a (the IDL) is left; re-running step 1 would upgrade in place, which is safe but pays the write fees again for nothing.
+First find out what landed - run step 1b. If `solana program show` reports the program, the deploy itself succeeded and only step 1a (the IDL) is left. Do not re-run step 1 "just in case": it would allocate another full buffer, and with ~0.71 SOL left after a successful deploy it fails outright at buffer creation.
 
 If the program did not land, **do not just re-run step 1** - the interrupted attempt left ~2.2876 SOL locked in a write buffer, and a fresh run allocates another one. With 3 SOL funded that second allocation fails outright with `insufficient funds for spend`. Pick one:
 
-**Resume into the stranded buffer (cheaper - no second rent).** On abort the CLI prints `Recover the intermediate account's ephemeral keypair file with 'solana-keygen recover' and the following N-word seed phrase:` - a **seed phrase, not a path**, so recovering the keypair is a mandatory first step. Copy the phrase before clearing the terminal.
+**Resume into the stranded buffer (cheaper - keeps the chunks already written).** Only available if **the CLI itself reported the failure**: it then prints `Recover the intermediate account's ephemeral keypair file with 'solana-keygen recover' and the following N-word seed phrase:` - a **seed phrase, not a path**. Copy it before clearing the terminal. If you killed the process yourself (Ctrl-C), nothing is printed and the keypair is gone: skip to closing the buffer.
 
 ```bash
-solana program show --buffers -um            # confirm the buffer and its balance
+solana program show --buffers -k ~/.config/solana/id.json -um   # confirm it and its balance
 solana-keygen recover -o /tmp/elisym-deploy-buffer.json prompt://   # paste the phrase
 solana program deploy \
   --url <url> \
   --use-rpc \
   --with-compute-unit-price 50000 \
+  --max-sign-attempts 20 \
+  -k ~/.config/solana/id.json \
   --buffer /tmp/elisym-deploy-buffer.json \
   --program-id target/deploy/elisym_config-keypair.json \
   --upgrade-authority ~/.config/solana/id.json \
   target/deploy/elisym_config.so
 ```
 
-**Or close it and start over**, which refunds the rent to the deployer first:
+**Or close it and start over**, which refunds the rent to the deployer first. This path needs only the buffer's authority, not its keypair, so it always works:
 
 ```bash
-solana program show --buffers -um
-solana program close --buffers -um
+solana program show --buffers -k ~/.config/solana/id.json -um
+solana program close --buffers -k ~/.config/solana/id.json -um
 ```
 
-(`-um` pins mainnet - without it both commands target the solana CLI's default cluster and silently report "no buffers" while the mainnet rent stays stranded. If the deploy used a dedicated RPC, pass `--url <that-rpc>` instead.)
+Two filters decide whether these commands see anything, and both fail the same silent way - an empty table that reads as "nothing stranded" while the rent stays locked:
+
+- `-um` pins mainnet; without it they target the solana CLI's default cluster. If the deploy used a dedicated RPC, pass `--url <that-rpc>` instead.
+- `-k` pins the authority they match on. The buffer's authority is step 1's `--upgrade-authority` signer, NOT the fee payer, so leaving `-k` off matches against whatever `solana config get` points at.
 
 ## Post-launch follow-up (deferred, round 16)
 
