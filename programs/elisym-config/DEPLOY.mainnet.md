@@ -108,7 +108,7 @@ SOLANA_RPC_URL=<url> \
   bun run packages/config-client/scripts/create-asset-stats.ts
 
 # 4. Verify immediately: admin and treasury must equal $DEPLOYER (step 0 -
-#    re-export it if this is a new shell), the printed RPC must be the host and path of <url>,
+#    re-export it if this is a new shell), the printed `Cluster:` line must read `mainnet`,
 #    fee must be 0, the NetworkStats PDA must exist, and the three AssetStats
 #    PDAs must show as existing.
 SOLANA_NETWORK=mainnet \
@@ -121,7 +121,7 @@ SOLANA_RPC_URL=<url> \
 - `Unauthorized` (6000) on `program_data` - the init key is not the upgrade authority: wrong keypair, or the authority was already transferred or revoked. Fix the key; do not work around the check.
 - `AccountOwnedByWrongProgram` (3007) or `AccountNotInitialized` (3012) on `program_data` - the program is not deployed under the upgradeable loader (v3), so no `ProgramData` account exists at the derived address. This is what a `solana program-v4 deploy` produces. `initialize` is uncallable at this address until the program is closed and redeployed under v3; step 1b catches it first.
 
-**Accepted residual (env mismatch):** `SOLANA_NETWORK=mainnet` against a devnet RPC creates orphan PDAs. Benign for on-chain state - `increment_stats_v2` is `init_if_needed` - but **not** benign for the gate above, which is a release decision made from that same output. `show` now prints the RPC origin as its first line for exactly this reason; read it before reading anything green. Genesis-hash verification is the future hardening if ever wanted.
+**Cluster mismatch is now detected, not accepted.** `show` asks the RPC for its genesis hash and prints the cluster that actually answered, independently of `SOLANA_NETWORK` and of the endpoint string. If the two disagree it prints a `*** MISMATCH ***` banner and everything below it is about the wrong cluster - which is what used to produce orphan PDAs and a falsely-green gate in silence. The endpoint itself is logged as scheme+host only: Alchemy and QuickNode carry the API key in the URL path.
 
 ## If a step after the deploy fails
 

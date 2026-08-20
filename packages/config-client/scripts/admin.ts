@@ -112,17 +112,42 @@ async function sendTransaction(
 }
 
 /**
- * An RPC endpoint safe to print: scheme, host and path, with credentials and
- * query string dropped. Path is kept deliberately - providers that select the
- * cluster by path (`/solana` vs `/solana_devnet`) collapse to one origin, and
- * telling those two apart is the whole point of logging it here.
+ * An RPC endpoint safe to print: scheme and host only. The path is dropped
+ * along with the query string and credentials - Alchemy and QuickNode carry
+ * the API key IN THE PATH, so keeping it to disambiguate path-selected
+ * clusters would trade a credential for a label. `resolveCluster` below
+ * answers the cluster question properly instead.
  */
 export function redactRpcUrl(url: string): string {
   try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+    return new URL(url).origin;
   } catch {
     return '(unparseable RPC URL)';
+  }
+}
+
+/**
+ * Genesis hash per cluster - the only identity a URL cannot lie about.
+ * `getGenesisHash` is one read-only call and it costs nothing to be sure.
+ */
+const GENESIS_HASHES: Record<string, string> = {
+  '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d': 'mainnet',
+  EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG: 'devnet',
+  '4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY': 'testnet',
+};
+
+/**
+ * Which cluster actually answered, asked of the chain rather than inferred
+ * from the endpoint string. An origin cannot identify a cluster - providers
+ * select it by path or by subdomain, and the path is exactly where Alchemy and
+ * QuickNode put the API key, so it must not be printed.
+ */
+async function resolveCluster(rpc: ReturnType<typeof createSolanaRpc>): Promise<string> {
+  try {
+    const genesis = await rpc.getGenesisHash().send();
+    return GENESIS_HASHES[genesis] ?? `unknown (genesis ${genesis})`;
+  } catch {
+    return '(could not read genesis hash)';
   }
 }
 
@@ -138,10 +163,20 @@ async function show(): Promise<void> {
   // it must never die before saying which cluster and program it is reading.
   // The program id is identical on both clusters and RPC_URL defaults to
   // devnet when SOLANA_RPC_URL is unset, so the board is meaningless without
-  // these three lines. `network` is separate from the RPC on purpose: it, not
-  // the endpoint, selects which mints the AssetStats block below checks.
+  // these lines. `network` is separate from the cluster on purpose: it, not
+  // the endpoint, selects which mints the AssetStats block below checks - and
+  // a disagreement between the two is what silently produced orphan PDAs and a
+  // falsely-green gate, so it is called out rather than left to the reader.
+  const cluster = await resolveCluster(rpc);
   console.log('RPC:           ', redactRpcUrl(RPC_URL));
+  console.log('Cluster:       ', cluster, '(from genesis hash)');
   console.log('SOLANA_NETWORK:', network);
+  if (cluster !== network) {
+    console.log('');
+    console.log(`*** MISMATCH: SOLANA_NETWORK=${network} but the RPC answered ${cluster}. ***`);
+    console.log('*** Everything below describes the WRONG cluster. Do not gate a release on it.');
+    console.log('');
+  }
   console.log('Program ID:    ', PROGRAM_ID);
   console.log('Config PDA:    ', configPda);
 

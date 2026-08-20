@@ -52,14 +52,14 @@ const ADMIN_KEYPAIR_PATH =
 const adminSecretKey = new Uint8Array(JSON.parse(readFileSync(ADMIN_KEYPAIR_PATH, 'utf8')));
 
 /**
- * An RPC endpoint safe to print: scheme, host and path, with credentials and
- * query string dropped. Path is kept - providers that select the cluster by
- * path collapse to one origin otherwise, and telling those apart is the point.
+ * An RPC endpoint safe to print: scheme and host only. The path is dropped
+ * because that is where Alchemy and QuickNode put the API key, and the query
+ * string for the same reason. Use `admin.ts show` if you need to know which
+ * cluster answered - it asks the chain for its genesis hash.
  */
 function redactRpcUrl(url: string): string {
   try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+    return new URL(url).origin;
   } catch {
     return '(unparseable RPC URL)';
   }
