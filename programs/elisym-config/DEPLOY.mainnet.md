@@ -123,6 +123,8 @@ SOLANA_RPC_URL=<url> \
 
 **Cluster mismatch is now detected, not accepted.** `show` asks the RPC for its genesis hash and prints the cluster that actually answered, independently of `SOLANA_NETWORK` and of the endpoint string. If the two disagree it prints a `*** MISMATCH ***` banner and everything below it is about the wrong cluster - which is what used to produce orphan PDAs and a falsely-green gate in silence. The endpoint itself is logged as scheme+host only: Alchemy and QuickNode carry the API key in the URL path.
 
+The scripts that **sign** go further and abort: step 3b and every `admin.ts` mutation (`set-fee`, `set-treasury`, `propose-admin`, `accept-admin`, `cancel-pending-admin`) print the same `Cluster:` line and exit non-zero before sending anything if it disagrees with `SOLANA_NETWORK`. A cluster the endpoint cannot prove (unreachable, or a genesis hash that is neither mainnet nor devnet nor testnet) aborts the same way - so these commands need `SOLANA_NETWORK` set to match the endpoint, and cannot be pointed at a local validator. `show` still only warns: it signs nothing, and its job is to print the board even when the board is wrong. Steps 2 and 3 declare no network at all (they are network-agnostic by design), so their cluster is the one step 1b and step 4 confirm.
+
 ## If a step after the deploy fails
 
 The scripts confirm over a websocket, so a dropped subscription or an expired blockhash makes one print a raw error and exit non-zero **while its transaction landed**. Never retry blind.

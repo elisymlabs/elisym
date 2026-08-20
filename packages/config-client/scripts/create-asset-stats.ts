@@ -57,6 +57,7 @@ import {
   fetchMaybeAssetStats,
   getCreateAssetStatsInstruction,
 } from '../src';
+import { abortOnClusterMismatch, resolveCluster } from './cluster';
 
 const NETWORK_ENV = process.env.SOLANA_NETWORK ?? 'devnet';
 if (NETWORK_ENV !== 'devnet' && NETWORK_ENV !== 'mainnet') {
@@ -85,8 +86,8 @@ const LSM_MAINNET_MINT = address('86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump')
 /**
  * An RPC endpoint safe to print: scheme and host only. The path is dropped
  * because that is where Alchemy and QuickNode put the API key, and the query
- * string for the same reason. Use `admin.ts show` if you need to know which
- * cluster answered - it asks the chain for its genesis hash.
+ * string for the same reason. The `Cluster:` line below is what identifies the
+ * chain - it comes from the genesis hash, which the URL cannot lie about.
  */
 function redactRpcUrl(url: string): string {
   try {
@@ -120,10 +121,18 @@ async function main(): Promise<void> {
     ...extraMints.map((mint) => ({ label: `extra ${mint}`, mint })),
   ];
 
+  // SOLANA_NETWORK picks the mints above; the endpoint picks the chain they are
+  // created on. Nothing ties the two together, so ask the chain which one
+  // answered and refuse to sign if it is not the one that was asked for -
+  // otherwise a stale SOLANA_RPC_URL silently pre-creates the mainnet asset
+  // PDAs on devnet and the release gate reads green against the wrong cluster.
+  const cluster = await resolveCluster(rpc);
   console.log('Network:   ', NETWORK);
+  console.log('Cluster:   ', cluster, '(from genesis hash)');
   console.log('RPC:       ', redactRpcUrl(RPC_URL));
   console.log('Program ID:', PROGRAM_ID);
   console.log('Payer:     ', payer.address);
+  abortOnClusterMismatch(cluster, NETWORK);
 
   for (const target of targets) {
     const assetStatsPda = await deriveAssetStatsAddress(PROGRAM_ID, target.mint);

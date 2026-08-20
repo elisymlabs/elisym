@@ -50,6 +50,7 @@ import {
   getSetFeeBpsInstructionAsync,
   getSetTreasuryInstructionAsync,
 } from '../src';
+import { abortOnClusterMismatch, resolveCluster } from './cluster';
 
 const COMMANDS = [
   'show',
@@ -115,7 +116,7 @@ async function sendTransaction(
  * An RPC endpoint safe to print: scheme and host only. The path is dropped
  * along with the query string and credentials - Alchemy and QuickNode carry
  * the API key IN THE PATH, so keeping it to disambiguate path-selected
- * clusters would trade a credential for a label. `resolveCluster` below
+ * clusters would trade a credential for a label. `resolveCluster` (./cluster)
  * answers the cluster question properly instead.
  */
 export function redactRpcUrl(url: string): string {
@@ -123,31 +124,6 @@ export function redactRpcUrl(url: string): string {
     return new URL(url).origin;
   } catch {
     return '(unparseable RPC URL)';
-  }
-}
-
-/**
- * Genesis hash per cluster - the only identity a URL cannot lie about.
- * `getGenesisHash` is one read-only call and it costs nothing to be sure.
- */
-const GENESIS_HASHES: Record<string, string> = {
-  '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d': 'mainnet',
-  EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG: 'devnet',
-  '4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY': 'testnet',
-};
-
-/**
- * Which cluster actually answered, asked of the chain rather than inferred
- * from the endpoint string. An origin cannot identify a cluster - providers
- * select it by path or by subdomain, and the path is exactly where Alchemy and
- * QuickNode put the API key, so it must not be printed.
- */
-async function resolveCluster(rpc: ReturnType<typeof createSolanaRpc>): Promise<string> {
-  try {
-    const genesis = await rpc.getGenesisHash().send();
-    return GENESIS_HASHES[genesis] ?? `unknown (genesis ${genesis})`;
-  } catch {
-    return '(could not read genesis hash)';
   }
 }
 
@@ -272,8 +248,16 @@ async function main(): Promise<void> {
   });
   const programOpts = { programAddress: PROGRAM_ID };
 
-  console.log('RPC:    ', redactRpcUrl(RPC_URL));
-  console.log('Signer: ', payer.address);
+  // Same identity board `show` prints, but here it is a gate rather than a
+  // banner: every command below signs a transaction, and `SOLANA_NETWORK` is
+  // otherwise consulted only by `show`, so nothing would stop `set-fee` from
+  // landing on the cluster a stale SOLANA_RPC_URL happens to point at.
+  const cluster = await resolveCluster(createSolanaRpc(RPC_URL));
+  console.log('RPC:           ', redactRpcUrl(RPC_URL));
+  console.log('Cluster:       ', cluster, '(from genesis hash)');
+  console.log('SOLANA_NETWORK:', network);
+  console.log('Signer:        ', payer.address);
+  abortOnClusterMismatch(cluster, network);
 
   let signature: string;
 
