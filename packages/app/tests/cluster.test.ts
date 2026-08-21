@@ -3,8 +3,8 @@
  * every other hostname (app-dev, localhost, loopback, LAN IPs, Vercel
  * previews, lookalikes) fails safe to devnet.
  */
-import { describe, expect, it } from 'vitest';
-import { resolveCluster, SOLANA_CLUSTER } from '~/lib/cluster';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolveCluster, rpcUrlFor, SOLANA_CLUSTER } from '~/lib/cluster';
 
 describe('resolveCluster', () => {
   it('resolves mainnet only for the exact production host', () => {
@@ -28,5 +28,42 @@ describe('resolveCluster', () => {
 
   it('module constant fails safe to devnet in a windowless (node) environment', () => {
     expect(SOLANA_CLUSTER).toBe('devnet');
+  });
+});
+
+describe('rpcUrlFor', () => {
+  // Hermetic on purpose. Vitest loads `packages/app/.env.local` exactly like the
+  // dev server does, so without clearing these first the fallback cases assert
+  // against whatever endpoint a developer happens to have configured - and the
+  // failure diff then prints that endpoint, API key and all.
+  beforeEach(() => {
+    vi.stubEnv('VITE_SOLANA_RPC_URL_MAINNET', undefined);
+    vi.stubEnv('VITE_SOLANA_RPC_URL_DEVNET', undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('falls back to the public endpoint per cluster', () => {
+    expect(rpcUrlFor('devnet')).toBe('https://api.devnet.solana.com');
+    expect(rpcUrlFor('mainnet')).toBe('https://api.mainnet-beta.solana.com');
+  });
+
+  it('honours the per-cluster override', () => {
+    vi.stubEnv('VITE_SOLANA_RPC_URL_MAINNET', 'https://provider.example/mainnet');
+    vi.stubEnv('VITE_SOLANA_RPC_URL_DEVNET', 'https://provider.example/devnet');
+    expect(rpcUrlFor('mainnet')).toBe('https://provider.example/mainnet');
+    expect(rpcUrlFor('devnet')).toBe('https://provider.example/devnet');
+  });
+
+  it('keeps the overrides on separate variables, so a mainnet one cannot reach devnet', () => {
+    vi.stubEnv('VITE_SOLANA_RPC_URL_MAINNET', 'https://provider.example/mainnet');
+    expect(rpcUrlFor('devnet')).toBe('https://api.devnet.solana.com');
+  });
+
+  it('treats an empty override as unset rather than as a blank endpoint', () => {
+    vi.stubEnv('VITE_SOLANA_RPC_URL_MAINNET', '');
+    expect(rpcUrlFor('mainnet')).toBe('https://api.mainnet-beta.solana.com');
   });
 });

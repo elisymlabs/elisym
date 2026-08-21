@@ -25,11 +25,46 @@ export function resolveCluster(hostname: string): SolanaCluster {
 export const SOLANA_CLUSTER: SolanaCluster =
   typeof window === 'undefined' ? 'devnet' : resolveCluster(window.location.hostname);
 
-const RPC_URLS: Record<SolanaCluster, string> = {
+const PUBLIC_RPC_URLS: Record<SolanaCluster, string> = {
   devnet: 'https://api.devnet.solana.com',
   mainnet: 'https://api.mainnet-beta.solana.com',
 };
-export const SOLANA_RPC_URL = RPC_URLS[SOLANA_CLUSTER];
+
+/**
+ * The RPC endpoint for a cluster, overridable at build time.
+ *
+ * The public endpoints are only a fallback, and the mainnet one does not work
+ * from a browser at all: `api.mainnet-beta.solana.com` answers 403 to any
+ * request carrying an `Origin` header. A mainnet deployment MUST therefore set
+ * `VITE_SOLANA_RPC_URL_MAINNET` to a provider endpoint, or every on-chain read
+ * fails - starting with the protocol config, which gates all payments.
+ *
+ * One variable per cluster, never a shared one: a single override set for
+ * production would point the devnet origin at a mainnet endpoint. This does not
+ * loosen the D10 hostname allowlist - the cluster is still decided by the host,
+ * and only its endpoint is configurable.
+ *
+ * The key ships in the bundle, as any browser-side RPC credential must.
+ * Restrict it by allowed origin at the provider.
+ */
+export function rpcUrlFor(cluster: SolanaCluster): string {
+  const override =
+    cluster === 'mainnet'
+      ? import.meta.env.VITE_SOLANA_RPC_URL_MAINNET
+      : import.meta.env.VITE_SOLANA_RPC_URL_DEVNET;
+  return override && override.length > 0 ? override : PUBLIC_RPC_URLS[cluster];
+}
+
+export const SOLANA_RPC_URL = rpcUrlFor(SOLANA_CLUSTER);
+
+if (SOLANA_CLUSTER === 'mainnet' && !import.meta.env.VITE_SOLANA_RPC_URL_MAINNET) {
+  // Loud on purpose: the fallback is not merely slow here, it is refused
+  // outright, and the failure surfaces later as an opaque config-fetch error.
+  console.warn(
+    'VITE_SOLANA_RPC_URL_MAINNET is not set - falling back to api.mainnet-beta.solana.com, ' +
+      'which answers 403 to browser requests. On-chain reads and payments will fail.',
+  );
+}
 
 // Wallet Standard chain identifier. Phantom and Solflare expose
 // `accounts[0].chains` from `@wallet-standard/base`; the array reflects the
