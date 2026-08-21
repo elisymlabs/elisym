@@ -8,6 +8,7 @@ import {
   formatAssetAmount,
   resolveUsdcAsset,
 } from '@elisym/sdk';
+import { type ListedAgent, readAgentPublic } from '@elisym/sdk/agent-store';
 import { type Rpc, type SolanaRpcApi, address } from '@solana/kit';
 
 // --- Constants ---
@@ -43,6 +44,29 @@ export function getRpcUrl(network: Network): string {
   return network === 'mainnet'
     ? 'https://api.mainnet-beta.solana.com'
     : 'https://api.devnet.solana.com';
+}
+
+// --- Agent listing ---
+
+/**
+ * The Solana line `list` prints for one agent: receiving address plus the
+ * network it is bound to. Read from the PUBLIC yaml instead of through
+ * `loadAgent`, so an agent whose secrets are encrypted still shows its network -
+ * a mainnet agent is the one most likely to be encrypted, and its network is the
+ * one field worth checking before starting the wrong process. Selects by chain
+ * rather than taking `payments[0]`: the two agree while `PaymentSchema.chain` is
+ * the literal `'solana'`, and this one keeps reading the right entry when a
+ * second rail lands. An unreadable or wallet-less agent contributes nothing
+ * rather than failing the whole listing.
+ */
+export async function solanaLineFor(agent: ListedAgent): Promise<string> {
+  try {
+    const { yaml } = await readAgentPublic(agent);
+    const solana = yaml.payments.find((entry) => entry.chain === 'solana');
+    return solana ? ` | Solana: ${solana.address} (${solana.network})` : '';
+  } catch {
+    return '';
+  }
 }
 
 // --- SPL balances ---

@@ -23,6 +23,7 @@ import { cmdProfile } from './commands/profile.js';
 import { cmdStart } from './commands/start.js';
 import { cmdWallet } from './commands/wallet.js';
 import { cmdX402Add, type X402AddOptions } from './commands/x402-add.js';
+import { solanaLineFor } from './helpers.js';
 import { PACKAGE_VERSION } from './version.js';
 
 /**
@@ -107,18 +108,16 @@ program
       }
       console.log('\nAgents:');
       for (const agent of agents) {
+        const solana = await solanaLineFor(agent);
+        const shadow = agent.shadowsGlobal ? ' [shadows global]' : '';
         try {
           const loaded = await loadAgent(agent.name, cwd);
           const identity = ElisymIdentity.fromHex(loaded.secrets.nostr_secret_key);
           const npub = nip19.npubEncode(identity.publicKey);
-          const solAddr = loaded.yaml.payments[0]?.address
-            ? ` | Solana: ${loaded.yaml.payments[0].address}`
-            : '';
-          const shadow = agent.shadowsGlobal ? ' [shadows global]' : '';
-          console.log(`  ${agent.name} (${agent.source})${shadow} | ${npub}${solAddr}`);
+          console.log(`  ${agent.name} (${agent.source})${shadow} | ${npub}${solana}`);
         } catch (e: any) {
           const hint = /encrypted secrets/i.test(e?.message ?? '') ? ' (encrypted)' : '';
-          console.log(`  ${agent.name} (${agent.source})${hint}`);
+          console.log(`  ${agent.name} (${agent.source})${shadow}${hint}${solana}`);
         }
       }
       console.log();
