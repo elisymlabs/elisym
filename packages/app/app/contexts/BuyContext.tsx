@@ -65,8 +65,9 @@ import { invalidateDelegationStatus } from '~/hooks/useDelegationStatus';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useJobHistory } from '~/hooks/useJobHistory';
-import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
+import { fetchWalletBalancesNow, invalidateWalletBalances } from '~/hooks/useWalletBalances';
 import { track } from '~/lib/analytics';
+import { checkBuyAffordability } from '~/lib/balanceCheck';
 import { resolvePaymentAsset } from '~/lib/cardAsset';
 import { clearInFlight, recordCompletion } from '~/lib/chatSession';
 import { appendPendingEntry, completeEntry, failEntry, recordEntryTxHash } from '~/lib/chatThread';
@@ -284,6 +285,18 @@ export interface BuySessionOptions {
    * sends, which carry no rail label.
    */
   payment?: 'delegated' | 'per-job';
+  /**
+   * Network fee a PER-JOB payment would draw from the wallet, in lamports, as
+   * the sending surface already sized it - so the click-time balance re-check
+   * can cover the fee leg without paying for a second estimate. Absent = 0,
+   * i.e. price check only.
+   *
+   * Surfaces pass it unconditionally. Whether it is actually demanded is
+   * `buy()`'s call, because only `buy()` knows whether the allowance rail can
+   * still win - and on that rail the provider pays the fee, so charging the
+   * customer would refuse a send they can afford.
+   */
+  gasLamports?: number;
 }
 
 interface BuyCtx {
@@ -394,7 +407,37 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         rated: false,
       });
 
-      const toastId = toast.loading('Submitting job...');
+      // A paid buy re-reads balances first (see the top of the try below), so
+      // name that step rather than announcing a submit that has not started.
+      // An asset this cluster cannot pay is skipped outright - the check
+      // abstains on it anyway, so the read would be latency for nothing.
+      const paymentAsset = isFree ? null : resolvePaymentAsset(card.payment, SOLANA_CLUSTER);
+      const needsBalanceRecheck =
+        !isFree && !!publicKey && buySession.payment !== 'delegated' && paymentAsset !== null;
+      // Everything about the delegated rail that is knowable BEFORE the
+      // allowance itself is read: the surface did not force per-job, the card
+      // advertises a delegation, the wallet can sign the authorization, and the
+      // price is in canonical USDC.
+      //
+      // Asset IDENTITY, not the card's `token` string: the pull targets the
+      // canonical USDC ATA whatever the card claims, so a card that merely
+      // calls itself usdc while naming another mint must not read as delegated
+      // here. `resolvePaymentAsset` returns null for any non-canonical mint.
+      //
+      // "Could still win", not "will win" - the rail also needs an ACTIVE
+      // covering allowance, and that costs an RPC round trip resolved further
+      // down. The gate below re-uses this and adds the narrowing TypeScript
+      // needs.
+      const delegationCanWin =
+        !isFree &&
+        buySession.payment !== 'per-job' &&
+        card.delegation !== undefined &&
+        signMessage !== undefined &&
+        paymentAsset !== null &&
+        assetKey(paymentAsset) === assetKey(resolveUsdcAsset(SOLANA_CLUSTER));
+      const toastId = toast.loading(
+        needsBalanceRecheck ? 'Checking your balance...' : 'Submitting job...',
+      );
 
       // Set once the pending thread entry has been written, so the outer catch
       // can fail the entry (job submitted, then client-side failure) while
@@ -402,6 +445,60 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       let threadEntryJobEventId: string | null = null;
 
       try {
+        // The button that got us here was gated on polled balances, which can
+        // be well out of date: the interval pauses while the tab is hidden,
+        // which is exactly where the user goes to spend. Re-read before the
+        // input is encrypted and before the provider is asked to quote, so a
+        // wallet drained in that window is refused with our own message rather
+        // than costing a provider round trip and a failed entry. This is
+        // submit hygiene, not freshness at signing: the payment tx is built
+        // much later, after the quote, and the wallet's own simulation stays
+        // the arbiter of what signs. A read that fails or times out yields
+        // `null` for that asset, which `checkBuyAffordability` abstains on by
+        // its own rules.
+        //
+        // PRICE is checked on every rail that reaches here. An explicit
+        // 'delegated' buy does not reach it at all (see `needsBalanceRecheck`):
+        // the delegation block below enforces `balance >= price` on the same
+        // ATA, with a better-aimed message.
+        //
+        // FEE is checked only where the allowance rail cannot win - see
+        // `delegationCanWin`. Demanding a fee while that rail is still open
+        // would refuse a send that settles for free, and `useDelegatedBuyMode`
+        // is a render-time read, too stale to rule it out. That leaves a known
+        // hole: a card painted 'Use' passes `delegatedCovers`, so
+        // `useJobGating` skips affordability outright, and if the allowance
+        // lapses between paint and click the fall-back to a per-job payment
+        // has had no fee check on either side. Closing it means resolving the
+        // rail before this check rather than after.
+        if (needsBalanceRecheck && publicKey) {
+          // SOL plus the card's own token, never every asset on the cluster -
+          // the click waits on the slowest read. SOL is read unconditionally:
+          // the fee tier spends it where `railIsPerJob` holds, and where the
+          // rail is still open the reading at least keeps the render gate's
+          // next fee check fresh - except on a 'Use'-painted card, which skips
+          // that check altogether.
+          const { solLamports, splRaw } = await fetchWalletBalancesNow(
+            queryClient,
+            publicKey.toBase58(),
+            paymentAsset !== null && paymentAsset.mint !== undefined ? [paymentAsset] : [],
+          );
+          const railIsPerJob = !delegationCanWin;
+          const affordable = checkBuyAffordability({
+            card,
+            solLamports,
+            splRaw,
+            gasLamports: railIsPerJob ? (buySession.gasLamports ?? 0) : 0,
+            network: SOLANA_CLUSTER,
+          });
+          if (!affordable.ok) {
+            // The outer catch owns every teardown this needs: the session
+            // token, the `buying` flag, the error bubble and the toast.
+            throw new Error(affordable.tooltip);
+          }
+          toast.loading('Submitting job...', { id: toastId });
+        }
+
         const identity = idCtx.identity;
         const capability = toDTag(cardName);
 
@@ -470,26 +567,14 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           | { owner: string; expiryUnix: number; nonce: string; proof: string }
           | undefined;
         const delegationDescriptor = card.delegation;
-        // USDC-only mirrors the provider-side load guard - a delegation block
-        // on a card priced in any other asset would compare mismatched
-        // subunits and submit a job the provider rejects anyway.
-        // Gate on asset IDENTITY, not the card's `token` string. The pull
-        // targets the canonical USDC ATA whatever the card claims, so a card
-        // that merely calls itself usdc while naming another mint would take
-        // the delegated path and spend real USDC against a price rendered
-        // from its own metadata. `resolvePaymentAsset` returns null for any
-        // mint that is not canonical on this cluster. Mirrors the MCP gate in
-        // `submit_delegated_job`.
-        const delegationAsset = resolvePaymentAsset(card.payment, SOLANA_CLUSTER);
-        if (
-          !isFree &&
-          delegationDescriptor &&
-          publicKey &&
-          signMessage &&
-          delegationAsset !== null &&
-          assetKey(delegationAsset) === assetKey(resolveUsdcAsset(SOLANA_CLUSTER)) &&
-          buySession.payment !== 'per-job'
-        ) {
+        // `delegationCanWin` carries the USDC-identity and rail-label tests
+        // (see where it is computed); the remaining clauses are the narrowing
+        // TypeScript needs to use the descriptor and the signer. USDC-only
+        // mirrors the provider-side load guard and the MCP gate in
+        // `submit_delegated_job` - a delegation block on a card priced in any
+        // other asset would compare mismatched subunits and submit a job the
+        // provider rejects anyway.
+        if (delegationCanWin && delegationDescriptor && publicKey && signMessage) {
           const owner = publicKey.toBase58();
           const price = BigInt(card.payment?.job_price ?? 0);
           let delegationActive = false;
@@ -981,6 +1066,13 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // The provider's pull reduced the remaining allowance - drop
                 // the cached read so Use/Delegate buttons recompute.
                 invalidateDelegationStatus(queryClient, delegatedPayment.owner);
+                // A pull on that same ATA is how this rail settles, so the
+                // balance the buy gate reads is stale as soon as the job
+                // lands. This is the one balance-moving purchase the app makes
+                // without signing a transfer of its own, so nothing else
+                // refreshes it; invalidating unconditionally costs at most one
+                // refetch when the provider delivered without charging.
+                invalidateWalletBalances(queryClient, delegatedPayment.owner);
               }
               void settleThreadCompletion(result, resultAttachments);
               setSession((prev) =>

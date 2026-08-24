@@ -6,7 +6,7 @@ import {
   type CapabilityCard,
 } from '@elisym/sdk';
 import { describe, expect, it } from 'vitest';
-import { checkBuyAffordability } from '../app/routes/Agent/lib/balanceCheck';
+import { checkBuyAffordability } from '../app/lib/balanceCheck';
 
 const USDC_KEY = assetKey(USDC_SOLANA_DEVNET);
 const USDC_MAINNET_KEY = assetKey(USDC_SOLANA_MAINNET);
@@ -225,6 +225,56 @@ describe('checkBuyAffordability (registry-driven assets)', () => {
       splRaw: { [LSM_KEY]: null },
       gasLamports: 4_200_000,
       network: 'mainnet',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('still blocks an SPL card on a known token deficit when the SOL read failed', () => {
+    // Each tier abstains on its own missing input. The click-time read times
+    // out per asset, so an unreadable SOL balance must not discard a decisive
+    // token balance and let an unpayable job through.
+    const result = checkBuyAffordability({
+      card: USDC_CARD,
+      solLamports: null,
+      splRaw: { [USDC_KEY]: 1_000_000n },
+      gasLamports: 0,
+      network: 'devnet',
+    });
+    expect(result).toEqual({ ok: false, tooltip: 'Need 4 USDC more to buy.' });
+  });
+
+  it('abstains from the fee tier alone when the SOL read failed but the token covers the price', () => {
+    const result = checkBuyAffordability({
+      card: USDC_CARD,
+      solLamports: null,
+      splRaw: { [USDC_KEY]: 5_000_000n },
+      gasLamports: 4_200_000,
+      network: 'devnet',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('abstains entirely when the token read failed, even with SOL below the fee estimate', () => {
+    // The fee figure is a deliberate worst case (two ATA creations that are
+    // usually no-ops), so letting it decide alone on a wallet whose token
+    // balance we could not read would refuse buys that would have settled.
+    const result = checkBuyAffordability({
+      card: USDC_CARD,
+      solLamports: 1_000n,
+      splRaw: { [USDC_KEY]: null },
+      gasLamports: 4_200_000,
+      network: 'devnet',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('abstains on a SOL card when the SOL read failed', () => {
+    const result = checkBuyAffordability({
+      card: SOL_CARD,
+      solLamports: null,
+      splRaw: {},
+      gasLamports: 5_000,
+      network: 'devnet',
     });
     expect(result.ok).toBe(true);
   });

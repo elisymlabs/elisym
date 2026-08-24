@@ -5,9 +5,10 @@ import { useIdentity } from '~/hooks/useIdentity';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import { useSolGasFeeEstimate } from '~/hooks/useSolGasFeeEstimate';
 import { useWalletBalances } from '~/hooks/useWalletBalances';
+import { checkBuyAffordability, checkSelfPayment } from '~/lib/balanceCheck';
+import { resolvePaymentAsset } from '~/lib/cardAsset';
 import { SOLANA_CLUSTER } from '~/lib/cluster';
 import { formatCardPrice } from '~/lib/formatPrice';
-import { checkBuyAffordability, checkSelfPayment } from './lib/balanceCheck';
 
 interface Args {
   card: CapabilityCard;
@@ -96,7 +97,11 @@ export function useJobGating({
   const fileTooLarge = !!file && file.size > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES;
   const gasFeeLamports = useSolGasFeeEstimate(card);
   const priceLabel = isFree ? null : formatCardPrice(card.payment, price);
-  const { solLamports, splRaw } = useWalletBalances();
+  // Poll only the asset this card is priced in - the gate never reads another.
+  const paymentAsset = resolvePaymentAsset(card.payment, SOLANA_CLUSTER);
+  const { solLamports, splRaw } = useWalletBalances(
+    paymentAsset !== null && paymentAsset.mint !== undefined ? [paymentAsset] : [],
+  );
   const selfPayment =
     !isFree && !!publicKey && !buying
       ? checkSelfPayment({ card, buyerWallet: publicKey.toBase58() })

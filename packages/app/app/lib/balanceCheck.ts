@@ -1,6 +1,6 @@
 import { assetKey, type Asset, type CapabilityCard, type Network } from '@elisym/sdk';
-import { resolvePaymentAsset } from '~/lib/cardAsset';
-import { compactZeros, formatDecimal } from '~/lib/formatPrice';
+import { resolvePaymentAsset } from './cardAsset';
+import { compactZeros, formatDecimal } from './formatPrice';
 
 const SOL_DECIMALS = 9;
 
@@ -30,16 +30,19 @@ function formatAssetDeficit(deficit: bigint, asset: Asset): string {
  *   Tier 1 - payment token covers the product price.
  *   Tier 2 - SOL covers the network fee (gas + worst-case ATA rent for SPL).
  *
- * Tiers are sequential: Tier 1 must pass before Tier 2 is shown. This keeps
- * the tooltip focused on the closest blocker.
+ * Tiers are ordered: Tier 1 must not block before Tier 2 is considered, so the
+ * tooltip names the closest blocker.
  *
  * For SOL-priced cards, both tiers draw from the same balance, so Tier 2
  * effectively asserts `solLamports - price >= gas` (equivalently
  * `solLamports >= price + gas`).
  *
- * Returns `{ ok: true }` while balances are still loading so the button does
- * not flicker disabled on first render. Free cards and the no-wallet case are
- * handled by the caller's existing flow and should never reach this function.
+ * A balance of `null` is unknown, never zero - so the button does not flicker
+ * disabled on first render, and a read that failed can never be mistaken for
+ * an empty wallet. An unknown PAYMENT balance abstains from the whole check;
+ * an unknown SOL balance abstains only from the fee tier, leaving a decisive
+ * token verdict intact. Free cards and the no-wallet case are handled by the
+ * caller's existing flow and should never reach this function.
  */
 export function checkBuyAffordability({
   card,
@@ -61,14 +64,20 @@ export function checkBuyAffordability({
   const splAsset = asset.mint !== undefined;
   const splBalance = splAsset ? (splRaw[assetKey(asset)] ?? null) : null;
 
-  if (solLamports === null) {
-    return { ok: true };
-  }
+  // An unknown PAYMENT balance abstains from the whole check, not just Tier 1.
+  // Tier 2 alone would decide on `gasLamports`, which `useSolGasFeeEstimate`
+  // deliberately inflates to a worst case of two ATA creations - usually
+  // no-ops - so a wallet holding the token and enough real SOL would be
+  // refused on a fee it will never pay. A missed block costs a wallet
+  // rejection; a false one costs a sale.
   if (splAsset && splBalance === null) {
     return { ok: true };
   }
 
-  // Tier 1: payment token covers the price.
+  // Beyond that each tier abstains on its OWN missing input and the other
+  // still runs: an unreadable SOL balance must not throw away a decisive token
+  // reading, which is routine now that the click-time read times out per
+  // asset.
   if (splAsset) {
     if (splBalance !== null && splBalance < price) {
       const deficit = formatAssetDeficit(price - splBalance, asset);
@@ -78,6 +87,9 @@ export function checkBuyAffordability({
       };
     }
   } else {
+    if (solLamports === null) {
+      return { ok: true };
+    }
     if (solLamports < price) {
       const deficit = formatSolDeficit(price - solLamports);
       return {
@@ -90,6 +102,9 @@ export function checkBuyAffordability({
   // Tier 2: SOL covers the network fee. For SOL cards we check what's left
   // after the price would be deducted, so balance must satisfy
   // `(balance - price) >= gas` (i.e. `balance >= price + gas`).
+  if (solLamports === null) {
+    return { ok: true };
+  }
   const solAfterPrice = splAsset ? solLamports : solLamports - price;
   if (solAfterPrice < gas) {
     const deficit = formatSolDeficit(gas - solAfterPrice);

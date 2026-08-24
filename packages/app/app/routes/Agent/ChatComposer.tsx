@@ -147,7 +147,7 @@ export function ChatComposer({
     track('buy', { agent: agentName, price: gate.priceLabel ?? 'free' });
     const text = gate.isStatic ? card.name : gate.effectiveInput;
     awaitingSubmitRef.current = true;
-    await send(card, text, file ?? undefined, entries);
+    await send(card, text, file ?? undefined, entries, { gasLamports: gate.gasFeeLamports });
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {

@@ -63,6 +63,7 @@ function ChatRetryButtonInner({
     onSelectCardIndex(cardIndex);
     await send(card, card.static === true ? card.name : gate.effectiveInput, file, entries, {
       forceOneShot: typeof entry.sessionId !== 'string',
+      gasLamports: gate.gasFeeLamports,
     });
   }
 
