@@ -46,11 +46,60 @@ export const X402_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
  * How much of a FAILING upstream's body is quoted back in the error.
  *
  * Enough for the service's own explanation - a rejected argument, a missing
- * required extension - and short enough that an untrusted body cannot flood a
- * log or a job's error feedback. The excerpt is control-stripped and collapsed
- * to one line before it goes anywhere.
+ * required extension - and short enough that an untrusted body cannot flood
+ * the operator's log or TUI. The excerpt is control-stripped and collapsed to
+ * one line before it goes anywhere; the customer never sees it (the runtime
+ * masks every unclassified job error to a fixed generic string).
  */
-export const UPSTREAM_ERROR_EXCERPT_CHARS = 400;
+export const X402_ERROR_EXCERPT_CHARS = 400;
+
+/**
+ * How much of a failing upstream's body is READ before hanging up. The
+ * success path caps its body too (`X402_MAX_RESPONSE_BYTES`); an error body
+ * is untrusted the same way and buffering it whole would let a hostile - or
+ * merely broken - upstream answer a 4xx with a gigabyte and take the agent
+ * down. Generous slack over the excerpt itself so whitespace-heavy JSON still
+ * yields a full one.
+ */
+export const X402_MAX_ERROR_BODY_BYTES = 8 * 1024;
+
+/**
+ * How long that read may take. A body is a diagnostic, not the deliverable:
+ * an upstream that trickles one byte per minute must not hold a concurrency
+ * slot for a message the operator can live without. Cancelling the reader
+ * ends the read with whatever arrived.
+ */
+export const X402_ERROR_BODY_READ_MS = 5_000;
+
+/**
+ * Cap on how many reads that body may take. Bytes alone do not bound a read
+ * loop: a chunk carrying nothing makes no progress against a size cap, and a
+ * stream that always has one ready starves the deadline's timer. At four bytes
+ * per chunk the two bounds meet; above that the byte cap is what ends a read,
+ * and below it this is.
+ */
+export const X402_MAX_ERROR_BODY_READS = 2_048;
+
+/**
+ * Cap on the base64 `PAYMENT-REQUIRED` challenge header the driver decodes.
+ *
+ * Not an anti-amplification measure: the x402 client copies the server's whole
+ * extension block into the payment envelope on its own, so the same bytes
+ * leave on the paid request either way. What this bounds is the DRIVER's own
+ * decode and parse of an untrusted header. It sits far above both a real
+ * challenge and the 16 KiB Node allows a response's headers by default, so a
+ * challenge that is merely large - a facilitator advertising many `accepts` -
+ * can never lose its identifier to it.
+ */
+export const X402_MAX_CHALLENGE_HEADER_CHARS = 64 * 1024;
+
+/**
+ * Shortest customer input masked out of a quoted upstream error. A needle of
+ * one or two characters occurs by chance in any English sentence, and blanking
+ * those turns the operator's explanation into a lie about where the input
+ * appeared; below this length the excerpt's honesty is worth more.
+ */
+export const X402_MASKED_INPUT_MIN_CHARS = 8;
 
 /**
  * Cap on a 402 challenge body during the payment handshake. The `@x402/fetch`

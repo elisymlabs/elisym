@@ -11,7 +11,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET, generateSolanaWallet } from '@elisym/sdk';
-import { encodePaymentRequiredHeader } from '@x402/core/http';
+import { decodePaymentSignatureHeader, encodePaymentRequiredHeader } from '@x402/core/http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SkillInput, X402SkillJob } from '../src/skill/index.js';
 import { X402PermanentError } from '../src/x402/errors.js';
@@ -52,6 +52,40 @@ import { X402Driver } from '../src/x402/driver.js';
 const USDC_MINT = USDC_SOLANA_DEVNET.mint ?? '';
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+/** `getExtensionInfo` from `@x402/core`: a declaration with no `info` IS its own info. */
+function declaredInfo(declaration: unknown): Record<string, unknown> {
+  if (typeof declaration !== 'object' || declaration === null || Array.isArray(declaration)) {
+    return {};
+  }
+  const record = declaration as { info?: Record<string, unknown> };
+  return 'info' in record ? (record.info ?? {}) : (record as Record<string, unknown>);
+}
+
+function requiresIdentifier(declaration: unknown): boolean {
+  return declaredInfo(declaration).required === true;
+}
+
+/**
+ * The rule `objectContainsSubset` in `@x402/core` enforces - every advertised
+ * field must come back - in a stricter, shape-agnostic form: leaves compare by
+ * serialization rather than the real key-sorting `deepEqual`, so this fixture
+ * can refuse an echo the real server would accept, never the reverse.
+ */
+function containsSubset(expected: unknown, actual: unknown): boolean {
+  if (typeof expected !== 'object' || expected === null || Array.isArray(expected)) {
+    return JSON.stringify(expected) === JSON.stringify(actual);
+  }
+  if (typeof actual !== 'object' || actual === null || Array.isArray(actual)) {
+    return false;
+  }
+  const actualRecord = actual as Record<string, unknown>;
+  return Object.entries(expected as Record<string, unknown>).every(([key, value]) =>
+    Object.hasOwn(actualRecord, key)
+      ? containsSubset(value, actualRecord[key])
+      : value === undefined,
+  );
+}
+
 /** Local x402 upstream: 402 with a real v2 header when unpaid, resource when paid. */
 class X402Fixture {
   private server: Server | undefined;
@@ -61,6 +95,11 @@ class X402Fixture {
   asset = USDC_MINT;
   paidRequests = 0;
   unpaidRequests = 0;
+  /** Extension block the 402 challenge advertises (undefined = none). */
+  extensions: Record<string, unknown> | undefined;
+  /** The last payment envelope the fixture received, and the header it arrived in. */
+  echoedEnvelope: Record<string, unknown> | undefined;
+  echoedHeader: string | undefined;
 
   async start(): Promise<string> {
     this.server = createServer((request, response) => {
@@ -101,12 +140,19 @@ class X402Fixture {
             extra: { feePayer: 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd' },
           },
         ],
+        ...(this.extensions === undefined ? {} : { extensions: this.extensions }),
       });
       response.writeHead(402, { 'PAYMENT-REQUIRED': header, 'content-type': 'application/json' });
       response.end('{}');
       return;
     }
     this.paidRequests += 1;
+    const refusal = this.extensionRefusal(request);
+    if (refusal !== null) {
+      response.writeHead(400, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: refusal }));
+      return;
+    }
     if (request.url?.startsWith('/image')) {
       response.writeHead(200, { 'content-type': 'image/png' });
       response.end(Buffer.from(PNG_BYTES));
@@ -114,6 +160,48 @@ class X402Fixture {
     }
     response.writeHead(200, { 'content-type': 'text/plain' });
     response.end('bridged result');
+  }
+
+  /**
+   * Both ways a real upstream refuses a payment over the extension it
+   * declared: no identifier when it demanded one (Birdeye answers 400, not
+   * 402), and an echo that dropped a field it advertised
+   * (`validateExtensions` -> `objectContainsSubset` in `@x402/core`).
+   */
+  private extensionRefusal(request: IncomingMessage): string | null {
+    const header = request.headers['payment-signature'];
+    if (this.extensions === undefined || typeof header !== 'string') {
+      return null;
+    }
+    let echoed: Record<string, unknown>;
+    try {
+      // The REAL decoder a server uses: it rejects anything outside standard
+      // base64, so a re-encoding slip is refused here exactly as in production.
+      const envelope = decodePaymentSignatureHeader(header) as unknown as {
+        extensions?: Record<string, unknown>;
+      };
+      this.echoedEnvelope = envelope as Record<string, unknown>;
+      this.echoedHeader = header;
+      echoed = envelope.extensions ?? {};
+    } catch {
+      return 'invalid payment envelope';
+    }
+    for (const [key, advertised] of Object.entries(this.extensions)) {
+      const back = echoed[key];
+      if (back === undefined) {
+        if (requiresIdentifier(advertised)) {
+          return `missing required extension ${key}`;
+        }
+        continue;
+      }
+      if (!containsSubset(advertised, back)) {
+        return `extension_echo_mismatch: ${key}`;
+      }
+      if (requiresIdentifier(advertised) && typeof declaredInfo(back).id !== 'string') {
+        return `missing required extension ${key}`;
+      }
+    }
+    return null;
   }
 
   async stop(): Promise<void> {
@@ -164,6 +252,9 @@ describe('x402 bridge integration (real wrapper + fixture)', () => {
     fixture.quoteSubunits = 5_000n;
     fixture.paidRequests = 0;
     fixture.unpaidRequests = 0;
+    fixture.extensions = undefined;
+    fixture.echoedEnvelope = undefined;
+    fixture.echoedHeader = undefined;
     clearProbeCache();
   });
 
@@ -213,6 +304,52 @@ describe('x402 bridge integration (real wrapper + fixture)', () => {
     const written = result.filePath === undefined ? null : await readFile(result.filePath);
     expect(written).not.toBeNull();
     expect(new Uint8Array(written ?? new Uint8Array())).toEqual(PNG_BYTES);
+  });
+
+  it('satisfies an upstream that demands a payment identifier, echo intact', async () => {
+    fixture.extensions = {
+      // The `?`/`>` run forces `/` and `+` into the re-encoded envelope, where
+      // a slip to base64url would show - the real decoder rejects that
+      // alphabet, so the fixture answers 400 exactly as a server would.
+      'payment-identifier': {
+        info: { required: true, scope: 'per-payment', tag: '????????>>>>>>>>' },
+      },
+      // A second extension the driver has no business touching. The fixture
+      // holds every declared extension to the same echo rule, so dropping it
+      // on the way out is a refused payment.
+      bazaar: { info: { listing: 'premium-data' } },
+    };
+
+    const result = await driver.execute(bridgeJob(), input);
+
+    expect(result).toEqual({ data: 'bridged result' });
+    const echoedExtensions = fixture.echoedEnvelope?.extensions as
+      | Record<string, unknown>
+      | undefined;
+    const echoed = echoedExtensions?.['payment-identifier'];
+    expect(declaredInfo(echoed).id).toMatch(/^pay_[a-f0-9]{32}$/);
+    // The declaration the server advertised came back with it - a server that
+    // checks its echo (@x402/core does) would have refused the payment.
+    expect(declaredInfo(echoed)).toMatchObject({
+      required: true,
+      scope: 'per-payment',
+      tag: '????????>>>>>>>>',
+    });
+    expect(declaredInfo(echoedExtensions?.bazaar)).toEqual({ listing: 'premium-data' });
+
+    // The rest of the envelope is what the server settles against - a dropped
+    // `accepted` or `payload` is a burnt payment, not a failed match.
+    expect(fixture.echoedEnvelope).toMatchObject({
+      x402Version: 2,
+      payload: { transaction: 'ZmFrZS1zaWduZWQtdHg=' },
+      accepted: { scheme: 'exact', amount: '5000', asset: USDC_MINT },
+      resource: { serviceName: 'Fixture Market Data' },
+    });
+    // Standard base64, the alphabet `@x402/core` validates the header against
+    // - and this envelope really does exercise the two characters that differ.
+    expect(fixture.echoedHeader ?? '').toMatch(/^[A-Za-z0-9+/]*={0,2}$/);
+    expect(fixture.echoedHeader ?? '').toContain('+');
+    expect(fixture.echoedHeader ?? '').toContain('/');
   });
 
   it('the REAL policy filter refuses to sign after an upstream reprice above the ceiling', async () => {
