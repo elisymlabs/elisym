@@ -738,20 +738,18 @@ describe('X402Driver', () => {
 
     /** A challenge whose encoded header is exactly `length` characters. */
     function challengeOfHeaderLength(length: number): Response {
-      const encode = (note: string) =>
-        Buffer.from(
-          JSON.stringify({
-            x402Version: 2,
-            accepts: [],
-            extensions: { 'payment-identifier': { info: { required: true, note } } },
-          }),
-          'utf8',
-        ).toString('base64');
-      let note = 'p'.repeat(length);
-      while (encode(note).length > length) {
-        note = note.slice(0, -1);
-      }
-      const header = encode(note);
+      const payload = (note: string) =>
+        JSON.stringify({
+          x402Version: 2,
+          accepts: [],
+          extensions: { 'payment-identifier': { info: { required: true, note } } },
+        });
+      // Solved, not searched: base64 spends four characters on every three
+      // bytes, so the note that lands on `length` exactly is arithmetic.
+      // Shaving one character at a time re-encoded the whole header on every
+      // step - fast enough here, and past the test timeout on a slower machine.
+      const noteLength = (length / 4) * 3 - Buffer.byteLength(payload(''), 'utf8');
+      const header = Buffer.from(payload('p'.repeat(noteLength)), 'utf8').toString('base64');
       if (header.length !== length) {
         throw new Error(`could not hit ${length}: got ${header.length}`);
       }
