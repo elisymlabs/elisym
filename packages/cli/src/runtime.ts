@@ -1755,7 +1755,9 @@ export class AgentRuntime {
       // first delegated job does not dead-letter on a missing ATA.
       ensureDestination: { owner: this.config.solanaAddress },
     });
-    const pull = await buildSignedPull(ctx.rpc, ctx.delegateSigner, instructions);
+    const pull = await buildSignedPull(ctx.rpc, ctx.delegateSigner, instructions, {
+      network: ctx.network,
+    });
     this.ledger.recordPullSignature(
       job.jobId,
       pull.signature,

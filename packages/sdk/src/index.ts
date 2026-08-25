@@ -120,6 +120,7 @@ export {
 export type {
   SignedPullTransaction,
   PullTerminalOutcome,
+  BuildSignedPullOptions,
   ConfirmToTerminalOptions,
 } from './payment/settlement';
 export { aggregateNetworkStats, getNetworkStats } from './payment/analytics';
