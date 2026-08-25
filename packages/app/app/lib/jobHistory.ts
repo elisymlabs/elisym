@@ -25,19 +25,24 @@ import type { SolanaCluster } from './cluster';
 export const JOB_HISTORY_KEY_PREFIX = 'elisym:job-history:';
 
 /**
- * TODO(mainnet launch): PLACEHOLDER - this MUST be set to the real
- * production-deploy unix timestamp at the Phase 5 launch moment
- * (docs/plans/solana-mainnet.md, D13 + "Remaining open items"). Until then it
- * sits at 2100-01-01 so every relay-side job classifies as devnet.
+ * The instant the elisym mainnet config PDA was initialized:
+ * 2026-08-21T12:58:48Z, transaction `iSP4xNfw1b78...`.
  *
  * Relay-side job events carry no network field, so the /jobs merge classifies
- * them by this cutoff: created before the mainnet launch = devnet. A matching
- * local entry for the same job event overrides the cutoff (see
- * routes/Jobs/lib/rows.ts) - a stale pre-flip tab can submit devnet jobs
- * after the epoch, and its local stamp (or the absence of one) is the better
- * witness.
+ * them by this cutoff: created before it = devnet. A matching local entry for
+ * the same job event overrides the cutoff (see routes/Jobs/lib/rows.ts) - a
+ * stale pre-flip tab can submit devnet jobs after the epoch, and its local
+ * stamp (or the absence of one) is the better witness.
+ *
+ * This is the config's own creation time, not the day the web app went
+ * mainnet, and the difference matters in both directions. Nothing on mainnet
+ * can predate it: `getProtocolConfig` reads fee and treasury from that PDA, so
+ * no payment could be built before it existed. Dating the epoch later instead
+ * - to the app deploy - would file every job from the pre-launch mainnet
+ * testing as devnet and hide it from /jobs. Rounding it down to the hour would
+ * fail the other way, pulling that hour's devnet jobs into the mainnet list.
  */
-export const MAINNET_EPOCH_SECS = 4_102_444_800;
+export const MAINNET_EPOCH_SECS = 1_787_317_128;
 
 const TERMINAL_STATUSES = new Set(['completed', 'error']);
 
