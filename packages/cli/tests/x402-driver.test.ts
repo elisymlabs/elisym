@@ -37,7 +37,21 @@ const mocks = vi.hoisted(() => ({
           return unpaid;
         }
         const headers = new Headers(init?.headers);
-        headers.set('PAYMENT-SIGNATURE', 'test-signature');
+        // A realistic envelope (base64 JSON wrapping the signed transaction),
+        // not an opaque string: the driver may rewrite this header to add
+        // extensions, and a fake value would hide whether it can.
+        headers.set(
+          'PAYMENT-SIGNATURE',
+          Buffer.from(
+            JSON.stringify({
+              x402Version: 2,
+              scheme: 'exact',
+              network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+              payload: { transaction: 'c2lnbmVkLXR4' },
+            }),
+            'utf8',
+          ).toString('base64'),
+        );
         return fetchFn(input, { ...init, headers });
       },
   ),
@@ -332,6 +346,136 @@ describe('X402Driver', () => {
       const store = new X402JobStore(dir);
       expect(await store.paidAttempts(input.jobId)).toBe(1);
       expect(await store.paymentSignatures(input.jobId)).toBe(1);
+    });
+
+    /** A 402 whose challenge header declares `payment-identifier` as required. */
+    function challengeWithRequiredIdentifier(): Response {
+      const challenge = Buffer.from(
+        JSON.stringify({
+          x402Version: 2,
+          accepts: [],
+          extensions: { 'payment-identifier': { info: { required: true } } },
+        }),
+        'utf8',
+      ).toString('base64');
+      return new Response('payment required', {
+        status: 402,
+        headers: { 'payment-required': challenge },
+      });
+    }
+
+    /** The `extensions` block of an outgoing PAYMENT-SIGNATURE envelope. */
+    function sentExtensions(request: Request): Record<string, any> | undefined {
+      const header = request.headers.get('PAYMENT-SIGNATURE');
+      if (header === null) {
+        return undefined;
+      }
+      return JSON.parse(Buffer.from(header, 'base64').toString('utf8')).extensions;
+    }
+
+    it('attaches a payment identifier when the challenge declares one as required', async () => {
+      let paidRequest: Request | undefined;
+      const fetchMock = vi.fn(async (info: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(info, init);
+        if (request.headers.has('PAYMENT-SIGNATURE')) {
+          paidRequest = request;
+          return new Response('the result', {
+            status: 200,
+            headers: { 'content-type': 'text/plain' },
+          });
+        }
+        return challengeWithRequiredIdentifier();
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await driver.execute(job, input);
+      const extensions = sentExtensions(paidRequest as Request);
+      expect(extensions?.['payment-identifier'].info.id).toMatch(/^pay_[a-f0-9]{32}$/);
+    });
+
+    it('never breaks the payment on an envelope it cannot read', async () => {
+      let paidRequest: Request | undefined;
+      const fetchMock = vi.fn(async (info: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(info, init);
+        if (request.headers.has('PAYMENT-SIGNATURE')) {
+          paidRequest = request;
+          return new Response('the result', {
+            status: 200,
+            headers: { 'content-type': 'text/plain' },
+          });
+        }
+        return challengeWithRequiredIdentifier();
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      // Opaque header: the rewrite must pass it through, not throw. The
+      // upstream then refuses it for the missing id - the same outcome as
+      // before, rather than a crash on the money path.
+      mocks.wrapFetchWithPayment.mockImplementationOnce(
+        (fetchFn: typeof globalThis.fetch) =>
+          async (target: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+            const unpaid = await fetchFn(target, init);
+            if (unpaid.status !== 402) {
+              return unpaid;
+            }
+            const headers = new Headers(init?.headers);
+            headers.set('PAYMENT-SIGNATURE', 'not-an-envelope');
+            return fetchFn(target, { ...init, headers });
+          },
+      );
+
+      await expect(driver.execute(job, input)).resolves.toEqual({ data: 'the result' });
+      expect(paidRequest?.headers.get('PAYMENT-SIGNATURE')).toBe('not-an-envelope');
+    });
+
+    it('leaves the envelope alone when the challenge asks for no identifier', async () => {
+      let paidRequest: Request | undefined;
+      const fetchMock = vi.fn(async (info: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(info, init);
+        if (request.headers.has('PAYMENT-SIGNATURE')) {
+          paidRequest = request;
+          return new Response('the result', {
+            status: 200,
+            headers: { 'content-type': 'text/plain' },
+          });
+        }
+        return new Response('payment required', { status: 402 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await driver.execute(job, input);
+      expect(sentExtensions(paidRequest as Request)).toBeUndefined();
+    });
+
+    it("quotes the upstream's own words on a failure, so a 4xx is diagnosable", async () => {
+      stubUpstream(
+        () =>
+          new Response('{"error":"missing required extension payment-identifier"}', {
+            status: 400,
+          }),
+      );
+      await expect(driver.execute(job, input)).rejects.toThrow(
+        /upstream returned 400.*payment-identifier/,
+      );
+    });
+
+    it('caps and flattens the quoted body - an untrusted upstream cannot flood the log', async () => {
+      stubUpstream(() => new Response(`xy\n${'A'.repeat(5_000)}`, { status: 400 }));
+      const error = await driver.execute(job, input).catch((caught: unknown) => caught);
+      const message = (error as Error).message;
+      expect(message).not.toContain('');
+      expect(message).not.toContain('\n');
+      expect(message.length).toBeLessThan(500);
+      expect(message).toMatch(/\.\.\.$/);
+    });
+
+    it('falls back to the bare status when the body cannot be read', async () => {
+      stubUpstream(
+        () =>
+          new Response(null, {
+            status: 400,
+          }),
+      );
+      await expect(driver.execute(job, input)).rejects.toThrow(/upstream returned 400$/);
     });
 
     it('refunds the slot on a 402 payment refusal and retries once with a fresh payment', async () => {

@@ -15,6 +15,7 @@
  * without hooks it is dead code, with hooks it would silently double the
  * maximum loss per attempt.
  */
+import { createHash } from 'node:crypto';
 import {
   calculateProtocolFee,
   formatAssetAmount,
@@ -32,8 +33,10 @@ import {
 import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
 import { ExactSvmScheme } from '@x402/svm';
 import { fetchUsdcBalance } from '../helpers.js';
+import { sanitizeForTerminal } from '../logging.js';
 import type { SkillInput, X402JobDriver, X402SkillJob } from '../skill/index.js';
 import {
+  UPSTREAM_ERROR_EXCERPT_CHARS,
   X402_FREE_RETRY_DELAYS_MS,
   X402_GET_INPUT_MAX_ENCODED_BYTES,
   X402_MAX_CHALLENGE_BYTES,
@@ -148,6 +151,67 @@ async function capChallengeResponse(response: Response): Promise<Response> {
     statusText: response.statusText,
     headers: response.headers,
   });
+}
+
+/**
+ * Did this 402 challenge declare a REQUIRED `payment-identifier` extension?
+ *
+ * Some upstreams (Birdeye among them) refuse a payment that carries no
+ * idempotency id, with a 400 rather than a 402 - so the id has to be attached
+ * before the paid request, not after being told off. Read from the header the
+ * challenge arrives in; the body is left alone because the payment wrapper
+ * consumes it to parse the requirements.
+ */
+function challengeRequiresPaymentIdentifier(response: Response): boolean {
+  const header = response.headers.get('payment-required');
+  if (header === null) {
+    return false;
+  }
+  try {
+    const decoded: unknown = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
+    const extension = (
+      decoded as { extensions?: Record<string, { info?: { required?: unknown } }> }
+    ).extensions?.['payment-identifier'];
+    return extension?.info?.required === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Attach an idempotency id to a signed payment envelope, derived from the
+ * signed transaction itself.
+ *
+ * Deterministic on purpose. A network-level retry of the SAME signed payment
+ * carries the same id, so an upstream that honours it serves the original
+ * result instead of charging twice; a re-signed payment (a fresh blockhash
+ * after a 402 refusal) is a genuinely different payment and gets a different
+ * id. Deriving it rather than storing it also keeps the property across a
+ * crash, with no extra state to reconcile.
+ *
+ * Only the envelope is touched - the signed transaction inside it is copied
+ * verbatim, so the signature stays valid.
+ */
+function withPaymentIdentifier(headerValue: string): string {
+  try {
+    const envelope: unknown = JSON.parse(Buffer.from(headerValue, 'base64').toString('utf8'));
+    if (typeof envelope !== 'object' || envelope === null) {
+      return headerValue;
+    }
+    const record = envelope as Record<string, unknown>;
+    const transaction = (record.payload as { transaction?: unknown } | undefined)?.transaction;
+    const seed = typeof transaction === 'string' ? transaction : headerValue;
+    const id = `pay_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`;
+    const extensions = (record.extensions ?? {}) as Record<string, unknown>;
+    record.extensions = { ...extensions, 'payment-identifier': { info: { id } } };
+    return Buffer.from(JSON.stringify(record), 'utf8').toString('base64');
+  } catch {
+    // An envelope we cannot read is one we must not break. The upstream will
+    // refuse it for the missing id, which is the same outcome as before this
+    // function existed - whereas throwing here would turn a signed, sendable
+    // payment into a crash on the money path.
+    return headerValue;
+  }
 }
 
 /** Per-attempt flag: flips the moment a payment claim is granted (i.e. just before a signed payment leaves). */
@@ -343,6 +407,9 @@ export class X402Driver implements X402JobDriver {
     attemptState: AttemptState,
   ): typeof globalThis.fetch {
     const store = this.store;
+    // Learned from this call's own 402, not from the cached probe: the
+    // challenge that governs a payment is the one that immediately preceded it.
+    let identifierRequired = false;
     return async function instrumentedFetch(info, init) {
       const request = new Request(info, init);
       if (request.headers.has('PAYMENT-SIGNATURE') || request.headers.has('X-PAYMENT')) {
@@ -362,6 +429,10 @@ export class X402Driver implements X402JobDriver {
         // know whether the upstream saw (and can settle) the payment, so the
         // attempt must count as money-unknown, never as money-free.
         attemptState.paymentSent = true;
+        const signature = request.headers.get('PAYMENT-SIGNATURE');
+        if (identifierRequired && signature !== null) {
+          request.headers.set('PAYMENT-SIGNATURE', withPaymentIdentifier(signature));
+        }
       }
       // `redirect: 'error'`: the upstream is untrusted. Auto-following a 3xx
       // would send the request - including the signed PAYMENT-SIGNATURE on the
@@ -369,6 +440,9 @@ export class X402Driver implements X402JobDriver {
       // Rebuild the request with the original method/headers/body so the option
       // takes effect (a Request's redirect mode is otherwise fixed at construction).
       const response = await globalThis.fetch(new Request(request, { redirect: 'error' }));
+      if (response.status === 402) {
+        identifierRequired = challengeRequiresPaymentIdentifier(response);
+      }
       // Cap the 402 challenge body the wrapper is about to read uncapped.
       return capChallengeResponse(response);
     };
@@ -407,14 +481,45 @@ export class X402Driver implements X402JobDriver {
     return new X402TransientError(`upstream request failed: ${message}`);
   }
 
-  private classifyStatus(status: number): Error {
+  /**
+   * Read a short, safe excerpt of a failing upstream's body.
+   *
+   * A bare status code is not a diagnosis: a 4xx from an x402 upstream can
+   * mean a rejected payload, a missing required extension, or an argument the
+   * service did not like, and the operator cannot tell which without the
+   * body's own words. The body is untrusted, so it is capped, control-stripped
+   * and collapsed to one line before it reaches a log or a job's error
+   * feedback. Reading it never fails the caller - an unreadable body simply
+   * yields no excerpt, which is exactly the status-only message as before.
+   */
+  private async errorExcerpt(response: Response): Promise<string> {
+    try {
+      const raw = await response.text();
+      const flat = sanitizeForTerminal(raw).replace(/\s+/g, ' ').trim();
+      if (flat.length === 0) {
+        return '';
+      }
+      const clipped =
+        flat.length > UPSTREAM_ERROR_EXCERPT_CHARS
+          ? `${flat.slice(0, UPSTREAM_ERROR_EXCERPT_CHARS)}...`
+          : flat;
+      return `: ${clipped}`;
+    } catch {
+      return '';
+    }
+  }
+
+  private classifyStatus(status: number, excerpt: string): Error {
     if (status === 402) {
-      return new X402TransientError('upstream still returned 402 after a payment attempt', status);
+      return new X402TransientError(
+        `upstream still returned 402 after a payment attempt${excerpt}`,
+        status,
+      );
     }
     if (status === 429 || status >= 500) {
-      return new X402TransientError(`upstream returned ${status}`, status);
+      return new X402TransientError(`upstream returned ${status}${excerpt}`, status);
     }
-    return new X402PermanentError(`upstream returned ${status}`);
+    return new X402PermanentError(`upstream returned ${status}${excerpt}`);
   }
 
   async execute(
@@ -576,8 +681,7 @@ export class X402Driver implements X402JobDriver {
       throw this.classifyWrapperError(error);
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => {});
-      throw this.classifyStatus(response.status);
+      throw this.classifyStatus(response.status, await this.errorExcerpt(response));
     }
 
     let bytes: Uint8Array;

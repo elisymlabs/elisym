@@ -43,6 +43,16 @@ export const X402_GET_INPUT_MAX_ENCODED_BYTES = 2_048;
 export const X402_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 /**
+ * How much of a FAILING upstream's body is quoted back in the error.
+ *
+ * Enough for the service's own explanation - a rejected argument, a missing
+ * required extension - and short enough that an untrusted body cannot flood a
+ * log or a job's error feedback. The excerpt is control-stripped and collapsed
+ * to one line before it goes anywhere.
+ */
+export const UPSTREAM_ERROR_EXCERPT_CHARS = 400;
+
+/**
  * Cap on a 402 challenge body during the payment handshake. The `@x402/fetch`
  * wrapper reads the initial 402 body uncapped to parse the requirements; a
  * hostile upstream could send a small 402 on probes but a giant one on the
