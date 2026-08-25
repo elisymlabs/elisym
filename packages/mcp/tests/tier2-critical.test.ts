@@ -6,7 +6,12 @@ import { join } from 'node:path';
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { saveAgentConfig, loadAgentConfig, updateAgentSecurity } from '../src/config.js';
-import { AgentContext, explorerClusterFor, rpcUrlFor, type AgentInstance } from '../src/context.js';
+import {
+  AgentContext,
+  explorerQuerySuffixFor,
+  rpcUrlFor,
+  type AgentInstance,
+} from '../src/context.js';
 import { registeredTools } from '../src/server.js';
 import { parseSolToLamports } from '../src/utils.js';
 
@@ -36,8 +41,13 @@ describe('network mapping', () => {
     expect(rpcUrlFor('devnet')).toBe('https://api.devnet.solana.com');
   });
 
-  it('explorer cluster query param matches network', () => {
-    expect(explorerClusterFor('devnet')).toBe('devnet');
+  it('rpcUrlFor returns the mainnet RPC', () => {
+    expect(rpcUrlFor('mainnet')).toBe('https://api.mainnet-beta.solana.com');
+  });
+
+  it('explorer links: devnet carries the cluster param, mainnet is a clean URL', () => {
+    expect(explorerQuerySuffixFor('devnet')).toBe('?cluster=devnet');
+    expect(explorerQuerySuffixFor('mainnet')).toBe('');
   });
 });
 
@@ -155,16 +165,14 @@ describe('config security flags', () => {
     expect(loaded.payments?.[0]?.network).toBe('devnet');
   });
 
-  it('rejects loading a YAML that declares a non-devnet network', async () => {
-    // Simulate a hand-edited or legacy YAML with mainnet - Zod in agent-store
-    // rejects it with a clear error before the MCP adapter gets a chance.
+  it('loads a YAML that declares mainnet', async () => {
     const { mkdir, writeFile } = await import('node:fs/promises');
-    const dir = join(tmpHome, '.elisym', 'legacy-mainnet');
+    const dir = join(tmpHome, '.elisym', 'mainnet-agent');
     await mkdir(dir, { recursive: true });
     await writeFile(
       join(dir, 'elisym.yaml'),
       [
-        'description: old',
+        'description: mainnet agent',
         'relays: [wss://relay.damus.io]',
         'payments:',
         '  - chain: solana',
@@ -177,7 +185,49 @@ describe('config security flags', () => {
       join(dir, '.secrets.json'),
       JSON.stringify({ nostr_secret_key: '0'.repeat(64) }),
     );
-    await expect(loadAgentConfig('legacy-mainnet')).rejects.toThrow();
+    const loaded = await loadAgentConfig('mainnet-agent');
+    expect(loaded.network).toBe('mainnet');
+    expect(loaded.payments?.[0]?.network).toBe('mainnet');
+  });
+
+  it('saveAgentConfig honors network: mainnet end-to-end', async () => {
+    await saveAgentConfig('mainnet-rt', {
+      name: 'mainnet-rt',
+      description: 'test',
+      relays: ['wss://relay.damus.io'],
+      nostrSecretKey: '0'.repeat(64),
+      solanaSecretKey: 'z'.repeat(87),
+      solanaAddress: 'CYWTDfv5keEpddQRkpYCuSGkzPkMRh2UWsw7zrgoC4QP',
+      network: 'mainnet',
+    });
+    const loaded = await loadAgentConfig('mainnet-rt');
+    expect(loaded.network).toBe('mainnet');
+    expect(loaded.payments?.[0]?.network).toBe('mainnet');
+  });
+
+  it('rejects loading a YAML that declares an unsupported network', async () => {
+    // Zod in agent-store rejects unknown networks (e.g. testnet) with a clear
+    // error before the MCP adapter gets a chance.
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const dir = join(tmpHome, '.elisym', 'legacy-testnet');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, 'elisym.yaml'),
+      [
+        'description: old',
+        'relays: [wss://relay.damus.io]',
+        'payments:',
+        '  - chain: solana',
+        '    network: testnet',
+        '    address: CYWTDfv5keEpddQRkpYCuSGkzPkMRh2UWsw7zrgoC4QP',
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      join(dir, '.secrets.json'),
+      JSON.stringify({ nostr_secret_key: '0'.repeat(64) }),
+    );
+    await expect(loadAgentConfig('legacy-testnet')).rejects.toThrow();
   });
 });
 

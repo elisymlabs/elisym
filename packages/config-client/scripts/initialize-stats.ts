@@ -1,15 +1,18 @@
 /**
- * One-shot script to call `initialize_stats` on the elisym-config program on devnet.
+ * One-shot script to call `initialize_stats` on the elisym-config program.
  *
- * Mirrors `initialize-devnet.ts` for the new `NetworkStats` PDA introduced
+ * Network-agnostic: the target cluster is whatever SOLANA_RPC_URL / RPC_URL points at.
+ * Must be signed by the current config admin (`has_one = admin`, `payer = admin`).
+ *
+ * Mirrors `initialize.ts` for the new `NetworkStats` PDA introduced
  * alongside the on-chain stats counter.
  *
  * Usage:
- *   bun run packages/config-client/scripts/initialize-stats-devnet.ts
+ *   bun run packages/config-client/scripts/initialize-stats.ts
  *
  * Optional env:
  *   PROGRAM_ID          - defaults to the Codama-embedded program address
- *   RPC_URL             - defaults to https://api.devnet.solana.com
+ *   SOLANA_RPC_URL      - RPC endpoint (alias: RPC_URL); defaults to https://api.devnet.solana.com
  *   ADMIN_KEYPAIR_PATH  - path to admin keypair JSON; defaults to ~/.config/solana/id.json.
  *                         Must equal the on-chain `Config.admin` (has_one check).
  */
@@ -39,13 +42,28 @@ const PROGRAM_ID: Address = process.env.PROGRAM_ID
   ? address(process.env.PROGRAM_ID)
   : ELISYM_CONFIG_PROGRAM_ADDRESS;
 
-const RPC_URL = process.env.RPC_URL ?? 'https://api.devnet.solana.com';
+const RPC_URL =
+  process.env.SOLANA_RPC_URL ?? process.env.RPC_URL ?? 'https://api.devnet.solana.com';
 const WS_URL = RPC_URL.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 
 const ADMIN_KEYPAIR_PATH =
   process.env.ADMIN_KEYPAIR_PATH ?? join(homedir(), '.config/solana/id.json');
 
 const adminSecretKey = new Uint8Array(JSON.parse(readFileSync(ADMIN_KEYPAIR_PATH, 'utf8')));
+
+/**
+ * An RPC endpoint safe to print: scheme and host only. The path is dropped
+ * because that is where Alchemy and QuickNode put the API key, and the query
+ * string for the same reason. Use `admin.ts show` if you need to know which
+ * cluster answered - it asks the chain for its genesis hash.
+ */
+function redactRpcUrl(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '(unparseable RPC URL)';
+  }
+}
 
 async function main(): Promise<void> {
   const admin = await createKeyPairSignerFromBytes(adminSecretKey);
@@ -63,7 +81,7 @@ async function main(): Promise<void> {
     seeds: [new TextEncoder().encode('__event_authority')],
   });
 
-  console.log('RPC:                ', RPC_URL);
+  console.log('RPC:                ', redactRpcUrl(RPC_URL));
   console.log('Program ID:         ', PROGRAM_ID);
   console.log('Admin (signer):     ', admin.address);
   console.log('Config PDA:         ', configPda);

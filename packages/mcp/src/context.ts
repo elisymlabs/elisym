@@ -16,28 +16,39 @@ import type { IrohBlobTransport } from '@elisym/sdk/node';
 import { createSolanaRpc } from '@solana/kit';
 
 /**
- * Supported Solana networks. Currently devnet only - mainnet will be re-added
- * once the elisym-config program is deployed and audited. `testnet` is not
- * supported.
+ * Supported Solana networks. An agent's network is fixed at creation
+ * (`payments[].network` in its YAML). `testnet` is not supported.
  */
-export type SolanaNetwork = 'devnet';
+export type SolanaNetwork = 'devnet' | 'mainnet';
 
-/** Map a network to its RPC endpoint. */
-export function rpcUrlFor(_network: SolanaNetwork): string {
-  return 'https://api.devnet.solana.com';
+/**
+ * Map a network to its public RPC endpoint. Deliberately does NOT honor a
+ * process-wide `SOLANA_RPC_URL` override: one MCP process hosts multiple
+ * agents that may span networks, so a single override could point a devnet
+ * agent's payment path at the mainnet cluster and spend real funds. If an
+ * override is ever needed here it must be network-scoped.
+ */
+export function rpcUrlFor(network: SolanaNetwork): string {
+  return network === 'mainnet'
+    ? 'https://api.mainnet-beta.solana.com'
+    : 'https://api.devnet.solana.com';
 }
 
 /** Fetch on-chain protocol config (fee, treasury) for a given network. */
-export async function fetchProtocolConfig(_network: SolanaNetwork): Promise<ProtocolConfigInput> {
-  const programId = getProtocolProgramId('devnet');
-  const rpc = createSolanaRpc(rpcUrlFor('devnet'));
-  const config = await getProtocolConfig(rpc, programId, { forceRefresh: true });
+export async function fetchProtocolConfig(network: SolanaNetwork): Promise<ProtocolConfigInput> {
+  const programId = getProtocolProgramId(network);
+  const rpc = createSolanaRpc(rpcUrlFor(network));
+  const config = await getProtocolConfig(rpc, programId, network, { forceRefresh: true });
   return { feeBps: config.feeBps, treasury: config.treasury };
 }
 
-/** Map a network to the explorer cluster query-string value. */
-export function explorerClusterFor(_network: SolanaNetwork): string {
-  return 'devnet';
+/**
+ * Query-string suffix for explorer.solana.com links. Mainnet is the
+ * explorer's default cluster, so a mainnet link stays clean (no query
+ * param); devnet links need `?cluster=devnet`.
+ */
+export function explorerQuerySuffixFor(network: SolanaNetwork): string {
+  return network === 'mainnet' ? '' : '?cluster=devnet';
 }
 
 /**
@@ -112,9 +123,9 @@ export interface WithdrawalNonce {
   /** Raw amount string as provided by the user (e.g. "0.5" or "all"). */
   amountRaw: string;
   /** Asset to withdraw. Defaults to 'sol' for back-compat with pre-USDC nonces. */
-  token?: 'sol' | 'usdc';
+  token?: 'sol' | 'usdc' | 'lsm';
   /**
-   * Amount resolved at preview time (SOL: lamports; USDC: 1e-6 USDC). Authoritative
+   * Amount resolved at preview time (SOL: lamports; USDC/LSM: 1e-6). Authoritative
    * for execution at confirm time: re-parsing `amountRaw` (especially "all") could
    * move a different amount if the balance shifted between preview and confirm. NOT
    * used for nonce match verification - that is `amountRaw`.

@@ -16,7 +16,9 @@ import {
 import {
   type ParsedAcceptAdminInstruction,
   type ParsedCancelPendingAdminInstruction,
+  type ParsedCreateAssetStatsInstruction,
   type ParsedIncrementStatsInstruction,
+  type ParsedIncrementStatsV2Instruction,
   type ParsedInitializeInstruction,
   type ParsedInitializeStatsInstruction,
   type ParsedProposeAdminInstruction,
@@ -28,6 +30,7 @@ export const ELISYM_CONFIG_PROGRAM_ADDRESS =
   'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE' as Address<'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE'>;
 
 export enum ElisymConfigAccount {
+  AssetStats,
   Config,
   NetworkStats,
 }
@@ -36,6 +39,17 @@ export function identifyElisymConfigAccount(
   account: { data: ReadonlyUint8Array } | ReadonlyUint8Array
 ): ElisymConfigAccount {
   const data = 'data' in account ? account.data : account;
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([44, 24, 137, 137, 250, 226, 23, 118])
+      ),
+      0
+    )
+  ) {
+    return ElisymConfigAccount.AssetStats;
+  }
   if (
     containsBytes(
       data,
@@ -66,7 +80,9 @@ export function identifyElisymConfigAccount(
 export enum ElisymConfigInstruction {
   AcceptAdmin,
   CancelPendingAdmin,
+  CreateAssetStats,
   IncrementStats,
+  IncrementStatsV2,
   Initialize,
   InitializeStats,
   ProposeAdmin,
@@ -104,12 +120,34 @@ export function identifyElisymConfigInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([149, 81, 159, 235, 145, 229, 114, 102])
+      ),
+      0
+    )
+  ) {
+    return ElisymConfigInstruction.CreateAssetStats;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([145, 78, 96, 206, 45, 21, 111, 175])
       ),
       0
     )
   ) {
     return ElisymConfigInstruction.IncrementStats;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([59, 252, 76, 120, 173, 113, 197, 249])
+      ),
+      0
+    )
+  ) {
+    return ElisymConfigInstruction.IncrementStatsV2;
   }
   if (
     containsBytes(
@@ -181,8 +219,14 @@ export type ParsedElisymConfigInstruction<
       instructionType: ElisymConfigInstruction.CancelPendingAdmin;
     } & ParsedCancelPendingAdminInstruction<TProgram>)
   | ({
+      instructionType: ElisymConfigInstruction.CreateAssetStats;
+    } & ParsedCreateAssetStatsInstruction<TProgram>)
+  | ({
       instructionType: ElisymConfigInstruction.IncrementStats;
     } & ParsedIncrementStatsInstruction<TProgram>)
+  | ({
+      instructionType: ElisymConfigInstruction.IncrementStatsV2;
+    } & ParsedIncrementStatsV2Instruction<TProgram>)
   | ({
       instructionType: ElisymConfigInstruction.Initialize;
     } & ParsedInitializeInstruction<TProgram>)

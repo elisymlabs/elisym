@@ -1,5 +1,11 @@
 import { assetKey, resolveKnownAsset, type Job, type JobStatus } from '@elisym/sdk';
-import { isTerminalJobStatus, type StoredJob } from '~/lib/jobHistory';
+import type { SolanaCluster } from '~/lib/cluster';
+import {
+  isTerminalJobStatus,
+  localJobNetwork,
+  MAINNET_EPOCH_SECS,
+  type StoredJob,
+} from '~/lib/jobHistory';
 
 export type JobRowSource = 'local' | 'merged' | 'nostr-only';
 
@@ -83,15 +89,39 @@ function relayAmountFields(job: Job): Pick<JobRowData, 'paymentAmount' | 'assetK
 }
 
 /**
+ * D13 relay-side classification: job events carry no network field, so the
+ * launch-epoch cutoff decides - created before the mainnet launch = devnet.
+ * Only meaningful for rows with no local trace; a matching local entry
+ * (stamped, or legacy-unstamped = devnet) overrides this cutoff, covering a
+ * stale pre-flip tab that keeps submitting devnet jobs after the epoch.
+ */
+function relayJobNetwork(job: Job): SolanaCluster {
+  return job.createdAt >= MAINNET_EPOCH_SECS ? 'mainnet' : 'devnet';
+}
+
+/**
  * The /jobs page is an index, not a reader: rows carry status and metadata
  * only - results are read on the agent's Chat tab, which hydrates and
  * reconciles them from the relays in conversation context.
+ *
+ * `network` scopes the page to the current cluster (D13): local entries on
+ * the other network are hidden, and relay-side entries are classified by
+ * `relayJobNetwork` with the local-entry override above. Callers pass ALL
+ * local jobs unfiltered - a hidden wrong-network local entry must still
+ * suppress (and classify) its relay-side counterpart.
  */
-export function buildJobRows(localJobs: StoredJob[], relayJobs: Job[]): JobRowData[] {
+export function buildJobRows(
+  localJobs: StoredJob[],
+  relayJobs: Job[],
+  network: SolanaCluster,
+): JobRowData[] {
   const relayById = new Map(relayJobs.map((job) => [job.eventId, job]));
   const rows: JobRowData[] = [];
 
   for (const local of localJobs) {
+    if (localJobNetwork(local) !== network) {
+      continue;
+    }
     const relay = relayById.get(local.jobEventId);
     rows.push({
       jobEventId: local.jobEventId,
@@ -111,6 +141,11 @@ export function buildJobRows(localJobs: StoredJob[], relayJobs: Job[]): JobRowDa
   const localIds = new Set(localJobs.map((local) => local.jobEventId));
   for (const relay of relayJobs) {
     if (localIds.has(relay.eventId)) {
+      // Rendered above as merged - or suppressed because the local entry sits
+      // on the other network, which also overrides the epoch classification.
+      continue;
+    }
+    if (relayJobNetwork(relay) !== network) {
       continue;
     }
     rows.push({

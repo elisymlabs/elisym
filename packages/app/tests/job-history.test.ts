@@ -10,6 +10,7 @@ import {
   createJobHistoryStore,
   isTerminalJobStatus,
   JOB_HISTORY_KEY_PREFIX,
+  localJobNetwork,
   type JobHistoryStorageAdapter,
   type StoredJob,
 } from '~/lib/jobHistory';
@@ -189,7 +190,7 @@ describe('jobHistory store', () => {
     store.saveJob(WALLET, job({ status: 'pending' }));
     store.flipTerminal(WALLET, 'job-1', { status: 'completed' }, { stampUnseen: false });
     expect(store.readJobs(WALLET)[0]?.unseen).toBeUndefined();
-    expect(store.unseenCount(WALLET)).toBe(0);
+    expect(store.unseenCount(WALLET, 'devnet')).toBe(0);
   });
 
   it('clearUnseen scopes to an agent and skips the write when nothing is set', () => {
@@ -198,14 +199,14 @@ describe('jobHistory store', () => {
     store.saveJob(WALLET, job({ jobEventId: 'b', agentPubkey: 'agent-2', status: 'pending' }));
     store.flipTerminal(WALLET, 'a', { status: 'completed' }, { stampUnseen: true });
     store.flipTerminal(WALLET, 'b', { status: 'completed' }, { stampUnseen: true });
-    expect(store.unseenCount(WALLET)).toBe(2);
+    expect(store.unseenCount(WALLET, 'devnet')).toBe(2);
 
     store.clearUnseen(WALLET, 'agent-1');
-    expect(store.unseenCount(WALLET)).toBe(1);
+    expect(store.unseenCount(WALLET, 'devnet')).toBe(1);
     expect(store.readJobs(WALLET).find((entry) => entry.jobEventId === 'b')?.unseen).toBe(true);
 
     store.clearUnseen(WALLET);
-    expect(store.unseenCount(WALLET)).toBe(0);
+    expect(store.unseenCount(WALLET, 'devnet')).toBe(0);
 
     // Loop guard: a clear with nothing to clear must not bump the version -
     // the clear-while-mounted effects key on it.
@@ -293,5 +294,21 @@ describe('jobHistory store', () => {
     expect(isTerminalJobStatus('pending')).toBe(false);
     expect(isTerminalJobStatus('payment-completed')).toBe(false);
     expect(isTerminalJobStatus('submitted')).toBe(false);
+  });
+
+  it('unseenCount scopes to the network - unstamped entries count as devnet (D13)', () => {
+    const store = createJobHistoryStore(memoryStorage());
+    store.saveJob(WALLET, job({ jobEventId: 'legacy', unseen: true }));
+    store.saveJob(WALLET, job({ jobEventId: 'dev', unseen: true, network: 'devnet' }));
+    store.saveJob(WALLET, job({ jobEventId: 'main', unseen: true, network: 'mainnet' }));
+
+    expect(store.unseenCount(WALLET, 'devnet')).toBe(2);
+    expect(store.unseenCount(WALLET, 'mainnet')).toBe(1);
+  });
+
+  it('localJobNetwork reads unstamped entries as devnet', () => {
+    expect(localJobNetwork(job())).toBe('devnet');
+    expect(localJobNetwork(job({ network: 'devnet' }))).toBe('devnet');
+    expect(localJobNetwork(job({ network: 'mainnet' }))).toBe('mainnet');
   });
 });

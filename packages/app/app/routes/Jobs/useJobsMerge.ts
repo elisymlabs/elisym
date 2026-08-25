@@ -6,8 +6,9 @@ import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { useJobHistory } from '~/hooks/useJobHistory';
 import { usePageVisible } from '~/hooks/usePageVisible';
+import { SOLANA_CLUSTER } from '~/lib/cluster';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
-import { isTerminalJobStatus, readJobs } from '~/lib/jobHistory';
+import { isTerminalJobStatus, localJobNetwork, readJobs } from '~/lib/jobHistory';
 import { buildJobRows, type JobRowData } from './lib/rows';
 
 /** Relay merge window and request limit (plan decision 7). */
@@ -63,7 +64,13 @@ async function fetchRelaySide(
   const providerByRequest = new Map<string, string>();
   const resultIds: string[] = [];
   for (const local of readJobs(wallet)) {
-    if (isTerminalJobStatus(local.status) || local.createdAt < localCutoffMs) {
+    // Wrong-network rows are hidden by the merge (D13) - do not spend result
+    // queries flipping entries the page will never show.
+    if (
+      localJobNetwork(local) !== SOLANA_CLUSTER ||
+      isTerminalJobStatus(local.status) ||
+      local.createdAt < localCutoffMs
+    ) {
       continue;
     }
     resultIds.push(local.jobEventId);
@@ -147,7 +154,10 @@ export function useJobsMerge(): {
     }
   }, [data, wallet, flipJob, pageVisible]);
 
-  const rows = useMemo(() => buildJobRows(localJobs, data?.jobs ?? []), [localJobs, data]);
+  const rows = useMemo(
+    () => buildJobRows(localJobs, data?.jobs ?? [], SOLANA_CLUSTER),
+    [localJobs, data],
+  );
 
   return {
     rows,

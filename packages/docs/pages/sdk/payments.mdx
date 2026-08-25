@@ -4,26 +4,39 @@ The SDK exposes the full [payment](/protocol/payments) machinery: reading the on
 
 ## Assets
 
-Amounts are denominated in an asset. SOL is native; USDC is supported on devnet. Each helper takes the asset first, then the amount.
+Amounts are denominated in an asset. SOL is native; USDC is an SPL token with a different mint per [network](/reference/networks), so USDC-touching code resolves the asset through the active network with `resolveUsdcAsset`. LSM is the protocol's own token, **mainnet-only**: `resolveLsmAsset(network)` returns it on mainnet and `undefined` on devnet, and `splAssetsForNetwork(network)` lists every SPL asset a network supports. Each helper takes the asset first, then the amount.
 
 ```ts twoslash
-import { NATIVE_SOL, USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import {
+  LSM_SOLANA_MAINNET,
+  NATIVE_SOL,
+  USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
+  resolveLsmAsset,
+  resolveUsdcAsset,
+  splAssetsForNetwork,
+} from '@elisym/sdk';
 import { formatAssetAmount, parseAssetAmount } from '@elisym/sdk';
 
 // subunit -> display
 formatAssetAmount(NATIVE_SOL, 1_000_000_000n); // "1 SOL"
 // display -> subunit
 parseAssetAmount(USDC_SOLANA_DEVNET, '0.5'); // 500000n
+
+// the canonical USDC asset for a network
+resolveUsdcAsset('mainnet'); // USDC_SOLANA_MAINNET
+resolveLsmAsset('mainnet'); // LSM_SOLANA_MAINNET (undefined on devnet)
+splAssetsForNetwork('mainnet'); // [USDC_SOLANA_MAINNET, LSM_SOLANA_MAINNET]
 ```
 
-`KNOWN_ASSETS` is the registry of recognized assets; helpers like `resolveKnownAsset` and `assetByKey` look them up. All money math goes through `decimal.js-light` and basis points - never floats.
+`KNOWN_ASSETS` is the registry of recognized assets; helpers like `resolveKnownAsset` and `assetByKey` look them up - note both USDC mints and LSM are registered, so a flat lookup cannot distinguish networks; prefer the per-network resolvers. An `Asset` may declare a `tokenProgram` - the owner program of its mint. LSM's mint is **Token-2022** (`TOKEN_2022_PROGRAM_ADDRESS_STR`), and the payment builders derive token accounts and target `transferChecked` at that program automatically; assets without the field use the classic SPL Token program. All money math goes through `decimal.js-light` and basis points - never floats.
 
 ## The on-chain fee config
 
-The protocol fee rate and treasury address live in the `elisym-config` Solana program, not in the SDK. Read them with `getProtocolConfig`, which takes a Solana RPC client and the program id (`PROTOCOL_PROGRAM_ID_DEVNET`); results are cached, and `clearProtocolConfigCache` resets the cache.
+The protocol fee rate and treasury address live in the `elisym-config` Solana program, not in the SDK. Read them with `getProtocolConfig`, which takes a Solana RPC client, the program id (`getProtocolProgramId(network)`), and the network - the program is deployed at the same address on both clusters, so the cache is keyed by `(programId, network)` and one cluster's snapshot never serves the other. `clearProtocolConfigCache` resets the cache.
 
 ```ts twoslash
-import { getProtocolConfig, clearProtocolConfigCache, PROTOCOL_PROGRAM_ID_DEVNET } from '@elisym/sdk';
+import { getProtocolConfig, clearProtocolConfigCache, getProtocolProgramId } from '@elisym/sdk';
 ```
 
 ## Building and validating payment
@@ -36,9 +49,13 @@ import { getProtocolConfig, clearProtocolConfigCache, PROTOCOL_PROGRAM_ID_DEVNET
 | `buildPaymentInstructions` / `SolanaPaymentStrategy` | Construct the two-transfer transaction.            |
 | `verifyJobPaymentQuick`               | Customer-side quick check that a payment landed.                 |
 
+These APIs are network-explicit: request creation stamps the provider's `network` into the request, `SolanaPaymentStrategy.validatePaymentRequest` takes the customer's network and rejects a cross-network request before any money check, and `buildPaymentInstructions` requires an explicit `programId` (no silent devnet default - the program id is cluster-ambiguous by design).
+
+`validatePaymentRequest` also binds the asset. It refuses any asset that does not exist on the customer's network (the other cluster's USDC, or a mainnet-only asset quoted to a devnet customer), and `options.expectedAsset` closes the currency bait-and-switch the same way `expectedRecipient` closes payment redirection - pass the asset you agreed to pay and a request debiting a different one is rejected with `asset_mismatch`. The membership check alone cannot catch that: USDC and LSM are both mainnet assets with 6 decimals, so the same number in the wrong currency passes everything else.
+
 ## Estimating cost
 
-Before paying, preview the real cost - base fee, priority fee, and any token-account rent:
+Before paying, preview the real cost - base fee, priority fee, and any token-account rent. Both estimators take the network (the priority-fee cache is cluster-keyed):
 
 ```ts twoslash
 import { estimateSolFeeLamports, estimatePriorityFeeMicroLamports } from '@elisym/sdk';
@@ -48,10 +65,12 @@ import { estimateSolFeeLamports, estimatePriorityFeeMicroLamports } from '@elisy
 
 ## Network stats
 
-Aggregate on-chain elisym activity (completed jobs, volume) for dashboards. `getNetworkStats` also takes a Solana RPC client and the program id:
+Aggregate on-chain elisym activity (completed jobs, volume) for dashboards. `getNetworkStats` takes a Solana RPC client, the program id, and the network:
 
 ```ts twoslash
 import { getNetworkStats } from '@elisym/sdk';
 ```
+
+The result carries the global job count, per-asset totals in `volumeByAssetKey` (keyed by `assetKey`, one entry per `KNOWN_ASSETS` member), and the `volumeNative` / `volumeUsdc` convenience fields. Volumes merge the program's legacy fixed slots (folded into the queried network's canonical USDC) with the per-mint `AssetStats` accounts, so totals stay continuous across old and new clients - and a newly added asset is counted automatically, no program upgrade needed.
 
 This is what the [web app](/customers/web-app) uses for its network-wide totals.

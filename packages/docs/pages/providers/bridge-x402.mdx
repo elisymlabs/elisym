@@ -16,7 +16,7 @@ npx @elisym/cli start my-agent
 
 ## How the money flows
 
-1. A customer hires the skill and pays your agent's address in devnet USDC (elisym verifies the payment on-chain **before** execution).
+1. A customer hires the skill and pays your agent's address in USDC on the agent's network (elisym verifies the payment on-chain **before** execution).
 2. The agent calls the upstream, pays its quote over x402 from the **same wallet**, and delivers the response.
 3. Your margin is the difference: `price - protocol fee - upstream quote`.
 
@@ -26,9 +26,9 @@ npx @elisym/cli start my-agent
 
 ## Prerequisites
 
-- An agent (`npx @elisym/cli init`).
-- A small devnet USDC float in the agent wallet - get some at the [Circle faucet](https://faucet.circle.com).
-- An upstream that accepts x402 payments in **devnet USDC on Solana** (`exact` scheme). EVM-only services and Solana mainnet services are not bridgeable yet; the command tells you exactly what the upstream accepts when it refuses.
+- An agent (`npx @elisym/cli init`). The agent's [network](/reference/networks) decides which upstreams are bridgeable: a devnet agent bridges devnet-settling upstreams, a mainnet agent bridges mainnet-settling ones.
+- A small USDC float in the agent wallet - on devnet from the [Circle faucet](https://faucet.circle.com), on mainnet with real USDC.
+- An upstream that accepts x402 payments in **USDC on Solana** on the agent's network (`exact` scheme). The network id is CAIP-2 form: `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` for devnet (v1 alias `solana-devnet`), `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` for mainnet (v1 alias `solana`). EVM-only services are not bridgeable yet; the command tells you exactly what the upstream accepts when it refuses.
 
 ## Command reference
 
@@ -127,6 +127,7 @@ import { ExactSvmScheme } from '@x402/svm/exact/server';
 import { Hono } from 'hono';
 
 const SOLANA_DEVNET = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+// Mainnet variant: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' - bridgeable by a mainnet agent.
 const PAY_TO = 'YOUR_DEVNET_ADDRESS';
 
 const facilitator = new HTTPFacilitatorClient({ url: 'https://facilitator.x402.org' });

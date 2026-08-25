@@ -14,8 +14,10 @@
  * customer's account, and after USDC -> anything the agent has NO authority over
  * the output (the approve was on the USDC account only).
  *
- * Run (against devnet, with a delegate key an owner has already approved):
+ * Run (with a delegate key an owner has already approved; `NETWORK` defaults
+ * to devnet and drives the USDC mint and the RPC defaults):
  *
+ *   NETWORK=devnet|mainnet \
  *   DELEGATE_SECRET=<base58 delegate key> \
  *   OWNER_ADDRESS=<the customer wallet that approved this delegate> \
  *   SPEND_USDC=0.25 \
@@ -43,12 +45,18 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { buildDelegatedTransfer, deriveOwnerDelegationAta, getDelegation } from '../src/delegation';
-import { USDC_SOLANA_DEVNET, formatAssetAmount, parseAssetAmount } from '../src/payment/assets';
+import { formatAssetAmount, parseAssetAmount, resolveUsdcAsset } from '../src/payment/assets';
 import { signerFromSecretKeyBase58 } from '../src/payment/wallet';
+import type { Network } from '../src/types';
 
-const RPC_URL = process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com';
-const WS_URL = process.env.SOLANA_WS_URL ?? 'wss://api.devnet.solana.com';
-const NETWORK = 'devnet' as const;
+const NETWORK: Network = process.env.NETWORK === 'mainnet' ? 'mainnet' : 'devnet';
+const RPC_URL =
+  process.env.SOLANA_RPC_URL ??
+  (NETWORK === 'mainnet' ? 'https://api.mainnet-beta.solana.com' : 'https://api.devnet.solana.com');
+const WS_URL =
+  process.env.SOLANA_WS_URL ??
+  (NETWORK === 'mainnet' ? 'wss://api.mainnet-beta.solana.com' : 'wss://api.devnet.solana.com');
+const USDC_ASSET = resolveUsdcAsset(NETWORK);
 
 const rpc = createSolanaRpc(RPC_URL);
 const rpcSubscriptions = createSolanaRpcSubscriptions(WS_URL);
@@ -69,7 +77,7 @@ async function main(): Promise<void> {
   const spendHuman = requireEnv('SPEND_USDC');
   const payeeAddress = process.env.PAYEE_ADDRESS;
 
-  const requested = parseAssetAmount(USDC_SOLANA_DEVNET, spendHuman);
+  const requested = parseAssetAmount(USDC_ASSET, spendHuman);
   const ownerAta = await deriveOwnerDelegationAta(ownerAddress, NETWORK);
 
   // 1. Confirm THIS delegate is authorized and read the remaining cap. The agent
@@ -98,8 +106,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(
-    `Remaining allowance ${formatAssetAmount(USDC_SOLANA_DEVNET, status.remainingCap)}; ` +
-      `spending ${formatAssetAmount(USDC_SOLANA_DEVNET, amount)}.`,
+    `Remaining allowance ${formatAssetAmount(USDC_ASSET, status.remainingCap)}; ` +
+      `spending ${formatAssetAmount(USDC_ASSET, amount)}.`,
   );
 
   // 3. Resolve the destination ATA.
@@ -114,7 +122,7 @@ async function main(): Promise<void> {
   const [destinationAta] = await findAssociatedTokenPda({
     owner: destinationOwner,
     tokenProgram: TOKEN_PROGRAM_ADDRESS,
-    mint: address(USDC_SOLANA_DEVNET.mint ?? ''),
+    mint: address(USDC_ASSET.mint ?? ''),
   });
 
   const transferIx = await buildDelegatedTransfer({
@@ -133,7 +141,7 @@ async function main(): Promise<void> {
         payer: delegate,
         ata: destinationAta,
         owner: destinationOwner,
-        mint: address(USDC_SOLANA_DEVNET.mint ?? ''),
+        mint: address(USDC_ASSET.mint ?? ''),
       },
       { programAddress: ASSOCIATED_TOKEN_PROGRAM_ADDRESS },
     ),
@@ -160,7 +168,7 @@ async function main(): Promise<void> {
   // never closes the account, so `after` is non-null in practice, but guard the
   // read rather than dereference a possibly-null value.
   const remainingLine = after
-    ? `Remaining allowance now ${formatAssetAmount(USDC_SOLANA_DEVNET, after.remainingCap)}.`
+    ? `Remaining allowance now ${formatAssetAmount(USDC_ASSET, after.remainingCap)}.`
     : 'Remaining allowance now unknown (owner ATA not found).';
   console.log(
     `Spent. Signature: ${signature}\n` +

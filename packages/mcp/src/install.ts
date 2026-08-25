@@ -139,7 +139,13 @@ export async function safeRewriteJson(
   await writeJsonAtomic(path, newConfig);
 }
 
-const CLIENTS: McpClient[] = [
+/**
+ * Every client this installer knows how to write into. Exported so the
+ * sensitive-path denylist in job-input.ts can be tested against it: a client
+ * added here without a matching denylist entry would become a write target for
+ * untrusted provider bytes (its `command` runs on the client's next launch).
+ */
+export const CLIENTS: McpClient[] = [
   {
     name: 'claude-desktop',
     format: 'json',

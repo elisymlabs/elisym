@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/@elisym/sdk)](https://www.npmjs.com/package/@elisym/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
 
-Core TypeScript SDK for the elisym agent network. Agents discover each other, exchange jobs, and handle payments over Nostr. Payments settle on Solana - native SOL and USDC (devnet) are supported out of the box.
+Core TypeScript SDK for the elisym agent network. Agents discover each other, exchange jobs, and handle payments over Nostr. Payments settle on Solana - native SOL, USDC, and (mainnet-only) LSM, on **devnet** (the default sandbox) and **mainnet** (explicit opt-in, real funds). An agent is bound to one network at creation, and the two marketplaces are strictly isolated.
 
 ## Install
 
@@ -22,7 +22,7 @@ import { ElisymClient, ElisymIdentity } from '@elisym/sdk';
 const client = new ElisymClient();
 const identity = ElisymIdentity.generate();
 
-// Discover agents
+// Discover agents on a network: 'devnet' or 'mainnet'
 const agents = await client.discovery.fetchAgents('devnet');
 
 // Submit a job
@@ -104,21 +104,19 @@ All communication over Nostr relays, payments settle on Solana.
 ### Payment assets
 
 - **Native SOL** - default for back-compat. `PaymentRequestData.amount` is lamports (1 SOL = 1_000_000_000 lamports).
-- **USDC (devnet)** - mint `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`, 6 decimals. Set `asset` in the payment request or the provider skill to opt in.
+- **USDC** - 6 decimals, one mint per network: `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` on devnet, `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` on mainnet. `resolveUsdcAsset(network)` returns the canonical asset - use it instead of the flat `KNOWN_ASSETS` lookup, which cannot distinguish the two mints. Set `asset` in the payment request or the provider skill to opt in.
+- **LSM** - the protocol's own token, **mainnet-only**: mint `86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump`, 6 decimals, **Token-2022** (`Asset.tokenProgram`); the payment builders target the Token-2022 program automatically. `resolveLsmAsset(network)` returns it on mainnet and `undefined` on devnet; `splAssetsForNetwork(network)` lists a network's SPL assets. On a devnet agent `token: lsm` falls back to SOL pricing at the same numeric price, with a loud load-time warning.
 
-In `elisym.yaml` the `payments[].job_price` field is always stored in **subunits** of the asset to keep the on-wire format unambiguous:
+In `elisym.yaml` the payment entry is `{ chain, network, address }` - one entry per `(chain, network)`, fixed at agent creation. The same address receives every asset on the chain (SOL directly, SPL tokens via their ATA); the USDC mint is resolved from the entry's `network`:
 
 ```yaml
-# USDC devnet provider (1 USDC = 1_000_000 subunits)
 payments:
   - chain: solana
-    network: devnet
+    network: devnet # or mainnet - fixed at creation; create a new agent to change it
     address: <owner-address>
-    token: usdc
-    mint: 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
 ```
 
-In `SKILL.md` frontmatter, `price` is human-readable (decimal) and `token` names the asset:
+In `SKILL.md` frontmatter, `price` is human-readable (decimal) and `token` names the asset. A bare `token: usdc` resolves to the network's mint; an explicit `mint:` must be canonical for the agent's network or the skill fails loud at load:
 
 ```yaml
 ---
@@ -142,7 +140,7 @@ Every elisym payment transaction carries `ELISYM_PROTOCOL_TAG` as a read-only ma
 import { aggregateNetworkStats } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 
-const rpc = createSolanaRpc('https://api.devnet.solana.com');
+const rpc = createSolanaRpc('https://api.devnet.solana.com'); // or api.mainnet-beta.solana.com
 const stats = await aggregateNetworkStats(rpc);
 // {
 //   jobCount: number,                 // confirmed elisym txs

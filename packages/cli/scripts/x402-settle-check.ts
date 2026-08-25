@@ -20,7 +20,7 @@ import {
 } from '@elisym/sdk';
 import { agentPaths, loadAgent } from '@elisym/sdk/agent-store';
 import { address, createSolanaRpc } from '@solana/kit';
-import { fetchUsdcBalance, getRpcUrl } from '../src/helpers.js';
+import { fetchUsdcBalance, formatSplBalanceValue, getRpcUrl } from '../src/helpers.js';
 import type { SkillContext, SkillInput } from '../src/skill/index.js';
 import { loadSkillsFromDir } from '../src/skill/loader.js';
 import { X402Driver } from '../src/x402/driver.js';
@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   }
 
   const loaded = await loadAgent(agentName, process.cwd(), process.env.ELISYM_PASSPHRASE);
-  const skills = loadSkillsFromDir(agentPaths(loaded.dir).skills);
+  const skills = loadSkillsFromDir(agentPaths(loaded.dir).skills, { network: 'devnet' });
   const skill =
     skills.find((entry) => entry.mode === 'x402' && entry.x402?.url === upstreamUrl) ??
     skills.find((entry) => entry.mode === 'x402');
@@ -47,9 +47,9 @@ async function main(): Promise<void> {
   const rpc = createSolanaRpc(rpcUrl);
 
   if (solPayment?.address !== undefined) {
-    const balance = await fetchUsdcBalance(rpc, address(solPayment.address));
+    const balance = await fetchUsdcBalance(rpc, address(solPayment.address), 'devnet');
     console.log(`  Bridge wallet: ${solPayment.address}`);
-    console.log(`  USDC balance:  ${formatAssetAmount(USDC_SOLANA_DEVNET, balance)}`);
+    console.log(`  USDC balance:  ${formatSplBalanceValue(USDC_SOLANA_DEVNET, balance)}`);
     console.log(`  Upstream:      ${upstreamUrl}`);
     console.log(
       `  Ceiling:       ${formatAssetAmount(USDC_SOLANA_DEVNET, skill.x402.maxUpstreamSubunits)}\n`,
@@ -57,13 +57,14 @@ async function main(): Promise<void> {
   }
 
   async function fetchLiveFeeBps(): Promise<number> {
-    const config = await getProtocolConfig(rpc, getProtocolProgramId('devnet'), {
+    const config = await getProtocolConfig(rpc, getProtocolProgramId('devnet'), 'devnet', {
       forceRefresh: true,
     });
     return config.feeBps;
   }
 
   const driver = new X402Driver({
+    network: 'devnet',
     agentDir: loaded.dir,
     paymentsAddress: solPayment?.address,
     solanaSecretKeyBase58: loaded.secrets.solana_secret_key,

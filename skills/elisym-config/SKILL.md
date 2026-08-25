@@ -76,10 +76,10 @@ Source of truth: `ElisymYamlSchema` in [`packages/sdk/src/agent-store/schema.ts`
 **`PaymentEntry`**
 
 - `chain: "solana"` (literal - only Solana is live today)
-- `network: "devnet"` (literal - only devnet is live in v0.6.x / 0.7.0 / 0.9.0)
+- `network: "devnet" | "mainnet"` (fixed at agent creation - to change networks, create a new agent; an in-place edit would replace the other network's published cards and mix history)
 - `address: string` (Base58 Solana pubkey, 32-44 chars, alphabet excludes `0OIl`)
 
-The same address receives every supported asset on the chain: native SOL directly, and SPL tokens (USDC devnet) via the Associated Token Account derived from `(address, mint)`. Per-asset pricing is declared in each skill's `SKILL.md` (`price` + optional `token: sol|usdc`), not here. There is no per-token field on the payment entry.
+The same address receives every supported asset on the chain: native SOL directly, and SPL tokens (USDC; LSM on mainnet) via the Associated Token Account derived from `(address, token program, mint)` - the USDC mint is resolved from the entry's `network`, and LSM's token program is Token-2022, so its ATA differs from the classic-SPL derivation. Per-asset pricing is declared in each skill's `SKILL.md` (`price` + optional `token: sol|usdc|lsm`), not here. There is no per-token field on the payment entry.
 
 **`LlmEntry`**
 
@@ -157,7 +157,7 @@ llm:
 
 Remind the user to export `OPENAI_API_KEY` in the shell that runs `npx @elisym/cli start`.
 
-**Switch the Solana payment address.** One entry per `(chain, network)`; adding a second devnet entry is not supported (the SDK takes the first match). Replace the existing one instead. The same address will continue to receive both SOL and USDC.
+**Switch the Solana payment address.** One entry per `(chain, network)`; adding a second devnet entry is not supported (the SDK takes the first match). Replace the existing one instead. The same address will continue to receive every supported asset (SOL, USDC; LSM on mainnet).
 
 ```yaml
 payments:

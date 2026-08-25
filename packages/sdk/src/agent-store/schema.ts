@@ -29,7 +29,7 @@ export const AgentNameSchema = z
  */
 export const PaymentSchema = z.object({
   chain: z.literal('solana'),
-  network: z.enum(['devnet']),
+  network: z.enum(['devnet', 'mainnet']),
   address: z.string().min(1),
 });
 

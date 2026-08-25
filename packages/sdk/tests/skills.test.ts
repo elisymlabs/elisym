@@ -9,7 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_MAX_TOOL_ROUNDS,
   loadSkillsFromDir,
@@ -75,6 +75,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
         ],
       },
       'prompt body',
+      { network: 'devnet' },
     );
     expect(parsed.priceSubunits).toBe(2_000_000n);
     expect(parsed.maxToolRounds).toBe(DEFAULT_MAX_TOOL_ROUNDS);
@@ -86,13 +87,16 @@ describe('validateSkillFrontmatter (strict mode)', () => {
       validateSkillFrontmatter(
         { name: 'x', description: 'y', capabilities: ['cap'], price: 0 },
         'prompt',
+        { network: 'devnet' },
       ),
     ).toThrow(/free skills/i);
   });
 
   it('rejects missing price without allowFreeSkills', () => {
     expect(() =>
-      validateSkillFrontmatter({ name: 'x', description: 'y', capabilities: ['cap'] }, 'prompt'),
+      validateSkillFrontmatter({ name: 'x', description: 'y', capabilities: ['cap'] }, 'prompt', {
+        network: 'devnet',
+      }),
     ).toThrow(/"price" is required/);
   });
 
@@ -100,7 +104,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
     const parsed = validateSkillFrontmatter(
       { name: 'x', description: 'y', capabilities: ['cap'], price: 0 },
       'prompt',
-      { allowFreeSkills: true },
+      { network: 'devnet', allowFreeSkills: true },
     );
     expect(parsed.priceSubunits).toBe(0n);
   });
@@ -109,7 +113,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
     const parsed = validateSkillFrontmatter(
       { name: 'x', description: 'y', capabilities: ['cap'] },
       'prompt',
-      { allowFreeSkills: true },
+      { network: 'devnet', allowFreeSkills: true },
     );
     expect(parsed.priceSubunits).toBe(0n);
   });
@@ -119,6 +123,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
     const parsed = validateSkillFrontmatter(
       { name: 'x', description: 'y', capabilities: ['cap'], price: 0.001 },
       'Résumez les points clés du texte suivant.',
+      { network: 'devnet' },
     );
     expect(parsed.systemPrompt).toContain('Résumez');
   });
@@ -128,6 +133,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
       validateSkillFrontmatter(
         { name: 'x', description: 'y', capabilities: [], price: 0.001 },
         'p',
+        { network: 'devnet' },
       ),
     ).toThrow(/capabilities/);
   });
@@ -137,6 +143,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
       validateSkillFrontmatter(
         { name: 'x', description: 'y', capabilities: ['ok', 42], price: 0.001 },
         'p',
+        { network: 'devnet' },
       ),
     ).toThrow(/non-empty strings/);
   });
@@ -152,6 +159,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
           max_tool_rounds: 2.5,
         },
         'p',
+        { network: 'devnet' },
       ),
     ).toThrow(/positive integer/);
   });
@@ -167,6 +175,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
           tools: [{ name: 'no-command', description: 'desc' }],
         },
         'p',
+        { network: 'devnet' },
       ),
     ).toThrow(/command/);
   });
@@ -182,6 +191,7 @@ describe('validateSkillFrontmatter (strict mode)', () => {
         image_file: './local.png',
       },
       'p',
+      { network: 'devnet' },
     );
     expect(parsed.image).toBe('https://example.com/x.png');
     expect(parsed.imageFile).toBe('./local.png');
@@ -212,14 +222,14 @@ You are a summarizer.
 `,
     );
 
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     expect(skills).toHaveLength(1);
     expect(skills[0]?.name).toBe('summary-skill');
     expect(skills[0]?.priceSubunits).toBe(1_000_000n);
   });
 
   it('returns an empty array when the directory is missing', () => {
-    expect(loadSkillsFromDir(join(tmpDir, 'nope'))).toEqual([]);
+    expect(loadSkillsFromDir(join(tmpDir, 'nope'), { network: 'devnet' })).toEqual([]);
   });
 
   it('skips a skill whose frontmatter is malformed YAML', () => {
@@ -238,7 +248,7 @@ tools:
 body
 `,
     );
-    expect(loadSkillsFromDir(tmpDir)).toEqual([]);
+    expect(loadSkillsFromDir(tmpDir, { network: 'devnet' })).toEqual([]);
   });
 
   it('rejects a skill with price 0 in strict mode', () => {
@@ -254,7 +264,7 @@ price: 0
 body
 `,
     );
-    expect(loadSkillsFromDir(tmpDir)).toEqual([]);
+    expect(loadSkillsFromDir(tmpDir, { network: 'devnet' })).toEqual([]);
   });
 
   it('loads free skills when allowFreeSkills is set', () => {
@@ -270,14 +280,17 @@ price: 0
 body
 `,
     );
-    const skills = loadSkillsFromDir(tmpDir, { allowFreeSkills: true });
+    const skills = loadSkillsFromDir(tmpDir, {
+      network: 'devnet',
+      allowFreeSkills: true,
+    });
     expect(skills).toHaveLength(1);
     expect(skills[0]?.priceSubunits).toBe(0n);
   });
 
   it('ignores entries that are not directories', () => {
     writeFileSync(join(tmpDir, 'not-a-skill.txt'), 'hello', 'utf-8');
-    expect(loadSkillsFromDir(tmpDir)).toEqual([]);
+    expect(loadSkillsFromDir(tmpDir, { network: 'devnet' })).toEqual([]);
   });
 
   it('loads a USDC-priced skill with `token: usdc`', () => {
@@ -294,13 +307,38 @@ token: usdc
 body
 `,
     );
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     expect(skills).toHaveLength(1);
     const skill = skills[0]!;
     expect(skill.priceSubunits).toBe(50_000n);
     expect(skill.asset.token).toBe('usdc');
     expect(skill.asset.symbol).toBe('USDC');
     expect(skill.asset.decimals).toBe(6);
+  });
+
+  it('loads an LSM-priced skill on a mainnet agent (Token-2022)', () => {
+    writeSkill(
+      'lsm-summary',
+      `---
+name: lsm-summary
+description: Summarize text for LSM
+capabilities: [summarize]
+price: 12.5
+token: lsm
+---
+
+body
+`,
+    );
+    const skills = loadSkillsFromDir(tmpDir, { network: 'mainnet' });
+    expect(skills).toHaveLength(1);
+    const skill = skills[0]!;
+    expect(skill.priceSubunits).toBe(12_500_000n);
+    expect(skill.asset.token).toBe('lsm');
+    expect(skill.asset.symbol).toBe('LSM');
+    expect(skill.asset.decimals).toBe(6);
+    expect(skill.asset.mint).toBe('86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump');
+    expect(skill.asset.tokenProgram).toBe('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
   });
 
   it('rejects a skill with an unknown token', () => {
@@ -317,7 +355,7 @@ token: doge
 body
 `,
     );
-    expect(loadSkillsFromDir(tmpDir)).toEqual([]);
+    expect(loadSkillsFromDir(tmpDir, { network: 'devnet' })).toEqual([]);
   });
 });
 
@@ -326,6 +364,7 @@ describe('validateSkillFrontmatter (mode)', () => {
     const parsed = validateSkillFrontmatter(
       { name: 'x', description: 'y', capabilities: ['cap'], price: 0.001 },
       'prompt',
+      { network: 'devnet' },
     );
     expect(parsed.mode).toBe('llm');
   });
@@ -341,6 +380,7 @@ describe('validateSkillFrontmatter (mode)', () => {
         output_file: './welcome.md',
       },
       '',
+      { network: 'devnet' },
     );
     expect(parsed.mode).toBe('static-file');
     expect(parsed.outputFile).toBe('./welcome.md');
@@ -357,6 +397,7 @@ describe('validateSkillFrontmatter (mode)', () => {
           mode: 'static-file',
         },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/requires "output_file"/);
   });
@@ -374,6 +415,7 @@ describe('validateSkillFrontmatter (mode)', () => {
           script: './oops.sh',
         },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/"script" is not valid/);
   });
@@ -391,6 +433,7 @@ describe('validateSkillFrontmatter (mode)', () => {
         script_timeout_ms: 5000,
       },
       '',
+      { network: 'devnet' },
     );
     expect(parsed.mode).toBe('static-script');
     expect(parsed.script).toBe('./gen.sh');
@@ -409,6 +452,7 @@ describe('validateSkillFrontmatter (mode)', () => {
         script: './proxy.sh',
       },
       '',
+      { network: 'devnet' },
     );
     expect(parsed.mode).toBe('dynamic-script');
     expect(parsed.scriptArgs).toEqual([]);
@@ -425,6 +469,7 @@ describe('validateSkillFrontmatter (mode)', () => {
           mode: 'static-script',
         },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/requires "script"/);
   });
@@ -440,6 +485,7 @@ describe('validateSkillFrontmatter (mode)', () => {
           mode: 'magic',
         },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/invalid mode/);
   });
@@ -457,6 +503,7 @@ describe('validateSkillFrontmatter (mode)', () => {
           tools: [{ name: 't', description: 'd', command: ['echo'] }],
         },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/"tools" is only valid in mode 'llm'/);
   });
@@ -474,6 +521,7 @@ describe('validateSkillFrontmatter (mode)', () => {
           output_file: './a.md',
         },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/"output_file" is only valid in mode 'static-file'/);
   });
@@ -489,6 +537,7 @@ describe('validateSkillFrontmatter (mode)', () => {
           script_args: ['--x'],
         },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/"script_args" is only valid/);
   });
@@ -506,6 +555,7 @@ describe('validateSkillFrontmatter (mode)', () => {
           script_args: '--x',
         },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/array of strings/);
   });
@@ -523,6 +573,7 @@ describe('validateSkillFrontmatter (mode)', () => {
           script_timeout_ms: 0,
         },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/positive integer/);
   });
@@ -615,7 +666,7 @@ ignored body
     );
     writeFileSync(join(dir, 'welcome.md'), 'hello world\n', 'utf-8');
 
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     expect(skills).toHaveLength(1);
     const skill = skills[0]!;
     expect(skill.constructor.name).toBe('StaticFileSkill');
@@ -641,7 +692,7 @@ output_file: ../../../etc/passwd
 
 `,
     );
-    expect(loadSkillsFromDir(tmpDir)).toEqual([]);
+    expect(loadSkillsFromDir(tmpDir, { network: 'devnet' })).toEqual([]);
   });
 
   it('static-file: caps result at MAX_STATIC_FILE_SIZE', async () => {
@@ -661,7 +712,7 @@ output_file: ./big.txt
     const oversized = 'x'.repeat(MAX_STATIC_FILE_SIZE + 1);
     writeFileSync(join(dir, 'big.txt'), oversized, 'utf-8');
 
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     expect(skills).toHaveLength(1);
     await expect(
       skills[0]!.execute(
@@ -689,7 +740,7 @@ script: ./gen.sh
     writeFileSync(scriptPath, '#!/bin/sh\necho "static result"', 'utf-8');
     chmodSync(scriptPath, 0o755);
 
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     expect(skills).toHaveLength(1);
     expect(skills[0]!.constructor.name).toBe('StaticScriptSkill');
 
@@ -718,7 +769,7 @@ script: ./fail.sh
     writeFileSync(scriptPath, '#!/bin/sh\necho "boom" >&2\nexit 7', 'utf-8');
     chmodSync(scriptPath, 0o755);
 
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     let thrown: unknown;
     try {
       await skills[0]!.execute(
@@ -752,7 +803,7 @@ script: ./upper.sh
     writeFileSync(scriptPath, '#!/bin/sh\ntr a-z A-Z', 'utf-8');
     chmodSync(scriptPath, 0o755);
 
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     expect(skills).toHaveLength(1);
     expect(skills[0]!.constructor.name).toBe('DynamicScriptSkill');
 
@@ -786,7 +837,7 @@ context: true
     );
     chmodSync(scriptPath, 0o755);
 
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     expect(skills).toHaveLength(1);
     expect(skills[0]!.context).toBe(true);
 
@@ -796,7 +847,14 @@ context: true
     ];
     const sessionId = '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c';
     const withSession = await skills[0]!.execute(
-      { data: 'second', inputType: 'text', tags: ['chat'], jobId: 'j-ctx-1', history, sessionId },
+      {
+        data: 'second',
+        inputType: 'text',
+        tags: ['chat'],
+        jobId: 'j-ctx-1',
+        history,
+        sessionId,
+      },
       { agentName: 't', agentDescription: '' },
     );
     expect(withSession.data).toBe(`${JSON.stringify(history)}:${sessionId}`);
@@ -828,7 +886,7 @@ script_args: ['flag-a', 'flag-b']
     writeFileSync(scriptPath, '#!/bin/sh\necho "args=$1,$2"\ncat', 'utf-8');
     chmodSync(scriptPath, 0o755);
 
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     const out = await skills[0]!.execute(
       { data: 'tail-input', inputType: 'text', tags: ['echo'], jobId: 'j5' },
       { agentName: 't', agentDescription: '' },
@@ -859,7 +917,7 @@ script_timeout_ms: 5000
     writeFileSync(scriptPath, '#!/bin/sh\ncat\necho done', 'utf-8');
     chmodSync(scriptPath, 0o755);
 
-    const skills = loadSkillsFromDir(tmpDir);
+    const skills = loadSkillsFromDir(tmpDir, { network: 'devnet' });
     const start = Date.now();
     const out = await skills[0]!.execute(
       { data: '', inputType: 'text', tags: ['r'], jobId: 'j-stdin' },
@@ -883,7 +941,7 @@ script: ../../../bin/sh
 
 `,
     );
-    expect(loadSkillsFromDir(tmpDir)).toEqual([]);
+    expect(loadSkillsFromDir(tmpDir, { network: 'devnet' })).toEqual([]);
   });
 });
 
@@ -904,6 +962,7 @@ describe('delegation block requires a USDC-priced skill (load-time money invaria
           delegation: delegationBlock,
         },
         'prompt',
+        { network: 'devnet' },
       ),
     ).toThrow(/USDC/);
   });
@@ -919,8 +978,188 @@ describe('delegation block requires a USDC-priced skill (load-time money invaria
         delegation: delegationBlock,
       },
       'prompt',
+      { network: 'devnet' },
     );
     expect(parsed.delegation?.mechanism).toBe('spl-approve');
     expect(parsed.asset.symbol).toBe('USDC');
+  });
+
+  it('rejects an LSM-priced mainnet skill with a delegation block (delegation stays USDC-only)', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        {
+          name: 'x',
+          description: 'y',
+          capabilities: ['cap'],
+          price: 25,
+          token: 'lsm',
+          delegation: delegationBlock,
+        },
+        'prompt',
+        { network: 'mainnet' },
+      ),
+    ).toThrow(/USDC/);
+  });
+
+  it('rejects a devnet lsm-fallback skill with a delegation block (falls back to SOL, still not USDC)', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        {
+          name: 'x',
+          description: 'y',
+          capabilities: ['cap'],
+          price: 25,
+          token: 'lsm',
+          delegation: delegationBlock,
+        },
+        'prompt',
+        { network: 'devnet' },
+      ),
+    ).toThrow(/USDC/);
+  });
+});
+
+// --- token: lsm - mainnet-only asset with a loud devnet fallback to SOL ---
+
+describe('token: lsm devnet fallback (mainnet-only asset)', () => {
+  const LSM_MINT = '86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump';
+
+  function lsmFrontmatter(mint?: string) {
+    return {
+      name: 'lsm-skill',
+      description: 'y',
+      capabilities: ['cap'],
+      price: 25,
+      token: 'lsm',
+      ...(mint ? { mint } : {}),
+    };
+  }
+
+  it('falls back to SOL at the same numeric price on devnet, warning through the logger', () => {
+    const warnings: Array<{ obj: Record<string, unknown>; msg?: string }> = [];
+    const parsed = validateSkillFrontmatter(lsmFrontmatter(), 'prompt', {
+      network: 'devnet',
+      logger: { warn: (obj, msg) => warnings.push({ obj, msg }) },
+    });
+    expect(parsed.asset.token).toBe('sol');
+    // price 25 reinterprets as 25 SOL (9 decimals), loudly.
+    expect(parsed.priceSubunits).toBe(25_000_000_000n);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.msg).toContain('mainnet-only');
+    expect(warnings[0]?.msg).toContain('falling back to SOL pricing');
+  });
+
+  it('explicit canonical LSM mint follows the same devnet fallback', () => {
+    const warnings: string[] = [];
+    const parsed = validateSkillFrontmatter(lsmFrontmatter(LSM_MINT), 'prompt', {
+      network: 'devnet',
+      logger: { warn: (_obj, msg) => warnings.push(msg ?? '') },
+    });
+    expect(parsed.asset.token).toBe('sol');
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('falls back to console.warn when the host supplies no logger', () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const parsed = validateSkillFrontmatter(lsmFrontmatter(), 'prompt', { network: 'devnet' });
+      expect(parsed.asset.token).toBe('sol');
+      expect(consoleWarn).toHaveBeenCalledTimes(1);
+      expect(String(consoleWarn.mock.calls[0]?.[0])).toContain('mainnet-only');
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it('a non-canonical mint claiming token lsm fails loud on both networks', () => {
+    const badMint = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+    for (const network of ['devnet', 'mainnet'] as const) {
+      expect(() =>
+        validateSkillFrontmatter(lsmFrontmatter(badMint), 'prompt', { network }),
+      ).toThrow(/canonical LSM mint/);
+    }
+  });
+
+  it('unknown-token error lists the deduped KNOWN_ASSETS token ids', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        { name: 'x', description: 'y', capabilities: ['cap'], price: 1, token: 'doge' },
+        'prompt',
+        { network: 'devnet' },
+      ),
+    ).toThrow(
+      /Known assets: sol, usdc, lsm \(mints resolve from the agent's network; omit "mint"\)/,
+    );
+  });
+});
+
+// --- canonical-mint gate (D8): explicit mint must match the agent's network ---
+
+describe('resolveSkillAsset canonical-mint gate (via validateSkillFrontmatter)', () => {
+  const DEVNET_USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+  const MAINNET_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  function usdcFrontmatter(mint?: string) {
+    return {
+      name: 'x',
+      description: 'y',
+      capabilities: ['cap'],
+      price: 0.05,
+      token: 'usdc',
+      ...(mint === undefined ? {} : { mint }),
+    };
+  }
+
+  it('bare token: usdc resolves to the devnet mint on a devnet agent', () => {
+    const parsed = validateSkillFrontmatter(usdcFrontmatter(), 'prompt', {
+      network: 'devnet',
+    });
+    expect(parsed.asset.mint).toBe(DEVNET_USDC_MINT);
+  });
+
+  it('bare token: usdc resolves to the mainnet mint on a mainnet agent', () => {
+    const parsed = validateSkillFrontmatter(usdcFrontmatter(), 'prompt', {
+      network: 'mainnet',
+    });
+    expect(parsed.asset.mint).toBe(MAINNET_USDC_MINT);
+  });
+
+  it('an explicit canonical mint passes on its own network', () => {
+    const devnet = validateSkillFrontmatter(usdcFrontmatter(DEVNET_USDC_MINT), 'prompt', {
+      network: 'devnet',
+    });
+    expect(devnet.asset.mint).toBe(DEVNET_USDC_MINT);
+    const mainnet = validateSkillFrontmatter(usdcFrontmatter(MAINNET_USDC_MINT), 'prompt', {
+      network: 'mainnet',
+    });
+    expect(mainnet.asset.mint).toBe(MAINNET_USDC_MINT);
+  });
+
+  it('fails loud on a devnet mint declared on a mainnet agent (copied SKILL.md)', () => {
+    expect(() =>
+      validateSkillFrontmatter(usdcFrontmatter(DEVNET_USDC_MINT), 'prompt', {
+        network: 'mainnet',
+      }),
+    ).toThrow(/not the canonical USDC mint for mainnet/);
+  });
+
+  it('fails loud on a mainnet mint declared on a devnet agent (reverse direction)', () => {
+    expect(() =>
+      validateSkillFrontmatter(usdcFrontmatter(MAINNET_USDC_MINT), 'prompt', {
+        network: 'devnet',
+      }),
+    ).toThrow(/not the canonical USDC mint for devnet/);
+  });
+
+  it('still rejects an unknown mint entirely', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        usdcFrontmatter('So11111111111111111111111111111111111111112'),
+        'prompt',
+        {
+          network: 'devnet',
+        },
+      ),
+    ).toThrow(/unknown asset/);
   });
 });

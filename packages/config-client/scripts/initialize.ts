@@ -1,15 +1,19 @@
 /**
- * One-shot script to call `initialize` on a freshly-deployed elisym-config program on devnet.
+ * One-shot script to call `initialize` on a freshly-deployed elisym-config program.
+ *
+ * Network-agnostic: the target cluster is whatever SOLANA_RPC_URL / RPC_URL points at
+ * (defaults to the public devnet endpoint). For the mainnet launch sequence see
+ * programs/elisym-config/DEPLOY.mainnet.md.
  *
  * Uses the Codama-generated client from @elisym/config-client and @solana/kit.
  *
  * Usage:
  *   INITIAL_TREASURY=<treasury-pubkey> \
- *   bun run packages/config-client/scripts/initialize-devnet.ts
+ *   bun run packages/config-client/scripts/initialize.ts
  *
  * Optional env:
  *   PROGRAM_ID         - defaults to the Codama-embedded program address
- *   RPC_URL            - defaults to https://api.devnet.solana.com
+ *   SOLANA_RPC_URL     - RPC endpoint (alias: RPC_URL); defaults to https://api.devnet.solana.com
  *   INITIAL_FEE_BPS    - defaults to 300 (3%)
  *   INITIAL_ADMIN      - defaults to the payer keypair pubkey
  */
@@ -25,6 +29,7 @@ import {
   createSolanaRpc,
   createSolanaRpcSubscriptions,
   createTransactionMessage,
+  getAddressEncoder,
   getProgramDerivedAddress,
   getSignatureFromTransaction,
   pipe,
@@ -39,6 +44,8 @@ const PROGRAM_ID: Address = process.env.PROGRAM_ID
   ? address(process.env.PROGRAM_ID)
   : ELISYM_CONFIG_PROGRAM_ADDRESS;
 
+const BPF_LOADER_UPGRADEABLE_PROGRAM_ID = address('BPFLoaderUpgradeab1e11111111111111111111111');
+
 const INITIAL_TREASURY_RAW = process.env.INITIAL_TREASURY;
 if (!INITIAL_TREASURY_RAW) {
   console.error('INITIAL_TREASURY env var is required.');
@@ -46,7 +53,8 @@ if (!INITIAL_TREASURY_RAW) {
 }
 const INITIAL_TREASURY = address(INITIAL_TREASURY_RAW);
 
-const RPC_URL = process.env.RPC_URL ?? 'https://api.devnet.solana.com';
+const RPC_URL =
+  process.env.SOLANA_RPC_URL ?? process.env.RPC_URL ?? 'https://api.devnet.solana.com';
 const WS_URL = RPC_URL.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 
 const INITIAL_FEE_BPS = Number(process.env.INITIAL_FEE_BPS ?? '300');
@@ -58,6 +66,20 @@ if (!Number.isInteger(INITIAL_FEE_BPS) || INITIAL_FEE_BPS < 0 || INITIAL_FEE_BPS
 const payerSecretKey = new Uint8Array(
   JSON.parse(readFileSync(join(homedir(), '.config/solana/id.json'), 'utf8')),
 );
+
+/**
+ * An RPC endpoint safe to print: scheme and host only. The path is dropped
+ * because that is where Alchemy and QuickNode put the API key, and the query
+ * string for the same reason. Use `admin.ts show` if you need to know which
+ * cluster answered - it asks the chain for its genesis hash.
+ */
+function redactRpcUrl(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '(unparseable RPC URL)';
+  }
+}
 
 async function main(): Promise<void> {
   const payer = await createKeyPairSignerFromBytes(payerSecretKey);
@@ -74,8 +96,17 @@ async function main(): Promise<void> {
     programAddress: PROGRAM_ID,
     seeds: [new TextEncoder().encode('__event_authority')],
   });
+  // `initialize` requires the payer to be the program's upgrade authority, so
+  // the loader's ProgramData account rides along. Derived from PROGRAM_ID here
+  // rather than left to the generated client, whose fallback hardcodes the
+  // Codama-embedded address and would derive the wrong account under a
+  // PROGRAM_ID override.
+  const [programData] = await getProgramDerivedAddress({
+    programAddress: BPF_LOADER_UPGRADEABLE_PROGRAM_ID,
+    seeds: [getAddressEncoder().encode(PROGRAM_ID)],
+  });
 
-  console.log('RPC:                ', RPC_URL);
+  console.log('RPC:                ', redactRpcUrl(RPC_URL));
   console.log('Program ID:         ', PROGRAM_ID);
   console.log('Payer:              ', payer.address);
   console.log('Initial admin:      ', INITIAL_ADMIN);
@@ -83,10 +114,12 @@ async function main(): Promise<void> {
   console.log('Initial fee (bps):  ', INITIAL_FEE_BPS);
   console.log('Config PDA:         ', configPda);
   console.log('Event authority PDA:', eventAuthority);
+  console.log('ProgramData PDA:    ', programData);
 
   const ix = await getInitializeInstructionAsync(
     {
       payer,
+      programData,
       eventAuthority,
       program: PROGRAM_ID,
       admin: INITIAL_ADMIN,

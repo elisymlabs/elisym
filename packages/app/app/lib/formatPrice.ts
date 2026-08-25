@@ -1,7 +1,15 @@
 import { resolveKnownAsset, type CapabilityCard } from '@elisym/sdk';
 import Decimal from 'decimal.js-light';
+import { resolvePaymentAsset } from './cardAsset';
+import { SOLANA_CLUSTER } from './cluster';
 
 type PaymentInfo = NonNullable<CapabilityCard['payment']>;
+
+// Cloned config keeps `Decimal.toString()` from switching to exponential
+// notation for small fractional amounts (1 lamport = 1e-9 SOL). `compactZeros`
+// only rewrites decimal notation, so an exponential string would slip through
+// it untouched and surface as "1e-9 SOL". Mirrors `formatAssetAmount` in the SDK.
+const FormatDecimal = Decimal.clone({ toExpNeg: -100, toExpPos: 100, precision: 50 });
 
 /**
  * Subscript digits used by `compactZeros` to compress long runs of leading
@@ -70,7 +78,13 @@ export function formatCardPrice(payment: PaymentInfo | undefined, amount: number
   if (!payment || !payment.token || payment.token === 'sol') {
     return `${compactZeros(formatDecimal(amount, fallbackDecimals))} ${fallbackToken}`;
   }
-  const asset = resolveKnownAsset(payment.chain, payment.token, payment.mint);
+  // Exact (chain, token, mint) first so a card minted on the other cluster still
+  // renders in its own decimals; a card that omits `mint` cannot be keyed that
+  // way, so fall back to this page's cluster - otherwise the price would print
+  // in raw subunits next to an affordability tooltip that reads whole units.
+  const asset =
+    resolveKnownAsset(payment.chain, payment.token, payment.mint) ??
+    resolvePaymentAsset(payment, SOLANA_CLUSTER);
   if (!asset) {
     return `${amount} ${payment.symbol ?? payment.token.toUpperCase()}`;
   }
@@ -83,5 +97,5 @@ export function formatCardPrice(payment: PaymentInfo | undefined, amount: number
  * `decimal.js-light`; see the CLAUDE.md rule on numeric work.
  */
 export function formatDecimal(amount: number, decimals: number): string {
-  return new Decimal(amount).div(new Decimal(10).pow(decimals)).toString();
+  return new FormatDecimal(amount).div(new FormatDecimal(10).pow(decimals)).toString();
 }

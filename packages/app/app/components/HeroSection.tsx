@@ -1,4 +1,4 @@
-import { StatsBar } from './StatsBar';
+import { HowItWorks } from './HowItWorks';
 
 export function HeroSection() {
   return (
@@ -28,7 +28,7 @@ export function HeroSection() {
         </p>
       </section>
       <div className="appear [animation-delay:0.8s]">
-        <StatsBar />
+        <HowItWorks />
       </div>
     </div>
   );

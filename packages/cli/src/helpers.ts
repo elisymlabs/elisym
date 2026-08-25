@@ -1,7 +1,14 @@
 /**
  * Shared CLI helpers - RPC URLs, SOL formatting, price validation.
  */
-import { USDC_SOLANA_DEVNET, calculateProtocolFee } from '@elisym/sdk';
+import {
+  type Asset,
+  type Network,
+  calculateProtocolFee,
+  formatAssetAmount,
+  resolveUsdcAsset,
+} from '@elisym/sdk';
+import { type ListedAgent, readAgentPublic } from '@elisym/sdk/agent-store';
 import { type Rpc, type SolanaRpcApi, address } from '@solana/kit';
 
 // --- Constants ---
@@ -27,27 +34,58 @@ export const WATCHDOG_SLEEP_DETECT_MULTIPLIER = 2;
 
 // --- Solana RPC ---
 
-export function getRpcUrl(_network: string): string {
+export function getRpcUrl(network: Network): string {
+  // CLI-only override (D9): `start <agent>` is one agent, one network per
+  // process, so a process-wide env override is unambiguous here.
   const envUrl = process.env.SOLANA_RPC_URL;
   if (envUrl) {
     return envUrl;
   }
-  // Only devnet is supported until the elisym-config program ships on mainnet.
-  return 'https://api.devnet.solana.com';
+  return network === 'mainnet'
+    ? 'https://api.mainnet-beta.solana.com'
+    : 'https://api.devnet.solana.com';
 }
 
-// --- USDC balance ---
+// --- Agent listing ---
 
 /**
- * Sum the agent's USDC token-account balances (raw subunits) on the connected
- * Solana RPC. Returns 0n on any error or when the asset has no mint configured;
- * callers display "0 USDC" rather than failing the whole banner.
+ * The Solana line `list` prints for one agent: receiving address plus the
+ * network it is bound to. Read from the PUBLIC yaml instead of through
+ * `loadAgent`, so an agent whose secrets are encrypted still shows its network -
+ * a mainnet agent is the one most likely to be encrypted, and its network is the
+ * one field worth checking before starting the wrong process. Selects by chain
+ * rather than taking `payments[0]`: the two agree while `PaymentSchema.chain` is
+ * the literal `'solana'`, and this one keeps reading the right entry when a
+ * second rail lands. An unreadable or wallet-less agent contributes nothing
+ * rather than failing the whole listing.
  */
-export async function fetchUsdcBalance(
+export async function solanaLineFor(agent: ListedAgent): Promise<string> {
+  try {
+    const { yaml } = await readAgentPublic(agent);
+    const solana = yaml.payments.find((entry) => entry.chain === 'solana');
+    return solana ? ` | Solana: ${solana.address} (${solana.network})` : '';
+  } catch {
+    return '';
+  }
+}
+
+// --- SPL balances ---
+
+/**
+ * Sum the agent's token-account balances for an SPL asset (raw subunits) on
+ * the connected Solana RPC. Uses a mint-filtered `getTokenAccountsByOwner`,
+ * which is token-program-agnostic (covers Token-2022 mints like LSM) and sums
+ * non-ATA accounts too. An asset with no mint, or an owner with no token
+ * account, is 0n; `null` means the balance could not be read. Callers render
+ * that as unknown rather than failing the banner - printing "0 LSM" for a
+ * wallet that holds a fortune is worse than saying the read failed.
+ */
+export async function fetchSplBalance(
   rpc: Rpc<SolanaRpcApi>,
   owner: ReturnType<typeof address>,
-): Promise<bigint> {
-  const mint = USDC_SOLANA_DEVNET.mint;
+  asset: Asset,
+): Promise<bigint | null> {
+  const mint = asset.mint;
   if (!mint) {
     return 0n;
   }
@@ -65,14 +103,44 @@ export async function fetchUsdcBalance(
         | { parsed?: { info?: { tokenAmount?: { amount?: string } } } }
         | undefined;
       const raw = parsed?.parsed?.info?.tokenAmount?.amount;
-      if (typeof raw === 'string') {
-        total += BigInt(raw);
+      // An entry the node returned unparsed (it falls back to base64 when it
+      // cannot parse the owning program - a node without the Token-2022 parser
+      // does this for LSM) is a FAILED read, not an empty account. Skipping it
+      // would silently under-report, which is the "0 LSM for a funded wallet"
+      // outcome this function exists to avoid.
+      if (typeof raw !== 'string') {
+        return null;
       }
+      total += BigInt(raw);
     }
     return total;
   } catch {
-    return 0n;
+    return null;
   }
+}
+
+/**
+ * Balance value for a banner - the bare amount, no symbol prefix (callers
+ * supply their own label). An unreadable balance never renders as zero.
+ */
+export function formatSplBalanceValue(asset: Asset, balance: bigint | null | undefined): string {
+  return balance === undefined || balance === null
+    ? 'unavailable (balance read failed)'
+    : formatAssetAmount(asset, balance);
+}
+
+/**
+ * The network's canonical-USDC balance via `fetchSplBalance` - kept for the
+ * x402 surfaces (driver float check, `x402 add` preflight, settle-check).
+ * `null` when the balance could not be read: the float checks refuse on an
+ * unknown balance rather than treating it as empty or as sufficient.
+ */
+export async function fetchUsdcBalance(
+  rpc: Rpc<SolanaRpcApi>,
+  owner: ReturnType<typeof address>,
+  network: Network,
+): Promise<bigint | null> {
+  return fetchSplBalance(rpc, owner, resolveUsdcAsset(network));
 }
 
 // --- Price validation ---

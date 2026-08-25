@@ -3,7 +3,10 @@ import { parseSkillMd, validateSkillFrontmatter } from '../src/skills/loader';
 
 function parseAndValidate(body: string) {
   const { frontmatter, systemPrompt } = parseSkillMd(body);
-  return validateSkillFrontmatter(frontmatter, systemPrompt, { allowFreeSkills: true });
+  return validateSkillFrontmatter(frontmatter, systemPrompt, {
+    network: 'devnet',
+    allowFreeSkills: true,
+  });
 }
 
 describe('skill loader - llm override', () => {

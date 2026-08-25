@@ -1,5 +1,6 @@
 import {
   estimateNetworkBaseline,
+  type CapabilityCard,
   formatAssetAmount,
   formatSol,
   verifyAgentIdentities,
@@ -358,10 +359,19 @@ export const discoveryTools: ToolDefinition[] = [
       }
 
       // Pre-compute Solana network gas estimates for paid cards in this result
-      // set. Two possible asset shapes (with/without ATA rent for USDC), each
-      // estimated at most once and shared across cards. Silent on RPC failure
-      // so a flaky cluster never breaks search itself.
-      const needsAtaSeen = new Set<boolean>();
+      // set, keyed by rent class: native (no ATA rent), classic-SPL ATA rent,
+      // or Token-2022 ATA rent (larger account). One estimate per class,
+      // shared across cards - a boolean needs-ATA key would misquote a mixed
+      // USDC+LSM result set. Silent on RPC failure so a flaky cluster never
+      // breaks search itself.
+      const rentClassForCard = (payment: NonNullable<CapabilityCard['payment']>): string => {
+        const cardAsset = assetFromCardPayment(payment);
+        if (cardAsset.mint === undefined) {
+          return 'native';
+        }
+        return cardAsset.tokenProgram ?? 'spl-classic';
+      };
+      const rentClassesSeen = new Set<string>();
       for (const a of filtered) {
         for (const card of a.cards) {
           if ((card.payment?.chain ?? 'solana') !== 'solana') {
@@ -370,17 +380,23 @@ export const discoveryTools: ToolDefinition[] = [
           if (!card.payment?.job_price) {
             continue;
           }
-          needsAtaSeen.add(assetFromCardPayment(card.payment).mint !== undefined);
+          rentClassesSeen.add(rentClassForCard(card.payment));
         }
       }
-      const gasByAtaNeed = new Map<boolean, string>();
-      if (needsAtaSeen.size > 0) {
+      const gasByRentClass = new Map<string, string>();
+      if (rentClassesSeen.size > 0) {
         try {
           const rpc = createSolanaRpc(rpcUrlFor(agent.network));
           await Promise.all(
-            Array.from(needsAtaSeen).map(async (needsAta) => {
-              const baseline = await estimateNetworkBaseline(rpc, { includeAtaRent: needsAta });
-              gasByAtaNeed.set(needsAta, formatSol(Number(baseline.totalLamports)));
+            Array.from(rentClassesSeen).map(async (rentClass) => {
+              const baseline = await estimateNetworkBaseline(rpc, agent.network, {
+                includeAtaRent: rentClass !== 'native',
+                // Only a token-2022 class carries a program override; 'native'
+                // and 'spl-classic' are not program addresses.
+                ataTokenProgram:
+                  rentClass === 'spl-classic' || rentClass === 'native' ? undefined : rentClass,
+              });
+              gasByRentClass.set(rentClass, formatSol(Number(baseline.totalLamports)));
             }),
           );
         } catch {
@@ -396,7 +412,10 @@ export const discoveryTools: ToolDefinition[] = [
           cards: a.cards.map((card) => {
             const asset = assetFromCardPayment(card.payment);
             const price = card.payment?.job_price;
-            const gasEstimate = price ? gasByAtaNeed.get(asset.mint !== undefined) : undefined;
+            const gasEstimate =
+              price && card.payment
+                ? gasByRentClass.get(rentClassForCard(card.payment))
+                : undefined;
             return {
               name: sanitizeField(card.name || '', 200),
               description: sanitizeField(card.description || '', 500),

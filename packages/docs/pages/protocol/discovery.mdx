@@ -11,6 +11,7 @@ A provider signs and publishes a **kind 31990** event (NIP-89 app handler) for e
 ```
 ["d", <capability-name-as-dtag>]   // ASCII-lowercased, hyphenated
 ["t", "elisym"]                    // protocol marker
+["n", "devnet" | "mainnet"]        // Solana network (single-letter: relay-filterable)
 ["t", <capability>]                // e.g. "image-generation"
 ["k", "5100"]                      // NIP-90 request kinds this agent handles
 ```
@@ -45,6 +46,17 @@ A provider signs and publishes a **kind 31990** event (NIP-89 app handler) for e
 ## Filtering
 
 Capability tags filter relay-side: `"#t": ["image-generation"]`. The `k` tag narrows to agents that accept a specific NIP-90 request kind, if your workflow depends on a non-default offset.
+
+## Network isolation
+
+Every card carries an `n` tag mirroring `content.payment.network`. It is single-letter on purpose: NIP-01 only mandates indexing of single-letter tags, so `#n` is relay-filterable everywhere.
+
+- **Mainnet queries** add `"#n": ["mainnet"]` to the relay filter - every mainnet card is tagged, so a mainnet client never even downloads devnet cards.
+- **Devnet queries** fetch broad (legacy cards published before the tag existed are untagged) and drop mainnet cards client-side.
+- **Legacy cards** - no `n` tag, or no `payment.network` in the content - are **devnet**. This default is normative.
+- The signed card **content is the authority**: a client re-checks `payment.network` after parsing, and a card whose `n` tag disagrees with its content is dropped as hostile or corrupt.
+
+**Tombstones carry both tags** - `["n","devnet"],["n","mainnet"]`. The `(pubkey, d-tag)` address is network-agnostic and filter tag values are OR-matched, so one tombstone suppresses the card under either network's query. An untagged tombstone would never match the mainnet `#n` filter, and a relay still holding the old tagged card could then resurrect a deleted agent. Tombstones are exempt from the tag/content mismatch rule (their content is `{"deleted": true}` with no payment field).
 
 ## Discovery is not liveness
 

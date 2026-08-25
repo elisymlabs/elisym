@@ -167,12 +167,16 @@ function JobInputInner({
       // A Products send on a context card opens a NEW conversation: rotate the
       // active session, then resolve on the fresh id (stamps the inFlight
       // token). The page jumps to the Chat tab, where the dialog continues.
+      // The rotation is not undone if buy() then refuses (an unaffordable
+      // wallet being the likeliest cause): the previous conversation stays in
+      // the sidebar and re-selecting it makes it active again.
       await rotateSession(idCtx.publicKey, agentPubkey);
       const resolved = await resolveSessionForSend(idCtx.publicKey, agentPubkey, []);
       await buy(isStatic ? card.name : effectiveInput, file ?? undefined, {
         sessionId: resolved.sessionId,
         token: resolved.token,
         payment: paymentIntent,
+        gasLamports: gasFeeLamports,
       });
       return;
     }
@@ -180,6 +184,7 @@ function JobInputInner({
     await buy(isStatic ? card.name : effectiveInput, file ?? undefined, {
       sessionId: null,
       payment: paymentIntent,
+      gasLamports: gasFeeLamports,
     });
   }
 

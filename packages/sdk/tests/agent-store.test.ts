@@ -79,10 +79,17 @@ describe('ElisymYamlSchema', () => {
     expect(() => ElisymYamlSchema.parse({ description: 'hi', extra: 1 })).toThrow();
   });
 
-  it('rejects non-devnet networks until mainnet ships', () => {
+  it('accepts a mainnet payment entry', () => {
+    const parsed = ElisymYamlSchema.parse({
+      payments: [{ chain: 'solana', network: 'mainnet', address: 'abc' }],
+    });
+    expect(parsed.payments[0]?.network).toBe('mainnet');
+  });
+
+  it('rejects unknown networks (devnet and mainnet only)', () => {
     expect(() =>
       ElisymYamlSchema.parse({
-        payments: [{ chain: 'solana', network: 'mainnet', address: 'abc' }],
+        payments: [{ chain: 'solana', network: 'testnet', address: 'abc' }],
       }),
     ).toThrow();
   });

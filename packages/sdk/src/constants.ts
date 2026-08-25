@@ -90,6 +90,18 @@ export const LAMPORTS_PER_SOL = 1_000_000_000;
 export const PROTOCOL_PROGRAM_ID_DEVNET = 'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE' as Address;
 
 /**
+ * Solana program ID for the elisym protocol config (mainnet deployment).
+ *
+ * Deliberately the same address as devnet - the program was deployed to
+ * mainnet with the same program keypair (plan D4). The constants stay
+ * per-cluster so a future divergence (or a localnet deployment) is a
+ * one-line change, but the program id alone no longer identifies a
+ * cluster: every program-id-keyed cache carries a network discriminator.
+ */
+export const PROTOCOL_PROGRAM_ID_MAINNET =
+  'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE' as Address;
+
+/**
  * Read-only marker pubkey attached as a non-signer account to every elisym
  * payment transaction. Lets indexers enumerate every elisym tx network-wide
  * via a single `getSignaturesForAddress(ELISYM_PROTOCOL_TAG)` call,
@@ -104,17 +116,14 @@ export const ELISYM_PROTOCOL_TAG = 'ELiZksgwDt41LaeuPDLkUfWgFXhGgVayTMP7L5nTSEL8
 
 export type ProtocolCluster = 'devnet' | 'mainnet' | 'localnet';
 
-/**
- * Resolve the elisym-config program ID for a given Solana cluster.
- * Mainnet is intentionally unsupported until the program ships there.
- */
+/** Resolve the elisym-config program ID for a given Solana cluster. */
 export function getProtocolProgramId(cluster: ProtocolCluster): Address {
   switch (cluster) {
     case 'devnet':
     case 'localnet':
       return PROTOCOL_PROGRAM_ID_DEVNET;
     case 'mainnet':
-      throw new Error('Protocol program is not deployed on mainnet yet');
+      return PROTOCOL_PROGRAM_ID_MAINNET;
   }
 }
 

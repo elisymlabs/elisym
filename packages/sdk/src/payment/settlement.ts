@@ -24,6 +24,8 @@ import {
   getSignatureFromTransaction,
   pipe,
   sendTransactionWithoutConfirmingFactory,
+  setTransactionMessageComputeUnitLimit,
+  setTransactionMessageComputeUnitPrice,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
@@ -31,6 +33,8 @@ import {
   type Signature,
   type SolanaRpcApi,
 } from '@solana/kit';
+import type { Network } from '../types';
+import { estimatePriorityFeeMicroLamports } from './priorityFee';
 import type { Signer } from './strategy';
 
 /** Re-poll settings for the absent-from-chain case (see isDefinitelyUnpaid). */
@@ -119,22 +123,64 @@ export interface SignedPullTransaction {
 }
 
 /**
+ * Compute-unit ceiling requested for a pull.
+ *
+ * A pull is `createAssociatedTokenIdempotent` + `transferChecked`, measured at
+ * 7,548 CU on mainnet when the destination token account already exists; the
+ * first pull to a fresh provider wallet also initializes that account, and this
+ * leaves room for it. Sized deliberately rather than reusing the payment path's
+ * 200,000: the prioritization fee is charged on the REQUESTED limit, so an
+ * oversized request buys the same position for several times the price.
+ */
+const PULL_COMPUTE_UNIT_LIMIT = 60_000;
+
+/** Matches the customer payment path, so neither side of a job outbids the other. */
+const PULL_PRIORITY_FEE_PERCENTILE = 75;
+
+export interface BuildSignedPullOptions {
+  /** Cluster the supplied RPC points at - the fee-sample cache discriminator. */
+  network: Network;
+  /** Override the estimate outright (tests, or an operator that knows better). */
+  priorityFeeMicroLamports?: bigint;
+  /** Percentile of recent fees to bid. Defaults to 75, as the payment path does. */
+  priorityFeePercentile?: number;
+  /** Override the CU ceiling. Defaults to {@link PULL_COMPUTE_UNIT_LIMIT}. */
+  computeUnitLimit?: number;
+}
+
+/**
  * Phase A of the two-phase pull: fetch a fresh blockhash, compile, and sign -
  * WITHOUT sending. The caller persists `{signature, lastValidBlockHeight}` and
  * only then runs phase B, so a crash between the two leaves a resolvable
  * phantom (the persisted signature goes provably dead at blockhash expiry, with
  * no charge) instead of an untracked in-flight transfer.
+ *
+ * The transaction carries a priority fee. Without one the provider's collection
+ * sits at the base rate while the customer's payment - which does bid - competes
+ * normally, so settlement degrades exactly when the network is busiest. A failed
+ * estimate falls back to no bid rather than aborting: a pull at the base rate is
+ * strictly better than a pull that never goes out.
  */
 export async function buildSignedPull(
   rpc: Rpc<SolanaRpcApi>,
   feePayer: Signer,
   instructions: readonly unknown[],
+  options: BuildSignedPullOptions,
 ): Promise<SignedPullTransaction> {
+  const computeUnitLimit = options.computeUnitLimit ?? PULL_COMPUTE_UNIT_LIMIT;
+  const priorityFeeMicroLamports =
+    options.priorityFeeMicroLamports ??
+    (await estimatePriorityFeeMicroLamports(rpc, {
+      network: options.network,
+      percentile: options.priorityFeePercentile ?? PULL_PRIORITY_FEE_PERCENTILE,
+    }).catch(() => 0n));
   const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
   const message = pipe(
     createTransactionMessage({ version: 0 }),
     (m) => setTransactionMessageFeePayerSigner(feePayer, m),
     (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
+    (m) => setTransactionMessageComputeUnitLimit(computeUnitLimit, m),
+    (m) => setTransactionMessageComputeUnitPrice(priorityFeeMicroLamports, m),
     (m) =>
       appendTransactionMessageInstructions(
         instructions as Parameters<typeof appendTransactionMessageInstructions>[0],

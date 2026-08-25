@@ -12,7 +12,7 @@ import {
   getProtocolConfig,
   getProtocolProgramId,
   parseAssetAmount,
-  USDC_SOLANA_DEVNET,
+  resolveUsdcAsset,
   type DelegationDescriptor,
   type DelegationStatus,
 } from '@elisym/sdk';
@@ -40,14 +40,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { invalidateDelegationStatus } from '~/hooks/useDelegationStatus';
 import { invalidateWalletBalances } from '~/hooks/useWalletBalances';
-import { SDK_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
+import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { cn } from '~/lib/cn';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
 const PRIORITY_FEE_PERCENTILE = 75;
-const NETWORK = 'devnet' as const;
 const kitRpc = createSolanaRpc(SOLANA_RPC_URL);
 const PROTOCOL_PROGRAM_ID = getProtocolProgramId(SDK_CLUSTER);
+const USDC_ASSET = resolveUsdcAsset(SOLANA_CLUSTER);
 
 interface VersionedTx {
   tx: VersionedTransaction;
@@ -66,6 +66,7 @@ async function buildVersionedTx(
 ): Promise<VersionedTx> {
   const payerSigner = createNoopSigner(address(payerAddress));
   const priorityFeeMicroLamports = await estimatePriorityFeeMicroLamports(kitRpc, {
+    network: SOLANA_CLUSTER,
     percentile: PRIORITY_FEE_PERCENTILE,
   });
   const { value: latestBlockhash } = await kitRpc.getLatestBlockhash().send();
@@ -134,7 +135,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
   // mount / cluster change; the authoritative value is re-read at approve time.
   const { data: protocolConfig, isError: configError } = useQuery({
     queryKey: ['delegation-protocol-config', SDK_CLUSTER],
-    queryFn: () => getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID),
+    queryFn: () => getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID, SOLANA_CLUSTER),
     staleTime: 60_000,
   });
 
@@ -146,7 +147,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
     }
     setStatus('loading');
     try {
-      const ownerAta = await deriveOwnerDelegationAta(ownerAddress, NETWORK);
+      const ownerAta = await deriveOwnerDelegationAta(ownerAddress, SOLANA_CLUSTER);
       // getDelegation returns null when the ATA does not exist (no USDC, hence
       // no delegation) and THROWS on a real RPC failure - so an outage does not
       // masquerade as "no delegation" and silently hide a live allowance/revoke.
@@ -172,7 +173,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
     }
     let capSubunits: bigint;
     try {
-      capSubunits = parseAssetAmount(USDC_SOLANA_DEVNET, capInput);
+      capSubunits = parseAssetAmount(USDC_ASSET, capInput);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Enter a valid USDC cap.');
       return;
@@ -186,7 +187,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
       let feeBps: number;
       let treasury: string;
       try {
-        const cfg = await getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID);
+        const cfg = await getProtocolConfig(kitRpc, PROTOCOL_PROGRAM_ID, SOLANA_CLUSTER);
         feeBps = cfg.feeBps;
         treasury = cfg.treasury;
       } catch {
@@ -198,7 +199,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
         owner: createNoopSigner(address(ownerAddress)),
         delegate: delegation.delegate_pubkey,
         capSubunits,
-        network: NETWORK,
+        network: SOLANA_CLUSTER,
         fee: feeSubunits > 0n ? { feeBps, treasury } : undefined,
       });
       // Independent transparency check: decode the exact approveChecked we built
@@ -209,27 +210,25 @@ export function DelegationPanel({ delegation, agentName }: Props) {
         decoded.delegate !== delegation.delegate_pubkey ||
         decoded.capSubunits !== capSubunits ||
         !decoded.recognized ||
-        decoded.mint !== USDC_SOLANA_DEVNET.mint
+        decoded.mint !== USDC_ASSET.mint
       ) {
         throw new Error('Built approval did not match the requested grant. Aborting.');
       }
       // Verify the fee leg too (defense-in-depth). deriveOwnerDelegationAta(addr)
       // is the USDC ATA of `addr`, so it yields the treasury's fee ATA.
       if (instructions.length === 4) {
-        const treasuryAta = await deriveOwnerDelegationAta(treasury, NETWORK);
+        const treasuryAta = await deriveOwnerDelegationAta(treasury, SOLANA_CLUSTER);
         const feeLeg = decodeDelegationFeeTransfer(instructions[3]);
         if (
           feeLeg.destination !== String(treasuryAta) ||
           feeLeg.amount !== feeSubunits ||
-          feeLeg.mint !== USDC_SOLANA_DEVNET.mint
+          feeLeg.mint !== USDC_ASSET.mint
         ) {
           throw new Error('Built fee transfer did not match the expected protocol fee. Aborting.');
         }
       }
       const feeNote =
-        feeSubunits > 0n
-          ? ` (+ ${formatAssetAmount(USDC_SOLANA_DEVNET, feeSubunits)} protocol fee)`
-          : '';
+        feeSubunits > 0n ? ` (+ ${formatAssetAmount(USDC_ASSET, feeSubunits)} protocol fee)` : '';
       toast.loading(`${formatDelegationGrant(decoded)}${feeNote} Approve in your wallet...`, {
         id: toastId,
       });
@@ -246,12 +245,9 @@ export function DelegationPanel({ delegation, agentName }: Props) {
       if (confirmation.value.err) {
         throw new Error(`Transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
       }
-      toast.success(
-        `Granted delegate up to ${formatAssetAmount(USDC_SOLANA_DEVNET, capSubunits)}.`,
-        {
-          id: toastId,
-        },
-      );
+      toast.success(`Granted delegate up to ${formatAssetAmount(USDC_ASSET, capSubunits)}.`, {
+        id: toastId,
+      });
       setCapInput('');
       invalidateWalletBalances(queryClient, ownerAddress);
       // Flip Use/Delegate buy buttons that key off the cached allowance read.
@@ -277,7 +273,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
     try {
       const instructions = await buildRevokeDelegate({
         owner: createNoopSigner(address(ownerAddress)),
-        network: NETWORK,
+        network: SOLANA_CLUSTER,
       });
       toast.loading('Revoke the allowance in your wallet...', { id: toastId });
       const { tx, blockhash, lastValidBlockHeight } = await buildVersionedTx(
@@ -327,7 +323,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
     if (/\d/.test(capInput)) {
       feePreviewSubunits =
         feeBps > 0
-          ? delegationApproveFeeSubunits(parseAssetAmount(USDC_SOLANA_DEVNET, capInput), feeBps)
+          ? delegationApproveFeeSubunits(parseAssetAmount(USDC_ASSET, capInput), feeBps)
           : 0n;
     }
   } catch {
@@ -387,10 +383,9 @@ export function DelegationPanel({ delegation, agentName }: Props) {
             <span className="font-semibold text-text">Heads up:</span> this account already
             delegates to a different key (
             <span className="font-mono text-[12px] break-all">{otherDelegate.delegate ?? ''}</span>)
-            with {formatAssetAmount(USDC_SOLANA_DEVNET, otherDelegate.remainingCap)} remaining.
-            Granting {agentName} an allowance here will{' '}
-            <span className="font-semibold">replace</span> that delegation - an account can have
-            only one delegate at a time.
+            with {formatAssetAmount(USDC_ASSET, otherDelegate.remainingCap)} remaining. Granting{' '}
+            {agentName} an allowance here will <span className="font-semibold">replace</span> that
+            delegation - an account can have only one delegate at a time.
           </p>
         </div>
       ) : null}
@@ -400,12 +395,12 @@ export function DelegationPanel({ delegation, agentName }: Props) {
           <p className="m-0 text-sm text-text">
             Active allowance:{' '}
             <span className="font-semibold">
-              {formatAssetAmount(USDC_SOLANA_DEVNET, activeDelegate.remainingCap)}
+              {formatAssetAmount(USDC_ASSET, activeDelegate.remainingCap)}
             </span>{' '}
             remaining
           </p>
           <p className="mt-4 text-[12px] text-text-2">
-            Balance: {formatAssetAmount(USDC_SOLANA_DEVNET, activeDelegate.balance)}
+            Balance: {formatAssetAmount(USDC_ASSET, activeDelegate.balance)}
           </p>
           <button
             type="button"
@@ -429,7 +424,7 @@ export function DelegationPanel({ delegation, agentName }: Props) {
             value={capInput}
             disabled={busy || !ownerAddress}
             onChange={(event) =>
-              setCapInput(sanitizeCapInput(event.target.value, USDC_SOLANA_DEVNET.decimals))
+              setCapInput(sanitizeCapInput(event.target.value, USDC_ASSET.decimals))
             }
             placeholder="e.g. 5"
             className={cn(
@@ -453,15 +448,14 @@ export function DelegationPanel({ delegation, agentName }: Props) {
         )}
         {ownerAddress && feeBps > 0 && feePreviewSubunits !== null && feePreviewSubunits > 0n ? (
           <p className="mt-8 text-[12px] text-text-2">
-            Protocol fee: {formatAssetAmount(USDC_SOLANA_DEVNET, feePreviewSubunits)}, charged now
-            to the treasury (+ ~one-time ATA rent if the treasury account is new). You must hold
-            this USDC.
+            Protocol fee: {formatAssetAmount(USDC_ASSET, feePreviewSubunits)}, charged now to the
+            treasury (+ ~one-time ATA rent if the treasury account is new). You must hold this USDC.
           </p>
         ) : null}
         {insufficientForFee ? (
           <p className="mt-8 text-[12px] font-medium text-warning">
-            Your USDC balance ({formatAssetAmount(USDC_SOLANA_DEVNET, usdcBalance)}) is below the
-            protocol fee - deposit USDC to approve.
+            Your USDC balance ({formatAssetAmount(USDC_ASSET, usdcBalance)}) is below the protocol
+            fee - deposit USDC to approve.
           </p>
         ) : null}
         {configError ? (

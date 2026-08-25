@@ -12,7 +12,7 @@ import {
   resolveDelegationAsset,
   validateSkillDelegation,
 } from '../src/delegation';
-import { USDC_SOLANA_DEVNET } from '../src/payment/assets';
+import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '../src/payment/assets';
 import { calculateProtocolFee } from '../src/payment/fee';
 import { generateSolanaWallet } from '../src/payment/wallet';
 
@@ -153,8 +153,8 @@ describe('resolveDelegationAsset', () => {
     expect(resolveDelegationAsset('devnet')).toBe(USDC_SOLANA_DEVNET);
   });
 
-  it('throws for mainnet (not wired yet)', () => {
-    expect(() => resolveDelegationAsset('mainnet')).toThrow(/mainnet/i);
+  it('resolves mainnet USDC', () => {
+    expect(resolveDelegationAsset('mainnet')).toBe(USDC_SOLANA_MAINNET);
   });
 });
 
@@ -245,16 +245,19 @@ describe('buildApproveDelegate', () => {
     ).rejects.toThrow(/differ/);
   });
 
-  it('rejects mainnet (USDC-only, not wired)', async () => {
+  it('accepts mainnet and approves against the mainnet USDC mint', async () => {
     const { owner, delegate } = await twoSigners();
-    await expect(
-      buildApproveDelegate({
-        owner,
-        delegate: delegate.address,
-        capSubunits: 1n,
-        network: 'mainnet',
-      }),
-    ).rejects.toThrow(/mainnet/i);
+    const instructions = await buildApproveDelegate({
+      owner,
+      delegate: delegate.address,
+      capSubunits: 50_000_000n,
+      network: 'mainnet',
+    });
+    expect(instructions).toHaveLength(2);
+    const view = decodeApproveDelegate(instructions[1]);
+    expect(view.mint).toBe(USDC_SOLANA_MAINNET.mint);
+    expect(view.symbol).toBe('USDC');
+    expect(view.recognized).toBe(true);
   });
 });
 

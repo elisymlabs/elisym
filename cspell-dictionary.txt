@@ -8,6 +8,7 @@ auxe
 bankr
 bech
 behaviour
+Birdeye
 blockhash
 bundler
 CAIP
@@ -144,6 +145,7 @@ undecryptable
 undercount
 undercounts
 unparseable
+unpayable
 unreads
 untargeted
 untrusted

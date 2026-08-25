@@ -20,7 +20,29 @@
  * instead of adopting the async `navigator.locks` path chatSession needs.
  */
 
+import type { SolanaCluster } from './cluster';
+
 export const JOB_HISTORY_KEY_PREFIX = 'elisym:job-history:';
+
+/**
+ * The instant the elisym mainnet config PDA was initialized:
+ * 2026-08-21T12:58:48Z, transaction `iSP4xNfw1b78...`.
+ *
+ * Relay-side job events carry no network field, so the /jobs merge classifies
+ * them by this cutoff: created before it = devnet. A matching local entry for
+ * the same job event overrides the cutoff (see routes/Jobs/lib/rows.ts) - a
+ * stale pre-flip tab can submit devnet jobs after the epoch, and its local
+ * stamp (or the absence of one) is the better witness.
+ *
+ * This is the config's own creation time, not the day the web app went
+ * mainnet, and the difference matters in both directions. Nothing on mainnet
+ * can predate it: `getProtocolConfig` reads fee and treasury from that PDA, so
+ * no payment could be built before it existed. Dating the epoch later instead
+ * - to the app deploy - would file every job from the pre-launch mainnet
+ * testing as devnet and hide it from /jobs. Rounding it down to the hour would
+ * fail the other way, pulling that hour's devnet jobs into the mainnet list.
+ */
+export const MAINNET_EPOCH_SECS = 1_787_317_128;
 
 const TERMINAL_STATUSES = new Set(['completed', 'error']);
 
@@ -42,6 +64,11 @@ export interface StoredJob {
   completedAt?: number;
   /** Result landed while the user was not looking; cleared by /jobs and the Chat tab. */
   unseen?: boolean;
+  /**
+   * Cluster the job was submitted on. Absent = a legacy pre-mainnet entry,
+   * which is devnet by definition (D13) - hidden on the mainnet domain.
+   */
+  network?: SolanaCluster;
 }
 
 export interface JobHistoryStorageAdapter {
@@ -60,7 +87,7 @@ export interface JobHistoryStore {
     opts: { stampUnseen: boolean },
   ): void;
   clearUnseen(wallet: string, agentPubkey?: string): void;
-  unseenCount(wallet: string): number;
+  unseenCount(wallet: string, network: SolanaCluster): number;
   handleExternalChange(key: string): void;
   subscribe(listener: () => void): () => void;
   version(): number;
@@ -114,6 +141,11 @@ function parseJobs(raw: string | null): StoredJob[] {
 
 export function isTerminalJobStatus(status: string): boolean {
   return TERMINAL_STATUSES.has(status);
+}
+
+/** Unstamped local entries predate the mainnet flip and are devnet (D13). */
+export function localJobNetwork(job: StoredJob): SolanaCluster {
+  return job.network ?? 'devnet';
 }
 
 export function createJobHistoryStore(
@@ -243,10 +275,13 @@ export function createJobHistoryStore(
     );
   }
 
-  function unseenCount(wallet: string): number {
+  // The badge counts only entries visible on the current network (D13): a
+  // legacy devnet flip must not light the badge on the mainnet domain for a
+  // row the /jobs page will never show.
+  function unseenCount(wallet: string, network: SolanaCluster): number {
     let count = 0;
     for (const job of readJobs(wallet)) {
-      if (job.unseen === true) {
+      if (job.unseen === true && localJobNetwork(job) === network) {
         count += 1;
       }
     }

@@ -69,6 +69,9 @@ export const PaymentRequestSchema = z.object({
     .positive()
     .max(MAX_EXPIRY_SECS_SCHEMA, `expiry_secs must be <= ${MAX_EXPIRY_SECS_SCHEMA}`),
   asset: paymentAssetRefSchema.optional(),
+  // Optional on the parse side: requests from pre-mainnet providers carry no
+  // network and are treated as devnet by `validatePaymentRequest`.
+  network: z.enum(['devnet', 'mainnet']).optional(),
 });
 
 export type ParsedPaymentRequest = z.infer<typeof PaymentRequestSchema>;

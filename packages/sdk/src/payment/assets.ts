@@ -4,25 +4,41 @@
  * `Asset` describes a currency a customer can spend: native coins (SOL, ETH, BTC)
  * or tokens (SPL, ERC-20). `assetKey` produces a stable string id for Map lookups.
  *
- * Today only `NATIVE_SOL` is in `KNOWN_ASSETS`. SPL (USDC) and other chains are
- * extended by adding entries to `KNOWN_ASSETS` and, where relevant, to the
- * MCP `DEFAULT_SESSION_LIMITS` catalogue.
+ * `KNOWN_ASSETS` holds native SOL plus the SPL assets (USDC per network, LSM
+ * on mainnet). New assets and chains are extended by adding entries to
+ * `KNOWN_ASSETS` and, always, to the MCP `DEFAULT_SESSION_LIMITS` catalogue -
+ * an asset without a limits entry is spend-uncapped in MCP sessions.
  */
 
 import Decimal from 'decimal.js-light';
+import type { Network } from '../types';
 
 export type Chain = 'solana';
 
+/**
+ * Token-2022 program address. Assets whose mint lives under this program set
+ * `Asset.tokenProgram`; the payment path derives ATAs and targets
+ * `transferChecked` at it instead of the classic SPL Token program.
+ */
+export const TOKEN_2022_PROGRAM_ADDRESS_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+
 export interface Asset {
   chain: Chain;
-  /** Lowercase token id: 'sol', 'usdc', 'btc', 'eth'. */
+  /** Lowercase token id: 'sol', 'usdc', 'lsm', 'btc', 'eth'. */
   token: string;
   /** SPL mint / ERC-20 contract. Undefined for a native coin. */
   mint?: string;
   /** Subunits per whole (9 SOL, 6 USDC, 8 BTC, 18 ETH). */
   decimals: number;
-  /** Display symbol: 'SOL', 'USDC'. */
+  /** Display symbol: 'SOL', 'USDC', 'LSM'. */
   symbol: string;
+  /**
+   * Owner program of `mint`. Absent = the classic SPL Token program. Never set
+   * for native coins. Only extension-free-transfer Token-2022 mints are
+   * supported (no transfer-fee/transfer-hook accounts are appended), which is
+   * guaranteed by admitting token-2022 assets exclusively via `KNOWN_ASSETS`.
+   */
+  tokenProgram?: string;
 }
 
 export const NATIVE_SOL: Asset = {
@@ -40,7 +56,66 @@ export const USDC_SOLANA_DEVNET: Asset = {
   symbol: 'USDC',
 };
 
-export const KNOWN_ASSETS: readonly Asset[] = [NATIVE_SOL, USDC_SOLANA_DEVNET];
+export const USDC_SOLANA_MAINNET: Asset = {
+  chain: 'solana',
+  token: 'usdc',
+  mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  decimals: 6,
+  symbol: 'USDC',
+};
+
+/**
+ * The $LSM token - mainnet only. Mint facts verified on-chain 2026-07-31:
+ * owner program Token-2022, decimals 6, supply ~999.99M, mint authority null,
+ * freeze authority null, extension set exactly {metadataPointer, tokenMetadata}
+ * and frozen forever (no authority exists to add extensions) - so plain
+ * `transferChecked` with no extra accounts suffices permanently. There is no
+ * devnet LSM: on devnet the skill loader falls back to native SOL (loudly).
+ */
+export const LSM_SOLANA_MAINNET: Asset = {
+  chain: 'solana',
+  token: 'lsm',
+  mint: '86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump',
+  decimals: 6,
+  symbol: 'LSM',
+  tokenProgram: TOKEN_2022_PROGRAM_ADDRESS_STR,
+};
+
+export const KNOWN_ASSETS: readonly Asset[] = [
+  NATIVE_SOL,
+  USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
+  LSM_SOLANA_MAINNET,
+];
+
+/**
+ * The canonical USDC asset for a network. The mint differs per cluster, so
+ * every USDC-touching path must resolve through the active network - a flat
+ * `KNOWN_ASSETS` lookup cannot distinguish the two.
+ */
+export function resolveUsdcAsset(network: Network): Asset {
+  return network === 'mainnet' ? USDC_SOLANA_MAINNET : USDC_SOLANA_DEVNET;
+}
+
+/**
+ * The LSM asset for a network, or `undefined` where it does not exist (LSM is
+ * mainnet-only). Callers decide what "not available" means for their surface:
+ * the skill loader falls back to native SOL, MCP payment paths refuse, and UI
+ * surfaces simply do not list it.
+ */
+export function resolveLsmAsset(network: Network): Asset | undefined {
+  return network === 'mainnet' ? LSM_SOLANA_MAINNET : undefined;
+}
+
+/**
+ * The SPL assets that exist on a network - the single source of truth for
+ * balance listings, affordability checks, and per-network guards. Devnet:
+ * USDC only. Mainnet: USDC + LSM.
+ */
+export function splAssetsForNetwork(network: Network): Asset[] {
+  const lsm = resolveLsmAsset(network);
+  return lsm ? [resolveUsdcAsset(network), lsm] : [resolveUsdcAsset(network)];
+}
 
 /** Stable Map key for `Asset`. Same shape regardless of Asset identity. */
 export function assetKey(a: Pick<Asset, 'chain' | 'token' | 'mint'>): string {

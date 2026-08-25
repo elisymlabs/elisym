@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { validateAgentName, RELAYS } from '@elisym/sdk';
+import type { Network } from '@elisym/sdk';
 import {
   ElisymYamlSchema,
   createAgentDir,
@@ -38,6 +39,18 @@ export interface InitOptions {
   local?: boolean;
   passphrase?: string;
   yes?: boolean;
+  /** Solana network for the wallet entry: 'devnet' (default) or 'mainnet'. Fixed at init (D1). */
+  network?: string;
+}
+
+export function parseNetworkOption(raw: string | undefined): Network | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (raw === 'devnet' || raw === 'mainnet') {
+    return raw;
+  }
+  throw new Error(`--network must be "devnet" or "mainnet"; got "${raw}"`);
 }
 
 function buildDefaultYaml(): ElisymYaml {
@@ -82,6 +95,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   if (options.config && options.defaults) {
     throw new Error('--config and --defaults are mutually exclusive; pick one.');
   }
+  const networkFlag = parseNetworkOption(options.network);
 
   // --defaults means "no prompts" - imply --yes for shadow/overwrite confirms.
   const skipConfirms = options.yes || options.defaults;
@@ -93,9 +107,25 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
     const raw = readFileSync(configPath, 'utf-8');
     template = ElisymYamlSchema.parse(YAML.parse(raw) ?? {});
     console.log(`  Loaded template from ${configPath}\n`);
+    // The template's payments entries are authoritative; a conflicting
+    // --network would silently bind the agent to the wrong cluster (D1:
+    // network is fixed at creation), so refuse instead of picking one.
+    const templateSolana = template.payments.find((entry) => entry.chain === 'solana');
+    if (networkFlag !== undefined && templateSolana && templateSolana.network !== networkFlag) {
+      throw new Error(
+        `--network ${networkFlag} conflicts with the template's payments[].network (${templateSolana.network}). ` +
+          'Edit the template or drop the flag.',
+      );
+    }
   } else if (options.defaults) {
     template = buildDefaultYaml();
     console.log('  Using default skeleton (no LLM, no payments). Edit later via `profile`.\n');
+    if (networkFlag !== undefined) {
+      console.warn(
+        '  ! --network has no effect with --defaults (no payments entry is created). ' +
+          'The wallet network is chosen when you configure a wallet.\n',
+      );
+    }
   }
 
   // Step 2: Agent name (arg > prompt).
@@ -165,7 +195,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   if (template) {
     yaml = template;
   } else {
-    const result = await promptYaml(inquirer);
+    const result = await promptYaml(inquirer, networkFlag);
     yaml = result.yaml;
     promptedApiKey = result.apiKey;
   }
@@ -273,6 +303,16 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
       void confirmPassphrase;
     }
   }
+  const mainnetBound = yaml.payments.some(
+    (entry) => entry.chain === 'solana' && entry.network === 'mainnet',
+  );
+  if (mainnetBound && !passphrase) {
+    // Warn, don't force (plan §7): mainnet secrets guard real funds.
+    console.warn(
+      '  ! No passphrase set: this MAINNET agent will store its secrets unencrypted on disk.\n' +
+        '    Strongly consider one (--passphrase or ELISYM_PASSPHRASE) - its keys will guard real funds.',
+    );
+  }
 
   // Step 7: Generate Nostr identity.
   const nostrSecretBytes = generateSecretKey();
@@ -305,7 +345,7 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   console.log(`  Location: ${created.dir}`);
   console.log(`  Nostr:    ${npub}`);
   if (yaml.payments[0]?.address) {
-    console.log(`  Solana:   ${yaml.payments[0].address}`);
+    console.log(`  Solana:   ${yaml.payments[0].address} (${yaml.payments[0].network})`);
   }
   if (passphrase) {
     console.log('  Secrets encrypted with your passphrase.');
@@ -340,9 +380,12 @@ async function resolveAgentName(
   return inputName;
 }
 
-async function promptYaml(inquirer: {
-  prompt: any;
-}): Promise<{ yaml: ElisymYaml; apiKey?: string }> {
+async function promptYaml(
+  inquirer: {
+    prompt: any;
+  },
+  networkFlag?: Network,
+): Promise<{ yaml: ElisymYaml; apiKey?: string }> {
   const { description } = await inquirer.prompt([
     {
       type: 'input',
@@ -394,12 +437,38 @@ async function promptYaml(inquirer: {
     },
   ]);
 
+  let walletNetwork: Network = 'devnet';
   if (solanaAddress) {
-    console.log(
-      '  The wallet receives every asset on Solana (SOL directly, USDC and other\n' +
-        '  SPL tokens via their ATA). Each skill declares its own price and token\n' +
-        '  in SKILL.md. Fund with SOL via `solana airdrop` or USDC via https://faucet.circle.com.',
-    );
+    if (networkFlag !== undefined) {
+      walletNetwork = networkFlag;
+    } else {
+      const { network } = await inquirer.prompt([
+        {
+          type: 'list',
+          name: 'network',
+          message: 'Solana network (fixed at init - to go mainnet later, create a new agent):',
+          choices: [
+            { name: 'devnet (test tokens - recommended to start)', value: 'devnet' },
+            { name: 'mainnet (REAL funds)', value: 'mainnet' },
+          ],
+          default: 'devnet',
+        },
+      ]);
+      walletNetwork = network as Network;
+    }
+    if (walletNetwork === 'mainnet') {
+      console.log(
+        '  ! MAINNET: this wallet handles REAL funds - every skill price is real money\n' +
+          '    and there is no faucet. Fund it with real SOL (and USDC if skills price in it).\n' +
+          '    The network is fixed at init: to go back to devnet, create a new agent.',
+      );
+    } else {
+      console.log(
+        '  The wallet receives every asset on Solana (SOL directly, USDC and other\n' +
+          '  SPL tokens via their ATA). Each skill declares its own price and token\n' +
+          '  in SKILL.md. Fund with SOL via `solana airdrop` or USDC via https://faucet.circle.com.',
+      );
+    }
   }
 
   const { llmProvider } = await inquirer.prompt([
@@ -426,7 +495,9 @@ async function promptYaml(inquirer: {
     picture: picture || undefined,
     banner: banner || undefined,
     relays: [...RELAYS],
-    payments: solanaAddress ? [{ chain: 'solana', network: 'devnet', address: solanaAddress }] : [],
+    payments: solanaAddress
+      ? [{ chain: 'solana', network: walletNetwork, address: solanaAddress }]
+      : [],
     security: {},
   };
 

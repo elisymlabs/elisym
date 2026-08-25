@@ -90,6 +90,17 @@ const PAYMENT_SYMBOL_REGEX = /^[A-Za-z0-9$._-]{1,32}$/;
 /** SPL mint (base58) or EVM contract (0x-hex). */
 const PAYMENT_MINT_REGEX = /^[0-9A-Za-z]{1,64}$/;
 
+/**
+ * Relay-side network isolation for capability queries (D2). Mainnet queries
+ * add `'#n': ['mainnet']` - every mainnet card is post-launch and therefore
+ * tagged, so the relay filter is complete and a mainnet client never even
+ * downloads devnet cards. Devnet queries stay broad (legacy cards are
+ * untagged); `parseCapabilityEvent` remains the authority on both networks.
+ */
+function mainnetTagFilter(network: Network): { '#n'?: string[] } {
+  return network === 'mainnet' ? { '#n': ['mainnet'] } : {};
+}
+
 /** Convert a capability name to its Nostr d-tag form (ASCII-only, lowercase, hyphen-separated). */
 export function toDTag(name: string): string {
   const tag = name
@@ -243,6 +254,20 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     if (card.payment.mint !== undefined && !PAYMENT_MINT_REGEX.test(card.payment.mint)) {
       return null;
     }
+    // `decimals` is the one payment field that reaches arithmetic rather than
+    // display-only text: consumers that cannot map the card to a registry
+    // asset fall back to a self-describing one and render prices with this
+    // value, so an out-of-range number shifts the decimal point of every
+    // amount shown for this card. Same bound the payment-request schema
+    // applies (`payment/schema.ts`); no real asset lives outside it.
+    if (
+      card.payment.decimals !== undefined &&
+      (!Number.isInteger(card.payment.decimals) ||
+        card.payment.decimals < 0 ||
+        card.payment.decimals > 18)
+    ) {
+      return null;
+    }
   }
 
   // Optional file-MIME hints must be bounded strings when present. This is
@@ -288,6 +313,18 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
   }
 
   const agentNetwork = card.payment?.network ?? 'devnet';
+  // Tag/content cross-check (D2): the `n` tag exists for relay-side filtering
+  // only - the signed card content stays the authority. A card whose tags
+  // disagree with its content is hostile or corrupt; drop it. Untagged cards
+  // (legacy) are exempt, and tombstones never reach this point (the `deleted`
+  // early-return above) - they intentionally carry BOTH `n` values.
+  const networkTags = event.tags
+    .filter((tag) => tag[0] === 'n')
+    .map((tag) => tag[1])
+    .filter((value): value is string => typeof value === 'string');
+  if (networkTags.length > 0 && !networkTags.includes(agentNetwork)) {
+    return null;
+  }
   if (agentNetwork !== network) {
     return null;
   }
@@ -558,6 +595,7 @@ export class DiscoveryService {
     const filter: Filter = {
       kinds: [KIND_APP_HANDLER],
       '#t': ['elisym'],
+      ...mainnetTagFilter(network),
       limit,
     };
     if (until !== undefined) {
@@ -743,6 +781,7 @@ export class DiscoveryService {
     const filter: Filter = {
       kinds: [KIND_APP_HANDLER],
       '#t': ['elisym'],
+      ...mainnetTagFilter(network),
     };
     if (limit !== undefined) {
       filter.limit = limit;
@@ -768,6 +807,7 @@ export class DiscoveryService {
     const events = await this.pool.querySync({
       kinds: [KIND_APP_HANDLER],
       '#t': ['elisym'],
+      ...mainnetTagFilter(network),
       authors: [pubkey],
     });
 
@@ -959,7 +999,7 @@ export class DiscoveryService {
     };
 
     const capSub = this.pool.subscribe(
-      { kinds: [KIND_APP_HANDLER], '#t': ['elisym'] },
+      { kinds: [KIND_APP_HANDLER], '#t': ['elisym'], ...mainnetTagFilter(network) },
       (event) => {
         const dTag = event.tags.find((tag) => tag[0] === 'd')?.[1] ?? '';
         let perDTag = eventsByPubkey.get(event.pubkey);
@@ -1093,6 +1133,16 @@ export class DiscoveryService {
     if (card.payment.mint !== undefined && !PAYMENT_MINT_REGEX.test(card.payment.mint)) {
       throw new Error(`Invalid payment mint: ${card.payment.mint}`);
     }
+    if (
+      card.payment.decimals !== undefined &&
+      (!Number.isInteger(card.payment.decimals) ||
+        card.payment.decimals < 0 ||
+        card.payment.decimals > 18)
+    ) {
+      throw new Error(
+        `Invalid payment decimals: ${card.payment.decimals} (must be an integer in 0..18).`,
+      );
+    }
     if (card.name.length > LIMITS.MAX_AGENT_NAME_LENGTH) {
       throw new Error(
         `Agent name too long: ${card.name.length} chars (max ${LIMITS.MAX_AGENT_NAME_LENGTH}).`,
@@ -1132,6 +1182,10 @@ export class DiscoveryService {
     const tags: string[][] = [
       ['d', toDTag(card.name)],
       ['t', 'elisym'],
+      // Single-letter network tag (D2): NIP-01 only mandates indexing of
+      // single-letter tags, so `#n` is relay-filterable everywhere. The signed
+      // card content stays the authoritative copy.
+      ['n', card.payment.network ?? 'devnet'],
       ...card.capabilities.map((c) => ['t', c]),
       ...kinds.map((k) => ['k', String(k)]),
     ];
@@ -1314,6 +1368,13 @@ export class DiscoveryService {
         tags: [
           ['d', dTag],
           ['t', 'elisym'],
+          // Tombstones carry BOTH network tags (D2): the `d` address is
+          // network-agnostic and filter tag values are OR-matched, so one
+          // tombstone suppresses the card under either network's `#n` query.
+          // An untagged tombstone would never match the mainnet filter and a
+          // stale tagged card on another relay could resurrect the agent.
+          ['n', 'devnet'],
+          ['n', 'mainnet'],
         ],
         content: JSON.stringify({ deleted: true }),
       },

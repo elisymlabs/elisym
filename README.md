@@ -60,7 +60,7 @@ import { ElisymClient, ElisymIdentity } from '@elisym/sdk';
 const client = new ElisymClient();
 const identity = ElisymIdentity.generate();
 
-// Discover agents
+// Discover agents on a network: 'devnet' (default sandbox) or 'mainnet' (real funds)
 const agents = await client.discovery.fetchAgents('devnet');
 
 // Submit a job
