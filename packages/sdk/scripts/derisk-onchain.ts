@@ -21,6 +21,20 @@
  * The default signer is the devnet wallet the elisym team funds for this. Any
  * wallet works as long as it holds SOL and one token account of the card asset;
  * the script reads that state and sizes each case against it.
+ *
+ * Two cases need state this script will not create, because creating it means
+ * signing, and verification is a read-only path this tool keeps read-only:
+ *
+ *   `unexpected-asset-outflow` runs when the signer holds a SECOND token, of
+ *   any mint other than the card's. It is found automatically - fund the wallet
+ *   with anything and the case appears.
+ *
+ *   The bank-level `lookup-table-unavailable` needs a table the DECODER can
+ *   still read while the chain refuses to load it, which is a table past its
+ *   deactivation cooldown. Make one with `DeactivateLookupTable`, wait
+ *   `deactivation_slot + 513`, then pass `DEAD_LOOKUP_TABLE=<address>`. A table
+ *   merely deactivated is still loadable and proves nothing - the cooldown is
+ *   the point.
  */
 
 import { getTransferSolInstruction } from '@solana-program/system';
@@ -31,12 +45,14 @@ import {
   getApproveInstruction,
   getCreateAssociatedTokenIdempotentInstruction,
   getSetAuthorityInstruction,
+  getTransferCheckedInstruction,
   TOKEN_PROGRAM_ADDRESS,
 } from '@solana-program/token';
 import {
   address,
   appendTransactionMessageInstructions,
   compressTransactionMessageUsingAddressLookupTables,
+  fetchAddressesForLookupTables,
   compileTransaction,
   createNoopSigner,
   createSolanaRpc,
@@ -60,10 +76,12 @@ const RPC_URL =
   process.env.RPC_URL ??
   (NETWORK === 'devnet' ? 'https://api.devnet.solana.com' : 'https://api.mainnet-beta.solana.com');
 const SIGNER = address(process.env.SIGNER ?? '2cwv5sFeT2FMdb5h4JSws9nCwW2kD1CCjGU2hxz3Q73x');
+const DEAD_TABLE = process.env.DEAD_LOOKUP_TABLE;
 
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const USDC_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 
 const rpc: Rpc<SolanaRpcApi> = createSolanaRpc(RPC_URL);
 const signer = createNoopSigner(SIGNER);
@@ -159,10 +177,40 @@ const TOKEN_ATA = tokenAccount.pubkey;
 const TOKEN_MINT = tokenAccount.account.data.parsed.info.mint as string;
 const TOKEN_DECIMALS = tokenAccount.account.data.parsed.info.tokenAmount.decimals as number;
 
+// A second token, of any mint but the card's, is what makes an outflow
+// "unexpected". Token-2022 is searched too - the base layout the verifier reads
+// is the same, and on devnet the only second asset around is a t22 one.
+const { value: token2022Accounts } = await rpc
+  .getTokenAccountsByOwner(
+    SIGNER,
+    { programId: address(TOKEN_2022_PROGRAM) },
+    { encoding: 'jsonParsed' },
+  )
+  .send();
+const otherAsset = [...tokenAccounts, ...token2022Accounts]
+  .map((account) => ({
+    ata: account.pubkey,
+    program: account.account.owner,
+    mint: account.account.data.parsed.info.mint as string,
+    decimals: account.account.data.parsed.info.tokenAmount.decimals as number,
+    amount: BigInt(account.account.data.parsed.info.tokenAmount.amount as string),
+  }))
+  .find((asset) => asset.mint !== TOKEN_MINT && asset.amount > 0n);
+
 console.log(`network   ${NETWORK}  (${RPC_URL})`);
 console.log(`signer    ${SIGNER}`);
 console.log(`  lamports ${lamports}`);
 console.log(`  token    ${TOKEN_ATA} mint=${TOKEN_MINT} decimals=${TOKEN_DECIMALS}`);
+console.log(
+  otherAsset
+    ? `  other    ${otherAsset.ata} mint=${otherAsset.mint} (drives unexpected-asset-outflow)`
+    : '  other    none - skipping unexpected-asset-outflow (fund a second token to cover it)',
+);
+console.log(
+  DEAD_TABLE === undefined
+    ? '  table    DEAD_LOOKUP_TABLE unset - skipping the bank-level lookup-table refusal'
+    : `  table    ${DEAD_TABLE} (past its deactivation cooldown)`,
+);
 console.log('');
 
 const { value: blockhash } = await rpc.getLatestBlockhash().send();
@@ -508,8 +556,94 @@ cases.push(
   },
 );
 
+// Both below need state this script will not sign into existence, so each is
+// added only when the cluster already holds it. A skipped case prints as such
+// rather than passing quietly.
+if (otherAsset !== undefined) {
+  cases.push({
+    name: 'an asset the card never published leaving the wallet',
+    expect: 'unexpected-asset-outflow',
+    run: async () => {
+      // A self-transfer nets to zero and proves nothing, so the call needs a
+      // real destination - created in the same transaction, since the stranger
+      // holds no account of this mint. Its rent rides the incidental allowance,
+      // well under the default, so the asset check is what decides the case.
+      const [strangerAta] = await findAssociatedTokenPda({
+        owner: stranger,
+        mint: address(otherAsset.mint),
+        tokenProgram: address(otherAsset.program),
+      });
+      return verify(
+        [
+          getCreateAssociatedTokenIdempotentInstruction({
+            payer: signer,
+            ata: strangerAta,
+            owner: stranger,
+            mint: address(otherAsset.mint),
+            tokenProgram: address(otherAsset.program),
+          }) as IInstruction,
+          getTransferCheckedInstruction(
+            {
+              source: address(otherAsset.ata),
+              mint: address(otherAsset.mint),
+              destination: strangerAta,
+              authority: signer,
+              amount: 1n,
+              decimals: otherAsset.decimals,
+            },
+            { programAddress: address(otherAsset.program) },
+          ) as IInstruction,
+        ],
+        cardFor({
+          token: 'usdc',
+          mint: TOKEN_MINT,
+          decimals: TOKEN_DECIMALS,
+          programs: [otherAsset.program, ASSOCIATED_TOKEN_PROGRAM_ADDRESS],
+          max_per_call_subunits: '1000000',
+        }),
+      );
+    },
+  });
+}
+
+if (DEAD_TABLE !== undefined) {
+  cases.push({
+    name: 'a lookup table the chain will no longer load',
+    expect: 'lookup-table-unavailable',
+    run: async () => {
+      // Rent-exempt transfers: a dust one fails simulation for its own reason
+      // and never reaches the table check.
+      const tables = await fetchAddressesForLookupTables([address(DEAD_TABLE)], rpc);
+      const targets = (tables[address(DEAD_TABLE)] ?? []).slice(0, 4);
+      const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        (m) => setTransactionMessageFeePayerSigner(signer, m),
+        (m) => setTransactionMessageLifetimeUsingBlockhash(blockhash, m),
+        (m) =>
+          appendTransactionMessageInstructions(
+            targets.map((target) =>
+              getTransferSolInstruction({ source: signer, destination: target, amount: 890_880n }),
+            ),
+            m,
+          ),
+        (m) => compressTransactionMessageUsingAddressLookupTables(m, tables),
+      );
+      return verifyOnchainCall({
+        envelope: envelopeFor(getBase64EncodedWireTransaction(compileTransaction(message))),
+        card: cardFor({ max_per_call_subunits: '10000000' }),
+        signer: SIGNER,
+        network: NETWORK,
+        rpc,
+      });
+    },
+  });
+}
+
 for (const testCase of cases) {
   await runCase(testCase);
+  // The public devnet endpoint rate-limits an unpaced run of this size, and a
+  // 429 renders as THREW rather than as the refusal the case is about.
+  await new Promise((resolve) => setTimeout(resolve, 700));
 }
 
 const width = Math.max(...results.map((r) => r.name.length));
