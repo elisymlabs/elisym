@@ -1,13 +1,30 @@
-import { resolveKnownAsset } from '@elisym/sdk';
+import { resolveKnownAsset, type CapabilityCard, type OnchainDescriptor } from '@elisym/sdk';
 import type { ReactNode } from 'react';
 import type { ChatThreadEntry } from '~/lib/chatThread';
 import { hasBlossom } from '~/lib/fileResult';
 import { compactZeros, formatDecimal } from '~/lib/formatPrice';
+import { isCallEnvelope } from '~/lib/onchainCall';
 import { ChatBubble } from './ChatBubble';
 import { FileResultCard } from './FileResultCard';
 import { cleanPreviewText } from './lib/artifactPreview';
+import { OnchainCallCard } from './OnchainCallCard';
 
 const SOL_DECIMALS = 9;
+
+/**
+ * Shown when a result IS a call envelope but no published promise resolves for
+ * it. The same thing MCP says, because the customer's position is the same:
+ * there is nothing to check the call against, so nothing will be offered to
+ * sign. The raw envelope stays reachable by opening the result.
+ *
+ * Phrased as "has not matched" rather than "cannot tell", because one of the
+ * ways to get here is transient: `useAgent` seeds its cards synchronously from
+ * cache, and a profile cached by an older build carries no `onchain` field
+ * until the relay result merges. A definite sentence would be briefly false.
+ */
+const UNMATCHED_CALL_NOTICE =
+  'This capability returned a Solana call, but elisym has not matched it to a promise this agent ' +
+  'publishes, so it will not offer to sign it.';
 
 interface Props {
   entry: ChatThreadEntry;
@@ -21,6 +38,12 @@ interface Props {
   onOpen: () => void;
   /** Retry affordance for failed entries, composed by the thread. */
   retryNode?: ReactNode;
+  /**
+   * The capability card behind this entry, when it publishes an on-chain
+   * promise. Present only for `mode: onchain` capabilities: the result is then
+   * a call to verify and sign rather than text to read.
+   */
+  onchainCard?: CapabilityCard & { onchain: OnchainDescriptor };
 }
 
 function formatEntryTime(ts: number): string {
@@ -55,6 +78,7 @@ export function ChatEntry({
   onRate,
   onOpen,
   retryNode,
+  onchainCard,
 }: Props) {
   const completed = entry.status === undefined;
   const priceLabel = priceLabelOf(entry);
@@ -67,6 +91,17 @@ export function ChatEntry({
 
   const fetchableAttachments = (entry.resultAttachments ?? []).filter(hasBlossom);
   const resultPreview = entry.result ? cleanPreviewText(entry.result) : '';
+  // A call is signed, not read: when the capability published an on-chain
+  // promise and the result carries an envelope, the bubble gives way to the
+  // confirm sheet that verifies it.
+  const signableCall =
+    onchainCard && entry.result && isCallEnvelope(entry.result) ? entry.result : undefined;
+  // An envelope with no published promise to check it against: the provider
+  // dropped the descriptor, republished on the other network, or two of its
+  // capabilities answer to this job's tag. MCP says so plainly; without this
+  // the browser rendered the raw base64 envelope and left the customer with
+  // no idea why nothing was offered to sign.
+  const unmatchedCall = !signableCall && isCallEnvelope(entry.result);
 
   let assistantBubble: ReactNode;
   if (completed) {
@@ -104,11 +139,22 @@ export function ChatEntry({
     // results into a one-word-per-line sliver.
     assistantBubble = (
       <div className="flex flex-col gap-8">
-        <ChatBubble side="assistant" onClick={onOpen}>
-          <p className="m-0 line-clamp-6 break-words whitespace-pre-wrap">
-            {resultPreview || 'Result received'}
-          </p>
-        </ChatBubble>
+        {signableCall && onchainCard ? (
+          <OnchainCallCard
+            card={onchainCard}
+            envelope={signableCall}
+            agentPubkey={agentPubkey}
+            jobEventId={entry.jobEventId}
+            signedAlready={entry.callSignature}
+            signedStatus={entry.callStatus}
+          />
+        ) : (
+          <ChatBubble side="assistant" onClick={onOpen}>
+            <p className="m-0 line-clamp-6 break-words whitespace-pre-wrap">
+              {unmatchedCall ? UNMATCHED_CALL_NOTICE : resultPreview || 'Result received'}
+            </p>
+          </ChatBubble>
+        )}
         {fetchableAttachments.length > 0 && (
           <div className="flex w-full max-w-[85%] flex-col gap-8 sm:max-w-[70%]">
             {fetchableAttachments.map((attachment, index) => (

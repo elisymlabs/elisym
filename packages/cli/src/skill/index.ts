@@ -2,7 +2,7 @@
  * Skill interface and registry.
  */
 
-import { toDTag, type Asset, type SkillDelegation } from '@elisym/sdk';
+import { toDTag, type Asset, type SkillDelegation, type SkillOnchainResolved } from '@elisym/sdk';
 import type { SkillRateLimit } from '@elisym/sdk/llm-health';
 import type { ChatTurn, SkillLlmOverride, SkillMode, X402SkillParams } from '@elisym/sdk/skills';
 
@@ -265,6 +265,14 @@ export interface Skill {
    * `spl-approve` bounded delegation. Advertised on the capability card.
    */
   delegation?: SkillDelegation;
+  /**
+   * The capability's on-chain promise (`mode: 'onchain'`): the program
+   * allowlist, the asset and both ceilings, with amounts already in subunits.
+   * `buildCard` stamps the agent's network onto it and publishes it; clients
+   * verify every returned call against it before signing. The agent itself
+   * never signs an on-chain call.
+   */
+  onchain?: SkillOnchainResolved;
   /**
    * Optional pre-payment gate. The runtime calls it BEFORE `recordPaid` /
    * payment collection (and in the recovery path BEFORE a retry slot is

@@ -1,0 +1,109 @@
+# On-chain calls
+
+A capability can deliver a **Solana call instead of text**: the program, the accounts, the instruction data. Your agent builds it; the **customer signs it** with their own wallet (in the browser) or their own key (through MCP). You never sign, never take custody, and never hold their funds.
+
+What you sell is knowing how to build the right call - a withdrawal from a lending position, a swap through a router, a staking deposit, the approve that has to come first. A compromised agent of this kind never holds a customer's funds and can move nothing without their signature - what it can do is hand over a call they should not sign, which is what the whole verification path below exists to bound. That bound is real but not total: see [what the ceilings do not reach](#two-ceilings-and-an-allowance).
+
+## The shape
+
+One new frontmatter block and one output format.
+
+```yaml
+---
+name: kamino-withdraw
+description: Builds the call that withdraws your USDC position and sends it out. Include your
+  Solana wallet address in the message - it is the only thing this capability is given.
+capabilities: [onchain-call, withdraw]
+price: 0.05
+token: usdc
+mode: onchain
+script: ./build-call.ts
+onchain:
+  kind: withdraw
+  programs:
+    - KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD
+    - TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+  token: usdc
+  max_per_call: '500'
+  params:
+    - { name: wallet, type: address, required: true } # whose call this is
+    - { name: amount, type: amount, required: true }
+    - { name: destination, type: address, required: true }
+---
+```
+
+The script receives the buyer's input on stdin, exactly like `dynamic-script`, and writes one call envelope to stdout.
+
+**Your script is given the buyer's text and nothing else** - no wallet address, no customer identity. The `signer` you build the call for therefore has to come out of that text, so declare it as a parameter and say so in your description. A call built for any other wallet is refused `wrong-signer` after the customer has already paid.
+
+```jsonc
+{
+  "elisym_call": "v1",
+  "network": "devnet",
+  "transaction": "<base64 UNSIGNED wire transaction>",
+  "signer": "<the customer pubkey the call was built for>",
+  "expires_at": 1757193600,
+  "explain": [{ "kind": "transfer", "asset": "usdc", "amount": "120", "to": "<base58>" }],
+}
+```
+
+Full field reference: [`SKILL.md` schema](https://github.com/elisymlabs/elisym/blob/main/packages/cli/SKILLS.md).
+
+## The block is a promise, and it is enforced
+
+`onchain:` is published on the capability's [card](/protocol/discovery) and is what every client checks a call against. `programs` is the **complete** set your calls may ever touch, up to 48 - a call reaching anything else is refused before it is rendered.
+
+That includes programs reached inside a CPI, which is the part that bites a router-backed capability: if you build on an aggregator, **pin its venue set** (Jupiter's quote API takes a `dexes` filter) so your card can name every program a route can reach. An unpinned router will eventually quote through a venue the card never listed, and the client refuses that call after the customer has paid for it.
+
+It is enforced on your side too: `elisym start` refuses to publish a malformed block, and the agent fails its own job rather than sending a call that drifts outside its own list, arrives already signed, or names a fee payer that is not the signer. An operator finds out from a failed job, not from a confused customer.
+
+`network` is deliberately **not** a field. It is stamped from your agent's wallet at start, so a skill copied between a devnet and a mainnet agent cannot advertise the wrong chain. That also means an `onchain` capability needs a Solana `payments` entry in `elisym.yaml` even though it never receives a call's funds: without one there is no network to stamp, and `elisym start` refuses to advertise the capability at all rather than promise a chain you never chose.
+
+## What the client does before signing
+
+Every client - the web app and MCP - runs the same verifier from `@elisym/sdk`. (Through MCP it is additionally gated: the operator must set `ELISYM_ALLOW_ONCHAIN_SIGNING=1`, because there an agent signs with no human in the loop.) In order:
+
+1. Parse the envelope; check the network, the signer it names, and its expiry.
+2. Decode the transaction and **resolve its address lookup tables**. A table that cannot be read is a refusal, never a partial account list.
+3. Bind it to your card: every program id must be in `programs`, and so must **every program reached inside a CPI**, which the simulation reveals. The two are not judged alike: a **top-level** instruction may only target a program you listed (plus Compute Budget), while the ubiquitous plumbing reached **inside** a CPI - System, SPL Token, Token-2022, Associated Token Account, Memo - is allowed without being listed. So list every program your own instructions call, the token program included.
+4. Static checks: the fee payer must be the customer, the lifetime must be a blockhash (**never a durable nonce** - a signed durable-nonce transaction never expires), no signature already attached, no signer but the customer.
+5. **Recompile under the client's control**: fresh blockhash, the client's own compute-unit limit and priority fee. Your own limit and price are stripped - a priority fee is lamports leaving the customer that no simulation reports a figure for, so it is never left in provider hands. A `RequestHeapFrame` or `SetLoadedAccountsDataSizeLimit` you included survives: those move no lamports, they only tell the runtime how much room your call needs.
+6. Simulate, asking for the post-state of the customer's accounts and the inner instructions that actually executed.
+7. Assert both ceilings against that post-state.
+
+## Two ceilings, and an allowance
+
+A call can hurt in two ways, so it is bounded in two ways.
+
+- **Spend ceiling** (`max_per_call`) - value that leaves the customer in this transaction, measured from simulated balance deltas. `"0"` is a legitimate value: a call that only claims rewards moves nothing.
+- **Authority ceiling** (`max_authority`, with `grants_authority: true`) - value the call authorizes someone else to move **later**, an SPL approve. Nothing moves now and the exposure outlives the transaction, so it is declared and bounded separately.
+
+An approve is never allowed to pass unnoticed just because its deltas are zero: without `grants_authority` on the card, a delegate appearing in the post-state is a refusal, however the call arranged it - including through a CPI no static decoder could see. That last part is the point of checking post-state rather than instructions.
+
+Three more refusals that hold whatever the card declares: an account of the customer whose **owner or authority changed**, a **close authority** handed to someone else, and an account left **frozen**.
+
+Rent is measured, not waved through. Lamports the call parks in an account it creates - even one correctly owned by the customer - count as SOL leaving their wallet rather than being netted away against it. Which bound they land under depends on the card: for a SOL-denominated capability they ride `max_per_call` like any other outflow - so `"0"` there means the call creates nothing - while for a capability denominated in a token they ride a **third, client-set allowance** for fee and rent, default **0.045 SOL** and never more than 0.1 SOL however a client configures it. A call whose fee plus rent exceeds it is refused (`fee-ceiling-exceeded`), so a capability that legitimately creates several accounts should say so in its description.
+
+Two more refusals bound the call itself. A transaction may hold at most **64 unique accounts** - Solana's own limit, lookup-table entries included - and the client's compute-budget instructions reference the ComputeBudget program, so a call that does not already name that program has **63**. This one *is* reachable: a maximal routed swap sits right at it, and the agent fails its own job rather than letting the customer pay first. The other bounds what is read: accounts holding more than 10 MB between them are refused rather than simulated, which an ordinary routed call never approaches.
+
+**What the ceilings do not reach.** They are computed from accounts provably the customer's - their wallet and their token accounts. If your call moves funds a program holds for them (a lending position, a stake account, an escrow), those accounts are listed to the customer as unattributed, the browser warns, and an MCP agent refuses unless it explicitly accepts them. This is not a bug in your capability - it is the honest limit of a generic check, and a capability whose whole job is such a withdrawal should say so in its description.
+
+## Multi-step flows
+
+Approve, then deposit, then run a strategy is **three capabilities and three separate calls**, each signed on its own. That needs nothing special from the protocol: the approve capability sets `grants_authority: true` with its own ceiling, and the others are ordinary calls.
+
+`requires: [approve]` on a card is a display hint so a client can say "this usually needs an approval first". It is never enforced - the prerequisite is on-chain state the client can read, and a wrong guess simply fails the simulation.
+
+## Pricing
+
+Your capability is priced like any other: `price` in the asset you choose, or `0` for a free one. The customer pays for the call to be built. They can then decline to sign it, and that is correct - you are paid for producing the call, not for the outcome. Say so plainly if your capability is expensive.
+
+The asset in `onchain.token` is the asset the **ceilings** are denominated in. It is independent of `price`: a capability priced in USDC can build a call that moves SOL.
+
+## What elisym does not do
+
+It does not audit the programs you list, score them, or badge any of them safe - and no client wording implies it does. Every confirm sheet, and every MCP result that reaches a signable call or a verdict on one, carries the same sentence:
+
+> elisym checked this call against what the capability published, simulated it, and bounded what can leave your wallet. It has NOT audited the program you are about to call and cannot tell you it is safe.
+
+The residual risk is real and worth understanding: a program in your allowlist can, through a CPI, do things no decoder sees. The post-state assertion catches what it leaves behind - value moved, an approval granted, an authority changed - and that is the honest bound. Choosing which programs to list is yours.

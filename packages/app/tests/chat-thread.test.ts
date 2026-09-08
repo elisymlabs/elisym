@@ -114,6 +114,71 @@ function createStore(delayMs = 0) {
   return { storage, locks, store };
 }
 
+describe('chatThread store - a signed call surviving the loss of this store', () => {
+  it('restores the claim from the customer’s own relay report', async () => {
+    // This browser's IndexedDB is otherwise the only record that a call was
+    // signed. Without the claim the sheet offers an already-executed call as
+    // fresh, and a re-check rebuilds it against a new blockhash, so the second
+    // signature genuinely lands - the paid action done twice.
+    const { store } = createStore();
+    await store.mergeHydratedEntry(
+      AGENT,
+      hydratedEntry('job-1', { callSignature: 'sig-1', callStatus: 'sent' }),
+    );
+    const thread = await store.readThread(AGENT);
+    // `sent`, not `landed`: the relay report carries no verdict, and the MCP
+    // client publishes one for `assume-landed` too.
+    expect(thread[0]).toMatchObject({ callSignature: 'sig-1', callStatus: 'sent' });
+  });
+
+  it('lets a report displace a local `failed`, which another device may have landed', async () => {
+    // A local `failed` proves only that THIS device's bytes never went out. A
+    // report exists only for a call its publisher watched land, so the two
+    // disagreeing means another device already did this - and keeping the
+    // local record would offer a fresh signature for an action already paid
+    // for and executed.
+    const { store } = createStore();
+    await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    await store.recordCallSignature(AGENT, 'job-1', 'never-sent-sig', 'failed');
+    await store.mergeHydratedEntry(
+      AGENT,
+      hydratedEntry('job-1', { callSignature: 'landed-elsewhere', callStatus: 'sent' }),
+    );
+    const thread = await store.readThread(AGENT);
+    expect(thread[0]).toMatchObject({
+      callSignature: 'landed-elsewhere',
+      callStatus: 'sent',
+    });
+  });
+
+  it('leaves a local `failed` alone when no report contradicts it', async () => {
+    // The retry the customer is entitled to. Nothing landed anywhere, so
+    // nothing may block signing again.
+    const { store } = createStore();
+    await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    await store.recordCallSignature(AGENT, 'job-1', 'never-sent-sig', 'failed');
+    await store.mergeHydratedEntry(AGENT, hydratedEntry('job-1'));
+    const thread = await store.readThread(AGENT);
+    expect(thread[0]).toMatchObject({ callSignature: 'never-sent-sig', callStatus: 'failed' });
+  });
+
+  it('leaves a local `sent` alone too, not just a local `failed`', async () => {
+    // The other half of the same guard. A local `sent` was written before the
+    // bytes went out on THIS device; the relay report may describe a different
+    // attempt, and replacing one in-flight signature with another would send
+    // the customer to check the wrong transaction.
+    const { store } = createStore();
+    await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    await store.recordCallSignature(AGENT, 'job-1', 'local-sig', 'sent');
+    await store.mergeHydratedEntry(
+      AGENT,
+      hydratedEntry('job-1', { callSignature: 'relay-sig', callStatus: 'sent' }),
+    );
+    const thread = await store.readThread(AGENT);
+    expect(thread[0]?.callSignature).toBe('local-sig');
+  });
+});
+
 describe('chatThread store', () => {
   it('appends a pending entry and reads it back', async () => {
     const { store } = createStore();
@@ -460,5 +525,95 @@ describe('chatThread store', () => {
       expect(locks.names.filter((name) => name === chatThreadKey(AGENT)).length).toBeGreaterThan(1);
       expect(locks.names).toContain(chatThreadKey(OTHER_AGENT));
     });
+  });
+});
+
+describe('recordCallSignature', () => {
+  it('stamps the signature and its outcome on an existing entry', async () => {
+    const { store } = createStore();
+    await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    expect(await store.recordCallSignature(AGENT, 'job-1', 'sig-1', 'sent')).toBe('stored');
+    const [stored] = await store.readThread(AGENT);
+    expect(stored?.callSignature).toBe('sig-1');
+    expect(stored?.callStatus).toBe('sent');
+  });
+
+  it('records the later verdict over the earlier one', async () => {
+    // `sent` -> `landed` is the normal path; `sent` -> `failed` is what lets a
+    // reverted call be retried instead of reading as already executed.
+    const { store } = createStore();
+    await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    await store.recordCallSignature(AGENT, 'job-1', 'sig-1', 'sent');
+    await store.recordCallSignature(AGENT, 'job-1', 'sig-1', 'failed');
+    const [stored] = await store.readThread(AGENT);
+    expect(stored?.callStatus).toBe('failed');
+  });
+
+  it('refuses to write over a DIFFERENT blocking signature', async () => {
+    // The compare-and-set. A caller decides to claim from a snapshot it read
+    // earlier; between that read and this write the hydration merge can commit
+    // a claim recovered from the customer's own relay report - a call another
+    // device already landed. A blind write would erase it and the caller would
+    // go on to send, executing the paid action twice.
+    const { store } = createStore();
+    await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    expect(await store.recordCallSignature(AGENT, 'job-1', 'landed-elsewhere', 'sent')).toBe(
+      'stored',
+    );
+    expect(await store.recordCallSignature(AGENT, 'job-1', 'mine', 'sent')).toBe('superseded');
+    const [stored] = await store.readThread(AGENT);
+    expect(stored?.callSignature).toBe('landed-elsewhere');
+  });
+
+  it('never moves a verdict off `landed`, in either direction', async () => {
+    // `landed` is the chain's own answer, and both ways out are wrong. `sent`
+    // would restore "could not confirm whether it landed" for a call that did.
+    // `failed` is worse: `blockingCallSignature` treats it as nothing to block
+    // on, so it would switch the double-execution guard OFF for a call that
+    // really happened.
+    const { store } = createStore();
+    await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    await store.recordCallSignature(AGENT, 'job-1', 'sig-1', 'landed');
+    expect(await store.recordCallSignature(AGENT, 'job-1', 'sig-1', 'sent')).toBe('superseded');
+    expect(await store.recordCallSignature(AGENT, 'job-1', 'sig-1', 'failed')).toBe('superseded');
+    const [stored] = await store.readThread(AGENT);
+    expect(stored?.callStatus).toBe('landed');
+  });
+
+  it('writes over a `failed` claim, which blocks nothing', async () => {
+    // The legitimate retry: nothing went out, so a fresh signature may claim
+    // the job. The compare-and-set must not turn this into a dead end.
+    const { store } = createStore();
+    await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    await store.recordCallSignature(AGENT, 'job-1', 'never-sent', 'failed');
+    expect(await store.recordCallSignature(AGENT, 'job-1', 'retry', 'sent')).toBe('stored');
+  });
+
+  it('still refuses a superseding claim when the write cannot commit', async () => {
+    // `superseded` is decided from a read INSIDE the transaction and writes
+    // nothing, so it does not need the transaction to commit. Gating it on the
+    // commit turned "another tab already claimed this job - abort" into "the
+    // claim did not store" - a warning the caller sends through, which is the
+    // paid action executed twice. Storage can refuse a write while reads still
+    // work: quota pressure, a `versionchange` mid-flight, private-mode IDB.
+    const { storage, store: writable } = createStore();
+    await writable.appendPendingEntry(AGENT, pendingEntry('job-1'));
+    await writable.recordCallSignature(AGENT, 'job-1', 'landed-elsewhere', 'sent');
+    const aborting: MemoryThreadStorage = {
+      ...storage,
+      async update(key, updater) {
+        // Runs the updater, as an aborted transaction does, then discards it.
+        updater(storage.map.get(key));
+        return false;
+      },
+    };
+    const store = createChatThreadStore(aborting, createRecordingLocks());
+    expect(await store.recordCallSignature(AGENT, 'job-1', 'mine', 'sent')).toBe('superseded');
+  });
+
+  it('never resurrects an entry that is gone', async () => {
+    const { store } = createStore();
+    expect(await store.recordCallSignature(AGENT, 'missing', 'sig-1', 'sent')).toBe('unstored');
+    expect(await store.readThread(AGENT)).toEqual([]);
   });
 });

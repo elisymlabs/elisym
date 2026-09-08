@@ -144,15 +144,16 @@ describe('stdio MCP integration', () => {
     await rm(tmpHome, { recursive: true, force: true });
   });
 
-  it('initializes and exposes exactly 34 tools', async () => {
+  it('initializes and exposes exactly 35 tools', async () => {
     harness = new McpHarness(tmpHome);
     await harness.initialize();
 
     const response = await harness.send('tools/list', {});
     expect(response.error).toBeUndefined();
     const result = response.result as { tools: Array<{ name: string; inputSchema: unknown }> };
-    expect(result.tools).toHaveLength(34);
+    expect(result.tools).toHaveLength(35);
     const names = result.tools.map((t) => t.name).sort();
+    expect(names).toContain('sign_onchain_call');
     expect(names).toContain('approve_delegation');
     expect(names).toContain('revoke_delegation');
     expect(names).toContain('submit_delegated_job');

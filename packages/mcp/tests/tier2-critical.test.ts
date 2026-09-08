@@ -23,8 +23,8 @@ describe('tool registry', () => {
     expect(unique.size).toBe(names.length);
   });
 
-  it('registers exactly 34 tools (ping_agent folded into search/pre-ping; estimate_payment_cost added with USDC; submit_feedback / add_contact / remove_contact / list_contacts added; submit_and_pay_job_from_file and submit_diff_review added; get_agent_policies added; fetch_job_file added for iroh file results; list_job_sessions added for conversations; verify_agent_identities added for external identity proofs; get_delegation added for spl-approve delegated execution; approve_delegation and revoke_delegation added for spl-approve delegation writes; submit_delegated_job added for delegated job payment)', () => {
-    expect(registeredTools).toHaveLength(34);
+  it('registers exactly 35 tools (ping_agent folded into search/pre-ping; estimate_payment_cost added with USDC; submit_feedback / add_contact / remove_contact / list_contacts added; submit_and_pay_job_from_file and submit_diff_review added; get_agent_policies added; fetch_job_file added for iroh file results; list_job_sessions added for conversations; verify_agent_identities added for external identity proofs; get_delegation added for spl-approve delegated execution; approve_delegation and revoke_delegation added for spl-approve delegation writes; submit_delegated_job added for delegated job payment; sign_onchain_call added for capability-built Solana calls)', () => {
+    expect(registeredTools).toHaveLength(35);
   });
 
   it('every registered tool has a Zod schema and a handler', () => {

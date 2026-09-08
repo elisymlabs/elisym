@@ -347,18 +347,25 @@ const SubmitDiffReviewSchema = z.object({
  * Single source of truth for both the recipient address and the advertised price so
  * they can never read different cards.
  */
-function paymentCardForCapability(
+export function paymentCardForCapability(
   provider: ProviderAgent,
   dTag?: string,
 ): CapabilityCard | undefined {
   const cards = provider.cards ?? [];
-  const candidates = dTag
-    ? cards.filter(
-        (card) =>
-          toDTag(card.name) === dTag ||
-          card.capabilities?.some((capability) => toDTag(capability) === dTag),
-      )
-    : cards;
+  const answers = (card: CapabilityCard) =>
+    toDTag(card.name) === dTag || card.capabilities?.some((entry) => toDTag(entry) === dTag);
+  const matching = dTag ? cards.filter(answers) : cards;
+  // A card the tag NAMES comes first, because that is the card that was asked
+  // for: the web app writes the selected card's own name as the tag, and the
+  // on-chain verifier resolves the same tag the same way. Without this, pricing
+  // took the first payment-bearing match in RELAY ARRIVAL ORDER while the
+  // on-chain path enforced the promise of the card the tag names - so the card
+  // that was paid for and the card whose ceilings were applied could differ,
+  // non-deterministically. A named card with no payment block still falls
+  // through to the loop below, exactly as before.
+  const named = dTag === undefined ? [] : matching.filter((card) => toDTag(card.name) === dTag);
+  const candidates =
+    named.length === 1 ? [...named, ...matching.filter((card) => card !== named[0])] : matching;
   // When a dTag is supplied but matches no card, do NOT fall back to scanning every
   // card: returning an unrelated card would make the confirm-before-publish gate
   // price (and set the recipient) against a capability the customer never asked for.
@@ -1456,6 +1463,15 @@ async function executeSubmitAndPay(
       params.timeoutMs + 5_000,
     );
 
+    // The no-wallet resolution is not a delivery, and the history has to say so.
+    // Nothing was paid, the provider never executed, and `result` is this
+    // client's own "payment required" notice rather than an answer - written as
+    // `completed` with that notice as the `resultPreview`, it made
+    // `list_my_jobs` report an unpaid, unanswered job as a successful one, to
+    // the LLM and to the user. Recorded the way the failure path below records
+    // one: `failed`, with no preview. The flag already existed for the
+    // session-turn gate a few lines down, whose comment says this outcome "is
+    // NOT a completed exchange"; the status write is the other half of it.
     await recordJobOutcome(agent, {
       jobEventId: jobId,
       capability: params.dTag,
@@ -1463,10 +1479,10 @@ async function executeSubmitAndPay(
       providerName: clipProviderName(provider.name),
       paidAmountSubunits: paidAmountSubunits?.toString(),
       assetKey: paidAssetKey,
-      status: 'completed',
+      status: noWalletResolution ? 'failed' : 'completed',
       submittedAt,
       completedAt: Date.now(),
-      resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
+      ...(noWalletResolution ? {} : { resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN) }),
       paymentSig,
       attachmentJson: resultAttachment ? JSON.stringify(resultAttachment) : undefined,
     });
@@ -2391,6 +2407,9 @@ export const customerTools: ToolDefinition[] = [
           timestamp,
           result: resultText,
           payment_sig: local?.paymentSig,
+          // The on-chain call this job produced and this agent signed, if any.
+          // Distinct from `payment_sig`, which paid for the job itself.
+          call_sig: local?.callSignature,
           customer_feedback: local?.customerFeedback,
           session_id: sessionByJobId.get(eventId),
         };
@@ -2785,6 +2804,11 @@ export const customerTools: ToolDefinition[] = [
       let paymentWarnings: string[] = [];
       // Captured so the timeout catch can await an in-flight payment settling.
       let awaitPayment: (() => Promise<void>) | undefined;
+      // Whether the wait was resolved by the no-wallet path rather than by a
+      // result. Mirrors `executeSubmitAndPay`: without it this call site cannot
+      // tell the two apart at all, and it recorded every unpaid, unanswered job
+      // as `completed`.
+      let noWalletResolution = false;
       try {
         const result = await awaitJobResult<string>(
           agent,
@@ -2798,7 +2822,10 @@ export const customerTools: ToolDefinition[] = [
               expectedRecipient,
               maxPriceLamports: input.max_price_lamports,
               expectedAsset: assetFromCardPayment(card.payment),
-              resolveNoWallet: resolve,
+              resolveNoWallet: (text) => {
+                noWalletResolution = true;
+                resolve(text);
+              },
               resolveResult: resolve,
               rejectPayment: reject,
               onPaid: (sig, warnings, amount, assetKey) => {
@@ -2842,6 +2869,9 @@ export const customerTools: ToolDefinition[] = [
           timeout + 5_000,
         );
 
+        // Same distinction the submit path makes: a job resolved by the
+        // no-wallet notice was never paid and never answered, so it is recorded
+        // as a failure with no preview rather than as a completed exchange.
         await recordJobOutcome(agent, {
           jobEventId: jobId,
           capability: dTag,
@@ -2849,10 +2879,10 @@ export const customerTools: ToolDefinition[] = [
           providerName: clipProviderName(provider.name),
           paidAmountSubunits: paidAmountSubunits?.toString(),
           assetKey: paidAssetKey,
-          status: 'completed',
+          status: noWalletResolution ? 'failed' : 'completed',
           submittedAt,
           completedAt: Date.now(),
-          resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
+          ...(noWalletResolution ? {} : { resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN) }),
           paymentSig,
         });
         const warningBlock = paymentWarnings.length > 0 ? `${paymentWarnings.join('\n')}\n` : '';

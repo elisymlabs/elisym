@@ -25,6 +25,9 @@ describe('encryptSecret / decryptSecret', () => {
     expect(decrypted).toBe(plaintext);
   });
 
+  // Four scrypt rounds in one test - the KDF is deliberately slow, so under a
+  // fully parallel suite this outgrows the 5s default and fails as a timeout
+  // rather than as a real defect. The budget is generous on purpose.
   it('produces different ciphertext each time (random salt/iv)', () => {
     const plaintext = 'same-secret';
     const a = encryptSecret(plaintext, passphrase);
@@ -32,7 +35,7 @@ describe('encryptSecret / decryptSecret', () => {
     expect(a).not.toBe(b);
     expect(decryptSecret(a, passphrase)).toBe(plaintext);
     expect(decryptSecret(b, passphrase)).toBe(plaintext);
-  });
+  }, 30_000);
 
   it('throws on wrong passphrase', () => {
     const encrypted = encryptSecret('secret', passphrase);

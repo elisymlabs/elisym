@@ -60,7 +60,9 @@ self-mint Nostr-verified ratings via its own sock customers; this buys no rankin
 advantage because ranking does not key on payment.
 
 The tx signature is anchored to the job by the SPL memo `elisym:v1:<jobId>` on
-the payment (see [Payments](/protocol/payments)). A future **off-chain indexer**
+the payment (see [Payments](/protocol/payments)). Only a `tx` tag means this;
+the `call_tx` tag an [on-chain call](/customers/onchain-calls) report carries is
+the customer's signed action, not a payment, and an indexer must skip it. A future **off-chain indexer**
 joins these signatures on-chain - verifying recipient, treasury, fee, and amount
 - to produce a payment-verified tier and payment-driven ranking, server-side and
 once for every client. No client or event-format change is needed then; the
