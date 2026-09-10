@@ -607,6 +607,55 @@ export class MarketplaceService {
     await this.pool.publishAll(event);
   }
 
+  /**
+   * Report the signature of a call the CUSTOMER signed and sent, for a job the
+   * provider built (`mode: 'onchain'`).
+   *
+   * Deliberately NOT `submitFeedback`: that carries a `rating` tag, and a
+   * customer reporting "this landed" is not the same as rating the provider.
+   * This publishes the completion fact only - the same kind-7000 rail, with the
+   * transaction attached and no rating claim - so a provider can tell whether
+   * the call it built was executed, and a future reputation indexer has
+   * something to anchor to.
+   *
+   * The signature rides a `call_tx` tag, NOT the `tx` tag a rating or a
+   * payment-completed uses. `tx` means "the payment for this job", anchored to
+   * it by the SPL memo `elisym:v1:<jobId>`; a call signature satisfies neither,
+   * so reusing the tag would hand an indexer a payment reference that verifies
+   * against nothing.
+   */
+  async reportCallSignature(
+    identity: ElisymIdentity,
+    jobEventId: string,
+    providerPubkey: string,
+    signature: string,
+    opts?: { capability?: string; network?: Network },
+  ): Promise<void> {
+    const tags: string[][] = [
+      ['e', jobEventId],
+      ['p', providerPubkey],
+      ['status', 'success'],
+      ['call_tx', signature, 'solana'],
+      ['t', 'elisym'],
+    ];
+    if (opts?.capability) {
+      tags.push(['t', opts.capability]);
+    }
+    if (opts?.network) {
+      tags.push(['network', opts.network]);
+    }
+    const event = finalizeEvent(
+      {
+        kind: KIND_JOB_FEEDBACK,
+        created_at: Math.floor(Date.now() / 1000),
+        tags,
+        content: 'Call signed and sent',
+      },
+      identity.secretKey,
+    );
+    await this.pool.publishAll(event);
+  }
+
   // --- Provider methods ---
 
   /**

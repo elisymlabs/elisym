@@ -4,6 +4,8 @@ import YAML from 'yaml';
 import { LIMITS } from '../constants';
 import { type SkillDelegation, validateSkillDelegation } from '../delegation';
 import type { SkillRateLimit } from '../llm-health/types';
+import { validateSkillOnchain } from '../onchain/schema';
+import type { SkillOnchainResolved } from '../onchain/types';
 import {
   type Asset,
   KNOWN_ASSETS,
@@ -16,6 +18,7 @@ import {
 } from '../payment/assets';
 import type { Network } from '../types';
 import { DynamicScriptSkill } from './dynamicScriptSkill';
+import { OnchainCallSkill } from './onchainCallSkill';
 import { resolveInsidePathReal } from './path-safety';
 import { DEFAULT_SCRIPT_TIMEOUT_MS, ScriptSkill, type SkillToolDef } from './scriptSkill';
 import { StaticFileSkill } from './staticFileSkill';
@@ -33,6 +36,7 @@ const VALID_MODES: readonly SkillMode[] = [
   'static-script',
   'dynamic-script',
   'x402',
+  'onchain',
 ] as const;
 
 /**
@@ -147,6 +151,13 @@ export interface SkillFrontmatter {
    * Applies to any skill mode.
    */
   delegation?: unknown;
+  /**
+   * Required for `mode: 'onchain'`, rejected everywhere else: the capability's
+   * public promise about the Solana calls it may return - the complete program
+   * allowlist, the asset, and both ceilings. Ceilings are written in display
+   * units and resolved to subunits here; the network is stamped at `buildCard`.
+   */
+  onchain?: unknown;
 }
 
 export interface ParsedSkill {
@@ -219,6 +230,12 @@ export interface ParsedSkill {
    * delegation; the host injects the delegate pubkey at `buildCard`.
    */
   delegation?: SkillDelegation;
+  /**
+   * Set when mode === 'onchain': the published promise with its asset and both
+   * ceilings resolved to subunits. No `network` - the host stamps it from the
+   * agent's wallet at `buildCard`.
+   */
+  onchain?: SkillOnchainResolved;
 }
 
 export interface LoaderLogger {
@@ -1010,7 +1027,7 @@ export function validateSkillFrontmatter(
       );
     }
     outputFile = frontmatter.output_file;
-  } else if (mode === 'static-script' || mode === 'dynamic-script') {
+  } else if (mode === 'static-script' || mode === 'dynamic-script' || mode === 'onchain') {
     if (typeof frontmatter.script !== 'string' || frontmatter.script.length === 0) {
       throw new Error(`SKILL.md "${frontmatter.name}": mode '${mode}' requires "script" (string)`);
     }
@@ -1052,7 +1069,7 @@ export function validateSkillFrontmatter(
     }
     if (frontmatter.script !== undefined) {
       throw new Error(
-        `SKILL.md "${frontmatter.name}": "script" is only valid in script modes (static-script, dynamic-script)`,
+        `SKILL.md "${frontmatter.name}": "script" is only valid in script modes (static-script, dynamic-script, onchain)`,
       );
     }
     if (frontmatter.script_args !== undefined) {
@@ -1109,6 +1126,8 @@ export function validateSkillFrontmatter(
     );
   }
 
+  const onchain = resolveSkillOnchain(frontmatter.name, frontmatter.onchain, mode, options);
+
   return {
     name: frontmatter.name,
     description: frontmatter.description,
@@ -1136,13 +1155,117 @@ export function validateSkillFrontmatter(
     noInput:
       x402 === undefined ? undefined : x402.method === 'GET' && x402.queryParam === undefined,
     delegation,
+    onchain,
   };
+}
+
+/**
+ * Resolve the `onchain:` block: the operator writes display amounts and a token
+ * id, the card carries subunits and a mint.
+ *
+ * The block and the mode move together. A block without `mode: onchain` would
+ * publish a promise nothing fulfills, and the mode without a block would ship a
+ * capability whose calls no client can check - both are load-time errors, on
+ * the operator's own file, where they are fixable.
+ */
+function resolveSkillOnchain(
+  skillName: string,
+  raw: unknown,
+  mode: SkillMode,
+  options: LoadSkillsOptions,
+): SkillOnchainResolved | undefined {
+  const block = validateSkillOnchain(skillName, raw);
+  if (mode !== 'onchain') {
+    if (block !== undefined) {
+      throw new Error(
+        `SKILL.md "${skillName}": an "onchain" block requires mode 'onchain' (got '${mode}')`,
+      );
+    }
+    return undefined;
+  }
+  if (block === undefined) {
+    throw new Error(`SKILL.md "${skillName}": mode 'onchain' requires an "onchain" block`);
+  }
+
+  const asset = resolveSkillAsset(
+    skillName,
+    block.token,
+    block.mint,
+    options.network,
+    options.logger,
+  );
+  // `resolveSkillAsset` degrades `lsm` to SOL on devnet, which is right for a
+  // PRICE (same number, cheaper asset) and wrong for a CEILING: "1000 LSM"
+  // would silently become a 1000 SOL bound. Fail loud instead.
+  if (asset.token !== block.token) {
+    throw new Error(
+      `SKILL.md "${skillName}": "onchain.token" is ${block.token}, which does not exist on ` +
+        `${options.network}. A ceiling must be denominated in the asset it bounds - change the ` +
+        'token, or run this capability on the network that has it.',
+    );
+  }
+  for (const param of block.params) {
+    if (!(ONCHAIN_PARAM_TYPES as readonly string[]).includes(param.type)) {
+      throw new Error(
+        `SKILL.md "${skillName}": unknown "onchain.params" type "${param.type}". ` +
+          `Allowed: ${ONCHAIN_PARAM_TYPES.join(', ')}`,
+      );
+    }
+  }
+  const spendSubunits = ceilingToSubunits(skillName, 'max_per_call', block.max_per_call, asset);
+  const authoritySubunits = ceilingToSubunits(
+    skillName,
+    'max_authority',
+    block.max_authority,
+    asset,
+  );
+  return {
+    kind: block.kind,
+    programs: block.programs,
+    requires: block.requires,
+    params: block.params,
+    token: asset.token,
+    ...(asset.mint ? { mint: asset.mint } : {}),
+    decimals: asset.decimals,
+    symbol: asset.symbol,
+    max_per_call_subunits: spendSubunits.toString(),
+    grants_authority: block.grants_authority,
+    max_authority_subunits: authoritySubunits.toString(),
+  };
+}
+
+/**
+ * Parameter types a client knows how to render. Enforced on the operator's own
+ * file only: the card schema keeps `type` a bounded string so an older client
+ * meeting a future type renders it as text instead of losing the descriptor.
+ */
+const ONCHAIN_PARAM_TYPES = ['amount', 'address', 'text', 'integer'] as const;
+
+/**
+ * Display amount to subunits for a ceiling. `"0"` is legitimate here (a call
+ * that moves nothing, or a capability that grants no authority), and
+ * `parseAssetAmount` rejects non-positive amounts, so zero is handled before it.
+ */
+function ceilingToSubunits(skillName: string, field: string, amount: string, asset: Asset): bigint {
+  if (/^0+(?:\.0+)?$/.test(amount)) {
+    return 0n;
+  }
+  try {
+    return parseAssetAmount(asset, amount);
+  } catch (error) {
+    throw new Error(
+      `SKILL.md "${skillName}": invalid "onchain.${field}" (${amount}) for ${asset.symbol}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }
 
 function buildSkillFromParsed(
   parsed: ParsedSkill,
   skillDir: string,
   logger: LoaderLogger,
+  network: Network,
   scriptEnv?: NodeJS.ProcessEnv,
 ): Skill {
   // Containment for `image_file`, matching `script`/`output_file` (which throw).
@@ -1238,6 +1361,33 @@ function buildSkillFromParsed(
           })
         : new StaticScriptSkill(scriptParams);
     }
+    case 'onchain': {
+      if (parsed.script === undefined || parsed.onchain === undefined) {
+        throw new Error(
+          `SKILL.md "${parsed.name}": internal error - script or onchain block missing for mode 'onchain'`,
+        );
+      }
+      const scriptPath = resolveInsidePathReal(skillDir, parsed.script);
+      if (!scriptPath) {
+        throw new Error(`SKILL.md "${parsed.name}": "script" must stay inside the skill directory`);
+      }
+      return new OnchainCallSkill({
+        name: parsed.name,
+        description: parsed.description,
+        capabilities: parsed.capabilities,
+        priceSubunits: parsed.priceSubunits,
+        asset: parsed.asset,
+        scriptPath,
+        scriptArgs: parsed.scriptArgs,
+        scriptTimeoutMs: parsed.scriptTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
+        scriptEnv,
+        image: parsed.image,
+        imageFile,
+        llmOverride: parsed.llmOverride,
+        onchain: parsed.onchain,
+        network,
+      });
+    }
     case 'x402': {
       if (parsed.x402 === undefined) {
         throw new Error(
@@ -1290,7 +1440,9 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions)
       const content = readFileSync(skillMdPath, 'utf-8');
       const { frontmatter, systemPrompt } = parseSkillMd(content);
       const parsed = validateSkillFrontmatter(frontmatter, systemPrompt, options);
-      skills.push(buildSkillFromParsed(parsed, entryPath, logger, options.scriptEnv));
+      skills.push(
+        buildSkillFromParsed(parsed, entryPath, logger, options.network, options.scriptEnv),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn?.({ dir: entry, err: message }, 'skipping malformed skill directory');

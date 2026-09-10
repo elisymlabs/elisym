@@ -12,6 +12,7 @@ import { cn } from '~/lib/cn';
 import { formatBytes } from '~/lib/fileResult';
 import { BuyErrorNote } from './BuyErrorNote';
 import { CapabilityDropdown } from './CapabilityDropdown';
+import { OnchainPromiseNote } from './OnchainPromiseNote';
 import { SolIcon } from './SolIcon';
 import type { BuyState } from './types';
 import { useJobGating } from './useJobGating';
@@ -247,6 +248,7 @@ function JobInputInner({
 
   return (
     <div className="rounded-3xl border border-black/7 bg-surface shadow-[0_1px_8px_rgba(0,0,0,0.05)]">
+      {card.onchain && <OnchainPromiseNote descriptor={card.onchain} />}
       {showsTextarea && (
         <textarea
           autoFocus

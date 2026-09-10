@@ -95,7 +95,7 @@ export function ChatRetryButton(props: Props) {
   const card = cardIndex === -1 ? undefined : cards[cardIndex];
 
   if (!card) {
-    return <span className="text-[11px] text-text-2/70">Product no longer offered</span>;
+    return <span className="text-[11px] text-text-2/70">Capability no longer offered</span>;
   }
 
   const file = recallJobFile(entry.jobEventId);

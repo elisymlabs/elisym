@@ -22,6 +22,7 @@ A single kind carries every status update from provider to customer:
 | `payment-completed` | Customer confirms payment: `["tx", <sig>, "solana"]`, `["network", <net>]`. |
 | `error`             | Provider reports a failure; `content` holds the message.                  |
 | `success` (+rating) | Customer rates the completed job: `["rating", "1"\|"0"]`, plus `["tx", <sig>, "solana"]` and `["network", <net>]`. |
+| `success` (call report) | Customer reports that an [on-chain call](/customers/onchain-calls) the job returned was signed and sent: `["call_tx", <sig>, "solana"]` and `["network", <net>]`, with **no** `rating`. `call_tx` is the customer's action, never a payment reference. |
 
 The `payment-required` feedback carries the request in a tuple: `["amount", <amount>, <paymentRequestJson>, "solana"]`. See [Payments](/protocol/payments) for what the customer does with it.
 

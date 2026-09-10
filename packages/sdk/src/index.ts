@@ -200,6 +200,52 @@ export type {
   VerifyDelegationAuthProofArgs,
 } from './delegation';
 
+// --- On-chain action capabilities (the customer signs, never the provider) ---
+export {
+  ONCHAIN_CALL_VERSION,
+  MAX_WIRE_TRANSACTION_BYTES,
+  MAX_CALL_BASE64_CHARS,
+  MAX_INSTRUCTIONS_PER_CALL,
+  MAX_PROGRAMS_PER_CARD,
+  MAX_PARAMS_PER_CARD,
+  MAX_REQUIRES_PER_CARD,
+  MAX_EXPLAIN_ENTRIES,
+  MAX_EXPLAIN_TEXT_CHARS,
+  MAX_CALL_TTL_SECS,
+  CALL_CLOCK_SKEW_SECS,
+  OnchainCallEnvelopeSchema,
+  OnchainDescriptorSchema,
+  SkillOnchainSchema,
+  parseOnchainCallEnvelope,
+  parseOnchainDescriptor,
+  validateSkillOnchain,
+  // The verifier: the only path by which a client signs a capability's call.
+  verifyOnchainCall,
+  defaultCeilings,
+  validateProviderCall,
+  OnchainRefusalError,
+  DEFAULT_INCIDENTAL_LAMPORTS,
+  MAX_INCIDENTAL_LAMPORTS,
+  ONCHAIN_DISCLAIMER,
+  ONCHAIN_REFUSAL_HEADLINES,
+  ONCHAIN_UNATTRIBUTED_NOTICE,
+} from './onchain';
+export type {
+  OnchainCallEnvelope,
+  OnchainDescriptor,
+  OnchainExplain,
+  OnchainParam,
+  SkillOnchain,
+  OnchainAssetDelta,
+  OnchainAuthorityGrant,
+  OnchainCallFacts,
+  OnchainCeilings,
+  OnchainRefusalReason,
+  OnchainVerifyResult,
+  SkillOnchainResolved,
+  VerifyOnchainCallArgs,
+} from './onchain';
+
 // --- On-chain protocol config ---
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
 export type { GetProtocolConfigOptions, ProtocolConfig } from './config/onchain';

@@ -18,6 +18,7 @@ import {
 } from '@elisym/sdk/skills';
 import { listLlmProviders } from '../llm/index.js';
 import { DynamicScriptSkill, StaticFileSkill, StaticScriptSkill } from './non-llm-skills.js';
+import { OnchainSkill } from './onchain-skill.js';
 import { ScriptSkill } from './script-skill.js';
 import { X402Skill } from './x402-skill.js';
 import type { Skill } from './index.js';
@@ -48,6 +49,7 @@ function buildCliSkill(
   parsed: ParsedSkill,
   entryPath: string,
   scriptEnv: NodeJS.ProcessEnv | undefined,
+  network: Network,
 ): Skill {
   // Confine image_file to the skill directory, mirroring the SDK loader's guard. A
   // third-party SKILL.md is untrusted; without this a traversing image_file (e.g.
@@ -151,6 +153,35 @@ function buildCliSkill(
           : new StaticScriptSkill(scriptParams);
       break;
     }
+    case 'onchain': {
+      if (parsed.script === undefined || parsed.onchain === undefined) {
+        throw new Error(
+          `SKILL.md "${parsed.name}": internal error - script or onchain block missing for mode 'onchain'`,
+        );
+      }
+      const scriptPath = resolveInsidePathReal(entryPath, parsed.script);
+      if (!scriptPath) {
+        throw new Error(`SKILL.md "${parsed.name}": "script" must stay inside the skill directory`);
+      }
+      skill = new OnchainSkill({
+        name: parsed.name,
+        description: parsed.description,
+        capabilities: parsed.capabilities,
+        priceSubunits: Number(parsed.priceSubunits),
+        asset: parsed.asset,
+        scriptPath,
+        scriptArgs: parsed.scriptArgs,
+        scriptTimeoutMs: parsed.scriptTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
+        scriptEnv: scopeLlmKeys(scriptEnv, parsed.llmOverride?.provider),
+        image: parsed.image,
+        imageFile: safeImageFile,
+        dir: entryPath,
+        llmOverride: parsed.llmOverride,
+        onchain: parsed.onchain,
+        network,
+      });
+      break;
+    }
     case 'x402': {
       if (parsed.x402 === undefined) {
         throw new Error(
@@ -238,7 +269,7 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions)
           warn: (_obj, msg) => console.warn(`  ! ${msg ?? ''}`),
         },
       });
-      skills.push(buildCliSkill(parsed, entryPath, options.scriptEnv));
+      skills.push(buildCliSkill(parsed, entryPath, options.scriptEnv, options.network));
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       console.warn(`  ! Skipping skill "${entry}": ${message}`);

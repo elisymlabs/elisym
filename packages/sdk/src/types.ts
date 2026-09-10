@@ -1,4 +1,5 @@
 import type { DelegationDescriptor } from './delegation';
+import type { OnchainDescriptor } from './onchain';
 import type { ElisymIdentity } from './primitives/identity';
 import type { FileAttachment, TransportKind } from './transport/attachment';
 
@@ -55,6 +56,17 @@ export interface CapabilityCard {
    * sets the real cap.
    */
   delegation?: DelegationDescriptor;
+  /**
+   * On-chain action descriptor. Present when the capability delivers a Solana
+   * call the CUSTOMER signs (browser wallet or MCP agent key) instead of text
+   * or a file: it names the complete set of programs the call may touch, the
+   * asset, and both ceilings (value that may leave, and authority that may be
+   * granted). Untrusted remote data - `parseCapabilityEvent` validates and
+   * clears a malformed descriptor rather than dropping the whole card. The
+   * client verifies every returned call against this promise before signing;
+   * a call outside it is refused, not rendered.
+   */
+  onchain?: OnchainDescriptor;
 }
 
 /** Payment info embedded in capability card (legacy format for on-network events). */

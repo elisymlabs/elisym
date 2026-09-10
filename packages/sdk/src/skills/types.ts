@@ -112,11 +112,21 @@ export interface SkillContext {
  *   the upstream from the agent's wallet. Requires an x402-capable host (the
  *   elisym CLI) that injects `SkillContext.x402` - gated at load time via
  *   `LoadSkillsOptions.allowX402Skills`.
+ * - `onchain`: run a script that BUILDS a Solana call, and return it for the
+ *   customer to sign. The agent signs nothing and takes no custody; the call is
+ *   checked against the capability's published `onchain:` block before it
+ *   leaves, and again by the client before it is signed.
  *
  * Static modes (and an x402 GET skill without a query param) set
  * `card.static = true` so the webapp hides its input box.
  */
-export type SkillMode = 'llm' | 'static-file' | 'static-script' | 'dynamic-script' | 'x402';
+export type SkillMode =
+  | 'llm'
+  | 'static-file'
+  | 'static-script'
+  | 'dynamic-script'
+  | 'x402'
+  | 'onchain';
 
 /**
  * Static configuration of an x402 bridge skill, parsed from SKILL.md
@@ -260,6 +270,12 @@ export interface Skill {
   context?: boolean;
   image?: string;
   imageFile?: string;
+  /**
+   * The capability's on-chain promise (`mode: 'onchain'`): which programs a
+   * call may touch, the asset, and both ceilings. The network is stamped onto
+   * it at `buildCard` from the agent's wallet, never declared in SKILL.md.
+   */
+  onchain?: import('../onchain/types').SkillOnchainResolved;
   /**
    * Optional pre-payment gate. The runtime calls it BEFORE the customer pays
    * (and before the job enters the ledger); throwing refuses the job with an
