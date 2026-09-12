@@ -260,6 +260,24 @@ describe('chatThread store', () => {
       expect(storage.map.has(chatThreadKey(AGENT))).toBe(false);
     });
 
+    it('overwrites the stamped ceiling with the settled metered price', async () => {
+      // A metered card stamps `job_price` (the CEILING) at submit time, because
+      // the real figure does not exist until the work is done. Unlike the
+      // hydration merge, this must OVERWRITE - the stamped value is a known
+      // placeholder, not a missing field - or the buyer is shown the ceiling
+      // forever for exactly the jobs metering exists to price lower.
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1', { priceLamports: 23_000 }));
+
+      expect(await store.recordEntrySettledPrice(AGENT, 'job-1', 6_100)).toBe(true);
+      const [entry] = await store.readThread(AGENT);
+      expect(entry?.priceLamports).toBe(6_100);
+
+      // Update-if-present, like the txHash writer: never resurrect a purged entry.
+      expect(await store.recordEntrySettledPrice(AGENT, 'ghost-job', 1)).toBe(false);
+      expect(await store.readThread(AGENT)).toHaveLength(1);
+    });
+
     it('records a txHash update-if-present only', async () => {
       const { store } = createStore();
       await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
@@ -267,6 +285,26 @@ describe('chatThread store', () => {
       const [entry] = await store.readThread(AGENT);
       expect(entry?.txHash).toBe('sig-1');
       expect(await store.recordEntryTxHash(AGENT, 'ghost-job', 'sig-2')).toBe(false);
+      expect(await store.readThread(AGENT)).toHaveLength(1);
+    });
+
+    it('retracts the txHash a confirmed revert disproved', async () => {
+      // The signature is stamped at broadcast, before confirmation. When the tx
+      // lands but reverts, no funds moved - leaving the signature in the thread
+      // would present a reverted payment as proof of one.
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+      await store.recordEntryTxHash(AGENT, 'job-1', 'sig-1');
+      expect(await store.clearEntryTxHash(AGENT, 'job-1')).toBe(true);
+      const [entry] = await store.readThread(AGENT);
+      expect(entry?.txHash).toBeUndefined();
+      // The key is REMOVED, not set to undefined: the entry is serialized to
+      // storage, where an explicit `"txHash": undefined` is not representable
+      // and a stray key would survive a round-trip as something else.
+      expect(Object.hasOwn(entry ?? {}, 'txHash')).toBe(false);
+      // Idempotent, and update-if-present like the writer it undoes.
+      expect(await store.clearEntryTxHash(AGENT, 'job-1')).toBe(true);
+      expect(await store.clearEntryTxHash(AGENT, 'ghost-job')).toBe(false);
       expect(await store.readThread(AGENT)).toHaveLength(1);
     });
   });

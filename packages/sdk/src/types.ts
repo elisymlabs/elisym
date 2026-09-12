@@ -1,4 +1,5 @@
 import type { DelegationDescriptor } from './delegation';
+import type { MeteredDescriptor } from './metered';
 import type { ElisymIdentity } from './primitives/identity';
 import type { FileAttachment, TransportKind } from './transport/attachment';
 
@@ -55,6 +56,19 @@ export interface CapabilityCard {
    * sets the real cap.
    */
   delegation?: DelegationDescriptor;
+  /**
+   * Metered-pricing descriptor. Present when the capability charges what the
+   * job actually consumed instead of a flat fee. `payment.job_price` is then
+   * the CEILING - the most one request can cost - and `min_subunits` is the
+   * floor; the real charge lands somewhere between and is pulled from the
+   * buyer's delegated allowance after the work is done.
+   *
+   * A client that ignores this field is still correct: it shows and gates on
+   * `job_price` and is charged no more than that. Untrusted remote data -
+   * `parseCapabilityEvent` clears a malformed or incoherent descriptor (floor
+   * above ceiling) rather than dropping the whole card.
+   */
+  metered?: MeteredDescriptor;
 }
 
 /** Payment info embedded in capability card (legacy format for on-network events). */
@@ -338,6 +352,7 @@ export interface JobUpdateCallbacks {
     attachment?: FileAttachment,
     attachments?: FileAttachment[],
     paymentTx?: string,
+    paidAmountSubunits?: number,
   ) => void;
   onError?: (error: string) => void;
   /**

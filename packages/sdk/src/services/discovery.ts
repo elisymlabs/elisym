@@ -17,6 +17,7 @@ import {
   X_USERNAME_REGEX,
 } from '../constants';
 import { parseDelegationDescriptor } from '../delegation';
+import { parseMeteredDescriptor } from '../metered';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type {
@@ -310,6 +311,17 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     (!Number.isInteger(card.payment.job_price) || card.payment.job_price < 0)
   ) {
     return null;
+  }
+
+  // Metered descriptor: same clear-don't-drop rule as delegation, and placed
+  // AFTER the `job_price` gate above on purpose - the floor is only meaningful
+  // against a ceiling that has already been proven to be a non-negative
+  // integer. `parseMeteredDescriptor` also clears an INCOHERENT descriptor (a
+  // floor ABOVE the ceiling), which a pure shape parse cannot see. A floor
+  // exactly equal to the ceiling is kept: it degenerates to a flat price,
+  // which is coherent, just not interesting.
+  if (card.metered !== undefined) {
+    card.metered = parseMeteredDescriptor(card.metered, card.payment?.job_price) ?? undefined;
   }
 
   const agentNetwork = card.payment?.network ?? 'devnet';
@@ -1176,6 +1188,18 @@ export class DiscoveryService {
     if (card.delegation !== undefined && parseDelegationDescriptor(card.delegation) === null) {
       throw new Error(
         'Capability delegation descriptor is malformed (mechanism/delegate_pubkey/cap).',
+      );
+    }
+    // Same mirror for metering. Note this deliberately passes the card's own
+    // `job_price`: the cross-field rule (floor must sit under the ceiling) is
+    // the half a shape-only mirror would miss, and a card whose floor exceeds
+    // its ceiling would publish fine and then be gutted at every reader.
+    if (
+      card.metered !== undefined &&
+      parseMeteredDescriptor(card.metered, card.payment?.job_price) === null
+    ) {
+      throw new Error(
+        'Capability metered descriptor is malformed or incoherent with the price (min_subunits must be a positive integer string at or below job_price).',
       );
     }
 

@@ -18,12 +18,12 @@ The fence delimiters (`---`) are required. Frontmatter is parsed as YAML.
 
 ## Required fields
 
-| Field          | Type                     | Notes                                                                                       |
-| -------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
-| `name`         | string                   | Skill name. Routed via the d-tag form of this string (lowercase kebab-case after `toDTag`). |
-| `description`  | string                   | One-line pitch shown in discovery UIs.                                                      |
-| `capabilities` | string[] (>= 1)          | Capability tags. Customers filter on these.                                                 |
-| `price`        | number \| numeric string | Per-job price in `token` units. Free skills (0) need `allowFreeSkills` at the runtime.      |
+| Field          | Type                     | Notes                                                                                                                                                                  |
+| -------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`         | string                   | Skill name. Routed via the d-tag form of this string (lowercase kebab-case after `toDTag`).                                                                            |
+| `description`  | string                   | One-line pitch shown in discovery UIs.                                                                                                                                 |
+| `capabilities` | string[] (>= 1)          | Capability tags. Customers filter on these.                                                                                                                            |
+| `price`        | number \| numeric string | Per-job price in `token` units. Free skills (0) need `allowFreeSkills` at the runtime. With a `metered` block this is the **ceiling** - the most one request can cost. |
 
 ## Asset / pricing
 
@@ -119,12 +119,13 @@ The script inherits `process.env` plus any per-provider keys the agent decrypted
 
 #### File inputs and outputs (P2P via iroh, `dynamic-script` only)
 
-Large or binary jobs move the payload peer-to-peer over iroh instead of inline in the Nostr event. The runtime exposes this to the script through two environment variables:
+Large or binary jobs move the payload peer-to-peer over iroh instead of inline in the Nostr event. The runtime exposes this to the script through environment variables:
 
-| Env var              | Direction | Meaning                                                                                                                      |
-| -------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `ELISYM_INPUT_FILE`  | in        | Set when the job carried a file attachment. Path to the input file the runtime fetched **after payment**; read it from disk. |
-| `ELISYM_OUTPUT_FILE` | out       | Always set. If the script writes a non-empty file here, the runtime seeds it via iroh and delivers it as a file result.      |
+| Env var              | Direction | Meaning                                                                                                                                                                                                             |
+| -------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ELISYM_INPUT_FILE`  | in        | Set when the job carried a file attachment. Path to the input file the runtime fetched **after payment**; read it from disk.                                                                                        |
+| `ELISYM_OUTPUT_FILE` | out       | Always set. If the script writes a non-empty file here, the runtime seeds it via iroh and delivers it as a file result.                                                                                             |
+| `ELISYM_CHARGE_FILE` | out       | Always set. A [metered](#metered-pricing-metered) skill writes what the job cost, in subunits. Ignored for a skill without a `metered` block. Never delivered to the buyer - it lives outside the output directory. |
 
 Rules:
 
@@ -214,6 +215,62 @@ delegation:
 - **Honest bound: max loss <= cap.** An SPL delegate can only `Transfer`/`Burn` up to the approved amount and can never `Approve`/`SetAuthority`/`CloseAccount` (all owner-only). It is bounded-trust, not "can't steal": within the cap the agent chooses the destination, including its own account. A fresh `approve` REPLACES the remaining allowance (re-arms the full cap) - a "top-up" is a re-grant. Revoke stops only FUTURE spend once it lands.
 - **USDC-only.** The mint resolves from the agent's network (devnet or mainnet). What the agent composes with the authority (pay providers, convert, swap) is application-layer and not built by elisym - the rail is exactly `Transfer USDC <= cap`.
 - **The skill's own price must be in USDC.** A `delegation` block on a skill priced in any other token (e.g. `token: sol`) fails at load and the skill is skipped (the agent exits only if it was the agent's only skill): a delegated pull transfers `price` as USDC subunits, so a non-USDC price would move a wildly wrong amount.
+
+## Metered pricing (`metered`)
+
+Charges what the job actually consumed instead of a flat fee. Requires a
+`delegation` block and `mode: dynamic-script`.
+
+```yaml
+price: 0.023 # the CEILING - the most one request can cost
+metered:
+  min: '0.001' # the floor, in the same display units as `price`
+```
+
+| Field | Type                     | Required | Notes                                                    |
+| ----- | ------------------------ | -------- | -------------------------------------------------------- |
+| `min` | number \| numeric string | yes      | Floor in display units. Must satisfy `0 < min <= price`. |
+
+**`price` keeps its meaning and becomes the ceiling.** That direction is
+deliberate: a client that knows nothing about metering still reads
+`payment.job_price`, still gates `max_price_lamports` on it, and is then charged
+less. Encoding it the other way round (a low `price` plus a new `price_max`)
+would make every existing client under-display the real cost.
+
+### How a skill reports its charge
+
+The runtime hands the script `ELISYM_CHARGE_FILE`; write the cost in the skill
+asset's subunits (6-decimal USDC: `6100` = 0.0061 USDC):
+
+```sh
+printf '%s' "$COST_SUBUNITS" > "$ELISYM_CHARGE_FILE"
+```
+
+The file is optional. A missing, empty or unparseable value means "no report"
+and the runtime charges the ceiling - the same amount, and the same buyer
+consent, as a non-metered skill. On a metered skill that also logs loudly,
+because it means the script is broken rather than the job being cheap.
+
+Whatever is reported is **clamped into `[min, price]`** before the pull. Both
+bounds come from the published card, so a buggy or hostile figure can never bill
+above what the buyer approved.
+
+### What it does NOT apply to
+
+- **The ordinary paid path.** `submit_and_pay_job` settles before the skill runs,
+  when no usage exists yet, so it always collects the ceiling. Only
+  `submit_delegated_job` can meter. The skill still works for both.
+- **Any mode but `dynamic-script`** - the others have no file channel to report on.
+- **Non-USDC skills**, transitively: `metered` requires `delegation`, and
+  delegation is USDC-only.
+
+### Consent and cap lifetime
+
+The delegated cap is the buyer's real bound and is unchanged. But note metering
+drains a cap several times more slowly, and the Token program only clears the
+delegate when the allowance reaches zero - so a standing allowance lives
+proportionally longer. The protocol fee is also charged at approve time on the
+whole cap, so the effective fee rate on actual spend rises by the same factor.
 
 ## Imagery
 

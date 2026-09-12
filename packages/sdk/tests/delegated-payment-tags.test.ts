@@ -1,6 +1,11 @@
 import { finalizeEvent, type Event } from 'nostr-tools';
 import { describe, expect, it, vi } from 'vitest';
-import { buildDelegationAuthProof, mintDelegationNonce } from '../src/delegation/auth-proof';
+import {
+  MAX_PROOF_TTL_SECS,
+  PROOF_CLOCK_SKEW_SECS,
+  buildDelegationAuthProof,
+  mintDelegationNonce,
+} from '../src/delegation/auth-proof';
 import { generateSolanaWallet } from '../src/payment/wallet';
 import { ElisymIdentity } from '../src/primitives/identity';
 import { MarketplaceService, parseDelegatedPayment } from '../src/services/marketplace';
@@ -128,6 +133,65 @@ describe('submitJobRequest delegated tags', () => {
         delegatedPayment: { ...delegatedPayment, proof: 'garbage' },
       }),
     ).rejects.toThrow(/proof/);
+  });
+
+  it('refuses a proof whose expiry is beyond the TTL horizon', async () => {
+    // A well-formed, correctly-signed proof - only the deadline is wrong. The
+    // provider refuses this too (before it burns the nonce), so nothing was
+    // ever spendable; the point is that the SDK, which DECLARES the bound in
+    // `SubmitJobOptions`, no longer publishes to a relay before finding out.
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const { customer, provider, delegatedPayment } = await delegatedFixture();
+    await expect(
+      svc.submitJobRequest(customer, {
+        input: 'x',
+        capability: 'text-gen',
+        providerPubkey: provider.publicKey,
+        delegatedPayment: {
+          ...delegatedPayment,
+          expiryUnix: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60,
+        },
+      }),
+    ).rejects.toThrow(/horizon/);
+    expect(pool.published).toHaveLength(0);
+  });
+
+  it('accepts an expiry at the horizon, skew included', async () => {
+    // The boundary on the ALLOWED side: the SDK grants the same skew the
+    // provider does, so a caller whose clock runs fast is not refused by its
+    // own SDK for a proof the provider would have taken.
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const { customer, provider, delegatedPayment } = await delegatedFixture();
+    await svc.submitJobRequest(customer, {
+      input: 'x',
+      capability: 'text-gen',
+      providerPubkey: provider.publicKey,
+      delegatedPayment: {
+        ...delegatedPayment,
+        expiryUnix: Math.floor(Date.now() / 1000) + MAX_PROOF_TTL_SECS + PROOF_CLOCK_SKEW_SECS,
+      },
+    });
+    expect(pool.published).toHaveLength(1);
+  });
+
+  it('refuses an already-expired proof instead of publishing a doomed job', async () => {
+    const pool = createMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const { customer, provider, delegatedPayment } = await delegatedFixture();
+    await expect(
+      svc.submitJobRequest(customer, {
+        input: 'x',
+        capability: 'text-gen',
+        providerPubkey: provider.publicKey,
+        delegatedPayment: {
+          ...delegatedPayment,
+          expiryUnix: Math.floor(Date.now() / 1000) - 1,
+        },
+      }),
+    ).rejects.toThrow(/past/);
+    expect(pool.published).toHaveLength(0);
   });
 });
 

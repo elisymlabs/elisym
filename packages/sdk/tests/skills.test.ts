@@ -1163,3 +1163,76 @@ describe('resolveSkillAsset canonical-mint gate (via validateSkillFrontmatter)',
     ).toThrow(/unknown asset/);
   });
 });
+
+/**
+ * Metered pricing frontmatter. The cross-field rules live in the loader (not in
+ * the schema) because only the loader can see the asset, the price and the mode
+ * at once - so this is where they have to be proven.
+ */
+describe('validateSkillFrontmatter > metered', () => {
+  const delegationBlock = { mechanism: 'spl-approve', suggested_cap_subunits: '50000000' };
+  const base = {
+    name: 'x',
+    description: 'y',
+    capabilities: ['cap'],
+    price: 0.05,
+    token: 'usdc',
+    mode: 'dynamic-script',
+    script: './s.sh',
+    delegation: delegationBlock,
+  };
+  const parse = (extra: Record<string, unknown>) =>
+    validateSkillFrontmatter({ ...base, ...extra }, 'prompt', { network: 'devnet' });
+
+  it('resolves metered.min to subunits of the skill asset', () => {
+    const parsed = parse({ metered: { min: '0.001' } });
+    expect(parsed.meteredMinSubunits).toBe(1000n);
+    expect(parsed.priceSubunits).toBe(50_000n);
+  });
+
+  it('refuses a floor above the ceiling - price is what the buyer is clamped to', () => {
+    expect(() => parse({ metered: { min: '0.06' } })).toThrow(/must not exceed "price"/);
+  });
+
+  it('refuses a zero floor - the pull rejects a non-positive amount', () => {
+    // Refused one layer down, by the amount parser. Pin the exact wording so
+    // this stays a real assertion: a bare /metered\.min/ would also match a
+    // parse failure for any other reason and prove nothing about zero.
+    expect(() => parse({ metered: { min: '0' } })).toThrow(
+      /invalid "metered\.min".*must be positive/i,
+    );
+  });
+
+  it('refuses metering without delegation - the ordinary path settles before the work runs', () => {
+    const { delegation: _drop, ...noDelegation } = base;
+    expect(() =>
+      validateSkillFrontmatter({ ...noDelegation, metered: { min: '0.001' } }, 'prompt', {
+        network: 'devnet',
+      }),
+    ).toThrow(/requires a "delegation" block/);
+  });
+
+  it('refuses metering on a mode with no channel to report a charge', () => {
+    expect(() =>
+      validateSkillFrontmatter(
+        { ...base, mode: 'llm', script: undefined, metered: { min: '0.001' } },
+        'prompt',
+        { network: 'devnet' },
+      ),
+    ).toThrow(/dynamic-script/);
+  });
+
+  it('accepts a floor equal to the ceiling - a range with no width is a flat price', () => {
+    // The boundary itself, not just the wrong side of it. This loader is the
+    // ONLY gate that can mint a `min === price` card, and three downstream
+    // places handle that case deliberately (the card parser keeps it,
+    // `formatCardPriceLabel` collapses the label, MCP quotes a single price),
+    // each with its own test. Without this one, widening `>` to `>=` here
+    // would silently make all of them unreachable.
+    expect(parse({ metered: { min: '0.05' } }).meteredMinSubunits).toBe(50_000n);
+  });
+
+  it('leaves a skill without a metered block unmetered', () => {
+    expect(parse({}).meteredMinSubunits).toBeUndefined();
+  });
+});
