@@ -8,7 +8,7 @@ import { useWalletBalances } from '~/hooks/useWalletBalances';
 import { checkBuyAffordability, checkSelfPayment } from '~/lib/balanceCheck';
 import { resolvePaymentAsset } from '~/lib/cardAsset';
 import { SOLANA_CLUSTER } from '~/lib/cluster';
-import { formatCardPrice } from '~/lib/formatPrice';
+import { formatCardPriceLabel } from '~/lib/formatPrice';
 
 interface Args {
   card: CapabilityCard;
@@ -96,7 +96,24 @@ export function useJobGating({
   // Whole-buffer encrypt + upload is bounded to the encrypted-Blossom cap (100 MiB).
   const fileTooLarge = !!file && file.size > LIMITS.MAX_BLOSSOM_ENCRYPTED_BYTES;
   const gasFeeLamports = useSolGasFeeEstimate(card);
-  const priceLabel = isFree ? null : formatCardPrice(card.payment, price);
+  // A metered card prices per use: `job_price` is the CEILING, and the buyer is
+  // charged somewhere between the published floor and it. Labelling that as a
+  // flat number would overstate the usual cost several-fold, so say the range.
+  // Only the delegated rail can meter - a per-job purchase always pays the
+  // ceiling, so the flat label stays correct there.
+  //
+  // `delegatedCovers` is the PAINTED buy mode, not the settled rail: if the
+  // allowance lapses between paint and click the buy falls back to a per-job
+  // payment and collects the ceiling (the same known window documented in
+  // BuyContext's balance-recheck block). The label survives that honestly,
+  // because the ceiling is the top of the range it already showed - it is only
+  // ever an over-estimate, never an under-estimate.
+  // `allowRange` is the rail: only a delegated buy can be metered, and a per-job
+  // buy really does collect the ceiling, so its flat label is correct.
+  const rangeLabel = formatCardPriceLabel(card, { allowRange: delegatedCovers });
+  const showsMeteredRange = card.metered !== undefined && delegatedCovers;
+  const priceLabel =
+    rangeLabel !== null && showsMeteredRange ? `${rangeLabel} per use` : rangeLabel;
   // Poll only the asset this card is priced in - the gate never reads another.
   const paymentAsset = resolvePaymentAsset(card.payment, SOLANA_CLUSTER);
   const { solLamports, splRaw } = useWalletBalances(

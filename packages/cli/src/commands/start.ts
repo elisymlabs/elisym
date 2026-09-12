@@ -1085,6 +1085,24 @@ export function buildCapabilityCard(skill: Skill, inputs: CapabilityCardInputs):
     ...(skill.delegation && delegatePubkey
       ? { delegation: { ...skill.delegation, delegate_pubkey: delegatePubkey } }
       : {}),
+    // Metered descriptor. The gate is COMPOUND on purpose and both halves
+    // matter: `delegatePubkey` is agent-wide (hoisted when ANY skill declares
+    // delegation), while `skill.delegation` is per-skill. Stamping on the agent
+    // half alone would advertise pay-per-use on a card that ships no delegation
+    // block - the buyer would be told "you pay for what you use" while the only
+    // rail they can reach charges the ceiling. The loader already refuses
+    // `metered` without `delegation`, so this is defence in depth.
+    // `solanaAddress` is in the gate too: without it the `payment` block below
+    // is omitted, and a metered descriptor with no price to clamp against is
+    // incoherent by construction - the write-side mirror would then reject the
+    // card with a misleading "malformed metered descriptor" instead of the real
+    // reason, which is that the agent has no payment address.
+    ...(skill.meteredMinSubunits !== undefined &&
+    skill.delegation &&
+    delegatePubkey &&
+    solanaAddress
+      ? { metered: { min_subunits: skill.meteredMinSubunits.toString() } }
+      : {}),
     payment: solanaAddress
       ? {
           chain: 'solana',

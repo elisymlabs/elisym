@@ -17,6 +17,7 @@ import { useIdentity } from '~/hooks/useIdentity';
 import { readChatSession, recordCompletion, repairMintedSession } from '~/lib/chatSession';
 import { mergeHydratedEntry, readThread, type HydratedChatEntry } from '~/lib/chatThread';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
+import { plausibleReportedPrice } from '~/lib/formatPrice';
 import { sessionCandidatesOf } from './useChatThread';
 
 const STALE_TIME_MS = 1000 * 30;
@@ -139,7 +140,12 @@ async function fetchHydratedEntries(
       capability: capability ?? '',
       prompt: prompt ?? '',
       ...(promptAttachment !== undefined ? { promptAttachment } : {}),
-      ...(result.amount !== undefined ? { priceLamports: result.amount } : {}),
+      // Relay-reconstructed history is provider-asserted by nature and there is
+      // no card in scope here to clamp against (and the card may have changed
+      // since the job ran), so this cannot be bounded the way the live path
+      // bounds it. `plausibleReportedPrice` is a floor on nonsense, not a
+      // guarantee - it is tested in `format-price.test.ts`.
+      ...(plausibleReportedPrice(result.amount) !== null ? { priceLamports: result.amount } : {}),
       ...(asset !== undefined ? { asset } : {}),
       result: resultText,
       ...(resultAttachments.length > 0 ? { resultAttachments } : {}),

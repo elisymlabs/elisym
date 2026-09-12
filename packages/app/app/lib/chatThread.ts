@@ -111,6 +111,12 @@ export interface ChatThreadStorageAdapter {
 export interface ChatThreadStore {
   appendPendingEntry(agentPubkey: string, entry: Omit<ChatThreadEntry, 'status'>): Promise<void>;
   recordEntryTxHash(agentPubkey: string, jobEventId: string, txHash: string): Promise<boolean>;
+  clearEntryTxHash(agentPubkey: string, jobEventId: string): Promise<boolean>;
+  recordEntrySettledPrice(
+    agentPubkey: string,
+    jobEventId: string,
+    priceLamports: number,
+  ): Promise<boolean>;
   completeEntry(
     agentPubkey: string,
     jobEventId: string,
@@ -310,6 +316,72 @@ export function createChatThreadStore(
     );
   }
 
+  /**
+   * Undo {@link recordEntryTxHash} for a payment that is CONFIRMED not to have
+   * moved funds (an on-chain revert). The signature is persisted optimistically
+   * at broadcast, before confirmation - keeping it after a revert would leave a
+   * reverted tx sitting in the thread as payment proof, the same falsehood the
+   * wallet-history row is cleaned of in `BuyContext`'s revert branch.
+   *
+   * Strict update-if-present and idempotent, exactly like the writer it undoes:
+   * a purged or trimmed entry is never resurrected, and an entry with no txHash
+   * is left untouched rather than re-written.
+   */
+  function clearEntryTxHash(agentPubkey: string, jobEventId: string): Promise<boolean> {
+    return mutateThread(
+      chatThreadKey(agentPubkey),
+      (entries) => {
+        const index = entries.findIndex((entry) => entry.jobEventId === jobEventId);
+        const stored = index === -1 ? undefined : entries[index];
+        if (stored === undefined) {
+          return { entries, changed: false, result: false };
+        }
+        if (stored.txHash === undefined) {
+          return { entries, changed: false, result: true };
+        }
+        const next = [...entries];
+        const { txHash: _dropped, ...rest } = stored;
+        next[index] = rest;
+        return { entries: next, changed: true, result: true };
+      },
+      false,
+    );
+  }
+
+  /**
+   * Correct a thread entry's price to what the job ACTUALLY settled at.
+   *
+   * A metered capability publishes its `job_price` as the CEILING, and that is
+   * what the entry is stamped with at submit time, because the real figure does
+   * not exist until the work is done. Without this the buyer would be shown the
+   * ceiling forever for exactly the jobs the feature exists to price lower.
+   * Unlike the hydration merge, this OVERWRITES: the stamped value is a known
+   * placeholder, not a missing field.
+   */
+  function recordEntrySettledPrice(
+    agentPubkey: string,
+    jobEventId: string,
+    priceLamports: number,
+  ): Promise<boolean> {
+    return mutateThread(
+      chatThreadKey(agentPubkey),
+      (entries) => {
+        const index = entries.findIndex((entry) => entry.jobEventId === jobEventId);
+        const stored = index === -1 ? undefined : entries[index];
+        if (stored === undefined) {
+          return { entries, changed: false, result: false };
+        }
+        if (stored.priceLamports === priceLamports) {
+          return { entries, changed: false, result: true };
+        }
+        const next = [...entries];
+        next[index] = { ...stored, priceLamports };
+        return { entries: next, changed: true, result: true };
+      },
+      false,
+    );
+  }
+
   function completeEntry(
     agentPubkey: string,
     jobEventId: string,
@@ -476,7 +548,9 @@ export function createChatThreadStore(
 
   return {
     appendPendingEntry,
+    clearEntryTxHash,
     recordEntryTxHash,
+    recordEntrySettledPrice,
     completeEntry,
     failEntry,
     mergeHydratedEntry,
@@ -492,6 +566,8 @@ const defaultStore = createChatThreadStore();
 
 export const appendPendingEntry = defaultStore.appendPendingEntry;
 export const recordEntryTxHash = defaultStore.recordEntryTxHash;
+export const clearEntryTxHash = defaultStore.clearEntryTxHash;
+export const recordEntrySettledPrice = defaultStore.recordEntrySettledPrice;
 export const completeEntry = defaultStore.completeEntry;
 export const failEntry = defaultStore.failEntry;
 export const mergeHydratedEntry = defaultStore.mergeHydratedEntry;

@@ -422,6 +422,29 @@ export const discoveryTools: ToolDefinition[] = [
               capabilities: card.capabilities,
               job_price_subunits: price,
               price_display: price ? formatAssetAmount(asset, BigInt(price)) : 'free',
+              // Metered pricing: `job_price` above is then the CEILING, and the
+              // real charge lands between the floor and it. Surfaced so a buying
+              // model does not read the ceiling as a flat rate and skip a card
+              // that is usually far cheaper. Only ever reachable through
+              // submit_delegated_job - the ordinary paid path settles up front
+              // and always collects the ceiling.
+              // Gated on `delegation` too: metering is only reachable through
+              // `submit_delegated_job`, which refuses a card with no delegation
+              // descriptor outright. Advertising "billed for actual usage
+              // (requires delegated payment)" on such a card would point a
+              // buying model at a door that is bolted shut.
+              ...(card.metered && card.delegation
+                ? {
+                    metered: true,
+                    metered_min_subunits: Number(card.metered.min_subunits),
+                    price_display_metered:
+                      BigInt(card.metered.min_subunits) === BigInt(price ?? 0)
+                        ? `${formatAssetAmount(asset, BigInt(price ?? 0))} per request`
+                        : `from ${formatAssetAmount(asset, BigInt(card.metered.min_subunits))} ` +
+                          `up to ${formatAssetAmount(asset, BigInt(price ?? 0))} per request, ` +
+                          `billed for actual usage (requires delegated payment)`,
+                  }
+                : {}),
               asset_token: asset.token,
               asset_symbol: asset.symbol,
               asset_mint: asset.mint,

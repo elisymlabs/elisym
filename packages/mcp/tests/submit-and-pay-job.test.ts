@@ -234,7 +234,7 @@ describe('submit_and_pay_job expected-recipient fail-fast', () => {
 });
 
 // Paid provider card whose recipient differs from the stub buyer wallet ('sol-pub').
-function paidProviderEvent(jobPrice: number) {
+function paidProviderEvent(jobPrice: number, metered?: { min_subunits: string }) {
   return {
     npub: VALID_PROVIDER_NPUB,
     name: 'Test Provider',
@@ -249,6 +249,7 @@ function paidProviderEvent(jobPrice: number) {
           token: 'usdc' as const,
           job_price: jobPrice,
         },
+        ...(metered ? { metered } : {}),
       },
     ],
   };
@@ -276,6 +277,35 @@ describe('confirm-before-publish gate', () => {
     expect(result.content[0]?.text).toMatch(/costs/);
     expect(result.content[0]?.text).toMatch(/max_price_lamports/);
     // The core orphan regression: no NIP-90 request is broadcast before confirmation.
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('never tells an ordinary buyer they are billed per use - that path collects the ceiling', async () => {
+    // `confirmPriceGate` is shared by five tools, but only the delegated pull can
+    // charge less than the card price. Saying "billed for what it uses" here and
+    // then collecting the full amount through collectPayment would be a straight
+    // lie to a paying customer.
+    //
+    // This asserts the end-to-end PROPERTY, not one line: two layers enforce it
+    // (the ordinary call sites do not pass the floor, and the gate also checks
+    // `toolName`). Verified by falsification - breaking either layer alone still
+    // passes, breaking both fails this test.
+    const fetchAgents = vi.fn(async () => [paidProviderEvent(500_000, { min_subunits: '1000' })]);
+    const submitJobRequest = vi.fn(async () => 'job-event-id');
+    const agent = buildStubAgent({ fetchAgents, submitJobRequest, hasSolana: false });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('submit_and_pay_job');
+    const input = tool.schema.parse({
+      input: 'remove bg',
+      provider_npub: VALID_PROVIDER_NPUB,
+      capability: 'do-thing',
+    });
+    const result = await tool.handler(ctx, input);
+
+    const text = result.content[0]?.text ?? '';
+    expect(text).toMatch(/costs/);
+    expect(text).not.toMatch(/billed for what it actually uses/i);
     expect(submitJobRequest).not.toHaveBeenCalled();
   });
 
@@ -337,6 +367,26 @@ describe('confirm-before-publish gate', () => {
     expect(result.content[0]?.text).toMatch(
       /call buy_capability again with max_price_lamports set/,
     );
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('buy_capability never quotes a metered range either - it collects the ceiling', async () => {
+    // Same rail distinction as submit_and_pay_job: buy_capability settles up
+    // front for the full advertised price, so per-use wording would be a lie.
+    const fetchAgents = vi.fn(async () => [paidProviderEvent(500_000, { min_subunits: '1000' })]);
+    const submitJobRequest = vi.fn(async () => 'job-event-id');
+    const agent = buildStubAgent({ fetchAgents, submitJobRequest, hasSolana: false });
+    const ctx = ctxWith(agent);
+
+    const tool = findTool('buy_capability');
+    const result = await tool.handler(
+      ctx,
+      tool.schema.parse({ provider_npub: VALID_PROVIDER_NPUB, capability: 'do-thing' }),
+    );
+
+    const text = result.content[0]?.text ?? '';
+    expect(text).toMatch(/costs/);
+    expect(text).not.toMatch(/billed for what it actually uses/i);
     expect(submitJobRequest).not.toHaveBeenCalled();
   });
 });

@@ -70,10 +70,17 @@ import { track } from '~/lib/analytics';
 import { checkBuyAffordability } from '~/lib/balanceCheck';
 import { resolvePaymentAsset } from '~/lib/cardAsset';
 import { clearInFlight, recordCompletion } from '~/lib/chatSession';
-import { appendPendingEntry, completeEntry, failEntry, recordEntryTxHash } from '~/lib/chatThread';
+import {
+  appendPendingEntry,
+  clearEntryTxHash,
+  completeEntry,
+  failEntry,
+  recordEntrySettledPrice,
+  recordEntryTxHash,
+} from '~/lib/chatThread';
 import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
-import { formatCardPrice } from '~/lib/formatPrice';
+import { formatCardPrice, settledPriceForEntry } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
 import { rememberJobFile } from '~/lib/retryFiles';
 
@@ -557,8 +564,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // Delegated payment mode: when the card advertises an spl-approve
         // delegation AND this wallet holds an ACTIVE matching allowance
         // covering the advertised price, the buy skips the per-job payment tx
-        // entirely - the provider pulls the price from the delegation AFTER
-        // delivering. Same button, no extra gate: consent was given at approve.
+        // entirely - the provider pulls from the delegation once the work is
+        // done. On a metered capability the advertised price is a ceiling and
+        // the pull is what the job actually used, never more than that.
+        // Same button, no extra gate: consent was given at approve.
         // The proof is a wallet `signMessage` over the SAME shared
         // `buildAuthMessage` bytes the SDK signs/verifies (single-use nonce,
         // short expiry), base58-encoded identically.
@@ -1002,6 +1011,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                     paymentAmount: undefined,
                     assetKey: undefined,
                   });
+                  // The thread entry got the same optimistic stamp and needs the
+                  // same retraction - it is the surface the buyer actually reads,
+                  // so leaving the reverted signature there is the more visible
+                  // half of the falsehood cleaned up just above.
+                  void clearEntryTxHash(agentPubkey, jobEventId);
                 }
                 snapshotFlipJob(
                   jobEventId,
@@ -1028,6 +1042,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               _attachment?: FileAttachment,
               attachments?: FileAttachment[],
               paymentTx?: string,
+              paidAmountSubunits?: number,
             ) => {
               // The subscription already decoded the envelope, so `content` is the
               // text and `attachments` the file descriptor(s) - do NOT re-decode here.
@@ -1061,6 +1076,18 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               );
               if (delegatedTxHash !== undefined) {
                 void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash);
+              }
+              // A metered card stamps the CEILING at submit time - the real
+              // figure does not exist until the work is done. Correct it now, or
+              // the buyer is shown the ceiling forever for exactly the jobs this
+              // feature exists to price lower. The rail check and the range
+              // check both live in `settledPriceForEntry`, where they are tested.
+              const settled = settledPriceForEntry(card, {
+                delegated: delegatedPayment !== undefined,
+                reported: paidAmountSubunits,
+              });
+              if (settled !== null) {
+                void recordEntrySettledPrice(agentPubkey, jobEventId, settled);
               }
               if (delegatedPayment !== undefined) {
                 // The provider's pull reduced the remaining allowance - drop

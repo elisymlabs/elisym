@@ -8,7 +8,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '~/lib/cn';
-import { formatCardPrice } from '~/lib/formatPrice';
+import { formatCardPriceLabel } from '~/lib/formatPrice';
 import { ProductAvatar } from './ProductAvatar';
 
 const DESCRIPTION_TOOLTIP_MAX_WIDTH = 320;
@@ -268,7 +268,14 @@ export function ProductCard({ card, selected, onClick }: Props) {
   const price = card.payment?.job_price;
   const hasPrice = price !== null && price !== undefined;
   const isFree = price === 0;
-  const formattedPrice = hasPrice && !isFree ? formatCardPrice(card.payment, price) : null;
+  // The CEILING, even on a metered card, because this is the browse-level price
+  // and it is the only figure every buyer can actually reach: metering needs a
+  // delegated allowance, and the buy gate itself shows the flat ceiling to
+  // anyone without one. Advertising the floor here would under-display the
+  // price for exactly those buyers - the failure this whole design exists to
+  // avoid, just pointed the other way. The gate widens it to a range once a
+  // delegated buy is on the table.
+  const formattedPrice = formatCardPriceLabel(card);
 
   return (
     <div

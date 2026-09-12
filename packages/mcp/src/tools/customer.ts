@@ -48,8 +48,10 @@ import {
 import { z } from 'zod';
 import type { AgentContext, AgentInstance } from '../context.js';
 import {
+  assertCanSpend,
   explorerQuerySuffixFor,
   fetchProtocolConfig,
+  recordSpend,
   releaseSpend,
   reserveSpend,
   resolveAssetFromPaymentRequest,
@@ -556,6 +558,38 @@ function wsUrlFor(httpUrl: string): string {
  * a write failure is logged but never propagated, so storage problems cannot
  * mask a successful job result. No-op for ephemeral agents (no agentDir).
  */
+/**
+ * Decide what to write as "what this job cost" in the buyer's local history.
+ *
+ * A flat capability always pulls the advertised price, so its own card is the
+ * authority and the provider's `amount` tag is ignored entirely. Only a metered
+ * capability has a genuinely variable charge, and even then the reported figure
+ * is trusted solely within the published `[min, price]` window - a value outside
+ * it is a lie or a bug, and falling back to the ceiling is both safe and exactly
+ * what the buyer consented to.
+ */
+function settledSubunitsForHistory(
+  card: { metered?: { min_subunits: string } } | undefined,
+  price: number,
+  reported: number | undefined,
+): number {
+  const min = card?.metered?.min_subunits;
+  // Explicit, not implicit: without this a flat card would fall through to
+  // `Number(undefined)` -> NaN and be rejected by the range check below purely
+  // by accident of NaN comparison semantics. The web app's `settledPriceForEntry`
+  // is redundant in exactly the same way. Neither is load-bearing; both are
+  // spelled out so that reading either one never requires reasoning about NaN
+  // to see that a flat card records the price the buyer signed.
+  if (min === undefined) {
+    return price;
+  }
+  if (reported === undefined || !Number.isInteger(reported)) {
+    return price;
+  }
+  const floor = Number(min);
+  return reported >= floor && reported <= price ? reported : price;
+}
+
 async function recordJobOutcome(agent: AgentInstance, entry: CustomerJobEntry): Promise<void> {
   if (!agent.agentDir) {
     return;
@@ -685,8 +719,23 @@ async function confirmPriceGate(opts: {
   asset: Asset;
   maxPriceLamports?: number;
   toolName: ConfirmGateToolName;
+  /**
+   * Metered floor in subunits, when the card advertises pay-per-use. Display
+   * only: `price` remains the number the gate compares against, because it is
+   * the CEILING and the most that can ever be charged.
+   */
+  meteredMinSubunits?: bigint;
 }): Promise<ToolResult | null> {
-  const { agent, providerLabel, capability, price, asset, maxPriceLamports, toolName } = opts;
+  const {
+    agent,
+    providerLabel,
+    capability,
+    price,
+    asset,
+    maxPriceLamports,
+    toolName,
+    meteredMinSubunits,
+  } = opts;
   if (maxPriceLamports !== undefined && price > maxPriceLamports) {
     // asset.symbol rides in from the provider's card - keep the price line inside
     // the untrusted boundary like the confirmation branch below.
@@ -704,8 +753,23 @@ async function confirmPriceGate(opts: {
       toolName === 'buy_capability'
         ? `Capability "${capability}" from "${providerLabel}"`
         : `Job for capability "${capability}" from "${providerLabel}"`;
+    // Metered wording is gated on the DELEGATED tool on purpose. The same
+    // helper serves five tools, and only the delegated pull can charge less
+    // than the card price - telling a `submit_and_pay_job` or `buy_capability`
+    // caller "you pay for what you use" and then collecting the full price
+    // would be a straight lie.
+    //
+    // Today this is DEFENCE IN DEPTH: the ordinary call sites simply never pass
+    // `meteredMinSubunits`. It exists so that a later change which starts
+    // passing it for display cannot silently turn into a false quote.
+    const costLine =
+      meteredMinSubunits !== undefined && toolName === 'submit_delegated_job'
+        ? `${subject} is billed for what it actually uses: from ` +
+          `${formatAssetAmount(asset, meteredMinSubunits)} and never more than ` +
+          `${formatAssetAmount(asset, BigInt(price))}.`
+        : `${subject} costs ${formatAssetAmount(asset, BigInt(price))}.`;
     const { text } = sanitizeUntrusted(
-      `${subject} costs ${formatAssetAmount(asset, BigInt(price))}.${gasLine}\n\n` +
+      `${costLine}${gasLine}\n\n` +
         `To confirm, call ${toolName} again with max_price_lamports set ` +
         `(e.g. ${price} or higher).`,
       'text',
@@ -1692,12 +1756,18 @@ export const customerTools: ToolDefinition[] = [
     name: 'submit_delegated_job',
     description:
       'Submit a job paid from your existing spl-approve USDC delegation: the provider does ' +
-      'the work FIRST, then pulls its advertised price from your delegated allowance - no ' +
-      'per-job payment transaction from you. Requires an ACTIVE delegation to the delegate ' +
-      'key this capability advertises (check with get_delegation). Within the approved cap ' +
-      'the delegate can pull without your signature, so treat the cap as the max loss. ' +
-      'If max_price_lamports is not set, returns the advertised price for confirmation ' +
-      'without publishing anything.',
+      'the work FIRST, then pulls from your delegated allowance - no per-job payment ' +
+      'transaction from you. On an ordinary capability it pulls the advertised price. On a ' +
+      'METERED one (the card carries a `metered` block) the advertised price is a CEILING ' +
+      'and the pull is what the job actually consumed, never more than that ceiling - so a ' +
+      'metered card is usually cheaper here than its listed price suggests. Requires an ' +
+      'ACTIVE delegation to the delegate key this capability advertises (check with ' +
+      'get_delegation). Within the approved cap the delegate can pull without your ' +
+      'signature, so treat the cap as the max loss. Your per-session spend limit also applies: ' +
+      'the job is refused if its ceiling does not fit the remaining session budget. ' +
+      'If max_price_lamports is not set, ' +
+      'returns the price - or the range, when metered - for confirmation without ' +
+      'publishing anything.',
     schema: SubmitDelegatedJobSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
@@ -1832,6 +1902,30 @@ export const customerTools: ToolDefinition[] = [
         );
       }
 
+      // Session spend cap. CHECK, deliberately not `reserveSpend`.
+      //
+      // Reserving would have to reserve the CEILING, because the real figure
+      // does not exist yet - on a metered capability the job has not run. Our
+      // own measurements put a typical metered pull at a fraction of its
+      // ceiling, so reserving it would burn several times the session budget
+      // the job actually consumes, and permanently for any job whose result
+      // never arrives. So the ceiling is only CHECKED here, and the amount
+      // that actually moved is recorded once the result reports it.
+      //
+      // Two limits of this, stated rather than papered over: concurrent
+      // submissions can each pass the check before either records anything
+      // (nothing is held between check and record), and an in-flight job
+      // counts as zero until it completes. That is weaker than the atomic
+      // reserve the signing paths use - it has to be, since no payment is
+      // signed here. The hard bound remains the on-chain allowance; this is
+      // the local guardrail a user who configured a session cap expects to
+      // exist at all.
+      try {
+        assertCanSpend(ctx, delegationAsset, priceSubunits);
+      } catch (e) {
+        return errorResult(e instanceof Error ? e.message : String(e));
+      }
+
       // Confirm-before-submit: the same single gate as the paying tools. No
       // second customer-side gate beyond this - consent was given at approve.
       const priceGate = await confirmPriceGate({
@@ -1842,6 +1936,11 @@ export const customerTools: ToolDefinition[] = [
         asset: delegationAsset,
         maxPriceLamports: input.max_price_lamports,
         toolName: 'submit_delegated_job',
+        // Card-published floor, so the quote reads "from X, never more than Y"
+        // instead of a flat number the buyer will usually not be charged.
+        ...(card?.metered !== undefined
+          ? { meteredMinSubunits: BigInt(card.metered.min_subunits) }
+          : {}),
       });
       if (priceGate) {
         return priceGate;
@@ -1878,6 +1977,10 @@ export const customerTools: ToolDefinition[] = [
 
       let resultAttachment: FileAttachment | undefined;
       let pullTx: string | undefined;
+      // What the provider says actually moved. On a metered capability this
+      // differs from the card price (which is the ceiling), so recording the
+      // card price would overstate every metered job in the buyer's history.
+      let settledAmountSubunits: number | undefined;
       try {
         const result = await awaitJobResult<string>(
           agent,
@@ -1893,8 +1996,10 @@ export const customerTools: ToolDefinition[] = [
                 attachment?: FileAttachment,
                 _attachments?: FileAttachment[],
                 paymentTx?: string,
+                paidAmountSubunits?: number,
               ) {
                 pullTx = paymentTx;
+                settledAmountSubunits = paidAmountSubunits;
                 if (attachment) {
                   resultAttachment = attachment;
                   resolve(formatFileResultMetadata(jobId, attachment));
@@ -1916,12 +2021,31 @@ export const customerTools: ToolDefinition[] = [
           timeoutMs + 5_000,
         );
 
+        // Count what actually moved against the session cap. The same figure the
+        // buyer's history records, computed by the same helper - a metered pull
+        // is usually well under the ceiling checked before publishing, so
+        // charging the ceiling here would overstate the session spend.
+        const settledForSession = settledSubunitsForHistory(card, price, settledAmountSubunits);
+        recordSpend(ctx, delegationAsset, BigInt(settledForSession));
+
         await recordJobOutcome(agent, {
           jobEventId: jobId,
           capability: dTag,
           providerPubkey,
           providerName: clipProviderName(provider.name),
-          paidAmountSubunits: String(price),
+          // What actually moved, as recorded in the buyer's OWN history.
+          //
+          // On a FLAT card the runtime always pulls exactly `price`, so there is
+          // nothing to learn from the provider and the reported figure is only a
+          // way to lie - the card price is the truth by construction.
+          //
+          // On a METERED card the pull is variable, so the provider's report is
+          // the only source of the real number. It is still attacker-controlled
+          // and arrives through a tag parser that accepts negatives and
+          // prefix-parses garbage, so it is trusted only inside the range the
+          // card published and the buyer approved: `[min, price]`. Anything
+          // outside degrades to the ceiling rather than to the attacker's value.
+          paidAmountSubunits: String(settledForSession),
           // The registry key, not the card's. A mint-less `usdc` card is
           // accepted by the gate above but keys as `solana:usdc`, which
           // `assetByKey` cannot resolve and which splits any per-asset
@@ -2374,7 +2498,30 @@ export const customerTools: ToolDefinition[] = [
 
         const status = nostr?.status ?? local?.status;
         const capability = nostr?.capability ?? local?.capability;
-        const amount = nostr?.amount ?? local?.paidAmountSubunits;
+        // Nostr first, deliberately - the two sides do not measure the same
+        // thing on an ordinary job. `nostr.amount` is the provider's NET
+        // (price minus protocol fee); `local.paidAmountSubunits` is the GROSS
+        // the customer signed. Preferring local would silently move every flat
+        // row from net to gross while nostr-only rows stayed net, putting two
+        // definitions in one list and shifting existing history by the fee.
+        //
+        // On a delegated job the two agree by construction (the pull moves the
+        // full price, the fee having been taken at approve), so metering loses
+        // nothing here. The bound that matters is applied where the figure is
+        // WRITTEN - see `settledSubunitsForHistory`.
+        const rawAmount = nostr?.amount ?? local?.paidAmountSubunits;
+        // Sanity-bound whichever source won. `nostr.amount` is the provider's
+        // own tag, read through a parser that accepts negatives and
+        // prefix-parses garbage, and it is rendered to the user as a spend
+        // figure. This cannot make it TRUE - only the provider knows what its
+        // pull moved - but a nonsensical value must not reach the display.
+        // The two sources differ in type as well as meaning: `nostr.amount` is a
+        // number, `local.paidAmountSubunits` a subunits string.
+        const amountNumber = typeof rawAmount === 'string' ? Number(rawAmount) : rawAmount;
+        const amount =
+          amountNumber !== undefined && Number.isInteger(amountNumber) && amountNumber >= 0
+            ? rawAmount
+            : undefined;
         // Normalize timestamps to Unix seconds so local-only and nostr-only
         // entries sort consistently. Nostr `createdAt` is already seconds;
         // local `submittedAt` is `Date.now()` (milliseconds).

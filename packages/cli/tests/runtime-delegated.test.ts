@@ -26,6 +26,10 @@ let mockReconcileOutcome: 'landed' | 'assume-landed' | 'dead' | 'unresolved' = '
 const PULL_SIGNATURE = '1'.repeat(64);
 const sendConfirmSpy = vi.fn();
 const buildSignedPullSpy = vi.fn();
+// The pull AMOUNT is invisible through `buildSignedPullSpy`: it arrives there
+// already serialised inside `instructions`. Spy on the builder instead - this is
+// the only place the figure is still a number.
+const buildDelegatedTransferSpy = vi.fn();
 const confirmPullSpy = vi.fn();
 
 // Keep the real crypto (proof build/verify), tag parsing, and ATA derivation;
@@ -35,6 +39,10 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
   return {
     ...actual,
     getDelegation: vi.fn(() => Promise.resolve(mockDelegationStatus)),
+    buildDelegatedTransfer: (...args: unknown[]) => {
+      buildDelegatedTransferSpy(...args);
+      return Promise.resolve([]);
+    },
     buildSignedPull: (...args: unknown[]) => {
       buildSignedPullSpy(...args);
       return Promise.resolve({
@@ -840,5 +848,274 @@ describe('delegated job payment - crash recovery', () => {
     expect(nonceStore.has(`${owner.address}:${nonce}`)).toBe(true);
     expect(ledger.getStatus('replay-after-restart')).toBe('failed');
     expect(feedbackErrors(transport, 'replay-after-restart').join(' ')).toMatch(/already used/i);
+  });
+});
+
+/**
+ * Metered pricing: the pull moves what the skill reported, clamped into the
+ * range the CARD published (`[metered.min, price]`).
+ *
+ * Every assertion here reads `buildDelegatedTransferSpy`, not
+ * `buildSignedPullSpy`. By the time the amount reaches `buildSignedPull` it is
+ * serialised inside `instructions`, so asserting on that spy would pass while
+ * proving nothing - on a payment path that is worse than no test at all.
+ */
+describe('AgentRuntime > metered delegated pricing', () => {
+  const MIN_SUBUNITS = 1_000n; // 0.001 USDC floor
+  const CEILING = BigInt(PRICE_SUBUNITS); // 0.05 USDC ceiling (the card's `price`)
+
+  function makeMeteredSkill(reported: bigint | undefined): Skill {
+    return makeDelegatedSkill({
+      meteredMinSubunits: MIN_SUBUNITS,
+      execute: vi.fn().mockResolvedValue({
+        data: 'metered result',
+        ...(reported !== undefined ? { chargeSubunits: reported } : {}),
+      }),
+    } as Partial<Skill>);
+  }
+
+  function pulledAmount(): bigint {
+    expect(buildDelegatedTransferSpy).toHaveBeenCalledOnce();
+    return (buildDelegatedTransferSpy.mock.calls[0]![0] as { amount: bigint }).amount;
+  }
+
+  beforeEach(() => {
+    mockDelegationStatus = {
+      delegate: undefined as unknown as string,
+      remainingCap: 50_000_000n,
+      balance: 50_000_000n,
+    } as any;
+  });
+
+  it('charges exactly what the skill reported when it sits inside the range', async () => {
+    const skill = makeMeteredSkill(6_100n);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-in-range')));
+
+    expect(pulledAmount()).toBe(6_100n);
+    const entry = ledger.allEntries().find((c) => c.job_id === 'metered-in-range');
+    expect(entry?.net_amount).toBe(6_100);
+  });
+
+  it('raises a below-floor report to the published minimum', async () => {
+    const skill = makeMeteredSkill(1n);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-below')));
+
+    expect(pulledAmount()).toBe(MIN_SUBUNITS);
+  });
+
+  it('never bills above the ceiling the buyer approved, however large the report', async () => {
+    const skill = makeMeteredSkill(CEILING * 1_000n);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-above')));
+
+    expect(pulledAmount()).toBe(CEILING);
+  });
+
+  it('falls back to the ceiling when a metered skill reports nothing', async () => {
+    const skill = makeMeteredSkill(undefined);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-silent')));
+
+    expect(pulledAmount()).toBe(CEILING);
+  });
+
+  it('ignores a reported charge from a skill that never declared metering', async () => {
+    // The card advertised a flat price, so the buyer was quoted a flat price -
+    // a stray charge file must not quietly change what is billed either way.
+    const skill = makeDelegatedSkill({
+      execute: vi.fn().mockResolvedValue({ data: 'flat result', chargeSubunits: 7n }),
+    } as Partial<Skill>);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-undeclared')));
+
+    expect(pulledAmount()).toBe(CEILING);
+  });
+
+  it('reports the charged amount to the customer, not the reserved ceiling', async () => {
+    const skill = makeMeteredSkill(6_100n);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-deliver')));
+
+    expect((transport as any).deliverResult).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'metered-deliver' }),
+      'metered result',
+      6_100,
+      undefined,
+      PULL_SIGNATURE,
+    );
+  });
+
+  it('never bills above the ceiling even if the floor invariant is violated', async () => {
+    // Defence in depth for the ONE property that must always hold: never more
+    // than the price the buyer approved. The loader and the publish mirror both
+    // enforce `min <= price`, so this state is unreachable through normal
+    // configuration - it is constructed here directly to prove the clamp does
+    // not rely on that invariant. A first-wins if/else-if clamp would bill the
+    // floor (above the ceiling) and fail this.
+    const skill = makeDelegatedSkill({
+      meteredMinSubunits: CEILING * 10n,
+      execute: vi.fn().mockResolvedValue({ data: 'metered result', chargeSubunits: 1n }),
+    } as Partial<Skill>);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-inverted')));
+
+    expect(pulledAmount()).toBe(CEILING);
+  });
+
+  it('refuses a non-bigint report rather than letting it reach the transfer', async () => {
+    // `SkillOutput.chargeSubunits` is a PUBLIC field typed bigint, but a
+    // programmatic SDK skill can put anything there. A number would coerce
+    // silently through the `<`/`>` comparisons and reach buildDelegatedTransfer
+    // as a number, so it is refused outright and the ceiling is billed.
+    const skill = makeDelegatedSkill({
+      meteredMinSubunits: MIN_SUBUNITS,
+      execute: vi.fn().mockResolvedValue({
+        data: 'metered result',
+        chargeSubunits: 6100 as unknown as bigint,
+      }),
+    } as Partial<Skill>);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-nonbigint')));
+
+    expect(pulledAmount()).toBe(CEILING);
+  });
+
+  // A numeric floor is NOT caught by the `floor <= 0n` half: mixed relational
+  // comparison is legal, so `1000 <= 0n` is false and the value would flow on to
+  // become `charged` and reach buildDelegatedTransfer as a Number. That is why
+  // the type half of the guard exists, and why this asserts the pulled type too.
+  it('bills the ceiling when the floor is a number rather than a bigint', async () => {
+    const skill = makeDelegatedSkill({
+      meteredMinSubunits: 1000 as unknown as bigint,
+      execute: vi.fn().mockResolvedValue({ data: 'metered result', chargeSubunits: 1n }),
+    } as Partial<Skill>);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-numfloor')));
+
+    expect(pulledAmount()).toBe(CEILING);
+    expect(typeof pulledAmount()).toBe('bigint');
+  });
+
+  it('refuses a non-positive floor rather than killing the job after the work ran', async () => {
+    // A zero floor would let a zero report clamp to zero, and the transfer
+    // builder rejects a non-positive amount - AFTER the result was produced and
+    // persisted. `meteredMinSubunits` is a plain public field, so the loader's
+    // guarantee is not enough on its own.
+    const skill = makeDelegatedSkill({
+      meteredMinSubunits: 0n,
+      execute: vi.fn().mockResolvedValue({ data: 'metered result', chargeSubunits: 0n }),
+    } as Partial<Skill>);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-zero-floor')));
+
+    // Only this assertion carries the guard: `buildDelegatedTransfer` is mocked
+    // here and never rejects a non-positive amount the way the real one does,
+    // so a status check would pass either way and prove nothing.
+    expect(pulledAmount()).toBe(CEILING);
+  });
+
+  it('a job with no delegation tags never reaches the metered pull at all', async () => {
+    // The feature's money invariant on the NON-delegated rail: metering lives
+    // entirely inside the delegated branch, so an ordinary paid job on a metered
+    // skill cannot have its charge influenced by what the skill reports. It
+    // settles up front, for the ceiling, through collectPayment.
+    //
+    // This asserts the PROPERTY, which two layers protect: the `claimsDelegated`
+    // branch and, behind it, the pre-check's own "malformed delegation tags"
+    // gate. Verified by falsification - forcing `claimsDelegated` true alone
+    // still yields no pull, because the pre-check then rejects.
+    const skill = makeMeteredSkill(6_100n);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    const delegated = await makeDelegatedJob('metered-ordinary');
+    const plain = { ...delegated, delegated: undefined, delegatedRejected: undefined };
+
+    await runJobs(runtime, () => triggerJob(plain as never));
+
+    expect(buildDelegatedTransferSpy).not.toHaveBeenCalled();
+    expect(buildSignedPullSpy).not.toHaveBeenCalled();
+  });
+
+  it('recovery delivers the METERED amount, not the ceiling', async () => {
+    // The chain under test: the pull persists `net_amount` = charged, the crash
+    // window leaves the entry `paid`, and `reconcileDelegatedEntry` later
+    // delivers from the ledger. If any link reverted to the skill price, a
+    // metered job would report the ceiling to the customer after a crash while
+    // the chain moved something smaller.
+    mockPullOutcome = 'unresolved';
+    const skill = makeMeteredSkill(6_100n);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-recover')));
+
+    // Phase A persisted the charged figure; nothing was delivered yet.
+    expect((transport as any).deliverResult).not.toHaveBeenCalled();
+    const paidEntry = ledger.allEntries().find((c) => c.job_id === 'metered-recover');
+    expect(paidEntry?.net_amount).toBe(6_100);
+
+    mockReconcileOutcome = 'landed';
+    const { transport: transport2 } = makeFakeTransport();
+    const runtime2 = makeRuntime(skill, transport2);
+    const runPromise = runtime2.run();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    runtime2.stop();
+    await runPromise.catch(() => {});
+
+    expect((transport2 as any).deliverResult).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'metered-recover' }),
+      'metered result',
+      6_100,
+      undefined,
+      PULL_SIGNATURE,
+    );
+  });
+
+  it('releases the reserved CEILING, not the charged amount', async () => {
+    // Releasing the smaller charged figure would leak the difference in
+    // `delegationInFlight` for the process lifetime - the map has no GC.
+    const skill = makeMeteredSkill(6_100n);
+    const { transport, triggerJob } = makeFakeTransport();
+    mockDelegationStatus = { ...(mockDelegationStatus as any), delegate: delegate.address } as any;
+    const runtime = makeRuntime(skill, transport);
+
+    await runJobs(runtime, async () => triggerJob(await makeDelegatedJob('metered-release')));
+
+    expect((runtime as any).delegationInFlight.size).toBe(0);
   });
 });

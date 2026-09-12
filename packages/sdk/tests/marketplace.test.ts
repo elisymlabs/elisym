@@ -641,6 +641,49 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
       undefined,
       [],
       undefined,
+      undefined,
+    );
+  });
+
+  it('surfaces the settled amount so a metered job is recorded at what actually moved', () => {
+    // The card carries the CEILING, so a customer-side record built from it
+    // would overstate every metered job. The result event's `amount` tag is the
+    // only place the real figure exists on this side.
+    const pool = createCallbackMockPool();
+    const svc = new MarketplaceService(pool as any);
+    const customer = ElisymIdentity.generate();
+    const provider = ElisymIdentity.generate();
+    const onResult = vi.fn();
+
+    svc.subscribeToJobUpdates({
+      jobEventId: 'job-metered',
+      providerPubkey: provider.publicKey,
+      customerPublicKey: customer.publicKey,
+      callbacks: { onResult },
+    });
+
+    const resultEvent = finalizeEvent(
+      {
+        kind: KIND_JOB_RESULT,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['e', 'job-metered'],
+          ['p', customer.publicKey],
+          ['amount', '6100'],
+        ],
+        content: 'metered result',
+      },
+      provider.secretKey,
+    );
+
+    pool.subs[1]!.onEvent(resultEvent);
+    expect(onResult).toHaveBeenCalledWith(
+      'metered result',
+      resultEvent.id,
+      undefined,
+      [],
+      undefined,
+      6100,
     );
   });
 
@@ -679,6 +722,7 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
       undefined,
       [],
       validSignature,
+      undefined,
     );
 
     // The `tx` tag is provider-controlled; consumers render it in TRUSTED
@@ -709,6 +753,7 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
       hostileEvent.id,
       undefined,
       [],
+      undefined,
       undefined,
     );
   });
@@ -749,6 +794,7 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
       resultEvent.id,
       undefined,
       [],
+      undefined,
       undefined,
     );
   });
@@ -794,6 +840,7 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
       resultEvent.id,
       attachment,
       [attachment],
+      undefined,
       undefined,
     );
   });

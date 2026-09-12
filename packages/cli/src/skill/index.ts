@@ -51,6 +51,13 @@ export interface SkillOutput {
   data: string;
   outputMime?: string;
   /**
+   * Metered charge the skill reports for THIS job, in the skill asset's
+   * subunits. Advisory: the runtime clamps it into `[metered.min, price]` and
+   * ignores it entirely on a skill that did not declare `metered`. Absent means
+   * "no report" - the runtime then falls back to the ceiling.
+   */
+  chargeSubunits?: bigint;
+  /**
    * Local path to a file result. When set, the runtime seeds the file via iroh
    * and the customer fetches it out-of-band; `data` carries any text note (or '').
    * `outputMime` is reused as the attachment's mime.
@@ -265,6 +272,12 @@ export interface Skill {
    * `spl-approve` bounded delegation. Advertised on the capability card.
    */
   delegation?: SkillDelegation;
+  /**
+   * Metered pricing floor in subunits. When set, `priceSubunits` is the CEILING
+   * and the delegated pull charges what the skill reports, clamped to
+   * `[meteredMinSubunits, priceSubunits]`.
+   */
+  meteredMinSubunits?: bigint;
   /**
    * Optional pre-payment gate. The runtime calls it BEFORE `recordPaid` /
    * payment collection (and in the recovery path BEFORE a retry slot is

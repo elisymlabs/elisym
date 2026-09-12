@@ -19,6 +19,8 @@ import {
   DELEGATION_OWNER_TAG,
   DELEGATION_PROOF_REGEX,
   DELEGATION_PROOF_TAG,
+  MAX_PROOF_TTL_SECS,
+  PROOF_CLOCK_SKEW_SECS,
 } from '../delegation/auth-proof';
 import { assertLamports } from '../payment/fee';
 import { parsePaymentRequest } from '../payment/schema';
@@ -228,6 +230,31 @@ export class MarketplaceService {
       if (!Number.isSafeInteger(expiryUnix) || expiryUnix <= 0) {
         throw new Error('delegatedPayment.expiryUnix must be a positive unix-seconds integer.');
       }
+      // Enforce the TTL horizon HERE, in the layer that owns it. Both constants
+      // are declared next door in `auth-proof.ts`, and `SubmitJobOptions`
+      // already documents the bound ("<= now + MAX_PROOF_TTL_SECS") - but until
+      // now nothing on the customer side checked it. The provider does
+      // (`runtime.ts`, before it burns the nonce), so an over-long proof was
+      // never spendable; it just failed remotely, after a relay publish, with a
+      // reason the caller had to parse out of job feedback. Every in-repo caller
+      // already mints exactly `now + MAX_PROOF_TTL_SECS`, so this can only fire
+      // on a third-party integration or a clock bug - which is precisely when a
+      // local, immediate error beats a silent remote rejection.
+      //
+      // The skew allowance is added, not subtracted: it is the same tolerance
+      // the provider grants, so a caller whose clock runs fast within the
+      // allowed skew is not refused by its own SDK for a proof the provider
+      // would have accepted.
+      const nowSecs = Math.floor(Date.now() / 1000);
+      if (expiryUnix > nowSecs + MAX_PROOF_TTL_SECS + PROOF_CLOCK_SKEW_SECS) {
+        throw new Error(
+          `delegatedPayment.expiryUnix is beyond the allowed horizon ` +
+            `(max ${MAX_PROOF_TTL_SECS}s ahead); providers reject such a proof.`,
+        );
+      }
+      if (expiryUnix <= nowSecs) {
+        throw new Error('delegatedPayment.expiryUnix is already in the past - mint a fresh proof.');
+      }
       if (!DELEGATION_NONCE_REGEX.test(nonce)) {
         throw new Error('delegatedPayment.nonce must be base58 with 32-44 characters.');
       }
@@ -406,12 +433,19 @@ export class MarketplaceService {
           txTagValue !== undefined && SOLANA_TX_SIGNATURE_REGEX.test(txTagValue)
             ? txTagValue
             : undefined;
+        // 6th arg: what the provider says actually moved. On a metered job this
+        // is the only place the real figure exists on the customer side - the
+        // card carries the CEILING, and a local record built from that would
+        // overstate every metered job in the buyer's own history.
+        const amountTagValue = ev.tags.find((tag) => tag[0] === 'amount')?.[1];
+        const paidAmountSubunits = safeParseInt(amountTagValue);
         cb.onResult?.(
           decoded.text ?? '',
           ev.id,
           decoded.attachment,
           attachmentsOf(decoded),
           paymentTxTag,
+          paidAmountSubunits,
         );
       } catch {
         /* caller error - don't crash subscription */

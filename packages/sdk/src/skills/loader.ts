@@ -4,6 +4,7 @@ import YAML from 'yaml';
 import { LIMITS } from '../constants';
 import { type SkillDelegation, validateSkillDelegation } from '../delegation';
 import type { SkillRateLimit } from '../llm-health/types';
+import { validateSkillMetered } from '../metered';
 import {
   type Asset,
   KNOWN_ASSETS,
@@ -147,6 +148,14 @@ export interface SkillFrontmatter {
    * Applies to any skill mode.
    */
   delegation?: unknown;
+  /**
+   * Opt into metered pricing: `price` becomes the CEILING and `metered.min` the
+   * floor, with the real charge decided after execution. Requires `delegation`
+   * (the ordinary paid path settles before the work runs, so it cannot meter)
+   * and `mode: dynamic-script` (only that mode has a file channel to report a
+   * charge back on). Written in display units, same spelling as `price`.
+   */
+  metered?: unknown;
 }
 
 export interface ParsedSkill {
@@ -219,6 +228,11 @@ export interface ParsedSkill {
    * delegation; the host injects the delegate pubkey at `buildCard`.
    */
   delegation?: SkillDelegation;
+  /**
+   * Metered pricing floor, resolved to subunits. Present only when the skill
+   * declares `metered`; `priceSubunits` is then the ceiling.
+   */
+  meteredMinSubunits?: bigint;
 }
 
 export interface LoaderLogger {
@@ -1109,6 +1123,49 @@ export function validateSkillFrontmatter(
     );
   }
 
+  // Metered pricing. Deliberately validated HERE - after the delegation USDC
+  // invariant above - so an operator who mis-declares the asset is told about
+  // that first, and so `mode`, `delegation`, `asset` and `priceSubunits` are all
+  // in scope for the cross-field rules a schema cannot see.
+  const metered = validateSkillMetered(frontmatter.name, frontmatter.metered);
+  let meteredMinSubunits: bigint | undefined;
+  if (metered !== undefined) {
+    if (delegation === undefined) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": a "metered" block requires a "delegation" block. ` +
+          `The ordinary paid path settles before the skill runs, so only a delegated pull can charge actual usage.`,
+      );
+    }
+    if (mode !== 'dynamic-script') {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": a "metered" block requires mode "dynamic-script" (got "${mode}"). ` +
+          `Only that mode can report a charge back through ELISYM_CHARGE_FILE.`,
+      );
+    }
+    // `delegation` forces USDC above, so the SOL branch of the price parser is
+    // unreachable here - parse the floor exactly like a non-SOL `price`.
+    const minRaw = metered.min;
+    const minString = typeof minRaw === 'number' ? String(minRaw) : minRaw;
+    try {
+      meteredMinSubunits = parseAssetAmount(asset, minString);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`SKILL.md "${frontmatter.name}": invalid "metered.min": ${detail}`);
+    }
+    // No explicit `<= 0` check: `parseAssetAmount` already refuses a
+    // non-positive amount ("USDC amount must be positive"), and duplicating it
+    // here would be unreachable code on a payment path - the worst kind, since
+    // a reader would take it for a live guard. The zero case IS tested; it just
+    // fails one layer down.
+
+    if (meteredMinSubunits > priceSubunits) {
+      throw new Error(
+        `SKILL.md "${frontmatter.name}": "metered.min" (${meteredMinSubunits}) must not exceed "price" ` +
+          `(${priceSubunits}) - price is the ceiling a metered charge is clamped to.`,
+      );
+    }
+  }
+
   return {
     name: frontmatter.name,
     description: frontmatter.description,
@@ -1136,6 +1193,7 @@ export function validateSkillFrontmatter(
     noInput:
       x402 === undefined ? undefined : x402.method === 'GET' && x402.queryParam === undefined,
     delegation,
+    meteredMinSubunits,
   };
 }
 

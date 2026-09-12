@@ -178,6 +178,9 @@ function buildCliSkill(
   if (parsed.executionTimeoutSecs !== undefined) {
     skill.executionTimeoutSecs = parsed.executionTimeoutSecs;
   }
+  if (parsed.meteredMinSubunits !== undefined) {
+    skill.meteredMinSubunits = parsed.meteredMinSubunits;
+  }
   if (parsed.delegation) {
     skill.delegation = parsed.delegation;
   }
