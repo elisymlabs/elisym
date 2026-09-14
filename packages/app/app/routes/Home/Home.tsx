@@ -9,7 +9,6 @@ import type { AgentDisplayData } from '~/hooks/useAgentDisplay';
 import { useAgentDisplay } from '~/hooks/useAgentDisplay';
 import { useAgentFeedback } from '~/hooks/useAgentFeedback';
 import { useAgents } from '~/hooks/useAgents';
-import { useStats } from '~/hooks/useStats';
 import { findTagFilter, findViewMode } from '~/lib/categories';
 import { cn } from '~/lib/cn';
 import { VERIFIED_PUBKEYS } from '~/lib/verified';
@@ -101,7 +100,6 @@ export default function Home() {
   } = useAgents({
     firstPaintBatchSize: PAGE_SIZE,
   });
-  useStats();
   const agentPubkeys = useMemo(() => agents.map((agent) => agent.pubkey), [agents]);
   const { data: feedbackMap } = useAgentFeedback(agentPubkeys, agentsStatus);
   const displayAgents = useAgentDisplay(agents, feedbackMap);

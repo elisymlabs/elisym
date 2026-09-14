@@ -36,7 +36,7 @@ import { generateKeyPairSigner, getBase58Decoder } from '@solana/kit';
 import { Command } from 'commander';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { loadAgentConfig, saveAgentConfig, listAgentNames, updateAgentSecurity } from './config.js';
-import { AgentContext } from './context.js';
+import { AgentContext, type SolanaNetwork } from './context.js';
 import { runInstall, runUninstall, runUpdate, runList } from './install.js';
 import { startServer } from './server.js';
 import { buildEffectiveLimits, DEFAULT_SESSION_LIMITS } from './session-limits.js';
@@ -66,6 +66,49 @@ const program = new Command()
   // version from package.json, same source as the MCP server capability block.
   .version(PACKAGE_VERSION);
 
+/**
+ * Read and validate ELISYM_NETWORK. Returns undefined when unset (or empty).
+ * The variable selects the network for ephemeral / auto-created identities
+ * ONLY - a disk-loaded agent's network is fixed at creation and a differing
+ * env value is a startup error (see assertNoNetworkConflict), never an
+ * override in either direction.
+ */
+function readNetworkEnv(): SolanaNetwork | undefined {
+  const raw = process.env.ELISYM_NETWORK;
+  if (raw === undefined || raw === '') {
+    return undefined;
+  }
+  if (raw !== 'devnet' && raw !== 'mainnet') {
+    console.error(`ELISYM_NETWORK="${raw}" is not supported. Expected "devnet" or "mainnet".`);
+    process.exit(1);
+  }
+  return raw;
+}
+
+/**
+ * Fail loud when ELISYM_NETWORK disagrees with a disk-loaded agent's YAML
+ * network. Both directions are conflicts, not overrides: a "devnet" belt over
+ * a mainnet agent must stop the session (not silently spend real funds), and
+ * "mainnet" over a devnet agent must not silently yield a devnet session.
+ */
+function assertNoNetworkConflict(
+  envNetwork: SolanaNetwork | undefined,
+  agentName: string,
+  agentNetwork: SolanaNetwork,
+): void {
+  if (envNetwork === undefined || envNetwork === agentNetwork) {
+    return;
+  }
+  console.error(
+    `ELISYM_NETWORK="${envNetwork}" conflicts with agent "${agentName}", which was created on ` +
+      `${agentNetwork}. An agent's network is fixed at creation - ELISYM_NETWORK selects the ` +
+      `network for ephemeral identities only and cannot override a stored agent. Unset ` +
+      `ELISYM_NETWORK, or create a ${envNetwork} agent ` +
+      `(npx @elisym/mcp init <name> --network ${envNetwork}) and point ELISYM_AGENT at it.`,
+  );
+  process.exit(1);
+}
+
 // Default action: start MCP server
 program.action(
   safe(async () => {
@@ -74,11 +117,16 @@ program.action(
     // Resolve agent identity
     const agentName = process.env.ELISYM_AGENT;
     const nostrSecret = process.env.ELISYM_NOSTR_SECRET;
+    // Hoisted above every branch: the env selection must reach BOTH ephemeral
+    // paths (provided-secret and auto-create), and a disk-loaded agent must be
+    // conflict-checked against it before the session starts.
+    const envNetwork = readNetworkEnv();
 
     if (agentName) {
       // Load existing agent from disk
       try {
         const config = await loadAgentConfig(agentName);
+        assertNoNetworkConflict(envNetwork, agentName, config.network);
         const instance = await buildAgentInstance(agentName, config);
         ctx.register(instance);
         console.error(`Loaded agent: ${agentName}`);
@@ -101,16 +149,10 @@ program.action(
       }
       const client = new ElisymClient({ relays: RELAYS });
       const name = process.env.ELISYM_AGENT_NAME ?? 'mcp-agent';
-      if (process.env.ELISYM_NETWORK && process.env.ELISYM_NETWORK !== 'devnet') {
-        console.error(
-          `ELISYM_NETWORK="${process.env.ELISYM_NETWORK}" is not supported. ` +
-            `Only "devnet" is available until the on-chain protocol program ships on mainnet.`,
-        );
-        process.exit(1);
-      }
+      const network = envNetwork ?? 'devnet';
 
-      ctx.register({ client, identity, name, network: 'devnet', security: {} });
-      console.error(`Ephemeral agent: ${name} (devnet)`);
+      ctx.register({ client, identity, name, network, security: {} });
+      console.error(`Ephemeral agent: ${name} (${network})`);
     } else {
       // default agent selection is deterministic (alphabetical sort) so the
       // "first" agent doesn't depend on filesystem ordering.
@@ -119,6 +161,7 @@ program.action(
         const name = names[0]!;
         try {
           const config = await loadAgentConfig(name);
+          assertNoNetworkConflict(envNetwork, name, config.network);
           const instance = await buildAgentInstance(name, config);
           ctx.register(instance);
           console.error(`Loaded default agent: ${name} (${instance.network})`);
@@ -130,8 +173,9 @@ program.action(
         // Auto-create ephemeral agent
         const identity = ElisymIdentity.generate();
         const client = new ElisymClient({ relays: RELAYS });
-        ctx.register({ client, identity, name: 'mcp-agent', network: 'devnet', security: {} });
-        console.error('Created ephemeral agent (no persistent identity, devnet).');
+        const network = envNetwork ?? 'devnet';
+        ctx.register({ client, identity, name: 'mcp-agent', network, security: {} });
+        console.error(`Created ephemeral agent (no persistent identity, ${network}).`);
       }
     }
 
@@ -147,7 +191,12 @@ program
   // capabilities are intentionally not exposed here: the MCP server runs in
   // customer-mode in 0.1.x, so an advertised capability list would be misleading.
   // provider-mode (0.2.0) will reintroduce this prompt.
-  .option('-n, --network <network>', 'Solana network (devnet only)', 'devnet')
+  .option(
+    '-n, --network <network>',
+    'Solana network (devnet or mainnet). Fixed at creation: to change networks later, ' +
+      'create a new agent. Mainnet payments move real funds.',
+    'devnet',
+  )
   .option('--install', 'Also install into MCP clients')
   .option(
     '--passphrase <value>',
@@ -174,9 +223,8 @@ program
           {
             type: 'list',
             name: 'network',
-            message: 'Solana network:',
-            // Only devnet is supported until the elisym-config program ships on mainnet.
-            choices: ['devnet'],
+            message: 'Solana network (fixed at creation - create a new agent to change it):',
+            choices: ['devnet', 'mainnet'],
             default: 'devnet',
           },
         ]);
@@ -185,13 +233,11 @@ program
         options.network = answers.network;
       }
 
-      if (options.network !== 'devnet') {
-        console.error(
-          `Network must be "devnet", got "${options.network}". ` +
-            `Mainnet is not supported until the on-chain protocol program is deployed.`,
-        );
+      if (options.network !== 'devnet' && options.network !== 'mainnet') {
+        console.error(`Network must be "devnet" or "mainnet", got "${options.network}".`);
         process.exit(1);
       }
+      const network: SolanaNetwork = options.network;
 
       // Passphrase: flag wins over env var wins over interactive prompt.
       // Empty string ("") is an explicit opt-out from encryption, distinct from
@@ -226,7 +272,7 @@ program
         nostrSecretKey: Buffer.from(nostrSecretKey).toString('hex'),
         solanaSecretKey: BASE58_DECODER.decode(solanaSecretBytes),
         solanaAddress: solanaSigner.address,
-        network: 'devnet',
+        network,
         security: { withdrawals_enabled: false, agent_switch_enabled: false },
         passphrase: passphrase || undefined,
       });
@@ -235,9 +281,15 @@ program
       console.log(`Agent "${name}" created.`);
       console.log(`  Nostr: ${npub}`);
       console.log(`  Solana: ${solanaSigner.address}`);
-      console.log(`  Network: ${options.network}`);
+      console.log(`  Network: ${network}`);
       console.log(`  Encrypted: ${passphrase ? 'yes' : 'no'}`);
       console.log(`  Config: ~/.elisym/${name}/elisym.yaml`);
+      if (network === 'mainnet') {
+        console.log(
+          `  Note: mainnet agent - payments move real funds (no faucet). The network is ` +
+            `fixed at creation; create a separate agent for devnet testing.`,
+        );
+      }
       if (passphrase) {
         console.log(`  Note: set ELISYM_PASSPHRASE before launching the MCP server.`);
       }

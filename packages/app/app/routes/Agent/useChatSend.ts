@@ -18,6 +18,13 @@ export interface ChatSendOptions {
    * is context-capable (the recorded decision wins).
    */
   forceOneShot?: boolean;
+  /**
+   * Network fee a per-job payment would draw from the wallet, in lamports, as
+   * the surface already sized it. Passed unconditionally: `buy()` decides
+   * whether to demand it, because only it knows whether the allowance rail can
+   * still win.
+   */
+  gasLamports?: number;
 }
 
 export type ChatSend = (
@@ -50,10 +57,14 @@ export function useChatSend({ agentPubkey, agentName, agentPicture }: Args): Cha
         // chat-session lock are never held simultaneously).
         const candidates = sessionCandidatesOf(entries, identityPubkey);
         const resolved = await resolveSessionForSend(identityPubkey, agentPubkey, candidates);
-        await buy(args, input, file, { sessionId: resolved.sessionId, token: resolved.token });
+        await buy(args, input, file, {
+          sessionId: resolved.sessionId,
+          token: resolved.token,
+          gasLamports: options?.gasLamports,
+        });
         return;
       }
-      await buy(args, input, file, { sessionId: null });
+      await buy(args, input, file, { sessionId: null, gasLamports: options?.gasLamports });
     },
     [buy, identityPubkey, agentPubkey, agentName, agentPicture],
   );

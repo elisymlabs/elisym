@@ -10,16 +10,17 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   LIMITS,
-  USDC_SOLANA_DEVNET,
   calculateProtocolFee,
   encodeSecretKeyBase58,
   formatAssetAmount,
   getProtocolConfig,
   getProtocolProgramId,
   generateSolanaWallet,
+  resolveUsdcAsset,
   signerFromSecretKeyBase58,
   toDTag,
 } from '@elisym/sdk';
+import type { Network } from '@elisym/sdk';
 import {
   ensureGitignoreHasX402Entries,
   listAgents,
@@ -36,7 +37,8 @@ import { address, createSolanaRpc } from '@solana/kit';
 import chalk from 'chalk';
 import Decimal from 'decimal.js-light';
 import YAML from 'yaml';
-import { fetchUsdcBalance, getRpcUrl } from '../helpers.js';
+import { fetchUsdcBalance, formatSplBalanceValue, getRpcUrl } from '../helpers.js';
+import { x402SolanaNetworkIds } from '../x402/constants.js';
 import { requirementAmount, selectAcceptableRequirement } from '../x402/matcher.js';
 import { X402ProbeError, probePaymentRequired, type X402ProbeResult } from '../x402/probe.js';
 
@@ -51,7 +53,6 @@ export interface X402AddOptions {
 
 const BPS_DENOMINATOR = 10_000;
 const DEFAULT_MARGIN_BPS = 1_000;
-const SOLANA_MAINNET_CAIP2 = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const CIRCLE_FAUCET_URL = 'https://faucet.circle.com';
 
 function fail(message: string): never {
@@ -154,6 +155,8 @@ export interface SkillMdInput {
   quote: bigint;
   marginPercent: string;
   feePercent: string;
+  /** The agent's Solana network - only used to render the quote amount. */
+  network: Network;
 }
 
 /**
@@ -184,7 +187,7 @@ export function buildSkillMd(input: SkillMdInput): string {
     'Operator notes for this x402 bridge skill (the executor ignores this body):',
     '',
     `- Upstream: ${input.url} (${input.method})`,
-    `- Upstream quote at generation time: ${formatAssetAmount(USDC_SOLANA_DEVNET, input.quote)} (= x402_max_upstream, the signing ceiling)`,
+    `- Upstream quote at generation time: ${formatAssetAmount(resolveUsdcAsset(input.network), input.quote)} (= x402_max_upstream, the signing ceiling)`,
     `- Price: ${input.priceDisplay} USDC (margin ${input.marginPercent}%, protocol fee ${input.feePercent}% at generation time)`,
     '- To reprice after an upstream change, re-run:',
     '',
@@ -253,15 +256,21 @@ export function scanExistingSkills(
   return scan;
 }
 
-function describeUnacceptableAccepts(probe: X402ProbeResult): string {
+function describeUnacceptableAccepts(probe: X402ProbeResult, agentNetwork: Network): string {
   const networks = [...new Set(probe.accepts.map((requirement) => String(requirement.network)))];
   if (networks.length > 0 && networks.every((network) => network.startsWith('eip155:'))) {
     return `the service accepts only EVM networks (${networks.join(', ')}) - not supported yet`;
   }
-  if (networks.some((network) => network === SOLANA_MAINNET_CAIP2 || network === 'solana')) {
-    return 'the service settles on Solana mainnet - elisym currently runs on devnet (mainnet is on the roadmap)';
+  const otherNetwork: Network = agentNetwork === 'mainnet' ? 'devnet' : 'mainnet';
+  const otherIds = x402SolanaNetworkIds(otherNetwork);
+  if (networks.some((network) => network === otherIds.caip2 || network === otherIds.v1)) {
+    return (
+      `the service settles on Solana ${otherNetwork} but this agent is bound to ${agentNetwork} ` +
+      `(one agent = one network) - bridge it from a ${otherNetwork} agent instead` +
+      (otherNetwork === 'mainnet' ? ' (create one: npx @elisym/cli init --network mainnet)' : '')
+    );
   }
-  return `no exact-scheme devnet-USDC requirement found (service accepts: ${networks.join(', ') || 'nothing parseable'})`;
+  return `no exact-scheme ${agentNetwork}-USDC requirement found (service accepts: ${networks.join(', ') || 'nothing parseable'})`;
 }
 
 export async function cmdX402Add(
@@ -318,6 +327,41 @@ export async function cmdX402Add(
   const passphrase = process.env.ELISYM_PASSPHRASE;
   const loaded = await loadAgent(agentName, cwd, passphrase);
 
+  // -- Agent network --
+  // An existing payments[] entry is authoritative (network is fixed at agent
+  // creation, D1). A wallet-less agent picks one HERE, before the probe: the
+  // upstream requirement must be matched against the network the bridge will
+  // actually settle on. Non-interactive runs default to devnet (D12).
+  const existingSolPayment = loaded.yaml.payments.find((entry) => entry.chain === 'solana');
+  let agentNetwork: Network;
+  if (existingSolPayment !== undefined) {
+    agentNetwork = existingSolPayment.network;
+  } else if (options.yes) {
+    agentNetwork = 'devnet';
+  } else {
+    const { network } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'network',
+        message:
+          'This agent has no Solana wallet entry yet. Which network should it operate on (fixed once set)?',
+        choices: [
+          { name: 'devnet (test tokens - recommended to start)', value: 'devnet' },
+          { name: 'mainnet (REAL funds)', value: 'mainnet' },
+        ],
+        default: 'devnet',
+      },
+    ]);
+    agentNetwork = network as Network;
+    if (agentNetwork === 'mainnet') {
+      console.log(
+        '  ! MAINNET: the bridge float and its upstream payments are REAL funds.\n' +
+          '    The network is fixed once written - to switch, create a new agent.',
+      );
+    }
+  }
+  const usdcAsset = resolveUsdcAsset(agentNetwork);
+
   // -- Probe the live 402 --
   console.log(`\n  Probing ${url} (${method}, unpaid)...`);
   let probe: X402ProbeResult;
@@ -330,10 +374,13 @@ export async function cmdX402Add(
     const message = error instanceof Error ? error.message : String(error);
     fail(`upstream unreachable: ${message}`);
   }
-  const anyCeiling = { maxUpstreamSubunits: BigInt(Number.MAX_SAFE_INTEGER) };
+  const anyCeiling = {
+    maxUpstreamSubunits: BigInt(Number.MAX_SAFE_INTEGER),
+    network: agentNetwork,
+  };
   const requirement = selectAcceptableRequirement(probe.accepts, anyCeiling);
   if (requirement === undefined) {
-    fail(describeUnacceptableAccepts(probe));
+    fail(describeUnacceptableAccepts(probe, agentNetwork));
   }
   const quote = requirementAmount(requirement);
   if (quote === null || quote <= 0n) {
@@ -405,6 +452,15 @@ export async function cmdX402Add(
         );
       }
     }
+    // Mirror init's mainnet warning: reaching this write without a passphrase
+    // means the secrets file is plaintext, and this brand-new key holds the
+    // bridge float in real funds.
+    if (agentNetwork === 'mainnet' && !passphrase) {
+      console.warn(
+        '  ! No passphrase set: this MAINNET wallet key will be stored unencrypted on disk.\n' +
+          '    Strongly consider one (ELISYM_PASSPHRASE) - the key will guard real funds.',
+      );
+    }
     await writeSecrets(
       loaded.dir,
       { ...loaded.secrets, solana_secret_key: solanaSecretKey },
@@ -414,37 +470,39 @@ export async function cmdX402Add(
   }
   const signer = await signerFromSecretKeyBase58(solanaSecretKey);
 
-  const solPayment = loaded.yaml.payments.find((entry) => entry.chain === 'solana');
-  if (solPayment !== undefined && solPayment.address !== signer.address) {
+  if (existingSolPayment !== undefined && existingSolPayment.address !== signer.address) {
     fail(
-      `wallet invariant violated: elisym.yaml payments[].address (${solPayment.address}) differs from the solana_secret_key address (${signer.address}).\n` +
+      `wallet invariant violated: elisym.yaml payments[].address (${existingSolPayment.address}) differs from the solana_secret_key address (${signer.address}).\n` +
         '    Revenue must land in the wallet the bridge spends from, or the float never refills.\n' +
         '    Fix: set payments[].address to the key address, or import the matching key.',
     );
   }
-  if (solPayment === undefined) {
+  if (existingSolPayment === undefined) {
     // Without a payments[] entry publishCapability throws at start and the
     // bridge silently gets no discovery - never let the invariant pass vacuously.
     console.log(
-      `  elisym.yaml has no Solana payments entry; adding address ${signer.address} (devnet).`,
+      `  elisym.yaml has no Solana payments entry; adding address ${signer.address} (${agentNetwork}).`,
     );
     await writeYaml(loaded.dir, {
       ...loaded.yaml,
       payments: [
         ...loaded.yaml.payments,
-        { chain: 'solana', network: 'devnet', address: signer.address },
+        { chain: 'solana', network: agentNetwork, address: signer.address },
       ],
     });
   }
 
   // -- Balance + protocol fee --
-  const rpc = createSolanaRpc(getRpcUrl('devnet'));
-  const balance = await fetchUsdcBalance(rpc, address(signer.address));
+  const rpc = createSolanaRpc(getRpcUrl(agentNetwork));
+  const balance = await fetchUsdcBalance(rpc, address(signer.address), agentNetwork);
   let feeBps: number;
   try {
-    const protocolConfig = await getProtocolConfig(rpc, getProtocolProgramId('devnet'), {
-      forceRefresh: true,
-    });
+    const protocolConfig = await getProtocolConfig(
+      rpc,
+      getProtocolProgramId(agentNetwork),
+      agentNetwork,
+      { forceRefresh: true },
+    );
     feeBps = protocolConfig.feeBps;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -459,7 +517,7 @@ export async function cmdX402Add(
   // -- Price: ceil(quote * (1 + margin) / (1 - fee)), integer bps math --
   const priceSubunits = computeBridgePriceSubunits(quote, marginBps, feeBps);
   const priceDisplay = new Decimal(priceSubunits.toString())
-    .div(new Decimal(10).pow(USDC_SOLANA_DEVNET.decimals))
+    .div(new Decimal(10).pow(usdcAsset.decimals))
     .toString();
   const protocolFee = calculateProtocolFee(Number(priceSubunits), feeBps);
   const netMargin = priceSubunits - BigInt(protocolFee) - quote;
@@ -539,18 +597,21 @@ export async function cmdX402Add(
   console.log(
     `  Upstream     ${url} (${method}${queryParam !== undefined ? `, input in ?${queryParam}=` : ''}${noInput ? ', no buyer input' : ''})`,
   );
-  console.log(`  Quote        ${formatAssetAmount(USDC_SOLANA_DEVNET, quote)}`);
+  console.log(`  Network      ${agentNetwork}`);
+  console.log(`  Quote        ${formatAssetAmount(usdcAsset, quote)}`);
   console.log(
-    `  Your price   ${formatAssetAmount(USDC_SOLANA_DEVNET, priceSubunits)}  (margin ${marginPercent}% + protocol fee ${feePercent}%)`,
+    `  Your price   ${formatAssetAmount(usdcAsset, priceSubunits)}  (margin ${marginPercent}% + protocol fee ${feePercent}%)`,
   );
-  console.log(`  Net margin   ${formatAssetAmount(USDC_SOLANA_DEVNET, netMargin)} per job`);
-  console.log(
-    `  Float        ${formatAssetAmount(USDC_SOLANA_DEVNET, balance)} in ${signer.address}`,
-  );
-  if (balance < quote) {
+  console.log(`  Net margin   ${formatAssetAmount(usdcAsset, netMargin)} per job`);
+  console.log(`  Float        ${formatSplBalanceValue(usdcAsset, balance)} in ${signer.address}`);
+  // An unreadable float is not a low float: say nothing about funding rather
+  // than send the operator to a faucet over an RPC hiccup.
+  if (balance !== null && balance < quote) {
     console.log(
       chalk.yellow(
-        `  ! Float below one upstream quote - fund the wallet with devnet USDC: ${CIRCLE_FAUCET_URL}`,
+        agentNetwork === 'mainnet'
+          ? '  ! Float below one upstream quote - fund the wallet with USDC (mainnet, REAL funds)'
+          : `  ! Float below one upstream quote - fund the wallet with devnet USDC: ${CIRCLE_FAUCET_URL}`,
       ),
     );
   }
@@ -577,12 +638,14 @@ export async function cmdX402Add(
     quote,
     marginPercent,
     feePercent,
+    network: agentNetwork,
   });
 
   // Round-trip through the real loader before touching disk: a generation
   // bug must fail HERE, not at the next `start`.
   const roundTrip = parseSkillMd(content);
   validateSkillFrontmatter(roundTrip.frontmatter, roundTrip.systemPrompt, {
+    network: agentNetwork,
     allowFreeSkills: false,
     allowX402Skills: true,
   });
@@ -592,8 +655,12 @@ export async function cmdX402Add(
   await ensureGitignoreHasX402Entries(dirname(loaded.dir));
 
   console.log(`\n  Wrote ${join(targetDir, 'SKILL.md')}`);
-  if (balance < quote) {
-    console.log(`  Next: fund the float (devnet USDC): ${CIRCLE_FAUCET_URL}`);
+  if (balance !== null && balance < quote) {
+    console.log(
+      agentNetwork === 'mainnet'
+        ? '  Next: fund the float with USDC on mainnet (REAL funds).'
+        : `  Next: fund the float (devnet USDC): ${CIRCLE_FAUCET_URL}`,
+    );
   }
   console.log(`  Start the agent: npx @elisym/cli start ${agentName}\n`);
 }

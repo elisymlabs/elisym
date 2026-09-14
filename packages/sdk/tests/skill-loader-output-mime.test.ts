@@ -11,8 +11,14 @@ const base = {
 describe('validateSkillFrontmatter output_mime', () => {
   it('parses output_mime on a dynamic-script skill', () => {
     const parsed = validateSkillFrontmatter(
-      { ...base, mode: 'dynamic-script', script: './run.sh', output_mime: 'image/png' },
+      {
+        ...base,
+        mode: 'dynamic-script',
+        script: './run.sh',
+        output_mime: 'image/png',
+      },
       '',
+      { network: 'devnet' },
     );
     expect(parsed.outputMime).toBe('image/png');
   });
@@ -21,6 +27,7 @@ describe('validateSkillFrontmatter output_mime', () => {
     const parsed = validateSkillFrontmatter(
       { ...base, mode: 'dynamic-script', script: './run.sh' },
       '',
+      { network: 'devnet' },
     );
     expect(parsed.outputMime).toBeUndefined();
   });
@@ -28,8 +35,14 @@ describe('validateSkillFrontmatter output_mime', () => {
   it('rejects an empty output_mime', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'dynamic-script', script: './run.sh', output_mime: '' },
+        {
+          ...base,
+          mode: 'dynamic-script',
+          script: './run.sh',
+          output_mime: '',
+        },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/non-empty string/);
   });
@@ -37,23 +50,37 @@ describe('validateSkillFrontmatter output_mime', () => {
   it("rejects output_mime on a static-script skill (file output isn't wired there)", () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'static-script', script: './run.sh', output_mime: 'image/png' },
+        {
+          ...base,
+          mode: 'static-script',
+          script: './run.sh',
+          output_mime: 'image/png',
+        },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/only valid in mode 'dynamic-script'/);
   });
 
   it('rejects output_mime on an llm skill', () => {
-    expect(() => validateSkillFrontmatter({ ...base, output_mime: 'image/png' }, 'prompt')).toThrow(
-      /only valid in mode 'dynamic-script'/,
-    );
+    expect(() =>
+      validateSkillFrontmatter({ ...base, output_mime: 'image/png' }, 'prompt', {
+        network: 'devnet',
+      }),
+    ).toThrow(/only valid in mode 'dynamic-script'/);
   });
 
   it('rejects output_mime on a static-file skill', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'static-file', output_file: './out.txt', output_mime: 'image/png' },
+        {
+          ...base,
+          mode: 'static-file',
+          output_file: './out.txt',
+          output_mime: 'image/png',
+        },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/only valid in mode 'dynamic-script'/);
   });

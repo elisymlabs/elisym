@@ -11,6 +11,7 @@ import { join, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
 import { LIMITS } from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CLIENTS } from '../src/install.js';
 import { computeGitDiff, prepareFileInput, resolveOutputPath } from '../src/job-input.js';
 
 const execFileP = promisify(execFile);
@@ -254,6 +255,34 @@ describe('resolveOutputPath', () => {
     await expect(resolveOutputPath(join(process.cwd(), 'credentials'))).rejects.toThrow(
       /sensitive path/,
     );
+  });
+
+  it('refuses every MCP client manifest this server installs into', async () => {
+    // Lockstep with install.ts: those files hold `mcpServers.*.command` (spawned
+    // on the client's next launch) and per-server `env` API keys, so untrusted
+    // provider bytes must never land there - not even with the opt-in.
+    const paths = CLIENTS.map((client) => client.configPath()).filter(
+      (path): path is string => path !== null,
+    );
+    expect(paths.length).toBeGreaterThan(0);
+    for (const path of paths) {
+      await expect(
+        resolveOutputPath(path, { allowOutsideCwd: true }),
+        `${path} is not covered by the sensitive-path denylist`,
+      ).rejects.toThrow(/sensitive path/);
+    }
+  });
+
+  it('refuses project-scope MCP manifests inside the working directory (no opt-in needed)', async () => {
+    await expect(resolveOutputPath(join(process.cwd(), '.mcp.json'))).rejects.toThrow(
+      /sensitive path/,
+    );
+    await expect(resolveOutputPath(join(process.cwd(), '.vscode', 'mcp.json'))).rejects.toThrow(
+      /sensitive path/,
+    );
+    await expect(
+      resolveOutputPath(join(process.cwd(), '.claude', 'settings.json')),
+    ).rejects.toThrow(/sensitive path/);
   });
 
   it('allows a non-sensitive .config subdir (no over-block)', async () => {

@@ -58,4 +58,16 @@ pub mod elisym_config {
     ) -> Result<()> {
         instructions::increment_stats::handler(ctx, amount, is_native)
     }
+
+    pub fn create_asset_stats(ctx: Context<CreateAssetStats>, mint: Pubkey) -> Result<()> {
+        instructions::create_asset_stats::handler(ctx, mint)
+    }
+
+    pub fn increment_stats_v2(
+        ctx: Context<IncrementStatsV2>,
+        amount: u64,
+        mint: Pubkey,
+    ) -> Result<()> {
+        instructions::increment_stats_v2::handler(ctx, amount, mint)
+    }
 }

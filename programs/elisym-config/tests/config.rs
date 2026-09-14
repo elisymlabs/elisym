@@ -14,13 +14,14 @@
 //! through the `SBF_OUT_DIR` env var that we set inside `setup_sbf_dir`.
 
 use anchor_lang::{
-    system_program, AccountDeserialize, AccountSerialize, InstructionData, Space, ToAccountMetas,
+    solana_program::bpf_loader_upgradeable, system_program, AccountDeserialize, AccountSerialize,
+    InstructionData, Space, ToAccountMetas,
 };
 use elisym_config::accounts as ix_accounts;
 use elisym_config::instruction as ix_args;
 use elisym_config::state::{
-    Config, NetworkStats, CONFIG_SEED, CURRENT_STATS_VERSION, CURRENT_VERSION, MAX_FEE_BPS,
-    STATS_SEED,
+    AssetStats, Config, NetworkStats, ASSET_STATS_SEED, CONFIG_SEED, CURRENT_ASSET_STATS_VERSION,
+    CURRENT_STATS_VERSION, CURRENT_VERSION, MAX_FEE_BPS, NATIVE_ASSET_SENTINEL, STATS_SEED,
 };
 use elisym_config::ID as PROGRAM_ID;
 use mollusk_svm::program;
@@ -101,6 +102,33 @@ fn event_authority_pda() -> Pubkey {
     Pubkey::find_program_address(&[b"__event_authority"], &PROGRAM_ID).0
 }
 
+fn programdata_pda() -> Pubkey {
+    Pubkey::find_program_address(&[PROGRAM_ID.as_ref()], &bpf_loader_upgradeable::ID).0
+}
+
+/// Loader-v3 `ProgramData` account holding `upgrade_authority`.
+///
+/// Layout is the bincode encoding the loader itself writes, 45 bytes total
+/// (`UpgradeableLoaderState::size_of_programdata_metadata()`): u32 variant tag
+/// (`ProgramData` = 3), u64 deploy slot, then `Option<Pubkey>` as a 1-byte tag
+/// plus the key. Written by hand so the fixture needs no bincode dependency;
+/// a mismatch fails the happy-path tests immediately.
+fn programdata_account(upgrade_authority: Option<Pubkey>) -> Account {
+    let mut data = vec![0u8; 45];
+    data[0] = 3;
+    if let Some(authority) = upgrade_authority {
+        data[12] = 1;
+        data[13..45].copy_from_slice(authority.as_ref());
+    }
+    Account {
+        lamports: PAYER_LAMPORTS,
+        data,
+        owner: bpf_loader_upgradeable::ID,
+        executable: false,
+        rent_epoch: 0,
+    }
+}
+
 fn read_config(account: &Account) -> Config {
     Config::try_deserialize(&mut &account.data[..]).expect("Config deserialize")
 }
@@ -160,6 +188,7 @@ fn build_initialize_ix(payer: Pubkey, admin: Pubkey, treasury: Pubkey, fee_bps: 
     let metas = ix_accounts::Initialize {
         config,
         payer,
+        program_data: programdata_pda(),
         system_program: system_program::ID,
         event_authority: event_authority_pda(),
         program: PROGRAM_ID,
@@ -214,16 +243,26 @@ fn build_accept_admin_ix(new_admin: Pubkey) -> Instruction {
 // Account builders
 // ---------------------------------------------------------------------------
 
-fn initial_accounts_for_initialize(payer: Pubkey) -> Vec<(Pubkey, Account)> {
+/// Accounts for `initialize` with `upgrade_authority` on the ProgramData PDA.
+fn initialize_accounts_with_authority(
+    payer: Pubkey,
+    upgrade_authority: Option<Pubkey>,
+) -> Vec<(Pubkey, Account)> {
     let (config, _) = config_pda();
     let (system_pk, system_acc) = program::keyed_account_for_system_program();
     vec![
         (config, empty_account()),
         (payer, funded_account(PAYER_LAMPORTS)),
+        (programdata_pda(), programdata_account(upgrade_authority)),
         (system_pk, system_acc),
         (event_authority_pda(), empty_account()),
         (PROGRAM_ID, program::create_program_account_loader_v3(&PROGRAM_ID)),
     ]
+}
+
+/// The ordinary case: the payer IS the program's upgrade authority.
+fn initial_accounts_for_initialize(payer: Pubkey) -> Vec<(Pubkey, Account)> {
+    initialize_accounts_with_authority(payer, Some(payer))
 }
 
 fn admin_only_accounts(admin: Pubkey, config_account: Account) -> Vec<(Pubkey, Account)> {
@@ -518,6 +557,43 @@ fn e10_initialize_called_twice_hits_anchor_reinit_protection() {
         &ix,
         &accounts,
         &[Check::err(ProgramError::Custom(ANCHOR_ACCOUNT_ALREADY_INITIALIZED))],
+    );
+}
+
+/// Closes the deploy->init front-run window: a bystander who lands `initialize`
+/// before the deployer would otherwise own `admin`/`treasury` for good.
+#[test]
+fn e10b_initialize_by_non_upgrade_authority_fails() {
+    let mollusk = mollusk_with_program();
+    let deployer = Pubkey::new_unique();
+    let frontrunner = Pubkey::new_unique();
+    let ix = build_initialize_ix(
+        frontrunner,
+        frontrunner,
+        Pubkey::new_unique(),
+        MAX_FEE_BPS,
+    );
+    let accounts = initialize_accounts_with_authority(frontrunner, Some(deployer));
+    let _ = mollusk.process_and_validate_instruction(
+        &ix,
+        &accounts,
+        &[Check::err(ProgramError::Custom(UNAUTHORIZED))],
+    );
+}
+
+/// A program deployed as immutable has no upgrade authority, so nobody can
+/// satisfy the check - `initialize` must be run while the program is still
+/// upgradeable.
+#[test]
+fn e10c_initialize_on_immutable_program_fails() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let ix = build_initialize_ix(payer, payer, Pubkey::new_unique(), 300);
+    let accounts = initialize_accounts_with_authority(payer, None);
+    let _ = mollusk.process_and_validate_instruction(
+        &ix,
+        &accounts,
+        &[Check::err(ProgramError::Custom(UNAUTHORIZED))],
     );
 }
 
@@ -964,3 +1040,335 @@ fn s7_increment_stats_native_overflow_fails() {
         &[Check::err(ProgramError::Custom(STATS_OVERFLOW))],
     );
 }
+
+// ---------------------------------------------------------------------------
+// Per-mint AssetStats: instruction builders + account builders
+// ---------------------------------------------------------------------------
+
+const ANCHOR_CONSTRAINT_SEEDS: u32 = 2006;
+
+fn asset_stats_pda(mint: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[ASSET_STATS_SEED, mint.as_ref()], &PROGRAM_ID)
+}
+
+fn read_asset_stats(account: &Account) -> AssetStats {
+    AssetStats::try_deserialize(&mut &account.data[..]).expect("AssetStats deserialize")
+}
+
+fn build_create_asset_stats_ix(payer: Pubkey, mint: Pubkey) -> Instruction {
+    let (asset_stats, _) = asset_stats_pda(&mint);
+    let metas = ix_accounts::CreateAssetStats {
+        asset_stats,
+        payer,
+        system_program: system_program::ID,
+        event_authority: event_authority_pda(),
+        program: PROGRAM_ID,
+    }
+    .to_account_metas(None);
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: metas,
+        data: ix_args::CreateAssetStats { mint }.data(),
+    }
+}
+
+fn build_increment_stats_v2_ix(payer: Pubkey, amount: u64, mint: Pubkey) -> Instruction {
+    let (stats, _) = stats_pda();
+    let (asset_stats, _) = asset_stats_pda(&mint);
+    let metas = ix_accounts::IncrementStatsV2 {
+        stats,
+        asset_stats,
+        payer,
+        system_program: system_program::ID,
+        event_authority: event_authority_pda(),
+        program: PROGRAM_ID,
+    }
+    .to_account_metas(None);
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: metas,
+        data: ix_args::IncrementStatsV2 { amount, mint }.data(),
+    }
+}
+
+fn create_asset_stats_accounts(payer: Pubkey, mint: &Pubkey) -> Vec<(Pubkey, Account)> {
+    let (asset_stats, _) = asset_stats_pda(mint);
+    let (system_pk, system_acc) = program::keyed_account_for_system_program();
+    vec![
+        (asset_stats, empty_account()),
+        (payer, funded_account(PAYER_LAMPORTS)),
+        (system_pk, system_acc),
+        (event_authority_pda(), empty_account()),
+        (PROGRAM_ID, program::create_program_account_loader_v3(&PROGRAM_ID)),
+    ]
+}
+
+fn increment_stats_v2_accounts(
+    payer: Pubkey,
+    mint: &Pubkey,
+    stats_account: Account,
+    asset_stats_account: Account,
+) -> Vec<(Pubkey, Account)> {
+    let (stats, _) = stats_pda();
+    let (asset_stats, _) = asset_stats_pda(mint);
+    let (system_pk, system_acc) = program::keyed_account_for_system_program();
+    vec![
+        (stats, stats_account),
+        (asset_stats, asset_stats_account),
+        (payer, funded_account(PAYER_LAMPORTS)),
+        (system_pk, system_acc),
+        (event_authority_pda(), empty_account()),
+        (PROGRAM_ID, program::create_program_account_loader_v3(&PROGRAM_ID)),
+    ]
+}
+
+fn create_asset_stats_for_test(mollusk: &Mollusk, payer: Pubkey, mint: &Pubkey) -> Account {
+    let (asset_stats_pk, _) = asset_stats_pda(mint);
+    let ix = build_create_asset_stats_ix(payer, *mint);
+    let accounts = create_asset_stats_accounts(payer, mint);
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+    get_resulting(&result, asset_stats_pk)
+}
+
+// ---------------------------------------------------------------------------
+// Per-mint AssetStats: happy-path tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v1_create_asset_stats_initializes_zeroed_pda() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+
+    let account = create_asset_stats_for_test(&mollusk, payer, &mint);
+    let asset_stats = read_asset_stats(&account);
+
+    let (_, expected_bump) = asset_stats_pda(&mint);
+    assert_eq!(asset_stats.version, CURRENT_ASSET_STATS_VERSION);
+    assert_eq!(asset_stats.bump, expected_bump);
+    assert_eq!(asset_stats.mint, mint);
+    assert_eq!(asset_stats.job_count, 0);
+    assert_eq!(asset_stats.volume, 0);
+    assert_eq!(asset_stats._reserved, [0u8; 64]);
+}
+
+/// Re-running `create_asset_stats` over a PDA that already carries volume must
+/// not reset it. The counters are accumulated first on purpose: against a
+/// freshly created (all-zero) PDA a missing `version` guard would rewrite the
+/// same zeros and the assertions would pass either way. `create-asset-stats.ts`
+/// documents itself as idempotent and DEPLOY.mainnet.md step 3b invites a
+/// re-run, so this is the case that matters.
+#[test]
+fn v2_create_asset_stats_is_idempotent() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let (asset_stats_pk, _) = asset_stats_pda(&mint);
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+    let created = create_asset_stats_for_test(&mollusk, payer, &mint);
+
+    let increment_ix = build_increment_stats_v2_ix(payer, 777, mint);
+    let increment_accounts =
+        increment_stats_v2_accounts(payer, &mint, stats_account, created.clone());
+    let increment_result = mollusk.process_and_validate_instruction(
+        &increment_ix,
+        &increment_accounts,
+        &[Check::success()],
+    );
+    let after_increment = get_resulting(&increment_result, asset_stats_pk);
+    let accumulated = read_asset_stats(&after_increment);
+    assert_eq!(accumulated.job_count, 1);
+    assert_eq!(accumulated.volume, 777);
+
+    let ix = build_create_asset_stats_ix(payer, mint);
+    let mut accounts = create_asset_stats_accounts(payer, &mint);
+    upsert(&mut accounts, asset_stats_pk, after_increment);
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+    let after_second = read_asset_stats(&get_resulting(&result, asset_stats_pk));
+
+    assert_eq!(after_second.version, accumulated.version);
+    assert_eq!(after_second.bump, accumulated.bump);
+    assert_eq!(after_second.mint, accumulated.mint);
+    assert_eq!(after_second.job_count, 1);
+    assert_eq!(after_second.volume, 777);
+    assert_eq!(after_second.last_updated, accumulated.last_updated);
+}
+
+#[test]
+fn v3_increment_stats_v2_accumulates_and_bumps_global_job_count() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let (stats_pk, _) = stats_pda();
+    let (asset_stats_pk, _) = asset_stats_pda(&mint);
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let mut stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+    let mut asset_stats_account = create_asset_stats_for_test(&mollusk, payer, &mint);
+
+    for amount in [1_000u64, 2_500, 40_000] {
+        let ix = build_increment_stats_v2_ix(payer, amount, mint);
+        let accounts = increment_stats_v2_accounts(
+            payer,
+            &mint,
+            stats_account.clone(),
+            asset_stats_account.clone(),
+        );
+        let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+        stats_account = get_resulting(&result, stats_pk);
+        asset_stats_account = get_resulting(&result, asset_stats_pk);
+    }
+
+    let asset_stats = read_asset_stats(&asset_stats_account);
+    assert_eq!(asset_stats.job_count, 3);
+    assert_eq!(asset_stats.volume, 1_000 + 2_500 + 40_000);
+
+    let stats = read_stats(&stats_account);
+    assert_eq!(stats.job_count, 3);
+    // v2 never touches the legacy volume slots.
+    assert_eq!(stats.volume_native, 0);
+    assert_eq!(stats.volume_usdc, 0);
+}
+
+#[test]
+fn v4_increment_stats_v2_self_registers_a_new_mint() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let (asset_stats_pk, expected_bump) = asset_stats_pda(&mint);
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+
+    // No create_asset_stats beforehand: the PDA starts as an empty account.
+    let ix = build_increment_stats_v2_ix(payer, 777, mint);
+    let accounts = increment_stats_v2_accounts(payer, &mint, stats_account, empty_account());
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+
+    let asset_stats = read_asset_stats(&get_resulting(&result, asset_stats_pk));
+    assert_eq!(asset_stats.version, CURRENT_ASSET_STATS_VERSION);
+    assert_eq!(asset_stats.bump, expected_bump);
+    assert_eq!(asset_stats.mint, mint);
+    assert_eq!(asset_stats.job_count, 1);
+    assert_eq!(asset_stats.volume, 777);
+    assert_eq!(asset_stats._reserved, [0u8; 64]);
+}
+
+#[test]
+fn v5_increment_stats_v2_native_sentinel() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+    let (asset_stats_pk, _) = asset_stats_pda(&NATIVE_ASSET_SENTINEL);
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+
+    let ix = build_increment_stats_v2_ix(payer, 1_000_000_000, NATIVE_ASSET_SENTINEL);
+    let accounts =
+        increment_stats_v2_accounts(payer, &NATIVE_ASSET_SENTINEL, stats_account, empty_account());
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+
+    let asset_stats = read_asset_stats(&get_resulting(&result, asset_stats_pk));
+    assert_eq!(asset_stats.mint, NATIVE_ASSET_SENTINEL);
+    assert_eq!(asset_stats.volume, 1_000_000_000);
+}
+
+#[test]
+fn v6_legacy_and_v2_coexist_with_continuous_job_count() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+    let (stats_pk, _) = stats_pda();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let mut stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+
+    // Old client: legacy increment (native).
+    let legacy_ix = build_increment_stats_ix(5_000, true);
+    let accounts = increment_stats_accounts(stats_account.clone());
+    let result = mollusk.process_and_validate_instruction(&legacy_ix, &accounts, &[Check::success()]);
+    stats_account = get_resulting(&result, stats_pk);
+
+    // New client: v2 increment for the same-network USDC-like mint.
+    let v2_ix = build_increment_stats_v2_ix(payer, 9_000, mint);
+    let accounts =
+        increment_stats_v2_accounts(payer, &mint, stats_account.clone(), empty_account());
+    let result = mollusk.process_and_validate_instruction(&v2_ix, &accounts, &[Check::success()]);
+    stats_account = get_resulting(&result, stats_pk);
+
+    let stats = read_stats(&stats_account);
+    assert_eq!(stats.job_count, 2);
+    assert_eq!(stats.volume_native, 5_000);
+    assert_eq!(stats.volume_usdc, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Per-mint AssetStats: error-path tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v7_increment_stats_v2_volume_overflow_fails() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+    let mint = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+    let mut asset_stats_account = create_asset_stats_for_test(&mollusk, payer, &mint);
+
+    let mut asset_stats = read_asset_stats(&asset_stats_account);
+    asset_stats.volume = u128::MAX - 1;
+    let mut buf: Vec<u8> = Vec::with_capacity(8 + AssetStats::INIT_SPACE);
+    asset_stats.try_serialize(&mut buf).expect("serialize asset stats");
+    asset_stats_account.data = buf;
+
+    let ix = build_increment_stats_v2_ix(payer, 2, mint);
+    let accounts = increment_stats_v2_accounts(payer, &mint, stats_account, asset_stats_account);
+    let _ = mollusk.process_and_validate_instruction(
+        &ix,
+        &accounts,
+        &[Check::err(ProgramError::Custom(STATS_OVERFLOW))],
+    );
+}
+
+#[test]
+fn v8_increment_stats_v2_wrong_pda_for_mint_fails() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+    let mint_a = Pubkey::new_unique();
+    let mint_b = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let stats_account = initialize_stats_for_test(&mollusk, admin, config_account);
+
+    // Instruction data says mint B but the account metas carry mint A's PDA.
+    let mut ix = build_increment_stats_v2_ix(payer, 100, mint_a);
+    ix.data = ix_args::IncrementStatsV2 {
+        amount: 100,
+        mint: mint_b,
+    }
+    .data();
+    let accounts = increment_stats_v2_accounts(payer, &mint_a, stats_account, empty_account());
+    let _ = mollusk.process_and_validate_instruction(
+        &ix,
+        &accounts,
+        &[Check::err(ProgramError::Custom(ANCHOR_CONSTRAINT_SEEDS))],
+    );
+}
+

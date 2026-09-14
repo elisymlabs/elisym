@@ -16,6 +16,7 @@ import { generateSecretKey, nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import { listAgentNames, loadAgentConfig, saveAgentConfig } from '../config.js';
 import type { AgentContext, AgentInstance, AgentSecurityFlags, SolanaNetwork } from '../context.js';
+import { shutdownIrohTransport } from '../iroh.js';
 import { logger } from '../logger.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, errorResult, textResult } from './types.js';
@@ -34,10 +35,14 @@ const CreateAgentSchema = z.object({
   // customer-mode in 0.1.x and never publishes a NIP-89 capability card,
   // so an advertised capability list would be misleading. Provider-mode
   // (0.2.0) will reintroduce this field.
-  // Only devnet is supported until the elisym-config program ships on mainnet.
-  // Mainnet was previously advertised here but every paid flow then crashed at
-  // payment time - rejecting at schema level surfaces the error up front.
-  network: z.enum(['devnet']).default('devnet'),
+  network: z
+    .enum(['devnet', 'mainnet'])
+    .default('devnet')
+    .describe(
+      'Solana network this agent is bound to. FIXED AT CREATION: an agent can never change ' +
+        'networks - switching networks means creating (or switch_agent-ing to) another agent ' +
+        'bound to the other network. Default devnet; mainnet payments move real funds.',
+    ),
   passphrase: z
     .string()
     .optional()
@@ -76,6 +81,9 @@ export async function buildAgentInstance(
       throw new Error(`Expected nsec, got ${decoded.type}`);
     }
     identity = ElisymIdentity.fromSecretKey(decoded.data);
+    // The identity copied the bytes - zero this intermediate so scrub()
+    // later leaves no second live copy of the secret in memory.
+    decoded.data.fill(0);
   } else {
     identity = ElisymIdentity.fromHex(config.nostrSecretKey);
   }
@@ -111,13 +119,30 @@ export async function buildAgentInstance(
 }
 
 /**
- * Tear down an agent: close its relay client, zero its Solana secret key bytes,
- * scrub the Nostr identity, and drop it from the registry. The agent will be
- * reloaded from disk if switched back to later. Shared by `switch_agent` and
- * `stop_agent`.
+ * Tear down an agent: shut down its iroh blob transport (releases the store
+ * fs-lock and network listener, removes an ephemeral tmpdir store), close its
+ * relay client, zero its Solana secret key bytes, scrub the Nostr identity,
+ * and drop it from the registry. The agent will be reloaded from disk if
+ * switched back to later. Shared by `switch_agent` and `stop_agent`; mirrors
+ * the per-agent teardown in `server.ts::shutdown`.
  */
-function scrubAgent(ctx: AgentContext, agent: AgentInstance): void {
-  agent.client.close();
+async function scrubAgent(ctx: AgentContext, agent: AgentInstance): Promise<void> {
+  await shutdownIrohTransport(agent);
+  try {
+    agent.client.close();
+  } catch (error) {
+    // A failing relay teardown must not abort the scrub - the secret-zeroing
+    // below still has to run. Log only the error class: a raw message could
+    // carry key material (same concern as server.ts's redactSecrets).
+    logger.warn(
+      {
+        event: 'close_failed',
+        agent: agent.name,
+        err: error instanceof Error ? error.name : 'unknown',
+      },
+      'agent client close failed during scrub',
+    );
+  }
   if (agent.solanaKeypair) {
     agent.solanaKeypair.secretKey.fill(0);
   }
@@ -130,7 +155,10 @@ export const agentTools: ToolDefinition[] = [
     name: 'create_agent',
     description:
       'Create a new agent identity. Generates Nostr keypair and Solana wallet, ' +
-      'saves config to ~/.elisym/<name>/. When activate=true (default), the ' +
+      'saves config to ~/.elisym/<name>/. The Solana network is fixed at creation: ' +
+      'there is no way to switch an existing agent between devnet and mainnet - ' +
+      'create an agent per network and use switch_agent to move between them. ' +
+      'When activate=true (default), the ' +
       'current active agent must have `security.agent_switch_enabled` set to true, ' +
       'otherwise the new agent is created but NOT activated (pass activate=false or ' +
       'run `npx @elisym/mcp enable-agent-switch <current-agent>`).',
@@ -187,17 +215,23 @@ export const agentTools: ToolDefinition[] = [
       const nostrSecretHex = Buffer.from(nostrSecretKey).toString('hex');
       const solanaSecretBase58 = BASE58_DECODER.decode(solanaSecretBytes);
 
-      await saveAgentConfig(input.name, {
-        name: input.name,
-        description: input.description,
-        relays: [...RELAYS],
-        nostrSecretKey: nostrSecretHex,
-        solanaSecretKey: solanaSecretBase58,
-        solanaAddress: solanaSigner.address,
-        network: input.network,
-        security: { withdrawals_enabled: false, agent_switch_enabled: false },
-        passphrase: input.passphrase,
-      });
+      try {
+        await saveAgentConfig(input.name, {
+          name: input.name,
+          description: input.description,
+          relays: [...RELAYS],
+          nostrSecretKey: nostrSecretHex,
+          solanaSecretKey: solanaSecretBase58,
+          solanaAddress: solanaSigner.address,
+          network: input.network,
+          security: { withdrawals_enabled: false, agent_switch_enabled: false },
+          passphrase: input.passphrase,
+        });
+      } catch (e) {
+        return errorResult(
+          `Failed to create agent "${input.name}": ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
 
       // Build and register agent
       const instance = await buildAgentInstance(input.name, {
@@ -206,6 +240,19 @@ export const agentTools: ToolDefinition[] = [
         network: input.network,
         security: { withdrawals_enabled: false, agent_switch_enabled: false },
       });
+      // Activation pivots away from the current agent - mirror switch_agent's
+      // teardown so the old agent's keys and iroh transport don't linger.
+      if (input.activate) {
+        let old: AgentInstance | undefined;
+        try {
+          old = ctx.active();
+        } catch {
+          // No active agent - nothing to scrub.
+        }
+        if (old && old.name !== input.name) {
+          await scrubAgent(ctx, old);
+        }
+      }
       ctx.register(instance, input.activate);
 
       return textResult(
@@ -226,6 +273,7 @@ export const agentTools: ToolDefinition[] = [
       'All subsequent tool calls will use this agent.',
     schema: SwitchAgentSchema,
     async handler(ctx, input) {
+      ctx.toolRateLimiter.check();
       // gate switch_agent behind an explicit opt-in flag. The active agent's flag
       // governs whether pivoting away from it is allowed - this prevents a prompt-
       // injected instruction from silently hopping to a different wallet.
@@ -263,7 +311,7 @@ export const agentTools: ToolDefinition[] = [
       // so there is nothing to fail - flip the active pointer and scrub the old.
       if (ctx.registry.has(input.name)) {
         if (old && old.name !== input.name) {
-          scrubAgent(ctx, old);
+          await scrubAgent(ctx, old);
         }
         ctx.activeAgentName = input.name;
         const agent = ctx.active();
@@ -284,7 +332,7 @@ export const agentTools: ToolDefinition[] = [
 
       // Target is ready - now it is safe to tear down the old agent.
       if (old && old.name !== input.name) {
-        scrubAgent(ctx, old);
+        await scrubAgent(ctx, old);
       }
       ctx.register(instance, true);
 
@@ -298,6 +346,7 @@ export const agentTools: ToolDefinition[] = [
     description: 'List all loaded agents and show which one is currently active.',
     schema: ListAgentsSchema,
     async handler(ctx) {
+      ctx.toolRateLimiter.check();
       // return structured JSON so downstream LLMs can program against stable field
       // names instead of parsing a bespoke plaintext format.
       const loaded = [];
@@ -352,6 +401,7 @@ export const agentTools: ToolDefinition[] = [
     description: 'Stop a loaded agent. Disconnects from relays. Cannot stop the active agent.',
     schema: StopAgentSchema,
     async handler(ctx, input) {
+      ctx.toolRateLimiter.check();
       if (input.name === ctx.activeAgentName) {
         return errorResult('Cannot stop the active agent. Switch to another agent first.');
       }
@@ -361,8 +411,9 @@ export const agentTools: ToolDefinition[] = [
         return errorResult(`Agent "${input.name}" is not loaded.`);
       }
 
-      // Close the client, zero secret key bytes, scrub identity, drop from registry.
-      scrubAgent(ctx, agent);
+      // Shut down iroh, close the client, zero secret key bytes, scrub
+      // identity, drop from registry.
+      await scrubAgent(ctx, agent);
 
       return textResult(`Agent "${input.name}" stopped and removed.`);
     },

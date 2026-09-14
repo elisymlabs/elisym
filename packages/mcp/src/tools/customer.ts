@@ -6,10 +6,15 @@ import {
   decodeJobPayload,
   deriveOwnerDelegationAta,
   encodeJobPayload,
+  NATIVE_SOL,
+  estimateAssetStatsRentLamports,
   estimateNetworkBaseline,
+  splAssetsForNetwork,
   formatAssetAmount,
   formatNetworkBaseline,
   getDelegation,
+  getProtocolProgramId,
+  resolveUsdcAsset,
   mintDelegationNonce,
   toDTag,
   DEFAULT_KIND_OFFSET,
@@ -43,7 +48,7 @@ import {
 import { z } from 'zod';
 import type { AgentContext, AgentInstance } from '../context.js';
 import {
-  explorerClusterFor,
+  explorerQuerySuffixFor,
   fetchProtocolConfig,
   releaseSpend,
   reserveSpend,
@@ -624,10 +629,30 @@ async function gasHintForCardAsset(agent: AgentInstance, asset: Asset): Promise<
   }
   try {
     const rpc = createSolanaRpc(rpcUrlFor(agent.network));
-    const baseline = await estimateNetworkBaseline(rpc, {
+    const baseline = await estimateNetworkBaseline(rpc, agent.network, {
       includeAtaRent: asset.mint !== undefined,
+      ataTokenProgram: asset.tokenProgram,
     });
-    return `\n${formatNetworkBaseline(baseline)}`;
+    // `estimateNetworkBaseline` is asset-agnostic and therefore cannot see the
+    // per-mint `AssetStats` PDA that every payment `init_if_needed`s. Left out,
+    // this hint under-quotes the first payer of an asset by ~0.0019 SOL - and
+    // under-quoting is the direction that strands a transaction. Ops pre-creates
+    // the PDAs for known assets, so the probe normally returns 0 and the
+    // sentence never appears. Its own try/catch: this is an extra RPC round
+    // trip on the confirmation path, and losing the whole gas line because the
+    // addendum failed would be a worse trade than omitting the addendum.
+    let statsHint = '';
+    try {
+      const statsRentLamports = await estimateAssetStatsRentLamports(rpc, agent.network, asset);
+      if (statsRentLamports > 0n) {
+        statsHint =
+          ` Plus a one-time ${formatAssetAmount(NATIVE_SOL, statsRentLamports)} for this ` +
+          `asset's on-chain stats account, charged to the first payer network-wide.`;
+      }
+    } catch {
+      // Probe unavailable - fall back to the baseline alone.
+    }
+    return `\n${formatNetworkBaseline(baseline)}${statsHint}`;
   } catch {
     return '';
   }
@@ -727,10 +752,13 @@ async function executePaymentFlow(
 
   // the expected recipient MUST match what the provider advertised in its card.
   // Passing `undefined` here would skip the check and let a compromised provider
-  // redirect funds to an attacker address.
+  // redirect funds to an attacker address. The agent network is the customer
+  // side of the SDK's cross-network rejection (a request settling on the other
+  // cluster fails validation before any transaction is built).
   const validation = payment().validatePaymentRequest(
     paymentRequest,
     protocolConfig,
+    agent.network,
     expectedRecipient,
   );
   if (validation !== null) {
@@ -751,6 +779,8 @@ async function executePaymentFlow(
     rpc,
     protocolConfig,
     {
+      programId: getProtocolProgramId(agent.network),
+      network: agent.network,
       jobEventId: jobId,
     },
   );
@@ -946,6 +976,25 @@ export function makePaymentFeedbackHandler(opts: {
       asset = resolveAssetFromPaymentRequest(parsedRequest as PaymentRequestData);
     } catch (e) {
       opts.rejectPayment(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
+    // Per-network membership guard: a registry-known SPL asset whose mint does
+    // not exist on this agent's network (LSM on devnet; the other network's
+    // USDC) is unpayable here. A hostile devnet-tagged card can claim such an
+    // asset and pass both the network gate and the expected-asset equality -
+    // refuse before signing instead of failing in on-chain simulation.
+    if (
+      asset.mint !== undefined &&
+      !splAssetsForNetwork(opts.agent.network).some(
+        (networkAsset) => networkAsset.mint === asset.mint,
+      )
+    ) {
+      opts.rejectPayment(
+        new Error(
+          `Asset ${asset.symbol} (mint ${asset.mint}) is not available on ` +
+            `${opts.agent.network}. Refusing to proceed.`,
+        ),
+      );
       return;
     }
     // Asset bait-and-switch guard: the card advertised a price in one asset, so a
@@ -1700,10 +1749,42 @@ export const customerTools: ToolDefinition[] = [
             `needs a priced skill. Use create_job for free capabilities.`,
         );
       }
-      if (asset.symbol !== 'USDC') {
-        // The pull moves USDC subunits; a non-USDC price would be a different amount.
+      // Gate on asset IDENTITY, not the display symbol. `assetFromCardPayment`
+      // falls back to a self-describing asset for tokens the registry does not
+      // know, taking `symbol` and `decimals` from the card verbatim - so a
+      // symbol compare accepts a hostile card that merely calls itself "USDC".
+      // That matters here because the pull is against the canonical USDC ATA
+      // (`deriveOwnerDelegationAta` below) whatever the card claims, while
+      // every price shown to the customer is rendered with the card's
+      // decimals: a card with decimals 12 displays 250 USDC as "0.00025 USDC"
+      // and the customer confirms a spend 10^6 times larger than they read.
+      // Requiring the network's canonical USDC also rejects the other
+      // cluster's USDC mint, and guarantees the `asset` used for every
+      // `formatAssetAmount` below is the registry entry, not card input.
+      // Decide from the card's RAW payment block, not from the resolved asset:
+      // `assetFromCardPayment` only self-describes when the card carries both
+      // `symbol` and a numeric `decimals`, and otherwise degrades to
+      // NATIVE_SOL - so a minimal `{token: 'usdc'}` card would be refused with
+      // "priced in SOL", a reason that is simply false. Normalizing here also
+      // matches the web app's `resolvePaymentAsset`, which lowercases `token`
+      // and defaults an absent `chain`; without that the two surfaces disagree
+      // on the same card.
+      //
+      // A mint-less `usdc` card is canonical by convention: there is one USDC
+      // per cluster and the pull targets it. Everything below renders through
+      // `delegationAsset` (the registry entry), so accepting one cannot let a
+      // card smuggle its own `decimals` into a displayed price.
+      const delegationAsset = resolveUsdcAsset(agent.network);
+      const cardPayment = paymentCardForCapability(provider, dTag)?.payment;
+      const cardMint = cardPayment?.mint;
+      const isCanonicalUsdc =
+        (cardPayment?.chain ?? delegationAsset.chain) === delegationAsset.chain &&
+        cardPayment?.token?.toLowerCase() === delegationAsset.token &&
+        (cardMint === undefined || cardMint === delegationAsset.mint);
+      if (!isCanonicalUsdc) {
+        const declared = cardPayment?.symbol ?? cardPayment?.token ?? asset.symbol;
         const { text } = sanitizeUntrusted(
-          `Delegated payment is USDC-only, but this capability is priced in ${asset.symbol}.`,
+          `Delegated payment is USDC-only, but this capability is priced in ${declared}.`,
           'text',
         );
         return errorResult(text);
@@ -1739,15 +1820,15 @@ export const customerTools: ToolDefinition[] = [
       }
       if (delegation.remainingCap < priceSubunits) {
         return errorResult(
-          `Remaining delegated cap ${formatAssetAmount(asset, delegation.remainingCap)} is ` +
-            `below the price ${formatAssetAmount(asset, priceSubunits)}. Top up the ` +
+          `Remaining delegated cap ${formatAssetAmount(delegationAsset, delegation.remainingCap)} is ` +
+            `below the price ${formatAssetAmount(delegationAsset, priceSubunits)}. Top up the ` +
             `delegation (re-approve) first.`,
         );
       }
       if (delegation.balance < priceSubunits) {
         return errorResult(
-          `Delegation account balance ${formatAssetAmount(asset, delegation.balance)} is ` +
-            `below the price ${formatAssetAmount(asset, priceSubunits)}. Fund the wallet first.`,
+          `Delegation account balance ${formatAssetAmount(delegationAsset, delegation.balance)} is ` +
+            `below the price ${formatAssetAmount(delegationAsset, priceSubunits)}. Fund the wallet first.`,
         );
       }
 
@@ -1758,7 +1839,7 @@ export const customerTools: ToolDefinition[] = [
         providerLabel: sanitizeField(provider.name || input.provider_npub, 64),
         capability: input.capability,
         price,
-        asset,
+        asset: delegationAsset,
         maxPriceLamports: input.max_price_lamports,
         toolName: 'submit_delegated_job',
       });
@@ -1841,7 +1922,11 @@ export const customerTools: ToolDefinition[] = [
           providerPubkey,
           providerName: clipProviderName(provider.name),
           paidAmountSubunits: String(price),
-          assetKey: assetKey(asset),
+          // The registry key, not the card's. A mint-less `usdc` card is
+          // accepted by the gate above but keys as `solana:usdc`, which
+          // `assetByKey` cannot resolve and which splits any per-asset
+          // aggregation away from the canonical `solana:usdc:<mint>` rows.
+          assetKey: assetKey(delegationAsset),
           status: 'completed',
           submittedAt,
           completedAt: Date.now(),
@@ -2811,4 +2896,4 @@ export const customerTools: ToolDefinition[] = [
 ];
 
 /** Re-exported for tests and the stdio integration harness. */
-export { explorerClusterFor };
+export { explorerQuerySuffixFor };

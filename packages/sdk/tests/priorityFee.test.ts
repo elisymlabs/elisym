@@ -66,6 +66,18 @@ describe('pickPercentileFee', () => {
     const samples: FakeSample[] = [{ prioritizationFee: 5_000 }, { prioritizationFee: 7_500 }];
     expect(pickPercentileFee(samples, 50)).toBe(5_000n);
   });
+
+  // A hostile/misconfigured RPC must not be able to inflate the estimate
+  // arbitrarily - the value flows straight into the compute-unit price.
+  it('clamps an absurd sample to the ceiling', () => {
+    const samples: FakeSample[] = [{ prioritizationFee: 2n ** 60n }];
+    expect(pickPercentileFee(samples, 50)).toBe(5_000_000n);
+  });
+
+  it('passes through a realistic congestion sample below the ceiling', () => {
+    const samples: FakeSample[] = [{ prioritizationFee: 4_999_999n }];
+    expect(pickPercentileFee(samples, 50)).toBe(4_999_999n);
+  });
 });
 
 describe('estimatePriorityFeeMicroLamports', () => {
@@ -73,8 +85,14 @@ describe('estimatePriorityFeeMicroLamports', () => {
     clearPriorityFeeCache();
     const samples: FakeSample[] = [{ prioritizationFee: 5_000n }];
     const { rpc, callCount } = makeRpc(samples);
-    const first = await estimatePriorityFeeMicroLamports(rpc, { percentile: 75 });
-    const second = await estimatePriorityFeeMicroLamports(rpc, { percentile: 75 });
+    const first = await estimatePriorityFeeMicroLamports(rpc, {
+      network: 'devnet',
+      percentile: 75,
+    });
+    const second = await estimatePriorityFeeMicroLamports(rpc, {
+      network: 'devnet',
+      percentile: 75,
+    });
     expect(first).toBe(5_000n);
     expect(second).toBe(5_000n);
     expect(callCount()).toBe(1);
@@ -86,9 +104,17 @@ describe('estimatePriorityFeeMicroLamports', () => {
     const { rpc, callCount } = makeRpc(samples);
     vi.useFakeTimers();
     try {
-      await estimatePriorityFeeMicroLamports(rpc, { percentile: 75, ttlMs: 1000 });
+      await estimatePriorityFeeMicroLamports(rpc, {
+        network: 'devnet',
+        percentile: 75,
+        ttlMs: 1000,
+      });
       vi.advanceTimersByTime(1500);
-      await estimatePriorityFeeMicroLamports(rpc, { percentile: 75, ttlMs: 1000 });
+      await estimatePriorityFeeMicroLamports(rpc, {
+        network: 'devnet',
+        percentile: 75,
+        ttlMs: 1000,
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -98,7 +124,48 @@ describe('estimatePriorityFeeMicroLamports', () => {
   it('falls back to floor when rpc returns empty samples', async () => {
     clearPriorityFeeCache();
     const { rpc } = makeRpc([]);
-    const fee = await estimatePriorityFeeMicroLamports(rpc);
+    const fee = await estimatePriorityFeeMicroLamports(rpc, {
+      network: 'devnet',
+    });
     expect(fee).toBe(1_000n);
+  });
+
+  // H9: the cache key carries the network - identical percentile/accounts on
+  // the other cluster must hit its own RPC, never the cached devnet sample.
+  it('never serves one cluster cached estimate to the other', async () => {
+    clearPriorityFeeCache();
+    const devnetSamples: FakeSample[] = [{ prioritizationFee: 5_000n }];
+    const mainnetSamples: FakeSample[] = [{ prioritizationFee: 50_000n }];
+    const devnetRpc = makeRpc(devnetSamples);
+    const mainnetRpc = makeRpc(mainnetSamples);
+
+    const devnetFee = await estimatePriorityFeeMicroLamports(devnetRpc.rpc, {
+      network: 'devnet',
+      percentile: 75,
+    });
+    const mainnetFee = await estimatePriorityFeeMicroLamports(mainnetRpc.rpc, {
+      network: 'mainnet',
+      percentile: 75,
+    });
+    expect(devnetFee).toBe(5_000n);
+    expect(mainnetFee).toBe(50_000n);
+    expect(devnetRpc.callCount()).toBe(1);
+    expect(mainnetRpc.callCount()).toBe(1);
+
+    // Repeat calls stay within each cluster's own cache entry.
+    expect(
+      await estimatePriorityFeeMicroLamports(devnetRpc.rpc, {
+        network: 'devnet',
+        percentile: 75,
+      }),
+    ).toBe(5_000n);
+    expect(
+      await estimatePriorityFeeMicroLamports(mainnetRpc.rpc, {
+        network: 'mainnet',
+        percentile: 75,
+      }),
+    ).toBe(50_000n);
+    expect(devnetRpc.callCount()).toBe(1);
+    expect(mainnetRpc.callCount()).toBe(1);
   });
 });

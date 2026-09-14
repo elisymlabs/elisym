@@ -14,6 +14,7 @@
  * unusable-not-stealable - fail-safe; owners must re-approve).
  */
 import { formatSol, generateSolanaWallet, signerFromSecretKeyBase58 } from '@elisym/sdk';
+import type { Network } from '@elisym/sdk';
 import { listAgents, loadAgent, writeSecrets } from '@elisym/sdk/agent-store';
 import { address, createSolanaRpc } from '@solana/kit';
 import { getRpcUrl } from '../helpers.js';
@@ -65,7 +66,7 @@ async function resolveAgentName(
   return selected as string;
 }
 
-async function printDelegateStatus(delegateSecretKey: string, network: string): Promise<void> {
+async function printDelegateStatus(delegateSecretKey: string, network: Network): Promise<void> {
   const signer = await signerFromSecretKeyBase58(delegateSecretKey);
   const rpc = createSolanaRpc(getRpcUrl(network));
   let gasLine = '';
@@ -174,6 +175,16 @@ export async function cmdDelegateKey(
       );
       process.exit(1);
     }
+  }
+
+  // Mirror init's mainnet warning: reaching this write without a passphrase
+  // means the secrets file is plaintext, and this key signs real-fund
+  // delegated transfers.
+  if (network === 'mainnet' && !passphrase) {
+    console.warn(
+      '  ! No passphrase set: this MAINNET delegate key will be stored unencrypted on disk.\n' +
+        '    Strongly consider one (ELISYM_PASSPHRASE) - the key spends owner-approved real funds.',
+    );
   }
 
   await writeSecrets(

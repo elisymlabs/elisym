@@ -50,6 +50,33 @@ describe('agent config round-trip', () => {
     expect(loaded.encrypted).toBe(false);
   });
 
+  // TOCTOU guard: two create_agent calls racing past the caller's existence
+  // check must not let the second write silently replace the first agent's
+  // freshly generated keys.
+  it('saveAgentConfig refuses to overwrite an existing agent', async () => {
+    await saveAgentConfig('dup-agent', {
+      name: 'dup-agent',
+      description: 'first',
+      relays: ['wss://relay.damus.io'],
+      nostrSecretKey: 'b'.repeat(64),
+      network: 'devnet',
+    });
+
+    await expect(
+      saveAgentConfig('dup-agent', {
+        name: 'dup-agent',
+        description: 'second',
+        relays: ['wss://relay.damus.io'],
+        nostrSecretKey: 'c'.repeat(64),
+        network: 'devnet',
+      }),
+    ).rejects.toThrow('already exists');
+
+    // The first agent's keys survived the attempted overwrite.
+    const loaded = await loadAgentConfig('dup-agent');
+    expect(loaded.nostrSecretKey).toBe('b'.repeat(64));
+  });
+
   it('saveAgentConfig + loadAgentConfig returns the secret key', async () => {
     await saveAgentConfig('load-agent', {
       name: 'load-agent',
@@ -74,7 +101,7 @@ describe('agent config round-trip', () => {
 
     const loaded = await loadAgentConfig('no-wallet');
     expect(loaded.payments).toBeUndefined();
-    // network falls back to 'devnet' (only supported value) even without payments.
+    // network falls back to 'devnet' (the default) even without payments.
     expect(loaded.network).toBe('devnet');
   });
 });

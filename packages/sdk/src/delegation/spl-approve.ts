@@ -47,7 +47,7 @@ import {
   isAddress,
   unwrapOption,
 } from '@solana/kit';
-import { type Asset, KNOWN_ASSETS, USDC_SOLANA_DEVNET, formatAssetAmount } from '../payment/assets';
+import { type Asset, KNOWN_ASSETS, formatAssetAmount, resolveUsdcAsset } from '../payment/assets';
 import { calculateProtocolFee } from '../payment/fee';
 import type { Signer } from '../payment/strategy';
 import type { Network } from '../types';
@@ -68,19 +68,12 @@ function assertU64(value: bigint, label: string): void {
 }
 
 /**
- * Resolve the canonical USDC asset for the active network. Only devnet exists
- * today; mainnet USDC is a distinct mint/constant to add when mainnet lands.
- * Throwing (rather than defaulting) keeps a mainnet caller from silently
- * approving a devnet mint.
+ * Resolve the canonical USDC asset for the active network. Delegation is
+ * USDC-only, and the mint differs per cluster - resolving through the network
+ * keeps a mainnet caller from approving the devnet mint and vice versa.
  */
 export function resolveDelegationAsset(network: Network): Asset {
-  if (network === 'devnet') {
-    return USDC_SOLANA_DEVNET;
-  }
-  throw new Error(
-    `Delegation is USDC-only and mainnet USDC is not wired yet (network: ${network}). ` +
-      `Add the mainnet USDC constant to KNOWN_ASSETS before enabling it.`,
-  );
+  return resolveUsdcAsset(network);
 }
 
 function requireMint(asset: Asset): Address {

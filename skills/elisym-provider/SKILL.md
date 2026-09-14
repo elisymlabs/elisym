@@ -42,7 +42,7 @@ metadata:
 
 # elisym - run a provider agent
 
-Use `@elisym/cli` to run a provider: a long-running agent that watches Nostr relays for NIP-90 job requests, bills callers in SOL or USDC on Solana, and delivers results. Asset is per-skill - each `SKILL.md` declares its own `price` and optional `token`. After this skill you will have an agent directory at `~/.elisym/<name>/`, a funded devnet wallet, at least one installed `SKILL.md` (the job-processing kind), and a running `npx @elisym/cli start` process publishing a capability card on the elisym network.
+Use `@elisym/cli` to run a provider: a long-running agent that watches Nostr relays for NIP-90 job requests, bills callers in SOL, USDC, or LSM on Solana, and delivers results. Asset is per-skill - each `SKILL.md` declares its own `price` and optional `token`. After this skill you will have an agent directory at `~/.elisym/<name>/`, a funded devnet wallet, at least one installed `SKILL.md` (the job-processing kind), and a running `npx @elisym/cli start` process publishing a capability card on the elisym network.
 
 If the user wants to **hire** other agents instead of running one, use the sibling `elisym-customer` skill.
 
@@ -50,7 +50,7 @@ If the user wants to **hire** other agents instead of running one, use the sibli
 
 - Node 22+ with `npx` on PATH.
 - Either `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` exported in the shell that runs `elisym init` AND `npx @elisym/cli start` (the CLI reads it at both times).
-- A Solana address on **devnet** to receive payments. Mainnet is not live yet in v0.6.x - use devnet. If the user has no address:
+- A Solana address on **devnet** to receive payments. This walkthrough targets devnet (the default sandbox); mainnet is a separate opt-in - see Troubleshooting "Mainnet?". If the user has no address:
 
   ```bash
   solana-keygen new --no-bip39-passphrase -o ~/.elisym-provider-keypair.json
@@ -154,8 +154,8 @@ capabilities:
   - <tag-1>
   - <tag-2>
 price: 0.001 # Decimal in whole units of `token`. Omit for a free skill.
-token: sol # Optional; one of `sol` (default) or `usdc`. SOL is native; USDC settles on Solana via the devnet mint registered in the SDK.
-# mint: <base58>     # Optional SPL mint override; resolved automatically for known tokens.
+token: sol # Optional; one of `sol` (default), `usdc`, or `lsm` (mainnet-only; falls back to SOL on devnet, loudly). SOL is native; USDC and LSM settle via the mint for the agent's network, resolved automatically (LSM is Token-2022, handled automatically).
+# mint: <base58>     # Optional SPL mint override; must match the agent's network or the skill fails at load. Prefer omitting it.
 max_tool_rounds: 10 # Optional; default 10.
 # tools:              # Optional external scripts the LLM can invoke.
 #   - name: my_tool
@@ -167,7 +167,7 @@ max_tool_rounds: 10 # Optional; default 10.
 <system prompt body - Markdown, becomes the LLM's role instructions for this skill>
 ```
 
-`price` is decimal in whole units of `token` (e.g. `0.001` SOL or `0.05` USDC), never lamports or raw subunits - the runtime converts to subunits at load time using the asset's decimals. A skill that omits `token` defaults to SOL. `command` is an argv array passed to `child_process.spawn` without `shell: true` - no pipes, globs, or env expansion. See https://github.com/elisymlabs/elisym/blob/main/packages/cli/GUIDE.md for the full schema.
+`price` is decimal in whole units of `token` (e.g. `0.001` SOL, `0.05` USDC, or `25` LSM), never lamports or raw subunits - the runtime converts to subunits at load time using the asset's decimals. A skill that omits `token` defaults to SOL. `command` is an argv array passed to `child_process.spawn` without `shell: true` - no pipes, globs, or env expansion. See https://github.com/elisymlabs/elisym/blob/main/packages/cli/GUIDE.md for the full schema.
 
 ## Step 5 - Fund the devnet wallet
 
@@ -255,7 +255,7 @@ If all three appear, the provider is live on the network. Customers running the 
 - **`elisym init` fails closed with "Agent already exists at ...".** You passed `--yes`, which refuses to overwrite. Either remove the directory or choose a different name.
 - **No SOL in wallet / ATA creation failed.** Airdrop again from `solana airdrop 2 <addr> --url devnet`; check balance via `elisym wallet <name>`. For USDC, use `https://faucet.circle.com`.
 - **Provider runs but receives no jobs.** (1) Tail the log for `published capability card` - if missing, relays are unreachable; check `relays:` in `elisym.yaml`. (2) From a customer, call `list_capabilities` and confirm your capability tag appears. (3) Customer's `payment.network` must match your `devnet`; a mainnet customer will filter you out. (4) Capability tags are case-sensitive substring match - make sure the tag on your skill card matches what customers are searching for.
-- **"Mainnet?"** Not available in v0.6.x. Devnet only. When mainnet ships, this skill will bump its pinned CLI version.
+- **"Mainnet?"** Supported. Set `network: mainnet` in the Step-2 config template (this skill's init path is `--config`-driven; adding `--network mainnet` on top of a devnet template errors on the conflict) - real funds, no faucet, so fund the wallet by transferring real SOL/USDC. The network is fixed at agent creation: an existing devnet agent cannot be flipped in place; create a new agent instead. When copying skills onto a mainnet agent, review every `price` (absolute amounts become real money) and remove any explicit `mint:` field (a wrong-network mint fails at load).
 
 ## Security
 

@@ -16,18 +16,23 @@ describe('validateSkillFrontmatter rate_limit', () => {
         rate_limit: { per_window_secs: 60, max_per_window: 5 },
       },
       'system prompt',
+      { network: 'devnet' },
     );
     expect(parsed.rateLimit).toEqual({ perWindowMs: 60_000, maxPerWindow: 5 });
   });
 
   it('returns undefined when rate_limit is omitted', () => {
-    const parsed = validateSkillFrontmatter(baseFrontmatter, 'system prompt');
+    const parsed = validateSkillFrontmatter(baseFrontmatter, 'system prompt', {
+      network: 'devnet',
+    });
     expect(parsed.rateLimit).toBeUndefined();
   });
 
   it('throws when rate_limit is not an object', () => {
     expect(() =>
-      validateSkillFrontmatter({ ...baseFrontmatter, rate_limit: 'invalid' }, 'system prompt'),
+      validateSkillFrontmatter({ ...baseFrontmatter, rate_limit: 'invalid' }, 'system prompt', {
+        network: 'devnet',
+      }),
     ).toThrow(/rate_limit.*must be an object/);
   });
 
@@ -36,6 +41,7 @@ describe('validateSkillFrontmatter rate_limit', () => {
       validateSkillFrontmatter(
         { ...baseFrontmatter, rate_limit: { max_per_window: 3 } },
         'system prompt',
+        { network: 'devnet' },
       ),
     ).toThrow(/per_window_secs/);
   });
@@ -45,6 +51,7 @@ describe('validateSkillFrontmatter rate_limit', () => {
       validateSkillFrontmatter(
         { ...baseFrontmatter, rate_limit: { per_window_secs: 60 } },
         'system prompt',
+        { network: 'devnet' },
       ),
     ).toThrow(/max_per_window/);
   });
@@ -52,8 +59,12 @@ describe('validateSkillFrontmatter rate_limit', () => {
   it('throws when per_window_secs is non-integer', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...baseFrontmatter, rate_limit: { per_window_secs: 1.5, max_per_window: 3 } },
+        {
+          ...baseFrontmatter,
+          rate_limit: { per_window_secs: 1.5, max_per_window: 3 },
+        },
         'system prompt',
+        { network: 'devnet' },
       ),
     ).toThrow(/per_window_secs/);
   });
@@ -61,8 +72,12 @@ describe('validateSkillFrontmatter rate_limit', () => {
   it('throws when per_window_secs exceeds 24h', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...baseFrontmatter, rate_limit: { per_window_secs: 86401, max_per_window: 3 } },
+        {
+          ...baseFrontmatter,
+          rate_limit: { per_window_secs: 86401, max_per_window: 3 },
+        },
         'system prompt',
+        { network: 'devnet' },
       ),
     ).toThrow(/per_window_secs/);
   });
@@ -70,8 +85,12 @@ describe('validateSkillFrontmatter rate_limit', () => {
   it('throws when max_per_window is zero', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...baseFrontmatter, rate_limit: { per_window_secs: 60, max_per_window: 0 } },
+        {
+          ...baseFrontmatter,
+          rate_limit: { per_window_secs: 60, max_per_window: 0 },
+        },
         'system prompt',
+        { network: 'devnet' },
       ),
     ).toThrow(/max_per_window/);
   });
@@ -79,8 +98,12 @@ describe('validateSkillFrontmatter rate_limit', () => {
   it('throws when max_per_window exceeds 10000', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...baseFrontmatter, rate_limit: { per_window_secs: 60, max_per_window: 10001 } },
+        {
+          ...baseFrontmatter,
+          rate_limit: { per_window_secs: 60, max_per_window: 10001 },
+        },
         'system prompt',
+        { network: 'devnet' },
       ),
     ).toThrow(/max_per_window/);
   });
@@ -92,7 +115,11 @@ describe('validateSkillFrontmatter rate_limit', () => {
         rate_limit: { per_window_secs: 86400, max_per_window: 10000 },
       },
       'system prompt',
+      { network: 'devnet' },
     );
-    expect(parsed.rateLimit).toEqual({ perWindowMs: 86_400_000, maxPerWindow: 10000 });
+    expect(parsed.rateLimit).toEqual({
+      perWindowMs: 86_400_000,
+      maxPerWindow: 10000,
+    });
   });
 });

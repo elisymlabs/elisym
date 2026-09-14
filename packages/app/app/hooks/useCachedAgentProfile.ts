@@ -2,7 +2,7 @@ import type { Agent } from '@elisym/sdk';
 import { useEffect, useState } from 'react';
 import { getAgentProfile } from '~/lib/agentProfileCache';
 import { getAgentSnapshot } from '~/lib/agentSnapshotCache';
-import { NETWORK } from './useAgents';
+import { SOLANA_CLUSTER } from '~/lib/cluster';
 
 /**
  * Cache-only agent profile lookup (session snapshot, then IDB). Unlike
@@ -11,12 +11,14 @@ import { NETWORK } from './useAgents';
  * an agent at all - an unknown pubkey just resolves to `undefined`.
  */
 export function useCachedAgentProfile(pubkey: string): Agent | undefined {
-  const [agent, setAgent] = useState<Agent | undefined>(() => getAgentSnapshot(NETWORK, pubkey));
+  const [agent, setAgent] = useState<Agent | undefined>(() =>
+    getAgentSnapshot(SOLANA_CLUSTER, pubkey),
+  );
 
   useEffect(() => {
-    setAgent(getAgentSnapshot(NETWORK, pubkey));
+    setAgent(getAgentSnapshot(SOLANA_CLUSTER, pubkey));
     let cancelled = false;
-    void getAgentProfile(NETWORK, pubkey).then((cached) => {
+    void getAgentProfile(SOLANA_CLUSTER, pubkey).then((cached) => {
       if (!cancelled && cached) {
         setAgent((prev) => prev ?? cached);
       }

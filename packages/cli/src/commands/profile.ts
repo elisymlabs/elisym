@@ -1,3 +1,4 @@
+import type { Network } from '@elisym/sdk';
 import {
   listAgents,
   loadAgent,
@@ -114,12 +115,12 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
     }
 
     if (section === 'wallet') {
-      const current = loaded.yaml.payments[0];
+      const current = loaded.yaml.payments.find((entry) => entry.chain === 'solana');
       const answers = await inquirer.prompt([
         {
           type: 'input',
           name: 'address',
-          message: 'Solana address (empty to clear):',
+          message: current ? 'Solana address:' : 'Solana address (empty to skip):',
           default: current?.address ?? '',
           validate: (value: string) => {
             if (!value) {
@@ -130,11 +131,58 @@ export async function cmdProfile(name: string | undefined): Promise<void> {
         },
       ]);
 
+      // Refuse to remove an existing wallet entry: the entry carries the
+      // agent's network, and network is fixed at creation (D1). Allowing a
+      // clear here would lose that pin - a later re-add (or `x402 add`) would
+      // prompt for a network again, silently flipping the agent between
+      // devnet and mainnet under the same identity and capability d-tags.
+      if (!answers.address && current) {
+        console.log(
+          '  ! The wallet entry cannot be removed: it pins the agent network, which is\n' +
+            '    fixed at creation - to change networks, create a new agent. To stop\n' +
+            '    charging, set every skill price to 0 instead. Wallet unchanged.\n',
+        );
+        continue;
+      }
+
+      // An existing entry's network is kept, never re-asked: network is fixed
+      // at agent creation (D1) - to go mainnet, create a new agent. Only a
+      // first-time wallet setup chooses one (default devnet, D12).
+      let walletNetwork: Network | undefined = current?.network;
+      if (answers.address && walletNetwork === undefined) {
+        const { network } = await inquirer.prompt([
+          {
+            type: 'list',
+            name: 'network',
+            message: 'Solana network (fixed once set - to switch later, create a new agent):',
+            choices: [
+              { name: 'devnet (test tokens - recommended to start)', value: 'devnet' },
+              { name: 'mainnet (REAL funds)', value: 'mainnet' },
+            ],
+            default: 'devnet',
+          },
+        ]);
+        walletNetwork = network as Network;
+        if (walletNetwork === 'mainnet') {
+          console.log(
+            '  ! MAINNET: this wallet handles REAL funds - every skill price is real money\n' +
+              '    and there is no faucet. Strongly consider encrypting secrets with a passphrase.',
+          );
+        }
+      }
+
+      // Replace only the Solana entry - preserve entries for any other chain
+      // so a future multi-chain payments[] is not clobbered by a wallet edit.
+      const otherChainEntries = loaded.yaml.payments.filter((entry) => entry.chain !== 'solana');
       const nextYaml: ElisymYaml = {
         ...loaded.yaml,
-        payments: answers.address
-          ? [{ chain: 'solana', network: 'devnet', address: answers.address }]
-          : [],
+        payments:
+          answers.address && walletNetwork !== undefined
+            ? [
+                ...otherChainEntries,
+                { chain: 'solana', network: walletNetwork, address: answers.address },
+              ]
+            : otherChainEntries,
       };
       await writeYaml(loaded.dir, nextYaml);
       loaded.yaml = nextYaml;

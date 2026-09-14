@@ -90,7 +90,10 @@ export default defineConfig({
     },
     {
       text: 'Reference',
-      items: [{ text: 'Constants', link: '/reference/constants' }],
+      items: [
+        { text: 'Networks', link: '/reference/networks' },
+        { text: 'Constants', link: '/reference/constants' },
+      ],
     },
   ],
 });

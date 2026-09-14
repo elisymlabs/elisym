@@ -257,6 +257,14 @@ describe('delegated job payment - live path', () => {
 
     expect(skill.execute).toHaveBeenCalledOnce();
     expect(buildSignedPullSpy).toHaveBeenCalledOnce();
+    // The pull's priority-fee estimate is cluster-keyed: it must be built for
+    // the runtime's own network, never a hardcoded one.
+    expect(buildSignedPullSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ network: 'devnet' }),
+    );
     expect(sendConfirmSpy).toHaveBeenCalledOnce();
     expect((transport as any).deliverResult).toHaveBeenCalledWith(
       expect.objectContaining({ jobId: 'happy-1' }),

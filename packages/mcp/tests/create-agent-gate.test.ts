@@ -21,11 +21,14 @@ function findTool(name: string) {
 
 function makeActiveAgentStub(name: string, switchEnabled: boolean): AgentInstance {
   return {
-    client: {} as never,
+    // Activation now scrubs the displaced agent, so the stub needs the
+    // teardown surface scrubAgent touches: client.close + identity.scrub.
+    client: { close: () => {} } as never,
     identity: {
       publicKey: 'a'.repeat(64),
       npub: 'npub1' + 'a'.repeat(59),
       secretKey: new Uint8Array(32),
+      scrub: () => {},
     } as never,
     name,
     network: 'devnet',
@@ -86,6 +89,8 @@ describe('create_agent respects agent_switch gate', () => {
 
     expect(result.isError).toBeFalsy();
     expect(ctx.activeAgentName).toBe('new-agent');
+    // The displaced agent is scrubbed and dropped, mirroring switch_agent.
+    expect(ctx.registry.has('unlocked')).toBe(false);
   });
 
   it('honors ELISYM_ALLOW_AGENT_SWITCH=1 env override', async () => {

@@ -11,8 +11,14 @@ const base = {
 describe('validateSkillFrontmatter input_mime', () => {
   it('parses input_mime on a dynamic-script skill', () => {
     const parsed = validateSkillFrontmatter(
-      { ...base, mode: 'dynamic-script', script: './run.sh', input_mime: 'image/png' },
+      {
+        ...base,
+        mode: 'dynamic-script',
+        script: './run.sh',
+        input_mime: 'image/png',
+      },
       '',
+      { network: 'devnet' },
     );
     expect(parsed.inputMime).toBe('image/png');
   });
@@ -21,11 +27,18 @@ describe('validateSkillFrontmatter input_mime', () => {
     const anyFile = validateSkillFrontmatter(
       { ...base, mode: 'dynamic-script', script: './run.sh', input_mime: '*' },
       '',
+      { network: 'devnet' },
     );
     expect(anyFile.inputMime).toBe('*');
     const anyImage = validateSkillFrontmatter(
-      { ...base, mode: 'dynamic-script', script: './run.sh', input_mime: 'image/*' },
+      {
+        ...base,
+        mode: 'dynamic-script',
+        script: './run.sh',
+        input_mime: 'image/*',
+      },
       '',
+      { network: 'devnet' },
     );
     expect(anyImage.inputMime).toBe('image/*');
   });
@@ -34,6 +47,7 @@ describe('validateSkillFrontmatter input_mime', () => {
     const parsed = validateSkillFrontmatter(
       { ...base, mode: 'dynamic-script', script: './run.sh' },
       '',
+      { network: 'devnet' },
     );
     expect(parsed.inputMime).toBeUndefined();
   });
@@ -43,6 +57,7 @@ describe('validateSkillFrontmatter input_mime', () => {
       validateSkillFrontmatter(
         { ...base, mode: 'dynamic-script', script: './run.sh', input_mime: '' },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/non-empty string/);
   });
@@ -50,8 +65,14 @@ describe('validateSkillFrontmatter input_mime', () => {
   it('rejects an over-long input_mime', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'dynamic-script', script: './run.sh', input_mime: 'x'.repeat(256) },
+        {
+          ...base,
+          mode: 'dynamic-script',
+          script: './run.sh',
+          input_mime: 'x'.repeat(256),
+        },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/too long/);
   });
@@ -59,23 +80,37 @@ describe('validateSkillFrontmatter input_mime', () => {
   it('rejects input_mime on a static-script skill (file input is dynamic-script only)', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'static-script', script: './run.sh', input_mime: 'image/png' },
+        {
+          ...base,
+          mode: 'static-script',
+          script: './run.sh',
+          input_mime: 'image/png',
+        },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/only valid in mode 'dynamic-script'/);
   });
 
   it('rejects input_mime on an llm skill', () => {
-    expect(() => validateSkillFrontmatter({ ...base, input_mime: 'image/png' }, 'prompt')).toThrow(
-      /only valid in mode 'dynamic-script'/,
-    );
+    expect(() =>
+      validateSkillFrontmatter({ ...base, input_mime: 'image/png' }, 'prompt', {
+        network: 'devnet',
+      }),
+    ).toThrow(/only valid in mode 'dynamic-script'/);
   });
 
   it('rejects input_mime on a static-file skill', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'static-file', output_file: './out.txt', input_mime: 'image/png' },
+        {
+          ...base,
+          mode: 'static-file',
+          output_file: './out.txt',
+          input_mime: 'image/png',
+        },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/only valid in mode 'dynamic-script'/);
   });

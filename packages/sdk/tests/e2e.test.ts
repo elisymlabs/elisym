@@ -23,6 +23,7 @@ import {
   MarketplaceService,
   PingService,
   SolanaPaymentStrategy,
+  getProtocolProgramId,
   type CapabilityCard,
   type ProtocolConfigInput,
   type SubCloser,
@@ -37,6 +38,7 @@ function makeAddress(): Address {
 
 const TEST_FEE_BPS = 300;
 const TEST_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy' as Address;
+const TEST_PROGRAM_ID = getProtocolProgramId('devnet');
 
 const CONFIG: ProtocolConfigInput = {
   feeBps: TEST_FEE_BPS,
@@ -255,7 +257,12 @@ describe('E2E: Targeted job flow', () => {
     expect(receivedJob.id).toBe(jobId);
 
     // --- Provider step 5: submitPaymentRequiredFeedback ---
-    const paymentRequest = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
+    const paymentRequest = payment.createPaymentRequest(
+      PROVIDER_WALLET,
+      JOB_PRICE,
+      CONFIG,
+      'devnet',
+    );
     const paymentRequestJson = JSON.stringify(paymentRequest);
     await providerMkt.submitPaymentRequiredFeedback(
       provider,
@@ -292,6 +299,7 @@ describe('E2E: Targeted job flow', () => {
     const validationError = payment.validatePaymentRequest(
       feedbackResult.payReqJson,
       CONFIG,
+      'devnet',
       PROVIDER_WALLET,
     );
     expect(validationError).toBeNull();
@@ -299,7 +307,9 @@ describe('E2E: Targeted job flow', () => {
     // --- Customer step 6: build payment instructions (signing happens wallet-side) ---
     const parsedPayReq = JSON.parse(feedbackResult.payReqJson);
     const customerSigner = makeMockSigner(CUSTOMER_WALLET);
-    const instructions = await buildPaymentInstructions(parsedPayReq, customerSigner as never);
+    const instructions = await buildPaymentInstructions(parsedPayReq, customerSigner as never, {
+      programId: TEST_PROGRAM_ID,
+    });
     expect(instructions.length).toBe(3);
     const fee = calculateProtocolFee(JOB_PRICE, TEST_FEE_BPS);
     const netAmount = JOB_PRICE - fee;
@@ -394,7 +404,7 @@ describe('E2E: Broadcast job flow', () => {
     expect(allJobs[0]!.content).toBe('Summarize the news today');
 
     // --- Step 3: Provider1 responds with payment-required ---
-    const payReq = payment.createPaymentRequest(provider1Wallet, BROADCAST_PRICE, CONFIG);
+    const payReq = payment.createPaymentRequest(provider1Wallet, BROADCAST_PRICE, CONFIG, 'devnet');
     await provider1Mkt.submitPaymentRequiredFeedback(
       provider1,
       jobEvent,
@@ -424,7 +434,12 @@ describe('E2E: Broadcast job flow', () => {
     expect(feedback.senderPubkey).not.toBe(provider2.publicKey);
 
     // Customer validates payment request from provider1
-    const valErr = payment.validatePaymentRequest(feedback.payReqJson, CONFIG, provider1Wallet);
+    const valErr = payment.validatePaymentRequest(
+      feedback.payReqJson,
+      CONFIG,
+      'devnet',
+      provider1Wallet,
+    );
     expect(valErr).toBeNull();
 
     // Customer builds payment instructions (signing happens wallet-side)
@@ -433,6 +448,7 @@ describe('E2E: Broadcast job flow', () => {
     const broadcastInstructions = await buildPaymentInstructions(
       parsedPayReq,
       customerSigner as never,
+      { programId: TEST_PROGRAM_ID },
     );
     expect(broadcastInstructions.length).toBe(3);
 
@@ -493,11 +509,11 @@ describe('E2E: Error flows', () => {
     const payment = new SolanaPaymentStrategy();
     const hackerWallet = makeAddress();
 
-    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
+    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG, 'devnet');
     // Attacker tampers with fee address
     request.fee_address = hackerWallet;
 
-    const error = payment.validatePaymentRequest(JSON.stringify(request), CONFIG);
+    const error = payment.validatePaymentRequest(JSON.stringify(request), CONFIG, 'devnet');
     expect(error).not.toBeNull();
     expect(error!.code).toBe('fee_address_mismatch');
     expect(error!.message).toContain('redirect');
@@ -505,22 +521,22 @@ describe('E2E: Error flows', () => {
 
   it('rejects expired payment request', () => {
     const payment = new SolanaPaymentStrategy();
-    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
+    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG, 'devnet');
     // Tamper: set created_at to 2 hours ago
     request.created_at = Math.floor(Date.now() / 1000) - 7200;
 
-    const error = payment.validatePaymentRequest(JSON.stringify(request), CONFIG);
+    const error = payment.validatePaymentRequest(JSON.stringify(request), CONFIG, 'devnet');
     expect(error).not.toBeNull();
     expect(error!.code).toBe('expired');
   });
 
   it('detects fee amount tampering', () => {
     const payment = new SolanaPaymentStrategy();
-    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
+    const request = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG, 'devnet');
     // Attacker sets fee to 0 to steal the protocol fee
     request.fee_amount = 0;
 
-    const error = payment.validatePaymentRequest(JSON.stringify(request), CONFIG);
+    const error = payment.validatePaymentRequest(JSON.stringify(request), CONFIG, 'devnet');
     expect(error).not.toBeNull();
     // Either missing_fee or invalid_fee_params depending on fee_address presence
     expect(['missing_fee', 'invalid_fee_params']).toContain(error!.code);
@@ -675,7 +691,7 @@ describe('E2E: Error flows', () => {
 
   it('payment verification rejects transaction with wrong reference key (replay)', async () => {
     const payment = new SolanaPaymentStrategy();
-    const payReq = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG);
+    const payReq = payment.createPaymentRequest(PROVIDER_WALLET, JOB_PRICE, CONFIG, 'devnet');
     const fee = calculateProtocolFee(JOB_PRICE, TEST_FEE_BPS);
     const net = JOB_PRICE - fee;
 

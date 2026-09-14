@@ -1,11 +1,36 @@
-import { type Address, type Rpc, type SolanaRpcApi, getAddressDecoder } from '@solana/kit';
+import { NATIVE_ASSET_SENTINEL, deriveAssetStatsAddress } from '@elisym/config-client';
+import { type Address, type Rpc, type SolanaRpcApi, address, getAddressDecoder } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type Asset,
+  LSM_SOLANA_MAINNET,
   USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
   calculateProtocolFee,
   estimateSolFeeLamports,
   formatFeeBreakdown,
+  getProtocolProgramId,
 } from '../src';
+
+function requireMint(asset: Asset): string {
+  if (!asset.mint) {
+    throw new Error(`asset ${asset.token} has no mint`);
+  }
+  return asset.mint;
+}
+
+// AssetStats PDAs the estimator probes (payment txs bundle increment_stats_v2).
+// The program id is byte-identical on both clusters, so the PDA depends only
+// on the mint.
+const PROGRAM_ID = getProtocolProgramId('devnet');
+const ASSET_STATS_PDAS: ReadonlySet<string> = new Set(
+  await Promise.all([
+    deriveAssetStatsAddress(PROGRAM_ID, NATIVE_ASSET_SENTINEL),
+    deriveAssetStatsAddress(PROGRAM_ID, address(requireMint(USDC_SOLANA_DEVNET))),
+    deriveAssetStatsAddress(PROGRAM_ID, address(requireMint(USDC_SOLANA_MAINNET))),
+    deriveAssetStatsAddress(PROGRAM_ID, address(requireMint(LSM_SOLANA_MAINNET))),
+  ]),
+);
 
 const ADDRESS_DECODER = getAddressDecoder();
 
@@ -26,24 +51,30 @@ const TEST_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy' as Address;
 function createMockRpc(options: {
   priorityFees?: Array<{ slot: number; prioritizationFee: bigint }>;
   atasExist?: boolean;
+  /** Whether the probed AssetStats PDA exists. Defaults to true (ops pre-creates them). */
+  assetStatsExist?: boolean;
 }): Rpc<SolanaRpcApi> {
   const fees = options.priorityFees ?? [
     { slot: 1, prioritizationFee: 1_000n },
     { slot: 2, prioritizationFee: 1_000n },
   ];
   const atasExist = options.atasExist ?? false;
+  const assetStatsExist = options.assetStatsExist ?? true;
   return {
     getRecentPrioritizationFees: () => ({
       send: () => Promise.resolve(fees),
     }),
-    getMinimumBalanceForRentExemption: () => ({
-      send: () => Promise.resolve(2_039_280n),
-    }),
-    getAccountInfo: () => ({
+    getMinimumBalanceForRentExemption: (size: bigint) => ({
       send: () =>
-        Promise.resolve({
-          value: atasExist ? { lamports: 2_039_280n, data: new Uint8Array() } : null,
-        }),
+        Promise.resolve(size === 138n ? 1_851_360n : size === 170n ? 2_074_080n : 2_039_280n),
+    }),
+    getAccountInfo: (accountAddress: Address) => ({
+      send: () => {
+        const exists = ASSET_STATS_PDAS.has(accountAddress as string) ? assetStatsExist : atasExist;
+        return Promise.resolve({
+          value: exists ? { lamports: 2_039_280n, data: new Uint8Array() } : null,
+        });
+      },
     }),
   } as unknown as Rpc<SolanaRpcApi>;
 }
@@ -79,22 +110,71 @@ describe('estimateSolFeeLamports', () => {
         expiry_secs: 600,
       },
       payer,
+      'devnet',
     );
     expect(est.rentLamports).toBe(0n);
+    expect(est.assetStatsRentLamports).toBe(0n);
     expect(est.totalLamports).toBe(est.baseFeeLamports + est.priorityFeeLamports);
     expect(est.baseFeeLamports).toBe(5_000n);
   });
 
+  it('SOL payment with a missing sentinel AssetStats PDA quotes the stats rent', async () => {
+    const rpc = createMockRpc({ assetStatsExist: false });
+    const est = await estimateSolFeeLamports(
+      rpc,
+      {
+        recipient: makeAddress(),
+        amount: 1_000_000,
+        reference: makeAddress(),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      payer,
+      'devnet',
+    );
+    expect(est.assetStatsRentLamports).toBe(1_851_360n);
+    expect(est.totalLamports).toBe(
+      est.baseFeeLamports + est.priorityFeeLamports + est.assetStatsRentLamports,
+    );
+    expect(formatFeeBreakdown(est)).toContain('Stats rent:');
+  });
+
+  it('LSM (Token-2022) payment on mainnet sizes ATA rent at 170 bytes', async () => {
+    const rpc = createMockRpc({ atasExist: false });
+    const est = await estimateSolFeeLamports(
+      rpc,
+      {
+        recipient: makeAddress(),
+        amount: 5_000_000,
+        reference: makeAddress(),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'lsm',
+          mint: requireMint(LSM_SOLANA_MAINNET),
+          decimals: 6,
+        },
+      },
+      payer,
+      'mainnet',
+    );
+    expect(est.breakdown.rentPerAtaLamports).toBe(2_074_080n);
+    expect(est.breakdown.missingAtaCount).toBe(1);
+    expect(est.rentLamports).toBe(2_074_080n);
+    expect(est.assetStatsRentLamports).toBe(0n);
+  });
+
   it('USDC + both ATAs missing: rent = 2x rentPerAta', async () => {
     const rpc = createMockRpc({ atasExist: false });
-    const est = await estimateSolFeeLamports(rpc, usdcRequest(), payer);
+    const est = await estimateSolFeeLamports(rpc, usdcRequest(), payer, 'devnet');
     expect(est.breakdown.missingAtaCount).toBe(2);
     expect(est.rentLamports).toBe(2n * 2_039_280n);
   });
 
   it('USDC + both ATAs exist: rent is 0', async () => {
     const rpc = createMockRpc({ atasExist: true });
-    const est = await estimateSolFeeLamports(rpc, usdcRequest(), payer);
+    const est = await estimateSolFeeLamports(rpc, usdcRequest(), payer, 'devnet');
     expect(est.breakdown.missingAtaCount).toBe(0);
     expect(est.rentLamports).toBe(0n);
   });
@@ -113,6 +193,7 @@ describe('estimateSolFeeLamports', () => {
         asset: request.asset,
       },
       payer,
+      'devnet',
     );
     expect(est.breakdown.missingAtaCount).toBe(1);
     expect(est.rentLamports).toBe(2_039_280n);
@@ -130,6 +211,7 @@ describe('estimateSolFeeLamports', () => {
         expiry_secs: 600,
       },
       payer,
+      'devnet',
     );
     const formatted = formatFeeBreakdown(est);
     expect(formatted).toContain('Base fee:');

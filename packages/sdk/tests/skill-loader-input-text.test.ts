@@ -12,8 +12,14 @@ describe('validateSkillFrontmatter input_text', () => {
   it('parses each valid input_text value on a dynamic-script skill', () => {
     for (const value of ['none', 'optional', 'required'] as const) {
       const parsed = validateSkillFrontmatter(
-        { ...base, mode: 'dynamic-script', script: './run.sh', input_text: value },
+        {
+          ...base,
+          mode: 'dynamic-script',
+          script: './run.sh',
+          input_text: value,
+        },
         '',
+        { network: 'devnet' },
       );
       expect(parsed.inputText).toBe(value);
     }
@@ -23,6 +29,7 @@ describe('validateSkillFrontmatter input_text', () => {
     const parsed = validateSkillFrontmatter(
       { ...base, mode: 'dynamic-script', script: './run.sh' },
       '',
+      { network: 'devnet' },
     );
     expect(parsed.inputText).toBeUndefined();
   });
@@ -30,8 +37,14 @@ describe('validateSkillFrontmatter input_text', () => {
   it('rejects an unknown input_text value', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'dynamic-script', script: './run.sh', input_text: 'maybe' },
+        {
+          ...base,
+          mode: 'dynamic-script',
+          script: './run.sh',
+          input_text: 'maybe',
+        },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/input_text/);
   });
@@ -41,6 +54,7 @@ describe('validateSkillFrontmatter input_text', () => {
       validateSkillFrontmatter(
         { ...base, mode: 'dynamic-script', script: './run.sh', input_text: 1 },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/input_text/);
   });
@@ -48,23 +62,37 @@ describe('validateSkillFrontmatter input_text', () => {
   it('rejects input_text on a static-script skill', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'static-script', script: './run.sh', input_text: 'none' },
+        {
+          ...base,
+          mode: 'static-script',
+          script: './run.sh',
+          input_text: 'none',
+        },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/input_text.*dynamic-script/);
   });
 
   it('rejects input_text on an llm skill', () => {
     expect(() =>
-      validateSkillFrontmatter({ ...base, mode: 'llm', input_text: 'none' }, ''),
+      validateSkillFrontmatter({ ...base, mode: 'llm', input_text: 'none' }, '', {
+        network: 'devnet',
+      }),
     ).toThrow(/input_text.*dynamic-script/);
   });
 
   it('rejects input_text on a static-file skill', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'static-file', output_file: './x.png', input_text: 'none' },
+        {
+          ...base,
+          mode: 'static-file',
+          output_file: './x.png',
+          input_text: 'none',
+        },
         '',
+        { network: 'devnet' },
       ),
     ).toThrow(/input_text.*dynamic-script/);
   });

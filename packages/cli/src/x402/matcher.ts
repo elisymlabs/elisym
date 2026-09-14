@@ -4,13 +4,20 @@
  * preflight probe and the `PaymentPolicy` applied inside the x402 client at
  * signing time - so the two can never drift apart.
  */
-import { USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import { resolveUsdcAsset } from '@elisym/sdk';
+import type { Network } from '@elisym/sdk';
 import type { PaymentPolicy, PaymentRequirements } from '@x402/fetch';
-import { X402_SOLANA_DEVNET_CAIP2, X402_SOLANA_DEVNET_V1 } from './constants.js';
+import { x402SolanaNetworkIds } from './constants.js';
 
 export interface RequirementRule {
   /** Ceiling on the upstream quote in USDC subunits (from `x402_max_upstream`). */
   maxUpstreamSubunits: bigint;
+  /**
+   * The agent's Solana network - drives both the accepted x402 network-id set
+   * and the USDC mint comparison. A cross-network requirement is never
+   * acceptable, whatever its price.
+   */
+  network: Network;
 }
 
 /**
@@ -35,10 +42,12 @@ export function isAcceptableRequirement(
     return false;
   }
   const network = requirement.network as string;
-  if (network !== X402_SOLANA_DEVNET_CAIP2 && network !== X402_SOLANA_DEVNET_V1) {
+  const acceptedIds = x402SolanaNetworkIds(rule.network);
+  if (network !== acceptedIds.caip2 && network !== acceptedIds.v1) {
     return false;
   }
-  if (USDC_SOLANA_DEVNET.mint === undefined || requirement.asset !== USDC_SOLANA_DEVNET.mint) {
+  const usdcMint = resolveUsdcAsset(rule.network).mint;
+  if (usdcMint === undefined || requirement.asset !== usdcMint) {
     return false;
   }
   const amount = requirementAmount(requirement);

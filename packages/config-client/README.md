@@ -4,7 +4,7 @@ Codama-generated TypeScript client for the `elisym-config` Solana program. Used 
 
 ## Admin CLI
 
-Manage the on-chain config from the terminal. All commands default to devnet.
+Manage the on-chain config from the terminal. All commands default to the public devnet RPC; point `SOLANA_RPC_URL` (alias: `RPC_URL`) at another endpoint to target mainnet or a private RPC. The mainnet launch sequence lives in `programs/elisym-config/DEPLOY.mainnet.md`.
 
 | Command                  | Description                                           |
 | ------------------------ | ----------------------------------------------------- |
@@ -34,7 +34,7 @@ Optional env vars: `PROGRAM_ID`, `RPC_URL`, `KEYPAIR`.
 
 ```bash
 INITIAL_TREASURY=<treasury-pubkey> \
-  bun run packages/config-client/scripts/initialize-devnet.ts
+  bun run packages/config-client/scripts/initialize.ts
 ```
 
 ## Build

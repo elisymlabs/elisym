@@ -1,3 +1,4 @@
+import { NATIVE_ASSET_SENTINEL, deriveAssetStatsAddress } from '@elisym/config-client';
 import { getTransferSolInstructionDataDecoder } from '@solana-program/system';
 import {
   type Address,
@@ -5,14 +6,19 @@ import {
   type Rpc,
   type Signature,
   type SolanaRpcApi,
+  address,
   getAddressDecoder,
 } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ELISYM_PROTOCOL_TAG,
+  LSM_SOLANA_MAINNET,
+  TOKEN_2022_PROGRAM_ADDRESS_STR,
   USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
   calculateProtocolFee,
   buildPaymentInstructions,
+  getProtocolProgramId,
   SolanaPaymentStrategy,
   ProtocolConfigInput,
   parsePaymentRequest,
@@ -34,6 +40,7 @@ const CONFIG: ProtocolConfigInput = {
   feeBps: TEST_FEE_BPS,
   treasury: TEST_TREASURY,
 };
+const TEST_PROGRAM_ID = getProtocolProgramId('devnet');
 
 const payment = new SolanaPaymentStrategy();
 const validAddress = makeAddress();
@@ -112,46 +119,52 @@ describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
     const result = payment.validatePaymentRequest(
       JSON.stringify(validRequest),
       CONFIG,
+      'devnet',
       recipientAddr,
     );
     expect(result).toBeNull();
   });
 
   it('rejects invalid JSON', () => {
-    const result = payment.validatePaymentRequest('not json', CONFIG);
+    const result = payment.validatePaymentRequest('not json', CONFIG, 'devnet');
     expect(result?.code).toBe('invalid_json');
     expect(result?.message).toContain('Invalid payment request JSON');
   });
 
   it('rejects recipient mismatch', () => {
-    const result = payment.validatePaymentRequest(JSON.stringify(validRequest), CONFIG, otherAddr);
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(validRequest),
+      CONFIG,
+      'devnet',
+      otherAddr,
+    );
     expect(result?.code).toBe('recipient_mismatch');
     expect(result?.message).toContain('Recipient mismatch');
   });
 
   it('rejects wrong fee address', () => {
     const badRequest = { ...validRequest, fee_address: otherAddr };
-    const result = payment.validatePaymentRequest(JSON.stringify(badRequest), CONFIG);
+    const result = payment.validatePaymentRequest(JSON.stringify(badRequest), CONFIG, 'devnet');
     expect(result?.code).toBe('fee_address_mismatch');
     expect(result?.message).toContain('Fee address mismatch');
   });
 
   it('rejects wrong fee amount', () => {
     const badRequest = { ...validRequest, fee_amount: 1 };
-    const result = payment.validatePaymentRequest(JSON.stringify(badRequest), CONFIG);
+    const result = payment.validatePaymentRequest(JSON.stringify(badRequest), CONFIG, 'devnet');
     expect(result?.code).toBe('fee_amount_mismatch');
     expect(result?.message).toContain('Fee amount mismatch');
   });
 
   it('rejects missing fee', () => {
     const { fee_address: _a, fee_amount: _b, ...noFee } = validRequest;
-    const result = payment.validatePaymentRequest(JSON.stringify(noFee), CONFIG);
+    const result = payment.validatePaymentRequest(JSON.stringify(noFee), CONFIG, 'devnet');
     expect(result?.code).toBe('missing_fee');
     expect(result?.message).toContain('missing protocol fee');
   });
 
   it('accepts without expected recipient', () => {
-    const result = payment.validatePaymentRequest(JSON.stringify(validRequest), CONFIG);
+    const result = payment.validatePaymentRequest(JSON.stringify(validRequest), CONFIG, 'devnet');
     expect(result).toBeNull();
   });
 
@@ -164,6 +177,7 @@ describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
     const result = payment.validatePaymentRequest(
       JSON.stringify(zeroFeeRequest),
       zeroFeeConfig,
+      'devnet',
       recipientAddr,
     );
     expect(result).toBeNull();
@@ -172,7 +186,7 @@ describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
 
 describe('SolanaPaymentStrategy.createPaymentRequest', () => {
   it('creates a payment request with correct fee', () => {
-    const pr = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG);
+    const pr = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG, 'devnet');
     expect(pr.recipient).toBe(validAddress);
     expect(pr.amount).toBe(100_000_000);
     expect(pr.fee_address).toBe(TEST_TREASURY);
@@ -183,42 +197,47 @@ describe('SolanaPaymentStrategy.createPaymentRequest', () => {
   });
 
   it('respects custom expirySecs option', () => {
-    const pr = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG, {
+    const pr = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG, 'devnet', {
       expirySecs: 120,
     });
     expect(pr.expiry_secs).toBe(120);
   });
 
   it('rejects zero amount', () => {
-    expect(() => payment.createPaymentRequest(validAddress, 0, CONFIG)).toThrow(
+    expect(() => payment.createPaymentRequest(validAddress, 0, CONFIG, 'devnet')).toThrow(
       'Invalid payment amount',
     );
   });
 
   it('rejects negative amount', () => {
-    expect(() => payment.createPaymentRequest(validAddress, -100, CONFIG)).toThrow(
+    expect(() => payment.createPaymentRequest(validAddress, -100, CONFIG, 'devnet')).toThrow(
       'Invalid payment amount',
     );
   });
 
   it('rejects NaN', () => {
-    expect(() => payment.createPaymentRequest(validAddress, NaN, CONFIG)).toThrow(
+    expect(() => payment.createPaymentRequest(validAddress, NaN, CONFIG, 'devnet')).toThrow(
       'Invalid payment amount',
     );
   });
 
   it('rejects Infinity', () => {
-    expect(() => payment.createPaymentRequest(validAddress, Infinity, CONFIG)).toThrow(
+    expect(() => payment.createPaymentRequest(validAddress, Infinity, CONFIG, 'devnet')).toThrow(
       'Invalid payment amount',
     );
   });
 
   it('rejects invalid treasury in config', () => {
     expect(() =>
-      payment.createPaymentRequest(validAddress, 100_000_000, {
-        feeBps: TEST_FEE_BPS,
-        treasury: 'not-a-valid-address' as Address,
-      }),
+      payment.createPaymentRequest(
+        validAddress,
+        100_000_000,
+        {
+          feeBps: TEST_FEE_BPS,
+          treasury: 'not-a-valid-address' as Address,
+        },
+        'devnet',
+      ),
     ).toThrow('Invalid treasury address');
   });
 });
@@ -241,6 +260,7 @@ describe('buildPaymentInstructions', () => {
         expiry_secs: 600,
       },
       signer as never,
+      { programId: TEST_PROGRAM_ID },
     );
     expect(instructions.length).toBe(3);
   });
@@ -256,6 +276,7 @@ describe('buildPaymentInstructions', () => {
         expiry_secs: 600,
       },
       signer as never,
+      { programId: TEST_PROGRAM_ID },
     );
     expect(instructions.length).toBe(2);
   });
@@ -281,6 +302,7 @@ describe('buildPaymentInstructions', () => {
           expiry_secs: 600,
         },
         signer as never,
+        { programId: TEST_PROGRAM_ID },
       );
       const provider = decodeAmount(instructions[0] as TransferIxLike);
       const feeIx = instructions[1] as TransferIxLike | undefined;
@@ -306,6 +328,7 @@ describe('buildPaymentInstructions', () => {
         expiry_secs: 600,
       },
       signer as never,
+      { programId: TEST_PROGRAM_ID },
     );
     const providerIx = instructions[0] as IxLike;
     const tail = providerIx.accounts.slice(-2);
@@ -331,7 +354,7 @@ describe('buildPaymentInstructions', () => {
         expiry_secs: 600,
       },
       signer as never,
-      { jobEventId },
+      { programId: TEST_PROGRAM_ID, jobEventId },
     );
     expect(instructions.length).toBe(3);
     const memoIx = instructions[0] as IxLike;
@@ -352,6 +375,7 @@ describe('buildPaymentInstructions', () => {
         expiry_secs: 600,
       },
       signer as never,
+      { programId: TEST_PROGRAM_ID },
     );
     expect(instructions.length).toBe(2);
   });
@@ -374,7 +398,10 @@ describe('SolanaPaymentStrategy.buildTransaction', () => {
     } as unknown as Rpc<SolanaRpcApi>;
   }
 
-  function makeSigner(addressValue: Address): { address: Address; signMessage: () => never } {
+  function makeSigner(addressValue: Address): {
+    address: Address;
+    signMessage: () => never;
+  } {
     return {
       address: addressValue,
       signMessage: () => {
@@ -399,6 +426,7 @@ describe('SolanaPaymentStrategy.buildTransaction', () => {
         signer as never,
         createMockRpc(),
         CONFIG,
+        { programId: TEST_PROGRAM_ID, network: 'devnet' },
       ),
     ).rejects.toThrow('non-positive provider amount');
   });
@@ -419,6 +447,7 @@ describe('SolanaPaymentStrategy.buildTransaction', () => {
         signer as never,
         createMockRpc(),
         CONFIG,
+        { programId: TEST_PROGRAM_ID, network: 'devnet' },
       ),
     ).rejects.toThrow('Invalid fee address');
   });
@@ -439,6 +468,7 @@ describe('SolanaPaymentStrategy.buildTransaction', () => {
         signer as never,
         createMockRpc(),
         CONFIG,
+        { programId: TEST_PROGRAM_ID, network: 'devnet' },
       ),
     ).rejects.toThrow('expired');
   });
@@ -455,7 +485,7 @@ describe('SolanaPaymentStrategy.validatePaymentRequest - expiry', () => {
       created_at: Math.floor(Date.now() / 1000) - 7200, // 2 hours ago
       expiry_secs: 3600, // 1 hour expiry
     };
-    const result = payment.validatePaymentRequest(JSON.stringify(expired), CONFIG);
+    const result = payment.validatePaymentRequest(JSON.stringify(expired), CONFIG, 'devnet');
     expect(result?.code).toBe('expired');
     expect(result?.message).toContain('expired');
   });
@@ -510,7 +540,9 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       overrides.getSignaturesForAddress ?? (() => wrap<unknown[]>([]));
     return {
       getLatestBlockhash: () =>
-        wrap({ value: { blockhash: 'mock' as Blockhash, lastValidBlockHeight: 1n } }),
+        wrap({
+          value: { blockhash: 'mock' as Blockhash, lastValidBlockHeight: 1n },
+        }),
       getTransaction: (...args: unknown[]) => getTransactionImpl(...args),
       getSignaturesForAddress: (...args: unknown[]) => getSignaturesForAddressImpl(...args),
     } as unknown as Rpc<SolanaRpcApi>;
@@ -722,7 +754,10 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         getSignaturesForAddress: () => ({
           send: () =>
             Promise.resolve([
-              { signature: 'failSig' as Signature, err: { InstructionError: 'x' } },
+              {
+                signature: 'failSig' as Signature,
+                err: { InstructionError: 'x' },
+              },
             ]),
         }),
         getTransaction: () => ({ send: () => Promise.resolve(null) }),
@@ -843,13 +878,13 @@ describe('USDC (SPL) payment flow', () => {
         decimals: 8,
       },
     };
-    const err = payment.validatePaymentRequest(JSON.stringify(req), CONFIG, validAddress);
+    const err = payment.validatePaymentRequest(JSON.stringify(req), CONFIG, 'devnet', validAddress);
     expect(err).not.toBeNull();
     expect(err?.code).toBe('invalid_asset');
   });
 
   it('createPaymentRequest embeds asset when provided', () => {
-    const req = payment.createPaymentRequest(validAddress, 50_000_000, CONFIG, {
+    const req = payment.createPaymentRequest(validAddress, 50_000_000, CONFIG, 'devnet', {
       asset: USDC_SOLANA_DEVNET,
     });
     expect(req.asset?.token).toBe('usdc');
@@ -858,7 +893,7 @@ describe('USDC (SPL) payment flow', () => {
   });
 
   it('createPaymentRequest omits asset when native SOL is selected', () => {
-    const req = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG);
+    const req = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG, 'devnet');
     expect(req.asset).toBeUndefined();
   });
 
@@ -885,6 +920,7 @@ describe('USDC (SPL) payment flow', () => {
         },
       },
       signer as never,
+      { programId: TEST_PROGRAM_ID },
     );
     // Expect: 2x ATA create (recipient + treasury) + 2x TransferChecked (provider + fee) + increment_stats
     expect(instructions.length).toBe(5);
@@ -899,5 +935,293 @@ describe('USDC (SPL) payment flow', () => {
     expect(tail[0]?.role).toBe(0);
     expect(tail[1]?.address).toBe(ELISYM_PROTOCOL_TAG);
     expect(tail[1]?.role).toBe(0);
+  });
+
+  it('buildPaymentInstructions targets Token-2022 for LSM (mainnet)', async () => {
+    const signer = {
+      address: makeAddress(),
+    };
+    const recipient = makeAddress();
+    const reference = makeAddress();
+    const lsmMint = LSM_SOLANA_MAINNET.mint;
+    if (!lsmMint) {
+      throw new Error('LSM_SOLANA_MAINNET must declare a mint');
+    }
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient,
+        amount: 5_000_000,
+        reference,
+        fee_address: TEST_TREASURY,
+        fee_amount: calculateProtocolFee(5_000_000, TEST_FEE_BPS),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'lsm',
+          mint: lsmMint,
+          decimals: 6,
+        },
+        network: 'mainnet',
+      },
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+    expect(instructions.length).toBe(5);
+
+    interface IxLike {
+      programAddress: string;
+      accounts: ReadonlyArray<{ address: string; role: number }>;
+    }
+    const [createRecipientAta, createTreasuryAta, providerTransfer, feeTransfer, statsIx] =
+      instructions as IxLike[];
+    // ATA creates run under the ATA program but must reference the Token-2022
+    // program account, and both transfers must target Token-2022 directly.
+    const referencesT22 = (ix: IxLike | undefined): boolean =>
+      Boolean(ix?.accounts.some((meta) => meta.address === TOKEN_2022_PROGRAM_ADDRESS_STR));
+    expect(referencesT22(createRecipientAta)).toBe(true);
+    expect(referencesT22(createTreasuryAta)).toBe(true);
+    expect(providerTransfer?.programAddress).toBe(TOKEN_2022_PROGRAM_ADDRESS_STR);
+    expect(feeTransfer?.programAddress).toBe(TOKEN_2022_PROGRAM_ADDRESS_STR);
+    // Stats leg is increment_stats_v2 carrying the LSM AssetStats PDA and the
+    // payer as a writable signer (it funds init_if_needed rent).
+    const assetStatsPda = await deriveAssetStatsAddress(TEST_PROGRAM_ID, address(lsmMint));
+    expect(statsIx?.accounts.some((meta) => meta.address === assetStatsPda)).toBe(true);
+    expect(statsIx?.accounts.some((meta) => meta.address === signer.address)).toBe(true);
+  });
+
+  it('native SOL stats leg carries the sentinel AssetStats PDA', async () => {
+    const signer = {
+      address: makeAddress(),
+    };
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 1_000_000,
+        reference: makeAddress(),
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+    interface IxLike {
+      accounts: ReadonlyArray<{ address: string; role: number }>;
+    }
+    const statsIx = instructions.at(-1) as IxLike;
+    const sentinelPda = await deriveAssetStatsAddress(TEST_PROGRAM_ID, NATIVE_ASSET_SENTINEL);
+    expect(statsIx.accounts.some((meta) => meta.address === sentinelPda)).toBe(true);
+  });
+});
+
+// --- payment request network (D7) ---
+
+describe('payment request network (D7)', () => {
+  function baseRequest(overrides: Record<string, unknown> = {}) {
+    const recipientAddr = makeAddress();
+    return {
+      recipient: recipientAddr,
+      amount: 140_000_000,
+      reference: makeAddress(),
+      fee_address: TEST_TREASURY,
+      fee_amount: calculateProtocolFee(140_000_000, TEST_FEE_BPS),
+      created_at: Math.floor(Date.now() / 1000),
+      expiry_secs: 3600,
+      ...overrides,
+    };
+  }
+
+  it('createPaymentRequest always stores the network (write-side required)', () => {
+    const devnetRequest = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG, 'devnet');
+    expect(devnetRequest.network).toBe('devnet');
+    const mainnetRequest = payment.createPaymentRequest(
+      validAddress,
+      100_000_000,
+      CONFIG,
+      'mainnet',
+    );
+    expect(mainnetRequest.network).toBe('mainnet');
+  });
+
+  it('rejects a mainnet request for a devnet customer', () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'mainnet' })),
+      CONFIG,
+      'devnet',
+    );
+    expect(result?.code).toBe('network_mismatch');
+    expect(result?.message).toContain('mainnet');
+  });
+
+  it('rejects a devnet request for a mainnet customer', () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'devnet' })),
+      CONFIG,
+      'mainnet',
+    );
+    expect(result?.code).toBe('network_mismatch');
+  });
+
+  it('treats a missing network as devnet (legacy providers)', () => {
+    const legacy = baseRequest();
+    expect(payment.validatePaymentRequest(JSON.stringify(legacy), CONFIG, 'devnet')).toBeNull();
+    const rejected = payment.validatePaymentRequest(JSON.stringify(legacy), CONFIG, 'mainnet');
+    expect(rejected?.code).toBe('network_mismatch');
+  });
+
+  it('accepts a matching mainnet request end-to-end', () => {
+    const request = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG, 'mainnet');
+    expect(
+      payment.validatePaymentRequest(JSON.stringify(request), CONFIG, 'mainnet', validAddress),
+    ).toBeNull();
+  });
+
+  function assetRef(asset: { chain: string; token: string; mint?: string; decimals: number }) {
+    return {
+      chain: asset.chain,
+      token: asset.token,
+      ...(asset.mint ? { mint: asset.mint } : {}),
+      decimals: asset.decimals,
+    };
+  }
+
+  it('rejects a mainnet-only asset quoted to a devnet customer', () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'devnet', asset: assetRef(LSM_SOLANA_MAINNET) })),
+      CONFIG,
+      'devnet',
+    );
+    expect(result?.code).toBe('invalid_asset');
+    expect(result?.message).toContain('not available on devnet');
+  });
+
+  it("rejects the other cluster's USDC even when the request network matches", () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'mainnet', asset: assetRef(USDC_SOLANA_DEVNET) })),
+      CONFIG,
+      'mainnet',
+    );
+    expect(result?.code).toBe('invalid_asset');
+  });
+
+  it('refuses a currency swap between two assets that are both legal on the network', () => {
+    // USDC and LSM are both mainnet and both 6 decimals, so the membership
+    // gate cannot separate them - only the expected-asset binding can.
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'mainnet', asset: assetRef(LSM_SOLANA_MAINNET) })),
+      CONFIG,
+      'mainnet',
+      undefined,
+      { expectedAsset: USDC_SOLANA_MAINNET },
+    );
+    expect(result?.code).toBe('asset_mismatch');
+    expect(result?.message).toContain('USDC');
+    expect(result?.message).toContain('LSM');
+  });
+
+  it('refuses a native-SOL request when the caller expected an SPL asset', () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'mainnet' })),
+      CONFIG,
+      'mainnet',
+      undefined,
+      { expectedAsset: USDC_SOLANA_MAINNET },
+    );
+    expect(result?.code).toBe('asset_mismatch');
+  });
+
+  it('accepts the expected asset', () => {
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(baseRequest({ network: 'mainnet', asset: assetRef(LSM_SOLANA_MAINNET) })),
+      CONFIG,
+      'mainnet',
+      undefined,
+      { expectedAsset: LSM_SOLANA_MAINNET },
+    );
+    expect(result).toBeNull();
+  });
+
+  it('checks the network BEFORE any money check (tampered fee still reports network_mismatch)', () => {
+    const tampered = baseRequest({
+      network: 'mainnet',
+      fee_amount: 1,
+      fee_address: makeAddress(),
+    });
+    const result = payment.validatePaymentRequest(JSON.stringify(tampered), CONFIG, 'devnet');
+    expect(result?.code).toBe('network_mismatch');
+  });
+
+  it('parse side keeps the wire round-trip: schema accepts and preserves network', () => {
+    const request = payment.createPaymentRequest(validAddress, 100_000_000, CONFIG, 'mainnet');
+    const parsed = parsePaymentRequest(JSON.stringify(request));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.data.network).toBe('mainnet');
+    }
+  });
+
+  it('schema rejects an unknown network value', () => {
+    const parsed = parsePaymentRequest(JSON.stringify(baseRequest({ network: 'testnet' })));
+    expect(parsed.ok).toBe(false);
+  });
+});
+
+// --- zero-fee round-trip on the mainnet path (launch invariant) ---
+
+describe('zero-fee mainnet round-trip', () => {
+  const ZERO_FEE_CONFIG: ProtocolConfigInput = {
+    feeBps: 0,
+    treasury: TEST_TREASURY,
+  };
+
+  it('feeBps=0 produces fee_amount 0 and validates on mainnet', () => {
+    const request = payment.createPaymentRequest(
+      validAddress,
+      100_000_000,
+      ZERO_FEE_CONFIG,
+      'mainnet',
+    );
+    expect(request.fee_amount).toBe(0);
+    expect(request.fee_address).toBe(TEST_TREASURY);
+    expect(request.network).toBe('mainnet');
+    expect(
+      payment.validatePaymentRequest(
+        JSON.stringify(request),
+        ZERO_FEE_CONFIG,
+        'mainnet',
+        validAddress,
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects fee_amount > 0 under a zero fee rate on mainnet (fund diversion guard)', () => {
+    const request = payment.createPaymentRequest(
+      validAddress,
+      100_000_000,
+      ZERO_FEE_CONFIG,
+      'mainnet',
+    );
+    const tampered = { ...request, fee_amount: 1_000_000 };
+    const result = payment.validatePaymentRequest(
+      JSON.stringify(tampered),
+      ZERO_FEE_CONFIG,
+      'mainnet',
+      validAddress,
+    );
+    expect(result?.code).toBe('fee_amount_mismatch');
+  });
+
+  it('zero-fee mainnet instructions carry no fee leg (transfer + increment_stats only)', async () => {
+    const request = payment.createPaymentRequest(
+      validAddress,
+      100_000_000,
+      ZERO_FEE_CONFIG,
+      'mainnet',
+    );
+    const signer = { address: makeAddress() };
+    const instructions = await buildPaymentInstructions(request, signer as never, {
+      programId: getProtocolProgramId('mainnet'),
+    });
+    expect(instructions.length).toBe(2);
   });
 });

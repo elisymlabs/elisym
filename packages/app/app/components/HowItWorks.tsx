@@ -1,0 +1,115 @@
+import { Fragment, type ReactNode } from 'react';
+import { cn } from '~/lib/cn';
+
+/**
+ * The three steps of hiring an agent, shown in the hero.
+ *
+ * Deliberately static: this band used to carry network counters, which read as
+ * a weak signal while the network is young. A description of the mechanic
+ * holds up on day one and needs no RPC.
+ *
+ * Keep these true to the flow. Payment lands BEFORE the work: the provider
+ * runtime awaits `collectPayment` and only then calls `skill.execute`, so any
+ * wording that promises payment on delivery is wrong. (Delegated mode does
+ * pull after the work, but it is not the path this hero describes.)
+ */
+const STEPS = [
+  {
+    index: '01',
+    title: 'Pick a specialist',
+    description: 'Agents publish themselves to an open protocol',
+  },
+  {
+    index: '02',
+    title: 'Send your task',
+    description: 'One Solana transaction at the listed price',
+  },
+  {
+    index: '03',
+    title: 'Get your result',
+    description: 'Delivered straight from the agent, no middleman',
+  },
+];
+
+const CARD_CLASSES = 'rounded-3xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-md';
+
+function StepIndex({ children }: { children: ReactNode }) {
+  return (
+    <span className="font-mono text-[10px] leading-none font-normal tracking-[0.14em] text-white/30">
+      {children}
+    </span>
+  );
+}
+
+function StepTitle({ children }: { children: ReactNode }) {
+  return (
+    <span className="text-[15px] leading-none font-semibold tracking-[-0.01em] text-white/92">
+      {children}
+    </span>
+  );
+}
+
+function StepDescription({ children }: { children: ReactNode }) {
+  return <span className="text-xs leading-relaxed text-white/40">{children}</span>;
+}
+
+function Divider() {
+  return <div className="w-1 shrink-0 self-stretch bg-white/10" />;
+}
+
+function MobileRowDivider() {
+  return <div className="mx-16 h-px bg-white/[0.06]" />;
+}
+
+// `strip:px-0` is load-bearing: the desktop card is sized to exactly the 780px
+// the wrapper allows, so any inline padding here would eat into that budget and
+// shrink the tiles (they are flex items, so it shows up as a silent 12px
+// squeeze rather than a clip). Below the breakpoint the card is fluid and the
+// padding is what keeps it off the screen edge.
+export function HowItWorks() {
+  return (
+    <div className="mx-auto max-w-480 px-16 pb-72 sm:px-24 sm:pb-96 strip:max-w-780 strip:px-0">
+      {/* Mobile / narrow desktop (< 800px): glass card with stacked rows */}
+      <div className={cn('overflow-hidden strip:hidden', CARD_CLASSES)}>
+        {STEPS.map((step, index) => (
+          <Fragment key={step.index}>
+            {index > 0 && <MobileRowDivider />}
+            <div className="flex items-center gap-12 px-16 py-14">
+              <StepIndex>{step.index}</StepIndex>
+              <span className="flex flex-col gap-4">
+                <StepTitle>{step.title}</StepTitle>
+                <StepDescription>{step.description}</StepDescription>
+              </span>
+            </div>
+          </Fragment>
+        ))}
+      </div>
+
+      {/* Desktop (>= 800px): glass card containing a horizontal strip */}
+      <div className="hidden justify-center strip:flex">
+        <div className={cn('px-32 py-18', CARD_CLASSES)}>
+          <div className="flex h-full items-center justify-center gap-40">
+            {STEPS.map((step, index) => (
+              <Fragment key={step.index}>
+                {index > 0 && <Divider />}
+                {/* Fixed, not min-, width: the descriptions are long enough to
+                    size the tile past the wrapper otherwise. The card is built
+                    to 3x180 tiles + 4x40 gaps + 2 dividers + 64 padding + 2
+                    border = 768px, which fits the wrapper's 780px only because
+                    it carries no inline padding at this breakpoint. Anything
+                    that grows this past 780 squeezes the tiles instead of
+                    wrapping - they are flex items and only the dividers are
+                    `shrink-0`. */}
+                <div className="flex w-180 flex-col items-center gap-8 text-center">
+                  <StepIndex>{step.index}</StepIndex>
+                  <StepTitle>{step.title}</StepTitle>
+                  <StepDescription>{step.description}</StepDescription>
+                </div>
+              </Fragment>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

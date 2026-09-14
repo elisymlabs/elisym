@@ -1,4 +1,11 @@
-import { type Asset, assetKey, NATIVE_SOL, USDC_SOLANA_DEVNET } from '@elisym/sdk';
+import {
+  type Asset,
+  LSM_SOLANA_MAINNET,
+  NATIVE_SOL,
+  USDC_SOLANA_DEVNET,
+  USDC_SOLANA_MAINNET,
+  assetKey,
+} from '@elisym/sdk';
 /**
  * regression tests for the single-shot payment guard.
  *
@@ -76,6 +83,62 @@ function buildHandler(overrides: {
     ctx,
   };
 }
+
+describe('makePaymentFeedbackHandler - per-network asset membership guard (M4)', () => {
+  function hostileRequest(asset: Asset): string {
+    return JSON.stringify({
+      recipient: 'So1aNaExpectedRecipient1111111111111111111',
+      amount: 5_000_000,
+      asset: { chain: asset.chain, token: asset.token, mint: asset.mint, decimals: asset.decimals },
+      network: 'devnet',
+    });
+  }
+
+  it('refuses LSM on a devnet agent before signing (hostile devnet-tagged card)', async () => {
+    const rejectPayment = vi.fn();
+    const { handler, executor } = buildHandler({
+      maxPriceLamports: 10_000_000,
+      expectedAsset: LSM_SOLANA_MAINNET,
+      rejectPayment,
+    });
+    handler('payment-required', 5_000_000, hostileRequest(LSM_SOLANA_MAINNET));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(executor).not.toHaveBeenCalled();
+    expect(rejectPayment).toHaveBeenCalledTimes(1);
+    expect(String(rejectPayment.mock.calls[0]?.[0])).toContain('not available on devnet');
+  });
+
+  it('refuses the pre-existing wrong-network-USDC variant (mainnet mint on a devnet agent)', async () => {
+    const rejectPayment = vi.fn();
+    const { handler, executor } = buildHandler({
+      maxPriceLamports: 10_000_000,
+      expectedAsset: USDC_SOLANA_MAINNET,
+      rejectPayment,
+    });
+    handler('payment-required', 5_000_000, hostileRequest(USDC_SOLANA_MAINNET));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(executor).not.toHaveBeenCalled();
+    expect(rejectPayment).toHaveBeenCalledTimes(1);
+    expect(String(rejectPayment.mock.calls[0]?.[0])).toContain('not available on devnet');
+  });
+
+  it('still pays the network-canonical USDC on a devnet agent', async () => {
+    const executor = vi.fn(async () => 'sig-usdc');
+    const { handler, onPaid, rejectPayment } = buildHandler({
+      executor,
+      maxPriceLamports: 10_000_000,
+      expectedAsset: USDC_SOLANA_DEVNET,
+    });
+    handler('payment-required', 5_000_000, hostileRequest(USDC_SOLANA_DEVNET));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(rejectPayment).not.toHaveBeenCalled();
+    expect(executor).toHaveBeenCalledTimes(1);
+    expect(onPaid).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('makePaymentFeedbackHandler', () => {
   it('triggers payment exactly once on a single payment-required event', async () => {

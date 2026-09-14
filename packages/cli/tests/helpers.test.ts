@@ -1,22 +1,37 @@
-import { describe, it, expect } from 'vitest';
-import { getRpcUrl, validateJobPrice, RENT_EXEMPT_MINIMUM } from '../src/helpers.js';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { LSM_SOLANA_MAINNET, USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/sdk';
+import type { ListedAgent } from '@elisym/sdk/agent-store';
+import type { Rpc, SolanaRpcApi } from '@solana/kit';
+import { address } from '@solana/kit';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import {
+  fetchUsdcBalance,
+  formatSplBalanceValue,
+  getRpcUrl,
+  solanaLineFor,
+  validateJobPrice,
+  RENT_EXEMPT_MINIMUM,
+} from '../src/helpers.js';
+
+const OWNER = address('2wKupLR9q6wXYppw8Gr2NvWxKBUqm4PPJKkQfoxHDBg4');
 
 describe('getRpcUrl', () => {
-  it('returns devnet URL for devnet', () => {
+  it('returns the devnet URL for devnet', () => {
     expect(getRpcUrl('devnet')).toBe('https://api.devnet.solana.com');
   });
 
-  it('returns devnet URL regardless of input (only devnet is supported)', () => {
-    expect(getRpcUrl('mainnet')).toBe('https://api.devnet.solana.com');
-    expect(getRpcUrl('testnet')).toBe('https://api.devnet.solana.com');
-    expect(getRpcUrl('unknown')).toBe('https://api.devnet.solana.com');
+  it('returns the mainnet URL for mainnet', () => {
+    expect(getRpcUrl('mainnet')).toBe('https://api.mainnet-beta.solana.com');
   });
 
-  it('honours SOLANA_RPC_URL override', () => {
+  it('honours SOLANA_RPC_URL override on both networks', () => {
     const prev = process.env.SOLANA_RPC_URL;
     process.env.SOLANA_RPC_URL = 'https://custom.rpc';
     try {
       expect(getRpcUrl('devnet')).toBe('https://custom.rpc');
+      expect(getRpcUrl('mainnet')).toBe('https://custom.rpc');
     } finally {
       if (prev === undefined) {
         delete process.env.SOLANA_RPC_URL;
@@ -24,6 +39,67 @@ describe('getRpcUrl', () => {
         process.env.SOLANA_RPC_URL = prev;
       }
     }
+  });
+});
+
+describe('fetchUsdcBalance', () => {
+  /** Fake RPC that records the mint filter and returns no token accounts. */
+  function fakeRpc(capture: { mint?: string }): Rpc<SolanaRpcApi> {
+    return {
+      getTokenAccountsByOwner: (_owner: unknown, filter: { mint: string }) => {
+        capture.mint = filter.mint;
+        return { send: async () => ({ value: [] }) };
+      },
+    } as unknown as Rpc<SolanaRpcApi>;
+  }
+
+  it('queries the devnet USDC mint for a devnet agent', async () => {
+    const capture: { mint?: string } = {};
+    await fetchUsdcBalance(fakeRpc(capture), OWNER, 'devnet');
+    expect(capture.mint).toBe(USDC_SOLANA_DEVNET.mint);
+  });
+
+  it('queries the mainnet USDC mint for a mainnet agent', async () => {
+    const capture: { mint?: string } = {};
+    await fetchUsdcBalance(fakeRpc(capture), OWNER, 'mainnet');
+    expect(capture.mint).toBe(USDC_SOLANA_MAINNET.mint);
+  });
+
+  it('reports an unreadable balance as null, never as zero', async () => {
+    // A rate-limited or failing RPC must not be indistinguishable from an
+    // empty wallet - callers render null as "unavailable".
+    const throwingRpc = {
+      getTokenAccountsByOwner: () => ({
+        send: async () => {
+          throw new Error('429 Too Many Requests');
+        },
+      }),
+    } as unknown as Rpc<SolanaRpcApi>;
+    expect(await fetchUsdcBalance(throwingRpc, OWNER, 'mainnet')).toBeNull();
+  });
+
+  it('reports an owner with no token account as zero', async () => {
+    const capture: { mint?: string } = {};
+    expect(await fetchUsdcBalance(fakeRpc(capture), OWNER, 'mainnet')).toBe(0n);
+  });
+});
+
+describe('formatSplBalanceValue', () => {
+  it('formats a readable balance in whole units', () => {
+    expect(formatSplBalanceValue(LSM_SOLANA_MAINNET, 25_000_000n)).toBe('25 LSM');
+  });
+
+  it('says the read failed instead of printing a zero balance', () => {
+    expect(formatSplBalanceValue(LSM_SOLANA_MAINNET, null)).toBe(
+      'unavailable (balance read failed)',
+    );
+    expect(formatSplBalanceValue(LSM_SOLANA_MAINNET, undefined)).toBe(
+      'unavailable (balance read failed)',
+    );
+  });
+
+  it('still prints a genuine zero as zero', () => {
+    expect(formatSplBalanceValue(LSM_SOLANA_MAINNET, 0n)).toBe('0 LSM');
   });
 });
 
@@ -52,5 +128,66 @@ describe('validateJobPrice', () => {
   it('message includes rent-exempt minimum', () => {
     const result = validateJobPrice(900_000, false, FEE_BPS);
     expect(result).toContain(String(RENT_EXEMPT_MINIMUM));
+  });
+});
+
+describe('solanaLineFor', () => {
+  const ADDRESS = '2wKupLR9q6wXYppw8Gr2NvWxKBUqm4PPJKkQfoxHDBg4';
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'elisym-list-test-'));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  async function agentWithYaml(name: string, yaml: string): Promise<ListedAgent> {
+    const dir = join(root, name);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'elisym.yaml'), yaml);
+    return { name, source: 'home', dir, shadowsGlobal: false };
+  }
+
+  it('names the network the agent is bound to', async () => {
+    const agent = await agentWithYaml(
+      'prod',
+      `payments:\n  - chain: solana\n    network: mainnet\n    address: ${ADDRESS}\n`,
+    );
+    expect(await solanaLineFor(agent)).toBe(` | Solana: ${ADDRESS} (mainnet)`);
+  });
+
+  it('names devnet just as explicitly - the point is telling the two apart', async () => {
+    const agent = await agentWithYaml(
+      'dev',
+      `payments:\n  - chain: solana\n    network: devnet\n    address: ${ADDRESS}\n`,
+    );
+    expect(await solanaLineFor(agent)).toBe(` | Solana: ${ADDRESS} (devnet)`);
+  });
+
+  it('reads the public yaml, so an encrypted agent still shows its network', async () => {
+    // No .secrets.json at all: `loadAgent` would throw here, which is exactly
+    // the branch that used to print no wallet line.
+    const agent = await agentWithYaml(
+      'encrypted',
+      `payments:\n  - chain: solana\n    network: mainnet\n    address: ${ADDRESS}\n`,
+    );
+    expect(await solanaLineFor(agent)).toContain('(mainnet)');
+  });
+
+  it('contributes nothing for a wallet-less agent', async () => {
+    const agent = await agentWithYaml('walletless', 'description: no wallet\npayments: []\n');
+    expect(await solanaLineFor(agent)).toBe('');
+  });
+
+  it('does not fail the listing when the yaml is unreadable', async () => {
+    const agent: ListedAgent = {
+      name: 'missing',
+      source: 'home',
+      dir: join(root, 'missing'),
+      shadowsGlobal: false,
+    };
+    await expect(solanaLineFor(agent)).resolves.toBe('');
   });
 });

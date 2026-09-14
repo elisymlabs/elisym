@@ -26,11 +26,13 @@ const x402Base = {
   x402_max_upstream: 10_000,
 };
 
-const withX402 = { allowX402Skills: true };
+const withX402 = { network: 'devnet', allowX402Skills: true } as const;
 
 describe('validateSkillFrontmatter mode x402', () => {
   it('rejects mode x402 without the host opt-in', () => {
-    expect(() => validateSkillFrontmatter(x402Base, '')).toThrow(/require the elisym CLI runtime/);
+    expect(() => validateSkillFrontmatter(x402Base, '', { network: 'devnet' })).toThrow(
+      /require the elisym CLI runtime/,
+    );
   });
 
   it('parses a minimal POST skill with defaults', () => {
@@ -147,7 +149,10 @@ describe('validateSkillFrontmatter mode x402', () => {
   it('rejects x402_max_input_bytes above the re-inline cap', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...x402Base, x402_max_input_bytes: LIMITS.MAX_REINLINE_TEXT_BYTES + 1 },
+        {
+          ...x402Base,
+          x402_max_input_bytes: LIMITS.MAX_REINLINE_TEXT_BYTES + 1,
+        },
         '',
         withX402,
       ),
@@ -167,7 +172,12 @@ describe('validateSkillFrontmatter mode x402', () => {
   it('rejects x402_* fields on non-x402 modes', () => {
     expect(() =>
       validateSkillFrontmatter(
-        { ...base, mode: 'dynamic-script', script: './run.sh', x402_url: 'https://x.example' },
+        {
+          ...base,
+          mode: 'dynamic-script',
+          script: './run.sh',
+          x402_url: 'https://x.example',
+        },
         '',
         withX402,
       ),
@@ -216,7 +226,10 @@ describe('X402ProxySkill', () => {
     jobId: 'job-1',
   };
 
-  const bareCtx: SkillContext = { agentName: 'bridge', agentDescription: 'test' };
+  const bareCtx: SkillContext = {
+    agentName: 'bridge',
+    agentDescription: 'test',
+  };
 
   it('fails clearly when the context has no x402 driver', async () => {
     const skill = new X402ProxySkill(params);
@@ -227,12 +240,18 @@ describe('X402ProxySkill', () => {
   it('delegates preflight and execute to the injected driver', async () => {
     const invoker: X402Invoker = {
       preflight: vi.fn().mockResolvedValue(undefined),
-      execute: vi
-        .fn()
-        .mockResolvedValue({ data: 'result', outputMime: 'image/png', filePath: '/tmp/f' }),
+      execute: vi.fn().mockResolvedValue({
+        data: 'result',
+        outputMime: 'image/png',
+        filePath: '/tmp/f',
+      }),
     };
     const controller = new AbortController();
-    const ctx: SkillContext = { ...bareCtx, x402: invoker, signal: controller.signal };
+    const ctx: SkillContext = {
+      ...bareCtx,
+      x402: invoker,
+      signal: controller.signal,
+    };
     const skill = new X402ProxySkill(params);
 
     await skill.preflight(input, ctx);
@@ -240,7 +259,11 @@ describe('X402ProxySkill', () => {
 
     const output = await skill.execute(input, ctx);
     expect(invoker.execute).toHaveBeenCalledWith(params.x402, input, controller.signal);
-    expect(output).toEqual({ data: 'result', outputMime: 'image/png', filePath: '/tmp/f' });
+    expect(output).toEqual({
+      data: 'result',
+      outputMime: 'image/png',
+      filePath: '/tmp/f',
+    });
     expect(output.cleanup).toBeUndefined();
   });
 
@@ -289,7 +312,10 @@ describe('loadSkillsFromDir mode x402', () => {
     await mkdir(join(dir, 'market-data'));
     await writeFile(join(dir, 'market-data', 'SKILL.md'), skillMd);
     const warn = vi.fn();
-    const skills = loadSkillsFromDir(dir, { logger: { warn } });
+    const skills = loadSkillsFromDir(dir, {
+      network: 'devnet',
+      logger: { warn },
+    });
     expect(skills).toHaveLength(0);
     expect(warn).toHaveBeenCalled();
   });
@@ -297,7 +323,10 @@ describe('loadSkillsFromDir mode x402', () => {
   it('loads an X402ProxySkill when the host opted in', async () => {
     await mkdir(join(dir, 'market-data'));
     await writeFile(join(dir, 'market-data', 'SKILL.md'), skillMd);
-    const skills = loadSkillsFromDir(dir, { allowX402Skills: true });
+    const skills = loadSkillsFromDir(dir, {
+      network: 'devnet',
+      allowX402Skills: true,
+    });
     expect(skills).toHaveLength(1);
     const skill = skills[0];
     expect(skill).toBeInstanceOf(X402ProxySkill);

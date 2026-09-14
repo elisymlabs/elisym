@@ -56,3 +56,22 @@ pub struct StatsIncremented {
     pub is_native: bool,
     pub timestamp: i64,
 }
+
+#[event]
+pub struct AssetStatsCreated {
+    pub mint: Pubkey,
+    pub payer: Pubkey,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct StatsIncrementedV2 {
+    pub mint: Pubkey,
+    pub amount: u64,
+    /// Jobs paid in THIS mint (the per-mint `AssetStats` counter).
+    pub asset_job_count: u64,
+    /// Jobs paid across all assets (the global `NetworkStats` counter, which
+    /// stays continuous across legacy and v2 clients).
+    pub network_job_count: u64,
+    pub timestamp: i64,
+}

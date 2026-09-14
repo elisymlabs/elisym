@@ -54,11 +54,12 @@ function makeCard(overrides: Partial<CapabilityCard> = {}): CapabilityCard {
 function makeCapabilityEvent(
   identity: ElisymIdentity,
   card: CapabilityCard,
-  opts: { createdAt?: number; dTag?: string; kinds?: number[] } = {},
+  opts: { createdAt?: number; dTag?: string; kinds?: number[]; nTags?: string[] } = {},
 ): Event {
   const createdAt = opts.createdAt ?? Math.floor(Date.now() / 1000);
   const dTag = opts.dTag ?? toDTag(card.name);
   const kinds = opts.kinds ?? [KIND_JOB_REQUEST];
+  const nTags = opts.nTags ?? [];
   return finalizeEvent(
     {
       kind: KIND_APP_HANDLER,
@@ -66,6 +67,7 @@ function makeCapabilityEvent(
       tags: [
         ['d', dTag],
         ['t', 'elisym'],
+        ...nTags.map((n) => ['n', n]),
         ...card.capabilities.map((c) => ['t', c]),
         ...kinds.map((k) => ['k', String(k)]),
       ],
@@ -74,6 +76,71 @@ function makeCapabilityEvent(
     identity.secretKey,
   );
 }
+
+/** Tombstone event with the same tag shape `deleteCapability` publishes (both `n` values). */
+function makeTombstoneEvent(
+  identity: ElisymIdentity,
+  capabilityName: string,
+  opts: { createdAt?: number } = {},
+): Event {
+  return finalizeEvent(
+    {
+      kind: KIND_APP_HANDLER,
+      created_at: opts.createdAt ?? Math.floor(Date.now() / 1000),
+      tags: [
+        ['d', toDTag(capabilityName)],
+        ['t', 'elisym'],
+        ['n', 'devnet'],
+        ['n', 'mainnet'],
+      ],
+      content: JSON.stringify({ deleted: true }),
+    },
+    identity.secretKey,
+  );
+}
+
+// --- payment.decimals bound (untrusted-input boundary) ---
+
+describe('parseCapabilityEvent - payment decimals', () => {
+  const solanaPayment = {
+    chain: 'solana',
+    network: 'devnet',
+    address: '11111111111111111111111111111111',
+    token: 'usdc',
+  };
+
+  function cardWithDecimals(decimals: unknown): CapabilityCard {
+    return makeCard({ payment: { ...solanaPayment, decimals } } as Partial<CapabilityCard>);
+  }
+
+  it('accepts a card that omits decimals', () => {
+    const agent = ElisymIdentity.generate();
+    const event = makeCapabilityEvent(agent, makeCard({ payment: solanaPayment }));
+    expect(parseCapabilityEvent(event, 'devnet')).not.toBeNull();
+  });
+
+  it('accepts the real range', () => {
+    const agent = ElisymIdentity.generate();
+    for (const decimals of [0, 6, 9, 18]) {
+      const event = makeCapabilityEvent(agent, cardWithDecimals(decimals));
+      expect(parseCapabilityEvent(event, 'devnet')).not.toBeNull();
+    }
+  });
+
+  it('rejects a decimals value that would shift the displayed price', () => {
+    // A card claiming decimals 12 renders 250000000 USDC subunits as
+    // "0.00025", a millionth of what a delegated pull actually moves.
+    //
+    // `null` stands in for the non-finite cases on purpose: the card reaches a
+    // reader as JSON, and `JSON.stringify` has already turned NaN and Infinity
+    // into null by then. They are exercised as themselves on the publish side.
+    const agent = ElisymIdentity.generate();
+    for (const decimals of [19, -1, 1.5, null]) {
+      const event = makeCapabilityEvent(agent, cardWithDecimals(decimals));
+      expect(parseCapabilityEvent(event, 'devnet')).toBeNull();
+    }
+  });
+});
 
 // --- clock skew (future-dated capability events) ---
 
@@ -681,6 +748,45 @@ describe('DiscoveryService.publishCapability', () => {
     expect(content.name).toBe('test-agent');
   });
 
+  it('rejects a decimals value the read side would drop', async () => {
+    // Write/read symmetry: parseCapabilityEvent returns null for these, so
+    // publishing one would ship a card no client ever displays - the provider
+    // would announce successfully and stay invisible with nothing to debug.
+    // NaN and Infinity are only reachable HERE: JSON.stringify turns both into
+    // null before a reader ever sees them.
+    const identity = ElisymIdentity.generate();
+    for (const decimals of [19, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const svc = new DiscoveryService(createMockPool() as any);
+      const card = makeCard({
+        payment: {
+          chain: 'solana',
+          network: 'devnet',
+          address: '11111111111111111111111111111111',
+          token: 'usdc',
+          decimals,
+        },
+      } as Partial<CapabilityCard>);
+      await expect(svc.publishCapability(identity, card)).rejects.toThrow('decimals');
+    }
+  });
+
+  it('publishes a card whose decimals are in range', async () => {
+    const pool = createMockPool();
+    const svc = new DiscoveryService(pool as any);
+    const identity = ElisymIdentity.generate();
+    const card = makeCard({
+      payment: {
+        chain: 'solana',
+        network: 'devnet',
+        address: '11111111111111111111111111111111',
+        token: 'usdc',
+        decimals: 6,
+      },
+    } as Partial<CapabilityCard>);
+
+    await expect(svc.publishCapability(identity, card)).resolves.toBeTruthy();
+  });
+
   it('rejects missing payment address', async () => {
     const pool = createMockPool();
     const svc = new DiscoveryService(pool as any);
@@ -755,6 +861,145 @@ describe('DiscoveryService.deleteCapability', () => {
     expect(ev.tags.find((t) => t[0] === 'd')?.[1]).toBe('test-agent');
     const content = JSON.parse(ev.content);
     expect(content.deleted).toBe(true);
+  });
+
+  it('tombstones carry BOTH network tags (D2)', async () => {
+    const pool = createMockPool();
+    const svc = new DiscoveryService(pool as any);
+    const identity = ElisymIdentity.generate();
+
+    await svc.deleteCapability(identity, 'test-agent');
+    const ev = pool.published[0]!;
+    const nValues = ev.tags.filter((t) => t[0] === 'n').map((t) => t[1]);
+    expect(nValues.sort()).toEqual(['devnet', 'mainnet']);
+  });
+});
+
+// --- network isolation (D2/D3) ---
+
+describe('discovery network isolation (D2/D3)', () => {
+  it('publishCapability tags the card with its network (n tag)', async () => {
+    const pool = createMockPool();
+    const svc = new DiscoveryService(pool as any);
+    const identity = ElisymIdentity.generate();
+
+    await svc.publishCapability(identity, makeCard());
+    const devnetEvent = pool.published[0]!;
+    expect(devnetEvent.tags.filter((t) => t[0] === 'n')).toEqual([['n', 'devnet']]);
+
+    await svc.publishCapability(
+      identity,
+      makeCard({
+        name: 'mainnet-agent',
+        payment: {
+          chain: 'solana',
+          network: 'mainnet',
+          address: '11111111111111111111111111111111',
+        },
+      }),
+    );
+    const mainnetEvent = pool.published[1]!;
+    expect(mainnetEvent.tags.filter((t) => t[0] === 'n')).toEqual([['n', 'mainnet']]);
+  });
+
+  it('mainnet queries add the relay-side #n filter; devnet queries stay broad', async () => {
+    const pool = createMockPool();
+    const svc = new DiscoveryService(pool as any);
+
+    await svc.fetchAgentsPage('mainnet');
+    const mainnetFilter = (pool.querySync as any).mock.calls[0]![0] as Filter;
+    expect(mainnetFilter['#n']).toEqual(['mainnet']);
+    expect(mainnetFilter['#t']).toEqual(['elisym']);
+
+    await svc.fetchAgentsPage('devnet');
+    const devnetFilter = (pool.querySync as any).mock.calls[1]![0] as Filter;
+    expect(devnetFilter['#n']).toBeUndefined();
+
+    await svc.fetchAgents('mainnet');
+    const fetchAgentsFilter = (pool.querySync as any).mock.calls[2]![0] as Filter;
+    expect(fetchAgentsFilter['#n']).toEqual(['mainnet']);
+
+    await svc.fetchAgent('mainnet', ElisymIdentity.generate().publicKey);
+    const fetchAgentFilter = (pool.querySync as any).mock.calls[3]![0] as Filter;
+    expect(fetchAgentFilter['#n']).toEqual(['mainnet']);
+
+    await svc.fetchAgents('devnet');
+    const fetchAgentsDevnet = (pool.querySync as any).mock.calls[4]![0] as Filter;
+    expect(fetchAgentsDevnet['#n']).toBeUndefined();
+  });
+
+  it('streamAgents subscribes with the #n filter on mainnet only', () => {
+    const pool = createMockPool();
+    const svc = new DiscoveryService(pool as any);
+
+    svc.streamAgents('mainnet', { onAgent: vi.fn() });
+    const mainnetCapFilter = (pool.subscribe as any).mock.calls[0]![0] as Filter;
+    expect(mainnetCapFilter['#n']).toEqual(['mainnet']);
+
+    svc.streamAgents('devnet', { onAgent: vi.fn() });
+    const devnetCapFilter = (pool.subscribe as any).mock.calls[2]![0] as Filter;
+    expect(devnetCapFilter['#n']).toBeUndefined();
+  });
+
+  it('a dual-tagged tombstone suppresses a deleted agent end-to-end on the mainnet path', async () => {
+    const pool = createMockPool();
+    const svc = new DiscoveryService(pool as any);
+    const identity = ElisymIdentity.generate();
+    const nowSecs = Math.floor(Date.now() / 1000);
+    const mainnetCard = makeCard({
+      payment: { chain: 'solana', network: 'mainnet', address: '11111111111111111111111111111111' },
+    });
+    const cardEvent = makeCapabilityEvent(identity, mainnetCard, {
+      createdAt: nowSecs - 60,
+      nTags: ['mainnet'],
+    });
+    const tombstone = makeTombstoneEvent(identity, mainnetCard.name, { createdAt: nowSecs - 30 });
+
+    // Both events match the relay-side mainnet filter (OR-matched tag values) -
+    // a stale relay handing back the old card cannot resurrect the agent.
+    const matchesMainnetFilter = (event: Event) =>
+      event.tags.some((t) => t[0] === 'n' && t[1] === 'mainnet');
+    expect(matchesMainnetFilter(cardEvent)).toBe(true);
+    expect(matchesMainnetFilter(tombstone)).toBe(true);
+
+    (pool.querySync as any).mockResolvedValue([cardEvent, tombstone]);
+    const { agents } = await svc.fetchAgentsPage('mainnet');
+    expect(agents.length).toBe(0);
+  });
+
+  it('drops a card whose n tag disagrees with its content (both directions)', () => {
+    const identity = ElisymIdentity.generate();
+
+    const devnetCard = makeCard();
+    const mislabeledDevnet = makeCapabilityEvent(identity, devnetCard, { nTags: ['mainnet'] });
+    // Content says devnet; tag says mainnet - dropped even from the devnet view.
+    expect(parseCapabilityEvent(mislabeledDevnet, 'devnet')).toBeNull();
+    expect(parseCapabilityEvent(mislabeledDevnet, 'mainnet')).toBeNull();
+
+    const mainnetCard = makeCard({
+      payment: { chain: 'solana', network: 'mainnet', address: '11111111111111111111111111111111' },
+    });
+    const mislabeledMainnet = makeCapabilityEvent(identity, mainnetCard, { nTags: ['devnet'] });
+    expect(parseCapabilityEvent(mislabeledMainnet, 'mainnet')).toBeNull();
+    expect(parseCapabilityEvent(mislabeledMainnet, 'devnet')).toBeNull();
+  });
+
+  it('accepts a correctly tagged card and an untagged legacy card', () => {
+    const identity = ElisymIdentity.generate();
+
+    const tagged = makeCapabilityEvent(identity, makeCard(), { nTags: ['devnet'] });
+    expect(parseCapabilityEvent(tagged, 'devnet')).not.toBeNull();
+
+    const mainnetCard = makeCard({
+      payment: { chain: 'solana', network: 'mainnet', address: '11111111111111111111111111111111' },
+    });
+    const taggedMainnet = makeCapabilityEvent(identity, mainnetCard, { nTags: ['mainnet'] });
+    expect(parseCapabilityEvent(taggedMainnet, 'mainnet')).not.toBeNull();
+
+    // Legacy (untagged) cards keep working and default to devnet (D3).
+    const legacy = makeCapabilityEvent(identity, makeCard());
+    expect(parseCapabilityEvent(legacy, 'devnet')).not.toBeNull();
+    expect(parseCapabilityEvent(legacy, 'mainnet')).toBeNull();
   });
 });
 

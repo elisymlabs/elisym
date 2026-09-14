@@ -6,11 +6,15 @@ import { type SkillDelegation, validateSkillDelegation } from '../delegation';
 import type { SkillRateLimit } from '../llm-health/types';
 import {
   type Asset,
+  KNOWN_ASSETS,
+  LSM_SOLANA_MAINNET,
   NATIVE_SOL,
-  USDC_SOLANA_DEVNET,
   parseAssetAmount,
   resolveKnownAsset,
+  resolveLsmAsset,
+  resolveUsdcAsset,
 } from '../payment/assets';
+import type { Network } from '../types';
 import { DynamicScriptSkill } from './dynamicScriptSkill';
 import { resolveInsidePathReal } from './path-safety';
 import { DEFAULT_SCRIPT_TIMEOUT_MS, ScriptSkill, type SkillToolDef } from './scriptSkill';
@@ -45,7 +49,11 @@ export interface SkillFrontmatter {
   description?: unknown;
   capabilities?: unknown;
   price?: unknown;
-  /** Lowercase token id ('sol', 'usdc'). Defaults to 'sol' for back-compat. */
+  /**
+   * Lowercase token id ('sol', 'usdc', 'lsm'). Defaults to 'sol' for
+   * back-compat. `lsm` is mainnet-only - on devnet it falls back to SOL
+   * pricing at the same numeric price, with a load-time warning.
+   */
   token?: unknown;
   /** SPL mint (base58). Optional - resolved from known assets when omitted. */
   mint?: unknown;
@@ -220,6 +228,13 @@ export interface LoaderLogger {
 
 export interface LoadSkillsOptions {
   /**
+   * The agent's Solana network. Required (not defaulted): `token: usdc`
+   * resolves to a different mint per cluster, and an explicit `mint:` must be
+   * canonical for this network - a devnet default would let an SDK-only host
+   * silently publish a card carrying the wrong-network mint (unpayable).
+   */
+  network: Network;
+  /**
    * When true, SKILL.md may declare `price: 0` or omit `price` entirely
    * and the skill is loaded as free (`priceLamports === 0n`). Default
    * false: paid-only (plugin's historical behaviour).
@@ -259,15 +274,28 @@ function solToLamports(sol: string | number): bigint {
 }
 
 /**
- * Resolve the asset a SKILL.md declares.
+ * Resolve the asset a SKILL.md declares, for the agent's network.
  *
  * - `token` absent or `'sol'` => native SOL (NATIVE_SOL).
- * - `token: 'usdc'` (+ optional `mint`) => resolved via `resolveKnownAsset`;
- *   falls back to `USDC_SOLANA_DEVNET` when `mint` is omitted so operators
- *   don't need to memorize the devnet mint address.
- * - Any unknown `token` throws.
+ * - `token: 'usdc'` with `mint` omitted => the canonical USDC mint for
+ *   `network` (operators don't need to memorize mint addresses).
+ * - `token: 'lsm'` => the mainnet LSM asset on mainnet; on devnet (where LSM
+ *   does not exist) the skill FALLS BACK to native SOL at the same numeric
+ *   price, with a loud warning - never silently. An explicit `mint:` that is
+ *   not the canonical LSM mint fails loud on both networks.
+ * - Any other explicit `mint:` must be canonical for `network` -
+ *   `resolveKnownAsset` is network-blind, so without the gate a SKILL.md
+ *   copied from an agent on the other network would load with that network's
+ *   mint and publish an unpayable card. Fails loud at load, both directions.
+ * - Any unknown `token` throws, listing the current `KNOWN_ASSETS` token ids.
  */
-function resolveSkillAsset(skillName: string, token: unknown, mint: unknown): Asset {
+function resolveSkillAsset(
+  skillName: string,
+  token: unknown,
+  mint: unknown,
+  network: Network,
+  logger?: LoaderLogger,
+): Asset {
   if (token === undefined || token === null) {
     return NATIVE_SOL;
   }
@@ -288,15 +316,56 @@ function resolveSkillAsset(skillName: string, token: unknown, mint: unknown): As
     return NATIVE_SOL;
   }
   if (normalized === 'usdc' && mintString === undefined) {
-    return USDC_SOLANA_DEVNET;
+    return resolveUsdcAsset(network);
+  }
+  if (normalized === 'lsm') {
+    if (mintString !== undefined && mintString !== LSM_SOLANA_MAINNET.mint) {
+      throw new Error(
+        `SKILL.md "${skillName}": mint ${mintString} is not the canonical LSM mint ` +
+          `(expected ${LSM_SOLANA_MAINNET.mint}). Omit "mint" to resolve it automatically.`,
+      );
+    }
+    const lsm = resolveLsmAsset(network);
+    if (lsm) {
+      return lsm;
+    }
+    // LSM is mainnet-only; on devnet the skill degrades to default (SOL)
+    // pricing at the same numeric price - loud by design. When the host
+    // supplies no logger, console.warn is the documented fallback for this
+    // one warning: a silently reinterpreted price would be an invisible
+    // currency change.
+    const message =
+      `SKILL.md "${skillName}": token "lsm" is mainnet-only - falling back to SOL pricing ` +
+      `on this ${network} agent. The numeric price is charged in SOL (e.g. price 25 = 25 SOL).`;
+    if (logger?.warn) {
+      logger.warn({ skill: skillName, network }, message);
+    } else {
+      console.warn(message);
+    }
+    return NATIVE_SOL;
   }
   const resolved = resolveKnownAsset('solana', normalized, mintString);
   if (!resolved) {
     const display = mintString ? `solana:${normalized}:${mintString}` : `solana:${normalized}`;
+    const knownTokens = [...new Set(KNOWN_ASSETS.map((asset) => asset.token))].join(', ');
     throw new Error(
       `SKILL.md "${skillName}": unknown asset ${display}. ` +
-        `Known assets: sol, usdc (devnet mint 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU).`,
+        `Known assets: ${knownTokens} (mints resolve from the agent's network; omit "mint").`,
     );
+  }
+  // Canonical-mint gate: `lsm` resolves in its own arm above, so any minted
+  // asset reaching this flat path is a USDC variant and must match the
+  // agent's network. A future SPL asset needs its own per-network canonical
+  // resolution here.
+  if (resolved.mint !== undefined) {
+    const canonical = resolveUsdcAsset(network);
+    if (resolved.mint !== canonical.mint) {
+      throw new Error(
+        `SKILL.md "${skillName}": mint ${resolved.mint} is not the canonical ${resolved.symbol} ` +
+          `mint for ${network} (expected ${canonical.mint}). This skill was likely copied from ` +
+          `an agent on the other network - omit "mint" to resolve it from the agent's network.`,
+      );
+    }
   }
   return resolved;
 }
@@ -804,7 +873,7 @@ function validateX402Config(
 export function validateSkillFrontmatter(
   frontmatter: SkillFrontmatter,
   systemPrompt: string,
-  options: LoadSkillsOptions = {},
+  options: LoadSkillsOptions,
 ): ParsedSkill {
   if (typeof frontmatter.name !== 'string' || frontmatter.name.length === 0) {
     throw new Error('SKILL.md: missing or invalid "name" field');
@@ -825,7 +894,13 @@ export function validateSkillFrontmatter(
     capabilities.push(capability);
   }
 
-  const asset = resolveSkillAsset(frontmatter.name, frontmatter.token, frontmatter.mint);
+  const asset = resolveSkillAsset(
+    frontmatter.name,
+    frontmatter.token,
+    frontmatter.mint,
+    options.network,
+    options.logger,
+  );
 
   let priceSubunits: bigint;
   if (frontmatter.price === undefined || frontmatter.price === null) {
@@ -1188,7 +1263,7 @@ function buildSkillFromParsed(
  * return constructed `Skill` instances (LLM or non-LLM depending on
  * frontmatter `mode`). Malformed directories are skipped with a `warn` log.
  */
-export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions = {}): Skill[] {
+export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions): Skill[] {
   const logger = options.logger ?? {};
   const skills: Skill[] = [];
 

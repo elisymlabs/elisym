@@ -1,12 +1,15 @@
 import {
+  assetKey,
   deriveOwnerDelegationAta,
   getDelegation,
+  resolveUsdcAsset,
   type CapabilityCard,
   type DelegationStatus,
 } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useQuery, type QueryClient } from '@tanstack/react-query';
+import { resolvePaymentAsset } from '~/lib/cardAsset';
 import { SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 
 const DELEGATION_STATUS_QUERY_KEY = 'delegation-status';
@@ -56,9 +59,17 @@ export function useDelegatedBuyMode(card: CapabilityCard): DelegatedBuyMode {
   // USDC-only mirrors the provider-side load guard: `job_price` on any other
   // asset is in different subunits (e.g. lamports), so comparing it against a
   // USDC allowance would light up Use for a wildly wrong amount.
+  //
+  // Must be the SAME test BuyContext applies before taking the delegated path
+  // (asset identity, not the card's `token` string). A looser test here lights
+  // up "Use" for a card the buy then refuses, and that refusal does not
+  // invalidate the status - so the button stays lit and every click repeats
+  // the same error.
+  const cardAsset = resolvePaymentAsset(card.payment, SOLANA_CLUSTER);
   const capable =
     price > 0n &&
-    card.payment?.token === 'usdc' &&
+    cardAsset !== null &&
+    assetKey(cardAsset) === assetKey(resolveUsdcAsset(SOLANA_CLUSTER)) &&
     descriptor !== undefined &&
     walletAddress !== undefined &&
     signMessage !== undefined;

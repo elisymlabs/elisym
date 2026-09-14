@@ -27,10 +27,12 @@ The fence delimiters (`---`) are required. Frontmatter is parsed as YAML.
 
 ## Asset / pricing
 
-| Field   | Type   | Default | Notes                                                                                                                       |
-| ------- | ------ | ------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `token` | string | `sol`   | Lowercase token id. `sol` and `usdc` are recognised. USDC is the canonical paid-skill asset for examples.                   |
-| `mint`  | string | -       | Optional explicit SPL mint (base58). Resolved automatically for known tokens; only set this if you really need to override. |
+| Field   | Type   | Default | Notes                                                                                                                                                                                                   |
+| ------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `token` | string | `sol`   | Lowercase token id. `sol`, `usdc`, and `lsm` are recognised. USDC is the canonical paid-skill asset for examples. A bare `token: usdc` resolves to the USDC mint of the agent's network.                |
+| `mint`  | string | -       | Optional explicit SPL mint (base58). Must be canonical for the agent's network - a wrong-network mint (e.g. a devnet mint in a skill copied to a mainnet agent) fails loud at load. Prefer omitting it. |
+
+`token: lsm` prices the skill in the $LSM token - **mainnet only** (Token-2022, 6 decimals; e.g. `price: 25` charges 25 LSM per job). On a devnet agent the skill still loads but FALLS BACK to default SOL pricing at the same numeric price, with a loud load-time warning: `price: 25` then charges 25 devnet SOL. One edge: a price above ~9,007,199 (valid for LSM's 6 decimals) overflows SOL's 9 decimals on devnet - that skill is skipped with a warning, and the agent starts with the skills that did load (if it was the only one, startup fails with `No skills found`). One skill carries exactly one `(token, price)` pair - to offer the same service in a second asset, publish a second skill under a distinct `name`. Delegation (`delegation:` block) and `mode: x402` remain USDC-only.
 
 ## Execution mode
 
@@ -210,7 +212,7 @@ delegation:
 
 - **No `delegate_pubkey` here.** It is derived from the agent's `solana_delegate_secret_key` and injected into the capability card at `elisym start` (`buildCard`). An agent that declares `delegation` without a delegate key cannot advertise it - the card ships without the delegation field and `start` warns. Generate the key with `npx @elisym/cli delegate-key <agent>`.
 - **Honest bound: max loss <= cap.** An SPL delegate can only `Transfer`/`Burn` up to the approved amount and can never `Approve`/`SetAuthority`/`CloseAccount` (all owner-only). It is bounded-trust, not "can't steal": within the cap the agent chooses the destination, including its own account. A fresh `approve` REPLACES the remaining allowance (re-arms the full cap) - a "top-up" is a re-grant. Revoke stops only FUTURE spend once it lands.
-- **USDC-only** (devnet today). What the agent composes with the authority (pay providers, convert, swap) is application-layer and not built by elisym - the rail is exactly `Transfer USDC <= cap`.
+- **USDC-only.** The mint resolves from the agent's network (devnet or mainnet). What the agent composes with the authority (pay providers, convert, swap) is application-layer and not built by elisym - the rail is exactly `Transfer USDC <= cap`.
 - **The skill's own price must be in USDC.** A `delegation` block on a skill priced in any other token (e.g. `token: sol`) fails at load and the skill is skipped (the agent exits only if it was the agent's only skill): a delegated pull transfers `price` as USDC subunits, so a non-USDC price would move a wildly wrong amount.
 
 ## Imagery

@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 /**
  * MCP adapter over @elisym/sdk/agent-store.
@@ -28,13 +29,11 @@ function coerceNetwork(raw: string | undefined, name: string): SolanaNetwork {
     return 'devnet';
   }
   if (raw === 'mainnet') {
-    throw new Error(
-      `Agent "${name}" is configured for mainnet, which is not supported until the ` +
-        `elisym-config program is deployed there. Re-create the agent with --network devnet: ` +
-        `rm -rf ~/.elisym/${name} && npx @elisym/mcp init ${name} --network devnet`,
-    );
+    return 'mainnet';
   }
-  throw new Error(`Agent "${name}" has unsupported network "${raw}". Expected "devnet".`);
+  throw new Error(
+    `Agent "${name}" has unsupported network "${raw}". Expected "devnet" or "mainnet".`,
+  );
 }
 
 export interface AgentConfigData {
@@ -93,11 +92,26 @@ export interface SaveAgentConfigInput {
   passphrase?: string;
 }
 
-/** Save an agent to ~/.elisym/<name>/ (home layout). Overwrites if present. */
+/**
+ * Save a NEW agent to ~/.elisym/<name>/ (home layout). Refuses to overwrite:
+ * the yaml is first claimed with an exclusive `wx` create so two concurrent
+ * create_agent calls racing past the caller's existence check get one
+ * deterministic winner and one clean "already exists" error, instead of the
+ * second write silently replacing the first agent's freshly generated keys.
+ */
 export async function saveAgentConfig(name: string, input: SaveAgentConfigInput): Promise<void> {
   validateAgentName(name);
   const created = await createAgentDir({ target: 'home', name, cwd: process.cwd() });
   const network = input.network ?? 'devnet';
+
+  try {
+    await writeFile(created.paths.yaml, '', { flag: 'wx', mode: 0o644 });
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+      throw new Error(`Agent "${name}" already exists.`);
+    }
+    throw error;
+  }
 
   await writeYamlInitial(created.dir, {
     display_name: undefined,

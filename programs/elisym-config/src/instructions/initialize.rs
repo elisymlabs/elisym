@@ -14,6 +14,23 @@ pub struct Initialize<'info> {
     pub config: Account<'info, Config>,
     #[account(mut)]
     pub payer: Signer<'info>,
+    /// Loader-v3 `ProgramData` for this program, used to require that the
+    /// caller is the upgrade authority.
+    ///
+    /// Without it `initialize` is permissionless first-come: the config PDA
+    /// uses `init`, so anyone who lands a call between deploy finalization and
+    /// ours seizes `admin`/`treasury` permanently, and the only recovery is a
+    /// migration upgrade. `seeds::program` pins the account to THIS program id
+    /// and `Account<ProgramData>` enforces the loader as its owner, so another
+    /// program's `ProgramData` cannot satisfy the check.
+    #[account(
+        seeds = [crate::ID.as_ref()],
+        bump,
+        seeds::program = anchor_lang::solana_program::bpf_loader_upgradeable::ID,
+        constraint = program_data.upgrade_authority_address == Some(payer.key())
+            @ ErrorCode::Unauthorized,
+    )]
+    pub program_data: Account<'info, ProgramData>,
     pub system_program: Program<'info, System>,
 }
 

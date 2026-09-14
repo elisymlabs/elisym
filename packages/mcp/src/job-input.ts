@@ -27,8 +27,15 @@ export const MAX_INPUT_PATH_LEN = 4096;
 // is a code-execution vector, not just a secret leak). Also blocks system auto-run
 // filenames (/etc/crontab, /etc/sudoers, /etc/bash.bashrc) and unit/desktop-entry
 // extensions (systemd `.service`, freedesktop `.desktop` autostart entries).
+// MCP client manifests belong to the same auto-run class: their `mcpServers.*`
+// entries carry a `command`/`args` the host client spawns at startup and an `env`
+// that routinely holds provider API keys - `install.ts` writes exactly these files.
+// Project-scope `.mcp.json` and `.vscode/mcp.json` live INSIDE the working
+// directory, so they are reachable without the allow-outside-cwd opt-in; the
+// macOS Claude Desktop / Windsurf manifests are matched here by name because they
+// sit under `Library/Application Support/`, where no dir segment below applies.
 const SENSITIVE_NAME_RE =
-  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys|wallet\.dat|credentials|.*-keypair\.json|.*\.pem|.*\.key|\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.bash_aliases|\.profile|\.zshrc|\.zprofile|\.zshenv|\.zlogin|\.zlogout|config\.fish|\.gitconfig|\.npmrc|\.netrc|crontab|sudoers|bash\.bashrc|.*\.service|.*\.desktop)$/i;
+  /(^|[/\\])(\.secrets\.json|\.env(\..+)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys|wallet\.dat|credentials|.*-keypair\.json|.*\.pem|.*\.key|\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.bash_aliases|\.profile|\.zshrc|\.zprofile|\.zshenv|\.zlogin|\.zlogout|config\.fish|\.gitconfig|\.npmrc|\.netrc|crontab|sudoers|bash\.bashrc|.*\.service|.*\.desktop|\.claude\.json|\.?mcp\.json|claude_desktop_config\.json)$/i;
 
 /**
  * Credential subdirs under `~/.config/` (gcloud, gh, ...). Too generic to list as
@@ -37,6 +44,11 @@ const SENSITIVE_NAME_RE =
  */
 const SENSITIVE_CONFIG_SUBDIRS = new Set(['gcloud', 'gh', 'hub', 'doctl', 'terraform']);
 // `.git` blocks the repo-internal config + hooks dir (hooks are auto-run on git ops).
+// The `.claude`/`.cursor`/`.codex`/`.windsurf`/`.vscode` segments are the config
+// trees of the MCP client hosts - kept in lockstep with `CLIENTS` in install.ts,
+// which writes into them. They are auto-run dirs in the same sense as the ones
+// below: `.claude/settings.json` hooks and every `mcpServers.*.command` run when
+// the client starts, and the same files hold that client's provider API keys.
 // The remaining segments are OS auto-run / privilege-escalation dirs whose contents
 // execute on login or schedule: macOS Launch{Agents,Daemons}, freedesktop autostart,
 // systemd unit trees, cron drop-in dirs, sudoers.d, profile.d, and SysV init.d.
@@ -50,6 +62,11 @@ const SENSITIVE_DIR_SEGMENTS = new Set([
   '.terraform.d',
   '.dropbox',
   '.git',
+  '.claude',
+  '.cursor',
+  '.codex',
+  '.windsurf',
+  '.vscode',
   'launchagents',
   'launchdaemons',
   'autostart',

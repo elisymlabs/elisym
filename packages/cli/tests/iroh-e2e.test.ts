@@ -83,6 +83,19 @@ const addonAvailable = await irohAvailable();
 const sha256 = (buf: Buffer): string => createHash('sha256').update(buf).digest('hex');
 const tick = (ms = 150): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Poll until `predicate` holds. A real iroh round trip (fetch -> execute ->
+ * seed -> deliver) has no fixed duration, so a wall-clock sleep makes these
+ * tests fail on a loaded machine instead of on a defect. Returns on timeout so
+ * the assertion that follows reports the actual missing call.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await tick(25);
+  }
+}
+
 const config: RuntimeConfig = {
   paymentTimeoutSecs: 30,
   maxConcurrentJobs: 2,
@@ -185,7 +198,11 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
     const runPromise = runtime.run();
     await tick(20);
     triggerJob(makeIncomingJob('out-job', 'please produce'));
-    await tick(1500);
+    await waitFor(() => deliverResult.mock.calls.length > 0);
+    // Settle window: a duplicate delivery would land right after the first, so
+    // keep observing briefly before stopping - `toHaveBeenCalledTimes(1)` is
+    // also a no-double-delivery assertion.
+    await tick(200);
     runtime.stop();
     await runPromise.catch(() => {});
 
@@ -233,7 +250,11 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
     const runPromise = runtime.run();
     await tick(20);
     triggerJob(makeIncomingJob('out-text-job', 'produce a lot'));
-    await tick(1500);
+    await waitFor(() => deliverResult.mock.calls.length > 0);
+    // Settle window: a duplicate delivery would land right after the first, so
+    // keep observing briefly before stopping - `toHaveBeenCalledTimes(1)` is
+    // also a no-double-delivery assertion.
+    await tick(200);
     runtime.stop();
     await runPromise.catch(() => {});
 
@@ -305,7 +326,11 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
     );
 
     const runPromise = runtime.run();
-    await tick(2000);
+    await waitFor(() => deliverResult.mock.calls.length > 0);
+    // Settle window: a duplicate delivery would land right after the first, so
+    // keep observing briefly before stopping - `toHaveBeenCalledTimes(1)` is
+    // also a no-double-delivery assertion.
+    await tick(200);
     runtime.stop();
     await runPromise.catch(() => {});
 
@@ -392,7 +417,12 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
     );
 
     const runPromise = runtime.run();
-    await tick(2000); // recovery runs at startup; allow the fetch + execute
+    // Recovery runs at startup: fetch the input, execute, then deliver.
+    await waitFor(() => deliverResult.mock.calls.length > 0);
+    // Settle window: a duplicate delivery would land right after the first, so
+    // keep observing briefly before stopping - `toHaveBeenCalledTimes(1)` is
+    // also a no-double-delivery assertion.
+    await tick(200);
     runtime.stop();
     await runPromise.catch(() => {});
 
@@ -477,7 +507,11 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
     );
 
     const runPromise = runtime.run();
-    await tick(2000);
+    await waitFor(() => deliverResult.mock.calls.length > 0);
+    // Settle window: a duplicate delivery would land right after the first, so
+    // keep observing briefly before stopping - `toHaveBeenCalledTimes(1)` is
+    // also a no-double-delivery assertion.
+    await tick(200);
     runtime.stop();
     await runPromise.catch(() => {});
 
@@ -576,7 +610,12 @@ maybe('iroh file transfer e2e (provider runtime <-> customer node)', () => {
     );
 
     const runPromise = runtime.run();
-    await tick(2500); // recovery: fetch input -> run script -> seed output -> deliver
+    // Recovery: fetch input -> run script -> seed output -> deliver.
+    await waitFor(() => deliverResult.mock.calls.length > 0);
+    // Settle window: a duplicate delivery would land right after the first, so
+    // keep observing briefly before stopping - `toHaveBeenCalledTimes(1)` is
+    // also a no-double-delivery assertion.
+    await tick(200);
     runtime.stop();
     await runPromise.catch(() => {});
 

@@ -28,7 +28,7 @@ capabilities:
 You are a text summarizer. Provide concise summaries.`,
       );
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(1);
       expect(skills[0]!.name).toBe('summarizer');
       expect(skills[0]!.description).toBe('Summarize text');
@@ -64,7 +64,7 @@ tools:
 You are a YouTube summarizer.`,
       );
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(1);
       expect(skills[0]!.name).toBe('youtube-summary');
     } finally {
@@ -86,7 +86,7 @@ You are a YouTube summarizer.`,
         `---\nname: s2\ndescription: Skill 2\ncapabilities: [b]\n---\nPrompt 2`,
       );
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(2);
     } finally {
       rmSync(tmp, { recursive: true });
@@ -94,7 +94,7 @@ You are a YouTube summarizer.`,
   });
 
   it('returns empty for nonexistent directory', () => {
-    expect(loadSkillsFromDir('/nonexistent/path')).toEqual([]);
+    expect(loadSkillsFromDir('/nonexistent/path', { network: 'devnet' })).toEqual([]);
   });
 
   it('skips directories without SKILL.md', () => {
@@ -103,7 +103,7 @@ You are a YouTube summarizer.`,
       mkdirSync(join(tmp, 'not-a-skill'));
       writeFileSync(join(tmp, 'not-a-skill', 'README.md'), 'nothing');
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(0);
     } finally {
       rmSync(tmp, { recursive: true });
@@ -115,7 +115,7 @@ You are a YouTube summarizer.`,
     try {
       writeFileSync(join(tmp, 'random.txt'), 'not a directory');
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(0);
     } finally {
       rmSync(tmp, { recursive: true });
@@ -140,7 +140,7 @@ image: https://example.com/hero.png
 Premium service.`,
       );
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(1);
       expect(skills[0]!.priceSubunits).toBe(10_000_000); // 0.01 SOL
       expect(skills[0]!.image).toBe('https://example.com/hero.png');
@@ -154,7 +154,7 @@ Premium service.`,
     try {
       createTempSkill(tmp, 'bad', `---\ndescription: No name\ncapabilities: [a]\n---\nPrompt`);
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(0);
     } finally {
       rmSync(tmp, { recursive: true });
@@ -170,7 +170,7 @@ Premium service.`,
         `---\nname: bad\ndescription: No caps\ncapabilities: []\n---\nPrompt`,
       );
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(0);
     } finally {
       rmSync(tmp, { recursive: true });
@@ -182,7 +182,7 @@ Premium service.`,
     try {
       createTempSkill(tmp, 'bad', `---\nname: bad\ncapabilities: [a]\n---\nPrompt`);
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(0);
     } finally {
       rmSync(tmp, { recursive: true });
@@ -197,7 +197,7 @@ Premium service.`,
         'llm',
         `---\nname: llm-skill\ndescription: LLM skill\ncapabilities: [chat]\nprice: 0.001\n---\n\nYou are helpful.`,
       );
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(1);
       expect(skills[0]!.mode).toBe('llm');
       expect(skills[0]!.constructor.name).toBe('ScriptSkill');
@@ -225,7 +225,7 @@ output_file: ./welcome.md
       );
       writeFileSync(join(skillDir, 'welcome.md'), 'static body\n');
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(1);
       expect(skills[0]!.mode).toBe('static-file');
       expect(skills[0]!.constructor.name).toBe('StaticFileSkill');
@@ -262,7 +262,7 @@ script: ./gen.sh
       writeFileSync(scriptPath, '#!/bin/sh\necho ok\n');
       chmodSync(scriptPath, 0o755);
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(1);
       expect(skills[0]!.mode).toBe('static-script');
       expect(skills[0]!.constructor.name).toBe('StaticScriptSkill');
@@ -298,7 +298,7 @@ script: ./upper.sh
       writeFileSync(scriptPath, '#!/bin/sh\ntr a-z A-Z\n');
       chmodSync(scriptPath, 0o755);
 
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(1);
       expect(skills[0]!.mode).toBe('dynamic-script');
       expect(skills[0]!.constructor.name).toBe('DynamicScriptSkill');
@@ -330,7 +330,7 @@ script: ../../../bin/sh
 ---
 `,
       );
-      const skills = loadSkillsFromDir(tmp);
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
       expect(skills).toHaveLength(0);
     } finally {
       rmSync(tmp, { recursive: true });

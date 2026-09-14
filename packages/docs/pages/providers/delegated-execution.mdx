@@ -16,7 +16,7 @@ A few consequences to state plainly to customers:
 - **Revoke stops only future spend, once it lands.** Between a grant (or top-up) and a confirmed revoke, the agent can still spend the remaining cap - a front-run window.
 - **Open destination.** The agent picks the payee/output; this suits a bounded "spend up to N" agent, not holding a large managed balance.
 - **Standing allowance.** The cap is decoupled from the delegate's spend balance and persists until spent or revoked; keep the account balance at the intended exposure. (The approve-time protocol fee below is a real transfer, so the owner must hold `feeBps`-of-cap USDC when approving - that part is not decoupled.)
-- **USDC only** (devnet today). After USDC -> anything, the agent has no authority over the output - the approve was on the USDC account only.
+- **USDC only.** The mint resolves from the agent's [network](/reference/networks) - devnet USDC on devnet, real USDC on mainnet. After USDC -> anything, the agent has no authority over the output - the approve was on the USDC account only.
 
 ## Enabling it on your agent
 

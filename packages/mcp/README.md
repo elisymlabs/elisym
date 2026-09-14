@@ -107,15 +107,17 @@ The bootstrap step is unchanged - the wizard collects the passphrase interactive
 
 ## Environment Variables
 
-| Variable                    | Description                                                                     |
-| --------------------------- | ------------------------------------------------------------------------------- |
-| `ELISYM_AGENT`              | Load agent from `~/.elisym/<name>/` (or a project-local `.elisym/<name>/`)      |
-| `ELISYM_NOSTR_SECRET`       | Nostr secret key (hex or nsec) for ephemeral mode                               |
-| `ELISYM_AGENT_NAME`         | Agent display name (default: mcp-agent)                                         |
-| `ELISYM_NETWORK`            | Solana network for ephemeral mode. Only `devnet` is supported (default: devnet) |
-| `ELISYM_PASSPHRASE`         | Passphrase for encrypted agent configs (optional)                               |
-| `ELISYM_ALLOW_WITHDRAWAL`   | Set to `1` to override per-agent `security.withdrawals_enabled` flag (CI use)   |
-| `ELISYM_ALLOW_AGENT_SWITCH` | Set to `1` to override per-agent `security.agent_switch_enabled` flag           |
+| Variable                    | Description                                                                                                                                                                                                    |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ELISYM_AGENT`              | Load agent from `~/.elisym/<name>/` (or a project-local `.elisym/<name>/`)                                                                                                                                     |
+| `ELISYM_NOSTR_SECRET`       | Nostr secret key (hex or nsec) for ephemeral mode                                                                                                                                                              |
+| `ELISYM_AGENT_NAME`         | Agent display name (default: mcp-agent)                                                                                                                                                                        |
+| `ELISYM_NETWORK`            | Solana network for ephemeral/auto-created identities: `devnet` (default) or `mainnet`. It cannot override a disk-loaded agent - an agent's network is fixed at creation, and a conflicting value fails startup |
+| `ELISYM_PASSPHRASE`         | Passphrase for encrypted agent configs (optional)                                                                                                                                                              |
+| `ELISYM_ALLOW_WITHDRAWAL`   | Set to `1` to override per-agent `security.withdrawals_enabled` flag (CI use)                                                                                                                                  |
+| `ELISYM_ALLOW_AGENT_SWITCH` | Set to `1` to override per-agent `security.agent_switch_enabled` flag                                                                                                                                          |
+
+The RPC endpoint is always the public one for each agent's network (`api.devnet.solana.com` / `api.mainnet-beta.solana.com`). The MCP server deliberately does **not** honor `SOLANA_RPC_URL`: one process can host agents on both networks, and a process-wide override could point a devnet agent's payment path at mainnet. Creating a mainnet agent: `npx @elisym/mcp init <name> --network mainnet` (or the `create_agent` tool's `network` parameter); the network is fixed at creation, and `switch_agent` to a mainnet-bound agent is how a session changes network.
 
 ## Usage Examples
 
@@ -202,7 +204,7 @@ npx @elisym/mcp disable-agent-switch <agent>
 
 The MCP process enforces a shared cap on total amount spent per asset by `submit_and_pay_job`, `buy_capability`, and `send_payment`. `withdraw` is NOT counted (uses its own gate).
 
-Defaults (hardcoded): `0.5 SOL`. When SPL-token support lands, `50 USDC` will be added.
+Defaults (hardcoded): `0.5 SOL` (shared), `50 USDC` per network, and `1,000,000 LSM` (mainnet-only) (the limiter is mint-keyed, so devnet USDC and mainnet USDC each get their own cap). Native SOL has no mint, so its cap is a single entry shared across networks - deliberate: in a mixed-network process the shared draw-down can only under-allow, never over-spend.
 
 Soft warnings fire once per process when committed spend first crosses 50% and 80% of the cap for an asset; the warning is appended to the tool result and logged at `warn` level. Crossing the cap is still a hard reject (the tool call fails).
 
@@ -210,7 +212,7 @@ Overrides live in `~/.elisym/config.yaml` and are applied at MCP start (restart 
 
 ```bash
 npx @elisym/mcp set-session-limit 1                               # raise SOL cap to 1 per session
-npx @elisym/mcp set-session-limit 100 --token usdc --mint <mint>  # once USDC is supported
+npx @elisym/mcp set-session-limit 100 --token usdc --mint <mint>  # per-mint USDC cap (one per network)
 npx @elisym/mcp clear-session-limit                               # revert SOL to default
 npx @elisym/mcp clear-session-limit --all                         # revert all assets to defaults
 npx @elisym/mcp session-limits                                    # list effective caps

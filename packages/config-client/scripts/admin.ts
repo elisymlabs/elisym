@@ -14,7 +14,7 @@
  *
  * Optional env:
  *   PROGRAM_ID  - defaults to Codama-embedded program address
- *   RPC_URL     - defaults to https://api.devnet.solana.com
+ *   SOLANA_RPC_URL - RPC endpoint (alias: RPC_URL); defaults to https://api.devnet.solana.com
  *   KEYPAIR     - path to keypair JSON, defaults to ~/.config/solana/id.json
  */
 
@@ -39,13 +39,18 @@ import {
 } from '@solana/kit';
 import {
   ELISYM_CONFIG_PROGRAM_ADDRESS,
-  fetchConfig,
+  NATIVE_ASSET_SENTINEL,
+  deriveAssetStatsAddress,
+  fetchMaybeConfig,
+  fetchMaybeAssetStats,
+  fetchMaybeNetworkStats,
   getAcceptAdminInstructionAsync,
   getCancelPendingAdminInstructionAsync,
   getProposeAdminInstructionAsync,
   getSetFeeBpsInstructionAsync,
   getSetTreasuryInstructionAsync,
 } from '../src';
+import { abortOnClusterMismatch, resolveCluster } from './cluster';
 
 const COMMANDS = [
   'show',
@@ -61,8 +66,18 @@ const PROGRAM_ID: Address = process.env.PROGRAM_ID
   ? address(process.env.PROGRAM_ID)
   : ELISYM_CONFIG_PROGRAM_ADDRESS;
 
-const RPC_URL = process.env.RPC_URL ?? 'https://api.devnet.solana.com';
+const RPC_URL =
+  process.env.SOLANA_RPC_URL ?? process.env.RPC_URL ?? 'https://api.devnet.solana.com';
 const WS_URL = RPC_URL.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+
+// Resolved at module load: `show` prints it before its first fetch, and it -
+// not the RPC URL - selects which mints the AssetStats block checks.
+const NETWORK_ENV = process.env.SOLANA_NETWORK ?? 'devnet';
+if (NETWORK_ENV !== 'devnet' && NETWORK_ENV !== 'mainnet') {
+  console.error(`SOLANA_NETWORK must be 'devnet' or 'mainnet'; got "${NETWORK_ENV}".`);
+  process.exit(1);
+}
+const network = NETWORK_ENV;
 
 const KEYPAIR_PATH = process.env.KEYPAIR ?? join(homedir(), '.config/solana/id.json');
 
@@ -97,6 +112,21 @@ async function sendTransaction(
   return getSignatureFromTransaction(signedTx as Parameters<typeof getSignatureFromTransaction>[0]);
 }
 
+/**
+ * An RPC endpoint safe to print: scheme and host only. The path is dropped
+ * along with the query string and credentials - Alchemy and QuickNode carry
+ * the API key IN THE PATH, so keeping it to disambiguate path-selected
+ * clusters would trade a credential for a label. `resolveCluster` (./cluster)
+ * answers the cluster question properly instead.
+ */
+export function redactRpcUrl(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '(unparseable RPC URL)';
+  }
+}
+
 async function show(): Promise<void> {
   const rpc = createSolanaRpc(RPC_URL);
   const [configPda] = await getProgramDerivedAddress({
@@ -104,19 +134,99 @@ async function show(): Promise<void> {
     seeds: [new TextEncoder().encode('config')],
   });
 
-  const account = await fetchConfig(rpc, configPda);
-  const data = account.data;
-  const pendingAdmin = data.pendingAdmin.__option === 'Some' ? data.pendingAdmin.value : 'none';
-
+  // Identity BEFORE any fetch. `show` is the release gate and the state it is
+  // most often run in is "something failed and I do not know what landed" - so
+  // it must never die before saying which cluster and program it is reading.
+  // The program id is identical on both clusters and RPC_URL defaults to
+  // devnet when SOLANA_RPC_URL is unset, so the board is meaningless without
+  // these lines. `network` is separate from the cluster on purpose: it, not
+  // the endpoint, selects which mints the AssetStats block below checks - and
+  // a disagreement between the two is what silently produced orphan PDAs and a
+  // falsely-green gate, so it is called out rather than left to the reader.
+  const cluster = await resolveCluster(rpc);
+  console.log('RPC:           ', redactRpcUrl(RPC_URL));
+  console.log('Cluster:       ', cluster, '(from genesis hash)');
+  console.log('SOLANA_NETWORK:', network);
+  if (cluster !== network) {
+    console.log('');
+    console.log(`*** MISMATCH: SOLANA_NETWORK=${network} but the RPC answered ${cluster}. ***`);
+    console.log('*** Everything below describes the WRONG cluster. Do not gate a release on it.');
+    console.log('');
+  }
   console.log('Program ID:    ', PROGRAM_ID);
   console.log('Config PDA:    ', configPda);
-  console.log('Version:       ', data.version);
-  console.log('Admin:         ', data.admin);
-  console.log('Pending admin: ', pendingAdmin);
-  console.log('Treasury:      ', data.treasury);
-  console.log('Fee (bps):     ', data.feeBps, `(${(data.feeBps / 100).toFixed(2)}%)`);
-  console.log('Paused:        ', data.paused);
-  console.log('Last updated:  ', new Date(Number(data.lastUpdated) * 1000).toISOString());
+
+  // `fetchMaybeConfig`, not `fetchConfig`: the asserting variant throws before
+  // anything is printed when the config is absent, which is exactly the
+  // post-failed-`initialize` state an operator runs this to diagnose. A
+  // missing config also must not hide the rest - `create_asset_stats` takes no
+  // config account, so 3b can have landed while step 2 has not.
+  const account = await fetchMaybeConfig(rpc, configPda);
+  if (!account.exists) {
+    console.log('Config:         (MISSING - initialize has not landed on this cluster)');
+  } else {
+    const data = account.data;
+    const pendingAdmin = data.pendingAdmin.__option === 'Some' ? data.pendingAdmin.value : 'none';
+    console.log('Version:       ', data.version);
+    console.log('Admin:         ', data.admin);
+    console.log('Pending admin: ', pendingAdmin);
+    console.log('Treasury:      ', data.treasury);
+    console.log('Fee (bps):     ', data.feeBps, `(${(data.feeBps / 100).toFixed(2)}%)`);
+    console.log('Paused:        ', data.paused);
+    console.log('Last updated:  ', new Date(Number(data.lastUpdated) * 1000).toISOString());
+  }
+
+  // Every payment tx bundles increment_stats - a missing stats PDA fails all
+  // payments on this cluster, and the config account alone cannot reveal that.
+  const [statsPda] = await getProgramDerivedAddress({
+    programAddress: PROGRAM_ID,
+    seeds: [new TextEncoder().encode('network_stats')],
+  });
+  const statsAccount = await fetchMaybeNetworkStats(rpc, statsPda);
+  if (statsAccount.exists) {
+    console.log('Stats PDA:     ', statsPda, '(initialized)');
+    console.log('Job count:     ', statsAccount.data.jobCount);
+  } else {
+    console.log(
+      'Stats PDA:     ',
+      statsPda,
+      '(MISSING - run initialize-stats.ts, payments will fail until it exists)',
+    );
+  }
+
+  // Per-mint AssetStats PDAs for the network's assets (SOLANA_NETWORK env,
+  // default devnet - explicit by design, never inferred from the RPC URL).
+  // A missing PDA on a program that HAS increment_stats_v2 only costs the
+  // first payer ~0.0019 SOL of rent (the instruction self-registers). On a
+  // program that predates the instruction it means every payment fails, and
+  // the two look identical from here - hence the message below points at the
+  // release gate rather than just at the rent.
+  const assetTargets: Array<{ label: string; mint: string }> = [
+    { label: 'native (sentinel)', mint: NATIVE_ASSET_SENTINEL },
+    {
+      label: `USDC ${network}`,
+      mint:
+        network === 'mainnet'
+          ? 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+          : '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    },
+    ...(network === 'mainnet'
+      ? [{ label: 'LSM mainnet', mint: '86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump' }]
+      : []),
+  ];
+  for (const target of assetTargets) {
+    const assetStatsPda = await deriveAssetStatsAddress(PROGRAM_ID, address(target.mint));
+    const assetAccount = await fetchMaybeAssetStats(rpc, assetStatsPda);
+    console.log(
+      `AssetStats ${target.label}:`,
+      assetStatsPda,
+      assetAccount.exists
+        ? `(exists, volume ${assetAccount.data.volume})`
+        : '(MISSING - run create-asset-stats.ts; if that aborts with ' +
+            'InstructionFallbackNotFound the program predates increment_stats_v2 and the ' +
+            'SDK must NOT be released against it)',
+    );
+  }
 }
 
 async function main(): Promise<void> {
@@ -138,8 +248,16 @@ async function main(): Promise<void> {
   });
   const programOpts = { programAddress: PROGRAM_ID };
 
-  console.log('RPC:    ', RPC_URL);
-  console.log('Signer: ', payer.address);
+  // Same identity board `show` prints, but here it is a gate rather than a
+  // banner: every command below signs a transaction, and `SOLANA_NETWORK` is
+  // otherwise consulted only by `show`, so nothing would stop `set-fee` from
+  // landing on the cluster a stale SOLANA_RPC_URL happens to point at.
+  const cluster = await resolveCluster(createSolanaRpc(RPC_URL));
+  console.log('RPC:           ', redactRpcUrl(RPC_URL));
+  console.log('Cluster:       ', cluster, '(from genesis hash)');
+  console.log('SOLANA_NETWORK:', network);
+  console.log('Signer:        ', payer.address);
+  abortOnClusterMismatch(cluster, network);
 
   let signature: string;
 

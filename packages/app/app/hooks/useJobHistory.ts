@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from 'react';
+import { SOLANA_CLUSTER } from '~/lib/cluster';
 import {
   flipTerminal as storeFlipTerminal,
   readJobs,
@@ -39,5 +40,5 @@ export function useJobHistory({ wallet }: { wallet: string }) {
 
 /** Live `unseen` badge count for the header (number snapshots are stable). */
 export function useUnseenJobsCount(wallet: string): number {
-  return useSyncExternalStore(subscribeJobHistory, () => unseenJobsCount(wallet));
+  return useSyncExternalStore(subscribeJobHistory, () => unseenJobsCount(wallet, SOLANA_CLUSTER));
 }

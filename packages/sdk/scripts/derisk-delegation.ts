@@ -1,17 +1,19 @@
 #!/usr/bin/env bun
 /**
- * Phase 0 de-risk: prove the SPL-approve delegation invariants on live devnet.
+ * Phase 0 de-risk: prove the SPL-approve delegation invariants on a live cluster.
  *
- * This is a MANUAL tool, not a CI test - it needs a devnet-USDC-funded owner
- * account (devnet USDC mint 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU; fund
- * via https://faucet.circle.com selecting Solana Devnet). SOL for gas is
- * airdropped automatically. Run:
+ * This is a MANUAL tool, not a CI test - it needs a USDC-funded owner account
+ * on the target network (devnet: fund via https://faucet.circle.com selecting
+ * Solana Devnet; mainnet: real USDC). On devnet, SOL for gas is airdropped
+ * automatically; on mainnet, fund the accounts with real SOL first. Run:
  *
- *   OWNER_SECRET=<base58 64-byte owner key with devnet USDC> \
+ *   NETWORK=devnet|mainnet \
+ *   OWNER_SECRET=<base58 64-byte owner key with USDC> \
  *   bun packages/sdk/scripts/derisk-delegation.ts
  *
- * Without OWNER_SECRET it generates a fresh owner, airdrops SOL, and then stops
- * with faucet instructions (a fresh account has no USDC to delegate).
+ * `NETWORK` defaults to devnet and drives the USDC mint, the program id, and
+ * the RPC defaults. Without OWNER_SECRET it generates a fresh owner and stops
+ * with funding instructions (a fresh account has no USDC to delegate).
  *
  * It verifies, against the real Token program:
  *  1. owner `approveChecked`s a delegate for `cap`; `getDelegation` reflects it;
@@ -59,13 +61,18 @@ import {
   deriveOwnerDelegationAta,
   getDelegation,
 } from '../src/delegation';
-import { USDC_SOLANA_DEVNET } from '../src/payment/assets';
+import { resolveUsdcAsset } from '../src/payment/assets';
 import { generateSolanaWallet, signerFromSecretKeyBase58 } from '../src/payment/wallet';
+import type { Network } from '../src/types';
 
-const RPC_URL = process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com';
-const WS_URL = process.env.SOLANA_WS_URL ?? 'wss://api.devnet.solana.com';
-const NETWORK = 'devnet' as const;
-const USDC_MINT = address(USDC_SOLANA_DEVNET.mint ?? '');
+const NETWORK: Network = process.env.NETWORK === 'mainnet' ? 'mainnet' : 'devnet';
+const RPC_URL =
+  process.env.SOLANA_RPC_URL ??
+  (NETWORK === 'mainnet' ? 'https://api.mainnet-beta.solana.com' : 'https://api.devnet.solana.com');
+const WS_URL =
+  process.env.SOLANA_WS_URL ??
+  (NETWORK === 'mainnet' ? 'wss://api.mainnet-beta.solana.com' : 'wss://api.devnet.solana.com');
+const USDC_MINT = address(resolveUsdcAsset(NETWORK).mint ?? '');
 
 const rpc = createSolanaRpc(RPC_URL);
 const rpcSubscriptions = createSolanaRpcSubscriptions(WS_URL);
@@ -133,6 +140,10 @@ async function ensureSol(signer: KeyPairSigner, label: string): Promise<void> {
   if (balance >= 200_000_000n) {
     return;
   }
+  if (NETWORK === 'mainnet') {
+    console.warn(`  ! ${label} (${signer.address}) is low on SOL; fund it with real SOL manually.`);
+    return;
+  }
   console.log(`  ...airdropping 2 SOL to ${label} (${signer.address})`);
   try {
     await airdrop({
@@ -159,7 +170,7 @@ async function usdcBalance(ata: Address): Promise<bigint> {
 }
 
 async function main(): Promise<void> {
-  console.log(`\nSPL-approve delegation de-risk (devnet: ${RPC_URL})\n`);
+  console.log(`\nSPL-approve delegation de-risk (${NETWORK}: ${RPC_URL})\n`);
 
   const owner = process.env.OWNER_SECRET
     ? await signerFromSecretKeyBase58(process.env.OWNER_SECRET)
@@ -179,9 +190,12 @@ async function main(): Promise<void> {
 
   const ownerUsdc = await usdcBalance(ownerAta);
   if (ownerUsdc === 0n) {
+    const fundingHint =
+      NETWORK === 'mainnet'
+        ? `Fund it with real USDC (mint ${USDC_MINT})`
+        : `Fund it via https://faucet.circle.com (Solana Devnet, mint ${USDC_MINT})`;
     console.error(
-      `\n  Owner ATA ${ownerAta} holds 0 USDC. Fund it via https://faucet.circle.com` +
-        ` (Solana Devnet, mint ${USDC_MINT}) then re-run with OWNER_SECRET set.\n`,
+      `\n  Owner ATA ${ownerAta} holds 0 USDC. ${fundingHint} then re-run with OWNER_SECRET set.\n`,
     );
     process.exit(1);
   }
@@ -209,7 +223,7 @@ async function main(): Promise<void> {
   let feeBps = 0;
   let treasury: string | null = null;
   try {
-    const feeConfig = await getProtocolConfig(rpc, getProtocolProgramId(NETWORK));
+    const feeConfig = await getProtocolConfig(rpc, getProtocolProgramId(NETWORK), NETWORK);
     treasury = feeConfig.treasury;
     feeBps =
       feeConfig.feeBps > 0 ? feeConfig.feeBps : Number(process.env.DELEGATION_TEST_FEE_BPS ?? 100);

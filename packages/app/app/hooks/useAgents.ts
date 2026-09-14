@@ -6,6 +6,7 @@ import {
   setAgentProfiles,
 } from '~/lib/agentProfileCache';
 import { setAgentSnapshot } from '~/lib/agentSnapshotCache';
+import { SOLANA_CLUSTER } from '~/lib/cluster';
 import { preloadFirstBatchPictures } from '~/lib/imagePreload';
 import { useElisymClient } from './useElisymClient';
 
@@ -28,8 +29,6 @@ export interface UseAgentsOptions {
    */
   firstPaintBatchSize?: number;
 }
-
-export const NETWORK = 'devnet';
 
 const PRELOAD_TIMEOUT_MS = 3000;
 const MAX_FIRST_PAINT_MS = 8000;
@@ -68,7 +67,7 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
     // never the render path.
     const writeAgent = (agent: Agent) => {
       agentMapRef.current.set(agent.pubkey, agent);
-      setAgentSnapshot(NETWORK, agent);
+      setAgentSnapshot(SOLANA_CLUSTER, agent);
     };
 
     const flush = () => {
@@ -119,7 +118,7 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
             }
           }
           if (changedAgents.length > 0) {
-            void setAgentProfiles(NETWORK, changedAgents);
+            void setAgentProfiles(SOLANA_CLUSTER, changedAgents);
           }
         }
         setVersion((prev) => prev + 1);
@@ -134,8 +133,8 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
     };
 
     const seedFromCache = async () => {
-      await migrateLegacyListSnapshot(NETWORK);
-      const cached = await getAllAgentProfiles(NETWORK);
+      await migrateLegacyListSnapshot(SOLANA_CLUSTER);
+      const cached = await getAllAgentProfiles(SOLANA_CLUSTER);
       if (cancelled || cached.length === 0) {
         return;
       }
@@ -157,7 +156,7 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
     };
 
     const open = (myGen: number) => {
-      closer = client.discovery.streamAgents(NETWORK, {
+      closer = client.discovery.streamAgents(SOLANA_CLUSTER, {
         onAgent: (agent) => {
           pendingRef.current.push({ type: 'agent', agent });
           schedule();
@@ -192,7 +191,7 @@ export function useAgents(options: UseAgentsOptions = {}): UseAgentsResult {
           }
           enrichedOrderRef.current = mergedAgents;
           enriched = true;
-          void setAgentProfiles(NETWORK, mergedAgents);
+          void setAgentProfiles(SOLANA_CLUSTER, mergedAgents);
           setStatus('enriched');
           setVersion((prev) => prev + 1);
           // Cold-path first-paint: warm path already flipped `displayReady`,

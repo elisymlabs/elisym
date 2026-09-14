@@ -1,7 +1,9 @@
 import {
+  NATIVE_ASSET_SENTINEL,
+  deriveAssetStatsAddress,
   deriveEventAuthorityAddress,
   deriveNetworkStatsAddress,
-  getIncrementStatsInstruction,
+  getIncrementStatsV2Instruction,
 } from '@elisym/config-client';
 import { getAddMemoInstruction } from '@solana-program/memo';
 import { getTransferSolInstruction } from '@solana-program/system';
@@ -31,15 +33,22 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { getProtocolConfig } from '../config/onchain';
-import { DEFAULTS, ELISYM_PROTOCOL_TAG, LIMITS, getProtocolProgramId } from '../constants';
+import { DEFAULTS, ELISYM_PROTOCOL_TAG, LIMITS } from '../constants';
 import type {
+  Network,
   PaymentAssetRef,
   PaymentRequestData,
   PaymentValidationError,
   VerifyOptions,
   VerifyResult,
 } from '../types';
-import { type Asset, NATIVE_SOL, resolveAssetFromPaymentRequest } from './assets';
+import {
+  type Asset,
+  NATIVE_SOL,
+  assetKey,
+  resolveAssetFromPaymentRequest,
+  splAssetsForNetwork,
+} from './assets';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
 import { parsePaymentRequest } from './schema';
@@ -98,6 +107,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     recipientAddress: string,
     amount: number,
     config: ProtocolConfigInput,
+    network: Network,
     options?: { expirySecs?: number; asset?: Asset },
   ): PaymentRequestData {
     assertConfig(config);
@@ -132,14 +142,16 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       created_at: Math.floor(Date.now() / 1000),
       expiry_secs: expirySecs,
       ...(assetRef ? { asset: assetRef } : {}),
+      network,
     };
   }
 
   validatePaymentRequest(
     requestJson: string,
     config: ProtocolConfigInput,
+    network: Network,
     expectedRecipient?: string,
-    options?: { maxAmountLamports?: bigint },
+    options?: { maxAmountLamports?: bigint; expectedAsset?: Asset },
   ): PaymentValidationError | null {
     assertConfig(config);
     const parsed = parsePaymentRequest(requestJson, {
@@ -158,18 +170,61 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     }
     const data: PaymentRequestData = parsed.data;
 
+    // Network gate FIRST, before any money check: a request settling on the
+    // other cluster must never proceed to fee/recipient validation, and a
+    // missing network means a pre-mainnet (devnet) provider (D7).
+    const requestNetwork = data.network ?? 'devnet';
+    if (requestNetwork !== network) {
+      return {
+        code: 'network_mismatch',
+        message:
+          `Network mismatch: this customer is on ${network}, but the payment request ` +
+          `settles on ${requestNetwork}. Cross-network payments are not possible.`,
+      };
+    }
+
     // Reject payment requests that reference an asset the SDK doesn't know
     // about - the customer cannot safely build a transaction without knowing
     // the wire format (System transfer vs SPL TransferChecked).
-    if (data.asset) {
-      try {
-        resolveAssetFromPaymentRequest(data);
-      } catch (error) {
-        return {
-          code: 'invalid_asset',
-          message: error instanceof Error ? error.message : String(error),
-        };
-      }
+    let requestAsset: Asset;
+    try {
+      requestAsset = resolveAssetFromPaymentRequest(data);
+    } catch (error) {
+      return {
+        code: 'invalid_asset',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    // Per-network membership. `resolveKnownAsset` is network-blind, so an asset
+    // that exists only on the other cluster (the other network's USDC, or a
+    // mainnet-only asset quoted to a devnet customer) resolves fine above and
+    // would only fail in on-chain simulation - after the customer signed.
+    if (
+      requestAsset.mint !== undefined &&
+      !splAssetsForNetwork(network).some((asset) => asset.mint === requestAsset.mint)
+    ) {
+      return {
+        code: 'invalid_asset',
+        message:
+          `Asset ${requestAsset.symbol} (mint ${requestAsset.mint}) is not available on ` +
+          `${network}. Refusing to proceed.`,
+      };
+    }
+
+    // Currency bait-and-switch. The membership gate alone cannot catch this:
+    // USDC and LSM are both legal on mainnet and both carry 6 decimals, so a
+    // request that swaps one for the other passes every check above while
+    // debiting a different currency for the same number. Callers that know
+    // which asset they agreed to pay pass it here.
+    const expectedAsset = options?.expectedAsset;
+    if (expectedAsset && assetKey(requestAsset) !== assetKey(expectedAsset)) {
+      return {
+        code: 'asset_mismatch',
+        message:
+          `Asset mismatch: expected to pay ${expectedAsset.symbol}, but the payment request ` +
+          `debits ${requestAsset.symbol}. Provider may be attempting a currency swap.`,
+      };
     }
 
     // Defense in depth: the Zod schema only enforces base58 + length, not
@@ -292,7 +347,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     payerSigner: Signer,
     rpc: Rpc<SolanaRpcApi>,
     config: ProtocolConfigInput,
-    options?: BuildTransactionOptions,
+    options: BuildTransactionOptions,
   ): Promise<Readonly<unknown>> {
     assertConfig(config);
     assertLamports(paymentRequest.amount, 'payment amount');
@@ -319,7 +374,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       );
     }
 
-    const computeUnitLimit = options?.computeUnitLimit ?? DEFAULT_COMPUTE_UNIT_LIMIT;
+    const computeUnitLimit = options.computeUnitLimit ?? DEFAULT_COMPUTE_UNIT_LIMIT;
     if (!Number.isInteger(computeUnitLimit) || computeUnitLimit <= 0) {
       throw new Error(`Invalid computeUnitLimit: ${computeUnitLimit}. Must be a positive integer.`);
     }
@@ -327,14 +382,15 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     // >= amount) and, for SPL assets, derives the ATAs, before any RPC
     // round-trip that depends on them.
     const paymentInstructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
-      jobEventId: options?.jobEventId,
-      programId: options?.programId,
+      jobEventId: options.jobEventId,
+      programId: options.programId,
     });
 
     const priorityFeeMicroLamports =
-      options?.priorityFeeMicroLamports ??
+      options.priorityFeeMicroLamports ??
       (await estimatePriorityFeeMicroLamports(rpc, {
-        percentile: options?.priorityFeePercentile ?? DEFAULT_PRIORITY_FEE_PERCENTILE,
+        network: options.network,
+        percentile: options.priorityFeePercentile ?? DEFAULT_PRIORITY_FEE_PERCENTILE,
       }));
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
@@ -741,7 +797,7 @@ function waitMs(ms: number): Promise<void> {
  * read-only, non-signer account so providers can detect the payment via
  * `getSignaturesForAddress(reference)`.
  *
- * For SPL assets (USDC on Solana), emits:
+ * For SPL assets (USDC, LSM on Solana), emits:
  *   1. `CreateAssociatedTokenIdempotent` for the recipient ATA (funded by payer);
  *   2. `CreateAssociatedTokenIdempotent` for the treasury ATA if a protocol fee applies;
  *   3. `TransferChecked` from payer ATA to recipient ATA, with `reference` as an
@@ -766,27 +822,32 @@ function waitMs(ms: number): Promise<void> {
 export async function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
   payerSigner: Signer,
-  options?: { jobEventId?: string; programId?: Address },
+  options: { jobEventId?: string; programId: Address },
 ): Promise<readonly unknown[]> {
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);
   const protocolTag = address(ELISYM_PROTOCOL_TAG);
-  const programId = options?.programId ?? getProtocolProgramId('devnet');
+  const programId = options.programId;
   const feeAmount = paymentRequest.fee_amount ?? 0;
   const providerAmount =
     paymentRequest.fee_address && feeAmount > 0
       ? paymentRequest.amount - feeAmount
       : paymentRequest.amount;
 
+  const asset = resolveAssetFromPaymentRequest(paymentRequest);
+  const statsMint = asset.mint ? address(asset.mint) : NATIVE_ASSET_SENTINEL;
   const statsPda = await deriveNetworkStatsAddress(programId);
+  const assetStatsPda = await deriveAssetStatsAddress(programId, statsMint);
   const eventAuthority = await deriveEventAuthorityAddress(programId);
-  const incrementStatsIx = getIncrementStatsInstruction(
+  const incrementStatsIx = getIncrementStatsV2Instruction(
     {
       stats: statsPda,
+      assetStats: assetStatsPda,
+      payer: payerSigner,
       eventAuthority,
       program: programId,
       amount: BigInt(paymentRequest.amount),
-      isNative: !resolveAssetFromPaymentRequest(paymentRequest).mint,
+      mint: statsMint,
     },
     { programAddress: programId },
   );
@@ -797,12 +858,11 @@ export async function buildPaymentInstructions(
     );
   }
 
-  const memoInstruction = options?.jobEventId
+  const memoInstruction = options.jobEventId
     ? getAddMemoInstruction({ memo: `elisym:v1:${options.jobEventId}` })
     : null;
 
   // Native SOL path - unchanged from the pre-USDC behaviour.
-  const asset = resolveAssetFromPaymentRequest(paymentRequest);
   if (!asset.mint) {
     const providerTransferIx = getTransferSolInstruction({
       source: payerSigner,
@@ -836,17 +896,19 @@ export async function buildPaymentInstructions(
     return instructions;
   }
 
-  // SPL path.
+  // SPL path. The owner token program comes from the asset registry: classic
+  // SPL Token unless the asset declares a Token-2022 mint (LSM).
   const mint = address(asset.mint);
+  const tokenProgram = asset.tokenProgram ? address(asset.tokenProgram) : TOKEN_PROGRAM_ADDRESS;
   const payerAddress = payerSigner.address;
   const [payerAta] = await findAssociatedTokenPda({
     owner: payerAddress,
-    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    tokenProgram,
     mint,
   });
   const [recipientAta] = await findAssociatedTokenPda({
     owner: recipient,
-    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    tokenProgram,
     mint,
   });
 
@@ -861,6 +923,7 @@ export async function buildPaymentInstructions(
         ata: recipientAta,
         owner: recipient,
         mint,
+        tokenProgram,
       },
       { programAddress: ASSOCIATED_TOKEN_PROGRAM_ADDRESS },
     ),
@@ -871,7 +934,7 @@ export async function buildPaymentInstructions(
     const treasuryOwner = address(paymentRequest.fee_address);
     [treasuryAta] = await findAssociatedTokenPda({
       owner: treasuryOwner,
-      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      tokenProgram,
       mint,
     });
     instructions.push(
@@ -881,20 +944,24 @@ export async function buildPaymentInstructions(
           ata: treasuryAta,
           owner: treasuryOwner,
           mint,
+          tokenProgram,
         },
         { programAddress: ASSOCIATED_TOKEN_PROGRAM_ADDRESS },
       ),
     );
   }
 
-  const providerTransferIx = getTransferCheckedInstruction({
-    source: payerAta,
-    mint,
-    destination: recipientAta,
-    authority: payerSigner,
-    amount: BigInt(providerAmount),
-    decimals: asset.decimals,
-  });
+  const providerTransferIx = getTransferCheckedInstruction(
+    {
+      source: payerAta,
+      mint,
+      destination: recipientAta,
+      authority: payerSigner,
+      amount: BigInt(providerAmount),
+      decimals: asset.decimals,
+    },
+    { programAddress: tokenProgram },
+  );
   const providerTransferIxWithMarkers = {
     ...providerTransferIx,
     accounts: [
@@ -907,14 +974,17 @@ export async function buildPaymentInstructions(
 
   if (treasuryAta && paymentRequest.fee_address && feeAmount > 0) {
     instructions.push(
-      getTransferCheckedInstruction({
-        source: payerAta,
-        mint,
-        destination: treasuryAta,
-        authority: payerSigner,
-        amount: BigInt(feeAmount),
-        decimals: asset.decimals,
-      }),
+      getTransferCheckedInstruction(
+        {
+          source: payerAta,
+          mint,
+          destination: treasuryAta,
+          authority: payerSigner,
+          amount: BigInt(feeAmount),
+          decimals: asset.decimals,
+        },
+        { programAddress: tokenProgram },
+      ),
     );
   }
 
@@ -934,16 +1004,18 @@ export async function buildPaymentInstructions(
 export async function createPaymentRequestWithOnchainConfig(
   rpc: Rpc<SolanaRpcApi>,
   programId: Address,
+  network: Network,
   recipient: string,
   amount: number,
   options?: { expirySecs?: number },
 ): Promise<PaymentRequestData> {
-  const config = await getProtocolConfig(rpc, programId);
+  const config = await getProtocolConfig(rpc, programId, network);
   const strategy = new SolanaPaymentStrategy();
   return strategy.createPaymentRequest(
     recipient,
     amount,
     { feeBps: config.feeBps, treasury: config.treasury },
+    network,
     options,
   );
 }

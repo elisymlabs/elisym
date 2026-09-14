@@ -1,4 +1,5 @@
 import { type Address, type Rpc, type Signature, type SolanaRpcApi, isAddress } from '@solana/kit';
+import type { Network } from '../types';
 
 /**
  * Lightweight payment verifier used by discovery ranking.
@@ -54,6 +55,7 @@ export async function verifyJobPaymentQuick(
   rpc: Rpc<SolanaRpcApi>,
   txSignature: string,
   expectedRecipient: Address,
+  network: Network,
 ): Promise<QuickVerifyResult> {
   if (!txSignature) {
     return { receivedFunds: false, txSignature: '', reason: 'invalid_input' };
@@ -62,7 +64,10 @@ export async function verifyJobPaymentQuick(
     return { receivedFunds: false, txSignature, reason: 'invalid_input' };
   }
 
-  const cacheKey = `${txSignature}:${expectedRecipient}`;
+  // Network rides in the cache key: signatures and recipient addresses are
+  // cluster-agnostic strings, so without it one cluster's cached verdict
+  // (positive entries live forever) would serve the other.
+  const cacheKey = `${txSignature}:${expectedRecipient}:${network}`;
   const cached = verifyCache.get(cacheKey);
   if (cached) {
     if (cached.result.receivedFunds) {

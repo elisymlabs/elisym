@@ -10,7 +10,9 @@ const baseFrontmatter = {
 
 describe('validateSkillFrontmatter max_execution_secs', () => {
   it('returns undefined when omitted (caller falls through to agent default)', () => {
-    const parsed = validateSkillFrontmatter(baseFrontmatter, 'system prompt');
+    const parsed = validateSkillFrontmatter(baseFrontmatter, 'system prompt', {
+      network: 'devnet',
+    });
     expect(parsed.executionTimeoutSecs).toBeUndefined();
   });
 
@@ -18,6 +20,7 @@ describe('validateSkillFrontmatter max_execution_secs', () => {
     const parsed = validateSkillFrontmatter(
       { ...baseFrontmatter, max_execution_secs: 1800 },
       'system prompt',
+      { network: 'devnet' },
     );
     expect(parsed.executionTimeoutSecs).toBe(1800);
   });
@@ -26,6 +29,7 @@ describe('validateSkillFrontmatter max_execution_secs', () => {
     const parsed = validateSkillFrontmatter(
       { ...baseFrontmatter, max_execution_secs: 0 },
       'system prompt',
+      { network: 'devnet' },
     );
     expect(parsed.executionTimeoutSecs).toBe(0);
   });
@@ -39,25 +43,32 @@ describe('validateSkillFrontmatter max_execution_secs', () => {
         max_execution_secs: 600,
       },
       'system prompt',
+      { network: 'devnet' },
     );
     expect(parsed.executionTimeoutSecs).toBe(600);
   });
 
   it('throws on a negative value', () => {
     expect(() =>
-      validateSkillFrontmatter({ ...baseFrontmatter, max_execution_secs: -5 }, 'system prompt'),
+      validateSkillFrontmatter({ ...baseFrontmatter, max_execution_secs: -5 }, 'system prompt', {
+        network: 'devnet',
+      }),
     ).toThrow(/max_execution_secs.*non-negative/);
   });
 
   it('throws on a non-integer value', () => {
     expect(() =>
-      validateSkillFrontmatter({ ...baseFrontmatter, max_execution_secs: 1.5 }, 'system prompt'),
+      validateSkillFrontmatter({ ...baseFrontmatter, max_execution_secs: 1.5 }, 'system prompt', {
+        network: 'devnet',
+      }),
     ).toThrow(/max_execution_secs.*non-negative integer/);
   });
 
   it('throws on a non-number value', () => {
     expect(() =>
-      validateSkillFrontmatter({ ...baseFrontmatter, max_execution_secs: '600' }, 'system prompt'),
+      validateSkillFrontmatter({ ...baseFrontmatter, max_execution_secs: '600' }, 'system prompt', {
+        network: 'devnet',
+      }),
     ).toThrow(/max_execution_secs/);
   });
 
@@ -66,6 +77,7 @@ describe('validateSkillFrontmatter max_execution_secs', () => {
       validateSkillFrontmatter(
         { ...baseFrontmatter, max_execution_secs: 2_147_484 },
         'system prompt',
+        { network: 'devnet' },
       ),
     ).toThrow(/max_execution_secs.*<=/);
   });

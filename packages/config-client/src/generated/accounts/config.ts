@@ -63,6 +63,13 @@ export type Config = {
   pendingAdmin: Option<Address>;
   treasury: Address;
   feeBps: number;
+  /**
+   * Reserved kill-switch flag, inert today: `initialize` writes `false` and
+   * no instruction can flip it, so a reader must never take `false` here as
+   * evidence that the protocol is live. Wiring it up needs an admin-gated
+   * `set_paused` plus client-side enforcement - the payment flow runs
+   * outside this program, so the flag can only ever be advisory.
+   */
   paused: boolean;
   lastUpdated: bigint;
   reserved: ReadonlyUint8Array;
@@ -75,6 +82,13 @@ export type ConfigArgs = {
   pendingAdmin: OptionOrNullable<Address>;
   treasury: Address;
   feeBps: number;
+  /**
+   * Reserved kill-switch flag, inert today: `initialize` writes `false` and
+   * no instruction can flip it, so a reader must never take `false` here as
+   * evidence that the protocol is live. Wiring it up needs an admin-gated
+   * `set_paused` plus client-side enforcement - the payment flow runs
+   * outside this program, so the flag can only ever be advisory.
+   */
   paused: boolean;
   lastUpdated: number | bigint;
   reserved: ReadonlyUint8Array;
