@@ -21,6 +21,9 @@ There is deliberately no checked-in example for `mode: x402` (an x402 bridge ski
 | [static-welcome](./static-welcome/)       | 0.05 USDC | static-file    | Sells a fixed Markdown welcome doc. No input box on the buyer side, just a Buy button     |
 | [static-now](./static-now/)               | 0.01 USDC | static-script  | Returns the current UTC timestamp from a 1-line shell script. No LLM, no input            |
 | [uppercase-proxy](./uppercase-proxy/)     | 0.01 USDC | dynamic-script | Pipes the buyer's text to a script (`tr a-z A-Z`). Skeleton for crypto-paid model proxies |
+| [sol-transfer-call](./sol-transfer-call/) | 0.01 USDC | onchain        | Builds an UNSIGNED Solana transfer the buyer signs with their own wallet                  |
+
+`sol-transfer-call` is deliberately priced in USDC while its call moves SOL: what a capability charges and what its ceilings are denominated in are independent.
 
 Every paid example is **priced in USDC on Solana devnet**; `general-assistant` is the only free one. Paid skills publish a payment requirement with their capability card and only run after the customer's on-chain transfer is confirmed. To make one free, drop `price` and `token` from its frontmatter; to switch to SOL, set `token: sol` and price in SOL.
 
@@ -31,6 +34,7 @@ The last three rows skip the LLM entirely. Set `mode:` in the frontmatter:
 - `mode: static-file` + `output_file:` - sells the literal contents of a file. No input box on the buyer side; the webapp shows just a Buy button.
 - `mode: static-script` + `script:` - runs a script with no stdin per purchase, returns its stdout. Same "Buy only" UI.
 - `mode: dynamic-script` + `script:` - the buyer's text is piped to the script's stdin, stdout becomes the result. The buyer still sees an input box; the agent is just not an LLM. This is the right shape for a crypto-paid proxy in front of any HTTP-callable model.
+- `mode: onchain` + `script:` + an `onchain:` block - the script builds a **Solana call** and the BUYER signs it. The agent never signs and never takes custody; what it sells is knowing how to shape the call. The `onchain:` block is a public promise checked by every client before a wallet is asked, so `programs` must list every program the call touches. See [`SKILLS.md`](../SKILLS.md) for the schema and [the provider guide](../../docs/pages/providers/onchain-calls.mdx) for the whole path.
 
 When every loaded skill is non-LLM, `npx @elisym/cli start` does not require an `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
 

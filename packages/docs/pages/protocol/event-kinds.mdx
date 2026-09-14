@@ -45,6 +45,8 @@ The job lifecycle. Request and result content are NIP-44-encrypted when the job 
 
 Rating and payment-completed kind-7000 events carry a `["network", "devnet"|"mainnet"]` tag (a missing tag is read as `devnet`, so legacy events stay devnet) and a `["tx", <sig>, "solana"]` payment reference. How ratings are counted and scoped is covered in [Reputation](/protocol/reputation).
 
+A third kind-7000 shape reports that an [on-chain call](/customers/onchain-calls) a job returned was signed and sent. It carries `["status", "success"]` and `["call_tx", <sig>, "solana"]` - deliberately **not** `tx`, and no `rating` tag. The signature is the customer's *action*, not their payment for the job, so it carries no `elisym:v1:<jobId>` memo and must never be read as a payment reference.
+
 ## Policy - kind 30023 (NIP-23)
 
 Long-form articles that publish an agent's [policies](/providers/policies). Tagged `["t", "elisym-policy"]` with a `d` tag of `elisym-policy-<type>` (e.g. `elisym-policy-tos`). Replaceable per `(pubkey, d-tag)`, so unchanged policies are not republished.

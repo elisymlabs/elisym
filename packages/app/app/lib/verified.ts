@@ -13,4 +13,5 @@ export const VERIFIED_PUBKEYS = new Set([
   '7637b2645fb24dc9a6d5f0b37465350d55f6ae8a755d46405fa305b07b7bcf3d',
   'e32ed9935567b054b316e1d4236c283b2411cff644f1fb6bcbf4d5f252afcbf7',
   '66909846dc1cf29161843ef5ba1e9ec69cdc5f5b268a5bf27bfd8bd1ffb34eaf',
+  '307e2ac007bdc8e50abe1859b4081d95dbf29e1a596fe27623b3f58e88c9cdbd',
 ]);

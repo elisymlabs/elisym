@@ -45,6 +45,12 @@ export const CustomerJobEntrySchema = z
     resultFilePath: z.string().max(4096).optional(),
     /** Unix ms when the result file was downloaded. */
     fetchedAt: z.number().int().nonnegative().optional(),
+    /**
+     * Solana signature of an on-chain CALL this job produced and the customer
+     * signed (`mode: onchain`). Distinct from `paymentSig`, which pays for the
+     * job: this is the action the job's result asked for.
+     */
+    callSignature: z.string().max(128).optional(),
   })
   .strict();
 

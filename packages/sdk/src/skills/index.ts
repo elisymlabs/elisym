@@ -36,6 +36,8 @@ export { StaticScriptSkill } from './staticScriptSkill';
 export type { StaticScriptSkillParams } from './staticScriptSkill';
 export { DynamicScriptSkill } from './dynamicScriptSkill';
 export type { DynamicScriptSkillParams } from './dynamicScriptSkill';
+export { OnchainCallSkill } from './onchainCallSkill';
+export type { OnchainCallSkillParams } from './onchainCallSkill';
 export { X402ProxySkill } from './x402ProxySkill';
 export type { X402ProxySkillParams } from './x402ProxySkill';
 export { resolveInsidePath, resolveInsidePathReal } from './path-safety';

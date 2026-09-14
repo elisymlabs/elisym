@@ -2,6 +2,7 @@ import type { CapabilityCard } from '@elisym/sdk';
 import { useEffect, useRef } from 'react';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import type { ChatThreadEntry } from '~/lib/chatThread';
+import { onchainCardFor } from '~/lib/onchainCall';
 import { ChatEntry } from './ChatEntry';
 import { ChatRetryButton } from './ChatRetryButton';
 import type { ChatSend } from './useChatSend';
@@ -203,6 +204,7 @@ export function ChatThread({
             <ChatEntry
               entry={entry}
               agentPubkey={agentPubkey}
+              onchainCard={onchainCardFor(cards, entry.capability)}
               liveStatus={entry.jobEventId === liveJobEventId ? liveStatus : null}
               rated={ratedIds.has(entry.jobEventId)}
               canRate={canRate && entry.capability !== ''}

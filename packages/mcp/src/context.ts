@@ -115,6 +115,46 @@ export interface AgentInstance {
   irohStoreDir?: string;
 }
 
+/**
+ * A call that passed the verifier and is waiting for the confirm step. Holds
+ * the exact bytes to sign plus what the preview told the caller, so the two
+ * can never drift apart.
+ */
+export interface OnchainCallNonce {
+  id: string;
+  agentName: string;
+  /** Base64 unsigned wire transaction the verifier produced. */
+  transaction: string;
+  /** The lifetime the verifier set, for a terminal-bounded confirm. */
+  lastValidBlockHeight: bigint;
+  /** Asset the ceilings are denominated in, for the session spend counter. */
+  assetKey: string;
+  /** Value that will leave, in that asset's subunits. */
+  spendSubunits: bigint;
+  /** Value the call authorizes someone else to move later. */
+  authoritySubunits: bigint;
+  /**
+   * Lamports the call costs on top of the card's asset - the network fee and
+   * rent for accounts it creates. Zero for a SOL-denominated card, where those
+   * lamports are already inside `spendSubunits`. Charged to the SOL session cap
+   * so a capability priced in a token cannot bleed SOL against no limit.
+   */
+  nativeLamports: bigint;
+  /**
+   * The network fee inside the reservations above. Held separately because a
+   * call that reverted still paid it: the rest of the reservation comes back,
+   * this does not.
+   */
+  feeLamports: bigint;
+  /** Provider that built it, for the signature report. */
+  providerPubkey: string;
+  /** Job the call came from, for the signature report. */
+  jobId?: string;
+  /** Capability d-tag the job named, carried onto the signature report. */
+  capability?: string;
+  createdAt: number;
+}
+
 /** Pending withdrawal preview. A call without nonce produces one of these. */
 export interface WithdrawalNonce {
   id: string;
@@ -173,6 +213,9 @@ export class AgentContext {
   /** pending withdraw previews, keyed by nonce id. TTL enforced on lookup. */
   private withdrawalNonces = new Map<string, WithdrawalNonce>();
 
+  /** verified on-chain calls awaiting a signature, keyed by nonce id. */
+  private onchainNonces = new Map<string, OnchainCallNonce>();
+
   /** Nonce time-to-live in ms. */
   static readonly NONCE_TTL_MS = 60_000;
 
@@ -213,6 +256,53 @@ export class AgentContext {
     this.withdrawalNonces.set(nonce.id, nonce);
   }
 
+  /**
+   * Remember a verified call so the confirm step signs EXACTLY the bytes the
+   * preview showed. Re-verifying at confirm time would re-simulate against a
+   * changed chain and could hand the caller a different transaction than the
+   * one it approved.
+   */
+  issueOnchainNonce(nonce: OnchainCallNonce): void {
+    // At most one live preview per job. Two previews of one job hold two
+    // DIFFERENT transactions - the verifier re-simulates against a fresh
+    // blockhash each time - and both would land, so a caller that previewed
+    // twice could confirm twice and execute the action twice.
+    if (nonce.jobId !== undefined) {
+      for (const [id, pending] of this.onchainNonces) {
+        if (pending.agentName === nonce.agentName && pending.jobId === nonce.jobId) {
+          this.onchainNonces.delete(id);
+        }
+      }
+    }
+    if (this.onchainNonces.size >= AgentContext.MAX_PENDING_NONCES) {
+      const now = Date.now();
+      for (const [id, pending] of this.onchainNonces) {
+        if (now - pending.createdAt > AgentContext.NONCE_TTL_MS) {
+          this.onchainNonces.delete(id);
+        }
+      }
+      if (this.onchainNonces.size >= AgentContext.MAX_PENDING_NONCES) {
+        throw new Error(
+          'Too many pending on-chain call previews. Wait for existing ones to expire.',
+        );
+      }
+    }
+    this.onchainNonces.set(nonce.id, nonce);
+  }
+
+  /** Take a pending call preview. Single-use; `null` when unknown or expired. */
+  consumeOnchainNonce(id: string): OnchainCallNonce | null {
+    const nonce = this.onchainNonces.get(id);
+    if (!nonce) {
+      return null;
+    }
+    this.onchainNonces.delete(id);
+    if (Date.now() - nonce.createdAt > AgentContext.NONCE_TTL_MS) {
+      return null;
+    }
+    return nonce;
+  }
+
   /** consume a nonce; returns the stored preview or null if missing/expired. */
   consumeWithdrawalNonce(id: string): WithdrawalNonce | null {
     const nonce = this.withdrawalNonces.get(id);
@@ -242,7 +332,7 @@ export function resolveAssetFromPaymentRequest(request: PaymentRequestData): Ass
 
 /**
  * Remaining subunits that may still be spent for the given asset.
- * Returns `null` when no cap is configured — callers treat that as unlimited.
+ * Returns `null` when no cap is configured - callers treat that as unlimited.
  */
 export function remainingForAsset(ctx: AgentContext, asset: Asset): bigint | null {
   const key = assetKey(asset);
