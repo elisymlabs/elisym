@@ -36,7 +36,7 @@ import { generateKeyPairSigner, getBase58Decoder } from '@solana/kit';
 import { Command } from 'commander';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { loadAgentConfig, saveAgentConfig, listAgentNames, updateAgentSecurity } from './config.js';
-import { AgentContext, type SolanaNetwork } from './context.js';
+import { AgentContext, DEFAULT_NETWORK, type SolanaNetwork } from './context.js';
 import { runInstall, runUninstall, runUpdate, runList } from './install.js';
 import { startServer } from './server.js';
 import { buildEffectiveLimits, DEFAULT_SESSION_LIMITS } from './session-limits.js';
@@ -149,7 +149,7 @@ program.action(
       }
       const client = new ElisymClient({ relays: RELAYS });
       const name = process.env.ELISYM_AGENT_NAME ?? 'mcp-agent';
-      const network = envNetwork ?? 'devnet';
+      const network = envNetwork ?? DEFAULT_NETWORK;
 
       ctx.register({ client, identity, name, network, security: {} });
       console.error(`Ephemeral agent: ${name} (${network})`);
@@ -173,7 +173,7 @@ program.action(
         // Auto-create ephemeral agent
         const identity = ElisymIdentity.generate();
         const client = new ElisymClient({ relays: RELAYS });
-        const network = envNetwork ?? 'devnet';
+        const network = envNetwork ?? DEFAULT_NETWORK;
         ctx.register({ client, identity, name: 'mcp-agent', network, security: {} });
         console.error(`Created ephemeral agent (no persistent identity, ${network}).`);
       }
@@ -194,8 +194,8 @@ program
   .option(
     '-n, --network <network>',
     'Solana network (devnet or mainnet). Fixed at creation: to change networks later, ' +
-      'create a new agent. Mainnet payments move real funds.',
-    'devnet',
+      `create a new agent. Defaults to ${DEFAULT_NETWORK}; mainnet payments move real funds.`,
+    DEFAULT_NETWORK,
   )
   .option('--install', 'Also install into MCP clients')
   .option(
@@ -225,7 +225,7 @@ program
             name: 'network',
             message: 'Solana network (fixed at creation - create a new agent to change it):',
             choices: ['devnet', 'mainnet'],
-            default: 'devnet',
+            default: DEFAULT_NETWORK,
           },
         ]);
         name = answers.name;

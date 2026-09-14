@@ -294,9 +294,34 @@ describe('network selection at startup', () => {
   );
 
   it(
-    'init defaults to devnet when --network is omitted (explicit opt-in for mainnet)',
+    'init defaults to mainnet when --network is omitted',
     async () => {
-      const result = await runCli(tmpHome, ['init', 'dev-agent', '--passphrase', '', '-d', 'test']);
+      // Reversed deliberately: devnet-by-default made an unconfigured install
+      // look like it worked while discovering devnet agents and paying with
+      // play money. The written YAML is what matters - the network is fixed
+      // there at creation and never re-read from the default afterwards.
+      const result = await runCli(tmpHome, ['init', 'new-agent', '--passphrase', '', '-d', 'test']);
+      expect(result.code).toBe(0);
+      const yaml = await readFile(join(tmpHome, '.elisym', 'new-agent', 'elisym.yaml'), 'utf8');
+      expect(yaml).toMatch(/network: mainnet/);
+      expect(yaml).not.toMatch(/network: devnet/);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'init still writes devnet when it is asked for',
+    async () => {
+      const result = await runCli(tmpHome, [
+        'init',
+        'dev-agent',
+        '--network',
+        'devnet',
+        '--passphrase',
+        '',
+        '-d',
+        'test',
+      ]);
       expect(result.code).toBe(0);
       const yaml = await readFile(join(tmpHome, '.elisym', 'dev-agent', 'elisym.yaml'), 'utf8');
       expect(yaml).toMatch(/network: devnet/);

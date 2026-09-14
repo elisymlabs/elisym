@@ -101,7 +101,14 @@ describe('agent config round-trip', () => {
 
     const loaded = await loadAgentConfig('no-wallet');
     expect(loaded.payments).toBeUndefined();
-    // network falls back to 'devnet' (the default) even without payments.
+    // An agent whose YAML names no network reads back as devnet, and that is
+    // NOT the creation default any more (which is mainnet). It is the
+    // conservative answer for an agent that already exists: it was created
+    // while devnet was the default, so following the new one would silently
+    // start spending real funds on upgrade. Safe direction by construction -
+    // this fallback can only ever downgrade mainnet to devnet, never the
+    // reverse. `init` and `create_agent` both always generate a wallet, so
+    // they always write a real `payments[].network` and never land here.
     expect(loaded.network).toBe('devnet');
   });
 });

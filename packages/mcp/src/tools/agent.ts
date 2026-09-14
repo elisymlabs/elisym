@@ -15,6 +15,7 @@ import {
 import { generateSecretKey, nip19 } from 'nostr-tools';
 import { z } from 'zod';
 import { listAgentNames, loadAgentConfig, saveAgentConfig } from '../config.js';
+import { DEFAULT_NETWORK } from '../context.js';
 import type { AgentContext, AgentInstance, AgentSecurityFlags, SolanaNetwork } from '../context.js';
 import { shutdownIrohTransport } from '../iroh.js';
 import { logger } from '../logger.js';
@@ -37,11 +38,12 @@ const CreateAgentSchema = z.object({
   // (0.2.0) will reintroduce this field.
   network: z
     .enum(['devnet', 'mainnet'])
-    .default('devnet')
+    .default(DEFAULT_NETWORK)
     .describe(
       'Solana network this agent is bound to. FIXED AT CREATION: an agent can never change ' +
         'networks - switching networks means creating (or switch_agent-ing to) another agent ' +
-        'bound to the other network. Default devnet; mainnet payments move real funds.',
+        `bound to the other network. Defaults to ${DEFAULT_NETWORK}, where payments move REAL ` +
+        'funds; pass "devnet" for an agent to experiment with.',
     ),
   passphrase: z
     .string()

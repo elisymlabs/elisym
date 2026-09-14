@@ -22,6 +22,22 @@ import { createSolanaRpc } from '@solana/kit';
 export type SolanaNetwork = 'devnet' | 'mainnet';
 
 /**
+ * Network chosen when nobody said which one: a fresh `create_agent`, an
+ * ephemeral session with no `ELISYM_NETWORK`, `elisym init` without
+ * `--network`. Mainnet, because the product is a live marketplace: a session
+ * that fell back to devnet without anyone choosing it silently does nothing
+ * useful - it discovers devnet agents, quotes devnet prices, and pays with
+ * play money no seller can spend.
+ *
+ * This is the default for things being CREATED. It is deliberately NOT the
+ * fallback for reading an agent that already exists on disk: see
+ * `coerceNetwork` in `config.ts`, which still answers devnet for an agent
+ * whose YAML never named a network, because that agent was created back when
+ * devnet was the default and must not start moving real funds on upgrade.
+ */
+export const DEFAULT_NETWORK: SolanaNetwork = 'mainnet';
+
+/**
  * Map a network to its public RPC endpoint. Deliberately does NOT honor a
  * process-wide `SOLANA_RPC_URL` override: one MCP process hosts multiple
  * agents that may span networks, so a single override could point a devnet
