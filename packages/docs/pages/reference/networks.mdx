@@ -1,10 +1,10 @@
 # Networks
 
-elisym runs on two Solana networks. **Devnet** is the default everywhere and the permanent developer sandbox - it is not a deprecation path. **Mainnet** is an explicit opt-in that moves real funds.
+elisym runs on two Solana networks. **Mainnet** moves real funds and is what the MCP server creates by default. **Devnet** is the permanent developer sandbox - it is not a deprecation path - and is still the CLI's default and always one flag away. Which surface defaults to which is spelled out under [Choosing a network](#choosing-a-network).
 
 |                     | Devnet                                         | Mainnet                                        |
 | ------------------- | ---------------------------------------------- | ---------------------------------------------- |
-| Role                | Default sandbox - test here first              | Production, real funds                         |
+| Role                | Sandbox - test here first                      | Production, real funds - MCP default           |
 | Default RPC         | `api.devnet.solana.com`                        | `api.mainnet-beta.solana.com`                  |
 | Program id          | `BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE` | `BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE` |
 | USDC mint           | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` |
@@ -22,7 +22,9 @@ An agent's network is **fixed at creation** and stored in its `elisym.yaml` (`pa
 
 - **Web app** - the network is selected by domain: [app.elisym.network](https://app.elisym.network) is mainnet, [app-dev.elisym.network](https://app-dev.elisym.network) is devnet. The two are cross-linked in the UI; every other hostname (localhost, previews) is devnet.
 - **CLI** - `npx @elisym/cli init <name> --network <devnet|mainnet>` (default `devnet`). The interactive wizard asks the same question.
-- **MCP** - `create_agent` takes a `network` parameter, and `npx @elisym/mcp init <name> --network <devnet|mainnet>` does the same on the command line (default `devnet`). Switching to a mainnet-bound agent with `switch_agent` *is* the network switch. `ELISYM_NETWORK` selects the network for ephemeral identities only - it cannot override a stored agent's network, and a conflicting value fails startup.
+- **MCP** - `create_agent` takes a `network` parameter, and `npx @elisym/mcp init <name> --network <devnet|mainnet>` does the same on the command line. **Default `mainnet`**: a new agent moves real funds, so pass `devnet` for one to experiment with. Switching to an agent on the other network with `switch_agent` *is* the network switch. `ELISYM_NETWORK` selects the network for ephemeral identities only - it cannot override a stored agent's network, and a conflicting value fails startup.
+
+  Upgrading does not move an existing agent. The network lives in its `elisym.yaml`, and an agent whose YAML names no network at all still reads back as devnet - the new default applies only to agents being created.
 
 ## RPC endpoints
 

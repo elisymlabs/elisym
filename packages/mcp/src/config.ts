@@ -16,14 +16,24 @@ import {
   writeYaml,
   writeYamlInitial,
 } from '@elisym/sdk/agent-store';
-import type { AgentSecurityFlags, SolanaNetwork } from './context.js';
+import { DEFAULT_NETWORK, type AgentSecurityFlags, type SolanaNetwork } from './context.js';
 
 /** Absolute path where the agent's YAML lives. Used in error hints. */
 export function agentConfigPath(name: string): string {
   return join(homeElisymDir(), name, 'elisym.yaml');
 }
 
-/** Coerce a payments[].network to the narrow SolanaNetwork type. */
+/**
+ * Coerce a payments[].network to the narrow SolanaNetwork type.
+ *
+ * A missing network answers devnet, NOT `DEFAULT_NETWORK`, and that asymmetry
+ * is the point. This reads an agent that already exists on disk. Such an agent
+ * was created while devnet was the default, so its owner funded it, tested it
+ * and reasoned about it as a devnet agent; following the new default here
+ * would silently re-point it at mainnet on upgrade and let the next job spend
+ * real funds nobody agreed to spend. An agent's network is fixed at creation -
+ * including when it was fixed by omission.
+ */
 function coerceNetwork(raw: string | undefined, name: string): SolanaNetwork {
   if (raw === undefined || raw === 'devnet') {
     return 'devnet';
@@ -102,7 +112,7 @@ export interface SaveAgentConfigInput {
 export async function saveAgentConfig(name: string, input: SaveAgentConfigInput): Promise<void> {
   validateAgentName(name);
   const created = await createAgentDir({ target: 'home', name, cwd: process.cwd() });
-  const network = input.network ?? 'devnet';
+  const network = input.network ?? DEFAULT_NETWORK;
 
   try {
     await writeFile(created.paths.yaml, '', { flag: 'wx', mode: 0o644 });
