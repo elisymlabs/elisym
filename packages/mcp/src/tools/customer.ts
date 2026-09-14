@@ -59,7 +59,12 @@ import {
   takeSpendWarnings,
 } from '../context.js';
 import { ensureIrohTransport } from '../iroh.js';
-import { computeGitDiff, prepareFileInput, resolveOutputPath } from '../job-input.js';
+import {
+  computeGitDiff,
+  prepareFileInput,
+  resolveOutputPath,
+  type PreparedFileInput,
+} from '../job-input.js';
 import { logger } from '../logger.js';
 import {
   sanitizeUntrusted,
@@ -298,6 +303,14 @@ const SubmitAndPayJobFromFileSchema = z.object({
         'Sensitive files (secret keys, .env, SSH/keypair, ~/.elisym, /proc) are always refused.',
     ),
   session_id: SessionIdSchema,
+});
+
+// Same file fields as the pay-up-front tool; like submit_delegated_job it has no
+// session support, and it quotes in the card asset's subunits.
+const SubmitDelegatedJobFromFileSchema = SubmitAndPayJobFromFileSchema.omit({
+  session_id: true,
+}).extend({
+  max_price_lamports: SubmitDelegatedJobSchema.shape.max_price_lamports,
 });
 
 const SubmitDiffReviewSchema = z.object({
@@ -699,13 +712,20 @@ async function gasHintForCardAsset(agent: AgentInstance, asset: Asset): Promise<
   }
 }
 
+/** Tools that settle from an spl-approve delegation - the only ones that can meter. */
+type DelegatedToolName = 'submit_delegated_job' | 'submit_delegated_job_from_file';
+
 /** Tools that drive the confirm-before-publish gate; named back in the retry instruction. */
 type ConfirmGateToolName =
   | 'buy_capability'
   | 'submit_and_pay_job'
   | 'submit_and_pay_job_from_file'
   | 'submit_diff_review'
-  | 'submit_delegated_job';
+  | DelegatedToolName;
+
+function isDelegatedTool(toolName: ConfirmGateToolName): toolName is DelegatedToolName {
+  return toolName === 'submit_delegated_job' || toolName === 'submit_delegated_job_from_file';
+}
 
 /**
  * Confirm-before-publish gate shared by buy_capability and the submit_and_pay_* tools.
@@ -760,8 +780,8 @@ async function confirmPriceGate(opts: {
       toolName === 'buy_capability'
         ? `Capability "${capability}" from "${providerLabel}"`
         : `Job for capability "${capability}" from "${providerLabel}"`;
-    // Metered wording is gated on the DELEGATED tool on purpose. The same
-    // helper serves five tools, and only the delegated pull can charge less
+    // Metered wording is gated on the DELEGATED tools on purpose. The same
+    // helper serves six tools, and only the delegated pull can charge less
     // than the card price - telling a `submit_and_pay_job` or `buy_capability`
     // caller "you pay for what you use" and then collecting the full price
     // would be a straight lie.
@@ -770,7 +790,7 @@ async function confirmPriceGate(opts: {
     // `meteredMinSubunits`. It exists so that a later change which starts
     // passing it for display cannot silently turn into a false quote.
     const costLine =
-      meteredMinSubunits !== undefined && toolName === 'submit_delegated_job'
+      meteredMinSubunits !== undefined && isDelegatedTool(toolName)
         ? `${subject} is billed for what it actually uses: from ` +
           `${formatAssetAmount(asset, meteredMinSubunits)} and never more than ` +
           `${formatAssetAmount(asset, BigInt(price))}.`
@@ -1328,6 +1348,94 @@ async function prepareTextInput(
   }
 }
 
+/**
+ * Bound on the inline prompt that accompanies a file. The single attachment slot
+ * holds the FILE, so the prompt cannot spill to a second iroh transfer - this
+ * stays below the NIP-44 inline budget, leaving headroom for envelope JSON + the
+ * iroh ticket; the SDK's plaintext backstop is the definitive guard.
+ */
+const FILE_PROMPT_INLINE_CAP = 55_000;
+
+interface ValidatedFileInput {
+  agent: AgentInstance;
+  prompt: string;
+  file: PreparedFileInput;
+}
+
+/**
+ * Cheap front half of the file-input tools: bound the prompt, validate and classify
+ * the file, and require a persistent agent. The expensive copy into the iroh store
+ * is `seedFileAttachment`, so a caller can defer it past its own pre-checks.
+ */
+async function validateFileInput(
+  ctx: AgentContext,
+  options: { inputPath: string; allowOutsideCwd: boolean; prompt: string },
+): Promise<ValidatedFileInput | { error: string }> {
+  // Do NOT route the prompt through prepareTextInput (which would spill an
+  // oversize note to a conflicting attachment).
+  const prompt = options.prompt.trim();
+  if (utf8ByteLength(prompt) > FILE_PROMPT_INLINE_CAP) {
+    return {
+      error:
+        `Prompt is too long to ride inline (max ${FILE_PROMPT_INLINE_CAP} bytes); ` +
+        `the file occupies the only attachment slot, so shorten the prompt.`,
+    };
+  }
+
+  // Validate + classify first, so a bad/sensitive/missing path gives a specific
+  // error rather than the persistent-agent message below.
+  let file: PreparedFileInput;
+  try {
+    file = await prepareFileInput(options.inputPath, {
+      allowOutsideCwd: options.allowOutsideCwd,
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  const agent = ctx.active();
+  // Every file travels P2P via iroh, which requires a persistent agent to seed:
+  // an ephemeral session cannot reliably outlive the request window.
+  if (agent.agentDir === undefined) {
+    return {
+      error:
+        `Sending a file requires a persistent agent (this is an ephemeral session). ` +
+        `Files are always transferred P2P via iroh, never inline.`,
+    };
+  }
+  return { agent, prompt, file };
+}
+
+/** Copy a validated file into the agent's iroh store and describe it as the job attachment. */
+async function seedFileAttachment(
+  agent: AgentInstance,
+  file: PreparedFileInput,
+): Promise<{ attachment: FileAttachment } | { error: string }> {
+  try {
+    const seeded = await ensureIrohTransport(agent).seedPath(file.absPath);
+    return {
+      attachment: {
+        name: file.name,
+        size: seeded.size,
+        mime: file.mime,
+        transports: [{ kind: 'iroh', ticket: seeded.ticket }],
+      },
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // The iroh addon is an optional native dependency; surface an install hint
+    // rather than the opaque seed error when it is simply not installed.
+    if (/@number0\/iroh|iroh file transfer is unavailable/i.test(msg)) {
+      return {
+        error:
+          `File transfer is unavailable: the optional @number0/iroh addon is not installed. ` +
+          `Install it (e.g. \`bun add @number0/iroh\`) to send files.`,
+      };
+    }
+    return { error: `Failed to seed file for transfer: ${msg}` };
+  }
+}
+
 async function executeSubmitAndPay(
   ctx: AgentContext,
   agent: AgentInstance,
@@ -1627,6 +1735,359 @@ async function executeSubmitAndPay(
   }
 }
 
+/**
+ * Shared core of the delegated tools. They differ only in where the input comes
+ * from - inline text (spilled to iroh when large) or a file seeded to iroh - so
+ * the card and delegation checks, price gate, proof, published event, pull and
+ * history record all live here.
+ */
+interface DelegatedJobParams {
+  /**
+   * Produces the job input. Called only once every pre-check and the price gate
+   * have passed, so a refused or confirmation-only call seeds nothing into iroh.
+   */
+  prepareInput: () => Promise<{ input: string; attachment?: FileAttachment } | { error: string }>;
+  providerNpub: string;
+  capability: string;
+  kindOffset: number;
+  timeoutMs: number;
+  maxPriceLamports?: number;
+  toolName: DelegatedToolName;
+}
+
+async function executeDelegatedJob(
+  ctx: AgentContext,
+  agent: AgentInstance,
+  params: DelegatedJobParams,
+): Promise<ToolResult> {
+  if (!agent.solanaKeypair) {
+    return errorResult(
+      'Solana wallet not configured for this agent - delegated payment signs the ' +
+        'proof with the owner (wallet) key.',
+    );
+  }
+  const providerPubkey = decodeNpub(params.providerNpub);
+  const dTag = toDTag(params.capability);
+  const { timeoutMs } = params;
+
+  // Pre-ping: a delegated job burns a single-use proof when the provider
+  // picks it up; refuse to publish toward an offline provider.
+  const ping = await agent.client.ping.pingAgent(providerPubkey, PRE_PING_TIMEOUT_MS);
+  if (!ping.online) {
+    return errorResult(
+      `Provider ${params.providerNpub} is offline. ` +
+        `Run search_agents to find currently-online providers.`,
+    );
+  }
+
+  const providers = await agent.client.discovery.fetchAgents(agent.network);
+  const provider = providers.find((candidate) => candidate.npub === params.providerNpub);
+  if (!provider) {
+    return errorResult(
+      `Provider ${params.providerNpub} not found on ${agent.network}. ` +
+        `Refresh discovery (e.g. search_agents) or verify the npub is correct.`,
+    );
+  }
+
+  const card = paymentCardForCapability(provider, dTag);
+  const descriptor = card?.delegation;
+  if (!descriptor) {
+    const payUpFrontTool =
+      params.toolName === 'submit_delegated_job_from_file'
+        ? 'submit_and_pay_job_from_file'
+        : 'submit_and_pay_job';
+    return errorResult(
+      `Capability "${params.capability}" of ${params.providerNpub} does not advertise ` +
+        `delegated payment. Use ${payUpFrontTool} instead.`,
+    );
+  }
+  const { price, asset } = advertisedPriceForCapability(provider, dTag);
+  if (price <= 0) {
+    return errorResult(
+      `Capability "${params.capability}" advertises no price - delegated payment ` +
+        `needs a priced skill. Use create_job for free capabilities.`,
+    );
+  }
+  // Gate on asset IDENTITY, not the display symbol. `assetFromCardPayment`
+  // falls back to a self-describing asset for tokens the registry does not
+  // know, taking `symbol` and `decimals` from the card verbatim - so a
+  // symbol compare accepts a hostile card that merely calls itself "USDC".
+  // That matters here because the pull is against the canonical USDC ATA
+  // (`deriveOwnerDelegationAta` below) whatever the card claims, while
+  // every price shown to the customer is rendered with the card's
+  // decimals: a card with decimals 12 displays 250 USDC as "0.00025 USDC"
+  // and the customer confirms a spend 10^6 times larger than they read.
+  // Requiring the network's canonical USDC also rejects the other
+  // cluster's USDC mint, and guarantees the `asset` used for every
+  // `formatAssetAmount` below is the registry entry, not card input.
+  // Decide from the card's RAW payment block, not from the resolved asset:
+  // `assetFromCardPayment` only self-describes when the card carries both
+  // `symbol` and a numeric `decimals`, and otherwise degrades to
+  // NATIVE_SOL - so a minimal `{token: 'usdc'}` card would be refused with
+  // "priced in SOL", a reason that is simply false. Normalizing here also
+  // matches the web app's `resolvePaymentAsset`, which lowercases `token`
+  // and defaults an absent `chain`; without that the two surfaces disagree
+  // on the same card.
+  //
+  // A mint-less `usdc` card is canonical by convention: there is one USDC
+  // per cluster and the pull targets it. Everything below renders through
+  // `delegationAsset` (the registry entry), so accepting one cannot let a
+  // card smuggle its own `decimals` into a displayed price.
+  const delegationAsset = resolveUsdcAsset(agent.network);
+  const cardPayment = paymentCardForCapability(provider, dTag)?.payment;
+  const cardMint = cardPayment?.mint;
+  const isCanonicalUsdc =
+    (cardPayment?.chain ?? delegationAsset.chain) === delegationAsset.chain &&
+    cardPayment?.token?.toLowerCase() === delegationAsset.token &&
+    (cardMint === undefined || cardMint === delegationAsset.mint);
+  if (!isCanonicalUsdc) {
+    const declared = cardPayment?.symbol ?? cardPayment?.token ?? asset.symbol;
+    const { text } = sanitizeUntrusted(
+      `Delegated payment is USDC-only, but this capability is priced in ${declared}.`,
+      'text',
+    );
+    return errorResult(text);
+  }
+  const priceSubunits = BigInt(price);
+
+  // Verify the ACTIVE delegation covers this provider + price BEFORE
+  // publishing (and before burning a proof). The card's delegate key is the
+  // one the proof will be bound to; the on-chain delegate must match it.
+  const rpc = createSolanaRpc(rpcUrlFor(agent.network));
+  const ownerAta = await deriveOwnerDelegationAta(agent.solanaKeypair.publicKey, agent.network);
+  let delegation: Awaited<ReturnType<typeof getDelegation>>;
+  try {
+    delegation = await getDelegation(rpc, ownerAta);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return errorResult(`Could not read your delegation on-chain: ${message}`);
+  }
+  if (delegation === null || delegation.delegate === null) {
+    return errorResult(
+      'No active delegation from this wallet. Approve one first (web app Delegation ' +
+        'tab, or the approve flow), then retry.',
+    );
+  }
+  if (delegation.delegate !== descriptor.delegate_pubkey) {
+    const { text } = sanitizeUntrusted(
+      `Your delegation is granted to ${delegation.delegate}, but this capability ` +
+        `advertises delegate ${descriptor.delegate_pubkey} (the provider may have ` +
+        `rotated its key). Re-approve the delegation, then retry.`,
+      'text',
+    );
+    return errorResult(text);
+  }
+  if (delegation.remainingCap < priceSubunits) {
+    return errorResult(
+      `Remaining delegated cap ${formatAssetAmount(delegationAsset, delegation.remainingCap)} is ` +
+        `below the price ${formatAssetAmount(delegationAsset, priceSubunits)}. Top up the ` +
+        `delegation (re-approve) first.`,
+    );
+  }
+  if (delegation.balance < priceSubunits) {
+    return errorResult(
+      `Delegation account balance ${formatAssetAmount(delegationAsset, delegation.balance)} is ` +
+        `below the price ${formatAssetAmount(delegationAsset, priceSubunits)}. Fund the wallet first.`,
+    );
+  }
+
+  // Session spend cap. CHECK, deliberately not `reserveSpend`.
+  //
+  // Reserving would have to reserve the CEILING, because the real figure
+  // does not exist yet - on a metered capability the job has not run. Our
+  // own measurements put a typical metered pull at a fraction of its
+  // ceiling, so reserving it would burn several times the session budget
+  // the job actually consumes, and permanently for any job whose result
+  // never arrives. So the ceiling is only CHECKED here, and the amount
+  // that actually moved is recorded once the result reports it.
+  //
+  // Two limits of this, stated rather than papered over: concurrent
+  // submissions can each pass the check before either records anything
+  // (nothing is held between check and record), and an in-flight job
+  // counts as zero until it completes. That is weaker than the atomic
+  // reserve the signing paths use - it has to be, since no payment is
+  // signed here. The hard bound remains the on-chain allowance; this is
+  // the local guardrail a user who configured a session cap expects to
+  // exist at all.
+  try {
+    assertCanSpend(ctx, delegationAsset, priceSubunits);
+  } catch (e) {
+    return errorResult(e instanceof Error ? e.message : String(e));
+  }
+
+  // Confirm-before-submit: the same single gate as the paying tools. No
+  // second customer-side gate beyond this - consent was given at approve.
+  const priceGate = await confirmPriceGate({
+    agent,
+    providerLabel: sanitizeField(provider.name || params.providerNpub, 64),
+    capability: params.capability,
+    price,
+    asset: delegationAsset,
+    maxPriceLamports: params.maxPriceLamports,
+    toolName: params.toolName,
+    // Card-published floor, so the quote reads "from X, never more than Y"
+    // instead of a flat number the buyer will usually not be charged.
+    ...(card?.metered !== undefined
+      ? { meteredMinSubunits: BigInt(card.metered.min_subunits) }
+      : {}),
+  });
+  if (priceGate) {
+    return priceGate;
+  }
+
+  // Seed before minting the proof, so a slow transfer cannot eat into its TTL.
+  const preparedInput = await params.prepareInput();
+  if ('error' in preparedInput) {
+    return errorResult(preparedInput.error);
+  }
+
+  // Mint the single-use, short-lived proof over the SHARED auth message:
+  // bound to THIS provider's delegate key and THIS Nostr author.
+  const ownerSigner = await createKeyPairSignerFromBytes(agent.solanaKeypair.secretKey);
+  const expiryUnix = Math.floor(Date.now() / 1000) + MAX_PROOF_TTL_SECS;
+  const nonce = mintDelegationNonce();
+  const proof = await buildDelegationAuthProof({
+    ownerSigner,
+    agentDelegate: descriptor.delegate_pubkey,
+    nostrAuthor: agent.identity.publicKey,
+    owner: agent.solanaKeypair.publicKey,
+    expiryUnix,
+    nonce,
+  });
+
+  const submittedAt = Date.now();
+  const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
+    input: preparedInput.input,
+    attachment: preparedInput.attachment,
+    capability: dTag,
+    providerPubkey,
+    kindOffset: params.kindOffset,
+    acceptTransports: MCP_ACCEPT_TRANSPORTS,
+    delegatedPayment: {
+      owner: agent.solanaKeypair.publicKey,
+      expiryUnix,
+      nonce,
+      proof,
+    },
+  });
+
+  let resultAttachment: FileAttachment | undefined;
+  let pullTx: string | undefined;
+  // What the provider says actually moved. On a metered capability this
+  // differs from the card price (which is the ceiling), so recording the
+  // card price would overstate every metered job in the buyer's history.
+  let settledAmountSubunits: number | undefined;
+  try {
+    const result = await awaitJobResult<string>(
+      agent,
+      {} as never,
+      ({ resolve, reject }) => ({
+        jobEventId: jobId,
+        providerPubkey,
+        customerPublicKey: agent.identity.publicKey,
+        callbacks: {
+          onResult(
+            content: string,
+            _eventId: string,
+            attachment?: FileAttachment,
+            _attachments?: FileAttachment[],
+            paymentTx?: string,
+            paidAmountSubunits?: number,
+          ) {
+            pullTx = paymentTx;
+            settledAmountSubunits = paidAmountSubunits;
+            if (attachment) {
+              resultAttachment = attachment;
+              resolve(formatFileResultMetadata(jobId, attachment));
+              return;
+            }
+            const sanitized = sanitizeResultContent(content);
+            resolve(`Job completed.\n\n${sanitized.text}`);
+          },
+          onError(error: string) {
+            rejectWithProviderError(reject, error);
+          },
+          onTimeout(waitedMs: number) {
+            reject(new JobWaitTimeoutError(waitedMs));
+          },
+        },
+        timeoutMs,
+        customerSecretKey: agent.identity.secretKey,
+      }),
+      timeoutMs + 5_000,
+    );
+
+    // Count what actually moved against the session cap. The same figure the
+    // buyer's history records, computed by the same helper - a metered pull
+    // is usually well under the ceiling checked before publishing, so
+    // charging the ceiling here would overstate the session spend.
+    const settledForSession = settledSubunitsForHistory(card, price, settledAmountSubunits);
+    recordSpend(ctx, delegationAsset, BigInt(settledForSession));
+
+    await recordJobOutcome(agent, {
+      jobEventId: jobId,
+      capability: dTag,
+      providerPubkey,
+      providerName: clipProviderName(provider.name),
+      // What actually moved, as recorded in the buyer's OWN history.
+      //
+      // On a FLAT card the runtime always pulls exactly `price`, so there is
+      // nothing to learn from the provider and the reported figure is only a
+      // way to lie - the card price is the truth by construction.
+      //
+      // On a METERED card the pull is variable, so the provider's report is
+      // the only source of the real number. It is still attacker-controlled
+      // and arrives through a tag parser that accepts negatives and
+      // prefix-parses garbage, so it is trusted only inside the range the
+      // card published and the buyer approved: `[min, price]`. Anything
+      // outside degrades to the ceiling rather than to the attacker's value.
+      paidAmountSubunits: String(settledForSession),
+      // The registry key, not the card's. A mint-less `usdc` card is
+      // accepted by the gate above but keys as `solana:usdc`, which
+      // `assetByKey` cannot resolve and which splits any per-asset
+      // aggregation away from the canonical `solana:usdc:<mint>` rows.
+      assetKey: assetKey(delegationAsset),
+      status: 'completed',
+      submittedAt,
+      completedAt: Date.now(),
+      resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
+      paymentSig: pullTx,
+      attachmentJson: resultAttachment ? JSON.stringify(resultAttachment) : undefined,
+    });
+    // The pull signature is provider-reported transparency data (the result
+    // event's `tx` tag) - the on-chain delegation itself remains the truth.
+    const pullLine = pullTx !== undefined ? `pull_tx=${pullTx}\n` : '';
+    const tip = buildJobCompletionTip(jobId, params.providerNpub);
+    return textResult(`event_id=${jobId}\n${pullLine}${result}${tip}`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const isTimeout = e instanceof JobWaitTimeoutError;
+    await recordJobOutcome(agent, {
+      jobEventId: jobId,
+      capability: dTag,
+      providerPubkey,
+      providerName: clipProviderName(provider.name),
+      status: isTimeout ? 'timeout' : 'failed',
+      submittedAt,
+      completedAt: Date.now(),
+    });
+    if (isTimeout) {
+      return textResult(
+        `event_id=${jobId}\nStill processing (delegated: the provider pulls payment ` +
+          `only after delivering the result). This is NOT an error - retry ` +
+          `get_job_result with event_id="${jobId}" later. If the provider never ` +
+          `starts, the proof expires within ${MAX_PROOF_TTL_SECS / 60} minutes with ` +
+          `no charge.`,
+      );
+    }
+    const safeMsg = sanitizeUntrusted(msg, 'text').text;
+    return errorResult(
+      `Job ${jobId} failed: ${safeMsg}. Delegated jobs charge only on delivery - ` +
+        `no charge occurred unless a pull was reported.`,
+    );
+  }
+}
+
 /** Subscribe helper that guarantees cleanup. */
 function awaitJobResult<T>(
   agent: AgentInstance,
@@ -1781,331 +2242,81 @@ export const customerTools: ToolDefinition[] = [
       'get_delegation). Within the approved cap the delegate can pull without your ' +
       'signature, so treat the cap as the max loss. Your per-session spend limit also applies: ' +
       'the job is refused if its ceiling does not fit the remaining session budget. ' +
+      'An input too large to ride inline is sent via iroh automatically (needs a persistent ' +
+      'agent); for a file on disk use submit_delegated_job_from_file. ' +
       'If max_price_lamports is not set, ' +
       'returns the price - or the range, when metered - for confirmation without ' +
       'publishing anything.',
     schema: SubmitDelegatedJobSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
-      checkLen('input', input.input, MAX_INPUT_LEN);
       checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
+      // Same bound as submit_and_pay_job: above it the provider streams a
+      // text/plain attachment to a file instead of re-inlining it to stdin.
+      const inputBytes = utf8ByteLength(input.input);
+      if (inputBytes > LIMITS.MAX_REINLINE_TEXT_BYTES) {
+        return errorResult(
+          `Input is ${inputBytes} bytes (max ${LIMITS.MAX_REINLINE_TEXT_BYTES} for an inline job). ` +
+            `Send a large file with submit_delegated_job_from_file.`,
+        );
+      }
 
       const agent = ctx.active();
-      if (!agent.solanaKeypair) {
-        return errorResult(
-          'Solana wallet not configured for this agent - delegated payment signs the ' +
-            'proof with the owner (wallet) key.',
-        );
-      }
-      const providerPubkey = decodeNpub(input.provider_npub);
-      const dTag = toDTag(input.capability);
-      const timeoutMs = Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000;
-
-      // Pre-ping: a delegated job burns a single-use proof when the provider
-      // picks it up; refuse to publish toward an offline provider.
-      const ping = await agent.client.ping.pingAgent(providerPubkey, PRE_PING_TIMEOUT_MS);
-      if (!ping.online) {
-        return errorResult(
-          `Provider ${input.provider_npub} is offline. ` +
-            `Run search_agents to find currently-online providers.`,
-        );
-      }
-
-      const providers = await agent.client.discovery.fetchAgents(agent.network);
-      const provider = providers.find((candidate) => candidate.npub === input.provider_npub);
-      if (!provider) {
-        return errorResult(
-          `Provider ${input.provider_npub} not found on ${agent.network}. ` +
-            `Refresh discovery (e.g. search_agents) or verify the npub is correct.`,
-        );
-      }
-
-      const card = paymentCardForCapability(provider, dTag);
-      const descriptor = card?.delegation;
-      if (!descriptor) {
-        return errorResult(
-          `Capability "${input.capability}" of ${input.provider_npub} does not advertise ` +
-            `delegated payment. Use submit_and_pay_job instead.`,
-        );
-      }
-      const { price, asset } = advertisedPriceForCapability(provider, dTag);
-      if (price <= 0) {
-        return errorResult(
-          `Capability "${input.capability}" advertises no price - delegated payment ` +
-            `needs a priced skill. Use create_job for free capabilities.`,
-        );
-      }
-      // Gate on asset IDENTITY, not the display symbol. `assetFromCardPayment`
-      // falls back to a self-describing asset for tokens the registry does not
-      // know, taking `symbol` and `decimals` from the card verbatim - so a
-      // symbol compare accepts a hostile card that merely calls itself "USDC".
-      // That matters here because the pull is against the canonical USDC ATA
-      // (`deriveOwnerDelegationAta` below) whatever the card claims, while
-      // every price shown to the customer is rendered with the card's
-      // decimals: a card with decimals 12 displays 250 USDC as "0.00025 USDC"
-      // and the customer confirms a spend 10^6 times larger than they read.
-      // Requiring the network's canonical USDC also rejects the other
-      // cluster's USDC mint, and guarantees the `asset` used for every
-      // `formatAssetAmount` below is the registry entry, not card input.
-      // Decide from the card's RAW payment block, not from the resolved asset:
-      // `assetFromCardPayment` only self-describes when the card carries both
-      // `symbol` and a numeric `decimals`, and otherwise degrades to
-      // NATIVE_SOL - so a minimal `{token: 'usdc'}` card would be refused with
-      // "priced in SOL", a reason that is simply false. Normalizing here also
-      // matches the web app's `resolvePaymentAsset`, which lowercases `token`
-      // and defaults an absent `chain`; without that the two surfaces disagree
-      // on the same card.
-      //
-      // A mint-less `usdc` card is canonical by convention: there is one USDC
-      // per cluster and the pull targets it. Everything below renders through
-      // `delegationAsset` (the registry entry), so accepting one cannot let a
-      // card smuggle its own `decimals` into a displayed price.
-      const delegationAsset = resolveUsdcAsset(agent.network);
-      const cardPayment = paymentCardForCapability(provider, dTag)?.payment;
-      const cardMint = cardPayment?.mint;
-      const isCanonicalUsdc =
-        (cardPayment?.chain ?? delegationAsset.chain) === delegationAsset.chain &&
-        cardPayment?.token?.toLowerCase() === delegationAsset.token &&
-        (cardMint === undefined || cardMint === delegationAsset.mint);
-      if (!isCanonicalUsdc) {
-        const declared = cardPayment?.symbol ?? cardPayment?.token ?? asset.symbol;
-        const { text } = sanitizeUntrusted(
-          `Delegated payment is USDC-only, but this capability is priced in ${declared}.`,
-          'text',
-        );
-        return errorResult(text);
-      }
-      const priceSubunits = BigInt(price);
-
-      // Verify the ACTIVE delegation covers this provider + price BEFORE
-      // publishing (and before burning a proof). The card's delegate key is the
-      // one the proof will be bound to; the on-chain delegate must match it.
-      const rpc = createSolanaRpc(rpcUrlFor(agent.network));
-      const ownerAta = await deriveOwnerDelegationAta(agent.solanaKeypair.publicKey, agent.network);
-      let delegation: Awaited<ReturnType<typeof getDelegation>>;
-      try {
-        delegation = await getDelegation(rpc, ownerAta);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        return errorResult(`Could not read your delegation on-chain: ${message}`);
-      }
-      if (delegation === null || delegation.delegate === null) {
-        return errorResult(
-          'No active delegation from this wallet. Approve one first (web app Delegation ' +
-            'tab, or the approve flow), then retry.',
-        );
-      }
-      if (delegation.delegate !== descriptor.delegate_pubkey) {
-        const { text } = sanitizeUntrusted(
-          `Your delegation is granted to ${delegation.delegate}, but this capability ` +
-            `advertises delegate ${descriptor.delegate_pubkey} (the provider may have ` +
-            `rotated its key). Re-approve the delegation, then retry.`,
-          'text',
-        );
-        return errorResult(text);
-      }
-      if (delegation.remainingCap < priceSubunits) {
-        return errorResult(
-          `Remaining delegated cap ${formatAssetAmount(delegationAsset, delegation.remainingCap)} is ` +
-            `below the price ${formatAssetAmount(delegationAsset, priceSubunits)}. Top up the ` +
-            `delegation (re-approve) first.`,
-        );
-      }
-      if (delegation.balance < priceSubunits) {
-        return errorResult(
-          `Delegation account balance ${formatAssetAmount(delegationAsset, delegation.balance)} is ` +
-            `below the price ${formatAssetAmount(delegationAsset, priceSubunits)}. Fund the wallet first.`,
-        );
-      }
-
-      // Session spend cap. CHECK, deliberately not `reserveSpend`.
-      //
-      // Reserving would have to reserve the CEILING, because the real figure
-      // does not exist yet - on a metered capability the job has not run. Our
-      // own measurements put a typical metered pull at a fraction of its
-      // ceiling, so reserving it would burn several times the session budget
-      // the job actually consumes, and permanently for any job whose result
-      // never arrives. So the ceiling is only CHECKED here, and the amount
-      // that actually moved is recorded once the result reports it.
-      //
-      // Two limits of this, stated rather than papered over: concurrent
-      // submissions can each pass the check before either records anything
-      // (nothing is held between check and record), and an in-flight job
-      // counts as zero until it completes. That is weaker than the atomic
-      // reserve the signing paths use - it has to be, since no payment is
-      // signed here. The hard bound remains the on-chain allowance; this is
-      // the local guardrail a user who configured a session cap expects to
-      // exist at all.
-      try {
-        assertCanSpend(ctx, delegationAsset, priceSubunits);
-      } catch (e) {
-        return errorResult(e instanceof Error ? e.message : String(e));
-      }
-
-      // Confirm-before-submit: the same single gate as the paying tools. No
-      // second customer-side gate beyond this - consent was given at approve.
-      const priceGate = await confirmPriceGate({
-        agent,
-        providerLabel: sanitizeField(provider.name || input.provider_npub, 64),
+      return executeDelegatedJob(ctx, agent, {
+        // Large input spills to iroh transparently; small input stays inline.
+        prepareInput: () => prepareTextInput(agent, input.input),
+        providerNpub: input.provider_npub,
         capability: input.capability,
-        price,
-        asset: delegationAsset,
+        kindOffset: input.kind_offset,
+        timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
         maxPriceLamports: input.max_price_lamports,
         toolName: 'submit_delegated_job',
-        // Card-published floor, so the quote reads "from X, never more than Y"
-        // instead of a flat number the buyer will usually not be charged.
-        ...(card?.metered !== undefined
-          ? { meteredMinSubunits: BigInt(card.metered.min_subunits) }
-          : {}),
       });
-      if (priceGate) {
-        return priceGate;
+    },
+  }),
+
+  defineTool({
+    name: 'submit_delegated_job_from_file',
+    description:
+      'Same as submit_delegated_job, but the job input is read from a file on disk by the ' +
+      "MCP server and sent peer-to-peer via iroh - the file content never enters the model's " +
+      'output tokens. Prefer this over submit_and_pay_job_from_file whenever the capability ' +
+      'advertises delegation: that tool pays the full listed price up front, while here the ' +
+      'provider pulls from your delegation after delivering - on a METERED card only what ' +
+      'the job consumed, never more than the listed price. Requires an ACTIVE delegation to ' +
+      'the delegate key the capability advertises (check with get_delegation), a persistent ' +
+      'agent, and the iroh addon. Text files reach the skill on stdin; binary files via ' +
+      'ELISYM_INPUT_FILE. Pass an optional `prompt` to send a text instruction alongside the ' +
+      'file; it rides inline (encrypted) while the file rides P2P. If max_price_lamports is ' +
+      'not set, returns the price - or the range, when metered - for confirmation without ' +
+      'publishing anything.',
+    schema: SubmitDelegatedJobFromFileSchema,
+    async handler(ctx, input) {
+      ctx.toolRateLimiter.check();
+      checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
+
+      const validated = await validateFileInput(ctx, {
+        inputPath: input.input_path,
+        allowOutsideCwd: input.allow_outside_cwd,
+        prompt: input.prompt,
+      });
+      if ('error' in validated) {
+        return errorResult(validated.error);
       }
-
-      // Mint the single-use, short-lived proof over the SHARED auth message:
-      // bound to THIS provider's delegate key and THIS Nostr author.
-      const ownerSigner = await createKeyPairSignerFromBytes(agent.solanaKeypair.secretKey);
-      const expiryUnix = Math.floor(Date.now() / 1000) + MAX_PROOF_TTL_SECS;
-      const nonce = mintDelegationNonce();
-      const proof = await buildDelegationAuthProof({
-        ownerSigner,
-        agentDelegate: descriptor.delegate_pubkey,
-        nostrAuthor: agent.identity.publicKey,
-        owner: agent.solanaKeypair.publicKey,
-        expiryUnix,
-        nonce,
-      });
-
-      const submittedAt = Date.now();
-      const jobId = await agent.client.marketplace.submitJobRequest(agent.identity, {
-        input: input.input,
-        capability: dTag,
-        providerPubkey,
-        kindOffset: input.kind_offset,
-        acceptTransports: MCP_ACCEPT_TRANSPORTS,
-        delegatedPayment: {
-          owner: agent.solanaKeypair.publicKey,
-          expiryUnix,
-          nonce,
-          proof,
+      const { agent, prompt, file } = validated;
+      return executeDelegatedJob(ctx, agent, {
+        // Seeded lazily: the delegation pre-checks and price gate run first.
+        prepareInput: async () => {
+          const seeded = await seedFileAttachment(agent, file);
+          return 'error' in seeded ? seeded : { input: prompt, attachment: seeded.attachment };
         },
+        providerNpub: input.provider_npub,
+        capability: input.capability,
+        kindOffset: input.kind_offset,
+        timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
+        maxPriceLamports: input.max_price_lamports,
+        toolName: 'submit_delegated_job_from_file',
       });
-
-      let resultAttachment: FileAttachment | undefined;
-      let pullTx: string | undefined;
-      // What the provider says actually moved. On a metered capability this
-      // differs from the card price (which is the ceiling), so recording the
-      // card price would overstate every metered job in the buyer's history.
-      let settledAmountSubunits: number | undefined;
-      try {
-        const result = await awaitJobResult<string>(
-          agent,
-          {} as never,
-          ({ resolve, reject }) => ({
-            jobEventId: jobId,
-            providerPubkey,
-            customerPublicKey: agent.identity.publicKey,
-            callbacks: {
-              onResult(
-                content: string,
-                _eventId: string,
-                attachment?: FileAttachment,
-                _attachments?: FileAttachment[],
-                paymentTx?: string,
-                paidAmountSubunits?: number,
-              ) {
-                pullTx = paymentTx;
-                settledAmountSubunits = paidAmountSubunits;
-                if (attachment) {
-                  resultAttachment = attachment;
-                  resolve(formatFileResultMetadata(jobId, attachment));
-                  return;
-                }
-                const sanitized = sanitizeResultContent(content);
-                resolve(`Job completed.\n\n${sanitized.text}`);
-              },
-              onError(error: string) {
-                rejectWithProviderError(reject, error);
-              },
-              onTimeout(waitedMs: number) {
-                reject(new JobWaitTimeoutError(waitedMs));
-              },
-            },
-            timeoutMs,
-            customerSecretKey: agent.identity.secretKey,
-          }),
-          timeoutMs + 5_000,
-        );
-
-        // Count what actually moved against the session cap. The same figure the
-        // buyer's history records, computed by the same helper - a metered pull
-        // is usually well under the ceiling checked before publishing, so
-        // charging the ceiling here would overstate the session spend.
-        const settledForSession = settledSubunitsForHistory(card, price, settledAmountSubunits);
-        recordSpend(ctx, delegationAsset, BigInt(settledForSession));
-
-        await recordJobOutcome(agent, {
-          jobEventId: jobId,
-          capability: dTag,
-          providerPubkey,
-          providerName: clipProviderName(provider.name),
-          // What actually moved, as recorded in the buyer's OWN history.
-          //
-          // On a FLAT card the runtime always pulls exactly `price`, so there is
-          // nothing to learn from the provider and the reported figure is only a
-          // way to lie - the card price is the truth by construction.
-          //
-          // On a METERED card the pull is variable, so the provider's report is
-          // the only source of the real number. It is still attacker-controlled
-          // and arrives through a tag parser that accepts negatives and
-          // prefix-parses garbage, so it is trusted only inside the range the
-          // card published and the buyer approved: `[min, price]`. Anything
-          // outside degrades to the ceiling rather than to the attacker's value.
-          paidAmountSubunits: String(settledForSession),
-          // The registry key, not the card's. A mint-less `usdc` card is
-          // accepted by the gate above but keys as `solana:usdc`, which
-          // `assetByKey` cannot resolve and which splits any per-asset
-          // aggregation away from the canonical `solana:usdc:<mint>` rows.
-          assetKey: assetKey(delegationAsset),
-          status: 'completed',
-          submittedAt,
-          completedAt: Date.now(),
-          resultPreview: result.slice(0, RESULT_PREVIEW_MAX_LEN),
-          paymentSig: pullTx,
-          attachmentJson: resultAttachment ? JSON.stringify(resultAttachment) : undefined,
-        });
-        // The pull signature is provider-reported transparency data (the result
-        // event's `tx` tag) - the on-chain delegation itself remains the truth.
-        const pullLine = pullTx !== undefined ? `pull_tx=${pullTx}\n` : '';
-        const tip = buildJobCompletionTip(jobId, input.provider_npub);
-        return textResult(`event_id=${jobId}\n${pullLine}${result}${tip}`);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        const isTimeout = e instanceof JobWaitTimeoutError;
-        await recordJobOutcome(agent, {
-          jobEventId: jobId,
-          capability: dTag,
-          providerPubkey,
-          providerName: clipProviderName(provider.name),
-          status: isTimeout ? 'timeout' : 'failed',
-          submittedAt,
-          completedAt: Date.now(),
-        });
-        if (isTimeout) {
-          return textResult(
-            `event_id=${jobId}\nStill processing (delegated: the provider pulls payment ` +
-              `only after delivering the result). This is NOT an error - retry ` +
-              `get_job_result with event_id="${jobId}" later. If the provider never ` +
-              `starts, the proof expires within ${MAX_PROOF_TTL_SECS / 60} minutes with ` +
-              `no charge.`,
-          );
-        }
-        const safeMsg = sanitizeUntrusted(msg, 'text').text;
-        return errorResult(
-          `Job ${jobId} failed: ${safeMsg}. Delegated jobs charge only on delivery - ` +
-            `no charge occurred unless a pull was reported.`,
-        );
-      }
     },
   }),
 
@@ -2627,7 +2838,9 @@ export const customerTools: ToolDefinition[] = [
       'approve payments up to that limit (this is a confirmation, not an error). ' +
       'COST: input is sent inline in the tool call, so a large input pays output tokens on ' +
       'the calling LLM. For files or git diffs, prefer submit_and_pay_job_from_file or ' +
-      'submit_diff_review respectively.',
+      'submit_diff_review respectively. This pays the listed price up front; when the ' +
+      'capability advertises delegation, submit_delegated_job bills a metered card for ' +
+      'actual usage instead.',
     schema: SubmitAndPayJobSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
@@ -2685,75 +2898,32 @@ export const customerTools: ToolDefinition[] = [
       'agent, a PAID provider skill (free skills reject file inputs), and the iroh addon. ' +
       'Text files reach the skill on stdin; binary files via ELISYM_INPUT_FILE. ' +
       'Pass an optional `prompt` to send a text instruction alongside the file (e.g. how ' +
-      'to edit an image); it rides inline (encrypted) while the file rides P2P.',
+      'to edit an image); it rides inline (encrypted) while the file rides P2P. ' +
+      'This pays the listed price up front; when the capability advertises delegation, ' +
+      'use submit_delegated_job_from_file so a metered card bills only actual usage.',
     schema: SubmitAndPayJobFromFileSchema,
     async handler(ctx, input) {
       ctx.toolRateLimiter.check();
       checkLen('provider_npub', input.provider_npub, MAX_NPUB_LEN);
 
-      // An optional prompt accompanies the file as the inline (NIP-44 encrypted) job
-      // note. The single attachment slot holds the FILE, so the prompt cannot spill to
-      // a second iroh transfer - bound it here (best-effort) below the NIP-44 inline
-      // budget, leaving headroom for envelope JSON + the iroh ticket; the SDK's
-      // plaintext backstop is the definitive guard. Do NOT route it through
-      // prepareTextInput (which would spill an oversize note to a conflicting attachment).
-      const PROMPT_INLINE_CAP = 55_000;
-      const trimmedPrompt = input.prompt.trim();
-      if (utf8ByteLength(trimmedPrompt) > PROMPT_INLINE_CAP) {
-        return errorResult(
-          `Prompt is too long to ride inline (max ${PROMPT_INLINE_CAP} bytes); ` +
-            `the file occupies the only attachment slot, so shorten the prompt.`,
-        );
+      const validated = await validateFileInput(ctx, {
+        inputPath: input.input_path,
+        allowOutsideCwd: input.allow_outside_cwd,
+        prompt: input.prompt,
+      });
+      if ('error' in validated) {
+        return errorResult(validated.error);
       }
-
-      // Validate + classify first, so a bad/sensitive/missing path gives a specific
-      // error rather than the persistent-agent message below.
-      let prepared;
-      try {
-        prepared = await prepareFileInput(input.input_path, {
-          allowOutsideCwd: input.allow_outside_cwd,
-        });
-      } catch (e) {
-        return errorResult(e instanceof Error ? e.message : String(e));
-      }
-
-      const agent = ctx.active();
-      // Every file travels P2P via iroh, which requires a persistent agent to seed:
-      // an ephemeral session cannot reliably outlive the request window.
-      if (agent.agentDir === undefined) {
-        return errorResult(
-          `Sending a file requires a persistent agent (this is an ephemeral session). ` +
-            `Files are always transferred P2P via iroh, never inline.`,
-        );
-      }
-
-      let attachment: FileAttachment;
-      try {
-        const seeded = await ensureIrohTransport(agent).seedPath(prepared.absPath);
-        attachment = {
-          name: prepared.name,
-          size: seeded.size,
-          mime: prepared.mime,
-          transports: [{ kind: 'iroh', ticket: seeded.ticket }],
-        };
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        // The iroh addon is an optional native dependency; surface an install hint
-        // rather than the opaque seed error when it is simply not installed.
-        if (/@number0\/iroh|iroh file transfer is unavailable/i.test(msg)) {
-          return errorResult(
-            `File transfer is unavailable: the optional @number0/iroh addon is not installed. ` +
-              `Install it (e.g. \`bun add @number0/iroh\`) to send files.`,
-          );
-        }
-        return errorResult(`Failed to seed file for transfer: ${msg}`);
+      const seeded = await seedFileAttachment(validated.agent, validated.file);
+      if ('error' in seeded) {
+        return errorResult(seeded.error);
       }
 
       // The file body rides the attachment; the optional prompt rides inline as the
       // job note (empty -> the SDK omits the envelope text, preserving file-only jobs).
-      return executeSubmitAndPay(ctx, agent, {
-        input: trimmedPrompt,
-        attachment,
+      return executeSubmitAndPay(ctx, validated.agent, {
+        input: validated.prompt,
+        attachment: seeded.attachment,
         providerNpub: input.provider_npub,
         providerPubkey: decodeNpub(input.provider_npub),
         capability: input.capability,

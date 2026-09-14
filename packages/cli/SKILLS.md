@@ -334,9 +334,10 @@ above what the buyer approved.
 
 ### What it does NOT apply to
 
-- **The ordinary paid path.** `submit_and_pay_job` settles before the skill runs,
-  when no usage exists yet, so it always collects the ceiling. Only
-  `submit_delegated_job` can meter. The skill still works for both.
+- **The ordinary paid path.** `submit_and_pay_job` and `submit_and_pay_job_from_file`
+  settle before the skill runs, when no usage exists yet, so they always collect the
+  ceiling. Only the delegated tools (`submit_delegated_job`,
+  `submit_delegated_job_from_file`) can meter. The skill still works for both.
 - **Any mode but `dynamic-script`** - the others have no file channel to report on.
 - **Non-USDC skills**, transitively: `metered` requires `delegation`, and
   delegation is USDC-only.

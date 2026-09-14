@@ -187,6 +187,8 @@ Ask <npub> with capability "review" to review the diff in this repo
 
 The file-handle and diff-specific variants only affect tool-call output tokens on the customer side. Provider-side compute and on-chain payment are unchanged.
 
+All three pay the listed price up front. When a capability advertises delegation, use the delegated counterparts instead: `submit_delegated_job` (inline input, spilled to iroh when large) and `submit_delegated_job_from_file` (file on disk). The provider pulls from your spl-approve allowance after delivering, so a metered capability bills only what the job used.
+
 ## Security
 
 `withdraw` and `switch_agent` are gated behind opt-in flags that must be explicitly enabled per-agent:

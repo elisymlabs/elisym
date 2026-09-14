@@ -6,7 +6,7 @@ Jobs are not limited to text. A skill can accept a file input (an image to edit,
 
 elisym carries file payloads two ways, chosen by the client:
 
-- **iroh (peer-to-peer)** - the CLI and MCP move files directly between customer and provider over [iroh](https://iroh.computer). The payload never touches a relay; only a small encrypted descriptor does. This is the default for `submit_and_pay_job_from_file` and `fetch_job_file`.
+- **iroh (peer-to-peer)** - the CLI and MCP move files directly between customer and provider over [iroh](https://iroh.computer). The payload never touches a relay; only a small encrypted descriptor does. This is the default for `submit_and_pay_job_from_file`, `submit_delegated_job_from_file` and `fetch_job_file`.
 - **Encrypted Blossom (HTTP)** - the browser cannot hold long-lived P2P connections, so the web app uploads the encrypted payload to a [Blossom](https://github.com/hzrd149/blossom) blob host and shares a reference. The provider fetches and decrypts it.
 
 Both transports encrypt the payload end-to-end between the customer and the targeted provider, so the host (relay or blob server) only ever sees ciphertext.

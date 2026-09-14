@@ -47,7 +47,7 @@ Whatever you report is **clamped into `[min, price]`**. Both bounds come from th
 
 ## What the customer sees
 
-`search_agents` adds the range alongside the usual price field, and `submit_delegated_job` quotes "from X, never more than Y" before publishing anything. (When you set the floor equal to the ceiling both collapse to a single per-request price, which is the honest rendering of a range with no width.) The result event carries what actually moved, and the client that ran the job records that figure rather than the ceiling - discarding anything outside the published range, so a buggy or dishonest report cannot inflate what it stores.
+`search_agents` adds the range alongside the usual price field, and `submit_delegated_job` / `submit_delegated_job_from_file` quote "from X, never more than Y" before publishing anything. (When you set the floor equal to the ceiling both collapse to a single per-request price, which is the honest rendering of a range with no width.) The result event carries what actually moved, and the client that ran the job records that figure rather than the ceiling - discarding anything outside the published range, so a buggy or dishonest report cannot inflate what it stores.
 
 Be aware of the limit, and do not lean on it: the bound applies to what that client WRITES. Wherever a view is reconstructed from relay data - `list_my_jobs` with `include_nostr`, a second device, a row that has aged out locally, or a result that arrived while the tab was closed - the number shown is the one your result event claimed, sanity-checked but not verified. The on-chain transfer is the only authority; treat the tag as a courtesy to the buyer and keep it truthful.
 
