@@ -52,6 +52,7 @@ Markdown body - used as the system prompt for `mode: llm`, ignored otherwise.
 | `static-script`  | ignored        | Runs `script` with no stdin; returns stdout.                         |
 | `dynamic-script` | yes            | Runs `script` with the input piped to stdin; returns stdout.         |
 | `x402`           | yes            | Proxies the job to an x402-paid HTTP upstream, paid from the agent wallet. |
+| `onchain`        | yes            | Runs `script` to BUILD a Solana call the **customer** signs. The agent signs nothing. |
 
 ### Script modes
 
@@ -64,6 +65,10 @@ Markdown body - used as the system prompt for `mode: llm`, ignored otherwise.
 :::warning
 Scripts run **without a shell** (`shell: false`). That means **no** pipes, globs, `$VAR` expansion, `&&`, or redirects in the command itself - put that logic inside the script. A `.sh` file must start with a shebang (`#!/usr/bin/env bash`) and be executable (`chmod +x`). Trimmed stdout is the result; empty stdout is an error. Shebangs are not honored on Windows - list the interpreter explicitly in tool `command` arrays.
 :::
+
+### `mode: onchain`
+
+The deliverable is a Solana call instead of text: your script builds an unsigned transaction, the customer signs it with their own wallet, and your agent never takes custody. Requires an `onchain:` block declaring the complete program allowlist, the asset, and both ceilings - the promise every client checks a returned call against before signing. See [on-chain calls](/providers/onchain-calls).
 
 ### `mode: x402`
 

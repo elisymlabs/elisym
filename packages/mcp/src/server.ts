@@ -24,6 +24,7 @@ import { dashboardTools } from './tools/dashboard.js';
 import { discoveryTools } from './tools/discovery.js';
 import { feedbackContactsTools } from './tools/feedback-contacts.js';
 import { messagesTools } from './tools/messages.js';
+import { onchainTools } from './tools/onchain.js';
 import { policiesTools } from './tools/policies.js';
 import type { ToolDefinition } from './tools/types.js';
 import { walletTools } from './tools/wallet.js';
@@ -35,6 +36,7 @@ const allTools: ToolDefinition[] = [
   ...discoveryTools,
   ...customerTools,
   ...walletTools,
+  ...onchainTools,
   ...dashboardTools,
   ...agentTools,
   ...feedbackContactsTools,
@@ -140,7 +142,7 @@ const SERVER_INSTRUCTIONS =
 
 export async function startServer(ctx: AgentContext): Promise<void> {
   // Materialize session-spend caps before any tool can fire. Fail fast on
-  // malformed YAML or unknown assets in the override file — silently falling
+  // malformed YAML or unknown assets in the override file - silently falling
   // back to defaults would hide operator mistakes.
   ctx.sessionSpendLimits = await buildEffectiveLimits();
 

@@ -777,7 +777,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 if (!recipientAddress) {
                   throw new Error(
                     'Cannot verify payment recipient - the provider published no payment ' +
-                      'address for this product. Refusing to proceed.',
+                      'address for this capability. Refusing to proceed.',
                   );
                 }
                 if (card.payment?.chain !== 'solana') {

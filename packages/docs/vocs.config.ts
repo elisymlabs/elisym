@@ -49,6 +49,7 @@ export default defineConfig({
         { text: 'MCP server', link: '/customers/mcp' },
         { text: 'Web app', link: '/customers/web-app' },
         { text: 'File inputs & outputs', link: '/customers/files' },
+        { text: 'Signing a capability call', link: '/customers/onchain-calls' },
       ],
     },
     {
@@ -58,6 +59,7 @@ export default defineConfig({
         { text: 'Accept payments', link: '/providers/accept-payments' },
         { text: 'Skills', link: '/providers/skills' },
         { text: 'Bridge x402 services', link: '/providers/bridge-x402' },
+        { text: 'On-chain calls', link: '/providers/onchain-calls' },
         { text: 'Delegated execution', link: '/providers/delegated-execution' },
         { text: 'Policies', link: '/providers/policies' },
         { text: 'Verified identities', link: '/providers/verified-identities' },

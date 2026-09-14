@@ -1,9 +1,10 @@
 import {
   estimateNetworkBaseline,
-  type CapabilityCard,
   formatAssetAmount,
   formatSol,
+  resolveKnownAsset,
   verifyAgentIdentities,
+  type CapabilityCard,
 } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
 import { z } from 'zod';
@@ -194,6 +195,25 @@ const VerifyAgentIdentitiesSchema = z.object({
 const ListCapabilitiesSchema = z.object({});
 
 const GetIdentitySchema = z.object({});
+
+/** Display caps for the on-chain descriptor's free-text fields. */
+const ONCHAIN_LABEL_CHARS = 32;
+const ONCHAIN_DESCRIPTION_CHARS = 200;
+
+/**
+ * A ceiling as this build can honestly state it. A card's own `decimals` are
+ * provider-controlled, so an asset elisym does not know is reported in raw
+ * subunits rather than dressed up: trusting a declared 18 decimals over a
+ * 6-decimal mint would make a 500-token bound read as `0.0000000005`. Same rule
+ * the browser applies, and the signing path refuses such an asset outright.
+ */
+export function onchainCeiling(
+  descriptor: NonNullable<CapabilityCard['onchain']>,
+  subunits: string,
+): string {
+  const asset = resolveKnownAsset('solana', descriptor.token, descriptor.mint);
+  return asset ? formatAssetAmount(asset, BigInt(subunits)) : `${subunits} subunits`;
+}
 
 export const discoveryTools: ToolDefinition[] = [
   defineTool({
@@ -438,6 +458,73 @@ export const discoveryTools: ToolDefinition[] = [
               // Conversation support: pass session_id on submit tools to hold a
               // multi-turn conversation with this capability.
               ...(card.context ? { context: true } : {}),
+              // On-chain capability: its result is a Solana call for THIS agent
+              // to verify and sign with `sign_onchain_call`, not text to read.
+              // Only the promise is surfaced, never a call - the ceilings and
+              // the program list are what a caller needs to decide up front.
+              ...(card.onchain
+                ? {
+                    onchain: {
+                      kind: card.onchain.kind,
+                      programs: card.onchain.programs,
+                      // Resolved where possible, exactly like the ceiling below
+                      // and like the payment block above: nothing cross-checks a
+                      // card's `symbol` against its mint, so a card can publish
+                      // a USDC mint and call it SOL.
+                      asset_symbol:
+                        resolveKnownAsset('solana', card.onchain.token, card.onchain.mint)
+                          ?.symbol ??
+                        sanitizeField(
+                          card.onchain.symbol ?? card.onchain.token,
+                          ONCHAIN_LABEL_CHARS,
+                        ),
+                      max_per_call: onchainCeiling(
+                        card.onchain,
+                        card.onchain.max_per_call_subunits,
+                      ),
+                      grants_authority: card.onchain.grants_authority,
+                      ...(card.onchain.grants_authority
+                        ? {
+                            max_authority: onchainCeiling(
+                              card.onchain,
+                              card.onchain.max_authority_subunits,
+                            ),
+                          }
+                        : {}),
+                      // The inputs the capability takes, so a caller composes a
+                      // job it can actually answer instead of guessing. Remote
+                      // free text, so through the same field sanitizer as every
+                      // other card string.
+                      ...(card.onchain.params.length > 0
+                        ? {
+                            params: card.onchain.params.map((param) => ({
+                              name: param.name,
+                              type: sanitizeField(param.type, ONCHAIN_LABEL_CHARS),
+                              required: param.required,
+                              ...(param.description
+                                ? {
+                                    description: sanitizeField(
+                                      param.description,
+                                      ONCHAIN_DESCRIPTION_CHARS,
+                                    ),
+                                  }
+                                : {}),
+                            })),
+                          }
+                        : {}),
+                      ...(card.onchain.requires.length > 0
+                        ? { usually_requires_first: card.onchain.requires }
+                        : {}),
+                      // The provider is handed nothing but the job's text, so a
+                      // call can only be built for a wallet the job names. An
+                      // envelope built for anyone else is refused `wrong-signer`
+                      // after the job has already been paid for.
+                      include_in_job_input:
+                        'your Solana address, which the capability needs to build the call for you',
+                      sign_with: 'sign_onchain_call',
+                    },
+                  }
+                : {}),
             };
           }),
           supported_kinds: a.supportedKinds,

@@ -39,8 +39,8 @@ const HEX_PUBKEY_RE = /^[0-9a-f]{64}$/;
 
 const TABS = [
   {
-    id: 'products' as const,
-    label: 'Products',
+    id: 'capabilities' as const,
+    label: 'Capabilities',
     icon: (
       <svg
         aria-hidden
@@ -283,7 +283,7 @@ export default function AgentPage() {
   const pingStatus: PingStatus = isOwn ? 'online' : pingedStatus;
 
   const [selectedCardIndex, setSelectedCardIndex] = useState(0);
-  const [activeTab, setActiveTab] = useState<TabId>('products');
+  const [activeTab, setActiveTab] = useState<TabId>('capabilities');
   const [appeared, setAppeared] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setAppeared(true), APPEAR_DURATION_MS);
@@ -447,7 +447,7 @@ export default function AgentPage() {
       return;
     }
     switchedJobRef.current = jobId;
-    setActiveTab((current) => (current === 'products' ? 'chat' : current));
+    setActiveTab((current) => (current === 'capabilities' ? 'chat' : current));
   }, [buyState?.buying, buyState?.jobId]);
 
   // A malformed pubkey can never resolve to an agent and would crash the
@@ -616,7 +616,7 @@ export default function AgentPage() {
                       >
                         <path d="M12 2 L13.6 10.4 L22 12 L13.6 13.6 L12 22 L10.4 13.6 L2 12 L10.4 10.4 Z" />
                       </svg>
-                      {cards.length} {cards.length === 1 ? 'product' : 'products'}
+                      {cards.length} {cards.length === 1 ? 'capability' : 'capabilities'}
                     </span>
                   )}
                   {agentData.purchases > 0 && (
@@ -722,7 +722,7 @@ export default function AgentPage() {
               chatDot={chatDot}
             />
 
-            {activeTab === 'products' && (
+            {activeTab === 'capabilities' && (
               <ProductsTab
                 cards={cards}
                 selectedCardIndex={selectedCardIndex}
@@ -760,7 +760,7 @@ export default function AgentPage() {
             {activeTab === 'policies' && <PoliciesPanel pubkey={pubkey} />}
           </div>
 
-          {cards.length > 0 && activeTab === 'products' && (
+          {cards.length > 0 && activeTab === 'capabilities' && (
             <>
               <div
                 className={cn(
@@ -829,7 +829,7 @@ function ProductsTab({
   onSelect: (index: number) => void;
 }) {
   if (cards.length === 0) {
-    return <p className="py-24 text-center text-sm text-text-2">No products yet.</p>;
+    return <p className="py-24 text-center text-sm text-text-2">No capabilities yet.</p>;
   }
   return (
     <div className="grid grid-cols-1 gap-12 sm:grid-cols-2">

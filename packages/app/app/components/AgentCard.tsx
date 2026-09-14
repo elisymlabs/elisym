@@ -135,7 +135,7 @@ export function AgentCard({ agent, isVerified, index = 0 }: Props) {
               <rect x="3" y="3" width="18" height="18" rx="2" />
               <path d="M3 9h18M9 21V9" />
             </svg>
-            {agent.cards.length} {agent.cards.length === 1 ? 'product' : 'products'}
+            {agent.cards.length} {agent.cards.length === 1 ? 'capability' : 'capabilities'}
             {hasFeedback && (
               <>
                 <span className="mx-4 opacity-30">·</span>

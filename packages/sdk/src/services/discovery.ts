@@ -17,6 +17,7 @@ import {
   X_USERNAME_REGEX,
 } from '../constants';
 import { parseDelegationDescriptor } from '../delegation';
+import { parseOnchainDescriptor } from '../onchain';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type {
@@ -302,6 +303,19 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
   // capability's delegation is unusable, not that the agent is gone.
   if (card.delegation !== undefined) {
     card.delegation = parseDelegationDescriptor(card.delegation) ?? undefined;
+  }
+
+  // On-chain action descriptor: same coerce-don't-drop posture. A cleared
+  // descriptor means this capability cannot be used to sign anything (the
+  // client has no promise to verify a call against), not that the agent is
+  // gone - it may still sell ordinary text jobs from its other cards.
+  if (card.onchain !== undefined) {
+    const descriptor = parseOnchainDescriptor(card.onchain) ?? undefined;
+    // A descriptor promising the other chain than the card's payment block is
+    // incoherent: a client would check a call against ceilings resolved for a
+    // different network's mints. Clear it rather than trust either half.
+    const paymentNetwork = card.payment?.network ?? 'devnet';
+    card.onchain = descriptor && descriptor.network === paymentNetwork ? descriptor : undefined;
   }
 
   if (
@@ -1177,6 +1191,23 @@ export class DiscoveryService {
       throw new Error(
         'Capability delegation descriptor is malformed (mechanism/delegate_pubkey/cap).',
       );
+    }
+    // Same mirror for the on-chain descriptor. Publishing a malformed one would
+    // ship a capability whose promise no client can check, so every call it
+    // ever returns would be refused - fail here instead, where it is fixable.
+    if (card.onchain !== undefined) {
+      const descriptor = parseOnchainDescriptor(card.onchain);
+      if (descriptor === null) {
+        throw new Error(
+          'Capability onchain descriptor is malformed (programs/token/ceilings/params).',
+        );
+      }
+      const paymentNetwork = card.payment.network ?? 'devnet';
+      if (descriptor.network !== paymentNetwork) {
+        throw new Error(
+          `Capability onchain descriptor is for ${descriptor.network} but the card pays on ${paymentNetwork}.`,
+        );
+      }
     }
 
     const tags: string[][] = [

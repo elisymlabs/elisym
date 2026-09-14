@@ -30,6 +30,19 @@ export const CHAT_THREAD_KEY_PREFIX = 'chat-thread:';
 /** Per-agent entry cap; oldest-by-`ts` trimmed on write, paid `pending` exempt. */
 export const MAX_THREAD_ENTRIES = 500;
 
+/** Outcome of an on-chain call a job produced. See `ChatThreadEntry.callStatus`. */
+export type CallStatus = 'sent' | 'landed' | 'failed';
+
+/**
+ * What became of a claim write.
+ *
+ * `superseded` is the one that matters: a DIFFERENT blocking signature was
+ * already recorded for this job, so this device lost a race - to another tab,
+ * or to the hydration merge recovering a call another device landed. The caller
+ * must abort rather than send, which a bare boolean could not tell it.
+ */
+export type ClaimOutcome = 'stored' | 'unstored' | 'superseded';
+
 export interface ChatThreadEntry {
   jobEventId: string;
   /**
@@ -64,6 +77,22 @@ export interface ChatThreadEntry {
    */
   txHash?: string;
   /**
+   * Solana signature of an on-chain CALL this entry produced and the customer
+   * signed (`mode: onchain` capabilities). Distinct from `txHash`, which is the
+   * payment for the job: this is the action the job's result asked for. Its
+   * presence is also what stops the confirm sheet offering to sign the same
+   * call a second time after a reload - a re-check would rebuild the call
+   * against a fresh blockhash, so the second signature would genuinely land.
+   */
+  callSignature?: string;
+  /**
+   * What became of that call. `sent` means broadcast with no verdict yet -
+   * honest, and still a reason not to sign again. `failed` means the chain
+   * answered that it reverted: nothing moved, so the customer may legitimately
+   * retry, and the confirm sheet must NOT treat it as already executed.
+   */
+  callStatus?: CallStatus;
+  /**
    * Epoch MILLISECONDS. Hydration callers must convert Nostr `created_at`
    * seconds before writing - session liveness windows compare this against
    * `Date.now()`-based stamps.
@@ -75,8 +104,30 @@ export interface ChatThreadEntry {
  * A relay-hydrated (always completed) entry: no local lifecycle fields, and
  * wire absence of a session is `sessionId` absent - never `null`.
  */
-export type HydratedChatEntry = Omit<ChatThreadEntry, 'status' | 'txHash' | 'sessionId'> & {
+export type HydratedChatEntry = Omit<
+  ChatThreadEntry,
+  'status' | 'txHash' | 'callSignature' | 'callStatus' | 'sessionId'
+> & {
   sessionId?: string;
+  /**
+   * Recovered from the CUSTOMER's own kind-7000 `call_tx` report, which is the
+   * only record of a signed call that outlives this browser's storage. Without
+   * it, a thread restored from relays comes back with no claim at all, and the
+   * sheet offers an already-signed call as fresh - a second, real execution of
+   * something the customer paid for once. Reachable by re-importing an
+   * identity, opening the same nsec elsewhere, or clearing site data, and
+   * bounded only by the envelope's 900s life.
+   *
+   * Recorded as `sent`, never `landed`, because the report does not say which.
+   * This browser publishes one only after the chain confirms, but the MCP
+   * client publishes for `assume-landed` too - a call it describes to its own
+   * caller as "almost certainly landed. Verify it yourself" - and nothing in
+   * the event distinguishes the two. `sent` blocks the sheet exactly as
+   * `landed` would while telling the customer to check the signature, which is
+   * the honest reading of a claim recovered from somewhere else.
+   */
+  callSignature?: string;
+  callStatus?: 'sent';
 };
 
 export interface CompleteEntryFields {
@@ -111,6 +162,12 @@ export interface ChatThreadStorageAdapter {
 export interface ChatThreadStore {
   appendPendingEntry(agentPubkey: string, entry: Omit<ChatThreadEntry, 'status'>): Promise<void>;
   recordEntryTxHash(agentPubkey: string, jobEventId: string, txHash: string): Promise<boolean>;
+  recordCallSignature(
+    agentPubkey: string,
+    jobEventId: string,
+    callSignature: string,
+    callStatus: CallStatus,
+  ): Promise<ClaimOutcome>;
   completeEntry(
     agentPubkey: string,
     jobEventId: string,
@@ -204,6 +261,27 @@ function fillMissingFields(
     merged.resultAttachments = hydrated.resultAttachments;
     filled = true;
   }
+  // A local claim that was SPENT outranks the report: `sent` means these bytes
+  // went out and nobody has seen the verdict, so taking a report's word for
+  // `landed` would claim a confirmation nobody observed.
+  //
+  // A local `failed` does NOT outrank it. It proves only that THIS device's
+  // attempt never left - not that no call for this job landed. A report exists
+  // only for a call its publisher watched land, so when the two disagree the
+  // truthful reading is "another device already did this", and keeping the
+  // local `failed` would leave the sheet offering a fresh signature for an
+  // action the customer has already paid for and executed. Same signature is a
+  // no-op, so a genuine retry is never refused by this.
+  const localIsSpent = merged.callSignature !== undefined && merged.callStatus !== 'failed';
+  if (
+    !localIsSpent &&
+    hydrated.callSignature !== undefined &&
+    hydrated.callSignature !== merged.callSignature
+  ) {
+    merged.callSignature = hydrated.callSignature;
+    merged.callStatus = hydrated.callStatus;
+    filled = true;
+  }
   return { merged, filled };
 }
 
@@ -246,10 +324,20 @@ export function createChatThreadStore(
           }
           return outcome.entries.length === 0 ? undefined : outcome.entries;
         });
-        if (outcome === undefined || !committed) {
-          // Storage failure before the updater ran, or a transaction that
-          // aborted after it - nothing durably changed; best-effort degrade
-          // without claiming success or notifying subscribers.
+        if (outcome === undefined || (!committed && outcome.changed)) {
+          // Storage failure before the updater ran, or a transaction carrying a
+          // real change that aborted after it - nothing durably changed;
+          // best-effort degrade without claiming success or notifying.
+          //
+          // A verdict reached WITHOUT writing anything is kept, because the
+          // commit it is waiting on is a no-op put. `superseded` is the case
+          // that matters: it means another tab already claimed this job with a
+          // different blocking signature, read inside this very transaction.
+          // Degrading it to the `unstored` fallback tells the caller "the claim
+          // did not store" - a warning, not a stop - and the caller then sends,
+          // which is the paid action executed twice. The same applies to the
+          // pre-send read, which would otherwise degrade to an empty thread and
+          // hide the claim it exists to find.
           return fallback;
         }
         if (outcome.changed) {
@@ -307,6 +395,54 @@ export function createChatThreadStore(
         return { entries: next, changed: true, result: true };
       },
       false,
+    );
+  }
+
+  /** Same strict update-if-present shape as `recordEntryTxHash`, for a signed call. */
+  function recordCallSignature(
+    agentPubkey: string,
+    jobEventId: string,
+    callSignature: string,
+    callStatus: CallStatus,
+  ): Promise<ClaimOutcome> {
+    return mutateThread<ClaimOutcome>(
+      chatThreadKey(agentPubkey),
+      (entries) => {
+        const index = entries.findIndex((entry) => entry.jobEventId === jobEventId);
+        const stored = index === -1 ? undefined : entries[index];
+        if (stored === undefined) {
+          return { entries, changed: false, result: 'unstored' };
+        }
+        if (stored.callSignature === callSignature && stored.callStatus === callStatus) {
+          return { entries, changed: false, result: 'stored' };
+        }
+        // COMPARE-AND-SET, inside the lock. A caller decides to claim from a
+        // snapshot it read earlier, and between that read and this write the
+        // hydration merge can commit a claim recovered from the customer's own
+        // relay report - a call another device already landed. A blind write
+        // would erase it and go on to send, which is the paid action executed
+        // twice. Refusing here is what lets the caller abort instead.
+        // Inlined rather than imported from `~/lib/onchainCall`, which imports
+        // this module's types: a `failed` claim moved nothing and blocks
+        // nothing, so writing over it is legitimate.
+        const blocks = stored.callSignature !== undefined && stored.callStatus !== 'failed';
+        if (blocks && stored.callSignature !== callSignature) {
+          return { entries, changed: false, result: 'superseded' };
+        }
+        // A verdict never leaves `landed`. That is the chain's own answer, and
+        // both ways out of it are wrong: rewriting it as `sent` puts "could not
+        // confirm whether it landed" back in front of a customer whose call
+        // demonstrably did, and rewriting it as `failed` turns the whole
+        // double-execution guard OFF for a call that really happened, because
+        // `blockingCallSignature` treats `failed` as nothing to block on.
+        if (stored.callStatus === 'landed' && callStatus !== 'landed') {
+          return { entries, changed: false, result: 'superseded' };
+        }
+        const next = [...entries];
+        next[index] = { ...stored, callSignature, callStatus };
+        return { entries: next, changed: true, result: 'stored' };
+      },
+      'unstored',
     );
   }
 
@@ -477,6 +613,7 @@ export function createChatThreadStore(
   return {
     appendPendingEntry,
     recordEntryTxHash,
+    recordCallSignature,
     completeEntry,
     failEntry,
     mergeHydratedEntry,
@@ -492,6 +629,7 @@ const defaultStore = createChatThreadStore();
 
 export const appendPendingEntry = defaultStore.appendPendingEntry;
 export const recordEntryTxHash = defaultStore.recordEntryTxHash;
+export const recordCallSignature = defaultStore.recordCallSignature;
 export const completeEntry = defaultStore.completeEntry;
 export const failEntry = defaultStore.failEntry;
 export const mergeHydratedEntry = defaultStore.mergeHydratedEntry;

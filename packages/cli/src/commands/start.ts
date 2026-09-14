@@ -437,6 +437,21 @@ export async function cmdStart(
     agentDescription: loaded.yaml.description ?? '',
   };
 
+  // -- Step 7a: on-chain capabilities need a wallet, for the network only --
+  // An `onchain` capability never receives a call's funds; it needs a payment
+  // entry because its card's `network` is stamped from one. With no entry the
+  // promise would say "devnet" by default, which the operator never chose - so
+  // the capability is not advertised at all. One run-level line here; the
+  // publish loop names each skill it skips.
+  const onchainSkillCount = allSkills.filter((skill) => skill.onchain !== undefined).length;
+  if (solanaAddress === undefined && onchainSkillCount > 0) {
+    console.warn(
+      `  ! ${onchainSkillCount} onchain capability(ies) declare a block but this agent has no ` +
+        'Solana payment address, so the network their cards would promise is a guess. Add a ' +
+        'payments entry to elisym.yaml.',
+    );
+  }
+
   // -- Step 7b: x402 bridge wiring (mode 'x402' skills) --
   // Startup check of the single-wallet invariant: revenue lands at
   // payments[].address, the upstream payer spends from solana_secret_key -
@@ -452,9 +467,23 @@ export async function cmdStart(
     } else if (!solanaAddress) {
       x402InvariantBroken = 'no payments[] entry in elisym.yaml';
     } else {
-      const bridgeSigner = await signerFromSecretKeyBase58(solanaSecretKey);
-      if (bridgeSigner.address !== solanaAddress) {
-        x402InvariantBroken = `payments[].address (${solanaAddress}) differs from the solana_secret_key address (${bridgeSigner.address})`;
+      // Caught, the way the delegate-key path below catches its own decode. A
+      // present-but-unreadable key is a broken invariant, which this block
+      // already knows how to handle - it withholds the x402 cards and start
+      // carries on. Left to throw it escaped `cmdStart` altogether, so one
+      // corrupted `solana_secret_key` stopped every LLM, static, dynamic and
+      // onchain skill on the agent from ever being advertised.
+      try {
+        const bridgeSigner = await signerFromSecretKeyBase58(solanaSecretKey);
+        if (bridgeSigner.address !== solanaAddress) {
+          x402InvariantBroken = `payments[].address (${solanaAddress}) differs from the solana_secret_key address (${bridgeSigner.address})`;
+        }
+      } catch (error) {
+        // Quotable only because `signerFromSecretKeyBase58` replaces kit's own
+        // message: that one carries the key itself for a bad-base58 string.
+        x402InvariantBroken = `solana_secret_key is present but unreadable - ${
+          error instanceof Error ? error.message : String(error)
+        }`;
       }
     }
     for (const skill of x402Skills) {
@@ -819,6 +848,25 @@ export async function cmdStart(
       );
       continue;
     }
+    // Same posture as x402: a card whose own invariant is broken is not
+    // published at all. Advertising an onchain capability without its
+    // descriptor would sell a job every client then refuses to sign, which is
+    // worse for the customer than the capability simply not being there.
+    if (withholdsOnchainCard(skill, solanaAddress)) {
+      // "Not republishing", because a card published by an earlier run when the
+      // wallet existed is not retracted here - the tombstone sweep builds its
+      // d-tag set from every skill, this one included. Same shape as the x402
+      // and retired-model withholds above.
+      console.warn(
+        `  ! Not republishing "${skill.name}" - no Solana payments entry. An earlier card ` +
+          'for it, if any, stays on the relays until it expires.',
+      );
+      logger.warn(
+        { event: 'publish_skipped_onchain_no_wallet', kind: 31990, skill: skill.name },
+        'capability not advertised - onchain block with no Solana payment address',
+      );
+      continue;
+    }
     try {
       await client.discovery.publishCapability(identity, buildCard(skill), kinds);
       cardsPublished += 1;
@@ -1085,6 +1133,15 @@ export function buildCapabilityCard(skill: Skill, inputs: CapabilityCardInputs):
     ...(skill.delegation && delegatePubkey
       ? { delegation: { ...skill.delegation, delegate_pubkey: delegatePubkey } }
       : {}),
+    // On-chain promise (`mode: onchain`): the network is stamped from the
+    // agent's wallet here, never from SKILL.md, so a capability copied between
+    // a devnet and a mainnet agent cannot advertise the wrong chain.
+    // Only stamped when the agent actually has a Solana payment entry: without
+    // one `walletNetwork` is a default, and a card must never promise a chain
+    // the operator never chose. `cmdStart` warns for such a skill at step 7a.
+    ...(skill.onchain && solanaAddress
+      ? { onchain: { ...skill.onchain, network: walletNetwork } }
+      : {}),
     payment: solanaAddress
       ? {
           chain: 'solana',
@@ -1098,6 +1155,22 @@ export function buildCapabilityCard(skill: Skill, inputs: CapabilityCardInputs):
         }
       : undefined,
   };
+}
+
+/**
+ * Whether the publish loop must skip this capability entirely.
+ *
+ * `buildCapabilityCard` already declines to stamp a descriptor with no wallet
+ * to take the network from, but publishing the card anyway would advertise a
+ * capability a customer can buy and then never sign - the whole promise having
+ * silently vanished. Named and exported because that is the rule worth pinning:
+ * it lives inside `cmdStart`, which no test drives.
+ */
+export function withholdsOnchainCard(
+  skill: { onchain?: unknown },
+  solanaAddress: string | undefined,
+): boolean {
+  return skill.onchain !== undefined && solanaAddress === undefined;
 }
 
 export function buildScriptEnv(secrets: LoadedAgent['secrets']): NodeJS.ProcessEnv {

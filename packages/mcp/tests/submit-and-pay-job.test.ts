@@ -17,7 +17,8 @@ import { LIMITS } from '@elisym/sdk';
 import { nip19 } from 'nostr-tools';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { AgentContext, type AgentInstance } from '../src/context.js';
-import { customerTools } from '../src/tools/customer.js';
+import { findCustomerJob } from '../src/storage/customer-history.js';
+import { customerTools, paymentCardForCapability } from '../src/tools/customer.js';
 
 // Mock the (node-only) iroh transport so the seed paths run without the native
 // addon. Both methods are exposed: seedBytes (large-text spill) and seedPath
@@ -41,6 +42,8 @@ function buildStubAgent(opts: {
   hasSolana?: boolean;
   /** Provider ping result. Defaults to online=true so the pre-ping guard passes. */
   pingAgent?: ReturnType<typeof vi.fn>;
+  /** Drive the job's callbacks. Defaults to a subscription that never fires. */
+  subscribeToJobUpdates?: ReturnType<typeof vi.fn>;
   /** Set to mark the agent persistent (eligible to seed a spilled input). */
   agentDir?: string;
 }): AgentInstance {
@@ -55,7 +58,7 @@ function buildStubAgent(opts: {
     discovery: { fetchAgents: opts.fetchAgents },
     marketplace: {
       submitJobRequest,
-      subscribeToJobUpdates: vi.fn(() => () => {}),
+      subscribeToJobUpdates: opts.subscribeToJobUpdates ?? vi.fn(() => () => {}),
     },
     ping: { pingAgent },
   };
@@ -192,6 +195,34 @@ describe('submit_and_pay_job expected-recipient fail-fast', () => {
     expect(result.content[0]?.text).toMatch(/no Solana payment address/i);
     // Crucial: it did NOT fall back to the unrelated 'do-thing' card and price against it.
     expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('prices the card the tag NAMES, not the first that answers by keyword', async () => {
+    // The web app writes the selected card's own name as the tag, and the
+    // on-chain verifier resolves that tag to the card it names. Pricing took
+    // the first payment-bearing match in RELAY ARRIVAL ORDER, so the card that
+    // was paid for and the card whose on-chain ceilings were enforced could
+    // differ - non-deterministically, across runs.
+    const providerEvent = {
+      npub: VALID_PROVIDER_NPUB,
+      name: 'Test Provider',
+      cards: [
+        {
+          name: 'bundle',
+          description: 'answers the same keyword, and arrives first',
+          capabilities: ['swap'],
+          payment: { chain: 'solana' as const, address: 'wrong-card-addr', amount: '9' },
+        },
+        {
+          name: 'swap',
+          description: 'the card the customer named',
+          capabilities: ['swap'],
+          payment: { chain: 'solana' as const, address: 'right-card-addr', amount: '1' },
+        },
+      ],
+    };
+    const priced = paymentCardForCapability(providerEvent as never, 'swap');
+    expect(priced?.payment?.address).toBe('right-card-addr');
   });
 
   it('allows free providers when the customer has no Solana wallet', async () => {
@@ -539,5 +570,108 @@ describe('submit_and_pay_job_from_file always seeds via iroh (never inline)', ()
     expect(result.content[0]?.text).toMatch(/inline/i);
     expect(mockSeedPath).not.toHaveBeenCalled();
     expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('a paid job the customer has no wallet for', () => {
+  const JOB_EVENT_ID = 'e'.repeat(64);
+  let agentDir: string;
+
+  beforeEach(async () => {
+    agentDir = await mkdtemp(join(tmpdir(), 'elisym-no-wallet-'));
+  });
+  afterEach(async () => {
+    await rm(agentDir, { recursive: true, force: true });
+  });
+
+  /** A provider whose card is priced in SOL, so the payment request stays minimal. */
+  function paidSolProvider() {
+    return {
+      npub: VALID_PROVIDER_NPUB,
+      name: 'Test Provider',
+      cards: [
+        {
+          name: 'do-thing',
+          description: 'paid capability',
+          capabilities: ['do-thing'],
+          payment: {
+            chain: 'solana' as const,
+            address: 'provider-wallet-addr',
+            job_price: 5_000,
+          },
+        },
+      ],
+    };
+  }
+
+  /** Fire the provider's payment-required feedback as soon as the wait is armed. */
+  function demandsPayment() {
+    return vi.fn(
+      (options: {
+        callbacks: { onFeedback: (status: string, amount?: number, request?: string) => void };
+      }) => {
+        queueMicrotask(() =>
+          options.callbacks.onFeedback(
+            'payment-required',
+            5_000,
+            JSON.stringify({ recipient: 'provider-wallet-addr', amount: 5_000 }),
+          ),
+        );
+        return () => {};
+      },
+    );
+  }
+
+  it('records it as failed rather than as a completed job whose result is the notice', async () => {
+    // The wait is resolved by this client's own "payment required" notice: the
+    // provider never executed and nothing was paid. Written as `completed` with
+    // that notice as `resultPreview`, `list_my_jobs` reported an unpaid,
+    // unanswered job back to the LLM and the user as a success.
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [paidSolProvider()]),
+      submitJobRequest: vi.fn(async () => JOB_EVENT_ID),
+      subscribeToJobUpdates: demandsPayment(),
+      hasSolana: false,
+      agentDir,
+    });
+    const tool = findTool('submit_and_pay_job');
+    await tool.handler(
+      ctxWith(agent),
+      tool.schema.parse({
+        input: 'do the thing',
+        provider_npub: VALID_PROVIDER_NPUB,
+        capability: 'do-thing',
+        max_price_lamports: 5_000,
+        timeout_secs: 2,
+      }),
+    );
+
+    const entry = await findCustomerJob(agentDir, JOB_EVENT_ID);
+    expect(entry?.status).toBe('failed');
+    expect(entry?.resultPreview).toBeUndefined();
+  });
+
+  it('buy_capability makes the same call, and had no way to tell the two apart at all', async () => {
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [paidSolProvider()]),
+      submitJobRequest: vi.fn(async () => JOB_EVENT_ID),
+      subscribeToJobUpdates: demandsPayment(),
+      hasSolana: false,
+      agentDir,
+    });
+    const tool = findTool('buy_capability');
+    await tool.handler(
+      ctxWith(agent),
+      tool.schema.parse({
+        provider_npub: VALID_PROVIDER_NPUB,
+        capability: 'do-thing',
+        max_price_lamports: 5_000,
+        timeout_secs: 2,
+      }),
+    );
+
+    const entry = await findCustomerJob(agentDir, JOB_EVENT_ID);
+    expect(entry?.status).toBe('failed');
+    expect(entry?.resultPreview).toBeUndefined();
   });
 });

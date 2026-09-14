@@ -23,6 +23,53 @@ const STALE_TIME_MS = 1000 * 30;
 const REFETCH_INTERVAL_MS = 1000 * 60;
 
 /**
+ * The signature that should block each job's confirm sheet, from the customer's
+ * own call reports.
+ *
+ * Exported and pure because of what it decides: pick the wrong event and the
+ * sheet either refuses a retry the customer is entitled to or points them at
+ * the wrong transaction to go and check.
+ *
+ * The author is re-verified rather than trusted to the filter - a relay is
+ * bound only by its own honesty - and the NEWEST report wins, because relay
+ * order is arbitrary and a job carries more than one whenever a first call
+ * failed and a later one was signed. Events without both an `e` anchor and a
+ * `call_tx` tag are ignored, which is every rating and payment report.
+ *
+ * `created_at` is the author's own clock, so "newest" is only as good as it.
+ * That is not a hole a provider can reach - every report counted here is one
+ * the VIEWER signed, and the check above proves it - but two of the customer's
+ * own devices with skewed clocks can order their reports wrongly, and the sheet
+ * would then name the older signature as the one to go and check. Both
+ * signatures block signing again, so the cost is a confusing pointer rather
+ * than a second call. The alternative, trusting relay arrival order, is worse:
+ * it is arbitrary between relays.
+ */
+export function newestCallSignatures(
+  reports: readonly NostrEvent[],
+  viewerPubkey: string,
+): Map<string, string> {
+  const signatureByJobId = new Map<string, string>();
+  const newestByJobId = new Map<string, number>();
+  for (const report of reports) {
+    if (!verifyEvent(report) || report.pubkey !== viewerPubkey) {
+      continue;
+    }
+    const jobEventId = report.tags.find((tag) => tag[0] === 'e')?.[1];
+    const signature = report.tags.find((tag) => tag[0] === 'call_tx')?.[1];
+    if (!jobEventId || !signature) {
+      continue;
+    }
+    const seen = newestByJobId.get(jobEventId);
+    if (seen === undefined || report.created_at > seen) {
+      newestByJobId.set(jobEventId, report.created_at);
+      signatureByJobId.set(jobEventId, signature);
+    }
+  }
+  return signatureByJobId;
+}
+
+/**
  * Fetch the viewer's completed jobs with this agent from the relays and decode
  * them into thread entries stamped with the hydrating identity. The 5100
  * envelope decode additionally reads `session.id` (the customer can always
@@ -51,7 +98,7 @@ async function fetchHydratedEntries(
   }
 
   const requestIds = requests.map((req) => req.id);
-  const [resultMap, rawFeedbacks] = await Promise.all([
+  const [resultMap, rawFeedbacks, rawCallReports] = await Promise.all([
     // Author-bound to the agent: forged kind-6100 protection, same as every
     // sibling queryJobResults call site.
     client.marketplace
@@ -60,12 +107,22 @@ async function fetchHydratedEntries(
     client.pool
       .queryBatchedByTag({ kinds: [KIND_JOB_FEEDBACK], authors: [agentPubkey] }, 'e', requestIds)
       .catch(() => [] as NostrEvent[]),
+    // The customer's OWN call reports. This browser's IndexedDB is otherwise
+    // the only record that a call was signed, so losing it - a re-imported
+    // identity, the same nsec on another device, cleared site data - brings the
+    // thread back with the envelope intact and no claim, and the sheet offers
+    // an already-executed call as fresh. Authored by the viewer, not the agent.
+    client.pool
+      .queryBatchedByTag({ kinds: [KIND_JOB_FEEDBACK], authors: [viewerPubkey] }, 'e', requestIds)
+      .catch(() => [] as NostrEvent[]),
   ]);
   // Same relay-honesty rule as the request query above: drop feedback events
   // not actually signed by the agent before trusting their payment-request tags.
   const feedbacks = (rawFeedbacks as NostrEvent[]).filter(
     (event) => verifyEvent(event) && event.pubkey === agentPubkey,
   );
+
+  const callSignatureByJobId = newestCallSignatures(rawCallReports as NostrEvent[], viewerPubkey);
 
   const assetByJobId = new Map<string, PaymentAssetRef>();
   for (const feedback of feedbacks) {
@@ -129,6 +186,7 @@ async function fetchHydratedEntries(
     const resultText = resultDisplay(decoded);
     const resultAttachments = decoded.attachments;
     const asset = assetByJobId.get(req.id);
+    const callSignature = callSignatureByJobId.get(req.id);
 
     out.push({
       jobEventId: req.id,
@@ -143,6 +201,10 @@ async function fetchHydratedEntries(
       ...(asset !== undefined ? { asset } : {}),
       result: resultText,
       ...(resultAttachments.length > 0 ? { resultAttachments } : {}),
+      // `sent`, not `landed`: the report carries no verdict, and the MCP client
+      // publishes one for `assume-landed` as well. It blocks the sheet either
+      // way and asks the customer to check the signature.
+      ...(callSignature !== undefined ? { callSignature, callStatus: 'sent' as const } : {}),
       // Epoch milliseconds - Nostr created_at is seconds.
       ts: req.created_at * 1000,
     });

@@ -1,0 +1,56 @@
+# Signing a capability's call
+
+Some capabilities do not answer with text. They answer with a **Solana call** - the program, the accounts, the instruction data - and you sign it with your own wallet. The agent that built it never signs, never takes custody, and never holds your funds.
+
+That means a compromised or dishonest agent cannot take your money directly. The one thing it can do is hand you a call you should not sign, which is why elisym checks every call before your wallet ever sees it.
+
+## What is checked, before you are asked
+
+The web app and the MCP client run the same verifier. It:
+
+- binds the call to what the capability **published** on its card - the complete list of programs it may ever touch. A call reaching anything else is refused before it is shown to you;
+- refuses a call that arrives already signed, pays its fee from someone else's account, needs a signature from a third party, or uses a lifetime that never expires (a signed durable-nonce transaction can be pocketed and submitted weeks later);
+- rebuilds the transaction under its own control - fresh blockhash, its own fee - so the agent cannot set your priority fee or hand you a stale call that fails after you sign;
+- **simulates it** and reads the state your accounts would be left in;
+- refuses anything that moves more than the ceiling you allowed, leaves a standing approval the capability never published, changes who controls one of your accounts, hands someone else the right to close one, or leaves one frozen;
+- refuses, rather than guesses, whenever it cannot finish the check: the simulation failed, the chain could not be read, or the node would not say which programs ran inside the call.
+
+**Where that bound stops.** Value is counted only in accounts that are provably yours - your wallet and your token accounts. Money a program holds *for* you (a lending position, a stake account, an escrow) sits in an account that program owns, and a call that moves it moves nothing the check can see. So a writable account the client could not attribute to you is listed - with two exceptions, both of which are accounts whose whole effect a movement above already describes: an ordinary token account where nothing changed but a balance going up, and a plain wallet that only received lamports. That second one means the destination of a bare SOL transfer is not named anywhere in what the client derived; if you need to check who you paid, read the transaction itself. Listing those too made the warning fire on every call, which is the same as not warning at all. What remains listed is the shape the sentence is about: state a program holds, in a form this check cannot read. It shows in the browser as a warning block and in MCP as a refusal you have to override on purpose. A call carrying such accounts is never described as "nothing moves".
+
+What you see is what the client itself derived from that simulation: the amounts, the programs (named where we can name them, "unknown program" where we cannot), and the fee.
+
+## Two limits you control, and one that is set for you
+
+- **How much may leave** - defaults to what the capability published, and you can lower it. Raising it above the published number is ignored, so the figure you are shown is always the figure applied.
+- **How much you authorize for later** - for calls that leave an SPL approval standing. This is the delegated-execution bound in another shape: after such a call, the delegate can move up to that amount at any time until you revoke it. A call like this is always spelled out by name: who gets the authority, over which account, for how much, and that it survives the transaction.
+
+Beneath those sits a third bound you do not have to set: an allowance for the **network fee and the rent** of any account the call creates. It defaults to 0.045 SOL - enough for the fee plus rent on every account a DeFi position open creates, which is usually more than one - and is capped at 0.1 SOL however a client is configured - a capability has no say in it at all, since there is no card field for it. For a capability priced in a token this is what bounds the SOL it spends; for one priced in SOL only the fee rides here, because every other lamport is the asset you already set a limit for. A call that exceeds it is refused, not quietly paid.
+
+## In the web app
+
+Buy the capability as usual - and put your wallet address in the job input, since that is the only thing the provider is given to build the call for. The agent's own explanation of the call, if it sent one, sits underneath the derived facts and is labelled as its words - never mixed into them. When the result is a call, the chat shows a review panel instead of a text bubble: set your limits, press **Check this call**, read what it does, then **Sign and send** in your wallet. The signature is stored with the job and reported back to the provider so it can tell whether the call landed. If the call is sent but cannot be confirmed, the panel says so and keeps the signature - check it in the explorer rather than signing again, because a second call would be a real one.
+
+That signature lives in this browser's storage, so losing it - clearing site data, re-importing your identity, or opening the same key somewhere else - would leave the panel offering an already-signed call as if it were new. To close that, the browser reports each confirmed call to the relays under your own key and reads those reports back when it restores a thread. A recovered call is shown as sent rather than confirmed - the report does not say which, and an agent signing on your behalf publishes one for a call it could not fully confirm - so check the signature in the explorer. A call that was sent but never reported at all has nothing to recover, so if you return to a job in a fresh browser within the call's 15-minute life, check the explorer before signing it again.
+
+## Through MCP
+
+`sign_onchain_call` is **off by default**. Set `ELISYM_ALLOW_ONCHAIN_SIGNING=1` in the MCP server's environment to enable it - the same operator opt-in that gates `approve_delegation`, and for the same reason: it lets an agent sign a transaction a remote provider built, with no human in the loop.
+
+Then, two steps:
+
+1. Submit the job as usual (`submit_and_pay_job`); the result is the call envelope. **Include your Solana address in the job input** - the provider is handed nothing but your text, and a call built for any other wallet is refused.
+2. `sign_onchain_call` with the `job_id` returns a preview: what the call does, the limits applied, and a nonce. Call it again with `nonce` to sign and send. The provider and the capability are read from the job itself, never from you, so a call can never be checked against a capability that did not build it. Lower either limit with `max_spend` / `max_authority`; neither can be raised above what the capability published.
+
+Signing a call claims the job in local history before the bytes go out, so a retry cannot sign the same job twice - and if the agent dies in that instant the claim outlives it. The guard needs that history to exist: an agent with no on-disk directory, or a job that has aged out of it, cannot be claimed, and the preview says so when that is the case. If a later preview says a call was already signed and the explorer shows no such transaction, clear `callSignature` from that job's entry in `.customer-history.json` before retrying.
+
+The agent's own explanation is not shown here at all: an LLM reading provider prose beside derived facts is the confusion this surface exists to avoid.
+
+There is no human in that loop, so two rules are stricter than in the browser: a call touching accounts elisym cannot attribute to you is refused outright unless you pass `accept_unattributed`, and what the call moves - an approval counted at the amount it **authorizes**, not the zero it moves today, plus the SOL the fee and any account rent cost - is charged against your [session spend limits](/customers/mcp).
+
+## What elisym does not tell you
+
+It does not tell you a program is safe. It has not audited the code you are about to call, and no part of the interface implies otherwise:
+
+> elisym checked this call against what the capability published, simulated it, and bounded what can leave your wallet. It has NOT audited the program you are about to call and cannot tell you it is safe.
+
+Bounded damage is the guarantee for the accounts elisym can see: at most what you allowed leaves them, and nothing lingers behind on them that you were not told about. For anything a program holds on your behalf, the guarantee is narrower - you are told which accounts those are, and the judgement is yours. Whether the program on the other side deserves your business is your call, and reputation - not a badge - is what should inform it.
