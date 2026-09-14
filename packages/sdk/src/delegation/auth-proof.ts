@@ -5,7 +5,7 @@
  * A customer who `approve`d a provider's delegate key authorizes ONE delegated
  * job by signing a short, human-legible message with the OWNER key (the Solana
  * account funds are pulled from). The provider verifies the signature against
- * the `delegation_owner` tag before pulling the price from the delegation, so a
+ * the `delegation_owner` tag before pulling from the delegation, so a
  * third party who merely observes the public tags can never trigger spend from
  * someone else's allowance.
  *

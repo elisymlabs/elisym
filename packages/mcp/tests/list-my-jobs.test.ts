@@ -24,6 +24,16 @@ const MY_PUBKEY = 'd'.repeat(64);
 const MY_NPUB = nip19.npubEncode(MY_PUBKEY);
 const OTHER_PUBKEY = 'e'.repeat(64);
 
+// Local history is where the BOUNDED spend figure lives (`settledSubunitsForHistory`
+// clamps a provider-asserted amount to the card's published range before it is
+// written). `nostr.amount` is the raw provider tag. The precedence between them
+// decides which of the two the user actually reads.
+const mockLocalHistory: Array<Record<string, unknown>> = [];
+vi.mock('../src/storage/customer-history.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, readCustomerHistory: async () => ({ version: 1, jobs: mockLocalHistory }) };
+});
+
 function buildStubAgent(opts: {
   fetchRecentJobs: ReturnType<typeof vi.fn>;
   queryJobResults?: ReturnType<typeof vi.fn>;
@@ -40,11 +50,81 @@ function buildStubAgent(opts: {
     identity: { publicKey: MY_PUBKEY, npub: MY_NPUB, secretKey: new Uint8Array(32) } as never,
     name: 'stub',
     network: 'devnet',
+    agentDir: '/tmp/elisym-list-jobs-stub',
     security: {},
   };
 }
 
 describe('list_my_jobs', () => {
+  it('reports the provider NET, not the gross the customer signed', async () => {
+    // The two sides measure different things on an ordinary job: the relay tag
+    // is the provider's net (price minus protocol fee), the local record is the
+    // gross the customer signed. Preferring local would move every flat row from
+    // net to gross while nostr-only rows stayed net - two definitions in one
+    // list. On a delegated job they agree by construction.
+    mockLocalHistory.length = 0;
+    mockLocalHistory.push({
+      jobEventId: 'job-1',
+      capability: 'echo',
+      providerPubkey: 'p'.repeat(64),
+      paidAmountSubunits: '6100',
+      status: 'completed',
+      submittedAt: Date.now(),
+    });
+    const fetchRecentJobs = vi.fn(async () => [
+      {
+        eventId: 'job-1',
+        customer: MY_PUBKEY,
+        status: 'success',
+        createdAt: 1,
+        capability: 'echo',
+        amount: 999_999_999,
+        result: 'done',
+        resultEventId: undefined,
+      },
+    ]);
+    const agent = buildStubAgent({ fetchRecentJobs });
+    const ctx = new AgentContext();
+    ctx.register(agent);
+
+    const tool = findTool('list_my_jobs');
+    const result = await tool.handler(ctx, tool.schema.parse({ limit: 10, include_nostr: true }));
+    const text = result.content[0]?.text ?? '';
+
+    expect(text).toContain('999999999');
+    expect(text).not.toContain('6100');
+    mockLocalHistory.length = 0;
+  });
+
+  it('drops an implausible provider-tagged amount instead of rendering it', async () => {
+    // `nostr.amount` is the provider's own tag, parsed by something that accepts
+    // negatives and prefix-parses garbage, and it is shown to the user as a
+    // spend figure. We cannot make it true - only the provider knows what its
+    // pull moved - but nonsense must not reach the display.
+    mockLocalHistory.length = 0;
+    for (const bad of [-5, 1.5, Number.NaN]) {
+      const fetchRecentJobs = vi.fn(async () => [
+        {
+          eventId: 'job-bad',
+          customer: MY_PUBKEY,
+          status: 'success',
+          createdAt: 1,
+          capability: 'echo',
+          amount: bad,
+          result: 'done',
+          resultEventId: undefined,
+        },
+      ]);
+      const agent = buildStubAgent({ fetchRecentJobs });
+      const ctx = new AgentContext();
+      ctx.register(agent);
+      const tool = findTool('list_my_jobs');
+      const result = await tool.handler(ctx, tool.schema.parse({ limit: 10, include_nostr: true }));
+      const text = result.content[0]?.text ?? '';
+      expect(text).not.toContain(String(bad));
+    }
+  });
+
   it('filters jobs by the current customer pubkey', async () => {
     const fetchRecentJobs = vi.fn(async () => [
       { eventId: 'j1', customer: MY_PUBKEY, status: 'success', createdAt: 1, capability: 'a' },

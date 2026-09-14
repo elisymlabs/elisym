@@ -39,6 +39,45 @@ You are a text summarizer. Provide concise summaries.`,
     }
   });
 
+  it('carries metered.min through to the runtime Skill as subunits', () => {
+    // The end-to-end wiring the runtime depends on: SKILL.md display units ->
+    // SDK ParsedSkill -> CLI Skill. If this passthrough breaks, a metered
+    // capability still loads and still sells, but `resolveMeteredCharge` sees no
+    // floor and silently bills the ceiling on every job - the feature would be
+    // dead with nothing failing.
+    const tmp = mkdtempSync(join(tmpdir(), 'skill-test-'));
+    try {
+      createTempSkill(
+        tmp,
+        'metered',
+        `---
+name: metered
+description: charges what it uses
+capabilities:
+  - metered-cap
+price: 0.023
+token: usdc
+mode: dynamic-script
+script: ./run.sh
+metered:
+  min: '0.001'
+delegation:
+  mechanism: spl-approve
+  suggested_cap_subunits: '5000000'
+---
+`,
+      );
+      writeFileSync(join(tmp, 'metered', 'run.sh'), '#!/bin/sh\necho hi\n');
+
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
+      expect(skills).toHaveLength(1);
+      expect(skills[0]!.priceSubunits).toBe(23_000);
+      expect(skills[0]!.meteredMinSubunits).toBe(1_000n);
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
   it('loads skill with tools', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'skill-test-'));
     try {

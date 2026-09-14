@@ -422,8 +422,24 @@ interface DelegatedPullContext {
   delegateSigner: Signer;
   /** The owner's delegated USDC ATA (source of funds). */
   ownerAta: string;
-  /** The skill price - the exact pull amount (no per-job protocol fee). */
+  /**
+   * The skill price. This is the amount RESERVED (cap check, balance check,
+   * `delegationInFlight`) and, for a non-metered skill, also the exact pull
+   * amount. For a metered skill it is the CEILING - see `chargedSubunits`.
+   *
+   * Reserve and release must both use THIS field, never the charged one:
+   * `releaseDelegationReservation` saturates at zero and drops the key, so
+   * releasing less than was reserved leaks in-flight subunits for the process
+   * lifetime, and releasing more zeroes a concurrent job's reservation for the
+   * same owner.
+   */
   priceSubunits: bigint;
+  /**
+   * What the pull actually moves, set after execution for a metered skill and
+   * clamped into `[meteredMinSubunits, priceSubunits]`. Undefined means "charge
+   * the ceiling" - a non-metered skill, or a metered one that reported nothing.
+   */
+  chargedSubunits?: bigint;
   rpc: Rpc<SolanaRpcApi>;
   network: Network;
   /** Set after phase A (sign + persist); rides the result event as a `tx` tag. */
@@ -1319,6 +1335,9 @@ export class AgentRuntime {
         return; // rejected: entry markFailed + error feedback already sent
       }
       // The pull moves the full price (protocol fee was charged at approve).
+      // For a metered skill this is only the CEILING: the real figure is not
+      // knowable until the work is done, so `netAmount` is re-read from the
+      // pull context after `executeDelegatedPull` and before `deliverResult`.
       netAmount = Number(delegatedPull.priceSubunits);
     } else if (jobPrice > 0) {
       const result = await this.collectPayment(job, jobPrice, jobAsset, signal);
@@ -1504,7 +1523,17 @@ export class AgentRuntime {
           return;
         }
         this.ledger.recordDeliveredContent(job.jobId, deliveredContent);
+        delegatedPull.chargedSubunits = this.resolveMeteredCharge(
+          job,
+          matched,
+          delegatedPull.priceSubunits,
+          output.chargeSubunits,
+          log,
+        );
         const outcome = await this.executeDelegatedPull(job, delegatedPull, log);
+        // Tell the customer what actually moved, not what was reserved. Without
+        // this the result event would report the ceiling on every metered job.
+        netAmount = Number(delegatedPull.chargedSubunits ?? delegatedPull.priceSubunits);
         if (outcome === 'dead') {
           // Provably no funds moved: error feedback, NO delivery, nonce stays
           // burned - the customer re-submits with a fresh proof.
@@ -1555,6 +1584,88 @@ export class AgentRuntime {
         this.releaseDelegationReservation(delegatedPull.request.owner, delegatedPull.priceSubunits);
       }
     }
+  }
+
+  /**
+   * Decide what a delegated pull should move, for a skill that opted into
+   * metered pricing.
+   *
+   * The skill reports a figure through `ELISYM_CHARGE_FILE`; we clamp it into
+   * the range the CARD published, so the buyer can never be billed above the
+   * `price` they approved nor below the `min` they were quoted. A skill that is
+   * not metered, or one that reported nothing usable, charges the ceiling -
+   * that is exactly today's behaviour and exactly what the buyer consented to,
+   * so a provider-side bug costs the provider nothing and surprises no one.
+   * The "reported nothing" case is logged loudly because on a metered skill it
+   * means the script is broken, not that the job was cheap.
+   *
+   * Returns `undefined` to mean "charge the ceiling", which is what every
+   * caller already falls back to.
+   */
+  private resolveMeteredCharge(
+    job: IncomingJob,
+    skill: Skill | null,
+    ceiling: bigint,
+    reported: bigint | undefined,
+    log: (msg: string) => void,
+  ): bigint | undefined {
+    const floor = skill?.meteredMinSubunits;
+    // Absent floor = not a metered skill at all: the common case, and silent.
+    if (floor === undefined) {
+      return undefined;
+    }
+    // Everything else is a malformed floor and worth saying out loud. Two
+    // hazards, one branch so a flat skill never trips it:
+    //  - a non-bigint would coerce through the comparisons below and reach
+    //    `buildDelegatedTransfer` as a number (`meteredMinSubunits` is a plain
+    //    public field, so the type annotation is the only thing asserting it);
+    //  - a non-positive floor would let a zero report clamp to zero, and the
+    //    transfer builder rejects that - killing the job AFTER the work ran and
+    //    the result was persisted. The card path guards this too.
+    if (typeof floor !== 'bigint' || floor <= 0n) {
+      log(
+        `[${job.jobId.slice(0, 8)}] Metered skill has an unusable floor (${String(floor)}) - ` +
+          `billing the ${ceiling} ceiling.`,
+      );
+      return undefined;
+    }
+    // `chargeSubunits` is bigint by TYPE only - it crosses the skill boundary as
+    // whatever the implementation put there. A number would coerce silently
+    // through the comparisons below and reach `buildDelegatedTransfer` as a
+    // number, so refuse anything else rather than trusting the annotation.
+    if (reported !== undefined && typeof reported !== 'bigint') {
+      log(
+        `[${job.jobId.slice(0, 8)}] Metered skill reported a non-bigint charge - billing the ${ceiling} ceiling.`,
+      );
+      return undefined;
+    }
+    if (reported === undefined) {
+      log(
+        `[${job.jobId.slice(0, 8)}] Metered skill reported no charge - billing the ${ceiling} ceiling. ` +
+          `The script should write its cost in subunits to ELISYM_CHARGE_FILE.`,
+      );
+      return undefined;
+    }
+    // Clamp in two UNCONDITIONAL steps, not if/else-if. The load-time invariant
+    // says the floor sits under the ceiling, but this is the one line that means
+    // "never more than the price the buyer approved", so it must hold even if
+    // that invariant is ever broken upstream: raising to the floor first and
+    // only then capping guarantees `charged <= ceiling` on every path.
+    // Both bounds come from the published card, never from the skill.
+    let charged = reported;
+    if (charged < floor) {
+      charged = floor;
+    }
+    if (charged > ceiling) {
+      charged = ceiling;
+    }
+    if (charged !== reported) {
+      log(
+        `[${job.jobId.slice(0, 8)}] Metered charge ${reported} clamped to ${charged} ` +
+          `(published range ${floor}..${ceiling}).`,
+      );
+    }
+    return charged;
   }
 
   private reserveDelegation(owner: string, amount: bigint): void {
@@ -1719,13 +1830,19 @@ export class AgentRuntime {
         'the delegation account balance is below this skill price.',
       );
     }
-    this.reserveDelegation(request.owner, priceSubunits);
     log(
       `[${job.jobId.slice(0, 8)}] Delegated pre-check ok: ${formatAssetAmount(
         delegationAsset,
         priceSubunits,
       )} from ${request.owner.slice(0, 8)}... (pull after work)`,
     );
+    // Reserve LAST, immediately before returning. The caller's try/finally -
+    // the only thing that ever releases - does not open until this function
+    // returns, so anything that can throw between the reservation and the
+    // return (a throwing `onLog`, say) would leak the owner's ceiling in
+    // `delegationInFlight` for the life of the process: that map has no GC and
+    // no expiry.
+    this.reserveDelegation(request.owner, priceSubunits);
     return { request, delegateSigner, ownerAta, priceSubunits, rpc, network };
   }
 
@@ -1745,11 +1862,14 @@ export class AgentRuntime {
     }
     // The provider's own USDC ATA - the pinned destination of every pull.
     const destinationAta = await deriveOwnerDelegationAta(this.config.solanaAddress, ctx.network);
+    // One expression for the amount, read by the transfer, the ledger and the log
+    // alike - three copies that must never drift apart.
+    const amount = ctx.chargedSubunits ?? ctx.priceSubunits;
     const instructions = await buildDelegatedTransfer({
       delegate: ctx.delegateSigner,
       source: ctx.ownerAta,
       destination: destinationAta,
-      amount: ctx.priceSubunits,
+      amount,
       network: ctx.network,
       // Idempotent create (delegate-paid rent) so a fresh provider wallet's
       // first delegated job does not dead-letter on a missing ATA.
@@ -1762,11 +1882,17 @@ export class AgentRuntime {
       job.jobId,
       pull.signature,
       Number(pull.lastValidBlockHeight),
-      Number(ctx.priceSubunits),
+      Number(amount),
     );
     ctx.pullSignature = pull.signature;
     const outcome = await sendConfirmToTerminal(ctx.rpc, pull, {});
-    log(`[${job.jobId.slice(0, 8)}] Delegated pull ${outcome}: ${pull.signature.slice(0, 16)}...`);
+    // Name the amount actually moved. Without it the operator's only per-job
+    // figure is the pre-check line, which prints the CEILING - so every metered
+    // job would be logged at a price it did not collect.
+    log(
+      `[${job.jobId.slice(0, 8)}] Delegated pull ${outcome}: ${amount} subunits, ` +
+        `${pull.signature.slice(0, 16)}...`,
+    );
     return outcome;
   }
 

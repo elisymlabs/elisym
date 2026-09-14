@@ -1691,3 +1691,103 @@ describe('compareAgentsByRank', () => {
     expect(compareAgentsByRank(newer, older)).toBeLessThan(0);
   });
 });
+
+/**
+ * Metered descriptor: clear-don't-drop on the read side, fail-loud on the write
+ * side. The asymmetry is deliberate - a reader must never lose a whole agent
+ * over a pricing hint, but a publisher shipping a descriptor every reader will
+ * gut has an operator bug worth stopping.
+ */
+describe('parseCapabilityEvent - metered descriptor', () => {
+  const payment = {
+    chain: 'solana',
+    network: 'devnet',
+    address: '11111111111111111111111111111111',
+    token: 'usdc',
+  };
+  const meteredCard = (metered: unknown, jobPrice: number = 50_000) =>
+    makeCard({
+      payment: { ...payment, job_price: jobPrice },
+      ...(metered !== undefined ? { metered } : {}),
+    } as never);
+
+  it('keeps a coherent descriptor', () => {
+    const agent = ElisymIdentity.generate();
+    const parsed = parseCapabilityEvent(
+      makeCapabilityEvent(agent, meteredCard({ min_subunits: '1000' })),
+      'devnet',
+    );
+    expect(parsed?.cards[0]?.metered).toEqual({ min_subunits: '1000' });
+  });
+
+  it('clears a malformed descriptor but keeps the agent and its price', () => {
+    const agent = ElisymIdentity.generate();
+    for (const bad of [
+      { min_subunits: 'nope' },
+      { min_subunits: 1000 },
+      { min_subunits: '-1' },
+      {},
+      'not-an-object',
+    ]) {
+      const parsed = parseCapabilityEvent(makeCapabilityEvent(agent, meteredCard(bad)), 'devnet');
+      expect(parsed).not.toBeNull();
+      expect(parsed?.cards[0]?.metered).toBeUndefined();
+      expect(parsed?.cards[0]?.payment?.job_price).toBe(50_000);
+    }
+  });
+
+  it('clears an incoherent descriptor - a floor ABOVE the ceiling', () => {
+    // A client would otherwise render "from 0.06, up to 0.05". The shape is
+    // valid, so only a cross-field check catches it.
+    const agent = ElisymIdentity.generate();
+    for (const min of ['60000', '50001', '0']) {
+      const parsed = parseCapabilityEvent(
+        makeCapabilityEvent(agent, meteredCard({ min_subunits: min })),
+        'devnet',
+      );
+      expect(parsed).not.toBeNull();
+      expect(parsed?.cards[0]?.metered).toBeUndefined();
+    }
+  });
+
+  it('publishCapability THROWS on a metered descriptor readers would gut', async () => {
+    // The write-side mirror. Readers clear a bad descriptor rather than dropping
+    // the card, so publishing one would silently ship a capability whose
+    // advertised pricing every client discards - fail loud at the source instead.
+    const identity = ElisymIdentity.generate();
+    const pool = { publish: vi.fn(async () => {}) };
+    const svc = new DiscoveryService(pool as never);
+    const base = makeCard({ payment: { ...payment, job_price: 50_000 } } as never);
+
+    // Malformed shape.
+    await expect(
+      svc.publishCapability(identity, { ...base, metered: { min_subunits: 'nope' } } as never),
+    ).rejects.toThrow(/metered/i);
+
+    // Well-shaped but incoherent: a floor above the ceiling the same card names.
+    await expect(
+      svc.publishCapability(identity, { ...base, metered: { min_subunits: '60000' } } as never),
+    ).rejects.toThrow(/metered/i);
+  });
+
+  it('KEEPS a floor exactly equal to the ceiling - that degenerates to a flat price', () => {
+    const agent = ElisymIdentity.generate();
+    const parsed = parseCapabilityEvent(
+      makeCapabilityEvent(agent, meteredCard({ min_subunits: '50000' })),
+      'devnet',
+    );
+    expect(parsed?.cards[0]?.metered).toEqual({ min_subunits: '50000' });
+  });
+
+  it('clears a descriptor on a card that carries no price to clamp against', () => {
+    const agent = ElisymIdentity.generate();
+    const card = makeCard({
+      payment: { ...payment },
+      metered: { min_subunits: '1000' },
+    } as never);
+    delete (card.payment as Record<string, unknown>).job_price;
+    const parsed = parseCapabilityEvent(makeCapabilityEvent(agent, card), 'devnet');
+    expect(parsed).not.toBeNull();
+    expect(parsed?.cards[0]?.metered).toBeUndefined();
+  });
+});

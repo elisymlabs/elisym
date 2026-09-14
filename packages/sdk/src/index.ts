@@ -186,6 +186,14 @@ export {
   buildDelegationAuthProof,
   verifyDelegationAuthProof,
 } from './delegation';
+
+export {
+  MeteredDescriptorSchema,
+  SkillMeteredSchema,
+  parseMeteredDescriptor,
+  validateSkillMetered,
+} from './metered';
+export type { MeteredDescriptor, SkillMetered } from './metered';
 export type {
   DelegationDescriptor,
   SkillDelegation,

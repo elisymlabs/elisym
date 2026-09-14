@@ -147,6 +147,156 @@ describe('search_agents claimed_identities', () => {
     expect(verifyMockCalls).toHaveLength(0);
   });
 
+  it('surfaces a metered card as a RANGE so a ceiling is not read as a flat rate', async () => {
+    // Without this a buying model sees only `job_price` - the ceiling - and can
+    // skip a card that is usually several times cheaper.
+    const metered = networkAgent({
+      cards: [
+        {
+          name: 'Summarizer',
+          description: 'summarize text',
+          capabilities: ['summarize'],
+          payment: {
+            chain: 'solana',
+            network: 'devnet',
+            address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+            token: 'usdc',
+            job_price: 23_000,
+            decimals: 6,
+            symbol: 'USDC',
+          },
+          metered: { min_subunits: '1000' },
+          // Metering is only reachable through the delegated rail, so the card
+          // must carry a delegation descriptor for search_agents to advertise it.
+          delegation: {
+            mechanism: 'spl-approve',
+            suggested_cap_subunits: '50000000',
+            delegate_pubkey: 'HWM7Pv9EokrYaPShAjMJcfMKqxUEacW7Jd7j1Mdyz2Jf',
+          },
+        },
+      ],
+    });
+    const agent = buildStubAgent({ fetchAgents: vi.fn(async () => [metered]) });
+    const tool = findTool('search_agents');
+
+    const result = await tool.handler(contextFor(agent), SEARCH_INPUT);
+    const parsed = parseWrappedJson(result.content[0]?.text ?? '') as Array<
+      Record<string, unknown>
+    >;
+    const card = (parsed[0]?.cards as Array<Record<string, unknown>>)[0]!;
+
+    expect(card.metered).toBe(true);
+    expect(card.metered_min_subunits).toBe(1000);
+    expect(card.job_price_subunits).toBe(23_000);
+    expect(String(card.price_display_metered)).toMatch(/from .* up to .* billed for actual usage/);
+  });
+
+  it('collapses a degenerate range to a flat per-request price', async () => {
+    // `min === job_price` is legal and operator-configurable; "from X up to X"
+    // reads like a bug rather than a flat price.
+    const degenerate = networkAgent({
+      cards: [
+        {
+          name: 'Summarizer',
+          description: 'summarize text',
+          capabilities: ['summarize'],
+          payment: {
+            chain: 'solana',
+            network: 'devnet',
+            address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+            token: 'usdc',
+            job_price: 23_000,
+            decimals: 6,
+            symbol: 'USDC',
+          },
+          metered: { min_subunits: '23000' },
+          delegation: {
+            mechanism: 'spl-approve',
+            suggested_cap_subunits: '50000000',
+            delegate_pubkey: 'HWM7Pv9EokrYaPShAjMJcfMKqxUEacW7Jd7j1Mdyz2Jf',
+          },
+        },
+      ],
+    });
+    const agent = buildStubAgent({ fetchAgents: vi.fn(async () => [degenerate]) });
+    const tool = findTool('search_agents');
+
+    const result = await tool.handler(contextFor(agent), SEARCH_INPUT);
+    const parsed = parseWrappedJson(result.content[0]?.text ?? '') as Array<
+      Record<string, unknown>
+    >;
+    const card = (parsed[0]?.cards as Array<Record<string, unknown>>)[0]!;
+
+    expect(String(card.price_display_metered)).toBe('0.023 USDC per request');
+  });
+
+  it('omits the metered fields on a card that advertises no delegation', async () => {
+    // `submit_delegated_job` refuses such a card outright, so advertising
+    // pay-per-use on it would point a buying model at a door that is bolted shut.
+    const orphan = networkAgent({
+      cards: [
+        {
+          name: 'Summarizer',
+          description: 'summarize text',
+          capabilities: ['summarize'],
+          payment: {
+            chain: 'solana',
+            network: 'devnet',
+            address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+            token: 'usdc',
+            job_price: 23_000,
+            decimals: 6,
+            symbol: 'USDC',
+          },
+          metered: { min_subunits: '1000' },
+        },
+      ],
+    });
+    const agent = buildStubAgent({ fetchAgents: vi.fn(async () => [orphan]) });
+    const tool = findTool('search_agents');
+
+    const result = await tool.handler(contextFor(agent), SEARCH_INPUT);
+    const parsed = parseWrappedJson(result.content[0]?.text ?? '') as Array<
+      Record<string, unknown>
+    >;
+    const card = (parsed[0]?.cards as Array<Record<string, unknown>>)[0]!;
+
+    expect(card).not.toHaveProperty('metered');
+    expect(card).not.toHaveProperty('price_display_metered');
+  });
+
+  it('omits the metered fields entirely on a flat-priced card', async () => {
+    const flat = networkAgent({
+      cards: [
+        {
+          name: 'Summarizer',
+          description: 'summarize text',
+          capabilities: ['summarize'],
+          payment: {
+            chain: 'solana',
+            network: 'devnet',
+            address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+            token: 'usdc',
+            job_price: 23_000,
+            decimals: 6,
+            symbol: 'USDC',
+          },
+        },
+      ],
+    });
+    const agent = buildStubAgent({ fetchAgents: vi.fn(async () => [flat]) });
+    const tool = findTool('search_agents');
+
+    const result = await tool.handler(contextFor(agent), SEARCH_INPUT);
+    const parsed = parseWrappedJson(result.content[0]?.text ?? '') as Array<
+      Record<string, unknown>
+    >;
+    const card = (parsed[0]?.cards as Array<Record<string, unknown>>)[0]!;
+
+    expect(card).not.toHaveProperty('metered');
+    expect(card).not.toHaveProperty('price_display_metered');
+  });
+
   it('frames identity claims as unverified in the tool description (in-band)', () => {
     const tool = findTool('search_agents');
     expect(tool.description).toContain('claimed_identities');

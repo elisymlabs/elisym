@@ -11,6 +11,7 @@ import {
   DELEGATION_NONCE_REGEX,
   MAX_PROOF_TTL_SECS,
   USDC_SOLANA_DEVNET,
+  assetKey,
   exportKeyPairBytes,
   generateSolanaWallet,
   verifyDelegationAuthProof,
@@ -23,6 +24,17 @@ import { AgentContext, type AgentInstance } from '../src/context.js';
 import { customerTools } from '../src/tools/customer.js';
 
 let mockDelegation: DelegationStatus | null = null;
+
+// Observe what lands in the buyer's own job history. The recorded spend figure
+// is provider-asserted, so it must be bounded before it is written.
+const appendCustomerJobSpy = vi.fn(async () => {});
+vi.mock('../src/storage/customer-history.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    appendCustomerJob: (...args: unknown[]) => appendCustomerJobSpy(...(args as [])),
+  };
+});
 
 vi.mock('@solana/kit', async (importOriginal) => {
   const actual = (await importOriginal()) as any;
@@ -47,7 +59,7 @@ let ownerSecretBytes: Uint8Array;
 let delegateAddress: string;
 const PROVIDER_NPUB = nip19.npubEncode('a'.repeat(64));
 
-function providerCard(withDelegation = true) {
+function providerCard(withDelegation = true, metered?: { min_subunits: string }) {
   return {
     npub: PROVIDER_NPUB,
     name: 'Delegated Provider',
@@ -75,6 +87,7 @@ function providerCard(withDelegation = true) {
               },
             }
           : {}),
+        ...(metered ? { metered } : {}),
       },
     ],
   };
@@ -103,6 +116,10 @@ function buildStubAgent(opts: {
     identity: identity as never,
     name: 'stub',
     network: 'devnet',
+    // `recordJobOutcome` is a no-op without an agentDir, so the history
+    // assertions below would silently observe nothing. The writer itself is
+    // mocked, so no file is touched.
+    agentDir: '/tmp/elisym-stub-agent',
     security: {},
     solanaKeypair: { publicKey: ownerSigner.address, secretKey: ownerSecretBytes },
   };
@@ -135,7 +152,11 @@ beforeEach(async () => {
   mockDelegation = null;
 });
 
-async function callTool(agent: AgentInstance, extraInput: Record<string, unknown> = {}) {
+async function callTool(
+  agent: AgentInstance,
+  extraInput: Record<string, unknown> = {},
+  ctx?: AgentContext,
+) {
   const tool = findTool('submit_delegated_job');
   const input = tool.schema.parse({
     input: 'do the work',
@@ -145,7 +166,7 @@ async function callTool(agent: AgentInstance, extraInput: Record<string, unknown
     timeout_secs: 1,
     ...extraInput,
   });
-  return tool.handler(ctxWith(agent), input);
+  return tool.handler(ctx ?? ctxWith(agent), input);
 }
 
 describe('submit_delegated_job pre-submit guards', () => {
@@ -214,6 +235,247 @@ describe('submit_delegated_job pre-submit guards', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toMatch(/balance/i);
     expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('quotes a RANGE for a metered card, not a flat price', async () => {
+    // The card price is the ceiling on a metered capability, so quoting it as a
+    // flat "costs X" would overstate the usual charge several-fold.
+    mockDelegation = activeDelegation();
+    const submitJobRequest = vi.fn();
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(true, { min_subunits: '1000' })]),
+      submitJobRequest,
+    });
+    const result = await callTool(agent, { max_price_lamports: undefined });
+    expect(result.isError).not.toBe(true);
+    const text = result.content[0]?.text ?? '';
+    expect(text).toMatch(/billed for what it actually uses/i);
+    expect(text).toMatch(/from 0\.001/);
+    expect(text).toMatch(/never more than/i);
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('bounds a provider-asserted settled amount before writing it to buyer history', async () => {
+    // The `amount` tag is provider-controlled and reaches us through a parser
+    // that accepts negatives and prefix-parses garbage. A hostile provider must
+    // not be able to write an arbitrary spend into the customer's own record
+    // while the on-chain pull moved something else - so it is clamped to the
+    // ceiling the buyer approved.
+    mockDelegation = activeDelegation();
+    const subscribeToJobUpdates = vi.fn(
+      (options: {
+        callbacks: {
+          onResult?: (
+            content: string,
+            eventId: string,
+            attachment?: unknown,
+            attachments?: unknown[],
+            paymentTx?: string,
+            paidAmountSubunits?: number,
+          ) => void;
+        };
+      }) => {
+        queueMicrotask(() =>
+          // Ten times the card price - a figure the buyer never approved.
+          options.callbacks.onResult?.('done', 'ev', undefined, undefined, 'sig', PRICE * 10),
+        );
+        return () => {};
+      },
+    );
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(true, { min_subunits: '1000' })]),
+      submitJobRequest: vi.fn(async () => 'job-ev'),
+      subscribeToJobUpdates: subscribeToJobUpdates as never,
+    });
+
+    await callTool(agent);
+
+    const recorded = appendCustomerJobSpy.mock.calls.at(-1)?.[1] as
+      | { paidAmountSubunits?: string }
+      | undefined;
+    expect(recorded?.paidAmountSubunits).toBe(String(PRICE));
+  });
+
+  it('ignores the reported amount entirely on a FLAT card', async () => {
+    // A flat capability always pulls exactly the advertised price, so its own
+    // card is the authority. Trusting a provider figure here would let one lie
+    // about a spend that is known by construction.
+    mockDelegation = activeDelegation();
+    const subscribeToJobUpdates = vi.fn(
+      (options: {
+        callbacks: {
+          onResult?: (
+            content: string,
+            eventId: string,
+            attachment?: unknown,
+            attachments?: unknown[],
+            paymentTx?: string,
+            paidAmountSubunits?: number,
+          ) => void;
+        };
+      }) => {
+        queueMicrotask(() =>
+          options.callbacks.onResult?.('done', 'ev', undefined, undefined, 'sig', 1),
+        );
+        return () => {};
+      },
+    );
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard()]),
+      submitJobRequest: vi.fn(async () => 'job-ev'),
+      subscribeToJobUpdates: subscribeToJobUpdates as never,
+    });
+
+    await callTool(agent);
+
+    const recorded = appendCustomerJobSpy.mock.calls.at(-1)?.[1] as
+      | { paidAmountSubunits?: string }
+      | undefined;
+    expect(recorded?.paidAmountSubunits).toBe(String(PRICE));
+  });
+
+  it('records the settled amount when the provider reports a credible one', async () => {
+    mockDelegation = activeDelegation();
+    const subscribeToJobUpdates = vi.fn(
+      (options: {
+        callbacks: {
+          onResult?: (
+            content: string,
+            eventId: string,
+            attachment?: unknown,
+            attachments?: unknown[],
+            paymentTx?: string,
+            paidAmountSubunits?: number,
+          ) => void;
+        };
+      }) => {
+        queueMicrotask(() =>
+          options.callbacks.onResult?.('done', 'ev', undefined, undefined, 'sig', 6_100),
+        );
+        return () => {};
+      },
+    );
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(true, { min_subunits: '1000' })]),
+      submitJobRequest: vi.fn(async () => 'job-ev'),
+      subscribeToJobUpdates: subscribeToJobUpdates as never,
+    });
+
+    await callTool(agent);
+
+    const recorded = appendCustomerJobSpy.mock.calls.at(-1)?.[1] as
+      | { paidAmountSubunits?: string }
+      | undefined;
+    expect(recorded?.paidAmountSubunits).toBe('6100');
+  });
+
+  it('rejects a metered report BELOW the published floor', async () => {
+    mockDelegation = activeDelegation();
+    const subscribeToJobUpdates = vi.fn(
+      (options: {
+        callbacks: {
+          onResult?: (
+            content: string,
+            eventId: string,
+            attachment?: unknown,
+            attachments?: unknown[],
+            paymentTx?: string,
+            paidAmountSubunits?: number,
+          ) => void;
+        };
+      }) => {
+        queueMicrotask(() =>
+          options.callbacks.onResult?.('done', 'ev', undefined, undefined, 'sig', 1),
+        );
+        return () => {};
+      },
+    );
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(true, { min_subunits: '1000' })]),
+      submitJobRequest: vi.fn(async () => 'job-ev'),
+      subscribeToJobUpdates: subscribeToJobUpdates as never,
+    });
+
+    await callTool(agent);
+
+    const recorded = appendCustomerJobSpy.mock.calls.at(-1)?.[1] as
+      | { paidAmountSubunits?: string }
+      | undefined;
+    expect(recorded?.paidAmountSubunits).toBe(String(PRICE));
+  });
+
+  it('gates max_price_lamports on the ceiling, not the metered floor', async () => {
+    mockDelegation = activeDelegation();
+    const submitJobRequest = vi.fn();
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(true, { min_subunits: '1000' })]),
+      submitJobRequest,
+    });
+    // A cap that sits BETWEEN the floor and the ceiling. This job would very
+    // likely settle under it, but the buyer has to approve the most it can
+    // cost: the runtime clamps into `[min, price]` and may well pull the
+    // ceiling (a skill that reports nothing does exactly that). Gating on the
+    // floor would publish a job that can legitimately charge above the cap.
+    const result = await callTool(agent, { max_price_lamports: PRICE - 1 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/exceeds max/);
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the ceiling does not fit the remaining session budget', async () => {
+    mockDelegation = activeDelegation();
+    const submitJobRequest = vi.fn();
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(true, { min_subunits: '1000' })]),
+      submitJobRequest,
+    });
+    const ctx = ctxWith(agent);
+    // Budget above the metered FLOOR but below the ceiling. The job might well
+    // settle inside the budget - but it might not, and nothing signed here can
+    // stop the pull afterwards, so the ceiling is what has to fit.
+    ctx.sessionSpendLimits.set(assetKey(USDC_SOLANA_DEVNET), BigInt(PRICE) - 1n);
+    const result = await callTool(agent, {}, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/Session spend limit/i);
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('charges the session counter what actually settled, not the ceiling', async () => {
+    mockDelegation = activeDelegation();
+    const settled = 6_100; // inside [1000, PRICE]
+    const subscribeToJobUpdates = vi.fn(
+      (options: {
+        callbacks: {
+          onResult?: (
+            content: string,
+            eventId: string,
+            attachment?: unknown,
+            attachments?: unknown[],
+            paymentTx?: string,
+            paidAmountSubunits?: number,
+          ) => void;
+        };
+      }) => {
+        queueMicrotask(() =>
+          options.callbacks.onResult?.('done', 'ev', undefined, undefined, 'sig', settled),
+        );
+        return () => {};
+      },
+    );
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(true, { min_subunits: '1000' })]),
+      submitJobRequest: vi.fn(async () => 'job-ev'),
+      subscribeToJobUpdates: subscribeToJobUpdates as never,
+    });
+    const ctx = ctxWith(agent);
+    ctx.sessionSpendLimits.set(assetKey(USDC_SOLANA_DEVNET), 10_000_000n);
+
+    await callTool(agent, {}, ctx);
+
+    // The whole point of metering: the buyer's session budget is charged the
+    // real figure. Billing the ceiling here would exhaust a session cap several
+    // times faster than the money actually leaving the wallet.
+    expect(ctx.sessionSpent.get(assetKey(USDC_SOLANA_DEVNET))).toBe(BigInt(settled));
   });
 
   it('returns a price confirmation (no publish) when max_price_lamports is omitted', async () => {

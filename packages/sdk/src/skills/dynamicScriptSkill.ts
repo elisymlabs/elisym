@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
@@ -13,6 +13,16 @@ import type {
   SkillMode,
   SkillOutput,
 } from './types';
+
+/**
+ * Upper bound on the charge file we are willing to read. Twenty digits plus
+ * whitespace is generous for a u64; anything bigger is not a number we would
+ * accept anyway, so it is refused unread rather than pulled into memory.
+ */
+const MAX_CHARGE_FILE_BYTES = 64;
+
+/** u64 ceiling - SPL amounts are u64, and the pull would reject anything above. */
+const U64_MAX = (1n << 64n) - 1n;
 
 export interface DynamicScriptSkillParams {
   name: string;
@@ -107,10 +117,17 @@ export class DynamicScriptSkill implements Skill {
     await mkdir(outputDir, { recursive: true });
     // No caller-provided env -> scoped copy of process.env (secret vars
     // stripped), never the raw parent env with the operator's key ring.
+    // Metered charge channel. Deliberately a sibling of `outputFile` under
+    // `outDir` and NOT inside `outputDir`: the multi-file scan below adopts
+    // EVERY non-empty regular file in `outputDir` as a result attachment, so a
+    // charge file placed there would be delivered to the buyer as output and
+    // would make a text-only skill look like a file skill.
+    const chargeFile = join(outDir, 'charge');
     const env: NodeJS.ProcessEnv = {
       ...(this.scriptEnv ?? scopedToolEnv()),
       ELISYM_OUTPUT_FILE: outputFile,
       ELISYM_OUTPUT_DIR: outputDir,
+      ELISYM_CHARGE_FILE: chargeFile,
     };
     if (input.filePath !== undefined) {
       env.ELISYM_INPUT_FILE = input.filePath;
@@ -159,6 +176,13 @@ export class DynamicScriptSkill implements Skill {
         throw new ScriptExecutionError(result.code, detail);
       }
 
+      // Read the metered charge ONCE, before the three return shapes below - a
+      // metered skill may report a charge alongside text, one file, or many, and
+      // reading it in only one branch would silently bill the ceiling for the
+      // others. Same adoption rule as ELISYM_OUTPUT_FILE: exists, regular,
+      // non-empty. Anything unparseable is treated as "no report".
+      const chargeSubunits = await readChargeFile(chargeFile);
+
       // Multi-file result: the script wrote files to ELISYM_OUTPUT_DIR. Collect the
       // non-empty files (sorted, deterministic) and deliver them as N attachments.
       // Like the single-file path, the stdout note may be empty (no empty-output guard).
@@ -179,6 +203,7 @@ export class DynamicScriptSkill implements Skill {
         return {
           data: result.stdout.trim(),
           filePaths,
+          ...(chargeSubunits !== undefined ? { chargeSubunits } : {}),
           outputMime: this.outputMime ?? 'application/octet-stream',
           cleanup: async () => {
             await rm(outDir, { recursive: true, force: true });
@@ -195,6 +220,7 @@ export class DynamicScriptSkill implements Skill {
         return {
           data: result.stdout.trim(),
           filePath: outputFile,
+          ...(chargeSubunits !== undefined ? { chargeSubunits } : {}),
           outputMime: this.outputMime ?? 'application/octet-stream',
           cleanup: async () => {
             await rm(outDir, { recursive: true, force: true });
@@ -213,11 +239,46 @@ export class DynamicScriptSkill implements Skill {
         const detail = result.stderr.trim() || '(no stderr)';
         throw new ScriptExecutionError(result.code, detail, 'script produced empty output');
       }
-      return { data: output };
+      return { data: output, ...(chargeSubunits !== undefined ? { chargeSubunits } : {}) };
     } finally {
       if (!keepOutDir) {
         await rm(outDir, { recursive: true, force: true }).catch(() => {});
       }
     }
   }
+}
+
+/**
+ * Read a metered charge written by the skill to `ELISYM_CHARGE_FILE`.
+ *
+ * Deliberately forgiving in one direction only: a missing, empty, oversized or
+ * unparseable file yields `undefined` ("the skill reported nothing"), and the
+ * runtime then charges the declared ceiling. It never throws - a job whose work
+ * is already done must not die over its accounting note.
+ *
+ * Strict about what it does accept: digits only, so no sign, no decimal point,
+ * no exponent, no leading `+`. The value is subunits, and the runtime clamps it
+ * into the card's published `[min, price]` regardless, so a hostile or buggy
+ * figure can never bill above what the buyer approved.
+ */
+async function readChargeFile(path: string): Promise<bigint | undefined> {
+  const chargeStat = await stat(path).catch(() => null);
+  if (chargeStat === null || !chargeStat.isFile() || chargeStat.size === 0) {
+    return undefined;
+  }
+  // A charge is at most 20 digits; anything larger is not a number we would
+  // accept, so refuse to read it rather than pulling an arbitrary file into memory.
+  if (chargeStat.size > MAX_CHARGE_FILE_BYTES) {
+    return undefined;
+  }
+  const raw = await readFile(path, 'utf8').catch(() => null);
+  if (raw === null) {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  if (!/^\d{1,20}$/.test(trimmed)) {
+    return undefined;
+  }
+  const value = BigInt(trimmed);
+  return value <= U64_MAX ? value : undefined;
 }
