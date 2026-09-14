@@ -270,8 +270,9 @@ export const agentTools: ToolDefinition[] = [
     name: 'switch_agent',
     description:
       'Switch the active agent. Loads from disk if not already loaded. ' +
-      'Gated by `security.agent_switch_enabled` in the target agent config ' +
-      '(or the ELISYM_ALLOW_AGENT_SWITCH=1 env var for CI). ' +
+      'Gated by `security.agent_switch_enabled` on the CURRENTLY ACTIVE agent - the one ' +
+      'being switched away from, not the target - so a prompt-injected instruction cannot ' +
+      'hop to a different wallet (the ELISYM_ALLOW_AGENT_SWITCH=1 env var overrides for CI). ' +
       'All subsequent tool calls will use this agent.',
     schema: SwitchAgentSchema,
     async handler(ctx, input) {
