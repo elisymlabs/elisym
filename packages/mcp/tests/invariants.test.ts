@@ -15,6 +15,8 @@ describe('broadcast is not reachable through any MCP tool', () => {
     'submit_and_pay_job',
     'submit_and_pay_job_from_file',
     'submit_diff_review',
+    'submit_delegated_job',
+    'submit_delegated_job_from_file',
     'buy_capability',
   ];
 

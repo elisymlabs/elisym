@@ -5,10 +5,15 @@
  * for the SAME delegate key, cap and balance cover the price) BEFORE publishing
  * anything - a published delegated job burns a single-use proof. The emission
  * test verifies the proof round-trips through the SDK verifier with the exact
- * (delegate, author, owner) binding the provider will check.
+ * (delegate, author, owner) binding the provider will check. The file variant
+ * and the large-input spill share that core, so they are covered here too.
  */
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   DELEGATION_NONCE_REGEX,
+  LIMITS,
   MAX_PROOF_TTL_SECS,
   USDC_SOLANA_DEVNET,
   assetKey,
@@ -19,11 +24,19 @@ import {
 import type { DelegationStatus } from '@elisym/sdk';
 import type { KeyPairSigner } from '@solana/kit';
 import { nip19 } from 'nostr-tools';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentContext, type AgentInstance } from '../src/context.js';
 import { customerTools } from '../src/tools/customer.js';
 
 let mockDelegation: DelegationStatus | null = null;
+
+// Mock the (node-only) iroh transport so the seed paths run without the native
+// addon: seedBytes backs the large-text spill, seedPath the file tool.
+const mockSeedBytes = vi.fn(async () => ({ ticket: 'blobticket-spill', size: 70_000 }));
+const mockSeedPath = vi.fn(async () => ({ ticket: 'blobticket-file', size: 17 }));
+vi.mock('../src/iroh.js', () => ({
+  ensureIrohTransport: vi.fn(() => ({ seedBytes: mockSeedBytes, seedPath: mockSeedPath })),
+}));
 
 // Observe what lands in the buyer's own job history. The recorded spend figure
 // is provider-asserted, so it must be bounded before it is written.
@@ -571,5 +584,207 @@ describe('submit_delegated_job proof emission', () => {
     expect(result.isError).not.toBe(true);
     expect(result.content[0]?.text).toMatch(/pull_tx=pull-sig-1/);
     expect(result.content[0]?.text).toMatch(/event_id=job-event-1/);
+  });
+});
+
+/** Resolve the wait at once with a result carrying the pull tx and settled amount. */
+function resolvingSubscription(paymentTx: string, paidAmountSubunits?: number) {
+  return vi.fn(
+    (options: {
+      callbacks: {
+        onResult?: (
+          content: string,
+          eventId: string,
+          attachment?: unknown,
+          attachments?: unknown[],
+          paymentTx?: string,
+          paidAmountSubunits?: number,
+        ) => void;
+      };
+    }) => {
+      queueMicrotask(() =>
+        options.callbacks.onResult?.(
+          'done',
+          'result-ev',
+          undefined,
+          undefined,
+          paymentTx,
+          paidAmountSubunits,
+        ),
+      );
+      return () => {};
+    },
+  );
+}
+
+interface SubmittedJob {
+  input: string;
+  attachment?: { mime: string; transports: { kind: string; ticket: string }[] };
+  delegatedPayment?: { owner: string };
+}
+
+describe('submit_delegated_job large inline input', () => {
+  it('spills input over the inline budget to iroh and still settles by delegation', async () => {
+    mockDelegation = activeDelegation();
+    const submitJobRequest = vi.fn(async () => 'job-event-spill');
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard()]),
+      submitJobRequest,
+      subscribeToJobUpdates: resolvingSubscription('pull-sig-spill') as never,
+    });
+
+    const result = await callTool(agent, {
+      input: 'x'.repeat(LIMITS.MAX_ENCRYPTED_INLINE_BYTES + 1),
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(mockSeedBytes).toHaveBeenCalledTimes(1);
+    const submitted = submitJobRequest.mock.calls[0]?.[1] as SubmittedJob;
+    expect(submitted.input).toBe('');
+    expect(submitted.attachment?.mime).toBe('text/plain');
+    expect(submitted.attachment?.transports[0]?.ticket).toBe('blobticket-spill');
+    expect(submitted.delegatedPayment?.owner).toBe(ownerSigner.address);
+  });
+
+  it('does not seed a large input while the price is only being confirmed', async () => {
+    mockDelegation = activeDelegation();
+    const submitJobRequest = vi.fn();
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard()]),
+      submitJobRequest,
+    });
+
+    const result = await callTool(agent, {
+      input: 'x'.repeat(LIMITS.MAX_ENCRYPTED_INLINE_BYTES + 1),
+      max_price_lamports: undefined,
+    });
+
+    expect(result.content[0]?.text).toMatch(/max_price_lamports/);
+    expect(mockSeedBytes).not.toHaveBeenCalled();
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('keeps a small input inline without seeding', async () => {
+    mockDelegation = activeDelegation();
+    const submitJobRequest = vi.fn(async () => 'job-event-inline');
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard()]),
+      submitJobRequest,
+      subscribeToJobUpdates: resolvingSubscription('pull-sig-inline') as never,
+    });
+
+    await callTool(agent);
+
+    expect(mockSeedBytes).not.toHaveBeenCalled();
+    const submitted = submitJobRequest.mock.calls[0]?.[1] as SubmittedJob;
+    expect(submitted.input).toBe('do the work');
+    expect(submitted.attachment).toBeUndefined();
+  });
+});
+
+describe('submit_delegated_job_from_file', () => {
+  let dir: string;
+  let filePath: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'elisym-delegated-file-'));
+    filePath = join(dir, 'history.md');
+    await writeFile(filePath, '# A long document');
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function callFileTool(agent: AgentInstance, extraInput: Record<string, unknown> = {}) {
+    const tool = findTool('submit_delegated_job_from_file');
+    const input = tool.schema.parse({
+      input_path: filePath,
+      provider_npub: PROVIDER_NPUB,
+      capability: 'delegated-skill',
+      max_price_lamports: PRICE,
+      allow_outside_cwd: true,
+      timeout_secs: 1,
+      ...extraInput,
+    });
+    return tool.handler(ctxWith(agent), input);
+  }
+
+  it('publishes one delegated job carrying the seeded file and records the metered pull', async () => {
+    mockDelegation = activeDelegation();
+    const submitJobRequest = vi.fn(async () => 'job-event-file');
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(true, { min_subunits: '1000' })]),
+      submitJobRequest,
+      subscribeToJobUpdates: resolvingSubscription('pull-sig-file', 1_500) as never,
+    });
+
+    const result = await callFileTool(agent, { prompt: '  Send it back verbatim.  ' });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0]?.text).toMatch(/pull_tx=pull-sig-file/);
+    expect(mockSeedPath).toHaveBeenCalledTimes(1);
+    expect(submitJobRequest).toHaveBeenCalledTimes(1);
+    const submitted = submitJobRequest.mock.calls[0]?.[1] as SubmittedJob;
+    expect(submitted.input).toBe('Send it back verbatim.');
+    expect(submitted.attachment?.mime).toBe('text/plain');
+    expect(submitted.attachment?.transports[0]).toEqual({
+      kind: 'iroh',
+      ticket: 'blobticket-file',
+    });
+    expect(submitted.delegatedPayment?.owner).toBe(ownerSigner.address);
+    const recorded = appendCustomerJobSpy.mock.calls.at(-1)?.[1] as
+      | { paidAmountSubunits?: string }
+      | undefined;
+    expect(recorded?.paidAmountSubunits).toBe('1500');
+  });
+
+  it('quotes the metered range and publishes nothing when max_price_lamports is omitted', async () => {
+    mockDelegation = activeDelegation();
+    const submitJobRequest = vi.fn();
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(true, { min_subunits: '1000' })]),
+      submitJobRequest,
+    });
+
+    const result = await callFileTool(agent, { max_price_lamports: undefined });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0]?.text).toMatch(/billed for what it actually uses/);
+    expect(result.content[0]?.text).toMatch(/submit_delegated_job_from_file/);
+    expect(mockSeedPath).not.toHaveBeenCalled();
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('points a card without delegation at the pay-up-front file tool, without seeding', async () => {
+    mockDelegation = activeDelegation();
+    const submitJobRequest = vi.fn();
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard(false)]),
+      submitJobRequest,
+    });
+
+    const result = await callFileTool(agent);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/Use submit_and_pay_job_from_file instead/);
+    expect(mockSeedPath).not.toHaveBeenCalled();
+    expect(submitJobRequest).not.toHaveBeenCalled();
+  });
+
+  it('refuses before publishing when there is no active delegation', async () => {
+    mockDelegation = null;
+    const submitJobRequest = vi.fn();
+    const agent = buildStubAgent({
+      fetchAgents: vi.fn(async () => [providerCard()]),
+      submitJobRequest,
+    });
+
+    const result = await callFileTool(agent);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/No active delegation/);
+    expect(mockSeedPath).not.toHaveBeenCalled();
+    expect(submitJobRequest).not.toHaveBeenCalled();
   });
 });

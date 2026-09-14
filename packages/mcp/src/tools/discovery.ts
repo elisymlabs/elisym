@@ -445,11 +445,11 @@ export const discoveryTools: ToolDefinition[] = [
               // Metered pricing: `job_price` above is then the CEILING, and the
               // real charge lands between the floor and it. Surfaced so a buying
               // model does not read the ceiling as a flat rate and skip a card
-              // that is usually far cheaper. Only ever reachable through
-              // submit_delegated_job - the ordinary paid path settles up front
-              // and always collects the ceiling.
+              // that is usually far cheaper. Only ever reachable through the
+              // delegated tools - the ordinary paid path settles up front and
+              // always collects the ceiling.
               // Gated on `delegation` too: metering is only reachable through
-              // `submit_delegated_job`, which refuses a card with no delegation
+              // the delegated tools, which refuse a card with no delegation
               // descriptor outright. Advertising "billed for actual usage
               // (requires delegated payment)" on such a card would point a
               // buying model at a door that is bolted shut.
@@ -472,7 +472,8 @@ export const discoveryTools: ToolDefinition[] = [
               network: card.payment?.network,
               network_fee_estimate_sol: gasEstimate,
               // File-exchange hints (dynamic-script). Informational: the MCP/CLI
-              // CAN send files via submit_and_pay_job_from_file, so this does not
+              // CAN send files via submit_and_pay_job_from_file and
+              // submit_delegated_job_from_file, so this does not
               // gate anything - it just tells the caller a file input is expected.
               // Already length-bounded by parseCapabilityEvent.
               ...(card.inputMime ? { input_mime: card.inputMime } : {}),
