@@ -80,6 +80,8 @@ let customer: ElisymIdentity;
 
 const PRICE_SUBUNITS = 50_000; // 0.05 USDC
 const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Upper bound for waiting out a job, generous enough for a loaded CI runner. */
+const SETTLE_BUDGET_MS = 10_000;
 
 function makeDelegatedSkill(overrides: Partial<Skill> = {}): Skill {
   return {
@@ -244,11 +246,35 @@ afterEach(() => {
   rmSync(agentDir, { recursive: true, force: true });
 });
 
+/**
+ * Drive the runtime over one or more triggered jobs, then stop it.
+ *
+ * The wait is on the runtime's own in-flight set, not on a fixed span. A
+ * delegated job signs and sends its pull inside `processJob`, so a sleep that
+ * is merely long enough on a fast laptop lets that pull land during the NEXT
+ * test on a slow CI runner - which shows up as a spy called zero times here
+ * and twice there. `waitMs` survives as the floor for the poll budget.
+ */
 async function runJobs(runtime: AgentRuntime, trigger: () => Promise<void> | void, waitMs = 200) {
   const runPromise = runtime.run();
   await tick();
   await trigger();
-  await tick(waitMs);
+
+  // `inFlight` is private: tests read it deliberately, because it is the only
+  // signal that says "this job is still being processed".
+  const { inFlight } = runtime as unknown as { inFlight: Set<string> };
+  const deadline = Date.now() + Math.max(waitMs, SETTLE_BUDGET_MS);
+  const queuedBy = Date.now() + Math.min(Math.max(waitMs, 100), 500);
+  while (inFlight.size === 0 && Date.now() < queuedBy) {
+    await tick(10);
+  }
+  while (inFlight.size > 0 && Date.now() < deadline) {
+    await tick(10);
+  }
+  // Trailing publishes (result delivery, feedback) run just after the job
+  // leaves the set.
+  await tick(30);
+
   runtime.stop();
   await runPromise.catch(() => {});
 }
