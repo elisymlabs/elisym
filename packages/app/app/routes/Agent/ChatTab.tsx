@@ -41,6 +41,8 @@ interface Props {
   /** Identity-scoped, ts-sorted thread entries (page-owned snapshot). */
   entries: ChatThreadEntry[];
   loading: boolean;
+  /** Opens the Delegation tab (the composer's 'delegate' buy-mode action). */
+  onOpenDelegation: () => void;
 }
 
 const THANKS_VISIBLE_MS = 3000;
@@ -106,6 +108,7 @@ export function ChatTab({
   buyState,
   entries,
   loading,
+  onOpenDelegation,
 }: Props) {
   const { client } = useElisymClient();
   const idCtx = useIdentity();
@@ -505,6 +508,7 @@ export function ChatTab({
               buyState={buyState}
               entries={entries}
               send={selectedKey === NEW_CHAT_KEY ? sendFromDraft : send}
+              onOpenDelegation={onOpenDelegation}
             />
           )
         )}

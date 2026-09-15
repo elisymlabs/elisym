@@ -14,7 +14,6 @@ import {
   mintDelegationNonce,
   assetKey,
   resolveKnownAsset,
-  resolveUsdcAsset,
   SolanaPaymentStrategy,
   splAssetsForNetwork,
   toDTag,
@@ -79,6 +78,7 @@ import {
   recordEntryTxHash,
 } from '~/lib/chatThread';
 import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
+import { DELEGATED_WALLET_UNSUPPORTED_MESSAGE, usesDelegatedRail } from '~/lib/delegatedBuyMode';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
 import { formatCardPrice, settledPriceForEntry } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
@@ -284,24 +284,14 @@ export interface BuySessionOptions {
   sessionId: string | null;
   token?: string;
   /**
-   * Explicit payment rail from the Products buy button: 'delegated' submits
-   * from the allowance or fails loudly (never a silent per-job payment the
-   * user did not choose); 'per-job' pays per job even when a delegation
-   * would be discovered at click time (the button advertised a per-job
-   * payment). Absent = resolve automatically at click time - chat/retry
-   * sends, which carry no rail label.
-   */
-  payment?: 'delegated' | 'per-job';
-  /**
    * Network fee a PER-JOB payment would draw from the wallet, in lamports, as
    * the sending surface already sized it - so the click-time balance re-check
    * can cover the fee leg without paying for a second estimate. Absent = 0,
    * i.e. price check only.
    *
-   * Surfaces pass it unconditionally. Whether it is actually demanded is
-   * `buy()`'s call, because only `buy()` knows whether the allowance rail can
-   * still win - and on that rail the provider pays the fee, so charging the
-   * customer would refuse a send they can afford.
+   * Surfaces pass it unconditionally. A delegated-rail card never demands it:
+   * the provider signs the pull and pays that fee, so charging the customer
+   * would refuse a send they can afford.
    */
   gasLamports?: number;
 }
@@ -322,8 +312,9 @@ const Ctx = createContext<BuyCtx | null>(null);
 export function BuyProvider({ children }: { children: ReactNode }) {
   const { client } = useElisymClient();
   const idCtx = useIdentity();
-  // `signMessage` is optional in the adapter contract - wallets lacking it
-  // simply never take the delegated-payment path and pay per-job instead.
+  // `signMessage` is optional in the adapter contract - a wallet lacking it
+  // cannot authorize a delegated job, so it cannot buy a delegated-rail card
+  // at all; every other card still pays per job.
   const { publicKey, sendTransaction, signMessage } = useWallet();
   const { connection } = useConnection();
   const queryClient = useQueryClient();
@@ -414,34 +405,18 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         rated: false,
       });
 
-      // A paid buy re-reads balances first (see the top of the try below), so
-      // name that step rather than announcing a submit that has not started.
+      // A delegated-rail card settles ONLY from the allowance: a missing,
+      // lapsed or unreadable allowance, or a wallet that cannot sign the
+      // authorization, fails the buy - never a per-job payment at the full
+      // price in its place. The send surfaces already hold those states
+      // (`useDelegatedBuyMode`); this is the backstop.
+      const delegatedOnly = usesDelegatedRail(card);
+      // A per-job buy re-reads balances first (see the top of the try below),
+      // so name that step rather than announcing a submit that has not started.
       // An asset this cluster cannot pay is skipped outright - the check
       // abstains on it anyway, so the read would be latency for nothing.
       const paymentAsset = isFree ? null : resolvePaymentAsset(card.payment, SOLANA_CLUSTER);
-      const needsBalanceRecheck =
-        !isFree && !!publicKey && buySession.payment !== 'delegated' && paymentAsset !== null;
-      // Everything about the delegated rail that is knowable BEFORE the
-      // allowance itself is read: the surface did not force per-job, the card
-      // advertises a delegation, the wallet can sign the authorization, and the
-      // price is in canonical USDC.
-      //
-      // Asset IDENTITY, not the card's `token` string: the pull targets the
-      // canonical USDC ATA whatever the card claims, so a card that merely
-      // calls itself usdc while naming another mint must not read as delegated
-      // here. `resolvePaymentAsset` returns null for any non-canonical mint.
-      //
-      // "Could still win", not "will win" - the rail also needs an ACTIVE
-      // covering allowance, and that costs an RPC round trip resolved further
-      // down. The gate below re-uses this and adds the narrowing TypeScript
-      // needs.
-      const delegationCanWin =
-        !isFree &&
-        buySession.payment !== 'per-job' &&
-        card.delegation !== undefined &&
-        signMessage !== undefined &&
-        paymentAsset !== null &&
-        assetKey(paymentAsset) === assetKey(resolveUsdcAsset(SOLANA_CLUSTER));
+      const needsBalanceRecheck = !isFree && !!publicKey && !delegatedOnly && paymentAsset !== null;
       const toastId = toast.loading(
         needsBalanceRecheck ? 'Checking your balance...' : 'Submitting job...',
       );
@@ -464,38 +439,24 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // `null` for that asset, which `checkBuyAffordability` abstains on by
         // its own rules.
         //
-        // PRICE is checked on every rail that reaches here. An explicit
-        // 'delegated' buy does not reach it at all (see `needsBalanceRecheck`):
-        // the delegation block below enforces `balance >= price` on the same
-        // ATA, with a better-aimed message.
-        //
-        // FEE is checked only where the allowance rail cannot win - see
-        // `delegationCanWin`. Demanding a fee while that rail is still open
-        // would refuse a send that settles for free, and `useDelegatedBuyMode`
-        // is a render-time read, too stale to rule it out. That leaves a known
-        // hole: a card painted 'Use' passes `delegatedCovers`, so
-        // `useJobGating` skips affordability outright, and if the allowance
-        // lapses between paint and click the fall-back to a per-job payment
-        // has had no fee check on either side. Closing it means resolving the
-        // rail before this check rather than after.
+        // Only a per-job buy reaches it, so it checks the price and the network
+        // fee both. A delegated-rail buy skips it (see `needsBalanceRecheck`):
+        // the delegation block below enforces `balance >= price` on the
+        // allowance ATA with a better-aimed message, and the provider pays the
+        // pull's fee.
         if (needsBalanceRecheck && publicKey) {
           // SOL plus the card's own token, never every asset on the cluster -
-          // the click waits on the slowest read. SOL is read unconditionally:
-          // the fee tier spends it where `railIsPerJob` holds, and where the
-          // rail is still open the reading at least keeps the render gate's
-          // next fee check fresh - except on a 'Use'-painted card, which skips
-          // that check altogether.
+          // the click waits on the slowest read.
           const { solLamports, splRaw } = await fetchWalletBalancesNow(
             queryClient,
             publicKey.toBase58(),
             paymentAsset !== null && paymentAsset.mint !== undefined ? [paymentAsset] : [],
           );
-          const railIsPerJob = !delegationCanWin;
           const affordable = checkBuyAffordability({
             card,
             solLamports,
             splRaw,
-            gasLamports: railIsPerJob ? (buySession.gasLamports ?? 0) : 0,
+            gasLamports: buySession.gasLamports ?? 0,
             network: SOLANA_CLUSTER,
           });
           if (!affordable.ok) {
@@ -561,29 +522,27 @@ export function BuyProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // Delegated payment mode: when the card advertises an spl-approve
-        // delegation AND this wallet holds an ACTIVE matching allowance
-        // covering the advertised price, the buy skips the per-job payment tx
-        // entirely - the provider pulls from the delegation once the work is
-        // done. On a metered capability the advertised price is a ceiling and
-        // the pull is what the job actually used, never more than that.
-        // Same button, no extra gate: consent was given at approve.
+        // Delegated payment mode: a delegated-rail card skips the per-job
+        // payment tx entirely - the provider pulls from the delegation once the
+        // work is done. On a metered capability the advertised price is a
+        // ceiling and the pull is what the job actually used, never more than
+        // that. No extra gate: consent was given at approve.
         // The proof is a wallet `signMessage` over the SAME shared
         // `buildAuthMessage` bytes the SDK signs/verifies (single-use nonce,
         // short expiry), base58-encoded identically.
-        const requestedDelegated = buySession.payment === 'delegated';
         let delegatedPayment:
           | { owner: string; expiryUnix: number; nonce: string; proof: string }
           | undefined;
         const delegationDescriptor = card.delegation;
-        // `delegationCanWin` carries the USDC-identity and rail-label tests
-        // (see where it is computed); the remaining clauses are the narrowing
-        // TypeScript needs to use the descriptor and the signer. USDC-only
-        // mirrors the provider-side load guard and the MCP gate in
-        // `submit_delegated_job` - a delegation block on a card priced in any
-        // other asset would compare mismatched subunits and submit a job the
-        // provider rejects anyway.
-        if (delegationCanWin && delegationDescriptor && publicKey && signMessage) {
+        if (delegatedOnly) {
+          if (delegationDescriptor === undefined || !publicKey) {
+            // Unreachable: `usesDelegatedRail` requires the descriptor, and a
+            // paid buy without a wallet returned above. Fail closed.
+            throw new Error('Delegated payment is not available for this job.');
+          }
+          if (!signMessage) {
+            throw new Error(DELEGATED_WALLET_UNSUPPORTED_MESSAGE);
+          }
           const owner = publicKey.toBase58();
           const price = BigInt(card.payment?.job_price ?? 0);
           let delegationActive = false;
@@ -598,13 +557,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               delegationStatus.remainingCap >= price &&
               delegationStatus.balance >= price;
           } catch {
-            // RPC failure reading the delegation - fall back to per-job
-            // payment (or abort an explicit Use, below).
+            // RPC failure reading the delegation - the buy aborts below.
             delegationReadFailed = true;
           }
-          if (requestedDelegated && !delegationActive) {
-            // The user clicked Use: surprising them with a per-job payment
-            // prompt they did not choose is worse than failing loudly. Drop
+          if (!delegationActive) {
+            // Never a per-job payment in its place (see `delegatedOnly`). Drop
             // the cached allowance read the label was painted from - without
             // this the button stays 'Use' (staleness alone never refetches)
             // and every re-click repeats the same error.
@@ -612,43 +569,35 @@ export function BuyProvider({ children }: { children: ReactNode }) {
             throw new Error(
               delegationReadFailed
                 ? 'Could not verify your delegated allowance (network error) - try again.'
-                : 'Your delegated allowance no longer covers this job - top it up in the Delegation tab.',
+                : 'Your delegated allowance does not cover this job - grant or top it up in the Delegation tab.',
             );
           }
-          if (delegationActive) {
-            // Sign OUTSIDE the fallback catch: a user who rejects the
-            // authorization aborts the buy (outer catch), rather than being
-            // silently re-prompted for a per-job payment they just declined.
-            toast.loading('Approve the delegated-payment authorization in your wallet...', {
-              id: toastId,
-            });
-            const expiryUnix = Math.floor(Date.now() / 1000) + MAX_PROOF_TTL_SECS;
-            const nonce = mintDelegationNonce();
-            const authMessage = buildAuthMessage({
-              agentDelegate: delegationDescriptor.delegate_pubkey,
-              nostrAuthor: identity.publicKey,
-              owner,
-              expiryUnix,
-              nonce,
-            });
-            const signatureBytes = await signMessage(authMessage);
-            const proof = getBase58Decoder().decode(signatureBytes);
-            delegatedPayment = { owner, expiryUnix, nonce, proof };
-            // No payment-required quote will ever arrive on the delegated
-            // path, so the deferred input upload must happen NOW, pre-submit -
-            // the provider fetches the file right after its own pre-check.
-            if (uploadInput) {
-              toast.loading('Uploading file...', { id: toastId });
-              await retryWithBackoff(uploadInput);
-              uploadInput = undefined;
-            }
-            toast.loading('Submitting delegated job...', { id: toastId });
+          // Sign OUTSIDE the read's catch: a user who rejects the authorization
+          // aborts the buy through the outer catch.
+          toast.loading('Approve the delegated-payment authorization in your wallet...', {
+            id: toastId,
+          });
+          const expiryUnix = Math.floor(Date.now() / 1000) + MAX_PROOF_TTL_SECS;
+          const nonce = mintDelegationNonce();
+          const authMessage = buildAuthMessage({
+            agentDelegate: delegationDescriptor.delegate_pubkey,
+            nostrAuthor: identity.publicKey,
+            owner,
+            expiryUnix,
+            nonce,
+          });
+          const signatureBytes = await signMessage(authMessage);
+          const proof = getBase58Decoder().decode(signatureBytes);
+          delegatedPayment = { owner, expiryUnix, nonce, proof };
+          // No payment-required quote will ever arrive on the delegated path,
+          // so the deferred input upload must happen NOW, pre-submit - the
+          // provider fetches the file right after its own pre-check.
+          if (uploadInput) {
+            toast.loading('Uploading file...', { id: toastId });
+            await retryWithBackoff(uploadInput);
+            uploadInput = undefined;
           }
-        } else if (requestedDelegated) {
-          // Unreachable from the UI (the Use button only renders with a
-          // delegation-advertising card and a connected signMessage-capable
-          // wallet) - fail closed rather than silently paying per-job.
-          throw new Error('Delegated payment is not available for this job.');
+          toast.loading('Submitting delegated job...', { id: toastId });
         }
 
         const jobEventId = await client.marketplace.submitJobRequest(identity, {

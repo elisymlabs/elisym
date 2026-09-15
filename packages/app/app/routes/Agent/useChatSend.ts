@@ -21,8 +21,7 @@ export interface ChatSendOptions {
   /**
    * Network fee a per-job payment would draw from the wallet, in lamports, as
    * the surface already sized it. Passed unconditionally: `buy()` decides
-   * whether to demand it, because only it knows whether the allowance rail can
-   * still win.
+   * whether to demand it (a delegated-rail card never does).
    */
   gasLamports?: number;
 }

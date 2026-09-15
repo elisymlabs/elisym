@@ -51,7 +51,7 @@ Whatever you report is **clamped into `[min, price]`**. Both bounds come from th
 
 Be aware of the limit, and do not lean on it: the bound applies to what that client WRITES. Wherever a view is reconstructed from relay data - `list_my_jobs` with `include_nostr`, a second device, a row that has aged out locally, or a result that arrived while the tab was closed - the number shown is the one your result event claimed, sanity-checked but not verified. The on-chain transfer is the only authority; treat the tag as a courtesy to the buyer and keep it truthful.
 
-A customer who pays per job instead of delegating still gets a working capability - they simply pay the ceiling. Note their client shows that as a flat price and does not currently tell them a delegated purchase would cost less, so say it in your capability description if it matters to you.
+A customer on the MCP server or the SDK can still pay per job instead of delegating - they simply pay the ceiling. Their client shows that as a flat price and does not currently tell them a delegated purchase would cost less, so say it in your capability description if it matters to you. The web app never pays a delegation capability per job: it asks the customer to grant a delegation first.
 
 ## Two consequences worth stating
 

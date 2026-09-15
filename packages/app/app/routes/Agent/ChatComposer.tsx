@@ -20,6 +20,7 @@ import {
 } from '~/lib/chatSession';
 import type { ChatThreadEntry } from '~/lib/chatThread';
 import { cn } from '~/lib/cn';
+import { delegatedBuyHoldReason } from '~/lib/delegatedBuyMode';
 import { formatBytes } from '~/lib/fileResult';
 import { BuyErrorNote } from './BuyErrorNote';
 import { CapabilityDropdown } from './CapabilityDropdown';
@@ -40,6 +41,8 @@ interface Props {
   /** Identity-scoped, ts-sorted thread entries (send-path adoption source). */
   entries: ChatThreadEntry[];
   send: ChatSend;
+  /** Opens the Delegation tab (the 'delegate' buy-mode action). */
+  onOpenDelegation: () => void;
 }
 
 /**
@@ -68,14 +71,15 @@ export function ChatComposer({
   buyState,
   entries,
   send,
+  onOpenDelegation,
 }: Props) {
   const { setVisible } = useWalletModal();
   const [input, setInput] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const { buying, error, paid, jobId } = buyState;
-  // Chat sends resolve their rail at click time, and a covering allowance
-  // means the send needs no per-job SOL - so the wallet-balance gate must not
-  // block (or mis-tooltip) it, same as the Products-tab Use button.
+  // A covering allowance means the send needs no per-job SOL - so the
+  // wallet-balance gate must not block (or mis-tooltip) it, same as the
+  // Products-tab Use button.
   const buyMode = useDelegatedBuyMode(card);
   const gate = useJobGating({
     card,
@@ -116,10 +120,23 @@ export function ChatComposer({
       }),
     ) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
 
-  const isDisabled = gate.isDisabled || sessionEnvelopeTooLarge;
-  const tip = sessionEnvelopeTooLarge
+  // The same explicit split as the Products button: without a covering
+  // allowance a delegation card offers 'Delegate' (routes to the Delegation
+  // tab), and the held modes disable the send with their reason - never a
+  // send settled with a per-job payment at the full price. 'Delegate' only
+  // navigates, so none of the job-send gates apply to it.
+  const holdReason = delegatedBuyHoldReason(buyMode);
+  let isDisabled = gate.isDisabled || sessionEnvelopeTooLarge;
+  let tip = sessionEnvelopeTooLarge
     ? 'Message is too large for a conversation send - shorten it or use the elisym CLI.'
     : gate.tip;
+  if (buyMode === 'delegate') {
+    isDisabled = buying;
+    tip = null;
+  } else if (holdReason !== null) {
+    isDisabled = true;
+    tip = holdReason;
+  }
 
   // Stale hint: the only remaining active-session surface here. The old
   // divergence note ("a newer conversation exists - join it") is gone: the
@@ -144,6 +161,11 @@ export function ChatComposer({
     if (isDisabled) {
       return;
     }
+    if (buyMode === 'delegate') {
+      track('delegate-open', { agent: agentName });
+      onOpenDelegation();
+      return;
+    }
     track('buy', { agent: agentName, price: gate.priceLabel ?? 'free' });
     const text = gate.isStatic ? card.name : gate.effectiveInput;
     awaitingSubmitRef.current = true;
@@ -152,8 +174,14 @@ export function ChatComposer({
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     // Cmd/Ctrl+Enter submits, mirroring JobInput - a bare Enter must never
-    // fire a (possibly paid) job from muscle memory.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !isDisabled) {
+    // fire a (possibly paid) job from muscle memory, and the shortcut never
+    // stands in for the button-only 'Delegate' navigation.
+    if (
+      event.key === 'Enter' &&
+      (event.metaKey || event.ctrlKey) &&
+      !isDisabled &&
+      buyMode !== 'delegate'
+    ) {
       event.preventDefault();
       void handleSend();
     }
@@ -165,6 +193,13 @@ export function ChatComposer({
     }
     if (gate.needsWalletConnect) {
       return 'Connect';
+    }
+    if (buyMode === 'loading') {
+      // The spinner is the whole content while the allowance read resolves.
+      return null;
+    }
+    if (buyMode === 'delegate') {
+      return 'Delegate';
     }
     return 'Send';
   }
@@ -266,9 +301,11 @@ export function ChatComposer({
               <button
                 onClick={() => void handleSend()}
                 disabled={isDisabled && !gate.needsWalletConnect}
+                aria-label={buyMode === 'loading' ? 'Checking the delegated allowance' : undefined}
+                aria-busy={buying || buyMode === 'loading'}
                 className="inline-flex h-32 min-w-64 cursor-pointer items-center justify-center gap-8 rounded-xl border-none bg-surface-dark px-14 text-xs leading-none font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#2a2a2e] disabled:cursor-not-allowed disabled:opacity-25"
               >
-                {buying && (
+                {(buying || buyMode === 'loading') && (
                   <svg aria-hidden className="size-14 animate-spin" viewBox="0 0 24 24" fill="none">
                     <circle
                       cx="12"

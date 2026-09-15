@@ -9,6 +9,7 @@ import type { PingStatus } from '~/hooks/usePingAgent';
 import { track } from '~/lib/analytics';
 import { resolveSessionForSend, rotateSession } from '~/lib/chatSession';
 import { cn } from '~/lib/cn';
+import { delegatedBuyHoldReason } from '~/lib/delegatedBuyMode';
 import { formatBytes } from '~/lib/fileResult';
 import { BuyErrorNote } from './BuyErrorNote';
 import { CapabilityDropdown } from './CapabilityDropdown';
@@ -124,27 +125,22 @@ function JobInputInner({
     ) > LIMITS.MAX_ENCRYPTED_INLINE_BYTES;
   // 'Delegate' only navigates to the Delegation tab, so none of the job-send
   // gates (input presence, agent online, balances, size caps) apply to it.
-  // 'loading' pins the button to a disabled spinner until the allowance read
-  // resolves - no Buy flash that flips to Use/Delegate a beat later.
+  // The held modes pin the button disabled with their reason: 'loading' shows
+  // a spinner until the allowance read resolves (no Buy flash that flips to
+  // Use/Delegate a beat later), and a wallet that cannot sign or a failed read
+  // blocks the buy rather than paying the full price per job.
+  const holdReason = delegatedBuyHoldReason(buyMode);
   let isDisabled = gate.isDisabled || sessionEnvelopeTooLarge;
-  if (buyMode === 'delegate') {
-    isDisabled = buying;
-  } else if (buyMode === 'loading') {
-    isDisabled = true;
-  }
   let tip = sessionEnvelopeTooLarge
     ? 'Message is too large for a conversation send - shorten it or use the elisym CLI.'
     : gate.tip;
   if (buyMode === 'delegate') {
+    isDisabled = buying;
     tip = null;
-  } else if (buyMode === 'loading') {
-    tip = 'Checking the delegated allowance…';
+  } else if (holdReason !== null) {
+    isDisabled = true;
+    tip = holdReason;
   }
-  // The Products button always states its rail explicitly: 'use' submits from
-  // the allowance, anything else pays per-job - even if a delegation would be
-  // discovered at click time, because the label promised a per-job payment.
-  // ('delegate'/'loading' never reach buy().)
-  const paymentIntent = buyMode === 'use' ? ('delegated' as const) : ('per-job' as const);
 
   async function handleBuy() {
     if (!isFree && !publicKey) {
@@ -152,7 +148,7 @@ function JobInputInner({
       setVisible(true);
       return;
     }
-    if (buyMode === 'loading') {
+    if (holdReason !== null) {
       return;
     }
     if (buyMode === 'delegate') {
@@ -176,7 +172,6 @@ function JobInputInner({
       await buy(isStatic ? card.name : effectiveInput, file ?? undefined, {
         sessionId: resolved.sessionId,
         token: resolved.token,
-        payment: paymentIntent,
         gasLamports: gasFeeLamports,
       });
       return;
@@ -184,7 +179,6 @@ function JobInputInner({
     // Context-off cards send deliberate one-shots.
     await buy(isStatic ? card.name : effectiveInput, file ?? undefined, {
       sessionId: null,
-      payment: paymentIntent,
       gasLamports: gasFeeLamports,
     });
   }
@@ -222,7 +216,9 @@ function JobInputInner({
       // the allowance read resolves.
       return null;
     }
-    if (buyMode === 'use') {
+    if (buyMode === 'use' || buyMode === 'wallet-unsupported' || buyMode === 'check-failed') {
+      // A held delegation card still names its action: it is paid from an
+      // allowance, never bought per job.
       return 'Use';
     }
     if (buyMode === 'delegate') {

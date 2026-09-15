@@ -102,12 +102,10 @@ export function useJobGating({
   // Only the delegated rail can meter - a per-job purchase always pays the
   // ceiling, so the flat label stays correct there.
   //
-  // `delegatedCovers` is the PAINTED buy mode, not the settled rail: if the
-  // allowance lapses between paint and click the buy falls back to a per-job
-  // payment and collects the ceiling (the same known window documented in
-  // BuyContext's balance-recheck block). The label survives that honestly,
-  // because the ceiling is the top of the range it already showed - it is only
-  // ever an over-estimate, never an under-estimate.
+  // `delegatedCovers` is the PAINTED buy mode, not the settled rail - but
+  // `buy()` never settles a delegated-rail card per job, so an allowance that
+  // lapses between paint and click fails the buy instead of charging the
+  // ceiling.
   // `allowRange` is the rail: only a delegated buy can be metered, and a per-job
   // buy really does collect the ceiling, so its flat label is correct.
   const rangeLabel = formatCardPriceLabel(card, { allowRange: delegatedCovers });
