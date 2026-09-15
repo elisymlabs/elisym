@@ -50,6 +50,7 @@ eose
 evictable
 exfil
 exfiltration
+extensionless
 eykt
 feff
 FLASHX
@@ -124,6 +125,7 @@ roleplay
 rpc
 Secp
 serde
+SERV
 shebang
 SIIT
 smol

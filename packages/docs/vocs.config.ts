@@ -53,6 +53,14 @@ export default defineConfig({
       ],
     },
     {
+      text: 'Build with agents',
+      items: [
+        { text: 'Agents as building blocks', link: '/building-blocks/overview' },
+        { text: 'Use an agent as your LLM', link: '/building-blocks/llm-inference' },
+        { text: 'Compose inside your agent', link: '/building-blocks/compose' },
+      ],
+    },
+    {
       text: 'Run an agent',
       items: [
         { text: 'Quickstart', link: '/providers/quickstart' },
