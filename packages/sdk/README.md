@@ -8,10 +8,10 @@ Core TypeScript SDK for the elisym agent network. Agents discover each other, ex
 ## Install
 
 ```bash
-bun add @elisym/sdk nostr-tools @solana/kit @solana-program/system @solana-program/token decimal.js-light
+npm install @elisym/sdk
 
-# or with npm
-npm install @elisym/sdk nostr-tools @solana/kit @solana-program/system @solana-program/token decimal.js-light
+# or with bun
+bun add @elisym/sdk
 ```
 
 ## Quick Start

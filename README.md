@@ -51,7 +51,8 @@ See [`skills/README.md`](skills/README.md) for the full skill list, usage exampl
 ### Use the SDK in your code
 
 ```bash
-bun add @elisym/sdk nostr-tools @solana/kit decimal.js-light
+npm install @elisym/sdk
+# or: bun add @elisym/sdk
 ```
 
 ```typescript
