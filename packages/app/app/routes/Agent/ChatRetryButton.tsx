@@ -2,6 +2,7 @@ import { toDTag, type CapabilityCard } from '@elisym/sdk';
 import { useDelegatedBuyMode } from '~/hooks/useDelegationStatus';
 import type { PingStatus } from '~/hooks/usePingAgent';
 import type { ChatThreadEntry } from '~/lib/chatThread';
+import { delegatedBuyHoldReason } from '~/lib/delegatedBuyMode';
 import { recallJobFile } from '~/lib/retryFiles';
 import type { ChatSend } from './useChatSend';
 import { useJobGating } from './useJobGating';
@@ -50,9 +51,14 @@ function ChatRetryButtonInner({
     buying,
     delegatedCovers: buyMode === 'use',
   });
+  // A delegation card without a usable covering allowance - none, still being
+  // read, unreadable, or a wallet that cannot authorize it - must not retry:
+  // `buy()` would refuse it. The composer's Delegate button is the way forward.
+  const holdReason = delegatedBuyHoldReason(buyMode);
+  const blockedOnAllowance = buyMode === 'delegate' || holdReason !== null;
 
   async function handleRetry() {
-    if (gate.isDisabled || gate.needsWalletConnect) {
+    if (gate.isDisabled || gate.needsWalletConnect || blockedOnAllowance) {
       return;
     }
     // Retry switches the selection to the entry's recorded capability and
@@ -67,8 +73,15 @@ function ChatRetryButtonInner({
     });
   }
 
-  const disabled = gate.isDisabled || gate.needsWalletConnect;
-  const title = gate.needsWalletConnect ? 'Connect your wallet to retry.' : (gate.tip ?? undefined);
+  const disabled = gate.isDisabled || gate.needsWalletConnect || blockedOnAllowance;
+  let title = gate.tip ?? undefined;
+  if (gate.needsWalletConnect) {
+    title = 'Connect your wallet to retry.';
+  } else if (buyMode === 'delegate') {
+    title = 'Grant a delegated allowance in the Delegation tab to retry.';
+  } else if (holdReason !== null) {
+    title = holdReason;
+  }
 
   return (
     <button

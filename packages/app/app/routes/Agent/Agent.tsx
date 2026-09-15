@@ -742,6 +742,7 @@ export default function AgentPage() {
                 buyState={buyState}
                 entries={identityEntries}
                 loading={!threadLoaded || (identityEntries.length === 0 && hydrating)}
+                onOpenDelegation={() => setActiveTab('delegation')}
               />
             )}
 

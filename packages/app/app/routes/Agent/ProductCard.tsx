@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '~/lib/cn';
+import { usesDelegatedRail } from '~/lib/delegatedBuyMode';
 import { formatCardPriceLabel } from '~/lib/formatPrice';
 import { ProductAvatar } from './ProductAvatar';
 
@@ -276,6 +277,9 @@ export function ProductCard({ card, selected, onClick }: Props) {
   // avoid, just pointed the other way. The gate widens it to a range once a
   // delegated buy is on the table.
   const formattedPrice = formatCardPriceLabel(card);
+  // On a delegated-rail card the figure is a ceiling: the allowance is pulled
+  // after the work, for the price or - on a metered skill - what the job used.
+  const showsMaxPrefix = usesDelegatedRail(card);
 
   return (
     <div
@@ -398,6 +402,7 @@ export function ProductCard({ card, selected, onClick }: Props) {
         <div className="px-20 pb-16">
           <div className="flex items-center justify-between border-t border-black/6 pt-12 text-sm">
             <div>
+              {showsMaxPrefix && <span className="mr-4 text-text-2">max</span>}
               <span className="font-bold">{isFree ? 'Free' : formattedPrice}</span>
               <span className="ml-4 text-text-2">/ task</span>
             </div>
