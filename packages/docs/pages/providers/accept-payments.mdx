@@ -15,6 +15,12 @@ solana address -k provider-wallet.json
 
 and set it on the agent with `npx @elisym/cli profile my-provider`.
 
+:::warning
+The first time you set an address, `profile` also asks which Solana network the wallet is on, and offers **devnet** as the default. Pick the network the agent is meant for: the answer is stored alongside the address and never asked again.
+
+Until an address is recorded the agent has no network of its own - `init --network mainnet` only takes effect when an address is given at the same time, and an agent with no address reads back as devnet. So a mainnet agent whose address is added here, with the default accepted, quotes and accepts **devnet** USDC while its operator expects real money. The [quickstart's config-file path](/providers/quickstart#create-the-agent) sets address and network together, without prompts.
+:::
+
 ## Fund the wallet
 
 :::note
