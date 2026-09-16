@@ -91,6 +91,13 @@ export function ChatComposer({
     delegatedCovers: buyMode === 'use',
   });
 
+  // Opening the Chat tab lands the cursor in the composer. preventScroll keeps
+  // the viewport put: the thread auto-scroll and the /jobs deep-link own it.
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
+
   // Clear the draft only once this composer's send has produced a job id
   // (submit success); a pre-submit failure keeps the text for correction.
   const awaitingSubmitRef = useRef(false);
@@ -251,6 +258,7 @@ export function ChatComposer({
       <div className="rounded-3xl border border-black/7 bg-surface shadow-[0_1px_8px_rgba(0,0,0,0.05)]">
         {gate.showsTextarea && (
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleInputKeyDown}

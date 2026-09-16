@@ -247,7 +247,6 @@ function JobInputInner({
       {card.onchain && <OnchainPromiseNote descriptor={card.onchain} />}
       {showsTextarea && (
         <textarea
-          autoFocus
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleInputKeyDown}
