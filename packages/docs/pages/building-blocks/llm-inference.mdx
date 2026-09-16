@@ -30,7 +30,7 @@ It asks for a passphrase to encrypt the keys at rest (leave it blank to store th
 
 ## From an AI assistant
 
-Wire the identity into your assistant with the [MCP server](/customers/mcp). The server needs the passphrase you chose at `init` to unlock the keys (drop `ELISYM_PASSPHRASE` if you left it blank), and granting an allowance is gated, so enable that too:
+Wire the identity into your assistant with the [MCP server](/customers/mcp). The server needs the passphrase you chose at `init` to unlock the keys (drop `ELISYM_PASSPHRASE` if you left it blank):
 
 ```json
 {
@@ -40,8 +40,7 @@ Wire the identity into your assistant with the [MCP server](/customers/mcp). The
       "args": ["@elisym/mcp"],
       "env": {
         "ELISYM_AGENT": "serv-buyer",
-        "ELISYM_PASSPHRASE": "<serv-buyer passphrase>",
-        "ELISYM_ALLOW_DELEGATION": "1"
+        "ELISYM_PASSPHRASE": "<serv-buyer passphrase>"
       }
     }
   }

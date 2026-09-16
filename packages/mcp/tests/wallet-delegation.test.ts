@@ -93,8 +93,8 @@ afterEach(() => {
 describe('approve_delegation guards', () => {
   const tool = findTool('approve_delegation');
 
-  it('rejects when the gate is off', async () => {
-    delete process.env.ELISYM_ALLOW_DELEGATION;
+  it('rejects when the operator disables it with ELISYM_ALLOW_DELEGATION=0', async () => {
+    process.env.ELISYM_ALLOW_DELEGATION = '0';
     const agent = buildStubAgent({ fetchAgent: vi.fn(), walletPubkey: OWNER });
     const result = await tool.handler(
       ctxWith(agent),
@@ -104,8 +104,20 @@ describe('approve_delegation guards', () => {
     expect(result.content[0]?.text).toMatch(/ELISYM_ALLOW_DELEGATION/);
   });
 
+  it('is enabled by default when ELISYM_ALLOW_DELEGATION is unset', async () => {
+    delete process.env.ELISYM_ALLOW_DELEGATION;
+    const fetchAgent = vi.fn(async () => null);
+    const agent = buildStubAgent({ fetchAgent, walletPubkey: OWNER });
+    const result = await tool.handler(
+      ctxWith(agent),
+      tool.schema.parse({ provider: PROVIDER_HEX, cap_usdc: '5' }),
+    );
+    expect(result.content[0]?.text).not.toMatch(/ELISYM_ALLOW_DELEGATION/);
+    expect(fetchAgent).toHaveBeenCalledOnce();
+  });
+
   it('rejects when no Solana key is configured (before the gate)', async () => {
-    process.env.ELISYM_ALLOW_DELEGATION = '1';
+    process.env.ELISYM_ALLOW_DELEGATION = '0';
     const agent = buildStubAgent({ fetchAgent: vi.fn() });
     const result = await tool.handler(
       ctxWith(agent),
@@ -116,7 +128,6 @@ describe('approve_delegation guards', () => {
   });
 
   it('rejects when the provider is not found on the network', async () => {
-    process.env.ELISYM_ALLOW_DELEGATION = '1';
     const fetchAgent = vi.fn(async () => null);
     const agent = buildStubAgent({ fetchAgent, walletPubkey: OWNER });
     const result = await tool.handler(
@@ -128,7 +139,6 @@ describe('approve_delegation guards', () => {
   });
 
   it('rejects when the provider advertises no delegation', async () => {
-    process.env.ELISYM_ALLOW_DELEGATION = '1';
     const fetchAgent = vi.fn(async () => ({
       npub: nip19.npubEncode(PROVIDER_HEX),
       name: 'no-deleg',
@@ -144,7 +154,6 @@ describe('approve_delegation guards', () => {
   });
 
   it('rejects when the provider advertises conflicting delegate keys', async () => {
-    process.env.ELISYM_ALLOW_DELEGATION = '1';
     const fetchAgent = vi.fn(async () => providerWithDelegation([DELEGATE_A, DELEGATE_B]));
     const agent = buildStubAgent({ fetchAgent, walletPubkey: OWNER });
     const result = await tool.handler(
@@ -156,7 +165,6 @@ describe('approve_delegation guards', () => {
   });
 
   it('refuses to silently replace a different existing delegate', async () => {
-    process.env.ELISYM_ALLOW_DELEGATION = '1';
     vi.mocked(getDelegation).mockResolvedValue({
       delegate: DELEGATE_B,
       remainingCap: 1_000_000n,
@@ -176,7 +184,6 @@ describe('approve_delegation guards', () => {
   });
 
   it('bypasses the refuse-replace guard when replace_existing is set', async () => {
-    process.env.ELISYM_ALLOW_DELEGATION = '1';
     vi.mocked(getDelegation).mockResolvedValue({
       delegate: DELEGATE_B,
       remainingCap: 1_000_000n,
@@ -203,7 +210,6 @@ describe('approve_delegation guards', () => {
   });
 
   it('rejects an approve whose protocol fee exceeds the session USDC cap', async () => {
-    process.env.ELISYM_ALLOW_DELEGATION = '1';
     vi.mocked(getDelegation).mockResolvedValue(null);
     vi.mocked(fetchProtocolConfig).mockResolvedValue({ feeBps: 500, treasury: address(OWNER) });
     const fetchAgent = vi.fn(async () => providerWithDelegation([DELEGATE_A]));

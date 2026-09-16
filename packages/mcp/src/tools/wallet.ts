@@ -569,8 +569,9 @@ export const walletTools: ToolDefinition[] = [
     description:
       'Grant a discovered provider a bounded USDC allowance it can spend autonomously with its ' +
       'delegate key (spl-approve) - no per-action signature from you. Signs with YOUR wallet. ' +
-      'GATED: requires ELISYM_ALLOW_DELEGATION=1. Pass the provider npub or hex pubkey; the ' +
-      'delegate is read from its signed capability card. YOU set the cap (USDC). Re-granting the ' +
+      'Enabled by default; the operator can disable it with ELISYM_ALLOW_DELEGATION=0. Pass the ' +
+      'provider npub or hex pubkey; the delegate is read from its signed capability card. ' +
+      'YOU set the cap (USDC). Re-granting the ' +
       'same delegate re-arms it; replacing a DIFFERENT existing delegate requires replace_existing:true. ' +
       'Honest bound: max loss <= cap - within it the delegate can spend to any ' +
       'destination including itself, and can drain USDC that arrives later up to the cap until ' +
@@ -588,17 +589,13 @@ export const walletTools: ToolDefinition[] = [
         return errorResult('Solana payments not configured for this agent.');
       }
 
-      // Operator opt-in gate (the primary barrier for this autonomous-LLM surface).
-      if (process.env.ELISYM_ALLOW_DELEGATION !== '1') {
+      // Operator opt-out: enabled by default, ELISYM_ALLOW_DELEGATION=0 turns it off.
+      if (process.env.ELISYM_ALLOW_DELEGATION === '0') {
         return errorResult(
-          'Delegated approvals are disabled. Set ELISYM_ALLOW_DELEGATION=1 to enable ' +
-            'approve_delegation (it grants a provider a standing USDC allowance).',
+          'Delegated approvals are disabled by the operator (ELISYM_ALLOW_DELEGATION=0). Unset it ' +
+            'to enable approve_delegation (it grants a provider a standing USDC allowance).',
         );
       }
-      logger.warn(
-        { event: 'delegation_gate_enabled', agent: agent.name },
-        'ELISYM_ALLOW_DELEGATION=1 - approve_delegation is enabled',
-      );
 
       // Resolve provider pubkey: raw lowercase-hex, else npub.
       let providerPubkey: string;
@@ -617,7 +614,7 @@ export const walletTools: ToolDefinition[] = [
       // Resolve the delegate from the provider's SIGNED card. This binds the delegate
       // to what the named provider published - it does NOT make approving a hostile
       // provider safe (a malicious provider advertises its own delegate). The
-      // operator opt-in gate is the real bound.
+      // cap the user sets is the real bound.
       const rpc = rpcFor(agent);
       let providerAgent: Agent | null;
       try {
@@ -646,7 +643,7 @@ export const walletTools: ToolDefinition[] = [
       const delegatePubkey = [...delegateKeys][0];
 
       // Parse the cap. The user chooses the amount - no imposed default or ceiling
-      // (matches the browser, where the owner types any cap). The gate is the barrier.
+      // (matches the browser, where the owner types any cap). The cap is the max loss.
       const usdcAsset = resolveUsdcAsset(agent.network);
       let capSubunits: bigint;
       try {

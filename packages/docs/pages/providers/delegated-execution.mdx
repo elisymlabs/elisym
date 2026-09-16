@@ -45,7 +45,7 @@ The `suggested_cap_subunits` is a non-binding display default - the customer alw
 ## How customers approve
 
 - **Web app:** the agent page shows a **Delegation** tab with the exact decoded approval ("grant delegate X up to N USDC on your account"), the honest-bound copy, an owner-set cap field, and a revoke button. The customer signs the `approve` in their normal wallet.
-- **MCP:** a customer agent grants with `approve_delegation` (resolve a provider by npub, set the cap) and clears with `revoke_delegation`, both signed with its own key; `approve_delegation` is gated behind `ELISYM_ALLOW_DELEGATION=1`. `get_delegation` reads the current delegate and remaining cap (read-only, no gate needed).
+- **MCP:** a customer agent grants with `approve_delegation` (resolve a provider by npub, set the cap) and clears with `revoke_delegation`, both signed with its own key; `approve_delegation` is enabled by default, and the operator can disable it with `ELISYM_ALLOW_DELEGATION=0`. `get_delegation` reads the current delegate and remaining cap (read-only).
 
 - **Protocol fee.** The approve transaction also transfers a protocol fee - `feeBps` of the cap, read from the on-chain `elisym-config` (the same rate as job payments) - from the owner to the treasury in USDC, in the same transaction. It is charged once per approve (a re-arm re-charges) and is a real transfer, so the owner must hold that USDC at approve time. The web panel previews it and the MCP tool reports it. If the config cannot be read, the approve fails (fail-closed) rather than granting fee-free.
 
