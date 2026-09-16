@@ -62,6 +62,16 @@ export interface LedgerEntry {
    */
   pull_signature?: string;
   pull_last_valid_block_height?: number;
+  /**
+   * The on-chain settlement signature this job consumed on the FLAT paid path.
+   * Written ONLY by an accepted {@link JobLedger.claimPaymentSignature}, whose
+   * failed flush rolls it back - so its presence always means "this job owns
+   * this settlement, and the ownership reached disk". This field IS the
+   * de-duplication index (re-read into it on every load, so there is no second
+   * store to lose); never cleared by `markDelivered`/`markFailed`, and optional
+   * so pre-existing entries load unchanged.
+   */
+  payment_signature?: string;
   created_at: number;
   retry_count: number;
 }
@@ -73,8 +83,46 @@ const VALID_TRANSITIONS: Record<LedgerStatus, LedgerStatus[]> = {
   failed: [],
 };
 
+/**
+ * Outcome of binding an on-chain settlement signature to a job.
+ *   - `claimed`: this job owns the signature and the ownership is on disk
+ *     (first claim, or a re-claim by the same job during re-confirmation or
+ *     crash recovery).
+ *   - `consumed-by-other`: another job already settled with this transaction.
+ *     Nothing about it is attributable to the claiming job.
+ *   - `not-persisted`: ownership could not be written to disk, so nothing was
+ *     bound - neither on disk nor in memory. The caller must NOT treat the
+ *     payment as accepted; the condition is transient and the same job (or a
+ *     sibling that can equally verify the signature) may claim it later.
+ *   - `unknown-job`: there is no ledger entry for this job id, so the claim has
+ *     nowhere durable to live. A provider wiring bug (every paid job is
+ *     `recordPaid` before payment collection), not a disk or customer state.
+ *
+ * Only `claimed` accepts a payment; the other three are refusals that differ
+ * only in what the operator should go and look at.
+ */
+export type PaymentSignatureClaim =
+  | 'claimed'
+  | 'consumed-by-other'
+  | 'not-persisted'
+  | 'unknown-job';
+
+/**
+ * How many distinct double-settled signatures `indexPaymentSignatures` names at
+ * load before it stops and reports a count instead. One line per duplicated
+ * SIGNATURE is the useful signal; a corrupt ledger repeating the same handful
+ * across thousands of entries is noise that hides every other startup message.
+ */
+const MAX_DOUBLE_SETTLE_WARNINGS = 20;
+
 export class JobLedger {
   private entries = new Map<string, LedgerEntry>();
+  /**
+   * settlement signature -> the job that consumed it. Derived state, rebuilt
+   * from `entries` on every {@link load} - the entries themselves are the
+   * durable record.
+   */
+  private paymentSignatureOwners = new Map<string, string>();
   private path: string;
 
   /**
@@ -90,9 +138,43 @@ export class JobLedger {
   private load(): void {
     try {
       const raw = readFileSync(this.path, 'utf-8');
-      const data = JSON.parse(raw) as Record<string, LedgerEntry>;
+      const data = JSON.parse(raw) as Record<string, unknown>;
+      let unusable = 0;
       for (const [id, entry] of Object.entries(data)) {
-        this.entries.set(id, entry);
+        // A hand-edited or third-party-written ledger can carry `null`, an array
+        // or a bare string where an entry belongs. Reading a property off one
+        // THROWS, and the index below is what decides whether a settlement has
+        // already been spent - so an unguarded entry here is a money bug, not a
+        // tidiness one: the throw used to land after `entries` was fully
+        // populated, leaving the process alive with an index built only as far
+        // as the bad value. Every settlement recorded after it then looked
+        // unclaimed, and one transaction could settle a second job.
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+          unusable += 1;
+          continue;
+        }
+        const candidate = entry as LedgerEntry;
+        // Ownership IS the job id, so an entry without one cannot own its
+        // settlement. The two halves fail differently and both are wrong: a
+        // MISSING id indexes the signature to `undefined`, which reads back as
+        // "nobody has claimed this" and lets a second job spend the same
+        // transaction; an EMPTY one indexes to `''`, which fails closed instead
+        // and refuses the transaction to the job that really paid. Either way
+        // the entry cannot be routed at all, so it never belongs in the
+        // pending set.
+        if (typeof candidate.job_id !== 'string' || candidate.job_id.length === 0) {
+          unusable += 1;
+          continue;
+        }
+        this.entries.set(id, candidate);
+      }
+      if (unusable > 0) {
+        console.warn(
+          `  ! Ledger load warning: skipped ${unusable} unusable ` +
+            `${unusable === 1 ? 'entry' : 'entries'} in ${this.path} - not an object, or carrying ` +
+            `no job id. They cannot be routed or recovered, and the next write will not preserve ` +
+            `them: copy the file before restarting if its history matters.`,
+        );
       }
     } catch (e: any) {
       // W4: Log warning on malformed ledger and backup corrupt file
@@ -109,6 +191,14 @@ export class JobLedger {
         }
       }
     }
+    // OUTSIDE the catch, deliberately. This index is what refuses a settlement
+    // another job already consumed, so a half-built one is worse than no agent
+    // at all - and inside the try, any throw here would be swallowed as "corrupt
+    // ledger", renaming the live file while the process carried on with whatever
+    // part of the index had been built. On an unreadable or unparseable file
+    // `entries` is empty and this is a no-op; anything that still throws now
+    // takes the process down loudly instead of quietly under-protecting money.
+    this.indexPaymentSignatures();
   }
 
   flush(): void {
@@ -117,10 +207,23 @@ export class JobLedger {
     const obj = Object.fromEntries(this.entries);
     const tmp = this.path + '.tmp';
     writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: LEDGER_FILE_MODE });
+    // `writeFileSync`'s `mode` applies only when it CREATES the file, so a stale
+    // `.tmp` left behind by a crash - possibly with looser permissions - would be
+    // reused as it stands. This chmod is what closes that, and it runs on the
+    // TEMP file so that `renameSync` stays the LAST statement and the whole
+    // method is all-or-nothing.
+    //
+    // That ordering is not tidiness. `claimPaymentSignature` rolls itself back
+    // when this throws, on the understanding that a failed flush wrote nothing.
+    // chmod the live file after the rename instead and a failure throws once the
+    // new content is already published: the claim would be undone in memory
+    // while standing on disk, freeing a sibling job to claim the same on-chain
+    // transaction and flush it. One transaction, two jobs - the exact thing the
+    // claim exists to prevent.
+    //
+    // `UsedNonceStore.flush` deliberately keeps the opposite order; see there.
+    chmodSync(tmp, LEDGER_FILE_MODE);
     renameSync(tmp, this.path);
-    // writeFileSync's `mode` is masked by the process umask, so an explicit
-    // chmod after the rename guarantees owner-only perms regardless of umask.
-    chmodSync(this.path, LEDGER_FILE_MODE);
   }
 
   recordPaid(entry: Omit<LedgerEntry, 'status' | 'retry_count'>): void {
@@ -184,6 +287,155 @@ export class JobLedger {
       entry.net_amount = netAmount;
       this.flush();
     }
+  }
+
+  /**
+   * Build the settlement-signature index from the loaded entries. A signature
+   * recorded on two entries is the on-disk fingerprint of a double settle -
+   * shout about it rather than silently picking a winner, but once per SIGNATURE
+   * and capped overall: a corrupt ledger repeating one signature across
+   * thousands of entries buried every other startup line under ~30 000
+   * identical warnings. The suppressed count is reported at the end.
+   */
+  private indexPaymentSignatures(): void {
+    const warnedSignatures = new Set<string>();
+    let suppressed = 0;
+    for (const entry of this.entries.values()) {
+      const paymentSignature = entry.payment_signature;
+      // Index STRINGS only: a hand-edited ledger can carry a number, object or
+      // null here, and keying the map on one blocks a slot no ordinary claim can
+      // ever collide with. Ignoring it just means the entry owns nothing.
+      if (typeof paymentSignature !== 'string' || paymentSignature.length === 0) {
+        continue;
+      }
+      const owner = this.paymentSignatureOwners.get(paymentSignature);
+      if (owner !== undefined && owner !== entry.job_id) {
+        if (warnedSignatures.has(paymentSignature)) {
+          continue;
+        }
+        warnedSignatures.add(paymentSignature);
+        if (warnedSignatures.size > MAX_DOUBLE_SETTLE_WARNINGS) {
+          suppressed += 1;
+          continue;
+        }
+        console.warn(
+          `  ! DOUBLE SETTLE in the ledger: on-chain settlement ${paymentSignature} is recorded ` +
+            `for BOTH job ${owner} and job ${entry.job_id}. One transaction must settle only one ` +
+            `job - audit both before trusting this agent's payment history.`,
+        );
+        continue;
+      }
+      this.paymentSignatureOwners.set(paymentSignature, entry.job_id);
+    }
+    if (suppressed > 0) {
+      console.warn(
+        `  ! DOUBLE SETTLE: ${suppressed} further duplicated settlement signature(s) not listed. ` +
+          `This ledger is corrupt - audit it in full.`,
+      );
+    }
+  }
+
+  /** The job that consumed `paymentSignature`, or undefined when unclaimed. */
+  paymentSignatureOwner(paymentSignature: string): string | undefined {
+    return this.paymentSignatureOwners.get(paymentSignature);
+  }
+
+  /**
+   * Bind an on-chain settlement signature to exactly one job - the whole of
+   * "one transaction settles one job" for the FLAT paid path. It exists because
+   * the SDK verifier is stateless by contract (see
+   * `PaymentStrategy.verifyPayment`), so one transfer carrying N job references
+   * verifies for all N and only the provider can pick the single job it settles.
+   *
+   * The exactly-once property comes from this method being SYNCHRONOUS: index
+   * read and write-back happen in one uninterrupted turn of the event loop, so
+   * N concurrent jobs presenting the same signature serialize and exactly one
+   * wins - the same shape as {@link UsedNonceStore}'s `has` -> `markUsed` pair.
+   * Never make this async.
+   *
+   * SCOPE: one ledger file, i.e. one agent directory, in one process. Two
+   * `elisym start` processes sharing a directory are deliberately not
+   * serialized against each other (no cross-process lock) - run one per agent
+   * directory. Separate directories are separate providers with separate
+   * wallets, so they have nothing to de-duplicate in common.
+   *
+   * A re-claim by the SAME job always succeeds: live re-confirmation and crash
+   * recovery re-verifying its own payment must both keep working.
+   *
+   * A job that claims a SECOND, DIFFERENT signature RELEASES the first one's
+   * index mark, because the entry carries exactly one `payment_signature` and
+   * the index must not outlive the entry field that justifies it - the prune
+   * path relies on "every mark corresponds to a persisted `payment_signature`".
+   * Releasing it is safe, not generous: a second claim is only reachable while
+   * the job is still unconfirmed (`net_amount` unset, which is the only state
+   * that re-runs verification), so the released signature settled nothing and
+   * is exactly as unowned as it was before this job ever looked at it.
+   *
+   * That release is guarded on OWNERSHIP, and so is its rollback. On a ledger
+   * that already double-settles (two entries carrying one signature -
+   * `indexPaymentSignatures` warns and keeps the first as owner), this entry's
+   * `payment_signature` can name a mark another job holds. Releasing it
+   * unguarded would free a settlement the rightful owner still needs, and
+   * re-assigning it unguarded on a failed flush would hand that owner's mark to
+   * this job - refusing the owner its own settlement until the next restart.
+   */
+  claimPaymentSignature(paymentSignature: string, jobId: string): PaymentSignatureClaim {
+    // Entry existence FIRST. `unknown-job` is a provider wiring bug and
+    // `consumed-by-other` a customer/attacker state; checking the index first
+    // would report the second when the truth is the first, sending the operator
+    // to audit a payment dispute that does not exist.
+    const entry = this.entries.get(jobId);
+    if (entry === undefined) {
+      return 'unknown-job';
+    }
+    const owner = this.paymentSignatureOwners.get(paymentSignature);
+    if (owner !== undefined && owner !== jobId) {
+      return 'consumed-by-other';
+    }
+    const previousSignature = entry.payment_signature;
+    // Past the guard above, `owner` IS the pre-mutation owner of this signature -
+    // either nobody, or this job re-claiming what it already holds - so the
+    // rollback reads it instead of looking the same key up a second time and
+    // reading as an independent fact.
+    const previousOwner = owner;
+    // Resolved BEFORE any mutation: only a mark this job actually holds is ours
+    // to release, and the same answer must drive the rollback below.
+    const releasedSignature =
+      typeof previousSignature === 'string' &&
+      previousSignature !== paymentSignature &&
+      this.paymentSignatureOwners.get(previousSignature) === jobId
+        ? previousSignature
+        : undefined;
+    this.paymentSignatureOwners.set(paymentSignature, jobId);
+    if (releasedSignature !== undefined) {
+      this.paymentSignatureOwners.delete(releasedSignature);
+    }
+    entry.payment_signature = paymentSignature;
+    try {
+      this.flush();
+    } catch {
+      // Fail closed, and roll BOTH sides back. The entry field must not stay
+      // assigned, or the next unrelated flush would quietly persist a settlement
+      // this job was refused. The in-memory mark goes with it: a restart
+      // discards it anyway, so holding it would only block - for the life of
+      // this process - a sibling job that can verify the same signature and is
+      // equally entitled to it. Self-healing either way: the same job re-claiming
+      // once the disk is writable flushes and wins.
+      entry.payment_signature = previousSignature;
+      if (previousOwner === undefined) {
+        this.paymentSignatureOwners.delete(paymentSignature);
+      } else {
+        this.paymentSignatureOwners.set(paymentSignature, previousOwner);
+      }
+      // ...including the mark this claim would have released. A refused claim
+      // must leave the index exactly as it found it, or a failed disk write
+      // would silently hand the job's earlier settlement to someone else.
+      if (releasedSignature !== undefined) {
+        this.paymentSignatureOwners.set(releasedSignature, jobId);
+      }
+      return 'not-persisted';
+    }
+    return 'claimed';
   }
 
   /** Attempt a state transition. Returns the entry if valid, undefined otherwise. */
@@ -271,11 +523,6 @@ export class JobLedger {
     return [...this.entries.values()];
   }
 
-  /** Remove old delivered/failed entries (default: 7 days). */
-  gc(maxAgeSecs = 7 * 24 * 60 * 60): void {
-    this.pruneOldEntries(maxAgeSecs * 1000);
-  }
-
   /**
    * Drop terminal entries (`delivered` / `failed`) whose `created_at`
    * predates `now - retentionMs`. Stuck non-terminal entries are never
@@ -286,6 +533,7 @@ export class JobLedger {
    */
   pruneOldEntries(retentionMs: number): number {
     const cutoff = Math.floor(Date.now() / 1000) - Math.floor(retentionMs / 1000);
+    const prunedSignatures = new Set<string>();
     let deleted = 0;
     for (const [id, entry] of this.entries) {
       if (
@@ -293,13 +541,43 @@ export class JobLedger {
         entry.created_at < cutoff
       ) {
         this.entries.delete(id);
+        if (typeof entry.payment_signature === 'string' && entry.payment_signature.length > 0) {
+          prunedSignatures.add(entry.payment_signature);
+        }
         deleted += 1;
       }
+    }
+    if (prunedSignatures.size > 0) {
+      this.releasePrunedPaymentSignatures(prunedSignatures);
     }
     if (deleted > 0) {
       this.flush();
     }
     return deleted;
+  }
+
+  /**
+   * Release the index marks of PRUNED entries, so the index cannot outgrow the
+   * ledger. Every mark corresponds to a persisted `payment_signature` (a claim
+   * whose flush failed rolls both back), so the entries are the whole story.
+   * Safe: `LEDGER_RETENTION_MS` is far past Solana's ~2-3 day history horizon,
+   * so a pruned signature can no longer verify for any job. A signature still
+   * carried by a SURVIVING entry (the fingerprint of a double settle) is kept
+   * whoever owns it - pruning one side must never hand the transaction to a
+   * third job.
+   */
+  private releasePrunedPaymentSignatures(prunedSignatures: ReadonlySet<string>): void {
+    const survivingSignatures = new Set<string>();
+    for (const entry of this.entries.values()) {
+      if (typeof entry.payment_signature === 'string') {
+        survivingSignatures.add(entry.payment_signature);
+      }
+    }
+    for (const paymentSignature of prunedSignatures) {
+      if (!survivingSignatures.has(paymentSignature)) {
+        this.paymentSignatureOwners.delete(paymentSignature);
+      }
+    }
   }
 }
 
@@ -362,6 +640,14 @@ export class UsedNonceStore {
     const obj = Object.fromEntries(this.entries);
     const tmp = this.path + '.tmp';
     writeFileSync(tmp, JSON.stringify(obj), { mode: LEDGER_FILE_MODE });
+    // The REVERSE of `JobLedger.flush`, and deliberately so. This store's only
+    // writers (`markUsed`, `prune`) swallow a flush failure and KEEP the
+    // in-memory mark, because an unpersisted nonce still enforces single-use for
+    // the life of the process. Publishing the data first is therefore the safe
+    // order: a chmod that fails afterwards leaves disk and memory agreeing that
+    // the nonce is spent. Make this all-or-nothing like the job ledger and the
+    // failure mode inverts - the mark lives only in memory, a restart forgets
+    // it, and a delegated pull can be replayed.
     renameSync(tmp, this.path);
     chmodSync(this.path, LEDGER_FILE_MODE);
   }

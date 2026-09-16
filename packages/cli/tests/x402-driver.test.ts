@@ -104,6 +104,15 @@ const USDC_MINT = USDC_SOLANA_DEVNET.mint ?? '';
 /** Millisecond-scale backoff so inline-retry tests run on real timers. */
 const TEST_FREE_RETRY_DELAYS = [5, 10];
 
+/**
+ * The fee payer an upstream facilitator advertises. The real
+ * `ExactSvmScheme.createPaymentPayload` throws "feePayer is required in
+ * paymentRequirements.extra for SVM transactions" without it, so a requirement
+ * carrying `extra: {}` is one the shipped driver could never pay - the stubbed
+ * scheme in this file is the only reason it looked acceptable.
+ */
+const X402_FEE_PAYER = 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd';
+
 function requirementAt(amount: string) {
   return {
     scheme: 'exact',
@@ -112,7 +121,7 @@ function requirementAt(amount: string) {
     asset: USDC_MINT,
     payTo: 'PayToAddress11111111111111111111111111111111',
     maxTimeoutSeconds: 60,
-    extra: {},
+    extra: { feePayer: X402_FEE_PAYER },
   };
 }
 
@@ -131,7 +140,7 @@ function acceptableProbe(amount: string) {
         asset: USDC_MINT,
         payTo: 'PayToAddress11111111111111111111111111111111',
         maxTimeoutSeconds: 60,
-        extra: {},
+        extra: { feePayer: X402_FEE_PAYER },
       },
     ],
   };
@@ -1876,7 +1885,7 @@ describe('X402Driver (mainnet agent)', () => {
       asset: MAINNET_MINT,
       payTo: 'PayToAddress11111111111111111111111111111111',
       maxTimeoutSeconds: 60,
-      extra: {},
+      extra: { feePayer: X402_FEE_PAYER },
     };
   }
 
@@ -1956,7 +1965,7 @@ describe('X402Driver (mainnet agent)', () => {
           asset: USDC_SOLANA_DEVNET.mint ?? '',
           payTo: 'PayToAddress11111111111111111111111111111111',
           maxTimeoutSeconds: 60,
-          extra: {},
+          extra: { feePayer: X402_FEE_PAYER },
         },
       ],
     });

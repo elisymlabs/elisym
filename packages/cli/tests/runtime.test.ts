@@ -6,17 +6,90 @@ import type { BlossomBlobTransport } from '@elisym/sdk';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
+import { ADDRESS_HISTORY_PROBE_ADDRESS, CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
 import { AgentRuntime, type RuntimeConfig } from '../src/runtime.js';
 import { SkillRegistry } from '../src/skill';
 import type { Skill } from '../src/skill';
 import type { NostrTransport, IncomingJob } from '../src/transport/nostr.js';
 
 // Configurable mocks for verifyPayment - reset in beforeEach. The runtime calls
-// verifyPayment twice: with a `txSignature` (signature path) and without (reference
-// path, also used by crash-recovery reVerifyPayment). Split so a test can drive the two
-// paths to different outcomes; `mockVerifyResult` remains the reference/recovery result.
+// verifyPayment with a `txSignature` (the customer-asserted signature path, and every
+// candidate of a reference scan) and without one (the SDK's own reference path, used by
+// the live verify race). Split so a test can drive the two paths to different outcomes;
+// `mockVerifyResult` remains the reference/recovery result.
 let mockVerifyResult: any = { verified: true, txSignature: 'tx123' };
 let mockSigVerifyResult: any = { verified: true, txSignature: 'tx123' };
+
+/**
+ * The one signature the fake `getSignaturesForAddress` reports against a payment
+ * reference. Crash recovery no longer delegates to the SDK's reference path: it
+ * enumerates the reference itself and verifies each candidate BY SIGNATURE, so the
+ * candidate's verification is routed back to `mockVerifyResult` - the knob that still
+ * means "what the reference scan finds".
+ */
+const REF_SCAN_CANDIDATE = 'refScanCandidateSignature';
+const DEFINITIVE_NO_PAYMENT = 'No matching transaction found for reference key';
+
+/**
+ * Addresses these fixtures use. Real base58/32-byte values, because `address()`
+ * below is the REAL `@solana/kit` parser: it rejects a placeholder like `'ref'`
+ * exactly as it does in production, so a fixture using one never reaches the
+ * code it claims to test.
+ */
+const PROVIDER_ADDRESS = 'So11111111111111111111111111111111111111112';
+const TREASURY_ADDRESS = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
+const PAYMENT_REFERENCE = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+const PAYMENT_REFERENCE_B = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const PAYMENT_REFERENCE_C = 'ComputeBudget111111111111111111111111111111';
+const PAYMENT_REFERENCE_D = 'SysvarRent111111111111111111111111111111111';
+
+/**
+ * A payment request in the shape the real SDK mints one - fee fields and network
+ * included, so what a test persists is something `validatePaymentRequest` would
+ * accept - and whose own window has already CLOSED. Recovery never issues a
+ * terminal no-payment verdict before `created_at + expiry_secs`, so a request
+ * minted "now" would keep every entry below deferred for ten minutes.
+ */
+function expiredPaymentRequest(reference: string): Record<string, unknown> {
+  return {
+    recipient: PROVIDER_ADDRESS,
+    amount: 100_000,
+    reference,
+    fee_address: TREASURY_ADDRESS,
+    fee_amount: 3_000, // 300 bps of 100_000, matching the protocol-config mock
+    created_at: Math.floor(Date.now() / 1000) - 700,
+    expiry_secs: 600,
+    network: 'devnet',
+  };
+}
+
+function expiredRequestJson(reference: string): string {
+  return JSON.stringify(expiredPaymentRequest(reference));
+}
+
+/**
+ * What the fake RPC lists for the reference. Derived from `mockVerifyResult` so every
+ * existing test keeps its exact meaning: "the SDK conclusively found nothing" is on-chain
+ * reality "the reference carries no transaction", and anything else is "there is a
+ * transaction, and `mockVerifyResult` says what verifying it yields".
+ */
+function refScanListing(): {
+  signature: string;
+  err: null;
+  blockTime: bigint;
+}[] {
+  const conclusivelyEmpty =
+    mockVerifyResult?.verified === false && mockVerifyResult?.error === DEFINITIVE_NO_PAYMENT;
+  return conclusivelyEmpty
+    ? []
+    : [
+        {
+          signature: REF_SCAN_CANDIDATE,
+          err: null,
+          blockTime: BigInt(Math.floor(Date.now() / 1000)),
+        },
+      ];
+}
 
 // Mock SolanaPaymentStrategy and Connection
 vi.mock('@elisym/sdk', async (importOriginal) => {
@@ -24,18 +97,26 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
   return {
     ...actual,
     SolanaPaymentStrategy: vi.fn().mockImplementation(() => ({
-      createPaymentRequest: vi.fn().mockReturnValue({
-        recipient: 'addr',
-        amount: 100_000,
-        reference: 'ref',
-        created_at: Math.floor(Date.now() / 1000),
-        expiry_secs: 600,
-      }),
+      // Deliberately already past its own window. Recovery refuses to issue a
+      // terminal "nobody paid" verdict before `created_at + expiry_secs` - a
+      // customer is entitled to the whole window the provider advertised - and
+      // these tests are about what happens after it. The gate itself has its own
+      // tests in `runtime-payment-dedup.test.ts`.
+      createPaymentRequest: vi
+        .fn()
+        .mockImplementation(() => expiredPaymentRequest(PAYMENT_REFERENCE)),
       verifyPayment: vi
         .fn()
         .mockImplementation(
-          (_rpc: unknown, _req: unknown, _cfg: unknown, options?: { txSignature?: string }) =>
-            Promise.resolve(options?.txSignature ? mockSigVerifyResult : mockVerifyResult),
+          (_rpc: unknown, _req: unknown, _cfg: unknown, options?: { txSignature?: string }) => {
+            const txSignature = options?.txSignature;
+            // A candidate the provider found by enumerating the reference itself is
+            // still "the reference path" - route it to `mockVerifyResult`.
+            if (txSignature === undefined || txSignature === REF_SCAN_CANDIDATE) {
+              return Promise.resolve(mockVerifyResult);
+            }
+            return Promise.resolve(mockSigVerifyResult);
+          },
         ),
     })),
     calculateProtocolFee: actual.calculateProtocolFee,
@@ -52,12 +133,32 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
   };
 });
 
-vi.mock('@solana/kit', () => ({
-  createSolanaRpc: vi.fn().mockReturnValue({
-    getTransaction: vi.fn(),
-  }),
-  signature: vi.fn((value: string) => value),
-}));
+vi.mock('@solana/kit', async (importOriginal) => {
+  const actual = (await importOriginal()) as any;
+  return {
+    ...actual,
+    createSolanaRpc: vi.fn().mockReturnValue({
+      getTransaction: vi.fn(),
+      getSignaturesForAddress: vi.fn((queried: string) => ({
+        // The endpoint-soundness probe is a different address from any payment
+        // reference; answering it (with anything, even nothing) is what lets
+        // recovery believe an empty reference.
+        send: () =>
+          Promise.resolve(queried === ADDRESS_HISTORY_PROBE_ADDRESS ? [] : refScanListing()),
+      })),
+      // Every runtime here is configured for devnet, and recovery refuses a
+      // terminal no-payment verdict from an endpoint that cannot prove its
+      // cluster. A stub that answered something else would silently turn every
+      // "marks failed" expectation below into a 24h wait.
+      getGenesisHash: vi.fn(() => ({
+        send: () => Promise.resolve(CLUSTER_GENESIS_HASHES.devnet),
+      })),
+    }),
+    // Everything else - `address`, `signature`, `isAddress` - comes through
+    // REAL. A permissive stand-in accepts values `@solana/kit` rejects, so the
+    // fixtures would be exercising a code path the shipped agent never takes.
+  };
+});
 
 let agentDir: string;
 let ledger: JobLedger;
@@ -373,7 +474,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, paymentTimeoutSecs: 1, solanaAddress: 'addr' },
+        { ...freeConfig, paymentTimeoutSecs: 1, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
       );
@@ -389,7 +490,12 @@ describe('AgentRuntime', () => {
       expect(skill.execute).not.toHaveBeenCalled();
     });
 
-    it('marks the job failed when the customer conclusively abandoned (no on-chain tx)', async () => {
+    it('keeps the job paid on timeout even when the customer conclusively never paid', async () => {
+      // The live path issues no terminal verdict: it cannot skip the signatures
+      // this provider already gave to other jobs, so it cannot tell "nobody
+      // paid" from "somebody else's transaction is on this reference". The
+      // entry stays `paid` and the next recovery tick makes the call - the
+      // sibling test below shows it really does close.
       mockVerifyResult = {
         verified: false,
         error: 'No matching transaction found for reference key',
@@ -407,7 +513,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, paymentTimeoutSecs: 1, solanaAddress: 'addr' },
+        { ...freeConfig, paymentTimeoutSecs: 1, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
       );
@@ -419,8 +525,57 @@ describe('AgentRuntime', () => {
       runtime.stop();
       await runPromise.catch(() => {});
 
-      expect(ledger.getStatus('timeout-abandoned')).toBe('failed');
+      expect(ledger.getStatus('timeout-abandoned')).toBe('paid');
+      expect(skill.execute).not.toHaveBeenCalled();
     });
+
+    it('recovery then closes the job the live path left recoverable', async () => {
+      // The other half: the terminal verdict is not lost, only moved to the one
+      // place that can issue it.
+      mockVerifyResult = {
+        verified: false,
+        error: 'No matching transaction found for reference key',
+      };
+      mockSigVerifyResult = {
+        verified: false,
+        error: 'No matching transaction found for reference key',
+      };
+      const skill = makeFakeSkill('paid-skill', 'unused', 100_000);
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue(null);
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        {
+          ...freeConfig,
+          paymentTimeoutSecs: 1,
+          recoveryIntervalSecs: 1,
+          solanaAddress: PROVIDER_ADDRESS,
+        },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('timeout-then-recovered'));
+      // Long enough for the real cadence: the live timeout, then TWO empty
+      // recovery scans held deliberately apart - two listings one tick apart,
+      // from an index the RPC is known to lag, are not independent enough to end
+      // a paid job on (`TERMINAL_CONFIRMATION_MIN_RUNG`).
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline && ledger.getStatus('timeout-then-recovered') !== 'failed') {
+        await tick(20);
+      }
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(ledger.getStatus('timeout-then-recovered')).toBe('failed');
+      expect(skill.execute).not.toHaveBeenCalled();
+    }, 25_000);
   });
 
   describe('recovery input decode', () => {
@@ -475,7 +630,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         undefined,
@@ -518,7 +673,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr', executionTimeoutSecs: 5 },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS, executionTimeoutSecs: 5 },
         ledger,
         { onLog: vi.fn() },
         undefined,
@@ -570,7 +725,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr', executionTimeoutSecs: 1 },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS, executionTimeoutSecs: 1 },
         ledger,
         { onLog: vi.fn() },
         undefined,
@@ -628,7 +783,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         undefined,
@@ -1538,7 +1693,7 @@ describe('AgentRuntime', () => {
         created_at: Math.floor(Date.now() / 1000),
       });
       // Early store: payment_request saved, net_amount still undefined
-      ledger.updatePayment('pay-reverify', undefined, '{"reference":"ref123"}');
+      ledger.updatePayment('pay-reverify', undefined, expiredRequestJson(PAYMENT_REFERENCE_B));
 
       const skill = makeFakeSkill('test-skill', 'recovered', 100_000);
       const registry = makeFakeRegistry(skill);
@@ -1548,7 +1703,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
       );
@@ -1562,8 +1717,15 @@ describe('AgentRuntime', () => {
       expect(ledger.getStatus('pay-reverify')).toBe('delivered');
     });
 
-    it('marks failed when re-verification returns not verified', async () => {
-      mockVerifyResult = { verified: false };
+    // Only a clean scan of the reference's WHOLE history, seen twice in a row,
+    // is terminal. Everything else (RPC error, abort, a transaction another job
+    // consumed, a truncated window) is inconclusive and must leave the paid
+    // entry recoverable - see the sibling test below and `reVerifyPayment`.
+    it('marks failed after two consecutive scans conclusively find no payment', async () => {
+      mockVerifyResult = {
+        verified: false,
+        error: 'No matching transaction found for reference key',
+      };
 
       ledger.recordPaid({
         job_id: 'pay-noverify',
@@ -1585,7 +1747,7 @@ describe('AgentRuntime', () => {
         }),
         created_at: Math.floor(Date.now() / 1000),
       });
-      ledger.updatePayment('pay-noverify', undefined, '{"reference":"ref456"}');
+      ledger.updatePayment('pay-noverify', undefined, expiredRequestJson(PAYMENT_REFERENCE_C));
 
       const skill = makeFakeSkill('test-skill', 'result', 100_000);
       const registry = makeFakeRegistry(skill);
@@ -1595,7 +1757,62 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, recoveryIntervalSecs: 1, solanaAddress: PROVIDER_ADDRESS },
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline && ledger.getStatus('pay-noverify') !== 'failed') {
+        await tick(20);
+      }
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      expect(skill.execute).not.toHaveBeenCalled();
+      expect(ledger.getStatus('pay-noverify')).toBe('failed');
+    }, 15_000);
+
+    it('keeps the job recoverable when re-verification is INCONCLUSIVE', async () => {
+      // An RPC outage is not evidence the customer failed to pay. The entry
+      // stays `paid` and no retry is burned; the 24h cutoff bounds the wait.
+      mockVerifyResult = {
+        verified: false,
+        error: 'Verification failed: fetch failed',
+      };
+
+      ledger.recordPaid({
+        job_id: 'pay-rpcdown',
+        input: 'test input',
+        input_type: 'text',
+        tags: ['elisym', 'text-gen'],
+        customer_id: 'cust',
+        raw_event_json: JSON.stringify({
+          id: 'pay-rpcdown',
+          pubkey: 'cust',
+          created_at: Math.floor(Date.now() / 1000),
+          kind: 5100,
+          tags: [
+            ['t', 'elisym'],
+            ['t', 'text-gen'],
+          ],
+          content: 'test input',
+          sig: 'sig',
+        }),
+        created_at: Math.floor(Date.now() / 1000),
+      });
+      ledger.updatePayment('pay-rpcdown', undefined, expiredRequestJson(PAYMENT_REFERENCE_D));
+
+      const skill = makeFakeSkill('test-skill', 'result', 100_000);
+      const registry = makeFakeRegistry(skill);
+      const { transport } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
       );
@@ -1606,7 +1823,9 @@ describe('AgentRuntime', () => {
       await runPromise.catch(() => {});
 
       expect(skill.execute).not.toHaveBeenCalled();
-      expect(ledger.getStatus('pay-noverify')).toBe('failed');
+      expect(ledger.getStatus('pay-rpcdown')).toBe('paid');
+      const entry = ledger.allEntries().find((candidate) => candidate.job_id === 'pay-rpcdown');
+      expect(entry?.retry_count).toBe(0);
     });
 
     it('marks failed when no payment_request stored', async () => {
@@ -1639,7 +1858,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
       );
@@ -1774,7 +1993,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr', maxQueueSize: 100 },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS, maxQueueSize: 100 },
         ledger,
         { onLog: vi.fn() },
       );
@@ -1917,7 +2136,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         stubMonitor,
@@ -2059,7 +2278,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         stubMonitor,
@@ -2149,7 +2368,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         stubMonitor,
@@ -2224,7 +2443,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         stubMonitor,
@@ -2296,7 +2515,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         stubMonitor,
@@ -2362,7 +2581,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
       );
@@ -2443,7 +2662,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         stubMonitor,
@@ -2495,7 +2714,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         stubMonitor,
@@ -2566,7 +2785,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         stubMonitor,
@@ -2627,7 +2846,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         stubMonitor,
@@ -2716,7 +2935,7 @@ describe('AgentRuntime', () => {
         transport,
         registry,
         { llm: null as any, agentName: 'test', agentDescription: '' },
-        { ...freeConfig, solanaAddress: 'addr' },
+        { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
         ledger,
         { onLog: vi.fn() },
         monitor,
@@ -2820,10 +3039,17 @@ describe('AgentRuntime', () => {
 });
 
 describe('AgentRuntime paid-mode payment-timeout messaging', () => {
+  /**
+   * Two different strings come out of a failed job, and they must not be
+   * confused: `onJobError` gets the OPERATOR message (the raw error, script
+   * stderr and all), while the customer gets whatever `customerSafeMessage`
+   * allows through. "Internal processing error" only ever exists on the second
+   * one, so asserting it against the first can never fail.
+   */
   async function drivePaidJobToTimeout(
     logs: string[],
     configureTransport: (transport: NostrTransport) => void,
-  ): Promise<string> {
+  ): Promise<{ operatorError: string; customerMessages: string[] }> {
     const skill = makeFakeSkill('paid-skill', 'done', 100_000);
     const registry = makeFakeRegistry(skill);
     const { transport, triggerJob } = makeFakeTransport();
@@ -2834,7 +3060,7 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
       transport,
       registry,
       { llm: null as any, agentName: 'test', agentDescription: '' },
-      { ...freeConfig, solanaAddress: 'addr', paymentTimeoutSecs: 2 },
+      { ...freeConfig, solanaAddress: PROVIDER_ADDRESS, paymentTimeoutSecs: 2 },
       ledger,
       {
         onLog: (message: string) => logs.push(message),
@@ -2848,39 +3074,61 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
     await tick(200);
     runtime.stop();
     await runPromise.catch(() => {});
-    return errors[0] ?? '';
+    const customerMessages = (transport.sendFeedback as any).mock.calls
+      .filter((call: any[]) => call[0]?.jobId === 'paid-timeout-job' && call[1]?.type === 'error')
+      .map((call: any[]) => call[1].message as string);
+    return { operatorError: errors[0] ?? '', customerMessages };
   }
 
-  it('logs a calm "abandoned" message (no WARNING) when the customer simply never paid', async () => {
-    // Reference scan ran clean and found nothing; no signature ever asserted.
+  it('tells the customer no payment arrived, never that the agent broke', async () => {
+    // Reference path ran clean and found nothing; no signature ever asserted.
+    // The customer gets the allowlisted payment-timeout message verbatim - a
+    // message that stops matching `CUSTOMER_SAFE_MESSAGE_PREFIXES` collapses to
+    // "Internal processing error" and blames the provider for a job the
+    // customer simply never paid for.
     mockVerifyResult = {
       verified: false,
       error: 'No matching transaction found for reference key',
     };
     const logs: string[] = [];
-    const error = await drivePaidJobToTimeout(logs, (transport) => {
+    const { operatorError, customerMessages } = await drivePaidJobToTimeout(logs, (transport) => {
       (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue(null);
     });
 
-    expect(logs.some((line) => /abandoned by customer/.test(line))).toBe(true);
-    expect(logs.some((line) => /WARNING:/.test(line))).toBe(false);
-    expect(error).toBe('Payment timeout');
+    expect(operatorError).toBe('Payment timeout: no payment received before the deadline.');
+    // Asserted on what the CUSTOMER actually received, which is the only place
+    // the masked string can appear.
+    expect(customerMessages).toContain('Payment timeout: no payment received before the deadline.');
+    expect(customerMessages).not.toContain('Internal processing error');
+    // Recoverable on the provider side: the live path never concludes
+    // non-payment - recovery does.
+    expect(logs.some((line) => /recovery makes the final call/i.test(line))).toBe(true);
   });
 
-  it('logs a loud WARNING when the reference scan failed with an RPC error', async () => {
-    mockVerifyResult = { verified: false, error: 'Verification failed: RPC 429' };
+  it('reports what each verify path actually said, verbatim', async () => {
+    // No classification is left to make - the verdict moved to recovery - so the
+    // operator gets the real errors instead of a canned sentence chosen by
+    // matching an SDK message the CLI does not own.
+    mockVerifyResult = {
+      verified: false,
+      error: 'Verification failed: RPC 429',
+    };
     const logs: string[] = [];
     await drivePaidJobToTimeout(logs, (transport) => {
       (transport as any).waitForPaymentSignature = vi.fn().mockResolvedValue(null);
     });
 
     expect(logs.some((line) => /WARNING:/.test(line) && /Check address/.test(line))).toBe(true);
-    expect(logs.some((line) => /abandoned by customer/.test(line))).toBe(false);
+    expect(logs.some((line) => /reference path: Verification failed: RPC 429/.test(line))).toBe(
+      true,
+    );
+    expect(logs.some((line) => /no payment-completed feedback/.test(line))).toBe(true);
   });
 
-  it('logs a loud WARNING when the customer asserted a signature we could not verify', async () => {
-    // Reference scan is definitive-no-pay, but the customer published a payment-completed
-    // signature that fails on-chain verification -> loud, because they claim to have paid.
+  it('distinguishes an asserted-but-unverifiable signature from no feedback at all', async () => {
+    // The customer published a payment-completed signature that fails on-chain
+    // verification: they CLAIM to have paid, which is a different thing for an
+    // operator to chase than silence.
     mockVerifyResult = {
       verified: false,
       error: 'No matching transaction found for reference key',
@@ -2892,7 +3140,12 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
     });
 
     expect(logs.some((line) => /WARNING:/.test(line))).toBe(true);
-    expect(logs.some((line) => /abandoned by customer/.test(line))).toBe(false);
+    expect(
+      logs.some((line) =>
+        /asserted a signature that did not verify \(Transaction not found\)/.test(line),
+      ),
+    ).toBe(true);
+    expect(logs.some((line) => /no payment-completed feedback/.test(line))).toBe(false);
   });
 
   it('emits no timeout message and runs the skill when payment verifies', async () => {
@@ -2907,7 +3160,7 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
       transport,
       registry,
       { llm: null as any, agentName: 'test', agentDescription: '' },
-      { ...freeConfig, solanaAddress: 'addr' },
+      { ...freeConfig, solanaAddress: PROVIDER_ADDRESS },
       ledger,
       { onLog: (message: string) => logs.push(message) },
     );
@@ -2921,7 +3174,12 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
 
     expect(skill.execute).toHaveBeenCalledOnce();
     expect(logs.some((line) => /WARNING:/.test(line))).toBe(false);
-    expect(logs.some((line) => /abandoned by customer/.test(line))).toBe(false);
+    // No timeout report of any kind: the payment was accepted, so neither the
+    // verbatim per-path line nor a refusal line has anything to say. (The
+    // previous "abandoned by customer" wording no longer exists anywhere in
+    // `src`, so asserting on it proved nothing.)
+    expect(logs.some((line) => /Payment verification timed out/.test(line))).toBe(false);
+    expect(logs.some((line) => /Payment (verified but )?[Nn]ot accepted/.test(line))).toBe(false);
   });
 });
 

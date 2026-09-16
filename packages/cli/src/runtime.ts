@@ -43,6 +43,7 @@ import type {
   Signer,
   SlidingWindowLimiter,
   TransportKind,
+  VerifyResult,
 } from '@elisym/sdk';
 import {
   createFreeLlmLimiterSet,
@@ -59,8 +60,16 @@ import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import pLimit from 'p-limit';
-import { getRpcUrl } from './helpers.js';
+import { LEDGER_RETENTION_MS, MAX_PAID_AGE_MS, getRpcUrl } from './helpers.js';
 import { JobLedger, UsedNonceStore } from './ledger.js';
+import {
+  PaymentRecovery,
+  RecoveryDeferrals,
+  UNNAMED_SETTLEMENT_SENTENCE,
+  claimRefusalSentence,
+  needsPaymentScan,
+  recoveryScanBudgetPerTick,
+} from './payment-recovery.js';
 import {
   SESSION_MAX_CONCURRENT_JOBS,
   type RecoverySessionRef,
@@ -72,16 +81,7 @@ import { X402PreflightError, X402TransientError } from './x402/errors.js';
 
 const payment = new SolanaPaymentStrategy();
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-const LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, mirrors plugin
-/**
- * Hard cutoff for `paid` jobs that the recovery loop is waiting to
- * re-execute against an unhealthy LLM pair. After this age the customer
- * is given up on, the entry is marked `failed`, and a final error
- * feedback is fired. Without this, an operator who walks away from a
- * billing-exhausted agent leaves the ledger and recovery loop spinning
- * on a job nobody will ever deliver.
- */
-const MAX_PAID_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 // How long the Nostr-feedback signature path waits for a `payment-completed`
 // before giving up. Solana confirmation + wallet signing is single-digit
 // seconds in the happy path, so 60s is generous; past that the customer is
@@ -287,18 +287,60 @@ class SeedFailedError extends Error {
 }
 
 /**
- * Thrown when on-chain payment verification times out but the customer was NOT
- * conclusively shown to have abandoned the job (the reference scan did not return
- * the definitive "no matching transaction" result, or the customer asserted a
- * signature we could not yet confirm). Kept distinct so `processJob` keeps the job
- * `paid` instead of marking it `failed`: a payment that confirms shortly after the
- * timeout (e.g. a lagging devnet RPC) is then picked up by recovery's reVerifyPayment
- * rather than being silently lost. A conclusively-abandoned job throws a plain Error
- * and is still marked failed.
+ * What a customer is told when recovery's scan saw the reference's whole
+ * history, after the payment request expired, twice in a row, and found no
+ * payment. The one customer-facing message that does assert non-payment - every
+ * weaker outcome defers instead.
+ */
+const RECOVERY_NO_PAYMENT_CUSTOMER_MESSAGE =
+  'Job permanently failed: no payment for this job was found on-chain after the payment request expired.';
+/**
+ * What a customer is told when the job was closed because the PROVIDER could
+ * not verify its payment - a `payment_request` it can no longer parse, or none
+ * persisted at all. Deliberately not "you did not pay": nobody here knows that,
+ * and the customer's only useful move is to come back with a signature.
+ */
+const RECOVERY_UNVERIFIABLE_CUSTOMER_MESSAGE =
+  'Job permanently failed: the provider could not verify payment for this job. If you paid, contact the provider with your transaction signature.';
+/**
+ * What a customer is told when recovery can no longer route the job's tags to
+ * any skill this agent offers - a renamed, re-priced or removed skill between
+ * accepting the job and recovering it. Provider-side, and terminal: no amount of
+ * waiting brings a skill back, so the customer needs to hear it now rather than
+ * at the 24h cutoff.
+ */
+const RECOVERY_NO_SKILL_CUSTOMER_MESSAGE =
+  'Job permanently failed: this provider no longer offers a skill for this job. If you paid, contact the provider with your transaction signature.';
+/**
+ * What a customer is told when the job's input file can no longer be fetched
+ * during recovery (the blob is gone, or its ticket cannot be resolved). The job
+ * cannot be re-executed without its input, and re-executing without it would
+ * silently produce the wrong answer for work already paid for.
+ */
+const RECOVERY_INPUT_UNAVAILABLE_CUSTOMER_MESSAGE =
+  'Job permanently failed: the input file for this job could not be retrieved after an agent restart - contact the provider to resolve.';
+
+/**
+ * Thrown whenever on-chain payment verification times out on the LIVE path.
+ * Kept distinct so `processJob` keeps the job `paid` instead of marking it
+ * `failed`: a payment that confirms shortly after the timeout (a lagging RPC),
+ * or one sitting behind a transaction another job consumed, is then picked up by
+ * recovery's `reVerifyPayment` rather than being silently lost.
+ *
+ * The live path has no terminal counterpart: it cannot skip the signatures this
+ * provider already consumed, so it cannot tell "nobody paid" from "somebody
+ * else's transaction is sitting on this reference". Recovery owns that verdict.
  */
 class PaymentTimeoutError extends Error {
   constructor() {
-    super('Payment verification timed out; awaiting late confirmation.');
+    // Customer-facing (it starts with an allowlisted `CUSTOMER_SAFE_MESSAGE_PREFIXES`
+    // entry, so `customerSafeMessage` forwards it verbatim). It must read as
+    // "no payment arrived", which is what the customer needs to know and all
+    // they can act on - NOT as a provider malfunction, and deliberately
+    // identical whether nobody paid or a transaction we could not attribute is
+    // sitting on the reference. Reword the prefix and the allowlist must move
+    // with it, or every unpaid customer is told the agent broke.
+    super('Payment timeout: no payment received before the deadline.');
     this.name = 'PaymentTimeoutError';
   }
 }
@@ -364,6 +406,27 @@ function customerSafeMessage(error: unknown): string {
     return error.message;
   }
   return 'Internal processing error';
+}
+
+/**
+ * Whether a persisted job event carries the top-level `["payment","delegated"]`
+ * tag - the fallback delegated discriminator for an entry whose ledger flag
+ * write was lost. Module-level so the memo in `AgentRuntime` wraps a pure
+ * function rather than a method that could grow state.
+ */
+function parseRawEventDelegated(rawEventJson: string | undefined): boolean {
+  if (rawEventJson === undefined) {
+    return false;
+  }
+  try {
+    const raw = JSON.parse(rawEventJson) as { tags?: unknown };
+    return (
+      Array.isArray(raw.tags) &&
+      raw.tags.some((tag) => Array.isArray(tag) && tag[0] === 'payment' && tag[1] === 'delegated')
+    );
+  } catch {
+    return false;
+  }
 }
 
 function bodyLooksLikeBilling(body: string): boolean {
@@ -473,6 +536,27 @@ export class AgentRuntime {
   private recoveryInterval: ReturnType<typeof setInterval> | null = null;
   private gcInterval: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
+  /**
+   * Backoff bookkeeping for `paid` entries whose payment recovery could not
+   * conclude. Public so an operator-facing surface (and the tests) can read the
+   * backlog without reaching into the runtime's internals.
+   */
+  readonly recoveryDeferrals = new RecoveryDeferrals(() => this.config.recoveryIntervalSecs);
+  /** Settlement binding and payment re-verification - see `payment-recovery.ts`. */
+  private readonly paymentRecovery: PaymentRecovery;
+  /**
+   * Size of the deferral backlog at the end of the previous tick, so the
+   * transition back to zero is logged exactly once. Without it the summary goes
+   * quiet on the tick the backlog clears and an operator never sees it clear -
+   * the one line they were waiting for.
+   */
+  private lastDeferralBacklog = 0;
+  /**
+   * Memoised `raw_event_json` delegated discriminator, keyed on the ledger entry
+   * OBJECT - see {@link rawEventIsDelegated}. Weak so it is bounded by the
+   * entries the ledger is holding, not by everything this process has ever seen.
+   */
+  private readonly rawEventDelegatedCache = new WeakMap<object, boolean>();
   /** Per-customer sliding-window rate limiter for free skills. */
   private freeCustomerLimiter: SlidingWindowLimiter = createSlidingWindowLimiter({
     windowMs: RATE_LIMIT_WINDOW_MS,
@@ -533,6 +617,12 @@ export class AgentRuntime {
   ) {
     this.limit = pLimit(config.maxConcurrentJobs);
     this.maxQueueSize = config.maxQueueSize ?? config.maxConcurrentJobs * 10;
+    this.paymentRecovery = new PaymentRecovery(
+      ledger,
+      config.network,
+      () => this.fetchProtocolConfig(),
+      payment,
+    );
   }
 
   /**
@@ -878,6 +968,9 @@ export class AgentRuntime {
     // is rejected at pre-check even when the nonce-set flush was lost.
     this.reconcileUsedNonces();
 
+    // The flat paid path needs no equivalent: its "already spent" index IS the
+    // ledger, rebuilt inside `JobLedger.load` before the runtime ever starts.
+
     // Recover pending jobs from previous sessions
     await this.recoverPendingJobs();
 
@@ -1145,9 +1238,10 @@ export class AgentRuntime {
       //   - `paid` + `SeedFailedError`: same - the skill produced output but the
       //     result blob seed failed/timed out; keep `paid` so recovery re-delivers
       //     on a freshly-reset iroh node rather than losing the paid job.
-      //   - `paid` + `PaymentTimeoutError`: payment verification timed out but the
-      //     customer was not conclusively shown to have abandoned; keep `paid` so
-      //     recovery re-verifies a late on-chain payment instead of losing it.
+      //   - `paid` + `PaymentTimeoutError`: payment verification timed out on the
+      //     live path, which never concludes non-payment; keep `paid` so recovery
+      //     re-verifies and issues the terminal verdict (or picks up a late
+      //     on-chain payment) instead of losing it.
       //   - `paid` + `X402TransientError`: the x402 upstream hiccuped (network,
       //     timeout, 5xx, 429) AFTER the customer paid; keep `paid` so recovery
       //     retries. The driver's idempotency cache + paid-attempt budget bound
@@ -1940,26 +2034,92 @@ export class AgentRuntime {
   }
 
   /**
+   * Whether this tick would spend an RPC reference scan on the entry. The
+   * delegated discriminator is the runtime's (delegated entries reconcile
+   * through the pull path, which never reads the reference); the rest of the
+   * predicate is `needsPaymentScan`.
+   */
+  private needsPaymentReVerification(entry: {
+    status: string;
+    net_amount?: number;
+    payment_request?: string;
+    delegated?: boolean;
+    raw_event_json?: string;
+  }): boolean {
+    return needsPaymentScan(entry, this.isDelegatedEntry(entry));
+  }
+
+  /**
+   * Close a recovered job AND tell the customer why.
+   *
+   * Recovery's verdicts are the last word on a job the customer already paid
+   * for (or believes they did), so a silent `markFailed` leaves them watching a
+   * job that will never answer. The 24h cutoff has always sent a notice; every
+   * other terminal recovery verdict sends one too.
+   */
+  private async failRecoveredJob(
+    entry: { job_id: string },
+    job: IncomingJob,
+    message: string,
+  ): Promise<void> {
+    this.ledger.markFailed(entry.job_id);
+    await this.transport.sendFeedback(job, { type: 'error', message }).catch(() => {});
+  }
+
+  /**
+   * One line per tick that sums up the deferral backlog, including the tick it
+   * finally clears - an operator watching a stuck agent needs to see the end of
+   * it, and a summary that simply stops appearing is indistinguishable from an
+   * agent that stopped logging.
+   */
+  private logDeferralSummary(log: (msg: string) => void): void {
+    const backlog = this.recoveryDeferrals.size;
+    const summary = this.recoveryDeferrals.summaryLine();
+    if (summary !== null) {
+      log(summary);
+    } else if (this.lastDeferralBacklog > 0) {
+      log('Recovery: no jobs are deferred awaiting payment confirmation any more.');
+    }
+    this.lastDeferralBacklog = backlog;
+  }
+
+  /**
    * Delegated discriminator for recovery routing. The ledger flag is primary;
    * the persisted raw event's top-level `payment` tag is the fallback for an
    * entry whose flag write was lost.
+   *
+   * The flag is re-read every call - `markDelegated` can set it on an entry a
+   * recovery tick has already looked at - while the FALLBACK is memoised, since
+   * `raw_event_json` never changes for a given entry object.
    */
   private isDelegatedEntry(entry: { delegated?: boolean; raw_event_json?: string }): boolean {
     if (entry.delegated === true) {
       return true;
     }
-    if (entry.raw_event_json === undefined) {
-      return false;
+    return this.rawEventIsDelegated(entry);
+  }
+
+  /**
+   * The `raw_event_json` half of {@link isDelegatedEntry}, memoised per entry
+   * OBJECT.
+   *
+   * The per-tick scan budget asks this of every non-deferred pending entry, and
+   * an entry over budget is parked and asked again next tick, so an uncached
+   * version re-parses every pending job's whole payload once a minute for as
+   * long as the backlog lasts - a full JSON parse of the customer's input (up to
+   * the 64KB inline cap) per entry per tick, to read one tag. The persisted
+   * event is immutable for the life of an entry object, so one parse is the
+   * whole answer; a ledger reload produces fresh objects and re-parses, which is
+   * correct.
+   */
+  private rawEventIsDelegated(entry: { raw_event_json?: string }): boolean {
+    const memoised = this.rawEventDelegatedCache.get(entry);
+    if (memoised !== undefined) {
+      return memoised;
     }
-    try {
-      const raw = JSON.parse(entry.raw_event_json) as { tags?: unknown };
-      return (
-        Array.isArray(raw.tags) &&
-        raw.tags.some((tag) => Array.isArray(tag) && tag[0] === 'payment' && tag[1] === 'delegated')
-      );
-    } catch {
-      return false;
-    }
+    const delegated = parseRawEventDelegated(entry.raw_event_json);
+    this.rawEventDelegatedCache.set(entry, delegated);
+    return delegated;
   }
 
   /**
@@ -2535,7 +2695,10 @@ export class AgentRuntime {
     //       Slower and more brittle on the public devnet RPC, but works as a
     //       fallback when Nostr feedback is dropped. Self-times out via SDK
     //       retry budget (~30s).
-    // First `verified: true` wins; if both fail we resolve immediately with
+    // First `verified: true` wins, but only after it CLAIMS its settlement
+    // signature for this job - a verified payment whose transaction was already
+    // consumed by another job is treated as not paid (see
+    // `claimSettlementSignature`). If both fail we resolve immediately with
     // the last failure. The outer `deadlineMs` backstop only triggers if both
     // paths somehow hang past their own timeouts.
     const rpc = createSolanaRpc(getRpcUrl(this.config.network));
@@ -2551,20 +2714,29 @@ export class AgentRuntime {
     const deadlineMs = this.config.paymentTimeoutSecs * 1000;
     const sigPathTimeoutMs = Math.min(deadlineMs, SIG_PATH_TIMEOUT_MS);
 
-    // Per-path failure outcomes, captured for the timeout-classification below. Declared
-    // at method scope (not inside the executor) because the WARNING site reads them after
-    // the Promise resolves. `sigOutcome.gotSignature` distinguishes "customer asserted a
-    // payment we could not confirm" (loud) from "customer never paid" (calm).
+    // Per-path failure outcomes, reported verbatim in the timeout log below.
+    // Declared at method scope (not inside the executor) because that log site
+    // reads them after the Promise resolves. `sigOutcome.gotSignature`
+    // distinguishes "the customer asserted a payment we could not confirm" from
+    // "no payment-completed feedback ever arrived" - two very different things
+    // for an operator to read.
     let sigOutcome: { gotSignature: boolean; error?: string } | undefined;
     let refOutcome: { error?: string } | undefined;
-    let result: { verified: boolean };
+    // Set when a path verified a payment on-chain that we then REFUSED: already
+    // consumed by another job, impossible to persist, or unnamed by the
+    // strategy. Read at the failure site below so the operator is pointed at the
+    // REFUSED line rather than at an RPC report on a job where money did move.
+    // Carries a SENTENCE, never the internal enum - an operator reading
+    // "refused (not-persisted)" at 3am learns nothing about what to go and fix.
+    let paymentRefusal: { consumedByOther: boolean; sentence: string } | undefined;
+    let result: VerifyResult;
     try {
-      result = await new Promise<{ verified: boolean }>((resolve, reject) => {
+      result = await new Promise<VerifyResult>((resolve, reject) => {
         let settled = false;
         let pending = 2;
-        let lastResult: { verified: boolean } = { verified: false };
+        let lastResult: VerifyResult = { verified: false };
 
-        const win = (verified: { verified: boolean }) => {
+        const win = (verified: VerifyResult) => {
           if (settled) {
             return;
           }
@@ -2573,18 +2745,57 @@ export class AgentRuntime {
           resolve(verified);
         };
 
-        const lose = (verified: { verified: boolean }, reason: string) => {
+        const lose = (verified: VerifyResult, reason: string) => {
           if (settled) {
             return;
           }
           lastResult = verified;
           pending -= 1;
           log(`[${job.jobId.slice(0, 8)}] verify ${reason}`);
+          // Both paths are one-shot - nothing re-polls - so once both have lost
+          // there is nothing left that could still resolve, and holding the
+          // `p-limit` slot until the deadline would only let one griefing
+          // transaction carrying N references pin N provider slots for the whole
+          // window. Resolve now; the entry stays `paid` and a genuine later
+          // transfer is picked up by recovery (`reVerifyPayment`).
           if (pending === 0) {
             settled = true;
             clearTimeout(deadline);
             resolve(lastResult);
           }
+        };
+
+        /**
+         * Accept a verified payment for THIS job, or refuse it.
+         *
+         * `askedSignature` is the signature this path asked the strategy about,
+         * when it asked about one at all. It wins over `verified.txSignature`
+         * for the same reason the recovery scan claims its own candidate: the
+         * de-duplication claim must not be redirectable by a buggy or hostile
+         * strategy echoing back some other transaction. The SDK's own reference
+         * path names no signature to ask about, so there the echo IS the answer.
+         */
+        const accept = (verified: VerifyResult, pathLabel: string, askedSignature?: string) => {
+          if (settled) {
+            return;
+          }
+          const txSignature = askedSignature ?? verified.txSignature;
+          if (txSignature === undefined) {
+            // A verification we cannot name cannot be de-duplicated. Every
+            // real SDK success carries its signature, so this is a broken
+            // strategy implementation, not a customer state - fail closed.
+            paymentRefusal = { consumedByOther: false, sentence: UNNAMED_SETTLEMENT_SENTENCE };
+            lose({ verified: false }, `${pathLabel}: ${UNNAMED_SETTLEMENT_SENTENCE}`);
+            return;
+          }
+          const claim = this.paymentRecovery.claimSettlementSignature(txSignature, job, log);
+          if (claim !== 'claimed') {
+            const sentence = claimRefusalSentence(claim);
+            paymentRefusal = { consumedByOther: claim === 'consumed-by-other', sentence };
+            lose({ verified: false }, `${pathLabel}: settlement refused - ${sentence}`);
+            return;
+          }
+          win(verified);
         };
 
         // Path (a) - signature path
@@ -2605,9 +2816,12 @@ export class AgentRuntime {
                 txSignature: sig,
               });
               if (verified.verified) {
-                win(verified);
+                // No `sigOutcome` write here: `accept` either wins (so the
+                // timeout log never runs) or sets `paymentRefusal`, which that
+                // log checks first.
+                accept(verified, 'sig path', sig);
               } else {
-                const reason = (verified as { error?: string }).error ?? 'unknown';
+                const reason = verified.error ?? 'unknown';
                 sigOutcome = { gotSignature: true, error: reason };
                 lose(verified, `sig path: not verified (${reason})`);
               }
@@ -2628,9 +2842,9 @@ export class AgentRuntime {
           .verifyPayment(rpc, request, protocolConfig)
           .then((verified) => {
             if (verified.verified) {
-              win(verified);
+              accept(verified, 'ref path');
             } else {
-              const reason = (verified as { error?: string }).error ?? 'unknown';
+              const reason = verified.error ?? 'unknown';
               refOutcome = { error: reason };
               lose(verified, `ref path: not verified (${reason})`);
             }
@@ -2686,38 +2900,58 @@ export class AgentRuntime {
       return { netAmount, paymentRequest: requestJson };
     }
 
-    // Timeout. Distinguish "customer simply never paid" (calm) from genuine uncertainty
-    // (loud "check manually"). Calm only when the reference scan ran clean and conclusively
-    // found nothing AND the customer never asserted a payment signature over Nostr. Only the
-    // exact "No matching transaction found for reference key" literal is definitive-no-pay;
-    // RPC/inconclusive errors and any asserted-but-unverifiable signature fall through to loud.
-    const refDefinitiveNoPay =
-      refOutcome?.error === 'No matching transaction found for reference key';
-    const sigGotSignature = sigOutcome?.gotSignature === true;
-    const customerAbandoned = !sigGotSignature && refDefinitiveNoPay;
-
-    if (customerAbandoned) {
+    // Timeout. The live path NEVER issues the terminal verdict: it cannot skip
+    // the signatures this ledger already spent, so it cannot tell "nobody paid"
+    // from "somebody else's transaction is sitting on this reference". The entry
+    // stays `paid` and `reVerifyPayment` decides on a later tick, bounded by the
+    // 24h `MAX_PAID_AGE_MS` cutoff.
+    //
+    // All that is decided here is what the OPERATOR is told. Since the verdict
+    // moved to recovery, there is nothing to classify: print what each path
+    // actually reported, verbatim. That is strictly more information than the
+    // two canned sentences it replaces, and it needs no string contract with
+    // the SDK - a reworded SDK message now degrades the log, not the decision.
+    if (paymentRefusal?.consumedByOther === true) {
       log(
-        `[${job.jobId.slice(0, 8)}] Payment not received; on-chain scan found no ` +
-          `matching transaction - job abandoned by customer.`,
+        `[${job.jobId.slice(0, 8)}] Payment not accepted: ${paymentRefusal.sentence}. The job ` +
+          `stays recoverable - recovery keeps looking for a transfer of its own.`,
+      );
+    } else if (paymentRefusal !== undefined) {
+      log(
+        `[${job.jobId.slice(0, 8)}] Payment verified but NOT accepted: ${paymentRefusal.sentence}. ` +
+          `The job stays recoverable and the next recovery tick retries it - see the REFUSED ` +
+          `line above for what to fix.`,
       );
     } else {
+      let sigReport: string;
+      if (sigOutcome === undefined) {
+        sigReport = 'signature path: no result';
+      } else if (!sigOutcome.gotSignature) {
+        sigReport = sigOutcome.error
+          ? `signature path: no payment-completed feedback (${sigOutcome.error})`
+          : 'signature path: no payment-completed feedback';
+      } else {
+        sigReport = `signature path: the customer asserted a signature that did not verify (${sigOutcome.error ?? 'unknown'})`;
+      }
+      const refReport = refOutcome === undefined ? 'no result' : (refOutcome.error ?? 'unknown');
       log(
-        `[${job.jobId.slice(0, 8)}] WARNING: Payment verification timed out. ` +
-          `Customer may have paid on-chain. Check address ${this.config.solanaAddress} manually.`,
+        `[${job.jobId.slice(0, 8)}] WARNING: Payment verification timed out - reference path: ` +
+          `${refReport}; ${sigReport}. The customer may still have paid on-chain; recovery makes ` +
+          `the final call. Check address ${this.config.solanaAddress} manually if it does not.`,
       );
     }
-    await this.transport
-      .sendFeedback(job, { type: 'error', message: 'payment timeout' })
-      .catch(() => {});
-    // A conclusively-abandoned customer (definitive on-chain "no transaction" + no
-    // asserted signature) is a real failure - mark it failed as before. Otherwise the
-    // payment may still confirm late (e.g. a lagging RPC), so throw a distinct error
-    // that keeps the job `paid` for recovery to re-verify - `payment_request` was
-    // already persisted above via the early `updatePayment`, so reVerifyPayment can run.
-    if (customerAbandoned) {
-      throw new Error('Payment timeout');
-    }
+    // Deliberately NO feedback here. `processJob`'s catch publishes exactly one
+    // error feedback, built by `customerSafeMessage`, and for a TARGETED job the
+    // customer's subscription closes on the FIRST error feedback it sees (see
+    // `subscribeToJobUpdates`). A bare "payment timeout" published here was
+    // therefore the only thing the customer ever read: the explanatory message
+    // that followed went into a subscription nobody was listening to any more.
+    //
+    // Always the recoverable error: the payment may still confirm late (a
+    // lagging RPC), or be sitting behind a transaction another job consumed.
+    // `payment_request` was persisted above via the early `updatePayment`, so
+    // `reVerifyPayment` can run on the next recovery tick and end the job there
+    // if the reference really carries nothing.
     throw new PaymentTimeoutError();
   }
 
@@ -2774,6 +3008,11 @@ export class AgentRuntime {
   private async recoverPendingJobs(): Promise<void> {
     const pending = this.ledger.pendingJobs().filter((e) => !this.inFlight.has(e.job_id));
 
+    // Drop backoff state for entries that have left the pending set (delivered,
+    // failed, pruned). Bounded by the pending set, so the map cannot grow with
+    // the ledger over a long-lived process.
+    this.recoveryDeferrals.sweep(new Set(this.ledger.pendingJobs().map((entry) => entry.job_id)));
+
     // Session pre-pass + release sweep - unconditionally at the top of every
     // tick, BEFORE the empty-pending early return: releases are needed
     // precisely when entries have left the pending set (a sweep placed after
@@ -2791,11 +3030,17 @@ export class AgentRuntime {
       );
     }
 
+    const log = this.callbacks.onLog ?? console.log;
+    // BEFORE the empty-pending early return, for the same reason as the sweep
+    // above: the tick that empties the backlog is precisely the tick an
+    // operator has been waiting to see, and a summary that just stops appearing
+    // is indistinguishable from an agent that stopped logging.
+    this.logDeferralSummary(log);
+
     if (pending.length === 0) {
       return;
     }
 
-    const log = this.callbacks.onLog ?? console.log;
     log(`Recovering ${pending.length} pending jobs...`);
 
     // If any pending `paid` job is parked on an unhealthy LLM pair,
@@ -2839,6 +3084,13 @@ export class AgentRuntime {
         }
       }
     }
+
+    // Reference scans started on THIS tick. Capped separately from live intake
+    // so a backlog of entries awaiting payment confirmation cannot fill the
+    // shared p-limit/queue and make the agent answer paying customers with
+    // "Server overloaded" - see `recoveryScanBudgetPerTick`.
+    const scanBudget = recoveryScanBudgetPerTick(this.config.maxConcurrentJobs);
+    let scansStartedThisTick = 0;
 
     for (const entry of pending) {
       const ageMs = (Math.floor(Date.now() / 1000) - entry.created_at) * 1000;
@@ -2889,6 +3141,24 @@ export class AgentRuntime {
 
       if (!entry.raw_event_json) {
         continue;
+      }
+
+      // Still inside its deferral backoff: the previous tick was inconclusive
+      // and nothing about this entry can have changed cheaply. Placed AFTER the
+      // age/retry cutoff above, so the 24h backstop still fires on schedule.
+      if (this.recoveryDeferrals.isDeferred(entry.job_id)) {
+        continue;
+      }
+
+      // This tick's reference-scan budget, derived from the agent's configured
+      // concurrency. Entries over it are parked rather than dropped; the budget
+      // itself is what spreads a restart's backlog over the following ticks.
+      if (this.needsPaymentReVerification(entry)) {
+        if (scansStartedThisTick >= scanBudget) {
+          this.recoveryDeferrals.parkForCapacity(entry.job_id);
+          continue;
+        }
+        scansStartedThisTick += 1;
       }
 
       // Respect queue limit for recovery jobs too
@@ -2980,19 +3250,106 @@ export class AgentRuntime {
         const skill = this.skills.route(entry.tags);
         if (!skill) {
           log(`[${entry.job_id.slice(0, 8)}] Recovery: no skill for tags, marking failed`);
-          this.ledger.markFailed(entry.job_id);
+          await this.failRecoveredJob(entry, fakeJob, RECOVERY_NO_SKILL_CUSTOMER_MESSAGE);
           return;
         }
 
-        // Gate the retry against the LLM health monitor: if the pair is
-        // still unhealthy, skip THIS tick without burning a retry. The
-        // outer loop will re-schedule us; a successful probe (lazy
-        // recovery loop or explicit refreshUnhealthy) flips the pair
-        // back to healthy and the next tick proceeds. Without this
-        // check, every recovery tick during a billing outage would
-        // re-spawn the script, fail with exit 42, and consume one of
-        // the bounded retry slots even though the underlying problem
-        // (operator's API key) hasn't been touched yet.
+        // Re-verify payment if reference was stored but confirmation lost to
+        // crash. Runs BEFORE `incrementRetry`, retry-free: a `deferred`
+        // verification says nothing about the customer (our disk, an aborted
+        // shutdown, a flaky RPC, a transaction another job consumed), so burning
+        // retries on it would force-fail a paid job in ~5 minutes over a local
+        // problem. The 24h cutoff is what bounds the wait.
+        //
+        // It runs BEFORE the preflight gate: an entry still waiting on payment
+        // cannot use a preflight result, and for an x402 skill that preflight
+        // buys a LIVE upstream quote on every tick.
+        //
+        // And it runs BEFORE the LLM-health gate below, which reads oddly until
+        // you follow the tick budget. The caller charges this entry one of the
+        // tick's five reference scans on the way in. Gate it first and an agent
+        // with one dead API key spends the whole budget on entries that return
+        // here without scanning - and, having neither scanned nor deferred, they
+        // are first in line again on the very next tick. The customers of its
+        // HEALTHY skills then go unverified for the length of the outage, and any
+        // that reach 24h close as "the agent did not recover" with their money
+        // taken. Confirming a payment needs no LLM; only executing the job does.
+
+        if (skill.priceSubunits > 0 && !entry.net_amount) {
+          if (entry.payment_request) {
+            const reVerification = await this.paymentRecovery.reVerifyPayment(
+              entry,
+              entry.payment_request,
+              skill.priceSubunits,
+              log,
+              recoveryAbort.signal,
+            );
+            if (reVerification === 'deferred') {
+              this.recoveryDeferrals.note(entry.job_id);
+              return;
+            }
+            if (reVerification === 'awaiting-window') {
+              // An empty reference inside the window this provider advertised is
+              // not an inconclusive look, so it must not climb the backoff
+              // ladder - see `noteAwaitingWindow`. Keeping it off the ladder is
+              // what lets a customer who confirms late in their window still be
+              // found promptly, and what stops an unpaid job from reaching its
+              // expiry already parked on a half-hour rung.
+              this.recoveryDeferrals.noteAwaitingWindow(entry.job_id);
+              return;
+            }
+            if (reVerification === 'corrupt-state') {
+              // OUR state, not the customer's. Waiting cannot repair it, so
+              // close now rather than hold the entry (and its session
+              // registration) for the whole 24h window.
+              log(
+                `[${entry.job_id.slice(0, 8)}] Recovery: the persisted payment request is ` +
+                  `unusable, so this job can never be verified - marking failed. This is a ` +
+                  `provider-side state problem; audit the ledger entry.`,
+              );
+              await this.failRecoveredJob(entry, fakeJob, RECOVERY_UNVERIFIABLE_CUSTOMER_MESSAGE);
+              return;
+            }
+            if (reVerification === 'no-payment') {
+              // ONE clean, complete, empty scan is not enough to destroy a
+              // customer's money: the public RPC throttles and lags this very
+              // index. Require a SECOND consecutive sighting; anything else in
+              // between clears the flag and restarts the count.
+              if (!this.recoveryDeferrals.sawNoPayment(entry.job_id)) {
+                log(
+                  `[${entry.job_id.slice(0, 8)}] Recovery: the reference's whole history is ` +
+                    `empty, but a single listing is not enough to close a paid job - confirming ` +
+                    `on the next attempt.`,
+                );
+                this.recoveryDeferrals.note(entry.job_id, true);
+                return;
+              }
+              log(
+                `[${entry.job_id.slice(0, 8)}] Recovery: two consecutive complete scans found no ` +
+                  `payment on this reference - marking failed.`,
+              );
+              await this.failRecoveredJob(entry, fakeJob, RECOVERY_NO_PAYMENT_CUSTOMER_MESSAGE);
+              return;
+            }
+            // The entry is no longer held back at all: drop its deferral state
+            // so the backlog summary's "oldest deferred" cannot keep ageing on
+            // an entry nobody is waiting for.
+            this.recoveryDeferrals.clear(entry.job_id);
+          } else {
+            log(`[${entry.job_id.slice(0, 8)}] Recovery: payment not confirmed, marking failed`);
+            await this.failRecoveredJob(entry, fakeJob, RECOVERY_UNVERIFIABLE_CUSTOMER_MESSAGE);
+            return;
+          }
+        }
+
+        // Gate the RE-EXECUTION against the LLM health monitor: if the pair is
+        // still unhealthy, skip THIS tick without burning a retry. The outer
+        // loop will re-schedule us; a successful probe (lazy recovery loop or
+        // explicit refreshUnhealthy) flips the pair back to healthy and the next
+        // tick proceeds. Without this check, every recovery tick during a
+        // billing outage would re-spawn the script, fail with exit 42, and
+        // consume one of the bounded retry slots even though the underlying
+        // problem (the operator's API key) has not been touched yet.
         const healthPair = resolveHealthPair(skill);
         if (this.healthMonitor && healthPair) {
           try {
@@ -3037,26 +3394,6 @@ export class AgentRuntime {
 
         this.ledger.incrementRetry(entry.job_id);
 
-        // Re-verify payment if reference was stored but confirmation lost to crash
-        if (skill.priceSubunits > 0 && !entry.net_amount) {
-          if (entry.payment_request) {
-            const verified = await this.reVerifyPayment(
-              entry,
-              skill.priceSubunits,
-              log,
-              recoveryAbort.signal,
-            );
-            if (!verified) {
-              this.ledger.markFailed(entry.job_id);
-              return;
-            }
-          } else {
-            log(`[${entry.job_id.slice(0, 8)}] Recovery: payment not confirmed, marking failed`);
-            this.ledger.markFailed(entry.job_id);
-            return;
-          }
-        }
-
         // Re-fetch the file input (if any) for the recovery re-execution, decoding
         // the descriptor from the persisted (decrypted) raw event. Without this the
         // recovery skill.execute would run without its file.
@@ -3084,7 +3421,7 @@ export class AgentRuntime {
           );
         } catch {
           log(`[${entry.job_id.slice(0, 8)}] Recovery: input file unavailable, marking failed`);
-          this.ledger.markFailed(entry.job_id);
+          await this.failRecoveredJob(entry, fakeJob, RECOVERY_INPUT_UNAVAILABLE_CUSTOMER_MESSAGE);
           return;
         }
 
@@ -3193,69 +3530,6 @@ export class AgentRuntime {
       }
     } finally {
       this.jobAbortControllers.delete(recoveryAbort);
-    }
-  }
-
-  /**
-   * Re-verify an on-chain payment during crash recovery.
-   *
-   * Limitation: Solana transaction data expires after ~2-3 days (recent blockhash window).
-   * If the agent was down longer, a confirmed payment may not be found on-chain and the
-   * job will be marked failed. For mainnet: use monitoring, avoid extended downtime, or
-   * configure an archive RPC via SOLANA_RPC_URL.
-   */
-  private async reVerifyPayment(
-    entry: ReturnType<JobLedger['pendingJobs']>[number],
-    priceSubunits: number,
-    log: (msg: string) => void,
-    signal?: AbortSignal,
-  ): Promise<boolean> {
-    try {
-      const request = JSON.parse(entry.payment_request!);
-      const rpc = createSolanaRpc(getRpcUrl(this.config.network));
-      const protocolConfig = await this.fetchProtocolConfig();
-
-      let result: { verified: boolean };
-      if (signal) {
-        let abortHandler: (() => void) | undefined;
-        const abortPromise = new Promise<never>((_, reject) => {
-          abortHandler = () => {
-            const err = new Error('The operation was aborted');
-            err.name = 'AbortError';
-            reject(err);
-          };
-          if (signal.aborted) {
-            abortHandler();
-            return;
-          }
-          signal.addEventListener('abort', abortHandler, { once: true });
-        });
-        try {
-          result = await Promise.race([
-            payment.verifyPayment(rpc, request, protocolConfig),
-            abortPromise,
-          ]);
-        } finally {
-          if (abortHandler) {
-            signal.removeEventListener('abort', abortHandler);
-          }
-        }
-      } else {
-        result = await payment.verifyPayment(rpc, request, protocolConfig);
-      }
-
-      if (result.verified) {
-        const fee = calculateProtocolFee(priceSubunits, protocolConfig.feeBps);
-        const netAmount = priceSubunits - fee;
-        this.ledger.updatePayment(entry.job_id, netAmount, entry.payment_request);
-        log(`[${entry.job_id.slice(0, 8)}] Recovery: payment re-verified (${netAmount} subunits)`);
-        return true;
-      }
-      log(`[${entry.job_id.slice(0, 8)}] Recovery: payment not found on-chain, marking failed`);
-      return false;
-    } catch (e: any) {
-      log(`[${entry.job_id.slice(0, 8)}] Recovery: payment re-verification error: ${e.message}`);
-      return false;
     }
   }
 }

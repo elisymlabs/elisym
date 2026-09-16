@@ -410,6 +410,14 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     return signTransactionMessageWithSigners(message);
   }
 
+  /**
+   * Verify a Solana payment - see `PaymentStrategy.verifyPayment` for the
+   * stateless contract this implements and the caller's de-duplication duty.
+   *
+   * Concretely: a transaction satisfies a request when its account keys contain
+   * the request's `reference` and the recipient's balance delta is `>= net`
+   * (plus the treasury's `>= fee` when a fee applies).
+   */
   async verifyPayment(
     rpc: Rpc<SolanaRpcApi>,
     paymentRequest: PaymentRequestData,
