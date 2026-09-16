@@ -17,6 +17,24 @@ export const RENT_EXEMPT_MINIMUM = 890_880; // lamports
 export const MAX_CONCURRENT_JOBS = 10;
 export const RECOVERY_MAX_RETRIES = 5;
 export const RECOVERY_INTERVAL_SECS = 60;
+/**
+ * Hard cutoff for `paid` jobs the recovery loop cannot finish - an unhealthy
+ * LLM pair, a preflight that keeps refusing, a payment it cannot confirm. After
+ * this age the entry is force-failed and an error feedback is fired. Without
+ * it, an operator who walks away from a billing-exhausted agent leaves the
+ * ledger and recovery loop spinning on a job nobody will ever deliver.
+ */
+export const MAX_PAID_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+/**
+ * How long a terminal ledger entry survives `pruneOldEntries`.
+ *
+ * RETENTION INVARIANT (`>= 2 * MAX_PAID_AGE_MS`): entries are also the "one
+ * transaction settles one job" index, so pruning one forgets which transaction
+ * it consumed. A rival can only ride a consumed settlement while itself alive
+ * (`MAX_PAID_AGE_MS`) and may have been created much later, so keep the 2x.
+ */
+export const LEDGER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, mirrors plugin
+
 export const WATCHDOG_PROBE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 export const WATCHDOG_PROBE_TIMEOUT_MS = 10_000;
 export const WATCHDOG_SELF_PING_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes

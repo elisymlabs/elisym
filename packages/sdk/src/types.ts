@@ -474,8 +474,17 @@ export interface PaymentRequestData {
   network?: Network;
 }
 
+/**
+ * Outcome of a stateless on-chain payment verification - `verified: true` means
+ * a transaction targeted this request and moved at least the expected amounts,
+ * NOT that it is exclusive to this request. See `PaymentStrategy.verifyPayment`.
+ */
 export interface VerifyResult {
   verified: boolean;
+  /**
+   * The settlement signature that satisfied the request - the value a provider
+   * de-duplicates on. Present on every success; absent on failure.
+   */
   txSignature?: string;
   error?: string;
 }

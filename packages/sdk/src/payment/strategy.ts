@@ -107,6 +107,22 @@ export interface PaymentStrategy {
 
   /**
    * Verify a payment on-chain.
+   *
+   * STATELESS by contract. Verification answers "does a transaction exist that
+   * targeted this request and moved at least the expected amounts", nothing
+   * more. The request's `reference` key proves a transaction targeted this
+   * request; it does NOT make that transaction exclusive to it, and the payer
+   * is not bound to the request either. One transaction can therefore carry
+   * several references and satisfy several concurrent requests, and a request's
+   * reference travels in cleartext wherever the request is published.
+   *
+   * Consequence for implementers of a provider: record the settlement signature
+   * (`VerifyResult.txSignature`) of every payment you accept and refuse one
+   * that another job already consumed - the strategy holds no state and cannot
+   * do it for you. Treating a consumed signature as proof that the customer did
+   * not pay is equally wrong: it means only that this particular transaction is
+   * not attributable to this request, so keep the request open to a transfer of
+   * its own rather than concluding non-payment.
    */
   verifyPayment(
     rpc: Rpc<SolanaRpcApi>,

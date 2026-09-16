@@ -35,7 +35,12 @@ describe('classifyJobError', () => {
   it('leaves transport / payment / validation errors as unknown', () => {
     expect(classifyJobError('Timed out waiting for response (120s).')).toBe('unknown');
     expect(classifyJobError('Provider returned an error')).toBe('unknown');
-    expect(classifyJobError('payment timeout')).toBe('unknown');
+    // The real provider-side wording. `unknown` is the right answer - the job is
+    // still open and being re-checked, which is not an agent outage; the web app
+    // keys its "your payment is held" note off the message itself.
+    expect(classifyJobError('Payment timeout: no payment received before the deadline.')).toBe(
+      'unknown',
+    );
     expect(classifyJobError('Rate limited, try again later')).toBe('unknown');
     expect(classifyJobError('Server overloaded, try again later')).toBe('unknown');
     expect(classifyJobError('Wallet disconnected - reconnect and retry')).toBe('unknown');

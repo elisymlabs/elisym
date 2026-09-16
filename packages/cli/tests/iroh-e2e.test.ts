@@ -18,6 +18,7 @@ import { NATIVE_SOL, encodeJobPayload, type FileAttachment } from '@elisym/sdk';
 import { createIrohTransport, type IrohBlobTransport } from '@elisym/sdk/node';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
+import { CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
 import { AgentRuntime, type RuntimeConfig } from '../src/runtime.js';
 import { SkillRegistry } from '../src/skill';
 import type { Skill } from '../src/skill';
@@ -34,12 +35,19 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
   return {
     ...actual,
     SolanaPaymentStrategy: vi.fn().mockImplementation(() => ({
+      // The SHAPE the real `createPaymentRequest` returns: base58 addresses it
+      // would actually accept, and the fee fields it always emits. (Nothing in
+      // this file routes a PAID live job today, so the strategy mock is inert -
+      // but a fixture the real code would reject is a trap for whoever does.)
       createPaymentRequest: vi.fn().mockReturnValue({
-        recipient: 'addr',
+        recipient: 'So11111111111111111111111111111111111111112',
         amount: 100_000,
-        reference: 'ref',
+        reference: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+        fee_address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+        fee_amount: 3_000,
         created_at: Math.floor(Date.now() / 1000),
         expiry_secs: 600,
+        network: 'devnet',
       }),
       verifyPayment: vi.fn().mockImplementation(() => Promise.resolve(mockVerifyResult)),
     })),
@@ -56,9 +64,22 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
   };
 });
 
-vi.mock('@solana/kit', () => ({
-  createSolanaRpc: vi.fn().mockReturnValue({ getTransaction: vi.fn() }),
-}));
+vi.mock('@solana/kit', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    // Spread the real module: a bare factory leaves `address`, `signature` and
+    // `isAddress` - all imported by the runtime - as `undefined`.
+    ...actual,
+    createSolanaRpc: vi.fn().mockReturnValue({
+      // `{ send }`-shaped, like the real RPC; the recovery paths call all three.
+      getTransaction: vi.fn(() => ({ send: () => Promise.resolve(null) })),
+      getSignaturesForAddress: vi.fn(() => ({ send: () => Promise.resolve([]) })),
+      getGenesisHash: vi.fn(() => ({
+        send: () => Promise.resolve(CLUSTER_GENESIS_HASHES.devnet),
+      })),
+    }),
+  };
+});
 
 // Gate on the optional native addon by exercising the REAL transport path (it
 // resolves @number0/iroh relative to the SDK, which holds the optionalDependency -
