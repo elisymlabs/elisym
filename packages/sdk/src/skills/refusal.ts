@@ -13,6 +13,7 @@
  * defining property of a refusal is that it does NOT touch health state, and a
  * script author reaching for it should not have to import from `llm-health`.
  */
+import { ScriptExecutionError } from '../llm-health/types';
 import {
   clipToCharacters,
   firstContentIndex,
@@ -49,6 +50,11 @@ export const SCRIPT_REFUSAL_MAX_CHARS = 400;
  * the same thing twice with two nouns for one actor.
  */
 export const SCRIPT_REFUSAL_UNSTATED = 'no reason was given.';
+
+/** Told to the operator when a script exits 43 without marking its stdout. */
+export const UNMARKED_REFUSAL_HINT =
+  `exit ${SCRIPT_EXIT_REFUSED} without a leading "${SCRIPT_REFUSAL_MARKER}" line on stdout, ` +
+  'so this was handled as a failure rather than a refusal - the customer was told nothing about their request:';
 
 /** How much of a refusing script's stderr the error carries for the operator. */
 export const SCRIPT_REFUSAL_STDERR_CHARS = 500;
@@ -153,5 +159,43 @@ export class ScriptRefusalError extends Error {
  * false however the source reads. Every consumer should use these guards.
  */
 export function isScriptRefusalError(value: unknown): value is ScriptRefusalError {
-  return value instanceof Error && value.name === 'ScriptRefusalError';
+  return (
+    value instanceof Error &&
+    value.name === 'ScriptRefusalError' &&
+    typeof (value as ScriptRefusalError).stderr === 'string'
+  );
+}
+
+/**
+ * The refusal contract, enforced in both directions, for any script runner.
+ *
+ * Exit 43 without the marker is a failure - 43 is also what a `set -eu` script
+ * inherits from a failed `curl` - and the operator gets a hint on the error's
+ * operator-side detail, because a mistyped marker otherwise looks exactly like
+ * a crash and the buyer is charged for "Internal processing error".
+ *
+ * The MARKER without exit 43 is a refusal too. A script that prints it and then
+ * exits 0 (its `exit 43` behind a pipeline that reset `$?`, say) would otherwise
+ * have `ELISYM-REFUSAL: ...` delivered to the buyer as the thing they paid for.
+ */
+export function throwIfRefused(result: {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}): void {
+  const markerEnd = refusalMarkerEnd(result.stdout);
+  if (markerEnd !== -1) {
+    throw new ScriptRefusalError(
+      result.code ?? SCRIPT_EXIT_REFUSED,
+      result.stdout,
+      result.stderr,
+      markerEnd,
+    );
+  }
+  if (result.code === SCRIPT_EXIT_REFUSED) {
+    throw new ScriptExecutionError(
+      result.code,
+      `${UNMARKED_REFUSAL_HINT} ${result.stderr.trim() || result.stdout.trim() || '(no output)'}`,
+    );
+  }
 }

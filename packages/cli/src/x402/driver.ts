@@ -20,9 +20,9 @@ import {
   calculateProtocolFee,
   formatAssetAmount,
   resolveUsdcAsset,
-  flattenUntrusted,
   signerFromSecretKeyBase58,
   withoutDanglingSurrogate,
+  withoutFormatMarks,
 } from '@elisym/sdk';
 import type { Asset, Network } from '@elisym/sdk';
 import {
@@ -35,6 +35,7 @@ import {
 import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
 import { ExactSvmScheme } from '@x402/svm';
 import { fetchUsdcBalance } from '../helpers.js';
+import { sanitizeForTerminal } from '../logging.js';
 import type { SkillInput, X402JobDriver, X402SkillJob } from '../skill/index.js';
 import {
   X402_ERROR_BODY_READ_MS,
@@ -365,7 +366,11 @@ function flattenForOperator(text: string): string {
   // first would leave it as a space this never strips. What remains of the
   // whitespace class - the line and paragraph separators among it - then
   // collapses to a single space rather than welding two words together.
-  return flattenUntrusted(text);
+  // Controls are DELETED here rather than spaced (which is what the SDK's
+  // `flattenUntrusted` does for a refusal): `maskCustomerInput` compares this
+  // text against what the customer sent, and an upstream echoing "ja\x01ne"
+  // has to collapse back to "jane" for the mask to find it.
+  return withoutFormatMarks(sanitizeForTerminal(text)).replace(/\s+/g, ' ').trim();
 }
 
 /**

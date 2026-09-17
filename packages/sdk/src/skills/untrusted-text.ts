@@ -13,7 +13,11 @@
 const ZWNJ = String.fromCodePoint(0x200c);
 const ZWJ = String.fromCodePoint(0x200d);
 
-const FORMAT_MARKS_SOURCE = String.raw`\p{Cf}`;
+/**
+ * Safe to share despite the `g` flag: `String.prototype.replace` sets
+ * `lastIndex` to 0 before and after a global regex, and this is its only use.
+ */
+const FORMAT_MARKS = /\p{Cf}/gu;
 
 /** Every C0 and C1 control character becomes a space. */
 export function withoutControlCharacters(text: string): string {
@@ -36,14 +40,9 @@ export function withoutControlCharacters(text: string): string {
  * four people. Those two are kept; a refusal written in Persian should reach its
  * customer spelled the way the provider wrote it.
  *
- * The regex is built per call: a module-level `/g` regex carries a mutable
- * `lastIndex`, and sharing one across modules is a bug waiting for its second
- * caller.
  */
 export function withoutFormatMarks(text: string): string {
-  return text.replace(new RegExp(FORMAT_MARKS_SOURCE, 'gu'), (mark) =>
-    mark === ZWJ || mark === ZWNJ ? mark : '',
-  );
+  return text.replace(FORMAT_MARKS, (mark) => (mark === ZWJ || mark === ZWNJ ? mark : ''));
 }
 
 /**
@@ -76,13 +75,20 @@ export function flattenUntrusted(text: string): string {
  * text was already cut by code unit before it got here.
  */
 export function takeCharacters(text: string, maxChars: number): string {
+  return takeFrom([...text], maxChars);
+}
+
+/** `takeCharacters` over an already-split string, so nothing splits it twice. */
+function takeFrom(characters: string[], maxChars: number): string {
   if (maxChars <= 0) {
     return '';
   }
-  const characters = [...text];
-  return characters.length <= maxChars
-    ? withoutDanglingSurrogate(text)
-    : characters.slice(0, maxChars).join('');
+  const kept =
+    characters.length <= maxChars ? characters.join('') : characters.slice(0, maxChars).join('');
+  // On both branches: the text may already have been cut by code unit before it
+  // reached here, and appending an ellipsis to half a character is how a lone
+  // surrogate ends up in a result event.
+  return withoutDanglingSurrogate(kept);
 }
 
 /**
@@ -99,12 +105,12 @@ export function clipToCharacters(text: string, maxChars: number): string {
   }
   const characters = [...text];
   if (characters.length <= maxChars) {
-    return text;
+    return withoutDanglingSurrogate(text);
   }
   if (maxChars === 1) {
     return '…';
   }
-  return `${takeCharacters(text, maxChars - 1).trimEnd()}…`;
+  return `${takeFrom(characters, maxChars - 1).trimEnd()}…`;
 }
 
 /**

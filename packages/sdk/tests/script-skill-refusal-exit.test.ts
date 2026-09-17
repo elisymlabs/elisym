@@ -7,6 +7,7 @@ import {
   isRefusal,
   isScriptRefusalError,
   refusalMessage,
+  UNMARKED_REFUSAL_HINT,
   SCRIPT_EXIT_REFUSED,
   SCRIPT_REFUSAL_MARKER,
   SCRIPT_REFUSAL_MAX_CHARS,
@@ -134,6 +135,34 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error.message).not.toContain('partial API body');
   });
 
+  it('honours the marker even when the script forgets to exit 43', async () => {
+    // `exit 43` behind a pipeline that reset $?, or simply falling off the end.
+    // Without this the buyer pays for a "result" whose whole content is the
+    // literal marker line.
+    fixture = setupScript(
+      `#!/bin/sh\necho "${SCRIPT_REFUSAL_MARKER} say the size in USD."\nexit 0\n`,
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptRefusalError);
+    expect(error.message).toBe('say the size in USD.');
+  });
+
+  it('tells the operator when a 43 arrives without the marker', async () => {
+    // Otherwise a mistyped marker is indistinguishable from a crash, and the
+    // operator has no way to learn their refusals are not reaching anyone.
+    fixture = setupScript(
+      `#!/bin/sh\necho "ELISYM-refusal: lowercase typo"\nexit ${SCRIPT_EXIT_REFUSED}\n`,
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptExecutionError);
+    expect(error.detail).toContain(UNMARKED_REFUSAL_HINT);
+    expect(error.detail).toContain('lowercase typo');
+  });
+
   it('leaves a plain non-zero exit as a generic failure', async () => {
     fixture = setupScript('#!/bin/sh\necho "reason on stdout"\nexit 1\n');
     const error = await dynamicSkill(fixture.scriptPath)
@@ -245,6 +274,10 @@ describe('recognising a refusal', () => {
     expect(isScriptRefusalError(thrown)).toBe(true);
     expect(isScriptRefusalError(lookalike)).toBe(false);
     expect(isScriptRefusalError({ name: 'ScriptRefusalError' })).toBe(false);
+    // The guard promises the shape, not just the name: a lookalike without
+    // `stderr` would otherwise print "(stderr: undefined)" in the operator log.
+    const nameOnly = Object.assign(new Error('no'), { name: 'ScriptRefusalError' });
+    expect(isScriptRefusalError(nameOnly)).toBe(false);
   });
 
   it('carries stderr as a bounded single line', () => {

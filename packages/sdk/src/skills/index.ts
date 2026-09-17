@@ -40,16 +40,12 @@ export { OnchainCallSkill } from './onchainCallSkill';
 export type { OnchainCallSkillParams } from './onchainCallSkill';
 export { X402ProxySkill } from './x402ProxySkill';
 export type { X402ProxySkillParams } from './x402ProxySkill';
+// The contract a script author needs (the code and the marker), the error the
+// runtime catches, and its guard. The parsing helpers behind them are internal.
 export {
-  isRefusal,
   isScriptRefusalError,
-  refusalMarkerEnd,
-  refusalMessage,
   SCRIPT_EXIT_REFUSED,
   SCRIPT_REFUSAL_MARKER,
-  SCRIPT_REFUSAL_MAX_CHARS,
-  SCRIPT_REFUSAL_STDERR_CHARS,
-  SCRIPT_REFUSAL_UNSTATED,
   ScriptRefusalError,
 } from './refusal';
 export { resolveInsidePath, resolveInsidePathReal } from './path-safety';

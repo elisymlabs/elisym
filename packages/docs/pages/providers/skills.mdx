@@ -168,7 +168,7 @@ if [ "$unit" != "USD" ]; then
 fi
 ```
 
-- **the marker is required.** 43 alone is also curl's `CURLE_BAD_FUNCTION_ARGUMENT`, which a `set -eu` script inherits from a failed request. Without the marker that stays a failure, which is what it is.
+- **the marker is what decides.** 43 alone is also curl's `CURLE_BAD_FUNCTION_ARGUMENT`, which a `set -eu` script inherits from a failed request - without the marker that stays a failure, which is what it is. A marked line counts as a refusal even if the script then exits 0, so a printed refusal is never delivered to the buyer as a result.
 - **the rest of the marker's line** is what the buyer reads - only that line, so anything the script prints below it stays operator-side. It is flattened to one paragraph, stripped of control characters and the format marks that reverse text, capped at 400 characters, and prefixed by the runtime with `The provider refused:`.
 - **stderr** stays operator-only, exactly as on every other exit code.
 - marking a refusal and saying nothing gives the buyer a fixed "gave no reason" message rather than silence.

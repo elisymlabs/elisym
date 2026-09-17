@@ -66,12 +66,13 @@ export type {
 } from './services/reputation';
 export { MarketplaceService, parseDelegatedPayment } from './services/marketplace';
 export type { DelegatedPaymentRequest } from './services/marketplace';
+// Only what another package actually consumes: the CLI's runtime flattens a
+// script's stderr for the operator log, and its x402 driver quotes an
+// upstream's body. The rest of `untrusted-text` stays module-private rather
+// than becoming a semver commitment on a published package.
 export {
   clipToCharacters,
-  firstContentIndex,
   flattenUntrusted,
-  takeCharacters,
-  withoutControlCharacters,
   withoutDanglingSurrogate,
   withoutFormatMarks,
 } from './skills/untrusted-text';

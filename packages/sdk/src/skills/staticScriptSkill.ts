@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { refusalMarkerEnd, SCRIPT_EXIT_REFUSED, ScriptRefusalError } from './refusal';
+import { throwIfRefused } from './refusal';
 import { runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
@@ -97,16 +97,11 @@ export class StaticScriptSkill implements Skill {
     if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {
       throw new ScriptBillingExhaustedError(result.code, result.stdout, result.stderr);
     }
-    if (result.code === SCRIPT_EXIT_REFUSED) {
-      // Understood and declined, and the script said so on stdout - the one
-      // case where its own words cross to the customer. Both halves are
-      // required: 43 alone is also what a `set -e` script inherits from a
-      // curl that failed, and that script is broken rather than refusing.
-      const refusalAt = refusalMarkerEnd(result.stdout);
-      if (refusalAt !== -1) {
-        throw new ScriptRefusalError(result.code, result.stdout, result.stderr, refusalAt);
-      }
-    }
+    // Both directions of the refusal contract, and the operator hint when a
+    // script exits 43 without honouring it. Runs before the generic non-zero
+    // branch AND before the success branch: a marker printed by a script that
+    // then exits 0 is a refusal, not a deliverable.
+    throwIfRefused(result);
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
       // Generic message reaches the customer; raw stderr/stdout stays on `detail`

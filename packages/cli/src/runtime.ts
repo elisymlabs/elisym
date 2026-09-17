@@ -23,6 +23,8 @@ import {
   getProtocolProgramId,
   isDefinitelyUnpaid,
   LIMITS,
+  clipToCharacters,
+  flattenUntrusted,
   isScriptBillingExhaustedError,
   isScriptExecutionError,
   isScriptRefusalError,
@@ -246,17 +248,8 @@ function scriptMessageLooksLikeBillingOrInvalid(message: string): boolean {
  */
 const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
 
-/**
- * Sentinel for "recovery finished this job itself": it marked the entry failed
- * and told the customer why, so the caller must not log it again as an
- * unhandled recovery error.
- */
-class RecoveryJobClosed extends Error {
-  constructor() {
-    super('recovery closed the job');
-    this.name = 'RecoveryJobClosed';
-  }
-}
+/** How much of a script's own output an operator-log line carries. */
+const OPERATOR_EXCERPT_CHARS = 500;
 
 /**
  * Re-thrown by the post-execute catch when the underlying skill failure
@@ -453,7 +446,10 @@ function describeForOperator(error: unknown): string {
       : `refused: ${error.message} (stderr: ${error.stderr})`;
   }
   if (isScriptExecutionError(error)) {
-    return `${error.message}: ${error.detail}`;
+    // Bounded and flattened, like the refusal above: `detail` is raw stderr,
+    // capped only by `MAX_SCRIPT_OUTPUT` (a megabyte), and a newline in it
+    // forges a second line on the operator's terminal and in the log.
+    return `${error.message}: ${clipToCharacters(flattenUntrusted(error.detail), OPERATOR_EXCERPT_CHARS)}`;
   }
   // Not every throw is an Error. The replaced expression (`e.message ?? …`)
   // read `message` off whatever was thrown, which threw its own TypeError on a
@@ -3240,11 +3236,7 @@ export class AgentRuntime {
         try {
           await this.recoverSingleJob(entry, log);
         } catch (e: any) {
-          // A job recovery closed on purpose has already been reported to both
-          // the operator and the customer.
-          if (!(e instanceof RecoveryJobClosed)) {
-            log(`[${entry.job_id.slice(0, 8)}] Recovery: failed: ${e.message}`);
-          }
+          log(`[${entry.job_id.slice(0, 8)}] Recovery: failed: ${e.message}`);
         } finally {
           this.inFlight.delete(entry.job_id);
           this.pending--;
@@ -3556,25 +3548,6 @@ export class AgentRuntime {
           }
         };
 
-        const runOrTellTheCustomer = async (
-          run: () => Promise<SkillOutput>,
-        ): Promise<SkillOutput> => {
-          try {
-            return await run();
-          } catch (error) {
-            if (!isScriptRefusalError(error)) {
-              throw error;
-            }
-            // A refusal is deterministic: the input that was refused is the
-            // input recovery replays, so retrying only spends the retry budget
-            // and ends in the generic "permanently failed after maximum
-            // retries" - the exact message this channel exists to replace.
-            log(`[${entry.job_id.slice(0, 8)}] Recovery: ${describeForOperator(error)}`);
-            await this.failRecoveredJob(entry, fakeJob, customerSafeMessage(error));
-            throw new RecoveryJobClosed();
-          }
-        };
-
         // Session path, recovery flavor: same lock/open/append flow as live
         // (slot-then-mutex holds - we run inside this.limit), with one
         // deliberate difference: the history load excludes this job's own
@@ -3582,22 +3555,36 @@ export class AgentRuntime {
         // already holds this exchange; replaying it would ask the LLM the same
         // question with its own undelivered answer in the prompt, and the
         // `(jobId, role)`-deduped append skips the already-present lines.
-        const output = await runOrTellTheCustomer(async () =>
-          recoveryJobSession === null
-            ? await runRecoveryExecution()
-            : await this.runSessionExchange({
-                session: recoveryJobSession,
-                jobId: entry.job_id,
-                userRecord: buildUserRecord(
-                  recoveryInputFile?.inlineText ?? entry.input,
-                  recoveryInputFile?.filePath !== undefined ? 'attachment' : undefined,
-                ),
-                signal: recoveryAbort.signal,
-                log,
-                execute: runRecoveryExecution,
-                excludeOwnTurns: true,
-              }),
-        );
+        let output: SkillOutput;
+        try {
+          output =
+            recoveryJobSession === null
+              ? await runRecoveryExecution()
+              : await this.runSessionExchange({
+                  session: recoveryJobSession,
+                  jobId: entry.job_id,
+                  userRecord: buildUserRecord(
+                    recoveryInputFile?.inlineText ?? entry.input,
+                    recoveryInputFile?.filePath !== undefined ? 'attachment' : undefined,
+                  ),
+                  signal: recoveryAbort.signal,
+                  log,
+                  execute: runRecoveryExecution,
+                  excludeOwnTurns: true,
+                });
+        } catch (error) {
+          if (!isScriptRefusalError(error)) {
+            throw error;
+          }
+          // A refusal is deterministic: the input that was refused is the input
+          // recovery replays, so retrying only spends the retry budget and ends
+          // in the generic "permanently failed after maximum retries" - the
+          // message this channel exists to replace. Closing the job here needs
+          // no sentinel: this is the function the recovery loop calls.
+          log(`[${entry.job_id.slice(0, 8)}] Recovery: ${describeForOperator(error)}`);
+          await this.failRecoveredJob(entry, fakeJob, customerSafeMessage(error));
+          return;
+        }
 
         // Symmetric with the primary path: seed any spilled payload (file or large
         // text) BEFORE markExecuted, and deliver `deliveredContent` (empty when
