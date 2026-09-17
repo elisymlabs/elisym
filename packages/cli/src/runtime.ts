@@ -60,7 +60,11 @@ import {
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import { SCRIPT_EXIT_REFUSED } from '@elisym/sdk/skills';
+import {
+  REFUSAL_CHANNEL_MISSING_HINT,
+  REFUSAL_CONTRACT_HINT,
+  SCRIPT_EXIT_REFUSED,
+} from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -221,6 +225,12 @@ const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient', 'insu
  * (`x-api-key`, `invalid api key`, `unauthorized`, ...) that are
  * specific to the auth/invalid bucket rather than the billing bucket.
  */
+// Scanned against a script's STDERR only. Stdout was the documented source -
+// shell proxies dump the provider's body there - but for an LLM-proxy skill
+// stdout is the model's completion, which the customer steers: a buyer asking
+// for the word "unauthorized" could otherwise gate the operator's key and
+// cascade it across every model on it. A proxy that wants its 402 detected
+// should write the upstream's body to stderr as well.
 const SCRIPT_BILLING_INVALID_MARKERS = [
   'credit balance',
   'billing',
@@ -248,25 +258,30 @@ function scriptMessageLooksLikeBillingOrInvalid(lowered: string): boolean {
  */
 const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
 
-/** How much of a script's own output an operator-log line carries. */
-const OPERATOR_EXCERPT_CHARS = 500;
-
-/** One bounded, single-line excerpt of text a script or a provider controls. */
-function operatorExcerpt(text: string, maxChars: number): string {
-  return excerptUntrusted(text, maxChars);
+/**
+ * Whether this failure is a refusal whose contract the script got wrong, rather
+ * than a crash that happened to exit with the same code.
+ *
+ * Keyed on the hint the SDK writes, not on the exit code: 43 is also curl's
+ * `CURLE_BAD_FUNCTION_ARGUMENT`, and treating every such crash as a refusal slip
+ * would quietly disable the health gate for a script that fails on every job.
+ */
+function isRefusalContractSlip(error: { detail: string }): boolean {
+  return (
+    error.detail.startsWith(REFUSAL_CONTRACT_HINT) ||
+    error.detail.startsWith(REFUSAL_CHANNEL_MISSING_HINT)
+  );
 }
 
 /**
- * The same, from the END of the text.
+ * How much of a script's own output an operator-log line carries.
  *
- * What gets stored as a gated pair's reason and replayed on every refused job
- * afterwards. An API's "insufficient credit balance" lands after whatever
- * progress meter the script's curl printed, so a head excerpt records the
- * meter - the one half of the output that says nothing.
+ * Generous because this is the ONLY copy: the full text is deliberately kept
+ * nowhere, being attacker-influenced text headed for a terminal and a
+ * structured log, and a Python traceback or a jq parse error is unreadable at a
+ * few hundred characters.
  */
-function operatorExcerptTail(text: string, maxChars: number): string {
-  return excerptUntrustedTail(text, maxChars);
-}
+const OPERATOR_EXCERPT_CHARS = 1500;
 
 /**
  * Re-thrown by the post-execute catch when the underlying skill failure
@@ -463,7 +478,8 @@ function describeForOperator(error: unknown): string {
     // Its `message` embeds stdout when stderr is empty; quote the halves the
     // same way the health branch does, so the two never disagree about what the
     // operator was shown. The CUSTOMER still gets `AGENT_UNAVAILABLE_MESSAGE`.
-    return `script signalled billing exhausted: ${operatorExcerptTail(error.stderr || error.stdout, OPERATOR_EXCERPT_CHARS)}`;
+    const said = error.stderr.trim() || error.stdout.trim() || '(no output)';
+    return `script signalled billing exhausted: ${excerptUntrustedTail(said, OPERATOR_EXCERPT_CHARS)}`;
   }
   if (isScriptRefusalError(error)) {
     return error.stderr === ''
@@ -474,19 +490,19 @@ function describeForOperator(error: unknown): string {
     // Bounded and flattened, like the refusal above: `detail` is raw stderr,
     // capped only by `MAX_SCRIPT_OUTPUT` (a megabyte), and a newline in it
     // forges a second line on the operator's terminal and in the log.
-    return `${error.message}: ${operatorExcerpt(error.detail, OPERATOR_EXCERPT_CHARS)}`;
+    return `${error.message}: ${excerptUntrusted(error.detail, OPERATOR_EXCERPT_CHARS)}`;
   }
   // Not every throw is an Error. The replaced expression (`e.message ?? …`)
   // read `message` off whatever was thrown, which threw its own TypeError on a
   // rejected `null` and forwarded a non-string `message` verbatim.
   if (typeof error === 'string') {
     // A thrown string carries its only diagnostic in itself.
-    return operatorExcerpt(error, OPERATOR_EXCERPT_CHARS);
+    return excerptUntrusted(error, OPERATOR_EXCERPT_CHARS);
   }
   if (typeof error === 'object' && error !== null && 'message' in error) {
     const message = (error as { message?: unknown }).message;
     if (typeof message === 'string' && message !== '') {
-      return operatorExcerpt(message, OPERATOR_EXCERPT_CHARS);
+      return excerptUntrusted(message, OPERATOR_EXCERPT_CHARS);
     }
   }
   return 'Unknown error';
@@ -907,7 +923,7 @@ export class AgentRuntime {
     }
     const tag = `[${jobId.slice(0, 8)}]`;
 
-    if (isScriptExecutionError(err) && err.exitCode === SCRIPT_EXIT_REFUSED) {
+    if (isScriptExecutionError(err) && isRefusalContractSlip(err)) {
       // The script meant to refuse and got the contract wrong (no reason file,
       // or a typo in the variable name). That says nothing about the operator's
       // API key, so gating it - let alone cascading across every model on it -
@@ -952,7 +968,7 @@ export class AgentRuntime {
         provider,
         model,
         'billing',
-        operatorExcerptTail(err.stderr || err.stdout, 200),
+        excerptUntrustedTail(err.stderr.trim() || err.stdout.trim() || '(no output)', 200),
       );
       return true;
     }
@@ -964,7 +980,7 @@ export class AgentRuntime {
         return false;
       }
       const status = Number(match[1]);
-      const body = operatorExcerpt(match[2] ?? '', 200);
+      const body = excerptUntrusted(match[2] ?? '', 200);
       const isBillingStatus = status === 402;
       const isAuthStatus = status === 401 || status === 403;
       const isBilling400 = status === 400 && bodyLooksLikeBilling(body);
@@ -1037,7 +1053,7 @@ export class AgentRuntime {
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
         log(
-          `${tag} Script "${skill.name}" failed ("${operatorExcerpt(message, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+          `${tag} Script "${skill.name}" failed ("${excerptUntrustedTail(message, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
         );
         return false;
       }
@@ -1066,7 +1082,7 @@ export class AgentRuntime {
         provider,
         model,
         reason,
-        operatorExcerpt(message, 200),
+        excerptUntrusted(message, 200),
         {
           cascade,
         },

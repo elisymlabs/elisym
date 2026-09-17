@@ -164,7 +164,7 @@ On any non-zero exit other than `43`, the customer receives a fixed generic mess
 The reason travels in its own file, named by `ELISYM_REFUSAL_FILE` - the same shape as `ELISYM_OUTPUT_FILE` and `ELISYM_CHARGE_FILE` - and it works for `dynamic-script`, `static-script` and `onchain`:
 
 ```sh
-if [ "$unit" != "USD" ] && [ -n "$ELISYM_REFUSAL_FILE" ]; then
+if [ "$unit" != "USD" ] && [ -n "${ELISYM_REFUSAL_FILE:-}" ]; then
   printf '%s' 'this venue sizes positions in USD, so write it as "size 300 USD".' > "$ELISYM_REFUSAL_FILE"
   exit 43  # the sentence above reaches the buyer
 fi

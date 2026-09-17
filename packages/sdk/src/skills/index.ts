@@ -44,6 +44,8 @@ export type { X402ProxySkillParams } from './x402ProxySkill';
 // runtime catches, and its guard. The parsing helpers behind them are internal.
 export {
   isScriptRefusalError,
+  REFUSAL_CHANNEL_MISSING_HINT,
+  REFUSAL_CONTRACT_HINT,
   SCRIPT_EXIT_REFUSED,
   SCRIPT_REFUSAL_FILE_ENV,
   SCRIPT_REFUSAL_MAX_CHARS,

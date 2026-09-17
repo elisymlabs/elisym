@@ -5,7 +5,7 @@ import { ElisymIdentity, NATIVE_SOL } from '@elisym/sdk';
 import type { BlossomBlobTransport } from '@elisym/sdk';
 import { ScriptExecutionError } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import { SCRIPT_EXIT_REFUSED, ScriptRefusalError } from '@elisym/sdk/skills';
+import { REFUSAL_CONTRACT_HINT, SCRIPT_EXIT_REFUSED, ScriptRefusalError } from '@elisym/sdk/skills';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { ADDRESS_HISTORY_PROBE_ADDRESS, CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
@@ -1352,9 +1352,11 @@ describe('AgentRuntime', () => {
       const monitor = monitorStub();
       await runOneJob(
         scriptSkillThatThrows(
+          // The SDK's own hint, because the bypass keys on the contract rather
+          // than on the number 43 - which is also curl's CURLE_BAD_FUNCTION_ARGUMENT.
           new ScriptExecutionError(
             SCRIPT_EXIT_REFUSED,
-            'exit 43 without writing ELISYM_REFUSAL_FILE: unauthorized',
+            `${REFUSAL_CONTRACT_HINT} unauthorized`,
             undefined,
             'unauthorized',
           ),
@@ -1364,6 +1366,27 @@ describe('AgentRuntime', () => {
       );
 
       expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
+    });
+
+    it('still gates a key when a crash merely exits 43', async () => {
+      // 43 is also curl's CURLE_BAD_FUNCTION_ARGUMENT. A script failing that way
+      // on every job must still trip the circuit breaker; only a refusal whose
+      // contract slipped is exempt.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            SCRIPT_EXIT_REFUSED,
+            'curl: (43) bad argument',
+            undefined,
+            'curl: (43) bad argument',
+          ),
+        ),
+        monitor,
+        'crashed-43-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalled();
     });
 
     it('masks a generic script failure rather than quoting its summary', async () => {

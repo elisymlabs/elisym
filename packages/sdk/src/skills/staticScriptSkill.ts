@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
@@ -26,14 +26,28 @@ import type {
  */
 let sharedRefusalDir: Promise<string | null> | undefined;
 
-function refusalDirectory(): Promise<string | null> {
+async function refusalDirectory(): Promise<string | null> {
   sharedRefusalDir ??= mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
-  return sharedRefusalDir.then((dir) => {
-    if (dir === null) {
-      sharedRefusalDir = undefined;
-    }
+  const dir = await sharedRefusalDir;
+  if (dir === null) {
+    // Creation failed: forget it, so the next job tries again. A tmpdir that
+    // was full at startup may not be later.
+    sharedRefusalDir = undefined;
+    return null;
+  }
+  // And confirm it is still there. An agent runs for weeks, and a tmp reaper
+  // deleting the directory would otherwise leave every later job pointing at a
+  // path that no longer exists - the script's redirect then fails and a refusal
+  // arrives as a crash.
+  const alive = await stat(dir).then(
+    (info) => info.isDirectory(),
+    () => false,
+  );
+  if (alive) {
     return dir;
-  });
+  }
+  sharedRefusalDir = undefined;
+  return refusalDirectory();
 }
 
 export interface StaticScriptSkillParams {
@@ -152,6 +166,7 @@ export class StaticScriptSkill implements Skill {
     throwIfRefused(
       result,
       refusalFile === undefined ? undefined : await readRefusalFile(refusalFile),
+      refusalFile !== undefined,
     );
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';

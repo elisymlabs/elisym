@@ -8,7 +8,7 @@
  * Redaction uses the SDK's DEFAULT_REDACT_PATHS so secret keys and
  * user input cannot leak through structured logs even in verbose mode.
  */
-import { DEFAULT_REDACT_PATHS, makeCensor } from '@elisym/sdk';
+import { DEFAULT_REDACT_PATHS, deleteControlCharacters, makeCensor } from '@elisym/sdk';
 import pino, { type Logger } from 'pino';
 
 export interface CreateLoggerOptions {
@@ -29,8 +29,6 @@ export interface CliLogger {
   /** Banner-only write to stdout. Semantically identical to logWithIndent. */
   bannerLog(line: string): void;
 }
-
-import { deleteControlCharacters } from '@elisym/sdk';
 
 /**
  * Strip terminal control characters before writing remote-derived content to the

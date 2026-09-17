@@ -152,6 +152,13 @@ export function flattenForComparison(text: string): string {
 // eslint-disable-next-line no-control-regex
 const SURVIVES_FLATTENING = /[^\s\u0000-\u001f\u007f-\u009f\p{Cf}]/gu;
 
+function hasContentBefore(text: string, before: number): boolean {
+  SURVIVES_FLATTENING.lastIndex = 0;
+  const found = SURVIVES_FLATTENING.exec(text.slice(0, before)) !== null;
+  SURVIVES_FLATTENING.lastIndex = 0;
+  return found;
+}
+
 function hasContentAfter(text: string, from: number): boolean {
   SURVIVES_FLATTENING.lastIndex = from;
   const found = SURVIVES_FLATTENING.test(text);
@@ -170,12 +177,20 @@ function hasContentAfter(text: string, from: number): boolean {
  */
 export function excerptUntrustedTail(text: string, maxChars: number): string {
   const window = maxChars * 8;
-  const tail = withoutLeadingDanglingSurrogate(text.slice(Math.max(0, text.length - window)));
-  const flattened = flattenUntrusted(tail);
+  const from = Math.max(0, text.length - window);
+  const windowed = flattenUntrusted(withoutLeadingDanglingSurrogate(text.slice(from)));
+  // The window is a fast path, not a guarantee, exactly as in `excerptUntrusted`
+  // - a diagnostic followed by a curl progress meter's 4000 trailing carriage
+  // returns leaves the window holding nothing at all, and returning a lone
+  // ellipsis would destroy the one line worth keeping.
+  const flattened = [...windowed].length < maxChars && from > 0 ? flattenUntrusted(text) : windowed;
   const characters = [...flattened];
-  const outran = text.length > window;
-  const overflows = characters.length > maxChars;
-  if (!outran && !overflows) {
+  // A cut is only a cut when something readable was dropped: padding ahead of
+  // the text is not content, and saying it was cut is a lie about the sentence.
+  const droppedContent =
+    characters.length > maxChars ||
+    (flattened === windowed && from > 0 && hasContentBefore(text, from));
+  if (!droppedContent) {
     return flattened;
   }
   const kept = characters.slice(Math.max(0, characters.length - (maxChars - 1)));
