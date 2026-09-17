@@ -60,6 +60,7 @@ import {
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
+import { REFUSAL_CHANNEL_MISSING_HINT, REFUSAL_UNREADABLE_HINT } from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -271,6 +272,20 @@ const SCRIPT_KEY_LEVEL_MARKERS = [
   'authentication_error',
 ];
 
+/**
+ * Whether this failure is the AGENT's own, not the script's and not the key's.
+ *
+ * Matched as a PREFIX of `detail`, which is the one position a script cannot
+ * reach: the hint is written there by `throwIfRefused` itself, ahead of the
+ * script's bounded output, so a buyer who talks a model into echoing the
+ * sentence cannot switch off the circuit breaker with it.
+ */
+function hostCouldNotOfferTheChannel(detail: string): boolean {
+  return (
+    detail.startsWith(REFUSAL_CHANNEL_MISSING_HINT) || detail.startsWith(REFUSAL_UNREADABLE_HINT)
+  );
+}
+
 /** How much of a gated pair's reason an operator is shown, and its lead-in. */
 const HEALTH_REASON_CHARS = 200;
 const SIGNAL_LEAD_CHARS = 80;
@@ -283,7 +298,13 @@ const SIGNAL_LEAD_CHARS = 80;
  * becomes two code units), so an index taken from the copy can point hundreds
  * of characters past the signal in the text it is used to quote.
  */
-const KEY_LEVEL_MARKER_RE = new RegExp(SCRIPT_KEY_LEVEL_MARKERS.join('|'), 'i');
+const KEY_LEVEL_MARKER_RE = new RegExp(
+  // Escaped: today's markers carry no metacharacters, but a future
+  // `insufficient_quota?` would silently change the match, and a `402 (` would
+  // throw at import time and take the whole CLI down before it serves a job.
+  SCRIPT_KEY_LEVEL_MARKERS.map((marker) => marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+  'i',
+);
 
 function keyLevelMarkerIndex(text: string): number {
   return KEY_LEVEL_MARKER_RE.exec(text)?.index ?? -1;
@@ -987,6 +1008,18 @@ export class AgentRuntime {
     }
     const tag = `[${jobId.slice(0, 8)}]`;
 
+    if (isScriptExecutionError(err) && hostCouldNotOfferTheChannel(err.detail)) {
+      // The runtime's own scratch file, not the operator's API key: a full or
+      // read-only temp directory, or something at the path this agent will not
+      // read. Gating the declared pair would refuse every capability on that key
+      // for a local disk problem, and the recovery probe - which tests the KEY -
+      // would clear it on the next tick and gate it again on the next job.
+      log(
+        `${tag} Skill "${skill.name}" could not be given a refusal channel by THIS AGENT (${excerptUntrustedTail(err.detail, 200)}); health state unchanged - check the temp directory.`,
+      );
+      return false;
+    }
+
     if (isScriptRefusalError(err)) {
       // A refusal is an answer, not a fault: the script ran, understood the
       // request and declined it. Gating the skill on it would take a capability
@@ -1113,7 +1146,10 @@ export class AgentRuntime {
         // silently is worse than the stdout-steering risk it guards.
         message = err.stderr ?? err.detail;
         diagnostic = message.trim() === '' ? err.detail : message;
-        scanned = 'stderr';
+        // The FIELD, not the class: an error built without one falls back to
+        // `detail`, which falls back to stdout, and telling an operator to grep
+        // a stderr that never held those words is the confusion this avoids.
+        scanned = err.stderr === undefined ? 'the skill error' : 'stderr';
       } else if (err instanceof Error) {
         message = err.message;
         diagnostic = message;

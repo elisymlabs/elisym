@@ -28,7 +28,11 @@ export function BuyErrorNote({ error, paid, fromJob, refusalInThread = false }: 
   // words, but a job error can be a stranger's, and neither surface may paint
   // control characters or thousands of unbroken characters into the page.
   if (!fromJob) {
-    return <Note body={boundedErrorText(error)} />;
+    // `'unknown'`, not a classification: this text is the app's own, so none of
+    // the provider verdicts can apply to it - but the money question is still
+    // asked rather than dropped, since `paid` can be true here the moment a
+    // post-payment step fails on this side.
+    return <Note body={boundedErrorText(error)} held={heldPaymentNote(error, paid, 'unknown')} />;
   }
   // Classified ONCE, for both decisions below.
   const kind = classifyJobError(error);

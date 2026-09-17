@@ -18,8 +18,21 @@ import { classifyJobError, type JobErrorKind } from '@elisym/sdk';
  */
 const PAYMENT_STILL_SOUGHT_PREFIX = 'Payment timeout';
 
+/**
+ * The runtime's fixed sentence for a skill that crashed.
+ *
+ * Deliberately says nothing about the failure, so it classifies as `unknown` -
+ * and it is by far the most common way a PAID job ends with no result, so it
+ * needs its own answer about the money rather than the silence `unknown` gets.
+ * Matched whole, not by prefix: it is a complete sentence the CLI pins.
+ */
+const SCRIPT_FAILED_MESSAGE = 'The agent could not complete this job.';
+
 const OUTAGE_NOTE =
   'Your payment is held. Once the agent is back online, the job will be retried automatically and the result delivered.';
+
+const CRASHED_NOTE =
+  'The job failed on the agent`s side and is closed. A flat-priced job is charged before it runs, so if you paid, check the job in your wallet history and contact the provider rather than sending it again.';
 
 const REFUSED_NOTE =
   'The agent says it declined this job, so it is closed and will not be retried. A flat-priced job is charged before it runs, so if you paid, check the job in your wallet history rather than sending it again.';
@@ -61,6 +74,12 @@ export function heldPaymentNote(
   }
   if (error.startsWith(PAYMENT_STILL_SOUGHT_PREFIX)) {
     return STILL_SOUGHT_NOTE;
+  }
+  // The provider's skill fell over. Terminal like a refusal, and charged like
+  // one, but not a decision - so it gets its own sentence rather than the
+  // refusal's "the agent says it declined this job".
+  if (error === SCRIPT_FAILED_MESSAGE) {
+    return CRASHED_NOTE;
   }
   return undefined;
 }

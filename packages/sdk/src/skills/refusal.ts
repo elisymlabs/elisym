@@ -73,10 +73,21 @@ export const REFUSAL_CONTRACT_HINT =
   `exit ${SCRIPT_EXIT_REFUSED} without writing ${SCRIPT_REFUSAL_FILE_ENV}, so this was handled as a ` +
   'failure rather than a refusal - the customer was told nothing about their request:';
 
-/** Told when the file is there but the agent could not read it. */
+/**
+ * Told when something is at that path but the agent would not, or could not,
+ * read it. Names the symlink case first: it is the one the channel REFUSES on
+ * purpose, and an operator sent to check permissions would never find it.
+ */
 export const REFUSAL_UNREADABLE_HINT =
-  `exit ${SCRIPT_EXIT_REFUSED} with a ${SCRIPT_REFUSAL_FILE_ENV} this agent could not read ` +
-  '(permissions, or too many open files), so the customer was told nothing about their request:';
+  `exit ${SCRIPT_EXIT_REFUSED} with a ${SCRIPT_REFUSAL_FILE_ENV} this agent would not read - a ` +
+  'symlink or a directory rather than a regular file, or one it lacks permission for (or it ran ' +
+  'out of descriptors) - so the customer was told nothing about their request:';
+
+/** Told when a reason was written but the exit code says the script crashed. */
+export const REFUSAL_WRONG_EXIT_HINT =
+  `wrote a reason to ${SCRIPT_REFUSAL_FILE_ENV} and then exited non-zero with something other ` +
+  `than ${SCRIPT_EXIT_REFUSED}, so this was handled as the crash the exit code describes and the ` +
+  'customer was told nothing about their request - a refusal must exit 43 (or 0):';
 
 /** Told instead when the runtime never gave the script a file to write. */
 export const REFUSAL_CHANNEL_MISSING_HINT =
@@ -146,7 +157,9 @@ export class ScriptRefusalError extends Error {
     super(refusalMessage(reason));
     this.name = 'ScriptRefusalError';
     this.exitCode = exitCode;
-    this.stderr = excerptUntrusted(stderr, SCRIPT_REFUSAL_STDERR_CHARS);
+    // The END of stderr, like every other operator-facing quote of it: the
+    // diagnostic lands after whatever progress meter the script's curl printed.
+    this.stderr = excerptUntrustedTail(stderr, SCRIPT_REFUSAL_STDERR_CHARS);
   }
 }
 
@@ -169,11 +182,12 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
 /**
  * The refusal contract, for any script runner, in one place.
  *
- * A written reason is a refusal whatever the exit code says - the script went
- * out of its way to produce it - EXCEPT when the process was killed rather than
- * exited (`code === null`). A builder cut short by the execution timeout after
- * writing its file decided nothing, and reporting that to a customer as a
- * deliberate refusal would be a lie.
+ * A refusal is exit 43, or exit 0 with a reason written (a pipeline that
+ * swallowed the 43). It is never a process the runtime KILLED (`code === null`):
+ * a builder cut short by the execution timeout after writing its file decided
+ * nothing, and reporting that as a deliberate refusal would be a lie. It is
+ * never another non-zero exit either - that is the crash the code describes,
+ * whatever the file says.
  *
  * Exit 43 with no reason is a FAILURE in every respect - the customer's generic
  * message, the operator log, the health gate - and treated as one deliberately:
@@ -188,24 +202,36 @@ export function throwIfRefused(
   file: RefusalFileRead,
   channelOffered = true,
 ): void {
+  const stated = file.state === 'read' && statesAReason(file.reason);
   if (file.state === 'read' && result.code !== null) {
-    // A reason the script actually wrote is a refusal whatever the exit code
-    // says. A file with nothing READABLE in it is only one when the script also
-    // exited 43: opening the channel early (`: > "$ELISYM_REFUSAL_FILE"`) is a
-    // common shape, and turning a finished, paid job into a refusal would throw
-    // its answer away. `statesAReason`, because `echo >` leaves a newline and a
-    // newline is no more a reason than no bytes at all.
-    if (statesAReason(file.reason) || result.code === SCRIPT_EXIT_REFUSED) {
+    // Exit 43 is a refusal with or without a reason - an empty file still means
+    // the script decided - and exit 0 with a reason is one too: `exit 43`
+    // swallowed by a pipeline comes back as 0, and the script went out of its
+    // way to write the sentence. `statesAReason`, because `echo >` leaves a
+    // newline behind and a newline is no more a reason than no bytes at all.
+    //
+    // ANY OTHER non-zero exit is a crash, reason or no reason. A skill that
+    // validates its input early, writes why, and then falls over further down
+    // has not refused: reporting that to the customer as a decision would
+    // charge them for a crash, and - since a refusal deliberately leaves health
+    // alone - would let a chronically broken skill keep selling, which is the
+    // same hole exit 43 was refused for.
+    if (result.code === SCRIPT_EXIT_REFUSED || (stated && result.code === 0)) {
       throw new ScriptRefusalError(result.code, file.reason, result.stderr);
     }
   }
-  if (result.code === SCRIPT_EXIT_REFUSED) {
+  if (
+    result.code === SCRIPT_EXIT_REFUSED ||
+    (stated && result.code !== null && result.code !== 0)
+  ) {
     // Which hint depends on whose fault it was: a script that never wrote the
     // file, a file the agent could not read, or a runtime that never named one.
     // Blaming the script for the last two sends an operator hunting a typo in
     // code that is correct.
     let hint = REFUSAL_CONTRACT_HINT;
-    if (!channelOffered) {
+    if (stated) {
+      hint = REFUSAL_WRONG_EXIT_HINT;
+    } else if (!channelOffered) {
       hint = REFUSAL_CHANNEL_MISSING_HINT;
     } else if (file.state === 'unreadable') {
       hint = REFUSAL_UNREADABLE_HINT;

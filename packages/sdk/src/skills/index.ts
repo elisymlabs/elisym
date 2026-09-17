@@ -43,15 +43,17 @@ export type { X402ProxySkillParams } from './x402ProxySkill';
 // The contract a script author needs (the exit code, the variable, the caps,
 // what is said when no reason was given), the error the runtime catches, and
 // its guard. The three operator-log hints go together or not at all: they are
-// the three arms of one decision - the script wrote nothing, the agent could
-// not read what it wrote, the agent never offered a file - and a consumer able
-// to match one has to be able to tell it from the other two. The file
+// the four arms of one decision - the script wrote nothing, it wrote a reason
+// and then crashed, the agent would not read what it wrote, the agent never
+// offered a file - and the runtime itself branches on the last two, since a
+// host that cannot give a script a scratch file is not an API key going bad. The file
 // reader behind them stays internal.
 export {
   isScriptRefusalError,
   REFUSAL_CHANNEL_MISSING_HINT,
   REFUSAL_CONTRACT_HINT,
   REFUSAL_UNREADABLE_HINT,
+  REFUSAL_WRONG_EXIT_HINT,
   refusalFromJobError,
   refusalMessage,
   SCRIPT_EXIT_REFUSED,

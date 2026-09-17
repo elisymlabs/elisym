@@ -1159,12 +1159,23 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               const refused = kind === 'provider-refused';
               void failEntry(agentPubkey, jobEventId, {
                 ...(refused ? { refusal: refusalFromJobError(errMsg) } : {}),
-              }).then((stored) => {
-                // Only once the bubble really holds it may the note stand down.
-                setSession((prev) =>
-                  sessionMatches(prev) ? { ...prev, refusalInThread: refused && stored } : prev,
-                );
-              });
+              })
+                .then((stored) => {
+                  // Only once the bubble really holds it may the note stand
+                  // down - and only for the job it was written for: a slow
+                  // IndexedDB write resolving after the customer has started
+                  // the next job would otherwise silence that job's note.
+                  setSession((prev) =>
+                    sessionMatches(prev) && prev.jobId === jobEventId
+                      ? { ...prev, refusalInThread: refused && stored }
+                      : prev,
+                  );
+                })
+                // A storage failure (private window, quota, an aborted
+                // transaction) must not surface as an unhandled rejection: the
+                // note is already rendering the reason, which is the outcome
+                // this `.then` exists to improve on, not to provide.
+                .catch(() => {});
               setSession((prev) =>
                 sessionMatches(prev)
                   ? {

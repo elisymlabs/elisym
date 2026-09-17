@@ -77,16 +77,16 @@ export function useChatReconcile(agentPubkey: string): void {
         ]);
         // transient relay error - the next tab open / hydration retries
         queryFailed = results === null;
-        // One entry's IndexedDB write failing (quota, a blocked private
-        // window, an aborted transaction) must not cost every OTHER entry its
-        // re-subscription below: without this the rejection escapes a bare
-        // `void reconcile()` and the open tab silently stops receiving live
-        // results for the rest of the session.
+        // And nothing is applied at all when it failed: no entry can be
+        // completed, and a refusal must not close a job whose answer the failed
+        // half never fetched.
+        //
+        // One entry's IndexedDB write failing (quota, a blocked private window,
+        // an aborted transaction) must not cost every OTHER entry its
+        // re-subscription below either: without the `catch` the rejection
+        // escapes a bare `void reconcile()` and the open tab silently stops
+        // receiving live results for the rest of the session.
         try {
-          // Nothing to apply when the RESULT query failed: no entry can be
-          // completed, and a refusal must not close a job whose answer the
-          // failed half never fetched. Skipping says that once instead of
-          // walking every pending entry to do nothing.
           for (const entry of results === null ? [] : pendingEntries) {
             if (cancelled) {
               return;
@@ -118,9 +118,9 @@ export function useChatReconcile(agentPubkey: string): void {
             // a transient failure must not demote a PAID pending entry whose
             // job the provider's recovery loop may still deliver.
             //
-            // A result outranks the error that preceded it, which is also why
-            // the loop above does not run at all when the result query failed:
-            // a relay that answered one query and not the other proved nothing,
+            // A result outranks the error that preceded it, which is why the
+            // loop is skipped entirely above when the result query failed: a
+            // relay that answered one query and not the other proved nothing,
             // and closing the entry on the half that did answer would withdraw
             // the Retry button from a paid job whose answer sits on a relay,
             // unread.
@@ -209,9 +209,13 @@ export function useChatReconcile(agentPubkey: string): void {
               if (classifyJobError(message) !== 'provider-refused') {
                 return;
               }
+              // `.catch`, because a storage failure here (private window,
+              // quota, a hidden tab's aborted transaction) would
+              // otherwise escape as an unhandled rejection - this handler has
+              // no caller to await it.
               void failEntry(agentPubkey, entry.jobEventId, {
                 refusal: refusalFromJobError(message),
-              });
+              }).catch(() => {});
             },
           },
           timeoutMs: JOB_WAIT_TIMEOUT_MS - elapsed,

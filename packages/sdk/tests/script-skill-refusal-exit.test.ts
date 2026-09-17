@@ -14,6 +14,7 @@ import {
   ScriptRefusalError,
   REFUSAL_CONTRACT_HINT,
   REFUSAL_UNREADABLE_HINT,
+  REFUSAL_WRONG_EXIT_HINT,
 } from '../src/skills/refusal';
 import { StaticScriptSkill } from '../src/skills/staticScriptSkill';
 import type { SkillOutput } from '../src/skills/types';
@@ -284,6 +285,23 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error).not.toBeInstanceOf(ScriptRefusalError);
     expect(error.detail).toContain(REFUSAL_CONTRACT_HINT);
     expect(error.detail).toContain('wrote nowhere');
+  });
+
+  it('believes the exit code when a reason is written and the script then crashes', async () => {
+    // A skill that validates early, writes why, and falls over further down has
+    // NOT refused. Calling that a refusal would charge the customer for a crash
+    // and - since a refusal leaves health alone by design - let a chronically
+    // broken skill keep selling, which is the hole exit 43 is refused for.
+    fixture = setupScript(
+      refusingScript('size it in USD.', { stderr: 'upstream returned garbage', exitCode: 1 }),
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptExecutionError);
+    expect(error).not.toBeInstanceOf(ScriptRefusalError);
+    expect(error.message).not.toContain('size it in USD');
+    expect(error.detail.startsWith(REFUSAL_WRONG_EXIT_HINT)).toBe(true);
   });
 
   it('blames the HOST when the reason file cannot be read', async () => {

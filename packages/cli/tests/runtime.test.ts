@@ -5,7 +5,12 @@ import { ElisymIdentity, NATIVE_SOL } from '@elisym/sdk';
 import type { BlossomBlobTransport } from '@elisym/sdk';
 import { ScriptExecutionError } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import { REFUSAL_CONTRACT_HINT, SCRIPT_EXIT_REFUSED, ScriptRefusalError } from '@elisym/sdk/skills';
+import {
+  REFUSAL_CHANNEL_MISSING_HINT,
+  REFUSAL_CONTRACT_HINT,
+  SCRIPT_EXIT_REFUSED,
+  ScriptRefusalError,
+} from '@elisym/sdk/skills';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { ADDRESS_HISTORY_PROBE_ADDRESS, CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
@@ -1375,6 +1380,28 @@ describe('AgentRuntime', () => {
         'unauthorized, insufficient credit balance',
         { cascade: false },
       );
+    });
+
+    it('does not gate a key when THIS AGENT could not offer the channel', async () => {
+      // A full or read-only temp directory is a local disk problem the runtime
+      // has already diagnosed. Gating would refuse every capability on the
+      // operator's key for it, and the recovery probe - which tests the KEY -
+      // would clear it on the next tick and gate it again on the next job.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            SCRIPT_EXIT_REFUSED,
+            `${REFUSAL_CHANNEL_MISSING_HINT} (no output)`,
+            undefined,
+            '',
+          ),
+        ),
+        monitor,
+        'no-channel-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
     });
 
     it('gates a key when a script exits 43 without writing a reason', async () => {
