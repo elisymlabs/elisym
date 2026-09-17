@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { isRefusal, SCRIPT_EXIT_REFUSED, ScriptRefusalError } from './refusal';
+import { refusalMarkerEnd, SCRIPT_EXIT_REFUSED, ScriptRefusalError } from './refusal';
 import { runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
@@ -97,12 +97,15 @@ export class StaticScriptSkill implements Skill {
     if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {
       throw new ScriptBillingExhaustedError(result.code, result.stdout, result.stderr);
     }
-    if (result.code === SCRIPT_EXIT_REFUSED && isRefusal(result.stdout)) {
+    if (result.code === SCRIPT_EXIT_REFUSED) {
       // Understood and declined, and the script said so on stdout - the one
       // case where its own words cross to the customer. Both halves are
       // required: 43 alone is also what a `set -e` script inherits from a
       // curl that failed, and that script is broken rather than refusing.
-      throw new ScriptRefusalError(result.code, result.stdout, result.stderr);
+      const refusalAt = refusalMarkerEnd(result.stdout);
+      if (refusalAt !== -1) {
+        throw new ScriptRefusalError(result.code, result.stdout, result.stderr, refusalAt);
+      }
     }
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';

@@ -53,16 +53,19 @@ describe('what a paying customer is told about their money', () => {
     }
   });
 
-  it('says nothing about the money when the provider refused the job', () => {
-    // A refusal is terminal AND already charged on the paid path, so the outage
-    // note would be false twice over. It is also the message most likely to
-    // contain an outage marker by accident: these are ordinary English.
+  it('says the job is closed and charged when the provider refused it', () => {
+    // A refusal is terminal AND already charged on the flat-priced path, so the
+    // outage note would be false twice over - and these reasons are the ones
+    // most likely to trip the outage markers by accident, being ordinary
+    // English rather than an API's words.
     for (const reason of [
       'insufficient detail in the brief - add the target audience.',
       'your billing address is missing a postal code.',
       'that file is unauthorized for this capability.',
     ]) {
-      expect(heldPaymentNote(`The provider refused: ${reason}`, true)).toBeUndefined();
+      const note = heldPaymentNote(`The provider refused: ${reason}`, true);
+      expect(note).toMatch(/will not be retried/);
+      expect(note).not.toMatch(/back online/);
     }
   });
 

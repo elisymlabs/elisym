@@ -43,6 +43,7 @@ export type { X402ProxySkillParams } from './x402ProxySkill';
 export {
   isRefusal,
   isScriptRefusalError,
+  refusalMarkerEnd,
   refusalMessage,
   SCRIPT_EXIT_REFUSED,
   SCRIPT_REFUSAL_MARKER,
@@ -51,14 +52,6 @@ export {
   SCRIPT_REFUSAL_UNSTATED,
   ScriptRefusalError,
 } from './refusal';
-export {
-  clipToCharacters,
-  firstContentIndex,
-  flattenUntrusted,
-  UNICODE_FORMAT_MARKS,
-  withoutControlCharacters,
-  withoutDanglingSurrogate,
-} from './untrusted-text';
 export { resolveInsidePath, resolveInsidePathReal } from './path-safety';
 export {
   DEFAULT_MAX_TOOL_ROUNDS,

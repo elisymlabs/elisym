@@ -4,19 +4,16 @@
  * A provider's refusal, a script's stderr, an upstream's error body: all of it
  * ends up on an operator's terminal, in a structured log, or in front of a
  * customer, and none of it can be trusted to be one plain line. The rules are
- * the same everywhere, so they live in one place: no C0/C1 controls, no Unicode
- * format marks, no newline to turn one log line into two, and no half of a
- * character left behind by a cut.
+ * the same everywhere, so they live in one place: no C0/C1 controls, no
+ * line-reversing format marks, no newline to turn one log line into two, and no
+ * half of a character left behind by a cut.
  */
 
-/**
- * Format characters: invisible, and survivors of control-stripping. The class
- * covers what someone would reach for to make a line read as something other
- * than what it says - direction overrides and isolates, zero-width joiners, the
- * byte-order mark, the tag block used to smuggle text past a human reader -
- * without this file having to enumerate them.
- */
-export const UNICODE_FORMAT_MARKS = /\p{Cf}/gu;
+/** Zero-width joiner and non-joiner - see `withoutFormatMarks`. */
+const ZWNJ = String.fromCodePoint(0x200c);
+const ZWJ = String.fromCodePoint(0x200d);
+
+const FORMAT_MARKS_SOURCE = String.raw`\p{Cf}`;
 
 /** Every C0 and C1 control character becomes a space. */
 export function withoutControlCharacters(text: string): string {
@@ -26,6 +23,27 @@ export function withoutControlCharacters(text: string): string {
     out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? ' ' : character;
   }
   return out;
+}
+
+/**
+ * Strip the format characters that let a line read as something other than what
+ * it says: direction overrides and isolates, the byte-order mark, the tag block
+ * used to smuggle text past a human reader.
+ *
+ * `\p{Cf}` covers those without enumerating them, but it also covers ZWJ and
+ * ZWNJ, which are load-bearing rather than deceptive: ZWNJ changes which word a
+ * Persian or Urdu sentence spells, and ZWJ is what makes one family emoji out of
+ * four people. Those two are kept; a refusal written in Persian should reach its
+ * customer spelled the way the provider wrote it.
+ *
+ * The regex is built per call: a module-level `/g` regex carries a mutable
+ * `lastIndex`, and sharing one across modules is a bug waiting for its second
+ * caller.
+ */
+export function withoutFormatMarks(text: string): string {
+  return text.replace(new RegExp(FORMAT_MARKS_SOURCE, 'gu'), (mark) =>
+    mark === ZWJ || mark === ZWNJ ? mark : '',
+  );
 }
 
 /**
@@ -39,7 +57,7 @@ export function withoutDanglingSurrogate(text: string): string {
 }
 
 /**
- * One plain paragraph: controls to spaces, format marks gone, runs of
+ * One plain paragraph: controls to spaces, deceptive marks gone, runs of
  * whitespace collapsed, trimmed.
  *
  * Marks are stripped after controls and before the whitespace collapse: the
@@ -47,27 +65,46 @@ export function withoutDanglingSurrogate(text: string): string {
  * leave it as a space nothing removes.
  */
 export function flattenUntrusted(text: string): string {
-  return withoutControlCharacters(text)
-    .replace(UNICODE_FORMAT_MARKS, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return withoutFormatMarks(withoutControlCharacters(text)).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The first `maxChars` CHARACTERS, with nothing added.
+ *
+ * Counting characters rather than UTF-16 code units is what keeps an emoji at
+ * the boundary from being halved; the surrogate guard covers the case where the
+ * text was already cut by code unit before it got here.
+ */
+export function takeCharacters(text: string, maxChars: number): string {
+  if (maxChars <= 0) {
+    return '';
+  }
+  const characters = [...text];
+  return characters.length <= maxChars
+    ? withoutDanglingSurrogate(text)
+    : characters.slice(0, maxChars).join('');
 }
 
 /**
  * At most `maxChars` CHARACTERS, with an ellipsis when something was cut.
  *
  * Counting characters rather than UTF-16 code units is what keeps an emoji at
- * the boundary from being halved.
+ * the boundary from being halved. A budget of zero or less yields nothing:
+ * arithmetic that reaches zero ("what is left of the line") must not come back
+ * with the whole input.
  */
 export function clipToCharacters(text: string, maxChars: number): string {
+  if (maxChars <= 0) {
+    return '';
+  }
   const characters = [...text];
   if (characters.length <= maxChars) {
     return text;
   }
-  return `${characters
-    .slice(0, maxChars - 1)
-    .join('')
-    .trimEnd()}…`;
+  if (maxChars === 1) {
+    return '…';
+  }
+  return `${takeCharacters(text, maxChars - 1).trimEnd()}…`;
 }
 
 /**

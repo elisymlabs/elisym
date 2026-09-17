@@ -432,7 +432,7 @@ fi
 ```
 
 - **the marker is required.** 43 on its own is also `CURLE_BAD_FUNCTION_ARGUMENT`, which a `set -eu` script inherits from a failed `curl` without meaning anything by it. Such a script is broken, not refusing: without the marker it stays on the failure path, where the buyer is told nothing about their input and the health gate still flips.
-- **stdout after the marker** is the sentence the customer reads. The SDK flattens it to one paragraph, drops control characters and Unicode format marks, and caps it at 400 characters (`SCRIPT_REFUSAL_MAX_CHARS`).
+- **the rest of the marker's line** is the sentence the customer reads - and only that line. Whatever the script prints afterwards stays operator-side, so a debug dump below the refusal is not forwarded to a stranger. The SDK flattens the line to one paragraph, drops control characters and the format marks that reverse text (zero-width joiners survive - they spell words), and caps it at 400 characters (`SCRIPT_REFUSAL_MAX_CHARS`).
 - **stderr** keeps its usual guarantee: operator-only, in the log, never sent anywhere.
 - marking a refusal and then saying nothing still refuses, with a fixed "gave no reason" message, so it cannot be mistaken for a result.
 - the health gate is untouched, unlike every other non-zero exit - refusing is the skill working.

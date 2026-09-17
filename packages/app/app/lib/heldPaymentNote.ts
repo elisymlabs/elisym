@@ -21,6 +21,9 @@ const PAYMENT_STILL_SOUGHT_PREFIX = 'Payment timeout';
 const OUTAGE_NOTE =
   'Your payment is held. Once the agent is back online, the job will be retried automatically and the result delivered.';
 
+const REFUSED_NOTE =
+  'The agent understood the request and declined it, so this job is closed and will not be retried. On a flat-priced job the payment has already been collected.';
+
 const STILL_SOUGHT_NOTE =
   'If your payment did go through, it is not lost: the agent keeps re-checking the chain and delivers the result if it finds it, so do not send it again. If it never finds it, the job is closed within 24 hours.';
 
@@ -40,8 +43,15 @@ export function heldPaymentNote(error: string, paid: boolean): string | undefine
   if (!paid) {
     return undefined;
   }
-  if (classifyJobError(error) === 'agent-unavailable') {
+  const kind = classifyJobError(error);
+  if (kind === 'agent-unavailable') {
     return OUTAGE_NOTE;
+  }
+  // A refusal is terminal AND already charged on the flat-priced path. Saying
+  // nothing would leave someone waiting for a retry that is not coming; the
+  // outage note would promise them exactly that retry.
+  if (kind === 'provider-refused') {
+    return REFUSED_NOTE;
   }
   if (error.startsWith(PAYMENT_STILL_SOUGHT_PREFIX)) {
     return STILL_SOUGHT_NOTE;

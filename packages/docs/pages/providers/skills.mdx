@@ -150,8 +150,8 @@ A script that calls an upstream LLM can declare `provider` + `model` so the agen
 | ------------- | -------------------------------------- | ------------------------------------------------------ |
 | `0`           | success                                | none                                                   |
 | `42`          | upstream LLM out of credits (HTTP 402) | flips the `(provider, model)` health gate to unhealthy |
-| `43` + marker | understood the request and refuses it  | none; **stdout is sent to the customer as the reason** |
-| anything else | generic skill failure                  | flips the declared `(provider, model)` pair unhealthy, when the skill declares one |
+| `43` + marker | understood the request and refuses it  | none; **the marker's line is sent to the customer as the reason** |
+| anything else | generic skill failure                  | flips the declared `(provider, model)` pair unhealthy, when the skill declares one - and cascades to that provider's other models if stderr looks like a billing/auth problem |
 
 `42` is `SCRIPT_EXIT_BILLING_EXHAUSTED`, exported from `@elisym/sdk/llm-health`. Reserve it strictly for the billing case - misusing it degrades the health gate.
 
@@ -169,7 +169,7 @@ fi
 ```
 
 - **the marker is required.** 43 alone is also curl's `CURLE_BAD_FUNCTION_ARGUMENT`, which a `set -eu` script inherits from a failed request. Without the marker that stays a failure, which is what it is.
-- **stdout after the marker** is what the buyer reads, flattened to one paragraph, stripped of control characters and format marks, capped at 400 characters, and prefixed by the runtime with `The provider refused:`.
+- **the rest of the marker's line** is what the buyer reads - only that line, so anything the script prints below it stays operator-side. It is flattened to one paragraph, stripped of control characters and the format marks that reverse text, capped at 400 characters, and prefixed by the runtime with `The provider refused:`.
 - **stderr** stays operator-only, exactly as on every other exit code.
 - marking a refusal and saying nothing gives the buyer a fixed "gave no reason" message rather than silence.
 - the health gate is untouched: refusing is the skill working, not failing.

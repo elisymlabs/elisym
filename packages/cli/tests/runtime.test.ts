@@ -1282,6 +1282,8 @@ describe('AgentRuntime', () => {
       expect(errorCall[1].message).not.toContain('builder.ts');
       // A refusal is an answer, not a fault: the capability stays online.
       expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
+      // And it is terminal: nothing about a refusal improves on a retry.
+      expect(ledger.getStatus('refused-job')).toBe('failed');
     });
 
     it('still flips the health gate on an ordinary script failure', async () => {
@@ -1302,8 +1304,32 @@ describe('AgentRuntime', () => {
         'claude-haiku-4-5',
         'invalid',
         expect.stringContaining('curl'),
-        expect.anything(),
+        // Never cascaded off a script's stderr: the markers are substrings, and
+        // "insufficient margin" in a trading script is not an exhausted key.
+        { cascade: false },
       );
+    });
+
+    it('masks a generic script failure rather than quoting its summary', async () => {
+      // The customer-facing string is part of the contract: `classifyJobError`
+      // keys the "what happened to my payment" note off it, so a skill failure
+      // must not start arriving as "script failed (exit 1)".
+      const errorCall = await runOneJob(
+        {
+          name: 'no-pair-skill',
+          description: 'Fails without a declared pair',
+          capabilities: ['text-gen'],
+          priceSubunits: 0,
+          asset: NATIVE_SOL,
+          mode: 'dynamic-script',
+          execute: vi.fn().mockRejectedValue(new ScriptExecutionError(1, 'boom on stderr')),
+        },
+        monitorStub(),
+        'masked-job',
+      );
+
+      expect(errorCall[1].message).toBe('Internal processing error');
+      expect(errorCall[1].message).not.toContain('boom on stderr');
     });
 
     it('passes non-API errors through', async () => {

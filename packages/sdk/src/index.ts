@@ -67,6 +67,17 @@ export type {
 export { MarketplaceService, parseDelegatedPayment } from './services/marketplace';
 export type { DelegatedPaymentRequest } from './services/marketplace';
 export {
+  clipToCharacters,
+  firstContentIndex,
+  flattenUntrusted,
+  takeCharacters,
+  withoutControlCharacters,
+  withoutDanglingSurrogate,
+  withoutFormatMarks,
+} from './skills/untrusted-text';
+export { isScriptBillingExhaustedError, isScriptExecutionError } from './llm-health/types';
+export { isScriptRefusalError } from './skills/refusal';
+export {
   classifyJobError,
   JobWaitTimeoutError,
   PROVIDER_REFUSED_PREFIX,

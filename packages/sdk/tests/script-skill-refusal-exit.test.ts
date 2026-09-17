@@ -149,10 +149,12 @@ describe('script skills surface a refusal the customer can read', () => {
 describe('refusalMessage', () => {
   const marked = (reason: string): string => `${SCRIPT_REFUSAL_MARKER} ${reason}`;
 
-  it('flattens a multi-line refusal into one paragraph', () => {
-    expect(refusalMessage(marked('first line\n\n  second line  \n'))).toBe(
-      'first line second line',
-    );
+  it('reads the marker line and stops at its end', () => {
+    // What follows the refusal line is the script talking to its operator: a
+    // debug dump there is not something to forward to a paying stranger.
+    expect(
+      refusalMessage(marked('write the size in USD.\nDEBUG token=sk-secret host=internal')),
+    ).toBe('write the size in USD.');
   });
 
   it('drops control characters rather than forwarding them', () => {
@@ -192,6 +194,16 @@ describe('refusalMessage', () => {
   it('caps a megabyte of stdout the same way', () => {
     const capped = refusalMessage(marked('y'.repeat(1_000_000)));
     expect(capped).toHaveLength(SCRIPT_REFUSAL_MAX_CHARS);
+  });
+
+  it('keeps the joiners that spell words, and drops the marks that reverse them', () => {
+    // ZWNJ changes which word a Persian sentence spells and ZWJ is what makes
+    // one emoji out of several; the bidi override is the one that lies.
+    const zwnj = String.fromCodePoint(0x200c);
+    const rtlOverride = String.fromCodePoint(0x202e);
+    expect(refusalMessage(marked(`می${zwnj}خواهم ${rtlOverride}reversed`))).toBe(
+      `می${zwnj}خواهم reversed`,
+    );
   });
 
   it('keeps a reason that starts after a long padded block', () => {

@@ -23,6 +23,9 @@ import {
   getProtocolProgramId,
   isDefinitelyUnpaid,
   LIMITS,
+  isScriptBillingExhaustedError,
+  isScriptExecutionError,
+  isScriptRefusalError,
   parseDelegatedPayment,
   PROVIDER_REFUSED_PREFIX,
   readAcceptedTransports,
@@ -51,13 +54,10 @@ import {
   FREE_LLM_GLOBAL_KEY,
   freeLlmCustomerKey,
   LlmHealthError,
-  isScriptBillingExhaustedError,
-  isScriptExecutionError,
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import { isScriptRefusalError } from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -420,8 +420,11 @@ function customerSafeMessage(error: unknown): string {
     return `${PROVIDER_REFUSED_PREFIX}${error.message}`;
   }
   if (isScriptExecutionError(error)) {
-    // Generic summary only - `error.detail` (raw stderr/stdout) stays operator-side.
-    return error.message;
+    // The fixed mask, not the error's own summary. `script failed (exit 1)`
+    // would be new customer-facing wording that `classifyJobError` does not
+    // know, so a buyer would lose the note telling them what happened to their
+    // payment. The summary and `error.detail` stay operator-side.
+    return 'Internal processing error';
   }
   if (isScriptBillingExhaustedError(error)) {
     return AGENT_UNAVAILABLE_MESSAGE;
@@ -452,9 +455,9 @@ function describeForOperator(error: unknown): string {
   if (isScriptExecutionError(error)) {
     return `${error.message}: ${error.detail}`;
   }
-  // Not every throw is an Error: a rejected plain object with a `message` field
-  // still says more than "Unknown error", which is what the replaced expression
-  // (`e.message ?? 'Unknown error'`) forwarded.
+  // Not every throw is an Error. The replaced expression (`e.message ?? …`)
+  // read `message` off whatever was thrown, which threw its own TypeError on a
+  // rejected `null` and forwarded a non-string `message` verbatim.
   if (typeof error === 'object' && error !== null && 'message' in error) {
     const message = (error as { message?: unknown }).message;
     if (typeof message === 'string' && message !== '') {
@@ -1290,7 +1293,10 @@ export class AgentRuntime {
       await this.executeJob(job, jobAbort.signal);
     } catch (e: any) {
       const log = this.callbacks.onLog ?? console.log;
-      log(`[${job.jobId.slice(0, 8)}] Error: ${e.message}`);
+      // `describeForOperator`, not `e.message`: a rejected null or a thrown
+      // string would make this line throw before the job is marked failed and
+      // before the customer is told anything at all.
+      log(`[${job.jobId.slice(0, 8)}] Error: ${describeForOperator(e)}`);
 
       // Status transitions on failure:
       //   - `executed`: never markFailed - delivery recovery will retry.

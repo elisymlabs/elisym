@@ -186,3 +186,4 @@ xchat
 zeroize
 zeroized
 zod
+ZWNJ

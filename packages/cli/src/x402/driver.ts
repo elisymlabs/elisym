@@ -20,10 +20,11 @@ import {
   calculateProtocolFee,
   formatAssetAmount,
   resolveUsdcAsset,
+  flattenUntrusted,
   signerFromSecretKeyBase58,
+  withoutDanglingSurrogate,
 } from '@elisym/sdk';
 import type { Asset, Network } from '@elisym/sdk';
-import { UNICODE_FORMAT_MARKS, withoutDanglingSurrogate } from '@elisym/sdk/skills';
 import {
   address,
   createSolanaRpc,
@@ -34,7 +35,6 @@ import {
 import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
 import { ExactSvmScheme } from '@x402/svm';
 import { fetchUsdcBalance } from '../helpers.js';
-import { sanitizeForTerminal } from '../logging.js';
 import type { SkillInput, X402JobDriver, X402SkillJob } from '../skill/index.js';
 import {
   X402_ERROR_BODY_READ_MS,
@@ -365,7 +365,7 @@ function flattenForOperator(text: string): string {
   // first would leave it as a space this never strips. What remains of the
   // whitespace class - the line and paragraph separators among it - then
   // collapses to a single space rather than welding two words together.
-  return sanitizeForTerminal(text).replace(UNICODE_FORMAT_MARKS, '').replace(/\s+/g, ' ').trim();
+  return flattenUntrusted(text);
 }
 
 /**
@@ -375,6 +375,11 @@ function flattenForOperator(text: string): string {
  * file or a terminal.
  */
 function printedPrefix(flattened: string): string {
+  // Code units, not characters: this budget is about how much of a line an
+  // operator's terminal gets, it is pinned that way by tests, and the guard
+  // below is what keeps the cut off the middle of a character. The customer-
+  // facing cap in `refusal.ts` counts characters instead, because there the
+  // budget is a sentence rather than a line.
   return flattened.length <= X402_ERROR_EXCERPT_CHARS
     ? flattened
     : withoutDanglingSurrogate(flattened.slice(0, X402_ERROR_EXCERPT_CHARS));

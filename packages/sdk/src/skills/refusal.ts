@@ -54,29 +54,29 @@ export const SCRIPT_REFUSAL_UNSTATED = 'no reason was given.';
 export const SCRIPT_REFUSAL_STDERR_CHARS = 500;
 
 /**
- * Cheap upper bound on what the cap can possibly need, measured from the first
- * real character rather than from the marker - a refusal padded with blank
- * lines is still a refusal, and cutting on raw offset would drop its sentence
- * and report that none was given.
+ * How much of the refusal line is read.
  *
  * `runScript` captures up to a megabyte, and normalizing all of it to produce
- * 400 characters is work nobody asked for. Whitespace collapse and mark
- * stripping only ever shorten, so an 8x window over real content cannot change
- * the capped result.
+ * 400 characters is work nobody asked for. The window is measured from the
+ * first real character after the marker, so blank padding before the sentence
+ * costs nothing - padding INSIDE it still counts, and a refusal that spends
+ * 3200 characters on whitespace and prose gets the first 400 characters' worth
+ * of what it said, not a "no reason given".
  */
 const SCAN_LIMIT = SCRIPT_REFUSAL_MAX_CHARS * 8;
 
 /**
- * Where the reason begins, or -1 when this stdout is not a refusal at all.
- * Indexes rather than slices: stdout can be a megabyte, and neither the check
- * nor the message needs a copy of it.
+ * Where the marker ends, or -1 when this stdout is not a refusal at all.
+ *
+ * Returns an index rather than a slice so the runners can decide and the error
+ * can build its message from one scan of what may be a megabyte of stdout.
  */
-function reasonStart(stdout: string): number {
+export function refusalMarkerEnd(stdout: string): number {
   const marker = firstContentIndex(stdout);
   if (marker === -1 || !stdout.startsWith(SCRIPT_REFUSAL_MARKER, marker)) {
     return -1;
   }
-  return firstContentIndex(stdout, marker + SCRIPT_REFUSAL_MARKER.length);
+  return marker + SCRIPT_REFUSAL_MARKER.length;
 }
 
 /**
@@ -85,26 +85,35 @@ function reasonStart(stdout: string): number {
  * whatever the exit code said.
  */
 export function isRefusal(stdout: string): boolean {
-  const marker = firstContentIndex(stdout);
-  return marker !== -1 && stdout.startsWith(SCRIPT_REFUSAL_MARKER, marker);
+  return refusalMarkerEnd(stdout) !== -1;
 }
 
 /**
- * What the customer is allowed to read of a refusal.
+ * What the customer is allowed to read of a refusal: the rest of the MARKER'S
+ * LINE, and nothing after it.
  *
- * The provider chose to send this, so it crosses the trust boundary - but as
- * one plain paragraph and nothing else: `flattenUntrusted` drops the control
- * characters and format marks that could redraw a terminal or reverse a line,
- * and the result is capped by character so no half of one survives the cut.
+ * Stopping at the newline is the part that matters. A script's stdout is not
+ * written for a stranger - the line after the refusal is as likely to be a
+ * debug dump with an internal hostname in it as anything else - and a contract
+ * that forwards "everything after the marker" invites exactly that. One line is
+ * also what the documentation can state without qualification.
+ *
+ * Within that line the provider chose to send this, so it crosses the trust
+ * boundary - but as one plain paragraph and nothing else: `flattenUntrusted`
+ * drops the control characters and deceptive format marks, and the result is
+ * capped by character so no half of one survives the cut.
  */
-export function refusalMessage(stdout: string): string {
-  const start = reasonStart(stdout);
-  if (start === -1) {
+export function refusalMessage(stdout: string, markerEnd = refusalMarkerEnd(stdout)): string {
+  if (markerEnd === -1) {
     return SCRIPT_REFUSAL_UNSTATED;
   }
-  const flattened = flattenUntrusted(
-    withoutDanglingSurrogate(stdout.slice(start, start + SCAN_LIMIT)),
-  );
+  const start = firstContentIndex(stdout, markerEnd);
+  const lineEnd = stdout.indexOf('\n', markerEnd);
+  if (start === -1 || (lineEnd !== -1 && start > lineEnd)) {
+    return SCRIPT_REFUSAL_UNSTATED;
+  }
+  const end = Math.min(lineEnd === -1 ? stdout.length : lineEnd, start + SCAN_LIMIT);
+  const flattened = flattenUntrusted(withoutDanglingSurrogate(stdout.slice(start, end)));
   return flattened === ''
     ? SCRIPT_REFUSAL_UNSTATED
     : clipToCharacters(flattened, SCRIPT_REFUSAL_MAX_CHARS);
@@ -124,8 +133,8 @@ export class ScriptRefusalError extends Error {
   /** Flattened, single-line excerpt of the script's stderr. May be empty. */
   readonly stderr: string;
 
-  constructor(exitCode: number, stdout: string, stderr: string) {
-    super(refusalMessage(stdout));
+  constructor(exitCode: number, stdout: string, stderr: string, markerEnd?: number) {
+    super(refusalMessage(stdout, markerEnd));
     this.name = 'ScriptRefusalError';
     this.exitCode = exitCode;
     this.stderr = clipToCharacters(
