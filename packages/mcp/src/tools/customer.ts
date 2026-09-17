@@ -853,7 +853,12 @@ async function executePaymentFlow(
     expectedRecipient,
   );
   if (validation !== null) {
-    throw new Error(`Payment validation failed: ${validation.message}`);
+    // Second line, behind the SDK's own field-only message: the request being
+    // validated was written by a remote provider and this string is read by an
+    // LLM. Defence in depth, not the primary fix - see `parsePaymentRequest`.
+    throw new Error(
+      `Payment validation failed: ${sanitizeUntrusted(validation.message, 'text').text}`,
+    );
   }
 
   if (!agent.solanaKeypair) {

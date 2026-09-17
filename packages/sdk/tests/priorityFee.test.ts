@@ -50,12 +50,30 @@ describe('pickPercentileFee', () => {
     expect(pickPercentileFee(samples, 75)).toBe(40_000n);
   });
 
-  it('clamps the percentile into [0, 100]', () => {
-    const samples: FakeSample[] = [{ prioritizationFee: 1_500n }, { prioritizationFee: 2_500n }];
-    // Negative percentile clamps to 0 -> picks lowest sample (1500), above floor.
-    expect(pickPercentileFee(samples, -50)).toBe(1_500n);
-    // Above 100 clamps to 100 -> picks highest sample (2500).
-    expect(pickPercentileFee(samples, 1000)).toBe(2_500n);
+  it('resolves an out-of-range percentile toward paying MORE, never less', () => {
+    // The two mistakes are not symmetric, and the asymmetry is the point. Above
+    // 100 clamps to the top sample: that over-bids, which the ceiling already
+    // bounds and which only costs money. A NEGATIVE one used to clamp to the
+    // bottom sample - an under-bid exactly when a caller passing nonsense can
+    // least afford it, since during congestion an under-bid transaction is
+    // included late or dropped. Nonsense now resolves to the default (75th),
+    // the same place a NaN goes.
+    const samples: FakeSample[] = [
+      { prioritizationFee: 1_500n },
+      { prioritizationFee: 2_500n },
+      { prioritizationFee: 9_000n },
+    ];
+    const atDefault = pickPercentileFee(samples, 75);
+
+    expect(pickPercentileFee(samples, -50)).toBe(atDefault);
+    expect(pickPercentileFee(samples, Number.NaN)).toBe(atDefault);
+    expect(pickPercentileFee(samples, Number.NEGATIVE_INFINITY)).toBe(atDefault);
+    // ...and the default is genuinely not the lowest sample, or this proves nothing.
+    expect(atDefault).not.toBe(1_500n);
+
+    // Above 100 still clamps to the top sample, and in-range values are honoured.
+    expect(pickPercentileFee(samples, 1000)).toBe(9_000n);
+    expect(pickPercentileFee(samples, 0)).toBe(1_500n);
   });
 
   it('treats a sub-floor sample as the floor', () => {
