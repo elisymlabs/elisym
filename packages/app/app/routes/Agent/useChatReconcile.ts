@@ -59,21 +59,36 @@ export function useChatReconcile(agentPubkey: string): void {
 
     const reconcile = async () => {
       const thread = await readThread(agentPubkey);
-      const pendingEntries = thread.filter(
-        (entry) => entry.status === 'pending' && entry.customerPubkey === identity.publicKey,
+      const mine = thread.filter((entry) => entry.customerPubkey === identity.publicKey);
+      const pendingEntries = mine.filter((entry) => entry.status === 'pending');
+      // A refusal can arrive AFTER the entry was already closed: the wait
+      // window expired, or ageing flipped it. Without its reason that bubble
+      // offers Retry, which buys a deterministic refusal again at full price -
+      // so recent failures with no reason yet are asked about too. Bounded to
+      // the ageing window: older than that, nobody is still deciding.
+      const unexplained = mine.filter(
+        (entry) =>
+          entry.status === 'failed' &&
+          entry.refusal === undefined &&
+          Date.now() - entry.ts < UNPAID_PENDING_MAX_AGE_MS,
       );
 
       let queryFailed = false;
-      if (pendingEntries.length > 0) {
+      if (pendingEntries.length > 0 || unexplained.length > 0) {
         const jobIds = pendingEntries.map((entry) => entry.jobEventId);
+        const askAbout = [...jobIds, ...unexplained.map((entry) => entry.jobEventId)];
         // The refusal query runs alongside, never instead: a provider that
         // errored and then delivered anyway (crash-recovery re-execution) has a
         // result, and a result outranks the error that preceded it.
         const [results, errors] = await Promise.all([
-          client.marketplace
-            .queryJobResults(identity, jobIds, undefined, agentPubkey)
-            .catch(() => null),
-          client.marketplace.queryJobErrors(jobIds, agentPubkey).catch(() => null),
+          // Results only for the OPEN ones; a closed entry is not waiting for
+          // one. The refusal query covers both.
+          jobIds.length === 0
+            ? Promise.resolve(new Map())
+            : client.marketplace
+                .queryJobResults(identity, jobIds, undefined, agentPubkey)
+                .catch(() => null),
+          client.marketplace.queryJobErrors(askAbout, agentPubkey).catch(() => null),
         ]);
         // transient relay error - the next tab open / hydration retries
         queryFailed = results === null;
@@ -128,6 +143,20 @@ export function useChatReconcile(agentPubkey: string): void {
             if (message !== undefined && classifyJobError(message) === 'provider-refused') {
               await failEntry(agentPubkey, entry.jobEventId, {
                 refusal: refusalFromJobError(message),
+              });
+            }
+          }
+          // And the closed ones, which need nothing but the reason. Outside the
+          // results loop: a result cannot arrive for an entry that is already
+          // `failed` - `completeEntry` is what would have cleared it.
+          for (const entry of unexplained) {
+            if (cancelled) {
+              return;
+            }
+            const late = errors?.get(entry.jobEventId);
+            if (late !== undefined && classifyJobError(late) === 'provider-refused') {
+              await failEntry(agentPubkey, entry.jobEventId, {
+                refusal: refusalFromJobError(late),
               });
             }
           }

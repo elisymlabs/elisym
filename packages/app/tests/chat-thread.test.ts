@@ -329,12 +329,26 @@ describe('chatThread store', () => {
     });
 
     it('does not churn the store when the same refusal arrives twice', async () => {
+      // Two live subscriptions for one job is the normal shape on the Chat tab.
+      // The second write must not touch the store - and must still answer that
+      // the thread carries the reason, since the caller uses that to decide
+      // whether the inline note may stand down. Reading it as "not stored"
+      // paints the same sentence twice, once in the bubble and once in red.
       const { store } = createStore();
       await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
       await store.failEntry(AGENT, 'job-1', { refusal: 'say the size in USD.' });
-      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'say the size in USD.' })).toBe(
-        false,
-      );
+      const version = store.version();
+      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'say the size in USD.' })).toBe(true);
+      // No bump: the store did not change, so nothing re-renders.
+      expect(store.version()).toBe(version);
+    });
+
+    it('says the thread does NOT carry a refusal it was never given', async () => {
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+      await store.failEntry(AGENT, 'job-1');
+      expect(await store.failEntry(AGENT, 'job-1')).toBe(false);
+      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'a different reason' })).toBe(true);
     });
 
     it('never demotes a completed entry, refusal or not', async () => {

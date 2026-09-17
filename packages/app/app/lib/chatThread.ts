@@ -206,6 +206,13 @@ export interface ChatThreadStore {
     jobEventId: string,
     fields: CompleteEntryFields,
   ): Promise<boolean>;
+  /**
+   * Flip an entry to `failed`, optionally attaching the agent's refusal.
+   *
+   * Resolves true when the entry ENDS UP carrying the refusal that was passed -
+   * including when another writer stored the same one first - and false when it
+   * does not, so a caller can tell "the thread says this" from "it does not".
+   */
   failEntry(
     agentPubkey: string,
     jobEventId: string,
@@ -634,7 +641,15 @@ export function createChatThreadStore(
         }
         const refusal = options?.refusal;
         if (stored.status === 'failed' && (refusal === undefined || stored.refusal === refusal)) {
-          return { entries, changed: false, result: false };
+          // Nothing to write - but the answer is about the ENTRY, not about
+          // this call: a caller asking "does the thread now carry this reason?"
+          // must not read "no" because somebody else wrote it first and be
+          // left rendering the same sentence a second time beside it.
+          return {
+            entries,
+            changed: false,
+            result: refusal !== undefined && stored.refusal === refusal,
+          };
         }
         // An entry aged out to `failed` before its refusal arrived still needs
         // the reason: without it the thread offers Retry, which buys the same

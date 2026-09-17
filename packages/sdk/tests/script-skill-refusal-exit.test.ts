@@ -306,10 +306,12 @@ describe('script skills surface a refusal the customer can read', () => {
 
   it('blames the HOST when the reason file cannot be read', async () => {
     // A directory where the file should be is the deterministic stand-in for
-    // the real shapes (mode 000, out of descriptors): the script kept its side
-    // of the contract, so the operator must not be sent hunting a typo - and
-    // unlike a copy bug, an agent that cannot read its own scratch file is
-    // failing at something it will fail at again, so this gates health.
+    // every shape this rejects (a symlink, mode 000, out of descriptors): the
+    // script kept its side of the contract, so the operator must not be sent
+    // hunting a typo. What sits at that path is the SCRIPT's doing, so unlike
+    // the agent failing to make a scratch directory at all, this still gates
+    // health - otherwise `mkdir "$ELISYM_REFUSAL_FILE"; exit 43` would be a
+    // skill's own switch for its circuit breaker.
     fixture = setupScript(
       `#!/bin/sh\nrm -f "$${SCRIPT_REFUSAL_FILE_ENV}"\nmkdir "$${SCRIPT_REFUSAL_FILE_ENV}"\n` +
         `exit ${SCRIPT_EXIT_REFUSED}\n`,

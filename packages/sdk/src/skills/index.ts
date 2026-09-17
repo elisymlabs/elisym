@@ -49,6 +49,7 @@ export type { X402ProxySkillParams } from './x402ProxySkill';
 // host that cannot give a script a scratch file is not an API key going bad. The file
 // reader behind them stays internal.
 export {
+  HOST_NO_SCRATCH_HINT,
   isScriptRefusalError,
   REFUSAL_CHANNEL_MISSING_HINT,
   REFUSAL_CONTRACT_HINT,

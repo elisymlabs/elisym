@@ -76,10 +76,21 @@ export async function readRefusalFile(path: string): Promise<RefusalFileRead> {
       return { state: 'read', reason: '' };
     }
     const buffer = Buffer.alloc(Math.min(info.size, SCRIPT_REFUSAL_FILE_MAX_BYTES));
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    // Until the buffer is full or the file ends: one `read` is one system call, and
+    // a network- or FUSE-backed tmpdir may hand back fewer bytes than asked
+    // for. Trusting the first count would cut a customer's reason mid-sentence,
+    // or - on a transient zero - tell them no reason was given at all.
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
+      if (bytesRead === 0) {
+        break;
+      }
+      filled += bytesRead;
+    }
     return {
       state: 'read',
-      reason: new StringDecoder('utf8').write(buffer.subarray(0, bytesRead)),
+      reason: new StringDecoder('utf8').write(buffer.subarray(0, filled)),
     };
   } catch {
     return { state: 'unreadable' };

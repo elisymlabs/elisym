@@ -83,6 +83,18 @@ export const REFUSAL_UNREADABLE_HINT =
   'symlink or a directory rather than a regular file, or one it lacks permission for (or it ran ' +
   'out of descriptors) - so the customer was told nothing about their request:';
 
+/**
+ * Told when the agent could not create the scratch DIRECTORY a job needs at all.
+ *
+ * Distinct from every hint below it, which describe something about a script
+ * that ran: here nothing ran. The runtime matches this prefix and leaves the
+ * health gate alone - a full or read-only temp directory is not an API key
+ * going bad, and the recovery probe would clear and re-gate it on every tick.
+ */
+export const HOST_NO_SCRATCH_HINT =
+  'this agent could not create a scratch directory for the job, so the skill never ran ' +
+  '(check the temp directory):';
+
 /** Told when a reason was written but the exit code says the script crashed. */
 export const REFUSAL_WRONG_EXIT_HINT =
   `wrote a reason to ${SCRIPT_REFUSAL_FILE_ENV} and then exited non-zero with something other ` +
@@ -189,13 +201,17 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
  * never another non-zero exit either - that is the crash the code describes,
  * whatever the file says.
  *
- * Exit 43 with no reason is a FAILURE in every respect - the customer's generic
- * message, the operator log, the health gate - and treated as one deliberately:
- * 43 is also curl's `CURLE_BAD_FUNCTION_ARGUMENT`, so a script that never meant
- * to refuse lands here, and an exit code that exempted itself from the breaker
- * would be the one crash an agent could repeat forever while taking payment.
- * The hint is what separates a copy bug from a crash for the operator; only a
- * real refusal leaves health untouched.
+ * Exit 43 with NO FILE AT ALL is a failure in every respect - the customer's
+ * generic message, the operator log, the health gate - and treated as one
+ * deliberately: 43 is also curl's `CURLE_BAD_FUNCTION_ARGUMENT`, so a script
+ * that never meant to refuse lands here, and an exit code that exempted itself
+ * from the breaker would be the one crash an agent could repeat forever while
+ * taking payment. The hint is what separates a copy bug from a crash for the
+ * operator.
+ *
+ * A file that IS there but says nothing readable is a different thing: the
+ * script created it on purpose, so with exit 43 that is a refusal with
+ * `SCRIPT_REFUSAL_UNSTATED` for a reason, and health is left alone.
  */
 export function throwIfRefused(
   result: { code: number | null; stdout: string; stderr: string },

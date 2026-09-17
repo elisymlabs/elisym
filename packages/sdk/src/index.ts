@@ -92,6 +92,7 @@ export {
 export {
   classifyJobError,
   JobWaitTimeoutError,
+  PROVIDER_FAILED_MESSAGE,
   PROVIDER_REFUSED_PREFIX,
 } from './services/jobErrors';
 export type { JobErrorKind } from './services/jobErrors';

@@ -45,6 +45,17 @@
  */
 export const PROVIDER_REFUSED_PREFIX = 'The provider refused: ';
 
+/**
+ * What a customer is told when a provider's skill CRASHED.
+ *
+ * Deliberately says nothing about the failure - a crash's output is the
+ * operator's, not the buyer's - which also means it carries no marker and
+ * classifies as `unknown`. A cross-package contract like the prefix above: the
+ * runtime sends it, and a client that wants to say something true about the
+ * money has to match the exact sentence.
+ */
+export const PROVIDER_FAILED_MESSAGE = 'The agent could not complete this job.';
+
 const AGENT_UNAVAILABLE_MARKERS = [
   'agent temporarily unavailable',
   'internal processing error',

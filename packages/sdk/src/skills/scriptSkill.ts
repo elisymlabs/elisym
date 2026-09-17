@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import type { Asset } from '../payment/assets';
+import { SCRIPT_REFUSAL_FILE_ENV } from './refusal';
 import type {
   CompletionResult,
   LlmClient,
@@ -160,7 +161,10 @@ const JOB_CHANNEL_ENV_VARS: readonly string[] = [
   'ELISYM_OUTPUT_FILE',
   'ELISYM_OUTPUT_DIR',
   'ELISYM_CHARGE_FILE',
-  'ELISYM_REFUSAL_FILE',
+  // From the constant the skills SET it from: a rename that touched only one of
+  // the two would set the channel under the new name and strip the old one,
+  // quietly restoring the inherited-channel hole this list exists to close.
+  SCRIPT_REFUSAL_FILE_ENV,
   'ELISYM_INPUT_FILE',
   'ELISYM_HISTORY_FILE',
   'ELISYM_SESSION_ID',

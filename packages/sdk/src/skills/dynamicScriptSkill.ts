@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
+import { HOST_NO_SCRATCH_HINT, SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
 import { runScript, scopedToolEnv, withoutInheritedJobChannels } from './scriptSkill';
 import type {
@@ -110,7 +110,14 @@ export class DynamicScriptSkill implements Skill {
     // `ELISYM_OUTPUT_FILE` (a fresh temp file); if it does, the runtime seeds that
     // file via iroh. A script that ignores these vars keeps the original
     // stdin -> stdout text behavior unchanged.
-    const outDir = await mkdtemp(join(tmpdir(), 'elisym-skill-out-'));
+    // A tmpdir that is full or read-only is the AGENT failing, not the script
+    // and not the operator's API key: the hint tells the runtime to leave the
+    // health gate alone rather than refuse every capability on that key and
+    // have the recovery probe clear it again on the next tick.
+    const outDir = await mkdtemp(join(tmpdir(), 'elisym-skill-out-')).catch((err: unknown) => {
+      const why = err instanceof Error ? err.message : String(err);
+      throw new ScriptExecutionError(null, `${HOST_NO_SCRATCH_HINT} ${why}`, undefined, '');
+    });
     const outputFile = join(outDir, 'output');
     // A skill returning MULTIPLE files writes them here instead of ELISYM_OUTPUT_FILE.
     // It lives under outDir (so the single `cleanup` of outDir removes both) and is a
