@@ -20,9 +20,9 @@ import {
   calculateProtocolFee,
   formatAssetAmount,
   resolveUsdcAsset,
+  clipToCodeUnits,
   flattenForComparison,
   signerFromSecretKeyBase58,
-  withoutDanglingSurrogate,
 } from '@elisym/sdk';
 import type { Asset, Network } from '@elisym/sdk';
 import {
@@ -355,18 +355,14 @@ function withPaymentIdentifier(
 
 /**
  * Exactly the characters `clipForOperator` will print for this text: all of it
- * when it fits, otherwise the excerpt's worth minus a high surrogate the cut
- * separated from its pair - half a character is not something to hand a log
- * file or a terminal.
+ * when it fits, otherwise the excerpt's worth, never ending in half a one.
+ *
+ * Code units rather than characters, because this budget is how much of a LINE
+ * an operator's terminal gets; both counts live in the SDK's `untrusted-text`,
+ * which says why each is the unit it is.
  */
 function printedPrefix(flattened: string): string {
-  // Code units, not characters: this budget is about how much of a line an
-  // operator's terminal gets. The customer-facing cap in `refusal.ts` counts
-  // characters instead, because there the budget is a sentence rather than a
-  // line. The guard below is what keeps either cut off the middle of one.
-  return flattened.length <= X402_ERROR_EXCERPT_CHARS
-    ? flattened
-    : withoutDanglingSurrogate(flattened.slice(0, X402_ERROR_EXCERPT_CHARS));
+  return clipToCodeUnits(flattened, X402_ERROR_EXCERPT_CHARS);
 }
 
 /** Clip an already-flattened quote to one line's worth of terminal. */

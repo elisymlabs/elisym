@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -26,10 +27,43 @@ import type {
  */
 let sharedRefusalDir: Promise<string | null> | undefined;
 
+/**
+ * Take the directories with us on the way out.
+ *
+ * Nothing disposes a skill, so without this an agent restarted nightly leaves a
+ * year of empty `elisym-static-out-*` behind. `rmSync`, because an exit handler
+ * cannot await; ONE listener over a set, because a tmp reaper can send us round
+ * `refusalDirectory` again and a listener per directory would eventually trip
+ * Node's max-listeners warning. A `SIGKILL` still leaves the directory behind,
+ * but it is empty by then - the job's own file goes in `execute`'s `finally`.
+ */
+const refusalDirs = new Set<string>();
+let sweepInstalled = false;
+
+function removeOnExit(dir: string): void {
+  refusalDirs.add(dir);
+  if (sweepInstalled) {
+    return;
+  }
+  sweepInstalled = true;
+  process.once('exit', () => {
+    for (const dead of refusalDirs) {
+      try {
+        rmSync(dead, { recursive: true, force: true });
+      } catch {
+        /* exiting anyway */
+      }
+    }
+  });
+}
+
 async function refusalDirectory(attempt = 0): Promise<string | null> {
-  const pending = (sharedRefusalDir ??= mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(
-    () => null,
-  ));
+  const pending = (sharedRefusalDir ??= mkdtemp(join(tmpdir(), 'elisym-static-out-'))
+    .then((dir) => {
+      removeOnExit(dir);
+      return dir;
+    })
+    .catch(() => null));
   const dir = await pending;
   // Only clear the promise we ourselves awaited: two jobs finding the same dead
   // directory would otherwise each discard the other's replacement and leave it
@@ -133,7 +167,8 @@ export class StaticScriptSkill implements Skill {
     // cron-shaped one - it may touch no filesystem at all - so paying a
     // `mkdtemp` and a recursive `rm` on every tick to hand the script a path it
     // usually never writes is the wrong trade; and a directory per SKILL would
-    // leak one per restart, since nothing disposes a skill.
+    // multiply them, since nothing disposes a skill. The one directory is swept
+    // at process exit.
     //
     // A read-only or full tmpdir must not be what stops a static skill running:
     // the job simply has no refusal channel, and the next one tries again.

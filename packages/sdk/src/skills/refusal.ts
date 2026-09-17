@@ -24,7 +24,7 @@
  */
 import { ScriptExecutionError } from '../llm-health/types';
 import type { RefusalFileRead } from './refusal-file';
-import { excerptUntrusted, hasVisibleText } from './untrusted-text';
+import { excerptUntrusted, flattenUntrusted, hasVisibleText } from './untrusted-text';
 
 /**
  * The exit code that says "what I wrote in the refusal file is why".
@@ -84,19 +84,31 @@ export const REFUSAL_CHANNEL_MISSING_HINT =
   '(check the temp directory):';
 
 /**
+ * Whether a written reason says anything a reader would SEE.
+ *
+ * Not `!== ''`: a file holding one newline, a NUL or a zero-width joiner is as
+ * empty as no bytes at all, and this is the same question `refusalMessage` asks
+ * of the text it is about to hand a customer.
+ */
+export function statesAReason(reason: string): boolean {
+  return hasVisibleText(flattenUntrusted(reason));
+}
+
+/**
  * What the customer is allowed to read of a refusal.
  *
  * The provider chose to write this, so it crosses the trust boundary - but as
  * one plain paragraph and nothing else: `flattenUntrusted` drops the control
  * characters and deceptive format marks, and the result is capped by character
  * so no half of one survives the cut.
+ *
+ * Exported for the web app, which renders the same sentence from the wire and
+ * must apply the same rule to it - a second copy of "excerpt, then fall back"
+ * would be two caps to keep in step.
  */
 export function refusalMessage(reason: string): string {
   const excerpt = excerptUntrusted(reason, SCRIPT_REFUSAL_MAX_CHARS);
-  // `hasVisibleText`, not `!== ''`: flattening keeps zero-width joiners on
-  // purpose - they spell words in Persian and join emoji - so a "sentence"
-  // made only of them survives as a non-empty string nobody can read.
-  return hasVisibleText(excerpt) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
+  return statesAReason(excerpt) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
 }
 
 /**
@@ -155,16 +167,16 @@ export function throwIfRefused(
   file: RefusalFileRead,
   channelOffered = true,
 ): void {
-  const refused =
-    file.state === 'read' &&
-    result.code !== null &&
+  if (file.state === 'read' && result.code !== null) {
     // A reason the script actually wrote is a refusal whatever the exit code
-    // says. An EMPTY file is only one when the script also exited 43: opening
-    // the channel early (`: > "$ELISYM_REFUSAL_FILE"`) is a common shape, and
-    // turning a finished, paid job into a refusal would throw its answer away.
-    (file.reason !== '' || result.code === SCRIPT_EXIT_REFUSED);
-  if (refused && file.state === 'read' && result.code !== null) {
-    throw new ScriptRefusalError(result.code, file.reason, result.stderr);
+    // says. A file with nothing READABLE in it is only one when the script also
+    // exited 43: opening the channel early (`: > "$ELISYM_REFUSAL_FILE"`) is a
+    // common shape, and turning a finished, paid job into a refusal would throw
+    // its answer away. `statesAReason`, because `echo >` leaves a newline and a
+    // newline is no more a reason than no bytes at all.
+    if (statesAReason(file.reason) || result.code === SCRIPT_EXIT_REFUSED) {
+      throw new ScriptRefusalError(result.code, file.reason, result.stderr);
+    }
   }
   if (result.code === SCRIPT_EXIT_REFUSED) {
     // Which hint depends on whose fault it was: a script that never wrote the

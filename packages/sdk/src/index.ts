@@ -71,19 +71,19 @@ export type { DelegatedPaymentRequest } from './services/marketplace';
 // upstream's body. The rest of `untrusted-text` stays module-private rather
 // than becoming a semver commitment on a published package.
 export {
+  clipToCodeUnits,
   deleteControlCharacters,
   excerptUntrusted,
   excerptUntrustedTail,
   flattenForComparison,
   hasVisibleText,
-  withoutDanglingSurrogate,
 } from './skills/untrusted-text';
 export {
   isLlmHealthError,
   isScriptBillingExhaustedError,
   isScriptExecutionError,
 } from './llm-health/types';
-export { isScriptRefusalError, SCRIPT_REFUSAL_MAX_CHARS } from './skills/refusal';
+export { isScriptRefusalError, refusalMessage, SCRIPT_REFUSAL_MAX_CHARS } from './skills/refusal';
 export {
   classifyJobError,
   JobWaitTimeoutError,

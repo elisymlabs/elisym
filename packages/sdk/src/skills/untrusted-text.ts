@@ -104,23 +104,72 @@ export function flattenUntrusted(text: string): string {
  * with the whole input.
  */
 export function clipToCharacters(text: string, maxChars: number, alreadyCut = false): string {
+  return clip(text, maxChars, alreadyCut, false);
+}
+
+/**
+ * The same budget from the other end: at most `maxChars` characters of the
+ * TAIL, with a LEADING ellipsis when something was cut.
+ */
+export function clipTailToCharacters(text: string, maxChars: number, alreadyCut = false): string {
+  return clip(text, maxChars, alreadyCut, true);
+}
+
+function clip(text: string, maxChars: number, alreadyCut: boolean, keepEnd: boolean): string {
   if (maxChars <= 0) {
     return '';
   }
-  // A character is one or two code units, so the first `maxChars` of them
-  // cannot begin past `maxChars * 2`. Spreading the whole string would build a
-  // million-element array of single characters to keep a few hundred.
-  const characters = [...text.slice(0, maxChars * 2)];
+  // A character is one or two code units, so the `maxChars` nearest this end
+  // cannot reach past `maxChars * 2` of it. Spreading the whole string would
+  // build a million-element array of single characters to keep a few hundred.
+  const near = keepEnd
+    ? text.slice(Math.max(0, text.length - maxChars * 2))
+    : text.slice(0, maxChars * 2);
+  const characters = [...trimDanglingSurrogates(near)];
   const fits = characters.length <= maxChars && text.length <= maxChars * 2;
   if (fits && !alreadyCut) {
-    return withoutDanglingSurrogate(text);
+    return trimDanglingSurrogates(text);
   }
   if (maxChars === 1) {
     return '…';
   }
   // `alreadyCut` says the CALLER truncated its input: a result that fits is
   // still an excerpt, and the ellipsis is the only thing that says so.
-  return `${withoutDanglingSurrogate(characters.slice(0, maxChars - 1).join('')).trimEnd()}…`;
+  const kept = keepEnd
+    ? characters.slice(characters.length - (maxChars - 1))
+    : characters.slice(0, maxChars - 1);
+  const joined = trimDanglingSurrogates(kept.join(''));
+  return keepEnd ? `…${joined.trimStart()}` : `${joined.trimEnd()}…`;
+}
+
+/** Neither end left holding half of a character a cut separated from its pair. */
+function trimDanglingSurrogates(text: string): string {
+  return withoutDanglingSurrogate(withoutLeadingDanglingSurrogate(text));
+}
+
+/**
+ * The first `maxUnits` UTF-16 CODE UNITS, never half a character, and with no
+ * marker of its own.
+ *
+ * The other budget in this module counts characters, because there it is a
+ * sentence a customer reads. This one counts code units, because there it is
+ * how much of a LINE an operator's terminal gets - and it returns the bare
+ * prefix because the x402 driver has to know exactly which characters will be
+ * printed before it can decide whether its cut landed inside a masked echo.
+ */
+export function clipToCodeUnits(text: string, maxUnits: number): string {
+  if (maxUnits <= 0) {
+    return '';
+  }
+  return text.length <= maxUnits ? text : withoutDanglingSurrogate(text.slice(0, maxUnits));
+}
+
+/**
+ * Every C0 and C1 control character DELETED, except tab and newline, which stay
+ * as whitespace for the collapse to handle.
+ */
+export function deleteControlCharacters(text: string): string {
+  return text.replace(CONTROLS_EXCEPT_TAB_AND_NEWLINE, '');
 }
 
 /**
@@ -134,10 +183,6 @@ export function clipToCharacters(text: string, maxChars: number, alreadyCut = fa
  * reaches the operator's log. Tab and newline survive as whitespace, so two
  * words on separate lines do not weld together before the collapse.
  */
-export function deleteControlCharacters(text: string): string {
-  return text.replace(CONTROLS_EXCEPT_TAB_AND_NEWLINE, '');
-}
-
 export function flattenForComparison(text: string): string {
   return withoutAnyFormatMarks(deleteControlCharacters(text)).replace(/\s+/g, ' ').trim();
 }
@@ -152,11 +197,20 @@ export function flattenForComparison(text: string): string {
 // eslint-disable-next-line no-control-regex
 const SURVIVES_FLATTENING = /[^\s\u0000-\u001f\u007f-\u009f\p{Cf}]/gu;
 
+/** The index of the first character that survives flattening, or -1. */
+function firstSurvivingIndex(text: string): number {
+  SURVIVES_FLATTENING.lastIndex = 0;
+  const match = SURVIVES_FLATTENING.exec(text);
+  SURVIVES_FLATTENING.lastIndex = 0;
+  return match?.index ?? -1;
+}
+
 function hasContentBefore(text: string, before: number): boolean {
-  SURVIVES_FLATTENING.lastIndex = 0;
-  const found = SURVIVES_FLATTENING.exec(text.slice(0, before)) !== null;
-  SURVIVES_FLATTENING.lastIndex = 0;
-  return found;
+  // Where the first one IS, not whether a copy of the prefix holds one: `before`
+  // is typically the whole input minus a window, and slicing it would copy the
+  // megabyte this module exists to avoid walking twice.
+  const first = firstSurvivingIndex(text);
+  return first !== -1 && first < before;
 }
 
 function hasContentAfter(text: string, from: number): boolean {
@@ -167,64 +221,67 @@ function hasContentAfter(text: string, from: number): boolean {
 }
 
 /**
- * The LAST `maxChars` characters, flattened - the excerpt for text whose point
- * is at the end.
+ * Flatten one end of an over-long text and say whether anything readable was
+ * dropped to do it.
  *
- * A script's diagnostic lands after whatever progress meter its curl printed,
- * so a head excerpt records the meter. The leading ellipsis says something came
- * before it, and the leading-surrogate guard covers the cut this makes at the
- * START of the text, which nothing else in this module does.
+ * Slicing BEFORE flattening is the point: the input can be a megabyte and
+ * flattening walks every code point. The 8x allowance covers what whitespace
+ * collapse can shorten - but it is a fast path, not a guarantee, since
+ * whitespace collapses by an unbounded factor: 3200 newlines ahead of the real
+ * sentence (or a curl progress meter's 4000 trailing carriage returns behind
+ * it) leave the window holding nothing at all. Any SHORT result from a text
+ * that outran the window means the window was the limit rather than the
+ * content, so pay for the whole thing once.
  */
-export function excerptUntrustedTail(text: string, maxChars: number): string {
+function excerptWindow(
+  text: string,
+  maxChars: number,
+  keepEnd: boolean,
+): { flattened: string; cut: boolean } {
   const window = maxChars * 8;
-  const from = Math.max(0, text.length - window);
-  const windowed = flattenUntrusted(withoutLeadingDanglingSurrogate(text.slice(from)));
-  // The window is a fast path, not a guarantee, exactly as in `excerptUntrusted`
-  // - a diagnostic followed by a curl progress meter's 4000 trailing carriage
-  // returns leaves the window holding nothing at all, and returning a lone
-  // ellipsis would destroy the one line worth keeping.
-  const flattened = [...windowed].length < maxChars && from > 0 ? flattenUntrusted(text) : windowed;
-  const characters = [...flattened];
-  // A cut is only a cut when something readable was dropped: padding ahead of
-  // the text is not content, and saying it was cut is a lie about the sentence.
-  const droppedContent =
-    characters.length > maxChars ||
-    (flattened === windowed && from > 0 && hasContentBefore(text, from));
-  if (!droppedContent) {
-    return flattened;
-  }
-  const kept = characters.slice(Math.max(0, characters.length - (maxChars - 1)));
-  return `…${kept.join('').trimStart()}`;
+  const outranWindow = text.length > window;
+  const from = keepEnd ? Math.max(0, text.length - window) : 0;
+  const sliced = keepEnd ? text.slice(from) : text.slice(0, window);
+  const windowed = flattenUntrusted(trimDanglingSurrogates(sliced));
+  const flattened =
+    [...windowed].length < maxChars && outranWindow ? flattenUntrusted(text) : windowed;
+  // Only text that was actually dropped counts as a cut: a refusal padded with
+  // trailing newlines is complete, and claiming otherwise both lies to the
+  // reader and eats one of its characters to make room for the ellipsis. The
+  // length-based cut is the clip's business, not this one's.
+  const cut =
+    outranWindow &&
+    flattened === windowed &&
+    (keepEnd ? hasContentBefore(text, from) : hasContentAfter(text, window));
+  return { flattened, cut };
+}
+
+/** Whether the text holds anything a reader would SEE. */
+export function hasVisibleText(text: string): boolean {
+  return withoutAnyFormatMarks(text).trim() !== '';
 }
 
 /**
  * One bounded, single-line excerpt of text somebody else wrote.
  *
  * The only way anything in this repository should quote untrusted text, so the
- * three parts stay together: slice BEFORE flattening (the input can be a
- * megabyte and flattening walks every code point), drop a surrogate the raw
- * slice may have separated, then clip by character with an ellipsis. The 8x
- * allowance covers what whitespace collapse can shorten.
+ * three parts stay together: slice before flattening, drop a surrogate the raw
+ * slice may have separated, then clip by character with an ellipsis.
  */
-/** Whether the text holds anything a reader would SEE. */
-export function hasVisibleText(text: string): boolean {
-  return withoutAnyFormatMarks(text).trim() !== '';
+export function excerptUntrusted(text: string, maxChars: number): string {
+  const { flattened, cut } = excerptWindow(text, maxChars, false);
+  return clipToCharacters(flattened, maxChars, cut);
 }
 
-export function excerptUntrusted(text: string, maxChars: number): string {
-  const window = maxChars * 8;
-  const windowed = flattenUntrusted(withoutDanglingSurrogate(text.slice(0, window)));
-  // The window is a fast path, not a guarantee: whitespace collapses by an
-  // unbounded factor, so 3200 newlines ahead of the real sentence leave the
-  // window holding nothing - or, worse, its first letter. Any SHORT result from
-  // a text that outran the window means the window was the limit rather than
-  // the content, so pay for the whole thing once.
-  const outranWindow = text.length > window;
-  const flattened =
-    [...windowed].length < maxChars && outranWindow ? flattenUntrusted(text) : windowed;
-  // Only text that was actually dropped counts as a cut: a refusal padded with
-  // trailing newlines is complete, and claiming otherwise both lies to the
-  // reader and eats its last character to make room for the ellipsis.
-  const droppedContent = outranWindow && flattened === windowed && hasContentAfter(text, window);
-  return clipToCharacters(flattened, maxChars, droppedContent);
+/**
+ * The same, from the other end - the excerpt for text whose point is at the
+ * end.
+ *
+ * A script's diagnostic lands after whatever progress meter its curl printed,
+ * so a head excerpt records the meter. The leading ellipsis says something came
+ * before it.
+ */
+export function excerptUntrustedTail(text: string, maxChars: number): string {
+  const { flattened, cut } = excerptWindow(text, maxChars, true);
+  return clipTailToCharacters(flattened, maxChars, cut);
 }

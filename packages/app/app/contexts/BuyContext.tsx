@@ -79,6 +79,7 @@ import {
 } from '~/lib/chatThread';
 import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { DELEGATED_WALLET_UNSUPPORTED_MESSAGE, usesDelegatedRail } from '~/lib/delegatedBuyMode';
+import { customerErrorText } from '~/lib/errorText';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
 import { formatCardPrice, settledPriceForEntry } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
@@ -1139,8 +1140,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
               );
               cleanupRef.current = null;
-              const toastMsg =
-                kind === 'agent-unavailable' ? 'Agent unavailable. Try again later.' : errMsg;
+              // The same sentence the inline note is about to render, bounded
+              // the same way: a provider's error feedback reaches here verbatim,
+              // and a toast is no safer a place to paint it than the page is.
+              const toastMsg = customerErrorText(errMsg);
               // Sonner does not always swap a multi-step `toast.loading`
               // chain to an error toast when given the same id (the
               // spinner sticks). Dismiss explicitly, then raise a fresh

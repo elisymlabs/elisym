@@ -1035,22 +1035,31 @@ export class AgentRuntime {
       // curl printed, so scanning a prefix would miss the one signal worth
       // gating on. Each consumer below excerpts for itself.
       let message: string;
+      // What an OPERATOR reads. The scan must not touch stdout, but the
+      // sentence saying WHY their key was gated still has to say something,
+      // and a script that printed its diagnosis to stdout and exited non-zero
+      // leaves stderr empty. Nothing here decides anything - the exit code
+      // already did - so quoting stdout carries no steering risk.
+      let diagnostic: string;
       if (isScriptExecutionError(err)) {
         // `?? detail` and not `|| detail`: an EMPTY stderr is an answer (the
         // script said nothing), while an ABSENT one means the error was built
         // by something that predates the field, and losing the diagnostic
         // silently is worse than the stdout-steering risk it guards.
         message = err.stderr ?? err.detail;
+        diagnostic = message.trim() === '' ? err.detail : message;
       } else if (err instanceof Error) {
         message = err.message;
+        diagnostic = message;
       } else {
         message = String(err);
+        diagnostic = message;
       }
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
         log(
-          `${tag} Script "${skill.name}" failed ("${excerptUntrustedTail(message, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+          `${tag} Script "${skill.name}" failed ("${excerptUntrustedTail(diagnostic, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
         );
         return false;
       }
@@ -1080,7 +1089,7 @@ export class AgentRuntime {
         provider,
         model,
         reason,
-        excerptUntrustedTail(message, 200),
+        excerptUntrustedTail(diagnostic, 200),
         {
           cascade,
         },

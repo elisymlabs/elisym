@@ -165,6 +165,32 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(output.data).toBe('the answer');
   });
 
+  it('does not turn a finished job into a refusal over a lone newline either', async () => {
+    // `echo >` is how a shell script opens a file, and it leaves a byte behind.
+    // Emptiness has to mean "nothing a reader would see", or the guard above
+    // covers only the one shape that writes zero bytes.
+    fixture = setupScript(
+      `#!/bin/sh\necho "" > "$${SCRIPT_REFUSAL_FILE_ENV}"\necho "the answer"\nexit 0\n`,
+    );
+    const output = await dynamicSkill(fixture.scriptPath).execute(MINIMAL_INPUT, MINIMAL_CTX);
+    expect(output.data).toBe('the answer');
+  });
+
+  it('leaves a crash that opened the channel a crash', async () => {
+    // Same file, non-zero exit, and still not a refusal: the customer must not
+    // be told the agent decided against them when it fell over, and the health
+    // monitor must still see the failure it would otherwise skip.
+    fixture = setupScript(
+      `#!/bin/sh\necho "" > "$${SCRIPT_REFUSAL_FILE_ENV}"\necho "boom" >&2\nexit 1\n`,
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptExecutionError);
+    expect(error).not.toBeInstanceOf(ScriptRefusalError);
+    expect(error.detail).toContain('boom');
+  });
+
   it('treats an empty refusal file as a refusal with nothing said', async () => {
     // Both docs promise this. The script created the file deliberately; only
     // its ABSENCE means "this was not a refusal".
@@ -280,6 +306,23 @@ describe('excerpting for the operator', () => {
     const { excerptUntrusted } = await import('../src/skills/untrusted-text');
     const nul = String.fromCharCode(0).repeat(4000);
     expect(excerptUntrusted(`complete reason.${nul}`, 400)).toBe('complete reason.');
+  });
+
+  it('finds a diagnostic the trailing window could not hold', async () => {
+    const { excerptUntrustedTail } = await import('../src/skills/untrusted-text');
+    // A curl progress meter's carriage returns, all of them AFTER the line
+    // worth keeping: the window holds nothing, so the excerpt has to pay for
+    // the whole text once rather than return an ellipsis.
+    const meter = String.fromCharCode(13).repeat(4000);
+    expect(excerptUntrustedTail(`out of credits${meter}`, 200)).toBe('out of credits');
+  });
+
+  it('gives back nothing when asked for nothing, from either end', async () => {
+    const { excerptUntrusted, excerptUntrustedTail } = await import('../src/skills/untrusted-text');
+    // Arithmetic that reaches zero ("what is left of the line") must not come
+    // back with the whole input, and a lone ellipsis is not an excerpt either.
+    expect(excerptUntrusted('a sentence', 0)).toBe('');
+    expect(excerptUntrustedTail('a sentence', 0)).toBe('');
   });
 });
 

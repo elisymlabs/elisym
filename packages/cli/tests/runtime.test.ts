@@ -1340,7 +1340,11 @@ describe('AgentRuntime', () => {
         'claude-haiku-4-5',
         // Skill-local, and never 'billing': the words were on stdout.
         'invalid',
-        '',
+        // The operator still gets to READ them. `lastReason` is printed on
+        // every gated job, and answering "why is my key gated?" with a blank
+        // line helps nobody; the classification above is the part the customer
+        // must not be able to steer, and it came from the exit code.
+        'unauthorized, insufficient credit balance',
         { cascade: false },
       );
     });

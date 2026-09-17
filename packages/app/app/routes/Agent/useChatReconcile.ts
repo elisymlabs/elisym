@@ -12,10 +12,11 @@ import { storedRefusal } from '~/lib/refusal';
  * Tab-open reconcile (stage 2): when the Chat tab opens, run a one-shot
  * `queryJobResults` for the current identity's still-`pending` entries -
  * author-bound to the agent pubkey (forged-6100 protection, same as every
- * sibling call site) - completing what resolved, then age unpaid pending
- * entries past 24h to `failed` (paid entries stay `pending`: money was sent,
- * the state must stay visible). Entries still pending and inside the 600s
- * result window get a re-subscription for the remainder of the window.
+ * sibling call site) - completing what resolved and closing what the agent
+ * refused (`queryJobErrors`, same binding), then age unpaid pending entries
+ * past 24h to `failed` (paid entries stay `pending`: money was sent, the state
+ * must stay visible). Entries still pending and inside the 600s result window
+ * get a re-subscription for the remainder of the window.
  *
  * Wallet-independent by design: everything runs off the Nostr identity, so
  * free-skill chats recover too. Runs once per Chat tab activation.
@@ -65,23 +66,26 @@ export function useChatReconcile(agentPubkey: string): void {
 
       let queryFailed = false;
       if (pendingEntries.length > 0) {
-        try {
-          const resultsByJob = await client.marketplace.queryJobResults(
-            identity,
-            pendingEntries.map((entry) => entry.jobEventId),
-            undefined,
-            agentPubkey,
-          );
-          for (const entry of pendingEntries) {
-            if (cancelled) {
-              return;
-            }
-            const res = resultsByJob.get(entry.jobEventId);
-            // Skip missing or undecryptable results (the latter surfaces as
-            // empty content + decryptionFailed), like the live subscription.
-            if (!res || res.decryptionFailed || !res.content) {
-              continue;
-            }
+        const jobIds = pendingEntries.map((entry) => entry.jobEventId);
+        // The refusal query runs alongside, never instead: a provider that
+        // errored and then delivered anyway (crash-recovery re-execution) has a
+        // result, and a result outranks the error that preceded it.
+        const [results, errors] = await Promise.all([
+          client.marketplace
+            .queryJobResults(identity, jobIds, undefined, agentPubkey)
+            .catch(() => null),
+          client.marketplace.queryJobErrors(jobIds, agentPubkey).catch(() => null),
+        ]);
+        // transient relay error - the next tab open / hydration retries
+        queryFailed = results === null;
+        for (const entry of pendingEntries) {
+          if (cancelled) {
+            return;
+          }
+          const res = results?.get(entry.jobEventId);
+          // Skip missing or undecryptable results (the latter surfaces as
+          // empty content + decryptionFailed), like the live subscription.
+          if (res && !res.decryptionFailed && res.content) {
             const decoded = decodeResult(res.content);
             await completeReconciled(
               entry.jobEventId,
@@ -89,10 +93,19 @@ export function useChatReconcile(agentPubkey: string): void {
               resultDisplay(decoded),
               decoded.attachments,
             );
+            continue;
           }
-        } catch {
-          // transient relay error - the next tab open / hydration retries
-          queryFailed = true;
+          // ONLY a refusal closes an entry from here. It is the one verdict
+          // that is terminal and deterministic, and this is the only path that
+          // reaches a refusal published while the tab was closed - including
+          // one past the 600s window, which is re-subscribed to by nothing.
+          // Every other error is left alone on purpose: an outage or a
+          // transient failure must not demote a PAID pending entry whose job
+          // the provider's recovery loop may still deliver.
+          const message = errors?.get(entry.jobEventId);
+          if (message !== undefined && classifyJobError(message) === 'provider-refused') {
+            await failEntry(agentPubkey, entry.jobEventId, { refusal: storedRefusal(message) });
+          }
         }
       }
 
@@ -151,11 +164,13 @@ export function useChatReconcile(agentPubkey: string): void {
               );
             },
             onError: (message: string) => {
-              // ONLY a refusal closes the entry here. It is the one verdict
-              // that is terminal and deterministic, and without it a refusal
-              // that arrived while the tab was closed would be lost: the entry
-              // keeps spinning (ageing skips anything with a txHash) or ages
-              // out with no reason and a Retry button that buys it again.
+              // A refusal published from here on, while the tab stays open.
+              // Everything already on the relays was handled by the query
+              // above - and must not be replayed into this subscription,
+              // whose `since` is therefore left at its 30-second default: the
+              // SDK closes the result subscriptions along with the first error
+              // it sees, so a stale one would cost the customer the result
+              // that came after it.
               //
               // Every other error is left alone on purpose: an outage, a
               // transient failure, or the SDK's own wait-window timeout (which
@@ -170,12 +185,6 @@ export function useChatReconcile(agentPubkey: string): void {
               });
             },
           },
-          // From when the job was SENT, not the subscription's 30-second
-          // default: the whole point here is feedback published while the tab
-          // was closed. (A tab closed longer than the wait window is still a
-          // gap - the entry is not re-subscribed at all, and closing it would
-          // need a feedback query rather than a subscription.)
-          sinceOverride: Math.floor(entry.ts / 1000) - 60,
           timeoutMs: JOB_WAIT_TIMEOUT_MS - elapsed,
           customerSecretKey: identity.secretKey,
         });
