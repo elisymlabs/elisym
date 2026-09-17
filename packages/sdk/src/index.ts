@@ -75,6 +75,7 @@ export {
   excerptUntrusted,
   excerptUntrustedTail,
   flattenForComparison,
+  hasVisibleText,
   withoutDanglingSurrogate,
 } from './skills/untrusted-text';
 export {

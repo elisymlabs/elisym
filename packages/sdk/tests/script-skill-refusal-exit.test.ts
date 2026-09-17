@@ -153,6 +153,18 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error.message).toHaveLength(SCRIPT_REFUSAL_MAX_CHARS);
   });
 
+  it('does not turn a finished job into a refusal because the file was opened', async () => {
+    // Opening the channel early (`: > "$ELISYM_REFUSAL_FILE"`, or a Python
+    // `open(path, "w")` before the decision) is a common shape. With exit 0 the
+    // job SUCCEEDED, and treating the empty file as a refusal would throw the
+    // answer away after the customer had paid for it.
+    fixture = setupScript(
+      `#!/bin/sh\n: > "$${SCRIPT_REFUSAL_FILE_ENV}"\necho "the answer"\nexit 0\n`,
+    );
+    const output = await dynamicSkill(fixture.scriptPath).execute(MINIMAL_INPUT, MINIMAL_CTX);
+    expect(output.data).toBe('the answer');
+  });
+
   it('treats an empty refusal file as a refusal with nothing said', async () => {
     // Both docs promise this. The script created the file deliberately; only
     // its ABSENCE means "this was not a refusal".

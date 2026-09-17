@@ -1,4 +1,9 @@
-import { excerptUntrusted, PROVIDER_REFUSED_PREFIX, SCRIPT_REFUSAL_MAX_CHARS } from '@elisym/sdk';
+import {
+  excerptUntrusted,
+  hasVisibleText,
+  PROVIDER_REFUSED_PREFIX,
+  SCRIPT_REFUSAL_MAX_CHARS,
+} from '@elisym/sdk';
 
 /**
  * What a refusal is allowed to occupy in the thread store.
@@ -25,8 +30,8 @@ export function storedRefusal(message: string): string {
     ? message.slice(PROVIDER_REFUSED_PREFIX.length)
     : message;
   const excerpt = excerptUntrusted(sentence, MAX_STORED_REFUSAL_CHARS);
-  // A provider that sends the label and nothing else - or a sentence made
-  // entirely of marks - would otherwise store an empty string, which renders as
-  // a blank bubble with the Retry button already withheld.
-  return excerpt === '' ? UNSTATED_REFUSAL : excerpt;
+  // `hasVisibleText`, not `!== ''`: a sentence of zero-width joiners survives
+  // flattening (they spell words in Persian) and would render as a blank bubble
+  // with the Retry button already withheld.
+  return hasVisibleText(excerpt) ? excerpt : UNSTATED_REFUSAL;
 }

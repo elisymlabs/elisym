@@ -60,11 +60,7 @@ import {
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import {
-  REFUSAL_CHANNEL_MISSING_HINT,
-  REFUSAL_CONTRACT_HINT,
-  SCRIPT_EXIT_REFUSED,
-} from '@elisym/sdk/skills';
+import { SCRIPT_EXIT_REFUSED } from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -259,19 +255,13 @@ function scriptMessageLooksLikeBillingOrInvalid(lowered: string): boolean {
 const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
 
 /**
- * Whether this failure is a refusal whose contract the script got wrong, rather
- * than a crash that happened to exit with the same code.
+ * What a customer is told when a script skill crashed.
  *
- * Keyed on the hint the SDK writes, not on the exit code: 43 is also curl's
- * `CURLE_BAD_FUNCTION_ARGUMENT`, and treating every such crash as a refusal slip
- * would quietly disable the health gate for a script that fails on every job.
+ * Deliberately not "Internal processing error", which `classifyJobError` reads
+ * as an outage: an outage is recoverable and this is not - the job is closed
+ * and will not be retried, so promising otherwise leaves someone waiting.
  */
-function isRefusalContractSlip(error: { detail: string }): boolean {
-  return (
-    error.detail.startsWith(REFUSAL_CONTRACT_HINT) ||
-    error.detail.startsWith(REFUSAL_CHANNEL_MISSING_HINT)
-  );
-}
+const SCRIPT_FAILED_MESSAGE = 'The agent could not complete this job.';
 
 /**
  * How much of a script's own output an operator-log line carries.
@@ -447,11 +437,12 @@ function customerSafeMessage(error: unknown): string {
     return `${PROVIDER_REFUSED_PREFIX}${error.message}`;
   }
   if (isScriptExecutionError(error)) {
-    // The fixed mask, not the error's own summary. `script failed (exit 1)`
-    // would be new customer-facing wording that `classifyJobError` does not
-    // know, so a buyer would lose the note telling them what happened to their
-    // payment. The summary and `error.detail` stay operator-side.
-    return 'Internal processing error';
+    // A fixed mask - the summary and `error.detail` stay operator-side - but
+    // NOT the outage wording. A script crash closes the job: the ledger marks
+    // it failed and recovery never looks at it again, so classifying it as an
+    // outage tells a customer who just paid that their payment is held and the
+    // job will be retried automatically, which is false.
+    return SCRIPT_FAILED_MESSAGE;
   }
   if (isScriptBillingExhaustedError(error)) {
     return AGENT_UNAVAILABLE_MESSAGE;
@@ -490,7 +481,9 @@ function describeForOperator(error: unknown): string {
     // Bounded and flattened, like the refusal above: `detail` is raw stderr,
     // capped only by `MAX_SCRIPT_OUTPUT` (a megabyte), and a newline in it
     // forges a second line on the operator's terminal and in the log.
-    return `${error.message}: ${excerptUntrusted(error.detail, OPERATOR_EXCERPT_CHARS)}`;
+    // The tail: a traceback's exception line and a jq parse error both land at
+    // the end, and this excerpt is the only copy kept.
+    return `${error.message}: ${excerptUntrustedTail(error.detail, OPERATOR_EXCERPT_CHARS)}`;
   }
   // Not every throw is an Error. The replaced expression (`e.message ?? …`)
   // read `message` off whatever was thrown, which threw its own TypeError on a
@@ -923,7 +916,7 @@ export class AgentRuntime {
     }
     const tag = `[${jobId.slice(0, 8)}]`;
 
-    if (isScriptExecutionError(err) && isRefusalContractSlip(err)) {
+    if (isScriptExecutionError(err) && err.refusalContractSlip) {
       // The script meant to refuse and got the contract wrong (no reason file,
       // or a typo in the variable name). That says nothing about the operator's
       // API key, so gating it - let alone cascading across every model on it -
@@ -1043,7 +1036,11 @@ export class AgentRuntime {
       // gating on. Each consumer below excerpts for itself.
       let message: string;
       if (isScriptExecutionError(err)) {
-        message = err.stderr ?? '';
+        // `?? detail` and not `|| detail`: an EMPTY stderr is an answer (the
+        // script said nothing), while an ABSENT one means the error was built
+        // by something that predates the field, and losing the diagnostic
+        // silently is worse than the stdout-steering risk it guards.
+        message = err.stderr ?? err.detail;
       } else if (err instanceof Error) {
         message = err.message;
       } else {
@@ -1076,13 +1073,14 @@ export class AgentRuntime {
       log(
         `${tag} Script failure (${signalNote}). Marking ${provider}/${model} unhealthy${cascadeNote}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      // Flattened: this is stored as the pair's `lastReason` and read back out
-      // on every gated job, so an unflattened copy forges a line each time.
+      // Flattened, bounded, and taken from the END: this is stored as the
+      // pair's `lastReason` and read back out on every gated job, and the
+      // diagnostic lands after whatever progress meter the script printed.
       this.healthMonitor.markUnhealthyFromJob(
         provider,
         model,
         reason,
-        excerptUntrusted(message, 200),
+        excerptUntrustedTail(message, 200),
         {
           cascade,
         },

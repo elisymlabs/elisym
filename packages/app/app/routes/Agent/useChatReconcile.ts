@@ -150,13 +150,6 @@ export function useChatReconcile(agentPubkey: string): void {
                 resultAttachments,
               );
             },
-            onTimeout: () => {
-              // The SDK routes a wait-window expiry to `onError` when no
-              // `onTimeout` is given, and a timeout is not a failure: a paid
-              // entry must stay `pending` (money was sent, the provider's
-              // recovery loop may still deliver) rather than gain a Retry
-              // button that buys the job twice.
-            },
             onError: (message: string) => {
               // ONLY a refusal closes the entry here. It is the one verdict
               // that is terminal and deterministic, and without it a refusal
@@ -164,9 +157,11 @@ export function useChatReconcile(agentPubkey: string): void {
               // keeps spinning (ageing skips anything with a txHash) or ages
               // out with no reason and a Retry button that buys it again.
               //
-              // Every other error is left alone on purpose: an outage or a
-              // transient failure must not demote a PAID pending entry, whose
-              // job the provider's recovery loop may still deliver.
+              // Every other error is left alone on purpose: an outage, a
+              // transient failure, or the SDK's own wait-window timeout (which
+              // arrives here when no `onTimeout` is given) must not demote a
+              // PAID pending entry, whose job the recovery loop may still
+              // deliver.
               if (classifyJobError(message) !== 'provider-refused') {
                 return;
               }
@@ -175,6 +170,12 @@ export function useChatReconcile(agentPubkey: string): void {
               });
             },
           },
+          // From when the job was SENT, not the subscription's 30-second
+          // default: the whole point here is feedback published while the tab
+          // was closed. (A tab closed longer than the wait window is still a
+          // gap - the entry is not re-subscribed at all, and closing it would
+          // need a feedback query rather than a subscription.)
+          sinceOverride: Math.floor(entry.ts / 1000) - 60,
           timeoutMs: JOB_WAIT_TIMEOUT_MS - elapsed,
           customerSecretKey: identity.secretKey,
         });

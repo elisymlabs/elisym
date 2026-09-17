@@ -23,7 +23,8 @@
  * script author reaching for it should not have to import from `llm-health`.
  */
 import { ScriptExecutionError } from '../llm-health/types';
-import { excerptUntrusted } from './untrusted-text';
+import type { RefusalFileRead } from './refusal-file';
+import { excerptUntrusted, hasVisibleText } from './untrusted-text';
 
 /**
  * The exit code that says "what I wrote in the refusal file is why".
@@ -71,6 +72,11 @@ export const REFUSAL_CONTRACT_HINT =
   `exit ${SCRIPT_EXIT_REFUSED} without writing ${SCRIPT_REFUSAL_FILE_ENV}, so this was handled as a ` +
   'failure rather than a refusal - the customer was told nothing about their request:';
 
+/** Told when the file is there but the agent could not read it. */
+export const REFUSAL_UNREADABLE_HINT =
+  `exit ${SCRIPT_EXIT_REFUSED} with a ${SCRIPT_REFUSAL_FILE_ENV} this agent could not read ` +
+  '(permissions, or too many open files), so the customer was told nothing about their request:';
+
 /** Told instead when the runtime never gave the script a file to write. */
 export const REFUSAL_CHANNEL_MISSING_HINT =
   `exit ${SCRIPT_EXIT_REFUSED}, but this agent could not create a scratch file, so ` +
@@ -87,7 +93,10 @@ export const REFUSAL_CHANNEL_MISSING_HINT =
  */
 export function refusalMessage(reason: string): string {
   const excerpt = excerptUntrusted(reason, SCRIPT_REFUSAL_MAX_CHARS);
-  return excerpt === '' ? SCRIPT_REFUSAL_UNSTATED : excerpt;
+  // `hasVisibleText`, not `!== ''`: flattening keeps zero-width joiners on
+  // purpose - they spell words in Persian and join emoji - so a "sentence"
+  // made only of them survives as a non-empty string nobody can read.
+  return hasVisibleText(excerpt) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
 }
 
 /**
@@ -143,22 +152,37 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
  */
 export function throwIfRefused(
   result: { code: number | null; stdout: string; stderr: string },
-  reason: string | undefined,
+  file: RefusalFileRead,
   channelOffered = true,
 ): void {
-  if (reason !== undefined && result.code !== null) {
-    throw new ScriptRefusalError(result.code, reason, result.stderr);
+  const refused =
+    file.state === 'read' &&
+    result.code !== null &&
+    // A reason the script actually wrote is a refusal whatever the exit code
+    // says. An EMPTY file is only one when the script also exited 43: opening
+    // the channel early (`: > "$ELISYM_REFUSAL_FILE"`) is a common shape, and
+    // turning a finished, paid job into a refusal would throw its answer away.
+    (file.reason !== '' || result.code === SCRIPT_EXIT_REFUSED);
+  if (refused && file.state === 'read' && result.code !== null) {
+    throw new ScriptRefusalError(result.code, file.reason, result.stderr);
   }
   if (result.code === SCRIPT_EXIT_REFUSED) {
     // Which hint depends on whose fault it was: a script that never wrote the
-    // file, or a runtime that never named one. Blaming the script for the
-    // second sends an operator hunting a typo in code that is correct.
-    const hint = channelOffered ? REFUSAL_CONTRACT_HINT : REFUSAL_CHANNEL_MISSING_HINT;
+    // file, a file the agent could not read, or a runtime that never named one.
+    // Blaming the script for the last two sends an operator hunting a typo in
+    // code that is correct.
+    let hint = REFUSAL_CONTRACT_HINT;
+    if (!channelOffered) {
+      hint = REFUSAL_CHANNEL_MISSING_HINT;
+    } else if (file.state === 'unreadable') {
+      hint = REFUSAL_UNREADABLE_HINT;
+    }
     throw new ScriptExecutionError(
       result.code,
       `${hint} ${result.stderr.trim() || result.stdout.trim() || '(no output)'}`,
       undefined,
       result.stderr,
+      true,
     );
   }
 }

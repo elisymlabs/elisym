@@ -1352,13 +1352,14 @@ describe('AgentRuntime', () => {
       const monitor = monitorStub();
       await runOneJob(
         scriptSkillThatThrows(
-          // The SDK's own hint, because the bypass keys on the contract rather
-          // than on the number 43 - which is also curl's CURLE_BAD_FUNCTION_ARGUMENT.
+          // The flag the SDK sets, not a string in `detail`: `detail` falls
+          // back to stdout, which a customer can steer through an LLM proxy.
           new ScriptExecutionError(
             SCRIPT_EXIT_REFUSED,
             `${REFUSAL_CONTRACT_HINT} unauthorized`,
             undefined,
             'unauthorized',
+            true,
           ),
         ),
         monitor,
@@ -1411,7 +1412,10 @@ describe('AgentRuntime', () => {
         'masked-job',
       );
 
-      expect(errorCall[1].message).toBe('Internal processing error');
+      // Not the outage wording: a crash closes the job, and telling a customer
+      // their payment is held for a retry that never comes is worse than
+      // telling them nothing.
+      expect(errorCall[1].message).toBe('The agent could not complete this job.');
       expect(errorCall[1].message).not.toContain('boom on stderr');
     });
 

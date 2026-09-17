@@ -95,13 +95,29 @@ export class ScriptExecutionError extends Error {
    * word "unauthorized" and take the agent's whole provider offline.
    */
   readonly stderr: string | undefined;
+  /**
+   * Set when the script MEANT to refuse and got the contract wrong.
+   *
+   * A flag rather than a string the runtime matches on: the hint lives in
+   * `detail`, which falls back to stdout, and for an LLM proxy stdout is the
+   * model's completion. A buyer who asked the model to echo that hint could
+   * otherwise switch off the agent's circuit breaker.
+   */
+  readonly refusalContractSlip: boolean;
 
-  constructor(exitCode: number | null, detail: string, summary?: string, stderr?: string) {
+  constructor(
+    exitCode: number | null,
+    detail: string,
+    summary?: string,
+    stderr?: string,
+    refusalContractSlip = false,
+  ) {
     super(summary ?? `script failed (exit ${exitCode ?? 'unknown'})`);
     this.name = 'ScriptExecutionError';
     this.exitCode = exitCode;
     this.detail = detail;
     this.stderr = stderr;
+    this.refusalContractSlip = refusalContractSlip;
   }
 }
 

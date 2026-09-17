@@ -26,13 +26,23 @@ import type {
  */
 let sharedRefusalDir: Promise<string | null> | undefined;
 
-async function refusalDirectory(): Promise<string | null> {
-  sharedRefusalDir ??= mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
-  const dir = await sharedRefusalDir;
+async function refusalDirectory(attempt = 0): Promise<string | null> {
+  const pending = (sharedRefusalDir ??= mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(
+    () => null,
+  ));
+  const dir = await pending;
+  // Only clear the promise we ourselves awaited: two jobs finding the same dead
+  // directory would otherwise each discard the other's replacement and leave it
+  // behind, one leaked directory per collision.
+  const forget = (): void => {
+    if (sharedRefusalDir === pending) {
+      sharedRefusalDir = undefined;
+    }
+  };
   if (dir === null) {
     // Creation failed: forget it, so the next job tries again. A tmpdir that
     // was full at startup may not be later.
-    sharedRefusalDir = undefined;
+    forget();
     return null;
   }
   // And confirm it is still there. An agent runs for weeks, and a tmp reaper
@@ -46,8 +56,11 @@ async function refusalDirectory(): Promise<string | null> {
   if (alive) {
     return dir;
   }
-  sharedRefusalDir = undefined;
-  return refusalDirectory();
+  forget();
+  // One retry. A tmpdir that keeps losing the directory is a broken host, and
+  // spinning here would hold the job slot forever instead of running the job
+  // without a refusal channel.
+  return attempt === 0 ? refusalDirectory(attempt + 1) : null;
 }
 
 export interface StaticScriptSkillParams {
@@ -165,7 +178,7 @@ export class StaticScriptSkill implements Skill {
     // whatever its exit code claims.
     throwIfRefused(
       result,
-      refusalFile === undefined ? undefined : await readRefusalFile(refusalFile),
+      refusalFile === undefined ? { state: 'absent' } : await readRefusalFile(refusalFile),
       refusalFile !== undefined,
     );
     if (result.code !== 0) {

@@ -206,6 +206,11 @@ export function excerptUntrustedTail(text: string, maxChars: number): string {
  * slice may have separated, then clip by character with an ellipsis. The 8x
  * allowance covers what whitespace collapse can shorten.
  */
+/** Whether the text holds anything a reader would SEE. */
+export function hasVisibleText(text: string): boolean {
+  return withoutAnyFormatMarks(text).trim() !== '';
+}
+
 export function excerptUntrusted(text: string, maxChars: number): string {
   const window = maxChars * 8;
   const windowed = flattenUntrusted(withoutDanglingSurrogate(text.slice(0, window)));
