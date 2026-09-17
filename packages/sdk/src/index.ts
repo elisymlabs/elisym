@@ -72,7 +72,7 @@ export type { DelegatedPaymentRequest } from './services/marketplace';
 // than becoming a semver commitment on a published package.
 export {
   excerptUntrusted,
-  withoutAnyFormatMarks,
+  flattenForComparison,
   withoutDanglingSurrogate,
 } from './skills/untrusted-text';
 export { isScriptBillingExhaustedError, isScriptExecutionError } from './llm-health/types';

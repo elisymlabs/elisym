@@ -223,6 +223,14 @@ describe('refusalMessage', () => {
     expect(capped.endsWith('…')).toBe(true);
   });
 
+  it('finds a reason that sits past the fast-path window', () => {
+    // Whitespace collapses by an unbounded factor, so a scan window measured on
+    // raw characters can be all newlines. The customer still gets the sentence.
+    expect(refusalMessage(`${'\n'.repeat(4000)}add the target audience.`)).toBe(
+      'add the target audience.',
+    );
+  });
+
   it('falls back when there is nothing to say', () => {
     expect(refusalMessage('   \n\t ')).toBe(SCRIPT_REFUSAL_UNSTATED);
   });

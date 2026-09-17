@@ -232,9 +232,8 @@ const SCRIPT_BILLING_INVALID_MARKERS = [
   'unauthenticated',
 ];
 
-function scriptMessageLooksLikeBillingOrInvalid(message: string): boolean {
-  const lower = message.toLowerCase();
-  return SCRIPT_BILLING_INVALID_MARKERS.some((marker) => lower.includes(marker));
+function scriptMessageLooksLikeBillingOrInvalid(lowered: string): boolean {
+  return SCRIPT_BILLING_INVALID_MARKERS.some((marker) => lowered.includes(marker));
 }
 
 /**
@@ -409,11 +408,13 @@ function customerSafeMessage(error: unknown): string {
     return error.message;
   }
   if (isScriptRefusalError(error)) {
-    // The one place a script's own words reach the customer. The prefix is the
-    // runtime's, and it is what keeps the channel honest: every other message
-    // on this feedback channel is the agent's own verdict (a payment rejection,
-    // an availability notice), and without a label a provider could write one.
-    // The SDK has already flattened and capped the sentence itself.
+    // The one place a script's own words reach the customer. The prefix marks
+    // them as the SKILL's rather than the agent's, so a refusal cannot be read
+    // as one of the runtime's own verdicts (a payment rejection, an
+    // availability notice). It is a discriminator inside this runtime and NOT
+    // a signature: another agent can emit the same string, so no client should
+    // treat it as proof of anything. The SDK has already flattened and capped
+    // the sentence itself.
     return `${PROVIDER_REFUSED_PREFIX}${error.message}`;
   }
   if (isScriptExecutionError(error)) {
@@ -453,7 +454,7 @@ function describeForOperator(error: unknown): string {
     // Bounded and flattened, like the refusal above: `detail` is raw stderr,
     // capped only by `MAX_SCRIPT_OUTPUT` (a megabyte), and a newline in it
     // forges a second line on the operator's terminal and in the log.
-    return `${error.message}: ${operatorExcerpt(error.detail)}`;
+    return `${error.message}: ${operatorExcerpt(error.detail ?? '')}`;
   }
   // Not every throw is an Error. The replaced expression (`e.message ?? …`)
   // read `message` off whatever was thrown, which threw its own TypeError on a
@@ -922,7 +923,7 @@ export class AgentRuntime {
         return false;
       }
       const status = Number(match[1]);
-      const body = (match[2] ?? '').slice(0, 200);
+      const body = operatorExcerpt(match[2] ?? '', 200);
       const isBillingStatus = status === 402;
       const isAuthStatus = status === 401 || status === 403;
       const isBilling400 = status === 400 && bodyLooksLikeBilling(body);
@@ -936,9 +937,10 @@ export class AgentRuntime {
       log(
         `${tag} LLM provider returned HTTP ${status} (${reason}). Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      // Flattened and bounded like the others: `lastReason` is read back out on
-      // every gated job, so an unflattened copy forges a log line each time.
-      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, operatorExcerpt(body, 200));
+      // `body` is already the bounded, flattened excerpt: `lastReason` is read
+      // back out on every gated job, so an unflattened copy would forge a log
+      // line each time.
+      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, body);
       return true;
     }
 
@@ -978,13 +980,17 @@ export class AgentRuntime {
       // customer steers. A buyer asking for the word "unauthorized" must not be
       // able to gate the operator's API key, let alone cascade it across every
       // model on that key.
+      // The WHOLE of it, with no excerpt: an API's "insufficient credit balance"
+      // lands at the END of stderr, after whatever progress meter the script's
+      // curl printed, so scanning a prefix would miss the one signal worth
+      // gating on. Each consumer below excerpts for itself.
       let message: string;
       if (isScriptExecutionError(err)) {
-        message = operatorExcerpt(err.stderr ?? '');
+        message = err.stderr ?? '';
       } else if (err instanceof Error) {
-        message = operatorExcerpt(err.message);
+        message = err.message;
       } else {
-        message = operatorExcerpt(String(err));
+        message = String(err);
       }
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
@@ -994,8 +1000,10 @@ export class AgentRuntime {
         );
         return false;
       }
+      // Lowered once and shared: `message` is raw stderr, bounded only by
+      // `MAX_SCRIPT_OUTPUT`.
       const lower = message.toLowerCase();
-      const looksBillingOrInvalid = scriptMessageLooksLikeBillingOrInvalid(message);
+      const looksBillingOrInvalid = scriptMessageLooksLikeBillingOrInvalid(lower);
       const reason: 'billing' | 'invalid' =
         looksBillingOrInvalid &&
         (lower.includes('credit balance') ||
@@ -1017,7 +1025,7 @@ export class AgentRuntime {
         provider,
         model,
         reason,
-        operatorExcerpt(message).slice(0, 200),
+        operatorExcerpt(message, 200),
         {
           cascade,
         },

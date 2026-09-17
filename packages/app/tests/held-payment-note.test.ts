@@ -75,6 +75,9 @@ describe('what a paying customer is told about their money', () => {
       const note = heldPaymentNote(`The provider refused: ${reason}`, true);
       expect(note).toMatch(/will not be retried/);
       expect(note).not.toMatch(/back online/);
+      // The label is not authenticated, so the note reports what the agent
+      // SAYS and points at the wallet rather than asserting where the money is.
+      expect(note).toMatch(/says it declined/);
     }
   });
 

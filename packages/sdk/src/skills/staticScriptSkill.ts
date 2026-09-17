@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { readRefusalFile, SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
+import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
+import { readRefusalFile } from './refusal-file';
 import { runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
@@ -84,15 +85,21 @@ export class StaticScriptSkill implements Skill {
     // A directory for the one out-of-band channel this mode has: the refusal
     // reason. Removed on every path, unlike the dynamic runner's, which may
     // outlive `execute` while a file result is seeded.
-    const outDir = await mkdtemp(join(tmpdir(), 'elisym-static-out-'));
+    //
+    // A skill in this mode may touch no filesystem at all, so a read-only or
+    // full tmpdir must not be what stops it running: without the directory the
+    // job simply has no refusal channel.
+    const outDir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
     try {
-      return await this.run(ctx, join(outDir, 'refusal'));
+      return await this.run(ctx, outDir === null ? undefined : join(outDir, 'refusal'));
     } finally {
-      await rm(outDir, { recursive: true, force: true }).catch(() => {});
+      if (outDir !== null) {
+        await rm(outDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
   }
 
-  private async run(ctx: SkillContext, refusalFile: string): Promise<SkillOutput> {
+  private async run(ctx: SkillContext, refusalFile: string | undefined): Promise<SkillOutput> {
     const result = await runScript(this.scriptPath, this.scriptArgs, {
       cwd: dirname(this.scriptPath),
       signal: ctx.signal,
@@ -101,7 +108,7 @@ export class StaticScriptSkill implements Skill {
       // stripped), never the raw parent env with the operator's key ring.
       env: {
         ...(this.scriptEnv ?? scopedToolEnv()),
-        [SCRIPT_REFUSAL_FILE_ENV]: refusalFile,
+        ...(refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile }),
       },
     });
     if (result.spawnError) {
@@ -111,14 +118,18 @@ export class StaticScriptSkill implements Skill {
         'script could not be started',
       );
     }
-    // Before every other verdict, including billing: a written reason is the
-    // most deliberate thing a script can say, and it is what the customer needs
-    // to read. Runs on the success path too - a script that wrote a refusal and
-    // then exited 0 refused, whatever its exit code claims.
-    throwIfRefused(result, await readRefusalFile(refusalFile));
     if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {
       throw new ScriptBillingExhaustedError(result.code, result.stdout, result.stderr);
     }
+    // After the billing signal, before everything else: an exhausted key
+    // must gate the agent even if a refusal file from an earlier branch is
+    // lying around. Otherwise a written reason wins, including over the
+    // success path - a script that wrote one and then exited 0 refused,
+    // whatever its exit code claims.
+    throwIfRefused(
+      result,
+      refusalFile === undefined ? undefined : await readRefusalFile(refusalFile),
+    );
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
       // Generic message reaches the customer; raw stderr/stdout stays on `detail`
@@ -134,7 +145,12 @@ export class StaticScriptSkill implements Skill {
       // paid -> failed path so recovery terminates it. stderr (if any)
       // carries the underlying reason for the operator log.
       const detail = result.stderr.trim() || '(no stderr)';
-      throw new ScriptExecutionError(result.code, detail, 'script produced empty output');
+      throw new ScriptExecutionError(
+        result.code,
+        detail,
+        'script produced empty output',
+        result.stderr,
+      );
     }
     return { data: output };
   }

@@ -42,6 +42,7 @@ export { X402ProxySkill } from './x402ProxySkill';
 export type { X402ProxySkillParams } from './x402ProxySkill';
 // The contract a script author needs (the code and the marker), the error the
 // runtime catches, and its guard. The parsing helpers behind them are internal.
+export { readRefusalFile } from './refusal-file';
 export {
   isScriptRefusalError,
   SCRIPT_EXIT_REFUSED,

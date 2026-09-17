@@ -116,7 +116,11 @@ export class ScriptExecutionError extends Error {
  * failure. Consumers outside this module should use these.
  */
 export function isScriptExecutionError(value: unknown): value is ScriptExecutionError {
-  return value instanceof Error && value.name === 'ScriptExecutionError';
+  return (
+    value instanceof Error &&
+    value.name === 'ScriptExecutionError' &&
+    typeof (value as ScriptExecutionError).detail === 'string'
+  );
 }
 
 export function isScriptBillingExhaustedError(

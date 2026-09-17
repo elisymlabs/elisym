@@ -116,6 +116,31 @@ export function clipToCharacters(text: string, maxChars: number): string {
 }
 
 /**
+ * Flatten text that will be COMPARED rather than read.
+ *
+ * Two deliberate differences from `flattenUntrusted`: control characters are
+ * DELETED instead of spaced, and every format mark goes, joiners included. The
+ * x402 driver masks a customer's input out of an upstream's echo by matching it
+ * byte for byte, so an upstream re-emitting `ja<0x01>ne` or `ja<ZWJ>ne` has to
+ * collapse back to what the customer sent or the mask misses it and the address
+ * reaches the operator's log. Tab and newline survive as whitespace, so two
+ * words on separate lines do not weld together before the collapse.
+ */
+export function flattenForComparison(text: string): string {
+  let out = '';
+  for (const character of text) {
+    const code = character.codePointAt(0);
+    const isDeletableControl =
+      code !== undefined &&
+      ((code < 0x20 && code !== 0x09 && code !== 0x0a) || (code >= 0x7f && code <= 0x9f));
+    if (!isDeletableControl) {
+      out += character;
+    }
+  }
+  return withoutAnyFormatMarks(out).replace(/\s+/g, ' ').trim();
+}
+
+/**
  * One bounded, single-line excerpt of text somebody else wrote.
  *
  * The only way anything in this repository should quote untrusted text, so the
@@ -125,8 +150,12 @@ export function clipToCharacters(text: string, maxChars: number): string {
  * allowance covers what whitespace collapse can shorten.
  */
 export function excerptUntrusted(text: string, maxChars: number): string {
-  return clipToCharacters(
-    flattenUntrusted(withoutDanglingSurrogate(text.slice(0, maxChars * 8))),
-    maxChars,
-  );
+  const windowed = flattenUntrusted(withoutDanglingSurrogate(text.slice(0, maxChars * 8)));
+  // The window is a fast path, not a guarantee: whitespace collapses by an
+  // unbounded factor, so 3200 newlines followed by the real sentence would
+  // flatten to nothing and report a refusal with no reason. When the window
+  // came back empty and there is more text, pay for the whole thing once.
+  const flattened =
+    windowed === '' && text.length > maxChars * 8 ? flattenUntrusted(text) : windowed;
+  return clipToCharacters(flattened, maxChars);
 }

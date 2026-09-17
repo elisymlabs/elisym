@@ -36,6 +36,12 @@
  * "check your billing address" would otherwise be read as an outage by the
  * substring markers below - telling the customer their payment is held for a
  * job that is already closed and already charged.
+ *
+ * NOT authenticated. The provider's own runtime writes it, so an agent running
+ * anything else can send the same string; it says "this reads as a refusal",
+ * never "this is certainly one". Anything a client does with it has to stay
+ * within what a lying provider could already do - suppressing a retry button
+ * is fine, asserting where the customer's money went is not.
  */
 export const PROVIDER_REFUSED_PREFIX = 'The provider refused: ';
 

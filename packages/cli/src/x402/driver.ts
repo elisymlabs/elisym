@@ -20,8 +20,8 @@ import {
   calculateProtocolFee,
   formatAssetAmount,
   resolveUsdcAsset,
+  flattenForComparison,
   signerFromSecretKeyBase58,
-  withoutAnyFormatMarks,
   withoutDanglingSurrogate,
 } from '@elisym/sdk';
 import type { Asset, Network } from '@elisym/sdk';
@@ -35,7 +35,6 @@ import {
 import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
 import { ExactSvmScheme } from '@x402/svm';
 import { fetchUsdcBalance } from '../helpers.js';
-import { sanitizeForTerminal } from '../logging.js';
 import type { SkillInput, X402JobDriver, X402SkillJob } from '../skill/index.js';
 import {
   X402_ERROR_BODY_READ_MS,
@@ -360,18 +359,14 @@ function withPaymentIdentifier(
  * turn one line into two. Everything an upstream can influence passes through
  * here before it is logged or quoted - a sanitized excerpt is only as good as
  * the least careful line reaching the same terminal.
+ *
+ * The SDK's `flattenForComparison` is the shared rule, and the comparison
+ * variant is the one this file needs: `maskCustomerInput` matches the
+ * customer's own bytes against this text, so controls are deleted rather than
+ * spaced and joiners go too.
  */
 function flattenForOperator(text: string): string {
-  // Marks first, then whitespace: the byte-order mark is both, and collapsing
-  // first would leave it as a space this never strips. What remains of the
-  // whitespace class - the line and paragraph separators among it - then
-  // collapses to a single space rather than welding two words together.
-  // Controls are DELETED here rather than spaced, and EVERY format mark goes,
-  // joiners included - both unlike the SDK's `flattenUntrusted`, which is for a
-  // sentence a customer reads. `maskCustomerInput` compares this text against
-  // what the customer sent, so an upstream echoing "ja\x01ne" or "ja<ZWJ>ne"
-  // has to collapse back to "jane" for the mask to find it.
-  return withoutAnyFormatMarks(sanitizeForTerminal(text)).replace(/\s+/g, ' ').trim();
+  return flattenForComparison(text);
 }
 
 /**
@@ -382,10 +377,9 @@ function flattenForOperator(text: string): string {
  */
 function printedPrefix(flattened: string): string {
   // Code units, not characters: this budget is about how much of a line an
-  // operator's terminal gets, it is pinned that way by tests, and the guard
-  // below is what keeps the cut off the middle of a character. The customer-
-  // facing cap in `refusal.ts` counts characters instead, because there the
-  // budget is a sentence rather than a line.
+  // operator's terminal gets. The customer-facing cap in `refusal.ts` counts
+  // characters instead, because there the budget is a sentence rather than a
+  // line. The guard below is what keeps either cut off the middle of one.
   return flattened.length <= X402_ERROR_EXCERPT_CHARS
     ? flattened
     : withoutDanglingSurrogate(flattened.slice(0, X402_ERROR_EXCERPT_CHARS));

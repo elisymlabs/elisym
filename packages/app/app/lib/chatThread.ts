@@ -71,14 +71,19 @@ export interface ChatThreadEntry {
   /** Absent = completed. */
   status?: 'pending' | 'failed';
   /**
-   * The provider refused this job: it understood the request and declined it.
+   * What the agent said when it refused this job, if it did.
    *
-   * Distinct from every other failure because it is DETERMINISTIC - the same
-   * request refuses again - and, on a flat-priced skill, already charged. The
-   * thread reads this to withhold the Retry affordance, which would otherwise
-   * invite the customer to pay a second time for the same answer.
+   * A refusal is distinct from every other failure because it is DETERMINISTIC
+   * - the same request refuses again - and, on a flat-priced skill, already
+   * charged. The thread reads this to show the reason in place of the fixed
+   * "no result" line and to withhold the Retry affordance, which would
+   * otherwise invite the customer to pay a second time for the same answer.
+   *
+   * Stored rather than kept in React state because the reason is the whole
+   * point: a customer who reloads the page must still be able to read what to
+   * change.
    */
-  refused?: boolean;
+  refusal?: string;
   /**
    * Solana signature of the payment, when one was sent. A paid entry stays
    * `pending` indefinitely (never aged, never trimmed): money was sent, the
@@ -191,7 +196,7 @@ export interface ChatThreadStore {
   failEntry(
     agentPubkey: string,
     jobEventId: string,
-    options?: { refused?: boolean },
+    options?: { refusal?: string },
   ): Promise<boolean>;
   mergeHydratedEntry(agentPubkey: string, entry: HydratedChatEntry): Promise<MergeHydratedResult>;
   readThread(agentPubkey: string): Promise<ChatThreadEntry[]>;
@@ -564,23 +569,30 @@ export function createChatThreadStore(
   function failEntry(
     agentPubkey: string,
     jobEventId: string,
-    options?: { refused?: boolean },
+    options?: { refusal?: string },
   ): Promise<boolean> {
     return mutateThread(
       chatThreadKey(agentPubkey),
       (entries) => {
         const index = entries.findIndex((entry) => entry.jobEventId === jobEventId);
         const stored = index === -1 ? undefined : entries[index];
-        if (stored === undefined || stored.status !== 'pending') {
-          // Missing, already failed, or completed - a completed entry must
-          // never be demoted back to failed.
+        if (stored === undefined || stored.status === undefined) {
+          // Missing, or completed - a completed entry must never be demoted
+          // back to failed.
           return { entries, changed: false, result: false };
         }
+        const refusal = options?.refusal;
+        if (stored.status === 'failed' && (refusal === undefined || stored.refusal === refusal)) {
+          return { entries, changed: false, result: false };
+        }
+        // An entry aged out to `failed` before its refusal arrived still needs
+        // the reason: without it the thread offers Retry, which buys the same
+        // refusal again.
         const next = [...entries];
         next[index] = {
           ...stored,
           status: 'failed',
-          ...(options?.refused === true ? { refused: true } : {}),
+          ...(refusal === undefined ? {} : { refusal }),
         };
         return { entries: next, changed: true, result: true };
       },

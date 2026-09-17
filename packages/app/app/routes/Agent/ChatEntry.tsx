@@ -199,7 +199,7 @@ export function ChatEntry({
           </div>
         }
       >
-        No result was delivered for this message.
+        {entry.refusal ?? 'No result was delivered for this message.'}
       </ChatBubble>
     );
   }

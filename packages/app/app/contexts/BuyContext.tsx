@@ -1131,7 +1131,9 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // charged: the entry must not offer Retry, which would buy the
               // same answer again.
               const kind = classifyJobError(errMsg);
-              void failEntry(agentPubkey, jobEventId, { refused: kind === 'provider-refused' });
+              void failEntry(agentPubkey, jobEventId, {
+                ...(kind === 'provider-refused' ? { refusal: errMsg } : {}),
+              });
               setSession((prev) =>
                 sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
               );

@@ -22,7 +22,7 @@ const OUTAGE_NOTE =
   'Your payment is held. Once the agent is back online, the job will be retried automatically and the result delivered.';
 
 const REFUSED_NOTE =
-  'The agent understood the request and declined it, so this job is closed and will not be retried. On a flat-priced job the payment has already been collected.';
+  'The agent says it declined this job, so it is closed and will not be retried. A flat-priced job is charged before it runs, so if you paid, check the job in your wallet history rather than sending it again.';
 
 const STILL_SOUGHT_NOTE =
   'If your payment did go through, it is not lost: the agent keeps re-checking the chain and delivers the result if it finds it, so do not send it again. If it never finds it, the job is closed within 24 hours.';
