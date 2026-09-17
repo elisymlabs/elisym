@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ElisymIdentity, NATIVE_SOL } from '@elisym/sdk';
 import type { BlossomBlobTransport } from '@elisym/sdk';
-import { SCRIPT_EXIT_REFUSED, ScriptRefusalError } from '@elisym/sdk/llm-health';
+import { ScriptExecutionError } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
+import { SCRIPT_EXIT_REFUSED, SCRIPT_REFUSAL_MARKER, ScriptRefusalError } from '@elisym/sdk/skills';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { ADDRESS_HISTORY_PROBE_ADDRESS, CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
@@ -1143,27 +1144,29 @@ describe('AgentRuntime', () => {
       expect(errorCall[1].message).toBe('Internal processing error');
     });
 
-    it('forwards a script refusal verbatim, unlike a script failure', async () => {
-      const refusingSkill: Skill = {
-        name: 'refuse-skill',
-        description: 'Refuses',
-        capabilities: ['text-gen'],
-        priceSubunits: 0,
-        asset: NATIVE_SOL,
-        execute: vi
-          .fn()
-          .mockRejectedValue(
-            new ScriptRefusalError(
-              SCRIPT_EXIT_REFUSED,
-              'a size in tokens is refused rather than converted, so write it as "size 300 USD".',
-              'builder.ts:41 parse failed',
-              400,
-            ),
-          ),
-      };
-      const registry = makeFakeRegistry(refusingSkill);
-      const { transport, triggerJob } = makeFakeTransport();
+    /** A skill that fails the way `err` says, with a health pair to gate on. */
+    const scriptSkillThatThrows = (err: unknown): Skill => ({
+      name: 'builder-skill',
+      description: 'Builds or refuses',
+      capabilities: ['text-gen'],
+      priceSubunits: 0,
+      asset: NATIVE_SOL,
+      mode: 'dynamic-script',
+      llmOverride: { provider: 'anthropic', model: 'claude-haiku-4-5' },
+      execute: vi.fn().mockRejectedValue(err),
+    });
 
+    const monitorStub = () =>
+      ({
+        assertReady: vi.fn().mockResolvedValue(undefined),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      }) as any;
+
+    const runOneJob = async (skill: Skill, monitor: any, jobId: string) => {
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
       const runtime = new AgentRuntime(
         transport,
         registry,
@@ -1171,22 +1174,61 @@ describe('AgentRuntime', () => {
         freeConfig,
         ledger,
         { onLog: vi.fn() },
+        monitor,
       );
-
       const runPromise = runtime.run();
       await tick();
-      triggerJob(makeJob('refused-job'));
+      triggerJob(makeJob(jobId));
       await tick(150);
       runtime.stop();
       await runPromise.catch(() => {});
-
       const feedbackCalls = (transport as any).sendFeedback.mock.calls;
-      const errorCall = feedbackCalls.find((c: any) => c[1]?.type === 'error');
+      return feedbackCalls.find((c: any) => c[1]?.type === 'error');
+    };
+
+    it("forwards a script refusal as the provider's words, gate untouched", async () => {
+      const monitor = monitorStub();
+      const errorCall = await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptRefusalError(
+            SCRIPT_EXIT_REFUSED,
+            `${SCRIPT_REFUSAL_MARKER} a size in tokens is refused rather than converted, so write it as "size 300 USD".`,
+            'builder.ts:41 parse failed',
+          ),
+        ),
+        monitor,
+        'refused-job',
+      );
+
       expect(errorCall[1].message).toBe(
-        'a size in tokens is refused rather than converted, so write it as "size 300 USD".',
+        'The provider refused: a size in tokens is refused rather than converted, so write it as "size 300 USD".',
       );
       // The operator's half of the story never crosses.
       expect(errorCall[1].message).not.toContain('builder.ts');
+      // A refusal is an answer, not a fault: the capability stays online.
+      expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
+    });
+
+    it('still flips the health gate on an ordinary script failure', async () => {
+      // The contrast that makes the test above mean something: same skill, same
+      // declared pair, a failure instead of a refusal.
+      const monitor = monitorStub();
+      const errorCall = await runOneJob(
+        scriptSkillThatThrows(new ScriptExecutionError(1, 'curl: (43) bad argument')),
+        monitor,
+        'failed-job',
+      );
+
+      // Flipping the gate also changes what the customer is told: the agent is
+      // now refusing jobs against that pair, so it says so.
+      expect(errorCall[1].message).toBe('Agent temporarily unavailable');
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'invalid',
+        expect.stringContaining('curl'),
+        expect.anything(),
+      );
     });
 
     it('passes non-API errors through', async () => {

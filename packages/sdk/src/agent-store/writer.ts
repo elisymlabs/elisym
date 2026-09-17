@@ -320,6 +320,12 @@ const EXAMPLE_SKILL_TEMPLATE = `# elisym skill template
 # #     to healthy as soon as the key works again
 # # \`max_tokens\` is rejected for script modes (the script controls
 # # its own token limits).
+# #
+# # Refusing: a script that understood the request and will not do it
+# # prints "ELISYM-REFUSAL: <reason>" on stdout and exits 43. That
+# # sentence is the one thing a script says straight to the customer -
+# # every other failure gives them a generic message, and stderr never
+# # leaves the operator's log. It does not touch the health gate.
 # # provider: anthropic
 # # model: claude-haiku-4-5-20251001
 # # max_tokens: 4096

@@ -422,18 +422,22 @@ echo "$body" | jq -r '.choices[0].message.content'
 
 On any other non-zero exit the customer receives a fixed generic message, because raw subprocess output is not safe to forward. That is right for a crash and wrong for a refusal: a capability that validates its input, checks a policy or parses an instruction has to be able to say **what to change**, or the customer pays, reads "script failed", and sends the same request again.
 
-Exit code 43 (`SCRIPT_EXIT_REFUSED`) is that channel:
-
-- **stdout** is the sentence the customer reads. The SDK flattens it to one paragraph, drops control characters and caps it at 400 characters (`SCRIPT_REFUSAL_MAX_CHARS`).
-- **stderr** keeps its usual guarantee: operator-only, in the log, never sent anywhere.
-- refusing with an empty stdout still refuses, with a fixed "gave no reason" message, so it cannot be mistaken for a result.
-- the health gate is untouched, unlike 42 - refusing is the skill working.
-
-It applies to `dynamic-script`, `static-script` and `onchain`, which runs through the same runner.
+Exit code 43 (`SCRIPT_EXIT_REFUSED`) is that channel, and it takes TWO things: the code, and stdout starting with the marker `ELISYM-REFUSAL:`.
 
 ```sh
 if [ "$unit" != "USD" ]; then
-  echo "this venue sizes positions in USD, so write it as \"size 300 USD\"."
+  echo "ELISYM-REFUSAL: this venue sizes positions in USD, so write it as \"size 300 USD\"."
   exit 43  # SCRIPT_EXIT_REFUSED - the line above reaches the buyer
 fi
 ```
+
+- **the marker is required.** 43 on its own is also `CURLE_BAD_FUNCTION_ARGUMENT`, which a `set -eu` script inherits from a failed `curl` without meaning anything by it. Such a script is broken, not refusing: without the marker it stays on the failure path, where the buyer is told nothing about their input and the health gate still flips.
+- **stdout after the marker** is the sentence the customer reads. The SDK flattens it to one paragraph, drops control characters and Unicode format marks, and caps it at 400 characters (`SCRIPT_REFUSAL_MAX_CHARS`).
+- **stderr** keeps its usual guarantee: operator-only, in the log, never sent anywhere.
+- marking a refusal and then saying nothing still refuses, with a fixed "gave no reason" message, so it cannot be mistaken for a result.
+- the health gate is untouched, unlike every other non-zero exit - refusing is the skill working.
+- the customer sees it prefixed with `The provider refused:`, which is the runtime's label and cannot be forged from inside a script.
+
+It applies to `dynamic-script`, `static-script` and `onchain`, which runs through the same runner.
+
+**Who pays for a refusal.** On the ordinary paid path the job is charged before the skill runs, so a refusal costs the buyer the full price and returns no result - price a refusing capability accordingly, and say so in its `description`. On the delegated path the pull happens after execution, so a refusal costs nothing.

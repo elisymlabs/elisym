@@ -40,6 +40,15 @@ export { OnchainCallSkill } from './onchainCallSkill';
 export type { OnchainCallSkillParams } from './onchainCallSkill';
 export { X402ProxySkill } from './x402ProxySkill';
 export type { X402ProxySkillParams } from './x402ProxySkill';
+export {
+  isRefusal,
+  refusalMessage,
+  SCRIPT_EXIT_REFUSED,
+  SCRIPT_REFUSAL_MARKER,
+  SCRIPT_REFUSAL_MAX_CHARS,
+  SCRIPT_REFUSAL_UNSTATED,
+  ScriptRefusalError,
+} from './refusal';
 export { resolveInsidePath, resolveInsidePathReal } from './path-safety';
 export {
   DEFAULT_MAX_TOOL_ROUNDS,

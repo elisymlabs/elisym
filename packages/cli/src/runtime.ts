@@ -52,11 +52,11 @@ import {
   LlmHealthError,
   ScriptBillingExhaustedError,
   ScriptExecutionError,
-  ScriptRefusalError,
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
+import { ScriptRefusalError } from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -246,6 +246,32 @@ function scriptMessageLooksLikeBillingOrInvalid(message: string): boolean {
 const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
 
 /**
+ * Label on the one customer-facing message a PROVIDER writes.
+ *
+ * Every other string on the error feedback channel is the agent's own verdict -
+ * a payment rejection, an availability notice - so a forwarded refusal without
+ * a label is a sentence a provider could use to imitate one. The prefix is
+ * added here rather than in the SDK because it is the runtime, not the skill,
+ * that owns what the channel means.
+ */
+const PROVIDER_REFUSED_PREFIX = 'The provider refused: ';
+
+/**
+ * Sentinel for "recovery finished this job itself": it marked the entry failed
+ * and told the customer why, so the caller must not log it again as an
+ * unhandled recovery error.
+ */
+class RecoveryJobClosed extends Error {
+  constructor() {
+    super('recovery closed the job');
+    this.name = 'RecoveryJobClosed';
+  }
+}
+
+/** An operator-log excerpt of remote-derived text: one line, bounded. */
+const OPERATOR_EXCERPT_CHARS = 500;
+
+/**
  * Re-thrown by the post-execute catch when the underlying skill failure
  * was a billing / invalid signal that just flipped the health pair to
  * unhealthy. Lets `processJob`'s sanitizer surface a stable
@@ -385,6 +411,34 @@ const CUSTOMER_SAFE_MESSAGE_PREFIXES = ['Input too long', 'No skill matched', 'P
  * the old leaky denylist (forward-unless-contains-"API") into an allowlist so
  * raw subprocess output or provider error bodies can never leak.
  */
+/**
+ * What the operator reads when a job fails.
+ *
+ * A refusal keeps its two halves apart: the sentence the customer got, and the
+ * script's stderr as a bounded single-line excerpt. Collapsing them (as an
+ * error `detail` would) prints the same sentence twice, the second copy
+ * unflattened and up to a megabyte long, and a multi-line copy forges extra
+ * lines in the log.
+ */
+function describeForOperator(error: unknown): string {
+  if (error instanceof ScriptRefusalError) {
+    const aside = error.stderr.replace(/\s+/g, ' ').trim();
+    if (aside === '') {
+      return `refused: ${error.message}`;
+    }
+    const clipped =
+      aside.length > OPERATOR_EXCERPT_CHARS ? `${aside.slice(0, OPERATOR_EXCERPT_CHARS)}…` : aside;
+    return `refused: ${error.message} (stderr: ${clipped})`;
+  }
+  if (error instanceof ScriptExecutionError) {
+    return `${error.message}: ${error.detail}`;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return 'Unknown error';
+}
+
 function customerSafeMessage(error: unknown): string {
   if (
     error instanceof AgentUnavailableError ||
@@ -394,10 +448,12 @@ function customerSafeMessage(error: unknown): string {
     return error.message;
   }
   if (error instanceof ScriptRefusalError) {
-    // The one place a script's own words reach the customer. The provider opted
-    // in by exiting with SCRIPT_EXIT_REFUSED, and the SDK has already flattened
-    // and capped what it wrote to stdout; stderr still stays on `detail`.
-    return error.message;
+    // The one place a script's own words reach the customer. The prefix is the
+    // runtime's, and it is what keeps the channel impossible to imitate: every other
+    // message on this feedback channel is the agent's own verdict (a payment
+    // rejection, an availability notice), and without a label a provider could
+    // write one. The SDK has already flattened and capped the sentence itself.
+    return `${PROVIDER_REFUSED_PREFIX}${error.message}`;
   }
   if (error instanceof ScriptExecutionError) {
     // Generic summary only - `error.detail` (raw stderr/stdout) stays operator-side.
@@ -833,8 +889,8 @@ export class AgentRuntime {
     if (err instanceof ScriptRefusalError) {
       // A refusal is an answer, not a fault: the script ran, understood the
       // request and declined it. Gating the skill on it would take a capability
-      // offline for doing exactly what it is meant to do.
-      log(`${tag} Skill "${skill.name}" refused the request; health state unchanged.`);
+      // offline for doing exactly what it is meant to do. (The operator's log
+      // line lives in `processJob`, which runs with or without a monitor.)
       return false;
     }
 
@@ -1284,10 +1340,7 @@ export class AgentRuntime {
       // Operator log keeps the full detail (including raw script stderr from a
       // ScriptExecutionError); the customer only ever receives an allowlisted,
       // generic message via `customerSafeMessage`.
-      const operatorMessage =
-        e instanceof ScriptExecutionError || e instanceof ScriptRefusalError
-          ? `${e.message}: ${e.detail}`
-          : (e.message ?? 'Unknown error');
+      const operatorMessage = describeForOperator(e);
       this.callbacks.onJobError?.(job.jobId, operatorMessage);
 
       // W8: only forward known-safe messages to the customer; everything else is
@@ -3188,7 +3241,11 @@ export class AgentRuntime {
         try {
           await this.recoverSingleJob(entry, log);
         } catch (e: any) {
-          log(`[${entry.job_id.slice(0, 8)}] Recovery: failed: ${e.message}`);
+          // A job recovery closed on purpose has already been reported to both
+          // the operator and the customer.
+          if (!(e instanceof RecoveryJobClosed)) {
+            log(`[${entry.job_id.slice(0, 8)}] Recovery: failed: ${e.message}`);
+          }
         } finally {
           this.inFlight.delete(entry.job_id);
           this.pending--;
@@ -3507,7 +3564,26 @@ export class AgentRuntime {
         // already holds this exchange; replaying it would ask the LLM the same
         // question with its own undelivered answer in the prompt, and the
         // `(jobId, role)`-deduped append skips the already-present lines.
-        const output =
+        const runOrTellTheCustomer = async (
+          run: () => Promise<SkillOutput>,
+        ): Promise<SkillOutput> => {
+          try {
+            return await run();
+          } catch (error) {
+            if (!(error instanceof ScriptRefusalError)) {
+              throw error;
+            }
+            // A refusal is deterministic: the input that was refused is the
+            // input recovery replays, so retrying only spends the retry budget
+            // and ends in the generic "permanently failed after maximum
+            // retries" - the exact message this channel exists to replace.
+            log(`[${entry.job_id.slice(0, 8)}] Recovery: ${describeForOperator(error)}`);
+            await this.failRecoveredJob(entry, fakeJob, customerSafeMessage(error));
+            throw new RecoveryJobClosed();
+          }
+        };
+
+        const output = await runOrTellTheCustomer(async () =>
           recoveryJobSession === null
             ? await runRecoveryExecution()
             : await this.runSessionExchange({
@@ -3521,7 +3597,8 @@ export class AgentRuntime {
                 log,
                 execute: runRecoveryExecution,
                 excludeOwnTurns: true,
-              });
+              }),
+        );
 
         // Symmetric with the primary path: seed any spilled payload (file or large
         // text) BEFORE markExecuted, and deliver `deliveredContent` (empty when
