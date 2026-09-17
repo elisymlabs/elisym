@@ -121,13 +121,25 @@ function withoutControlCharacters(text: string): string {
  * one plain paragraph and nothing else. Control characters (escape sequences,
  * carriage returns, anything that could redraw a terminal or forge a line in a
  * log) are dropped, runs of whitespace collapse, and the result is capped.
+ *
+ * The cap counts CHARACTERS, not UTF-16 code units: cutting by code unit splits
+ * a surrogate pair whenever a refusal happens to carry an emoji near the limit,
+ * and the half that survives is not valid UTF-8 once the message is serialized
+ * into the result event.
  */
 export function refusalMessage(stdout: string, maxChars: number): string {
   const flattened = withoutControlCharacters(stdout).replace(/\s+/g, ' ').trim();
   if (flattened === '') {
     return SCRIPT_REFUSAL_UNSTATED;
   }
-  return flattened.length > maxChars ? `${flattened.slice(0, maxChars - 1).trimEnd()}…` : flattened;
+  const characters = [...flattened];
+  if (characters.length > maxChars) {
+    return `${characters
+      .slice(0, maxChars - 1)
+      .join('')
+      .trimEnd()}…`;
+  }
+  return flattened;
 }
 
 /**

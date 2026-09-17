@@ -142,6 +142,19 @@ describe('refusalMessage', () => {
     expect(capped.endsWith('…')).toBe(true);
   });
 
+  it('cuts between characters, not through one', () => {
+    // The emoji straddles the limit. Cutting by UTF-16 code unit keeps its
+    // leading half, and a lone surrogate is not valid UTF-8 once the message is
+    // serialized into the result event.
+    const emoji = String.fromCodePoint(0x1f600);
+    const capped = refusalMessage(
+      `${'x'.repeat(SCRIPT_REFUSAL_MAX_CHARS - 2)}${emoji} tail`,
+      SCRIPT_REFUSAL_MAX_CHARS,
+    );
+    expect(Buffer.from(capped, 'utf8').toString('utf8')).toBe(capped);
+    expect([...capped].length).toBeLessThanOrEqual(SCRIPT_REFUSAL_MAX_CHARS);
+  });
+
   it('falls back when there is nothing to say', () => {
     expect(refusalMessage('   \n\t ', SCRIPT_REFUSAL_MAX_CHARS)).toBe(SCRIPT_REFUSAL_UNSTATED);
   });
