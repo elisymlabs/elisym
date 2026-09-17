@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -15,6 +16,25 @@ import type {
   SkillMode,
   SkillOutput,
 } from './types';
+
+/**
+ * The process-wide scratch directory for refusal files, created on first use.
+ *
+ * Retried on the next job when it fails: a tmpdir that was full at startup may
+ * not be later, and a skill that can never refuse is a worse outcome than one
+ * `mkdtemp` attempt per job until it works.
+ */
+let sharedRefusalDir: Promise<string | null> | undefined;
+
+function refusalDirectory(): Promise<string | null> {
+  sharedRefusalDir ??= mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
+  return sharedRefusalDir.then((dir) => {
+    if (dir === null) {
+      sharedRefusalDir = undefined;
+    }
+    return dir;
+  });
+}
 
 export interface StaticScriptSkillParams {
   name: string;
@@ -82,20 +102,21 @@ export class StaticScriptSkill implements Skill {
   }
 
   async execute(_input: SkillInput, ctx: SkillContext): Promise<SkillOutput> {
-    // A directory per job for the one out-of-band channel this mode has: the
-    // refusal reason. Per job rather than per skill because a per-skill
-    // directory has no owner to remove it - nothing disposes a skill - and an
-    // agent restarted daily would leave one behind every time.
+    // One directory for the whole process, a file per job. This mode is the
+    // cron-shaped one - it may touch no filesystem at all - so paying a
+    // `mkdtemp` and a recursive `rm` on every tick to hand the script a path it
+    // usually never writes is the wrong trade; and a directory per SKILL would
+    // leak one per restart, since nothing disposes a skill.
     //
-    // A skill in this mode may touch no filesystem at all, so a read-only or
-    // full tmpdir must not be what stops it running: without the directory the
-    // job simply has no refusal channel, and the next job tries again.
-    const outDir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
+    // A read-only or full tmpdir must not be what stops a static skill running:
+    // the job simply has no refusal channel, and the next one tries again.
+    const dir = await refusalDirectory();
+    const refusalFile = dir === null ? undefined : join(dir, `refusal-${randomUUID()}`);
     try {
-      return await this.run(ctx, outDir === null ? undefined : join(outDir, 'refusal'));
+      return await this.run(ctx, refusalFile);
     } finally {
-      if (outDir !== null) {
-        await rm(outDir, { recursive: true, force: true }).catch(() => {});
+      if (refusalFile !== undefined) {
+        await rm(refusalFile, { force: true }).catch(() => {});
       }
     }
   }

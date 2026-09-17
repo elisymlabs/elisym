@@ -202,11 +202,16 @@ export function ChatEntry({
         {entry.refusal === undefined ? (
           'No result was delivered for this message.'
         ) : (
-          // Provider-authored text, wrapped like every other untrusted bubble
-          // in this file so it cannot push the page sideways - but NOT clamped:
-          // it is bounded at 400 characters already, and the tail is the half
-          // that says what to change.
-          <p className="m-0 break-words whitespace-pre-wrap">{entry.refusal}</p>
+          // Attributed, because the sentence is the AGENT's and the bubble is
+          // the app's: the runtime's label was stripped before storage, and
+          // without this the agent's words read as the app speaking. Wrapped
+          // like every other untrusted bubble so it cannot push the page
+          // sideways, and not clamped - it is bounded at 400 characters
+          // already, and its tail is the half that says what to change.
+          <>
+            <span className="text-text-2">The agent refused: </span>
+            <span className="break-words whitespace-pre-wrap">{entry.refusal}</span>
+          </>
         )}
       </ChatBubble>
     );

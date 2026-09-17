@@ -636,6 +636,9 @@ export function createChatThreadStore(
             merged.resultAttachments = hydrated.resultAttachments;
           }
           delete merged.status;
+          // Same invariant as `completeEntry`: an answered job carries no
+          // refusal, whichever path answered it.
+          delete merged.refusal;
           fired = true;
         }
         const changed = fired || filled;

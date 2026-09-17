@@ -73,6 +73,11 @@ export function withoutAnyFormatMarks(text: string): string {
  * something to hand a log file, a terminal or a JSON encoder: it is not valid
  * UTF-8, and what survives the encoding is a replacement character at best.
  */
+export function withoutLeadingDanglingSurrogate(text: string): string {
+  const first = text.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? text.slice(1) : text;
+}
+
 export function withoutDanglingSurrogate(text: string): string {
   const last = text.charCodeAt(text.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
@@ -129,17 +134,52 @@ export function clipToCharacters(text: string, maxChars: number, alreadyCut = fa
  * reaches the operator's log. Tab and newline survive as whitespace, so two
  * words on separate lines do not weld together before the collapse.
  */
-export function flattenForComparison(text: string): string {
-  return withoutAnyFormatMarks(text.replace(CONTROLS_EXCEPT_TAB_AND_NEWLINE, ''))
-    .replace(/\s+/g, ' ')
-    .trim();
+export function deleteControlCharacters(text: string): string {
+  return text.replace(CONTROLS_EXCEPT_TAB_AND_NEWLINE, '');
 }
 
-/** Whether anything but whitespace remains at or after `from`. */
+export function flattenForComparison(text: string): string {
+  return withoutAnyFormatMarks(deleteControlCharacters(text)).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Whether anything that SURVIVES flattening remains at or after `from`.
+ *
+ * Not `\S`: control characters and zero-width marks match that and are then
+ * dropped, so a refusal padded with NULs or bidi marks would be reported as
+ * truncated when nothing readable was lost.
+ */
+// eslint-disable-next-line no-control-regex
+const SURVIVES_FLATTENING = /[^\s\u0000-\u001f\u007f-\u009f\p{Cf}]/gu;
+
 function hasContentAfter(text: string, from: number): boolean {
-  const scan = /\S/g;
-  scan.lastIndex = from;
-  return scan.test(text);
+  SURVIVES_FLATTENING.lastIndex = from;
+  const found = SURVIVES_FLATTENING.test(text);
+  SURVIVES_FLATTENING.lastIndex = 0;
+  return found;
+}
+
+/**
+ * The LAST `maxChars` characters, flattened - the excerpt for text whose point
+ * is at the end.
+ *
+ * A script's diagnostic lands after whatever progress meter its curl printed,
+ * so a head excerpt records the meter. The leading ellipsis says something came
+ * before it, and the leading-surrogate guard covers the cut this makes at the
+ * START of the text, which nothing else in this module does.
+ */
+export function excerptUntrustedTail(text: string, maxChars: number): string {
+  const window = maxChars * 8;
+  const tail = withoutLeadingDanglingSurrogate(text.slice(Math.max(0, text.length - window)));
+  const flattened = flattenUntrusted(tail);
+  const characters = [...flattened];
+  const outran = text.length > window;
+  const overflows = characters.length > maxChars;
+  if (!outran && !overflows) {
+    return flattened;
+  }
+  const kept = characters.slice(Math.max(0, characters.length - (maxChars - 1)));
+  return `…${kept.join('').trimStart()}`;
 }
 
 /**

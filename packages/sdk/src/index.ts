@@ -71,7 +71,9 @@ export type { DelegatedPaymentRequest } from './services/marketplace';
 // upstream's body. The rest of `untrusted-text` stays module-private rather
 // than becoming a semver commitment on a published package.
 export {
+  deleteControlCharacters,
   excerptUntrusted,
+  excerptUntrustedTail,
   flattenForComparison,
   withoutDanglingSurrogate,
 } from './skills/untrusted-text';

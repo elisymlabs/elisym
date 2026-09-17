@@ -71,6 +71,12 @@ export const REFUSAL_CONTRACT_HINT =
   `exit ${SCRIPT_EXIT_REFUSED} without writing ${SCRIPT_REFUSAL_FILE_ENV}, so this was handled as a ` +
   'failure rather than a refusal - the customer was told nothing about their request:';
 
+/** Told instead when the runtime never gave the script a file to write. */
+export const REFUSAL_CHANNEL_MISSING_HINT =
+  `exit ${SCRIPT_EXIT_REFUSED}, but this agent could not create a scratch file, so ` +
+  `${SCRIPT_REFUSAL_FILE_ENV} was never set and the script had nowhere to put its reason ` +
+  '(check the temp directory):';
+
 /**
  * What the customer is allowed to read of a refusal.
  *
@@ -138,14 +144,19 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
 export function throwIfRefused(
   result: { code: number | null; stdout: string; stderr: string },
   reason: string | undefined,
+  channelOffered = true,
 ): void {
   if (reason !== undefined && result.code !== null) {
     throw new ScriptRefusalError(result.code, reason, result.stderr);
   }
   if (result.code === SCRIPT_EXIT_REFUSED) {
+    // Which hint depends on whose fault it was: a script that never wrote the
+    // file, or a runtime that never named one. Blaming the script for the
+    // second sends an operator hunting a typo in code that is correct.
+    const hint = channelOffered ? REFUSAL_CONTRACT_HINT : REFUSAL_CHANNEL_MISSING_HINT;
     throw new ScriptExecutionError(
       result.code,
-      `${REFUSAL_CONTRACT_HINT} ${result.stderr.trim() || result.stdout.trim() || '(no output)'}`,
+      `${hint} ${result.stderr.trim() || result.stdout.trim() || '(no output)'}`,
       undefined,
       result.stderr,
     );

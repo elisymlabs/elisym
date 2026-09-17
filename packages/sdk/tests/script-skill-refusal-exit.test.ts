@@ -249,6 +249,28 @@ describe('refusalMessage', () => {
   });
 });
 
+describe('excerpting for the operator', () => {
+  it('keeps the END of a long stderr, where the diagnostic lands', async () => {
+    const { excerptUntrustedTail } = await import('../src/skills/untrusted-text');
+    const meter = '#'.repeat(5000);
+    const excerpt = excerptUntrustedTail(`${meter} insufficient credit balance`, 200);
+    expect(excerpt.endsWith('insufficient credit balance')).toBe(true);
+    expect(excerpt.startsWith('…')).toBe(true);
+    expect([...excerpt].length).toBeLessThanOrEqual(200);
+  });
+
+  it('leaves a short text alone, with no ellipsis to imply a cut', async () => {
+    const { excerptUntrustedTail } = await import('../src/skills/untrusted-text');
+    expect(excerptUntrustedTail('out of credits', 200)).toBe('out of credits');
+  });
+
+  it('does not call padding a truncation', async () => {
+    const { excerptUntrusted } = await import('../src/skills/untrusted-text');
+    const nul = String.fromCharCode(0).repeat(4000);
+    expect(excerptUntrusted(`complete reason.${nul}`, 400)).toBe('complete reason.');
+  });
+});
+
 describe('recognising a refusal', () => {
   it('identifies the error by name and shape, since instanceof cannot cross SDK bundles', () => {
     // Each SDK entry point is its own bundle, so the class the script runners

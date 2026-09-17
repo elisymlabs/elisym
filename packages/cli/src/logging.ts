@@ -30,6 +30,8 @@ export interface CliLogger {
   bannerLog(line: string): void;
 }
 
+import { deleteControlCharacters } from '@elisym/sdk';
+
 /**
  * Strip terminal control characters before writing remote-derived content to the
  * operator's terminal. Nostr tag values and provider error strings are attacker-
@@ -37,8 +39,10 @@ export interface CliLogger {
  * could spoof output, hide text, or overwrite earlier lines. Keeps tab and newline.
  */
 export function sanitizeForTerminal(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+  // One definition of the class, in `@elisym/sdk`: the SDK flattens the same
+  // characters out of a refusal and out of an upstream's error body, and a
+  // second copy here is one the next tightening would miss.
+  return deleteControlCharacters(value);
 }
 
 function resolveLevel(options: CreateLoggerOptions): string {

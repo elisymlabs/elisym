@@ -158,15 +158,20 @@ export function useChatReconcile(agentPubkey: string): void {
               // button that buys the job twice.
             },
             onError: (message: string) => {
-              // Without this the refusal that arrived while the tab was closed
-              // is dropped: a PAID entry then spins on "waiting for the
-              // result" forever (ageing skips entries with a txHash), and an
-              // unpaid one ages to `failed` with no reason, so the thread
-              // offers Retry and the customer buys the same refusal again.
+              // ONLY a refusal closes the entry here. It is the one verdict
+              // that is terminal and deterministic, and without it a refusal
+              // that arrived while the tab was closed would be lost: the entry
+              // keeps spinning (ageing skips anything with a txHash) or ages
+              // out with no reason and a Retry button that buys it again.
+              //
+              // Every other error is left alone on purpose: an outage or a
+              // transient failure must not demote a PAID pending entry, whose
+              // job the provider's recovery loop may still deliver.
+              if (classifyJobError(message) !== 'provider-refused') {
+                return;
+              }
               void failEntry(agentPubkey, entry.jobEventId, {
-                ...(classifyJobError(message) === 'provider-refused'
-                  ? { refusal: storedRefusal(message) }
-                  : {}),
+                refusal: storedRefusal(message),
               });
             },
           },

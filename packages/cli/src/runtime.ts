@@ -24,6 +24,7 @@ import {
   isDefinitelyUnpaid,
   LIMITS,
   excerptUntrusted,
+  excerptUntrustedTail,
   isLlmHealthError,
   isScriptBillingExhaustedError,
   isScriptExecutionError,
@@ -251,7 +252,7 @@ const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
 const OPERATOR_EXCERPT_CHARS = 500;
 
 /** One bounded, single-line excerpt of text a script or a provider controls. */
-function operatorExcerpt(text: string, maxChars = OPERATOR_EXCERPT_CHARS): string {
+function operatorExcerpt(text: string, maxChars: number): string {
   return excerptUntrusted(text, maxChars);
 }
 
@@ -264,8 +265,7 @@ function operatorExcerpt(text: string, maxChars = OPERATOR_EXCERPT_CHARS): strin
  * meter - the one half of the output that says nothing.
  */
 function operatorExcerptTail(text: string, maxChars: number): string {
-  const tail = text.slice(Math.max(0, text.length - maxChars * 8));
-  return excerptUntrusted(tail, maxChars);
+  return excerptUntrustedTail(text, maxChars);
 }
 
 /**
@@ -463,7 +463,7 @@ function describeForOperator(error: unknown): string {
     // Its `message` embeds stdout when stderr is empty; quote the halves the
     // same way the health branch does, so the two never disagree about what the
     // operator was shown. The CUSTOMER still gets `AGENT_UNAVAILABLE_MESSAGE`.
-    return `script signalled billing exhausted: ${operatorExcerpt(error.stderr || error.stdout)}`;
+    return `script signalled billing exhausted: ${operatorExcerptTail(error.stderr || error.stdout, OPERATOR_EXCERPT_CHARS)}`;
   }
   if (isScriptRefusalError(error)) {
     return error.stderr === ''
@@ -474,15 +474,19 @@ function describeForOperator(error: unknown): string {
     // Bounded and flattened, like the refusal above: `detail` is raw stderr,
     // capped only by `MAX_SCRIPT_OUTPUT` (a megabyte), and a newline in it
     // forges a second line on the operator's terminal and in the log.
-    return `${error.message}: ${operatorExcerpt(error.detail)}`;
+    return `${error.message}: ${operatorExcerpt(error.detail, OPERATOR_EXCERPT_CHARS)}`;
   }
   // Not every throw is an Error. The replaced expression (`e.message ?? …`)
   // read `message` off whatever was thrown, which threw its own TypeError on a
   // rejected `null` and forwarded a non-string `message` verbatim.
+  if (typeof error === 'string') {
+    // A thrown string carries its only diagnostic in itself.
+    return operatorExcerpt(error, OPERATOR_EXCERPT_CHARS);
+  }
   if (typeof error === 'object' && error !== null && 'message' in error) {
     const message = (error as { message?: unknown }).message;
     if (typeof message === 'string' && message !== '') {
-      return operatorExcerpt(message);
+      return operatorExcerpt(message, OPERATOR_EXCERPT_CHARS);
     }
   }
   return 'Unknown error';
@@ -3573,6 +3577,7 @@ export class AgentRuntime {
           skill,
         );
         const runRecoveryExecution = async (history?: ChatTurn[]): Promise<SkillOutput> => {
+          let budgetExceeded = false;
           let budgetTimer: ReturnType<typeof setTimeout> | undefined;
           try {
             const execPromise = skill.execute(
@@ -3594,6 +3599,7 @@ export class AgentRuntime {
                 new Promise<never>((_resolve, reject) => {
                   budgetTimer = setTimeout(() => {
                     recoveryAbort.abort();
+                    budgetExceeded = true;
                     reject(new ExecutionBudgetExceededError(recoveryBudgetMs));
                   }, recoveryBudgetMs);
                 }),
@@ -3606,9 +3612,15 @@ export class AgentRuntime {
             // Otherwise a key that expires while jobs are mid-recovery is never
             // detected - the preflight gate keeps admitting NEW jobs and customers
             // keep paying for a skill that will fail, and this loop's assertReady
-            // gate keeps passing so retries burn for nothing. A budget abort matches
-            // neither billing nor invalid signals, so this is a no-op for it.
-            this.markHealthFromExecuteError(skill, err, log, entry.job_id);
+            // gate keeps passing so retries burn for nothing.
+            //
+            // A budget abort is skipped explicitly, as on the live path: for a
+            // SCRIPT skill the classifier has no markers to match and gates the
+            // pair anyway, so one slow recovery job would take the operator's
+            // key offline for every new customer.
+            if (!budgetExceeded) {
+              this.markHealthFromExecuteError(skill, err, log, entry.job_id);
+            }
             throw err;
           } finally {
             if (budgetTimer) {
