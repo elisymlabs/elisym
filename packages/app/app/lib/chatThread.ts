@@ -30,6 +30,14 @@ export const CHAT_THREAD_KEY_PREFIX = 'chat-thread:';
 /** Per-agent entry cap; oldest-by-`ts` trimmed on write, paid unresolved exempt. */
 export const MAX_THREAD_ENTRIES = 500;
 
+/**
+ * How many paid-but-unresolved entries may hold their place against the cap.
+ *
+ * Generous, because these are the entries a customer may still need to act on -
+ * and finite, because `failed` never clears itself.
+ */
+export const MAX_PROTECTED_UNRESOLVED = 100;
+
 /** Outcome of an on-chain call a job produced. See `ChatThreadEntry.callStatus`. */
 export type CallStatus = 'sent' | 'landed' | 'failed';
 
@@ -245,15 +253,31 @@ function sortByTs(entries: ChatThreadEntry[]): ChatThreadEntry[] {
   return [...entries].sort((left, right) => left.ts - right.ts);
 }
 
-/** Drop oldest-by-`ts` entries over the cap; paid, unresolved entries are exempt. */
+/**
+ * Drop oldest-by-`ts` entries over the cap; the newest paid, unresolved entries
+ * are exempt.
+ *
+ * Bounded, because `failed` is terminal - nothing but a late result ever clears
+ * it - so an unlimited exemption would let a heavy user of a flaky agent grow
+ * one IndexedDB record forever, and every write re-serializes the whole blob.
+ * The exemption is worth having for the jobs someone might still act on, which
+ * are the recent ones.
+ */
 function trimToCap(entries: ChatThreadEntry[]): ChatThreadEntry[] {
   if (entries.length <= MAX_THREAD_ENTRIES) {
     return entries;
   }
+  const protectedIds = new Set(
+    entries
+      .filter(isUnresolvedPaid)
+      .sort((left, right) => right.ts - left.ts)
+      .slice(0, MAX_PROTECTED_UNRESOLVED)
+      .map((entry) => entry.jobEventId),
+  );
   let excess = entries.length - MAX_THREAD_ENTRIES;
   const kept: ChatThreadEntry[] = [];
   for (const entry of entries) {
-    if (excess > 0 && !isUnresolvedPaid(entry)) {
+    if (excess > 0 && !protectedIds.has(entry.jobEventId)) {
       excess -= 1;
       continue;
     }

@@ -6,7 +6,7 @@ import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health
 import type { Asset } from '../payment/assets';
 import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
-import { runScript, scopedToolEnv } from './scriptSkill';
+import { runScript, scopedToolEnv, withoutInheritedJobChannels } from './scriptSkill';
 import type {
   Skill,
   SkillContext,
@@ -131,7 +131,10 @@ export class DynamicScriptSkill implements Skill {
     // echoed.
     const refusalFile = join(outDir, 'refusal');
     const env: NodeJS.ProcessEnv = {
-      ...(this.scriptEnv ?? scopedToolEnv()),
+      // Every channel below is set explicitly; the strip is what keeps an
+      // INHERITED one (the agent's own shell, a script skill spawning another)
+      // from surviving into a var this job does not set.
+      ...withoutInheritedJobChannels(this.scriptEnv ?? scopedToolEnv()),
       ELISYM_OUTPUT_FILE: outputFile,
       ELISYM_OUTPUT_DIR: outputDir,
       ELISYM_CHARGE_FILE: chargeFile,

@@ -6,7 +6,7 @@
  * entry, which browsers load. A bare `import 'node:fs/promises'` in that bundle
  * is an unhandled scheme in webpack and a throwing stub in Vite.
  */
-import { open, stat } from 'node:fs/promises';
+import { lstat, open } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { SCRIPT_REFUSAL_FILE_MAX_BYTES } from './refusal';
 
@@ -30,9 +30,16 @@ export type RefusalFileRead =
  * redirects a gigabyte here cannot pull it into the agent, and the decoder is
  * given the bytes without `end()` so a cap landing inside a multi-byte
  * character drops the fragment instead of turning it into a replacement one.
+ *
+ * `lstat`, so a SYMLINK is not a regular file. This is the one channel allowed
+ * to carry a subprocess's own bytes to a remote customer, and the whole design
+ * rests on the script having written them on purpose. A script that instead
+ * points the path at the agent's config (`ln -sf ~/.elisym/agent.json
+ * "$ELISYM_REFUSAL_FILE"`) would otherwise have its first 8 KB published as the
+ * reason - so the channel returns only bytes written where the runtime put it.
  */
 export async function readRefusalFile(path: string): Promise<RefusalFileRead> {
-  const info = await stat(path).catch(() => null);
+  const info = await lstat(path).catch(() => null);
   if (info === null) {
     return { state: 'absent' };
   }

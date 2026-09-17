@@ -913,7 +913,16 @@ export class MarketplaceService {
     await this.pool.publishAll(event);
   }
 
-  /** Submit error feedback to notify customer of a failure. */
+  /**
+   * Submit error feedback to notify customer of a failure.
+   *
+   * The content is CLEARTEXT even when the job request was NIP-44 encrypted,
+   * unlike `submitJobResult`: a feedback event is addressed to nobody in
+   * particular and is read by clients that never held the job's key. Every
+   * caller must therefore treat this as a public statement - which is why the
+   * runtime's customer-safe messages are fixed strings, and why a skill's
+   * refusal reason is documented as public and told not to quote the input.
+   */
   async submitErrorFeedback(
     identity: ElisymIdentity,
     requestEvent: Event,

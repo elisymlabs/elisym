@@ -257,6 +257,11 @@ function scriptMessageLooksLikeBillingOrInvalid(lowered: string): boolean {
  * balance` except the provider whose key it is. The LLM path next door already
  * demands an HTTP 401/402 before cascading; this is the script path's version
  * of the same bar.
+ *
+ * Which is why the bare status words are BOTH absent: `unauthorized` and
+ * `unauthenticated` are what any proxy, gRPC service or unrelated third-party
+ * call says when it did not like a request. They still gate this pair through
+ * the wider list above.
  */
 const SCRIPT_KEY_LEVEL_MARKERS = [
   'credit balance',
@@ -265,12 +270,44 @@ const SCRIPT_KEY_LEVEL_MARKERS = [
   'invalid api key',
   'invalid_api_key',
   'authentication_error',
-  'unauthenticated',
 ];
 
-function scriptMessageNamesTheKey(lowered: string): boolean {
-  return SCRIPT_KEY_LEVEL_MARKERS.some((marker) => lowered.includes(marker));
+/** The first key-level marker in the text, or -1 - see `scriptSignalReason`. */
+function keyLevelMarkerIndex(lowered: string): number {
+  let earliest = -1;
+  for (const marker of SCRIPT_KEY_LEVEL_MARKERS) {
+    const at = lowered.indexOf(marker);
+    if (at !== -1 && (earliest === -1 || at < earliest)) {
+      earliest = at;
+    }
+  }
+  return earliest;
 }
+
+/**
+ * The operator's `lastReason`, read back on every job the gate refuses.
+ *
+ * From the SIGNAL when there is one, and from the END otherwise. The scan reads
+ * the whole of a stderr bounded only by `MAX_SCRIPT_OUTPUT`, so a proxy that
+ * printed `invalid x-api-key` and then four kilobytes of retry chatter would
+ * otherwise have the chatter quoted as the reason its operator's whole provider
+ * is offline. The text a decision was made on and the text given as its reason
+ * should be the same text.
+ */
+function scriptSignalReason(diagnostic: string, signalAt: number): string {
+  if (signalAt === -1) {
+    return excerptUntrustedTail(diagnostic, 200);
+  }
+  // A little BEFORE the marker, because the marker is rarely the sentence: the
+  // phrase that matched `x-api-key` reads "invalid x-api-key", and starting
+  // exactly at the match throws away the word that says what is wrong with it.
+  const from = Math.max(0, signalAt - SIGNAL_LEAD_CHARS);
+  const quoted = excerptUntrusted(diagnostic.slice(from), 200);
+  return from === 0 ? quoted : `…${quoted}`;
+}
+
+/** How much of the line before a matched marker the reason keeps. */
+const SIGNAL_LEAD_CHARS = 80;
 
 /**
  * Customer-facing message for both the preflight gate (cached
@@ -1104,7 +1141,8 @@ export class AgentRuntime {
           : 'invalid';
       // The gate and the cascade are separate questions, and the second one is
       // much more expensive to get wrong - see `SCRIPT_KEY_LEVEL_MARKERS`.
-      const cascade = scriptMessageNamesTheKey(lower);
+      const signalAt = keyLevelMarkerIndex(lower);
+      const cascade = signalAt !== -1;
       const cascadeNote = cascade ? this.cascadeSuffix(provider, model) : ' (no cascade)';
       const signalNote = looksBillingOrInvalid
         ? `${reason} signal in stderr`
@@ -1112,14 +1150,11 @@ export class AgentRuntime {
       log(
         `${tag} Script failure (${signalNote}). Marking ${provider}/${model} unhealthy${cascadeNote}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      // Flattened, bounded, and taken from the END: this is stored as the
-      // pair's `lastReason` and read back out on every gated job, and the
-      // diagnostic lands after whatever progress meter the script printed.
       this.healthMonitor.markUnhealthyFromJob(
         provider,
         model,
         reason,
-        excerptUntrustedTail(diagnostic, 200),
+        scriptSignalReason(diagnostic, signalAt),
         {
           cascade,
         },

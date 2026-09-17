@@ -107,7 +107,13 @@ export function useChatReconcile(agentPubkey: string): void {
             // nothing. Every other error is left alone on purpose: an outage or
             // a transient failure must not demote a PAID pending entry whose
             // job the provider's recovery loop may still deliver.
-            const message = errors?.get(entry.jobEventId);
+            //
+            // And never while the RESULT query failed: a result outranks the
+            // error that preceded it, and a relay that answered one query but
+            // not the other proved nothing about the result. Closing the entry
+            // on the half that did answer would withdraw the Retry button from
+            // a paid job whose answer is sitting on a relay, unread.
+            const message = queryFailed ? undefined : errors?.get(entry.jobEventId);
             if (message !== undefined && classifyJobError(message) === 'provider-refused') {
               await failEntry(agentPubkey, entry.jobEventId, {
                 refusal: refusalFromJobError(message),

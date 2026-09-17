@@ -355,7 +355,7 @@ export function ChatComposer({
             File inputs require a paid capability - this one is free.
           </div>
         )}
-        {error && <BuyErrorNote error={error} paid={paid} />}
+        {error && <BuyErrorNote error={error} paid={paid} refusalInThread />}
       </div>
     </div>
   );

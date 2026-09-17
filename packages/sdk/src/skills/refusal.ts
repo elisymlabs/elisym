@@ -25,7 +25,7 @@
 import { ScriptExecutionError } from '../llm-health/types';
 import { PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
 import type { RefusalFileRead } from './refusal-file';
-import { excerptUntrusted, flattenUntrusted, hasVisibleText } from './untrusted-text';
+import { excerptUntrusted, excerptUntrustedTail, hasVisibleText } from './untrusted-text';
 
 /**
  * The exit code that says "what I wrote in the refusal file is why".
@@ -92,7 +92,7 @@ export const REFUSAL_CHANNEL_MISSING_HINT =
  * of the text it is about to hand a customer.
  */
 export function statesAReason(reason: string): boolean {
-  return hasVisibleText(flattenUntrusted(reason));
+  return hasVisibleText(reason);
 }
 
 /**
@@ -215,9 +215,15 @@ export function throwIfRefused(
       hint = REFUSAL_UNREADABLE_HINT;
       contractSlip = false;
     }
+    // The script's output is bounded HERE, not left for the log to clip: an
+    // operator log excerpts a long detail from its END, and the hint - the one
+    // line saying the contract was broken, or that this host cannot make a
+    // scratch file - sits at the front. A chatty script would otherwise erase
+    // it with its own progress meter.
+    const output = result.stderr.trim() || result.stdout.trim();
     throw new ScriptExecutionError(
       result.code,
-      `${hint} ${result.stderr.trim() || result.stdout.trim() || '(no output)'}`,
+      `${hint} ${output === '' ? '(no output)' : excerptUntrustedTail(output, SCRIPT_REFUSAL_STDERR_CHARS)}`,
       undefined,
       result.stderr,
       contractSlip,

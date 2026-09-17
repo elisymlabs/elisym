@@ -46,6 +46,7 @@ export {
   isScriptRefusalError,
   REFUSAL_CHANNEL_MISSING_HINT,
   REFUSAL_CONTRACT_HINT,
+  REFUSAL_UNREADABLE_HINT,
   refusalFromJobError,
   refusalMessage,
   SCRIPT_EXIT_REFUSED,

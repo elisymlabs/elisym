@@ -204,6 +204,40 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error.message).toBe(SCRIPT_REFUSAL_UNSTATED);
   });
 
+  it('refuses to read a refusal file that is a symlink to something else', async () => {
+    // The channel's whole premise is that a script WROTE those bytes on
+    // purpose. A link pointing at the agent's own config would otherwise have
+    // its first 8 KB published to a customer as the reason.
+    fixture = setupScript(
+      `#!/bin/sh\nsecret="$(dirname "$${SCRIPT_REFUSAL_FILE_ENV}")/agent-key"\n` +
+        `printf '%s' 'nsec-the-operator-would-rather-keep' > "$secret"\n` +
+        `rm -f "$${SCRIPT_REFUSAL_FILE_ENV}"\n` +
+        `ln -s "$secret" "$${SCRIPT_REFUSAL_FILE_ENV}"\n` +
+        `exit ${SCRIPT_EXIT_REFUSED}\n`,
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).not.toBeInstanceOf(ScriptRefusalError);
+    expect(error.message).not.toContain('nsec');
+    expect(error.detail).not.toContain('nsec');
+  });
+
+  it('keeps the contract hint in front of a chatty script`s own output', async () => {
+    // The operator log excerpts a long detail from its END. The hint is the one
+    // line saying the refusal reached nobody, and a progress meter must not be
+    // able to push it out.
+    fixture = setupScript(
+      `#!/bin/sh\ni=0\nwhile [ $i -lt 400 ]; do echo "downloading chunk $i" >&2; i=$((i+1)); done\nexit ${SCRIPT_EXIT_REFUSED}\n`,
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptExecutionError);
+    expect(error.detail.startsWith(REFUSAL_CONTRACT_HINT)).toBe(true);
+    expect(error.detail).toContain('downloading chunk');
+  });
+
   it('tells the operator when a 43 arrives with no reason written', async () => {
     // Otherwise a mistyped variable name is indistinguishable from a crash, and
     // the operator has no way to learn their refusals reach nobody.
@@ -315,6 +349,21 @@ describe('excerpting for the operator', () => {
     // the whole text once rather than return an ellipsis.
     const meter = String.fromCharCode(13).repeat(4000);
     expect(excerptUntrustedTail(`out of credits${meter}`, 200)).toBe('out of credits');
+  });
+
+  it('keeps a whole short line when clipping the tail of one', async () => {
+    const { clipTailToCharacters } = await import('../src/skills/untrusted-text');
+    // The budget is larger than the text, so the ellipsis is the caller's cut
+    // and every character survives it: an offset computed from the wrong end
+    // would be negative, and `slice(-7)` would silently eat the front.
+    expect(clipTailToCharacters('a whole short line', 100, true)).toBe('…a whole short line');
+  });
+
+  it('counts control characters as invisible, not as text', async () => {
+    const { hasVisibleText } = await import('../src/skills/untrusted-text');
+    expect(hasVisibleText(`${String.fromCharCode(7)}${String.fromCharCode(0)}`)).toBe(false);
+    expect(hasVisibleText(String.fromCodePoint(0x200d))).toBe(false);
+    expect(hasVisibleText(' hello ')).toBe(true);
   });
 
   it('gives back nothing when asked for nothing, from either end', async () => {

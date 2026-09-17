@@ -145,12 +145,45 @@ const SECRET_ENV_VARS: readonly string[] = [
   'SOLANA_RPC_URL',
 ];
 
+/**
+ * Vars that name a channel for ONE job, which only the skill running that job
+ * may set.
+ *
+ * Each is a path the runtime creates and reads back. An inherited copy - the
+ * agent started from a shell that exported one, or a script skill spawning
+ * another - would have a child write its result, its charge or its refusal into
+ * a file belonging to somebody else's job, while the runtime tells the operator
+ * the channel was never offered. Stripped here; set explicitly by the skill
+ * that owns them.
+ */
+const JOB_CHANNEL_ENV_VARS: readonly string[] = [
+  'ELISYM_OUTPUT_FILE',
+  'ELISYM_OUTPUT_DIR',
+  'ELISYM_CHARGE_FILE',
+  'ELISYM_REFUSAL_FILE',
+  'ELISYM_INPUT_FILE',
+  'ELISYM_HISTORY_FILE',
+  'ELISYM_SESSION_ID',
+];
+
 export function scopedToolEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  return withoutInheritedJobChannels(stripSecrets({ ...process.env }));
+}
+
+function stripSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   for (const key of SECRET_ENV_VARS) {
     delete env[key];
   }
   return env;
+}
+
+/** The same strip, for an env a CALLER assembled out of `process.env`. */
+export function withoutInheritedJobChannels(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const scoped: NodeJS.ProcessEnv = { ...env };
+  for (const key of JOB_CHANNEL_ENV_VARS) {
+    delete scoped[key];
+  }
+  return scoped;
 }
 
 export interface ScriptSkillParams {

@@ -14,6 +14,15 @@ import {
  */
 export const MAX_DISPLAYED_ERROR_CHARS = 400;
 
+/**
+ * How a refusal is introduced wherever one is shown.
+ *
+ * One constant, because two surfaces say it: the failed bubble in the thread
+ * and this module's own line. The sentence after it is the AGENT's and the
+ * label is the app's, so it has to be unmistakably ours.
+ */
+export const AGENT_REFUSED_LABEL = 'The agent refused: ';
+
 /** Said when the error carries nothing a reader could act on. */
 export const UNSTATED_FAILURE = 'The job could not be completed.';
 
@@ -46,7 +55,7 @@ export function customerErrorText(error: string): string {
     return 'Agent unavailable. Try again later.';
   }
   if (kind === 'provider-refused') {
-    return `The agent refused: ${refusalFromJobError(error)}`;
+    return `${AGENT_REFUSED_LABEL}${refusalFromJobError(error)}`;
   }
   return boundedErrorText(error);
 }

@@ -1,6 +1,7 @@
 import { resolveKnownAsset, type CapabilityCard, type OnchainDescriptor } from '@elisym/sdk';
 import type { ReactNode } from 'react';
 import type { ChatThreadEntry } from '~/lib/chatThread';
+import { AGENT_REFUSED_LABEL } from '~/lib/errorText';
 import { hasBlossom } from '~/lib/fileResult';
 import { compactZeros, formatDecimal } from '~/lib/formatPrice';
 import { isCallEnvelope } from '~/lib/onchainCall';
@@ -209,7 +210,7 @@ export function ChatEntry({
           // sideways, and not clamped - it is bounded at 400 characters
           // already, and its tail is the half that says what to change.
           <>
-            <span className="text-text-2">The agent refused: </span>
+            <span className="text-text-2">{AGENT_REFUSED_LABEL}</span>
             <span className="break-words whitespace-pre-wrap">{entry.refusal}</span>
           </>
         )}

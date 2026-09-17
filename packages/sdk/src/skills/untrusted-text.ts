@@ -135,8 +135,10 @@ function clip(text: string, maxChars: number, alreadyCut: boolean, keepEnd: bool
   }
   // `alreadyCut` says the CALLER truncated its input: a result that fits is
   // still an excerpt, and the ellipsis is the only thing that says so.
+  // `Math.max`, because a text SHORTER than the budget makes that offset
+  // negative and `slice(-7)` would silently eat the front of a line that fit.
   const kept = keepEnd
-    ? characters.slice(characters.length - (maxChars - 1))
+    ? characters.slice(Math.max(0, characters.length - (maxChars - 1)))
     : characters.slice(0, maxChars - 1);
   const joined = trimDanglingSurrogates(kept.join(''));
   return keepEnd ? `…${joined.trimStart()}` : `${joined.trimEnd()}…`;
@@ -256,9 +258,16 @@ function excerptWindow(
   return { flattened, cut };
 }
 
-/** Whether the text holds anything a reader would SEE. */
+/**
+ * Whether the text holds anything a reader would SEE.
+ *
+ * Controls AND format marks, not just marks: a "sentence" of NULs, of bells, or
+ * of zero-width joiners is a non-empty string nobody can read, and a caller
+ * asking this question is deciding whether to print it or say nothing instead.
+ * Takes raw text, so it cannot be got wrong by asking before flattening.
+ */
 export function hasVisibleText(text: string): boolean {
-  return withoutAnyFormatMarks(text).trim() !== '';
+  return withoutAnyFormatMarks(withoutControlCharacters(text)).trim() !== '';
 }
 
 /**

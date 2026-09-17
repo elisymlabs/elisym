@@ -8,7 +8,7 @@ import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health
 import type { Asset } from '../payment/assets';
 import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
-import { runScript, scopedToolEnv } from './scriptSkill';
+import { runScript, scopedToolEnv, withoutInheritedJobChannels } from './scriptSkill';
 import type {
   Skill,
   SkillContext,
@@ -189,9 +189,13 @@ export class StaticScriptSkill implements Skill {
       signal: ctx.signal,
       timeoutMs: this.scriptTimeoutMs,
       // No caller-provided env -> scoped copy of process.env (secret vars
-      // stripped), never the raw parent env with the operator's key ring.
+      // stripped), never the raw parent env with the operator's key ring. A
+      // caller-provided one is a spread of `process.env` too, so an INHERITED
+      // channel is stripped either way: with no scratch file of our own, the
+      // script must find the variable unset rather than pointing at a stranger's
+      // - the runtime is about to tell its operator the channel was not offered.
       env: {
-        ...(this.scriptEnv ?? scopedToolEnv()),
+        ...withoutInheritedJobChannels(this.scriptEnv ?? scopedToolEnv()),
         ...(refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile }),
       },
     });
