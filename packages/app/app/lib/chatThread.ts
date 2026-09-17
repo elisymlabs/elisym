@@ -552,6 +552,10 @@ export function createChatThreadStore(
         }
         const completed: ChatThreadEntry = { ...stored };
         delete completed.status;
+        // A late crash-recovery result answers the job, so the refusal that
+        // preceded it is no longer what happened - leaving it behind would let
+        // any future reader show a refusal for a job that succeeded.
+        delete completed.refusal;
         if (fields.result !== undefined) {
           completed.result = fields.result;
         }

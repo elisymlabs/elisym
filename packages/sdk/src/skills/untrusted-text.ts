@@ -135,6 +135,13 @@ export function flattenForComparison(text: string): string {
     .trim();
 }
 
+/** Whether anything but whitespace remains at or after `from`. */
+function hasContentAfter(text: string, from: number): boolean {
+  const scan = /\S/g;
+  scan.lastIndex = from;
+  return scan.test(text);
+}
+
 /**
  * One bounded, single-line excerpt of text somebody else wrote.
  *
@@ -155,5 +162,9 @@ export function excerptUntrusted(text: string, maxChars: number): string {
   const outranWindow = text.length > window;
   const flattened =
     [...windowed].length < maxChars && outranWindow ? flattenUntrusted(text) : windowed;
-  return clipToCharacters(flattened, maxChars, outranWindow && flattened === windowed);
+  // Only text that was actually dropped counts as a cut: a refusal padded with
+  // trailing newlines is complete, and claiming otherwise both lies to the
+  // reader and eats its last character to make room for the ellipsis.
+  const droppedContent = outranWindow && flattened === windowed && hasContentAfter(text, window);
+  return clipToCharacters(flattened, maxChars, droppedContent);
 }

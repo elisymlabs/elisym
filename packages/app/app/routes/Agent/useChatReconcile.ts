@@ -150,6 +150,13 @@ export function useChatReconcile(agentPubkey: string): void {
                 resultAttachments,
               );
             },
+            onTimeout: () => {
+              // The SDK routes a wait-window expiry to `onError` when no
+              // `onTimeout` is given, and a timeout is not a failure: a paid
+              // entry must stay `pending` (money was sent, the provider's
+              // recovery loop may still deliver) rather than gain a Retry
+              // button that buys the job twice.
+            },
             onError: (message: string) => {
               // Without this the refusal that arrived while the tab was closed
               // is dropped: a PAID entry then spins on "waiting for the

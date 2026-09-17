@@ -256,6 +256,19 @@ function operatorExcerpt(text: string, maxChars = OPERATOR_EXCERPT_CHARS): strin
 }
 
 /**
+ * The same, from the END of the text.
+ *
+ * What gets stored as a gated pair's reason and replayed on every refused job
+ * afterwards. An API's "insufficient credit balance" lands after whatever
+ * progress meter the script's curl printed, so a head excerpt records the
+ * meter - the one half of the output that says nothing.
+ */
+function operatorExcerptTail(text: string, maxChars: number): string {
+  const tail = text.slice(Math.max(0, text.length - maxChars * 8));
+  return excerptUntrusted(tail, maxChars);
+}
+
+/**
  * Re-thrown by the post-execute catch when the underlying skill failure
  * was a billing / invalid signal that just flipped the health pair to
  * unhealthy. Lets `processJob`'s sanitizer surface a stable
@@ -418,12 +431,6 @@ function customerSafeMessage(error: unknown): string {
     // the sentence itself.
     return `${PROVIDER_REFUSED_PREFIX}${error.message}`;
   }
-  if (isScriptBillingExhaustedError(error)) {
-    // Its `message` embeds stdout when stderr is empty; quote the halves the
-    // same way the health branch does, so the two never disagree about what the
-    // operator was shown.
-    return `script signalled billing exhausted: ${operatorExcerpt(error.stderr || error.stdout)}`;
-  }
   if (isScriptExecutionError(error)) {
     // The fixed mask, not the error's own summary. `script failed (exit 1)`
     // would be new customer-facing wording that `classifyJobError` does not
@@ -452,6 +459,12 @@ function customerSafeMessage(error: unknown): string {
  * the second copy unflattened and up to a megabyte long.
  */
 function describeForOperator(error: unknown): string {
+  if (isScriptBillingExhaustedError(error)) {
+    // Its `message` embeds stdout when stderr is empty; quote the halves the
+    // same way the health branch does, so the two never disagree about what the
+    // operator was shown. The CUSTOMER still gets `AGENT_UNAVAILABLE_MESSAGE`.
+    return `script signalled billing exhausted: ${operatorExcerpt(error.stderr || error.stdout)}`;
+  }
   if (isScriptRefusalError(error)) {
     return error.stderr === ''
       ? `refused: ${error.message}`
@@ -461,7 +474,7 @@ function describeForOperator(error: unknown): string {
     // Bounded and flattened, like the refusal above: `detail` is raw stderr,
     // capped only by `MAX_SCRIPT_OUTPUT` (a megabyte), and a newline in it
     // forges a second line on the operator's terminal and in the log.
-    return `${error.message}: ${operatorExcerpt(error.detail ?? '')}`;
+    return `${error.message}: ${operatorExcerpt(error.detail)}`;
   }
   // Not every throw is an Error. The replaced expression (`e.message ?? …`)
   // read `message` off whatever was thrown, which threw its own TypeError on a
@@ -935,7 +948,7 @@ export class AgentRuntime {
         provider,
         model,
         'billing',
-        operatorExcerpt(err.stderr || err.stdout, 200),
+        operatorExcerptTail(err.stderr || err.stdout, 200),
       );
       return true;
     }

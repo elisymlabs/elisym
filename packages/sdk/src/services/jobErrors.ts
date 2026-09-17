@@ -67,7 +67,10 @@ export type JobErrorKind = 'agent-unavailable' | 'provider-refused' | 'unknown';
  * Classify a customer-facing error string surfaced via
  * `JobUpdateCallbacks.onError` into a stable kind the UI can branch on.
  *
- * Match is case-insensitive against the message text. Returns
+ * The refusal label is matched as an exact, case-SENSITIVE prefix - it is a
+ * wire contract between one runtime and its clients, not a phrase to look for.
+ * The outage markers below are matched case-insensitively anywhere in the text.
+ * Returns
  * `provider-refused` when the runtime labelled the message as a skill's own
  * refusal, `agent-unavailable` for any known billing/auth/invalid-key signal,
  * and `unknown` for everything else (timeouts, validation errors, transport).

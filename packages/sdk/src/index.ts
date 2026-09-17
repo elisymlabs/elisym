@@ -80,7 +80,7 @@ export {
   isScriptBillingExhaustedError,
   isScriptExecutionError,
 } from './llm-health/types';
-export { isScriptRefusalError } from './skills/refusal';
+export { isScriptRefusalError, SCRIPT_REFUSAL_MAX_CHARS } from './skills/refusal';
 export {
   classifyJobError,
   JobWaitTimeoutError,

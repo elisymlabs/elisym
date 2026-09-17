@@ -7,6 +7,7 @@
  * is an unhandled scheme in webpack and a throwing stub in Vite.
  */
 import { open, stat } from 'node:fs/promises';
+import { StringDecoder } from 'node:string_decoder';
 import { SCRIPT_REFUSAL_FILE_MAX_BYTES } from './refusal';
 
 /**
@@ -38,7 +39,11 @@ export async function readRefusalFile(path: string): Promise<string | undefined>
   try {
     const buffer = Buffer.alloc(Math.min(info.size, SCRIPT_REFUSAL_FILE_MAX_BYTES));
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    return buffer.subarray(0, bytesRead).toString('utf8');
+    // `StringDecoder.write` and never `end`: the cap can land in the middle of
+    // a multi-byte character, and the decoder holds that fragment back instead
+    // of turning it into a replacement character in a Persian or Chinese
+    // refusal. The same helper `runScript` uses for its own chunk boundaries.
+    return new StringDecoder('utf8').write(buffer.subarray(0, bytesRead));
   } catch {
     return undefined;
   } finally {
