@@ -52,6 +52,7 @@ import {
   LlmHealthError,
   ScriptBillingExhaustedError,
   ScriptExecutionError,
+  ScriptRefusalError,
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
@@ -390,6 +391,12 @@ function customerSafeMessage(error: unknown): string {
     error instanceof ExecutionBudgetExceededError ||
     error instanceof SeedFailedError
   ) {
+    return error.message;
+  }
+  if (error instanceof ScriptRefusalError) {
+    // The one place a script's own words reach the customer. The provider opted
+    // in by exiting with SCRIPT_EXIT_REFUSED, and the SDK has already flattened
+    // and capped what it wrote to stdout; stderr still stays on `detail`.
     return error.message;
   }
   if (error instanceof ScriptExecutionError) {
@@ -822,6 +829,14 @@ export class AgentRuntime {
       return false;
     }
     const tag = `[${jobId.slice(0, 8)}]`;
+
+    if (err instanceof ScriptRefusalError) {
+      // A refusal is an answer, not a fault: the script ran, understood the
+      // request and declined it. Gating the skill on it would take a capability
+      // offline for doing exactly what it is meant to do.
+      log(`${tag} Skill "${skill.name}" refused the request; health state unchanged.`);
+      return false;
+    }
 
     if (err instanceof ScriptBillingExhaustedError) {
       const provider = skill.llmOverride?.provider;
@@ -1270,7 +1285,7 @@ export class AgentRuntime {
       // ScriptExecutionError); the customer only ever receives an allowlisted,
       // generic message via `customerSafeMessage`.
       const operatorMessage =
-        e instanceof ScriptExecutionError
+        e instanceof ScriptExecutionError || e instanceof ScriptRefusalError
           ? `${e.message}: ${e.detail}`
           : (e.message ?? 'Unknown error');
       this.callbacks.onJobError?.(job.jobId, operatorMessage);

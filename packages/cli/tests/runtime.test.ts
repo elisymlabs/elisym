@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ElisymIdentity, NATIVE_SOL } from '@elisym/sdk';
 import type { BlossomBlobTransport } from '@elisym/sdk';
+import { SCRIPT_EXIT_REFUSED, ScriptRefusalError } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
@@ -1140,6 +1141,52 @@ describe('AgentRuntime', () => {
       const feedbackCalls = (transport as any).sendFeedback.mock.calls;
       const errorCall = feedbackCalls.find((c: any) => c[1]?.type === 'error');
       expect(errorCall[1].message).toBe('Internal processing error');
+    });
+
+    it('forwards a script refusal verbatim, unlike a script failure', async () => {
+      const refusingSkill: Skill = {
+        name: 'refuse-skill',
+        description: 'Refuses',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        execute: vi
+          .fn()
+          .mockRejectedValue(
+            new ScriptRefusalError(
+              SCRIPT_EXIT_REFUSED,
+              'a size in tokens is refused rather than converted, so write it as "size 300 USD".',
+              'builder.ts:41 parse failed',
+              400,
+            ),
+          ),
+      };
+      const registry = makeFakeRegistry(refusingSkill);
+      const { transport, triggerJob } = makeFakeTransport();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('refused-job'));
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      const errorCall = feedbackCalls.find((c: any) => c[1]?.type === 'error');
+      expect(errorCall[1].message).toBe(
+        'a size in tokens is refused rather than converted, so write it as "size 300 USD".',
+      );
+      // The operator's half of the story never crosses.
+      expect(errorCall[1].message).not.toContain('builder.ts');
     });
 
     it('passes non-API errors through', async () => {

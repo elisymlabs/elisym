@@ -1,6 +1,14 @@
 import { dirname } from 'node:path';
-import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
-import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
+import {
+  SCRIPT_EXIT_BILLING_EXHAUSTED,
+  SCRIPT_EXIT_REFUSED,
+  SCRIPT_REFUSAL_MAX_CHARS,
+} from '../llm-health/constants';
+import {
+  ScriptBillingExhaustedError,
+  ScriptExecutionError,
+  ScriptRefusalError,
+} from '../llm-health/types';
 import type { Asset } from '../payment/assets';
 import { runScript, scopedToolEnv } from './scriptSkill';
 import type {
@@ -95,6 +103,15 @@ export class StaticScriptSkill implements Skill {
     }
     if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {
       throw new ScriptBillingExhaustedError(result.code, result.stdout, result.stderr);
+    }
+    if (result.code === SCRIPT_EXIT_REFUSED) {
+      // Understood and declined. stdout carries the reason for the customer.
+      throw new ScriptRefusalError(
+        result.code,
+        result.stdout,
+        result.stderr,
+        SCRIPT_REFUSAL_MAX_CHARS,
+      );
     }
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';

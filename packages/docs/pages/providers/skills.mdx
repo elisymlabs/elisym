@@ -150,9 +150,28 @@ A script that calls an upstream LLM can declare `provider` + `model` so the agen
 | ------------- | -------------------------------------- | ------------------------------------------------------ |
 | `0`           | success                                | none                                                   |
 | `42`          | upstream LLM out of credits (HTTP 402) | flips the `(provider, model)` health gate to unhealthy |
+| `43`          | understood the request and refuses it  | none; **stdout is sent to the customer as the reason** |
 | anything else | generic skill failure                  | treated as a transient bug                             |
 
 `42` is `SCRIPT_EXIT_BILLING_EXHAUSTED`, exported from `@elisym/sdk/llm-health`. Reserve it strictly for the billing case - misusing it degrades the health gate.
+
+## Refusing so the customer knows what to change
+
+On any non-zero exit other than `43`, the customer receives a fixed generic message: raw subprocess output is not safe to forward. That is right for a crash and wrong for a refusal. A skill that validates its input, applies a policy or parses an instruction needs to say what to change, or the buyer pays, reads "script failed" and sends the same request again.
+
+Exit `43` (`SCRIPT_EXIT_REFUSED`) is that channel, and it works for `dynamic-script`, `static-script` and `onchain`:
+
+```sh
+if [ "$unit" != "USD" ]; then
+  echo "this venue sizes positions in USD, so write it as \"size 300 USD\"."
+  exit 43  # the line above reaches the buyer
+fi
+```
+
+- **stdout** is what the buyer reads, flattened to one paragraph, stripped of control characters and capped at 400 characters.
+- **stderr** stays operator-only, exactly as on every other exit code.
+- refusing with nothing on stdout gives the buyer a fixed "gave no reason" message rather than silence.
+- the health gate is untouched: refusing is the skill working, not failing.
 
 ## Imagery
 

@@ -8,12 +8,17 @@ export {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   LAZY_RECOVERY_INTERVAL_MS,
   SCRIPT_EXIT_BILLING_EXHAUSTED,
+  SCRIPT_EXIT_REFUSED,
+  SCRIPT_REFUSAL_MAX_CHARS,
   UNAVAILABLE_TOLERANCE,
 } from './constants';
 export {
   LlmHealthError,
+  refusalMessage,
+  SCRIPT_REFUSAL_UNSTATED,
   ScriptBillingExhaustedError,
   ScriptExecutionError,
+  ScriptRefusalError,
   type LlmHealthErrorReason,
   type LlmHealthSnapshotEntry,
   type LlmHealthStatus,

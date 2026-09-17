@@ -381,13 +381,34 @@ This is one mechanism, two declaration paths: `mode: 'llm'` skills get it throug
 
 The exit code from a script-mode skill controls how the runtime reacts:
 
-| Exit code                | Meaning                                       | Health monitor effect                                                                                 |
-| ------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| 0                        | success                                       | none                                                                                                  |
-| 42                       | upstream LLM provider is out of credits / 402 | runtime calls `markUnhealthyFromJob` on the declared `(provider, model)`; lazy recovery loop kicks in |
-| anything else (non-zero) | generic skill failure                         | none - treated as a transient skill bug, not a key problem                                            |
+| Exit code                | Meaning                                                                                          | Health monitor effect                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| 0                        | success                                                                                          | none                                                                                                  |
+| 42                       | upstream LLM provider is out of credits / 402                                                    | runtime calls `markUnhealthyFromJob` on the declared `(provider, model)`; lazy recovery loop kicks in |
+| 43                       | the skill understood the request and refuses it; stdout is the reason, and the customer reads it | none - a refusal is an answer, not a fault                                                            |
+| anything else (non-zero) | generic skill failure                                                                            | none - treated as a transient skill bug, not a key problem                                            |
 
-Exit code 42 (`SCRIPT_EXIT_BILLING_EXHAUSTED`) is the contract. It was chosen to avoid POSIX/sysexits.h collisions: 1-2 are generic, 64-78 are sysexits, 126-128 are shell-internal, 130+ are signals. 42 sits cleanly outside all of those. Reserve it strictly for the billing case - using it for anything else degrades the health gate's accuracy.
+### 43: refusing out loud
+
+On any other non-zero exit the customer receives a fixed generic message, because raw subprocess output is not safe to forward. That is right for a crash and wrong for a refusal: a capability that validates its input, checks a policy or parses an instruction has to be able to say **what to change**, or the customer pays, reads "script failed", and sends the same request again.
+
+Exit code 43 (`SCRIPT_EXIT_REFUSED`) is that channel:
+
+- **stdout** is the sentence the customer reads. The SDK flattens it to one paragraph, drops control characters and caps it at 400 characters (`SCRIPT_REFUSAL_MAX_CHARS`).
+- **stderr** keeps its usual guarantee: operator-only, in the log, never sent anywhere.
+- refusing with an empty stdout still refuses, with a fixed "gave no reason" message, so it cannot be mistaken for a result.
+- the health gate is untouched, unlike 42 - refusing is the skill working.
+
+It applies to `dynamic-script`, `static-script` and `onchain`, which runs through the same runner.
+
+```sh
+if [ "$unit" != "USD" ]; then
+  echo "this venue sizes positions in USD, so write it as \"size 300 USD\"."
+  exit 43  # SCRIPT_EXIT_REFUSED - the line above reaches the buyer
+fi
+```
+
+Exit code 42 (`SCRIPT_EXIT_BILLING_EXHAUSTED`) is the other contract. It was chosen to avoid POSIX/sysexits.h collisions: 1-2 are generic, 64-78 are sysexits, 126-128 are shell-internal, 130+ are signals. 42 sits cleanly outside all of those. Reserve it strictly for the billing case - using it for anything else degrades the health gate's accuracy.
 
 The constant is exported as `SCRIPT_EXIT_BILLING_EXHAUSTED` from `@elisym/sdk/llm-health` for TypeScript scripts. Shell scripts can hardcode `42` (with a comment pointing here).
 

@@ -94,6 +94,64 @@ export class ScriptExecutionError extends Error {
   }
 }
 
+/** Said when a script refuses without printing anything to say why. */
+export const SCRIPT_REFUSAL_UNSTATED = 'The capability refused this request and gave no reason.';
+
+/**
+ * Every C0 and C1 control character becomes a space.
+ *
+ * Written as a code-point test rather than a regex on purpose: a regex literal
+ * spelling this range is both a lint error (`no-control-regex`) and something
+ * the formatter rewrites into the raw bytes themselves, leaving a line of
+ * source nobody can review.
+ */
+function withoutControlCharacters(text: string): string {
+  let out = '';
+  for (const character of text) {
+    const code = character.codePointAt(0) ?? 0;
+    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? ' ' : character;
+  }
+  return out;
+}
+
+/**
+ * What the customer is allowed to read of a refusal.
+ *
+ * The provider chose to send this, so it crosses the trust boundary - but as
+ * one plain paragraph and nothing else. Control characters (escape sequences,
+ * carriage returns, anything that could redraw a terminal or forge a line in a
+ * log) are dropped, runs of whitespace collapse, and the result is capped.
+ */
+export function refusalMessage(stdout: string, maxChars: number): string {
+  const flattened = withoutControlCharacters(stdout).replace(/\s+/g, ' ').trim();
+  if (flattened === '') {
+    return SCRIPT_REFUSAL_UNSTATED;
+  }
+  return flattened.length > maxChars ? `${flattened.slice(0, maxChars - 1).trimEnd()}…` : flattened;
+}
+
+/**
+ * Thrown when a script exits with `SCRIPT_EXIT_REFUSED`: it understood the
+ * request and will not do it.
+ *
+ * Unlike `ScriptExecutionError`, `message` here is the PROVIDER's own sentence
+ * rather than a fixed summary, and it is meant to reach the customer - that is
+ * the whole point of the exit code. It is taken from stdout, which the provider
+ * writes deliberately; stderr keeps its guarantee of staying operator-side and
+ * lives on `detail` with everything else.
+ */
+export class ScriptRefusalError extends Error {
+  readonly exitCode: number;
+  readonly detail: string;
+
+  constructor(exitCode: number, stdout: string, stderr: string, maxChars: number) {
+    super(refusalMessage(stdout, maxChars));
+    this.name = 'ScriptRefusalError';
+    this.exitCode = exitCode;
+    this.detail = stderr.trim() || stdout.trim() || '(no output)';
+  }
+}
+
 /**
  * Per-skill rate-limit declaration. Snake-case in SKILL.md frontmatter,
  * camelCase here. Applies to any skill mode but the framework adds a
