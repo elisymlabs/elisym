@@ -2643,49 +2643,62 @@ describe('a deferred entry is bounded in cost', () => {
     // scans climbed it before the deadline passed - so when they stopped doing
     // that, the first post-expiry sighting would have banked at rung 1 and the
     // job would have closed ~60s later on a fresh, laggy reference.
+    //
+    // The clock is FROZEN for the assertions below. They compare an exact number
+    // of milliseconds against a separately sampled `Date.now()`, and a real clock
+    // that ticks once between the two samples makes that off by one - which is
+    // exactly how this test failed in CI (expected 300000, received 300001).
+    // Freezing keeps the assertion exact, which is what gives it teeth, without
+    // making it a coin flip.
     const intervalSecs = 60;
+    const nowSpy = vi.spyOn(Date, 'now');
+    const startedAt = 1_700_000_000_000;
+    nowSpy.mockReturnValue(startedAt);
     const deferrals = new RecoveryDeferrals(
       () => intervalSecs,
       () => 0.5, // jitter 0: the rung itself, with no spread to hide behind
     );
-    const startedAt = Date.now();
 
-    deferrals.note('closing-in', true);
-
-    expect(deferrals.sawNoPayment('closing-in')).toBe(true);
-    // Pinned as a LITERAL, not through the constant: every other assertion here
-    // reads `TERMINAL_CONFIRMATION_MIN_RUNG`, so lowering it moves both sides of
-    // those comparisons together and they keep passing with no floor at all.
-    // Five ticks is the guarantee - five minutes at the default cadence, which
-    // is the spacing this exists to buy.
-    expect(
-      RECOVERY_DEFER_BACKOFF_TICKS[TERMINAL_CONFIRMATION_MIN_RUNG - 1] as number,
-    ).toBeGreaterThanOrEqual(5);
-    // The count still advances - only the wait is floored.
-    expect(deferrals.peek('closing-in')?.attempts).toBe(1);
-    expect((deferrals.peek('closing-in')?.nextAttemptAt ?? 0) - startedAt).toBe(
-      (RECOVERY_DEFER_BACKOFF_TICKS[TERMINAL_CONFIRMATION_MIN_RUNG - 1] as number) *
-        intervalSecs *
-        1000,
-    );
-
-    // An ordinary inconclusive look is NOT floored: it cannot close anything, so
-    // making it wait would only slow down a job whose payment is still findable.
-    deferrals.note('ordinary');
-    expect((deferrals.peek('ordinary')?.nextAttemptAt ?? 0) - Date.now()).toBe(
-      (RECOVERY_DEFER_BACKOFF_TICKS[0] as number) * intervalSecs * 1000,
-    );
-
-    // And past the floor the ladder keeps climbing on its own terms.
-    for (let look = 0; look < RECOVERY_DEFER_BACKOFF_TICKS.length; look++) {
+    try {
       deferrals.note('closing-in', true);
+
+      expect(deferrals.sawNoPayment('closing-in')).toBe(true);
+      // Pinned as a LITERAL, not through the constant: every other assertion here
+      // reads `TERMINAL_CONFIRMATION_MIN_RUNG`, so lowering it moves both sides of
+      // those comparisons together and they keep passing with no floor at all.
+      // Five ticks is the guarantee - five minutes at the default cadence, which
+      // is the spacing this exists to buy.
+      expect(
+        RECOVERY_DEFER_BACKOFF_TICKS[TERMINAL_CONFIRMATION_MIN_RUNG - 1] as number,
+      ).toBeGreaterThanOrEqual(5);
+      // The count still advances - only the wait is floored.
+      expect(deferrals.peek('closing-in')?.attempts).toBe(1);
+      expect((deferrals.peek('closing-in')?.nextAttemptAt ?? 0) - startedAt).toBe(
+        (RECOVERY_DEFER_BACKOFF_TICKS[TERMINAL_CONFIRMATION_MIN_RUNG - 1] as number) *
+          intervalSecs *
+          1000,
+      );
+
+      // An ordinary inconclusive look is NOT floored: it cannot close anything, so
+      // making it wait would only slow down a job whose payment is still findable.
+      deferrals.note('ordinary');
+      expect((deferrals.peek('ordinary')?.nextAttemptAt ?? 0) - startedAt).toBe(
+        (RECOVERY_DEFER_BACKOFF_TICKS[0] as number) * intervalSecs * 1000,
+      );
+
+      // And past the floor the ladder keeps climbing on its own terms.
+      for (let look = 0; look < RECOVERY_DEFER_BACKOFF_TICKS.length; look++) {
+        deferrals.note('closing-in', true);
+      }
+      const lastRung = RECOVERY_DEFER_BACKOFF_TICKS[
+        RECOVERY_DEFER_BACKOFF_TICKS.length - 1
+      ] as number;
+      expect((deferrals.peek('closing-in')?.nextAttemptAt ?? 0) - startedAt).toBe(
+        lastRung * intervalSecs * 1000,
+      );
+    } finally {
+      nowSpy.mockRestore();
     }
-    const lastRung = RECOVERY_DEFER_BACKOFF_TICKS[
-      RECOVERY_DEFER_BACKOFF_TICKS.length - 1
-    ] as number;
-    expect((deferrals.peek('closing-in')?.nextAttemptAt ?? 0) - Date.now()).toBe(
-      lastRung * intervalSecs * 1000,
-    );
   });
 
   it('JITTERS each rung so entries deferred together do not come back together', () => {
