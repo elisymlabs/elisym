@@ -69,9 +69,11 @@ export function withoutAnyFormatMarks(text: string): string {
 }
 
 /**
- * Drop a high surrogate a cut separated from its pair. Half a character is not
- * something to hand a log file, a terminal or a JSON encoder: it is not valid
- * UTF-8, and what survives the encoding is a replacement character at best.
+ * Half a character is not something to hand a log file, a terminal or a JSON
+ * encoder: it is not valid UTF-8, and what survives the encoding is a
+ * replacement character at best. A cut leaves one at each end - a LOW surrogate
+ * orphaned at the start of what follows it, a HIGH one at the end of what
+ * precedes it - so there is a function for each.
  */
 export function withoutLeadingDanglingSurrogate(text: string): string {
   const first = text.charCodeAt(0);

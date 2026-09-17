@@ -88,9 +88,15 @@ export function useChatReconcile(agentPubkey: string): void {
               return;
             }
             const res = results?.get(entry.jobEventId);
-            // Skip missing or undecryptable results (the latter surfaces as
-            // empty content + decryptionFailed), like the live subscription.
-            if (res && !res.decryptionFailed && res.content) {
+            if (res !== undefined) {
+              // An undecryptable result (empty content + decryptionFailed, as
+              // the live subscription sees it) is still a DELIVERED one, so the
+              // entry stays pending and nothing below may close it as refused:
+              // the provider answered, and a customer told "the agent refused"
+              // for a job with an answer on the relays has no way back.
+              if (res.decryptionFailed || !res.content) {
+                continue;
+              }
               const decoded = decodeResult(res.content);
               await completeReconciled(
                 entry.jobEventId,

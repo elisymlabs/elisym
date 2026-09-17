@@ -27,16 +27,17 @@ import { createKeyedQueue, webLocks, type LocksAdapter } from './locks';
 
 export const CHAT_THREAD_KEY_PREFIX = 'chat-thread:';
 
-/** Per-agent entry cap; oldest-by-`ts` trimmed on write, paid unresolved exempt. */
+/** Per-agent entry cap; oldest-by-`ts` trimmed on write, paid jobs exempt. */
 export const MAX_THREAD_ENTRIES = 500;
 
 /**
- * How many paid-but-unresolved entries may hold their place against the cap.
+ * How many paid-and-FAILED entries hold their place against the cap.
  *
- * Generous, because these are the entries a customer may still need to act on -
- * and finite, because `failed` never clears itself.
+ * Generous, because each is a record of money that bought nothing - and finite,
+ * because `failed` never clears itself. Paid `pending` entries are not counted
+ * here: they resolve on their own, so exempting all of them is already bounded.
  */
-export const MAX_PROTECTED_UNRESOLVED = 100;
+export const MAX_PROTECTED_PAID_FAILURES = 100;
 
 /** Outcome of an on-chain call a job produced. See `ChatThreadEntry.callStatus`. */
 export type CallStatus = 'sent' | 'landed' | 'failed';
@@ -94,9 +95,9 @@ export interface ChatThreadEntry {
   refusal?: string;
   /**
    * Solana signature of the payment, when one was sent. A paid entry is never
-   * aged out of `pending` and never trimmed while it is unresolved - `pending`
-   * or `failed`, a refusal included: money was sent, the state must stay
-   * visible.
+   * aged out of `pending` and never trimmed while it is one: money was sent,
+   * the state must stay visible. A paid entry that FAILED - a refusal included -
+   * keeps its place too, but only the most recent of them (`trimToCap`).
    */
   txHash?: string;
   /**
@@ -129,7 +130,10 @@ export interface ChatThreadEntry {
  */
 export type HydratedChatEntry = Omit<
   ChatThreadEntry,
-  'status' | 'txHash' | 'callSignature' | 'callStatus' | 'sessionId'
+  // `refusal` too: this type is a COMPLETED job, and both merge paths delete
+  // the field for that reason. Leaving it in the type let a future hydration
+  // source insert a completed entry that still says the agent refused it.
+  'status' | 'txHash' | 'callSignature' | 'callStatus' | 'sessionId' | 'refusal'
 > & {
   sessionId?: string;
   /**
@@ -230,19 +234,24 @@ const idbThreadStorage: ChatThreadStorageAdapter = {
 };
 
 /**
- * Money left the wallet and nothing came back for it.
+ * Money left the wallet and nothing came back for it - in two flavours, because
+ * they are exempted from the trim on different terms.
  *
- * `pending` is a job still open; `failed` is one closed with no result, a
- * refusal included - and a refusal is terminal AND charged, so that entry is
- * the customer's only local record of a payment they got nothing for, the very
- * one `heldPaymentNote` tells them to check against their wallet history. A
- * completed paid entry (no `status` at all) may be trimmed: they got what they
- * paid for.
+ * A paid `pending` entry is never trimmed at all: the job is still open, money
+ * was sent, and the state must stay visible. A paid `failed` one is a job closed
+ * with no result - a refusal is terminal AND charged, so it is the customer's
+ * only local record of a payment that bought nothing, the very one
+ * `heldPaymentNote` sends them to check against their wallet history - but
+ * `failed` is terminal, so nothing ever clears it and only the most recent of
+ * them hold their place against the cap. A completed paid entry (no `status` at
+ * all) may be trimmed: they got what they paid for.
  */
-function isUnresolvedPaid(entry: ChatThreadEntry): boolean {
-  // `status` is cleared on completion, so "still has one" is what says the job
-  // never resolved.
-  return entry.txHash !== undefined && entry.status !== undefined;
+function isPaidPending(entry: ChatThreadEntry): boolean {
+  return entry.txHash !== undefined && entry.status === 'pending';
+}
+
+function isPaidFailed(entry: ChatThreadEntry): boolean {
+  return entry.txHash !== undefined && entry.status === 'failed';
 }
 
 function sessionUuidOf(entry: ChatThreadEntry): string | undefined {
@@ -254,30 +263,31 @@ function sortByTs(entries: ChatThreadEntry[]): ChatThreadEntry[] {
 }
 
 /**
- * Drop oldest-by-`ts` entries over the cap; the newest paid, unresolved entries
- * are exempt.
+ * Drop oldest-by-`ts` entries over the cap. Paid `pending` entries are exempt
+ * outright; the newest paid `failed` ones are exempt up to a bound.
  *
- * Bounded, because `failed` is terminal - nothing but a late result ever clears
- * it - so an unlimited exemption would let a heavy user of a flaky agent grow
- * one IndexedDB record forever, and every write re-serializes the whole blob.
- * The exemption is worth having for the jobs someone might still act on, which
- * are the recent ones.
+ * The bound is only on the terminal half. A `pending` entry resolves - a result
+ * lands, or ageing closes it - so exempting every one of them cannot grow
+ * without end. A `failed` one never clears itself, so an unlimited exemption
+ * would let a heavy user of a flaky agent grow a single IndexedDB record
+ * forever, with every write re-serializing the whole blob.
  */
 function trimToCap(entries: ChatThreadEntry[]): ChatThreadEntry[] {
   if (entries.length <= MAX_THREAD_ENTRIES) {
     return entries;
   }
-  const protectedIds = new Set(
+  const keptFailures = new Set(
     entries
-      .filter(isUnresolvedPaid)
+      .filter(isPaidFailed)
       .sort((left, right) => right.ts - left.ts)
-      .slice(0, MAX_PROTECTED_UNRESOLVED)
+      .slice(0, MAX_PROTECTED_PAID_FAILURES)
       .map((entry) => entry.jobEventId),
   );
   let excess = entries.length - MAX_THREAD_ENTRIES;
   const kept: ChatThreadEntry[] = [];
   for (const entry of entries) {
-    if (excess > 0 && !protectedIds.has(entry.jobEventId)) {
+    const exempt = isPaidPending(entry) || keptFailures.has(entry.jobEventId);
+    if (excess > 0 && !exempt) {
       excess -= 1;
       continue;
     }

@@ -1,4 +1,4 @@
-import { classifyJobError } from '@elisym/sdk';
+import { classifyJobError, type JobErrorKind } from '@elisym/sdk';
 
 /**
  * The provider's word for "no payment reached me inside the live window". It is
@@ -39,11 +39,17 @@ const STILL_SOUGHT_NOTE =
  * for a day is worse than saying nothing - it is the message that keeps someone
  * waiting instead of contacting the provider while the transaction is fresh.
  */
-export function heldPaymentNote(error: string, paid: boolean): string | undefined {
+export function heldPaymentNote(
+  error: string,
+  paid: boolean,
+  known?: JobErrorKind,
+): string | undefined {
   if (!paid) {
     return undefined;
   }
-  const kind = classifyJobError(error);
+  // `known` is the caller's already-computed classification of this same string
+  // - see `customerErrorText`, which renders beside this note.
+  const kind = known ?? classifyJobError(error);
   if (kind === 'agent-unavailable') {
     return OUTAGE_NOTE;
   }

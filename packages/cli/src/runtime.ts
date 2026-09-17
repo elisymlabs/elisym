@@ -272,16 +272,18 @@ const SCRIPT_KEY_LEVEL_MARKERS = [
   'authentication_error',
 ];
 
-/** The first key-level marker in the text, or -1 - see `scriptSignalReason`. */
-function keyLevelMarkerIndex(lowered: string): number {
-  let earliest = -1;
-  for (const marker of SCRIPT_KEY_LEVEL_MARKERS) {
-    const at = lowered.indexOf(marker);
-    if (at !== -1 && (earliest === -1 || at < earliest)) {
-      earliest = at;
-    }
-  }
-  return earliest;
+/**
+ * The first key-level marker in the text, or -1 - see `scriptSignalReason`.
+ *
+ * Matched case-insensitively against the ORIGINAL text rather than by index
+ * into a lowercased copy: `toLowerCase` is not length-preserving (one `İ`
+ * becomes two code units), so an index taken from the copy can point hundreds
+ * of characters past the signal in the text it is used to quote.
+ */
+const KEY_LEVEL_MARKER_RE = new RegExp(SCRIPT_KEY_LEVEL_MARKERS.join('|'), 'i');
+
+function keyLevelMarkerIndex(text: string): number {
+  return KEY_LEVEL_MARKER_RE.exec(text)?.index ?? -1;
 }
 
 /**
@@ -1100,6 +1102,12 @@ export class AgentRuntime {
       // curl printed, so scanning a prefix would miss the one signal worth
       // gating on. Each consumer below excerpts for itself.
       let message: string;
+      // Where the scanned text came from, for the operator's log line: only a
+      // `ScriptExecutionError` carries a real stderr. Any other throw from a
+      // non-llm skill puts its own `message` under the scan, and telling an
+      // operator to go read a stderr that never held those words sends them
+      // grepping for nothing.
+      let scanned: 'stderr' | 'the skill error';
       // What an OPERATOR reads. The scan must not touch stdout, but the
       // sentence saying WHY their key was gated still has to say something,
       // and a script that printed its diagnosis to stdout and exited non-zero
@@ -1113,12 +1121,15 @@ export class AgentRuntime {
         // silently is worse than the stdout-steering risk it guards.
         message = err.stderr ?? err.detail;
         diagnostic = message.trim() === '' ? err.detail : message;
+        scanned = 'stderr';
       } else if (err instanceof Error) {
         message = err.message;
         diagnostic = message;
+        scanned = 'the skill error';
       } else {
         message = String(err);
         diagnostic = message;
+        scanned = 'the skill error';
       }
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
@@ -1141,11 +1152,11 @@ export class AgentRuntime {
           : 'invalid';
       // The gate and the cascade are separate questions, and the second one is
       // much more expensive to get wrong - see `SCRIPT_KEY_LEVEL_MARKERS`.
-      const signalAt = keyLevelMarkerIndex(lower);
+      const signalAt = keyLevelMarkerIndex(message);
       const cascade = signalAt !== -1;
       const cascadeNote = cascade ? this.cascadeSuffix(provider, model) : ' (no cascade)';
       const signalNote = looksBillingOrInvalid
-        ? `${reason} signal in stderr`
+        ? `${reason} signal in ${scanned}`
         : `generic exit (no billing/invalid markers, classified as ${reason}, skill-local)`;
       log(
         `${tag} Script failure (${signalNote}). Marking ${provider}/${model} unhealthy${cascadeNote}; future jobs against this pair will be refused until recovery probe succeeds.`,

@@ -3,6 +3,7 @@ import {
   excerptUntrusted,
   hasVisibleText,
   refusalFromJobError,
+  type JobErrorKind,
 } from '@elisym/sdk';
 
 /**
@@ -49,8 +50,11 @@ export function boundedErrorText(error: string): string {
  * classifying it and then rendering the raw version anyway, as the toast did,
  * is the same bug as not classifying it at all.
  */
-export function customerErrorText(error: string): string {
-  const kind = classifyJobError(error);
+export function customerErrorText(error: string, known?: JobErrorKind): string {
+  // `known` for a caller that has already classified this string: three modules
+  // render one error together, and three passes over the marker list are three
+  // places that can drift about what `provider-refused` means.
+  const kind = known ?? classifyJobError(error);
   if (kind === 'agent-unavailable') {
     return 'Agent unavailable. Try again later.';
   }

@@ -134,7 +134,9 @@ export class DynamicScriptSkill implements Skill {
       // Every channel below is set explicitly; the strip is what keeps an
       // INHERITED one (the agent's own shell, a script skill spawning another)
       // from surviving into a var this job does not set.
-      ...withoutInheritedJobChannels(this.scriptEnv ?? scopedToolEnv()),
+      ...(this.scriptEnv === undefined
+        ? scopedToolEnv()
+        : withoutInheritedJobChannels(this.scriptEnv)),
       ELISYM_OUTPUT_FILE: outputFile,
       ELISYM_OUTPUT_DIR: outputDir,
       ELISYM_CHARGE_FILE: chargeFile,

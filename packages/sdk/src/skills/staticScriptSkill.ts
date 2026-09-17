@@ -1,6 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { rmSync } from 'node:fs';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
@@ -17,85 +15,6 @@ import type {
   SkillMode,
   SkillOutput,
 } from './types';
-
-/**
- * The process-wide scratch directory for refusal files, created on first use.
- *
- * Retried on the next job when it fails: a tmpdir that was full at startup may
- * not be later, and a skill that can never refuse is a worse outcome than one
- * `mkdtemp` attempt per job until it works.
- */
-let sharedRefusalDir: Promise<string | null> | undefined;
-
-/**
- * Take the directories with us on the way out.
- *
- * Nothing disposes a skill, so without this an agent restarted nightly leaves a
- * year of empty `elisym-static-out-*` behind. `rmSync`, because an exit handler
- * cannot await; ONE listener over a set, because a tmp reaper can send us round
- * `refusalDirectory` again and a listener per directory would eventually trip
- * Node's max-listeners warning. A `SIGKILL` still leaves the directory behind,
- * but it is empty by then - the job's own file goes in `execute`'s `finally`.
- */
-const refusalDirs = new Set<string>();
-let sweepInstalled = false;
-
-function removeOnExit(dir: string): void {
-  refusalDirs.add(dir);
-  if (sweepInstalled) {
-    return;
-  }
-  sweepInstalled = true;
-  process.once('exit', () => {
-    for (const dead of refusalDirs) {
-      try {
-        rmSync(dead, { recursive: true, force: true });
-      } catch {
-        /* exiting anyway */
-      }
-    }
-  });
-}
-
-async function refusalDirectory(attempt = 0): Promise<string | null> {
-  const pending = (sharedRefusalDir ??= mkdtemp(join(tmpdir(), 'elisym-static-out-'))
-    .then((dir) => {
-      removeOnExit(dir);
-      return dir;
-    })
-    .catch(() => null));
-  const dir = await pending;
-  // Only clear the promise we ourselves awaited: two jobs finding the same dead
-  // directory would otherwise each discard the other's replacement and leave it
-  // behind, one leaked directory per collision.
-  const forget = (): void => {
-    if (sharedRefusalDir === pending) {
-      sharedRefusalDir = undefined;
-    }
-  };
-  if (dir === null) {
-    // Creation failed: forget it, so the next job tries again. A tmpdir that
-    // was full at startup may not be later.
-    forget();
-    return null;
-  }
-  // And confirm it is still there. An agent runs for weeks, and a tmp reaper
-  // deleting the directory would otherwise leave every later job pointing at a
-  // path that no longer exists - the script's redirect then fails and a refusal
-  // arrives as a crash.
-  const alive = await stat(dir).then(
-    (info) => info.isDirectory(),
-    () => false,
-  );
-  if (alive) {
-    return dir;
-  }
-  forget();
-  // One retry. A tmpdir that keeps losing the directory is a broken host, and
-  // spinning here would hold the job slot forever instead of running the job
-  // without a refusal channel.
-  return attempt === 0 ? refusalDirectory(attempt + 1) : null;
-}
 
 export interface StaticScriptSkillParams {
   name: string;
@@ -163,22 +82,23 @@ export class StaticScriptSkill implements Skill {
   }
 
   async execute(_input: SkillInput, ctx: SkillContext): Promise<SkillOutput> {
-    // One directory for the whole process, a file per job. This mode is the
-    // cron-shaped one - it may touch no filesystem at all - so paying a
-    // `mkdtemp` and a recursive `rm` on every tick to hand the script a path it
-    // usually never writes is the wrong trade; and a directory per SKILL would
-    // multiply them, since nothing disposes a skill. The one directory is swept
-    // at process exit.
+    // A directory per JOB, exactly as `DynamicScriptSkill` does it. One shared
+    // directory would be cheaper on a cron-shaped skill that never writes to
+    // it, but it would also be enumerable: `ls "$(dirname "$ELISYM_REFUSAL_FILE")"`
+    // from one job's script reaches the channel of every other job running
+    // beside it, and forging a refusal there closes a different customer's paid
+    // job. `mkdtemp` gives each one a directory only its own script is told
+    // about.
     //
     // A read-only or full tmpdir must not be what stops a static skill running:
     // the job simply has no refusal channel, and the next one tries again.
-    const dir = await refusalDirectory();
-    const refusalFile = dir === null ? undefined : join(dir, `refusal-${randomUUID()}`);
+    const dir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
+    const refusalFile = dir === null ? undefined : join(dir, 'refusal');
     try {
       return await this.run(ctx, refusalFile);
     } finally {
-      if (refusalFile !== undefined) {
-        await rm(refusalFile, { force: true }).catch(() => {});
+      if (dir !== null) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
       }
     }
   }
@@ -195,7 +115,9 @@ export class StaticScriptSkill implements Skill {
       // script must find the variable unset rather than pointing at a stranger's
       // - the runtime is about to tell its operator the channel was not offered.
       env: {
-        ...withoutInheritedJobChannels(this.scriptEnv ?? scopedToolEnv()),
+        ...(this.scriptEnv === undefined
+          ? scopedToolEnv()
+          : withoutInheritedJobChannels(this.scriptEnv)),
         ...(refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile }),
       },
     });

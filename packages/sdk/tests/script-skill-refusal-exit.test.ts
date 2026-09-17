@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ScriptExecutionError } from '../src/llm-health';
 import type { SkillOnchainResolved } from '../src/onchain/types';
@@ -14,6 +15,7 @@ import {
   REFUSAL_CONTRACT_HINT,
 } from '../src/skills/refusal';
 import { StaticScriptSkill } from '../src/skills/staticScriptSkill';
+import type { SkillOutput } from '../src/skills/types';
 import {
   dynamicSkill,
   MINIMAL_CTX,
@@ -81,6 +83,38 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error).toBeInstanceOf(ScriptRefusalError);
     expect(error.exitCode).toBe(SCRIPT_EXIT_REFUSED);
     expect(error.message).toBe('nothing to do today.');
+  });
+
+  it('gives each static-script job a channel no other job can see', async () => {
+    // One directory shared by the whole process would be enumerable: `ls
+    // "$(dirname "$ELISYM_REFUSAL_FILE")"` from one job's script reaches the
+    // channel of every job running beside it, and writing there forges a
+    // refusal that closes a different customer's paid job.
+    fixture = setupScript(
+      `#!/bin/sh\nls "$(dirname "$${SCRIPT_REFUSAL_FILE_ENV}")" | wc -l\n` +
+        `dirname "$${SCRIPT_REFUSAL_FILE_ENV}"\n`,
+    );
+    const skill = new StaticScriptSkill({
+      name: 'cron',
+      description: 'cron',
+      capabilities: ['cron'],
+      priceSubunits: 1n,
+      asset: NATIVE_SOL,
+      scriptPath: fixture.scriptPath,
+      scriptArgs: [],
+    });
+    const [first, second] = await Promise.all([
+      skill.execute(MINIMAL_INPUT, MINIMAL_CTX),
+      skill.execute(MINIMAL_INPUT, MINIMAL_CTX),
+    ]);
+    const dirOf = (out: SkillOutput): string => String(out.data).split('\n')[1] ?? '';
+    // Each job sees an EMPTY directory of its own - its file exists only once
+    // the script writes it - and never the other job's.
+    expect(String(first.data).split('\n')[0]?.trim()).toBe('0');
+    expect(dirOf(first)).not.toBe(dirOf(second));
+    // And neither directory outlives the job.
+    expect(existsSync(dirOf(first))).toBe(false);
+    expect(existsSync(dirOf(second))).toBe(false);
   });
 
   it('reaches a mode: onchain capability too', async () => {
