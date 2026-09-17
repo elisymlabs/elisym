@@ -6,7 +6,7 @@ import type { BlossomBlobTransport } from '@elisym/sdk';
 import { ScriptExecutionError } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
 import {
-  REFUSAL_CHANNEL_MISSING_HINT,
+  HostScratchError,
   REFUSAL_CONTRACT_HINT,
   SCRIPT_EXIT_REFUSED,
   ScriptRefusalError,
@@ -1382,26 +1382,42 @@ describe('AgentRuntime', () => {
       );
     });
 
-    it('does not gate a key when THIS AGENT could not offer the channel', async () => {
+    it('does not gate a key when THIS AGENT could not give the job scratch space', async () => {
       // A full or read-only temp directory is a local disk problem the runtime
       // has already diagnosed. Gating would refuse every capability on the
       // operator's key for it, and the recovery probe - which tests the KEY -
       // would clear it on the next tick and gate it again on the next job.
+      //
+      // Carried by a CLASS, never by a sentence in `detail`: on an ordinary
+      // failure `detail` is the script's own stderr (and for an LLM proxy it
+      // falls back to a completion the buyer steers), so any phrase the runtime
+      // matched there would be a skill's switch for its own breaker.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(new HostScratchError('ENOSPC: no space left on device')),
+        monitor,
+        'no-scratch-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
+    });
+
+    it('gates a key for a script that merely PRINTS the host-failure wording', async () => {
       const monitor = monitorStub();
       await runOneJob(
         scriptSkillThatThrows(
           new ScriptExecutionError(
-            SCRIPT_EXIT_REFUSED,
-            `${REFUSAL_CHANNEL_MISSING_HINT} (no output)`,
+            1,
+            'the agent could not create scratch space for this job',
             undefined,
-            '',
+            'the agent could not create scratch space for this job',
           ),
         ),
         monitor,
-        'no-channel-job',
+        'liar-job',
       );
 
-      expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalled();
     });
 
     it('gates a key when a script exits 43 without writing a reason', async () => {

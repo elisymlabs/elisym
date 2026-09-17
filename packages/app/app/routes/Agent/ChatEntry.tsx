@@ -4,6 +4,7 @@ import type { ChatThreadEntry } from '~/lib/chatThread';
 import { AGENT_REFUSED_LABEL } from '~/lib/errorText';
 import { hasBlossom } from '~/lib/fileResult';
 import { compactZeros, formatDecimal } from '~/lib/formatPrice';
+import { refusedPaymentNote } from '~/lib/heldPaymentNote';
 import { isCallEnvelope } from '~/lib/onchainCall';
 import { ChatBubble } from './ChatBubble';
 import { FileResultCard } from './FileResultCard';
@@ -189,6 +190,11 @@ export function ChatEntry({
       </ChatBubble>
     );
   } else {
+    // Where the money went, for a refusal that outlived the buy session that
+    // produced it: a reload, or a reason the reconcile attached on a later tab
+    // open. The inline note beside the composer only knows about the session.
+    const refusalMoneyNote =
+      entry.refusal === undefined ? undefined : refusedPaymentNote(entry.txHash !== undefined);
     assistantBubble = (
       <ChatBubble
         side="assistant"
@@ -212,6 +218,9 @@ export function ChatEntry({
           <>
             <span className="text-text-2">{AGENT_REFUSED_LABEL}</span>
             <span className="break-words whitespace-pre-wrap">{entry.refusal}</span>
+            {refusalMoneyNote !== undefined && (
+              <div className="mt-8 text-[11px] text-text-2">{refusalMoneyNote}</div>
+            )}
           </>
         )}
       </ChatBubble>

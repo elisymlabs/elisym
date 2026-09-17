@@ -3,17 +3,18 @@ import {
   excerptUntrusted,
   hasVisibleText,
   refusalFromJobError,
+  SCRIPT_REFUSAL_MAX_CHARS,
   type JobErrorKind,
 } from '@elisym/sdk';
 
 /**
  * What an unexplained failure may occupy on screen.
  *
- * The same budget as a refusal: an error from the wire is the same stranger's
- * text, and a paragraph is as much of one as a toast or an inline note can
- * carry without becoming the page.
+ * THE refusal budget, not a copy of its number: an error from the wire is the
+ * same stranger's text, and a paragraph is as much of one as a toast or an
+ * inline note can carry without becoming the page. Raising one raises both.
  */
-export const MAX_DISPLAYED_ERROR_CHARS = 400;
+export const MAX_DISPLAYED_ERROR_CHARS = SCRIPT_REFUSAL_MAX_CHARS;
 
 /**
  * How a refusal is introduced wherever one is shown.

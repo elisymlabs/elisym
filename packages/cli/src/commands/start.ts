@@ -28,6 +28,7 @@ import {
   signerFromSecretKeyBase58,
   toDTag,
   type CapabilityCard,
+  deleteControlCharacters,
   type Network,
 } from '@elisym/sdk';
 import {
@@ -70,7 +71,7 @@ import {
 import { cacheKeyFor, resolveTripleForOverride } from '../llm/cache.js';
 import { resolveProviderApiKey } from '../llm/keys.js';
 import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
-import { createLogger, sanitizeForTerminal } from '../logging.js';
+import { createLogger } from '../logging.js';
 import { mimeFromPath } from '../mime.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SessionStore } from '../sessions.js';
@@ -748,7 +749,7 @@ export async function cmdStart(
     }
     try {
       await client.policies.deletePolicy(identity, type);
-      console.log(`  Removed stale policy: ${sanitizeForTerminal(type)}`);
+      console.log(`  Removed stale policy: ${deleteControlCharacters(type)}`);
     } catch {
       // non-fatal, will retry next start
     }
@@ -908,7 +909,7 @@ export async function cmdStart(
         // inject an orphan event whose name collapses to an active skill's d-tag.
         if (card.name && toDTag(card.name) === dTag) {
           await client.discovery.deleteCapability(identity, card.name);
-          console.log(`  Removed stale capability: ${sanitizeForTerminal(card.name)}`);
+          console.log(`  Removed stale capability: ${deleteControlCharacters(card.name)}`);
         }
       } catch {
         // malformed event, skip
@@ -1045,7 +1046,7 @@ export async function cmdStart(
         // The capability tag is an attacker-controlled Nostr tag value; strip terminal
         // control chars before it reaches stdout. Never log job.input here - the
         // capability tag is the only descriptor needed.
-        const cap = sanitizeForTerminal(job.tags.find((t) => t !== 'elisym') ?? 'unknown');
+        const cap = deleteControlCharacters(job.tags.find((t) => t !== 'elisym') ?? 'unknown');
         process.stdout.write(`  [job] ${job.jobId.slice(0, 16)} | cap=${cap}\n`);
         logger.info({ event: 'job_received', jobId: job.jobId, capability: cap });
       },
@@ -1054,7 +1055,7 @@ export async function cmdStart(
         logger.info({ event: 'job_delivered', jobId });
       },
       onJobError: (jobId, error) => {
-        const safeError = sanitizeForTerminal(error);
+        const safeError = deleteControlCharacters(error);
         process.stderr.write(`  [job] ${jobId.slice(0, 16)} | error: ${safeError}\n`);
         logger.error({ event: 'job_error', jobId, error: safeError });
       },

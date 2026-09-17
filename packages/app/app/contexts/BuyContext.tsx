@@ -733,7 +733,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Terminal, unpaid exit: the job will never be paid, so the
                 // pending entry gains the Retry affordance now instead of
                 // waiting out the 24h unpaid-aging rule.
-                void failEntry(agentPubkey, jobEventId);
+                void failEntry(agentPubkey, jobEventId).catch(() => {});
                 cleanupRef.current?.();
                 cleanupRef.current = null;
                 return;
@@ -994,7 +994,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Terminal payment failure (never broadcast, or reverted with no
                 // funds moved): the thread entry gains the Retry affordance. The
                 // resumable branch above deliberately leaves it paid-`pending`.
-                void failEntry(agentPubkey, jobEventId);
+                void failEntry(agentPubkey, jobEventId).catch(() => {});
                 setSession((prev) =>
                   sessionMatches(prev)
                     ? { ...prev, buying: false, error: msg, errorFromJob: false }
@@ -1231,7 +1231,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Unpaid timeout is terminal for the thread entry (the design's
                 // aging rule, applied eagerly while the tab is still open). A
                 // paid timeout above stays `pending` - money was sent.
-                void failEntry(agentPubkey, jobEventId);
+                void failEntry(agentPubkey, jobEventId).catch(() => {});
                 setSession((prev) =>
                   sessionMatches(prev)
                     ? {
@@ -1274,7 +1274,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // (nothing was submitted); after the entry landed it becomes a failed
         // bubble with Retry.
         if (threadEntryJobEventId !== null) {
-          void failEntry(agentPubkey, threadEntryJobEventId);
+          void failEntry(agentPubkey, threadEntryJobEventId).catch(() => {});
         }
         await releaseSessionToken();
         setSession((prev) =>

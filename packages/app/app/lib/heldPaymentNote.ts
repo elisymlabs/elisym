@@ -42,6 +42,19 @@ const STILL_SOUGHT_NOTE =
  * for a day is worse than saying nothing - it is the message that keeps someone
  * waiting instead of contacting the provider while the transaction is fresh.
  */
+/**
+ * The same money answer for a refusal the THREAD holds, with no buy session
+ * behind it.
+ *
+ * A refusal survives a reload and can be discovered by the reconcile on a later
+ * tab open; `heldPaymentNote` reaches only the ephemeral error of the session
+ * that produced it, so without this a customer who paid and came back is shown
+ * the reason and never told the job is closed and already charged.
+ */
+export function refusedPaymentNote(paid: boolean): string | undefined {
+  return paid ? REFUSED_NOTE : undefined;
+}
+
 export function heldPaymentNote(
   error: string,
   paid: boolean,

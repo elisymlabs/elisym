@@ -61,7 +61,7 @@ import {
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import { HOST_NO_SCRATCH_HINT, REFUSAL_CHANNEL_MISSING_HINT } from '@elisym/sdk/skills';
+import { isHostScratchError, startsWithRefusalHint } from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -273,24 +273,6 @@ const SCRIPT_KEY_LEVEL_MARKERS = [
   'authentication_error',
 ];
 
-/**
- * Whether this failure is the AGENT's own, not the script's and not the key's.
- *
- * Only the cases where the runtime could not create its own scratch space. NOT
- * the unreadable file: what sits at that path is the SCRIPT's doing - a symlink,
- * a directory, a mode-000 file - so exempting it would hand every skill a way to
- * switch off its own circuit breaker (`mkdir "$ELISYM_REFUSAL_FILE"; exit 43`
- * on every job, forever, with every customer paying).
- *
- * Matched as a PREFIX of `detail`, which is the one position a script cannot
- * reach: the hint is written there by the SDK itself, ahead of the script's
- * bounded output, so a buyer who talks a model into echoing the sentence cannot
- * switch off the breaker with it either.
- */
-function hostCouldNotOfferTheChannel(detail: string): boolean {
-  return detail.startsWith(REFUSAL_CHANNEL_MISSING_HINT) || detail.startsWith(HOST_NO_SCRATCH_HINT);
-}
-
 /** How much of a gated pair's reason an operator is shown, and its lead-in. */
 const HEALTH_REASON_CHARS = 200;
 const SIGNAL_LEAD_CHARS = 80;
@@ -327,7 +309,12 @@ function keyLevelMarkerIndex(text: string): number {
  */
 function scriptSignalReason(diagnostic: string, signalAt: number): string {
   if (signalAt === -1) {
-    return excerptUntrustedTail(diagnostic, HEALTH_REASON_CHARS);
+    // From the FRONT when the SDK put a hint there: that line is the whole
+    // diagnosis (the contract was not kept, the reason file was not readable),
+    // and a tail excerpt of a chatty script would clip exactly it.
+    return startsWithRefusalHint(diagnostic)
+      ? excerptUntrusted(diagnostic, HEALTH_REASON_CHARS)
+      : excerptUntrustedTail(diagnostic, HEALTH_REASON_CHARS);
   }
   // A little BEFORE the marker, because the marker is rarely the sentence: the
   // phrase that matched `x-api-key` reads "invalid x-api-key", and starting
@@ -350,15 +337,6 @@ function scriptSignalReason(diagnostic: string, signalAt: number): string {
  * subscription as the `onError` argument.
  */
 const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
-
-/**
- * What a customer is told when a script skill crashed.
- *
- * Deliberately not "Internal processing error", which `classifyJobError` reads
- * as an outage: an outage is recoverable and this is not - the job is closed
- * and will not be retried, so promising otherwise leaves someone waiting.
- */
-const SCRIPT_FAILED_MESSAGE = PROVIDER_FAILED_MESSAGE;
 
 /**
  * How much of a script's own output an operator-log line carries.
@@ -539,7 +517,7 @@ function customerSafeMessage(error: unknown): string {
     // it failed and recovery never looks at it again, so classifying it as an
     // outage tells a customer who just paid that their payment is held and the
     // job will be retried automatically, which is false.
-    return SCRIPT_FAILED_MESSAGE;
+    return PROVIDER_FAILED_MESSAGE;
   }
   if (isScriptBillingExhaustedError(error)) {
     return AGENT_UNAVAILABLE_MESSAGE;
@@ -1013,17 +991,14 @@ export class AgentRuntime {
     }
     const tag = `[${jobId.slice(0, 8)}]`;
 
-    if (isScriptExecutionError(err) && hostCouldNotOfferTheChannel(err.detail)) {
-      // This agent's own temp directory, not the operator's API key. Gating
-      // the declared pair would refuse every capability on that key for a local
-      // disk problem, and the recovery probe - which tests the KEY - would
-      // clear it on the next tick and gate it again on the next job.
-      //
-      // The HEAD of the detail: the hint the SDK front-loads is the whole
-      // diagnosis here, and a tail excerpt would keep the script's output and
-      // clip the sentence that says whose fault this is.
+    if (isHostScratchError(err)) {
+      // This agent's own temp directory, not the operator's API key. Gating the
+      // declared pair would refuse every capability on that key for a local disk
+      // problem, and the recovery probe - which tests the KEY - would clear it
+      // on the next tick and gate it again on the next job. The HEAD of the
+      // detail, where the SDK puts the diagnosis.
       log(
-        `${tag} Skill "${skill.name}" could not be given scratch space by THIS AGENT: ${excerptUntrusted(err.detail, 300)} Health state unchanged.`,
+        `${tag} Skill "${skill.name}" could not be given scratch space by THIS AGENT: ${excerptUntrusted(err.detail, 300)} Health state unchanged; the job stays paid for recovery.`,
       );
       return false;
     }
@@ -1530,6 +1505,11 @@ export class AgentRuntime {
       const currentStatus = this.ledger.getStatus(job.jobId);
       const keepPaidForRecovery =
         (e instanceof AgentUnavailableError ||
+          // The agent's own disk, not the job: a tmpdir that is full or
+          // read-only now may not be in five minutes, and the customer has
+          // already paid. Terminating here would keep their money for a failure
+          // that was never about their request.
+          isHostScratchError(e) ||
           e instanceof SeedFailedError ||
           e instanceof PaymentTimeoutError ||
           e instanceof X402TransientError ||
@@ -3733,8 +3713,12 @@ export class AgentRuntime {
                 execPromise,
                 new Promise<never>((_resolve, reject) => {
                   budgetTimer = setTimeout(() => {
-                    recoveryAbort.abort();
+                    // The flag BEFORE the abort, as on the live path: aborting
+                    // can settle the skill's own promise first, and the catch
+                    // below has to know the cause was the budget whichever
+                    // rejection wins the race.
                     budgetExceeded = true;
+                    recoveryAbort.abort();
                     reject(new ExecutionBudgetExceededError(recoveryBudgetMs));
                   }, recoveryBudgetMs);
                 }),
@@ -3753,9 +3737,14 @@ export class AgentRuntime {
             // SCRIPT skill the classifier has no markers to match and gates the
             // pair anyway, so one slow recovery job would take the operator's
             // key offline for every new customer.
-            if (!budgetExceeded) {
-              this.markHealthFromExecuteError(skill, err, log, entry.job_id);
+            if (budgetExceeded) {
+              // And turned back into the budget error, also as on the live path: the abort may have
+              // surfaced as the skill's own error, and the caller branches on
+              // the budget type (its retry accounting, and the paid-for-recovery
+              // rule for an x402 skill).
+              throw new ExecutionBudgetExceededError(recoveryBudgetMs);
             }
+            this.markHealthFromExecuteError(skill, err, log, entry.job_id);
             throw err;
           } finally {
             if (budgetTimer) {

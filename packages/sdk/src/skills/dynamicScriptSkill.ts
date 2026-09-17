@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { HOST_NO_SCRATCH_HINT, SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
+import { HostScratchError } from './host-fault';
+import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
 import { runScript, scopedToolEnv, withoutInheritedJobChannels } from './scriptSkill';
 import type {
@@ -111,19 +112,24 @@ export class DynamicScriptSkill implements Skill {
     // file via iroh. A script that ignores these vars keeps the original
     // stdin -> stdout text behavior unchanged.
     // A tmpdir that is full or read-only is the AGENT failing, not the script
-    // and not the operator's API key: the hint tells the runtime to leave the
-    // health gate alone rather than refuse every capability on that key and
-    // have the recovery probe clear it again on the next tick.
+    // and not the operator's API key: `HostScratchError` tells the runtime to
+    // leave the health gate alone rather than refuse every capability on that
+    // key and have the recovery probe clear it again on the next tick.
     const outDir = await mkdtemp(join(tmpdir(), 'elisym-skill-out-')).catch((err: unknown) => {
-      const why = err instanceof Error ? err.message : String(err);
-      throw new ScriptExecutionError(null, `${HOST_NO_SCRATCH_HINT} ${why}`, undefined, '');
+      throw new HostScratchError(err instanceof Error ? err.message : String(err));
     });
     const outputFile = join(outDir, 'output');
     // A skill returning MULTIPLE files writes them here instead of ELISYM_OUTPUT_FILE.
     // It lives under outDir (so the single `cleanup` of outDir removes both) and is a
     // distinct subpath from `outputFile`, so scanning it never picks up the single file.
     const outputDir = join(outDir, 'files');
-    await mkdir(outputDir, { recursive: true });
+    // Same disk, same verdict - and the directory goes with it: this is ahead
+    // of the `try` whose `finally` removes it, so a throw here would leak one
+    // per failed job on the host that can least afford it.
+    await mkdir(outputDir, { recursive: true }).catch(async (err: unknown) => {
+      await rm(outDir, { recursive: true, force: true }).catch(() => {});
+      throw new HostScratchError(err instanceof Error ? err.message : String(err));
+    });
     // No caller-provided env -> scoped copy of process.env (secret vars
     // stripped), never the raw parent env with the operator's key ring.
     // Metered charge channel. Deliberately a sibling of `outputFile` under
@@ -162,7 +168,12 @@ export class DynamicScriptSkill implements Skill {
     }
     if (input.history !== undefined && input.history.length > 0) {
       const historyFile = join(outDir, 'history.json');
-      await writeFile(historyFile, JSON.stringify(input.history), 'utf8');
+      await writeFile(historyFile, JSON.stringify(input.history), 'utf8').catch(
+        async (err: unknown) => {
+          await rm(outDir, { recursive: true, force: true }).catch(() => {});
+          throw new HostScratchError(err instanceof Error ? err.message : String(err));
+        },
+      );
       env.ELISYM_HISTORY_FILE = historyFile;
     }
 

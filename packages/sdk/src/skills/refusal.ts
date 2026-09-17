@@ -24,6 +24,7 @@
  */
 import { ScriptExecutionError } from '../llm-health/types';
 import { PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
+import { HostScratchError } from './host-fault';
 import type { RefusalFileRead } from './refusal-file';
 import { excerptUntrusted, excerptUntrustedTail, hasVisibleText } from './untrusted-text';
 
@@ -83,18 +84,6 @@ export const REFUSAL_UNREADABLE_HINT =
   'symlink or a directory rather than a regular file, or one it lacks permission for (or it ran ' +
   'out of descriptors) - so the customer was told nothing about their request:';
 
-/**
- * Told when the agent could not create the scratch DIRECTORY a job needs at all.
- *
- * Distinct from every hint below it, which describe something about a script
- * that ran: here nothing ran. The runtime matches this prefix and leaves the
- * health gate alone - a full or read-only temp directory is not an API key
- * going bad, and the recovery probe would clear and re-gate it on every tick.
- */
-export const HOST_NO_SCRATCH_HINT =
-  'this agent could not create a scratch directory for the job, so the skill never ran ' +
-  '(check the temp directory):';
-
 /** Told when a reason was written but the exit code says the script crashed. */
 export const REFUSAL_WRONG_EXIT_HINT =
   `wrote a reason to ${SCRIPT_REFUSAL_FILE_ENV} and then exited non-zero with something other ` +
@@ -106,6 +95,19 @@ export const REFUSAL_CHANNEL_MISSING_HINT =
   `exit ${SCRIPT_EXIT_REFUSED}, but this agent could not create a scratch file, so ` +
   `${SCRIPT_REFUSAL_FILE_ENV} was never set and the script had nowhere to put its reason ` +
   '(check the temp directory):';
+
+/**
+ * Whether this detail opens with one of the hints above.
+ *
+ * For DISPLAY only - which excerpt of a failure an operator is shown - never
+ * for a decision. A script can print any of these sentences itself; all that
+ * buys it is having its own output quoted from the front.
+ */
+export function startsWithRefusalHint(detail: string): boolean {
+  return [REFUSAL_CONTRACT_HINT, REFUSAL_UNREADABLE_HINT, REFUSAL_WRONG_EXIT_HINT].some((hint) =>
+    detail.startsWith(hint),
+  );
+}
 
 /**
  * Whether a written reason says anything a reader would SEE.
@@ -213,6 +215,19 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
  * script created it on purpose, so with exit 43 that is a refusal with
  * `SCRIPT_REFUSAL_UNSTATED` for a reason, and health is left alone.
  */
+/**
+ * The script's own output, bounded HERE rather than left for the log to clip.
+ *
+ * An operator log excerpts a long detail from its END, and the hint in front of
+ * this - the line saying the contract was broken, or that this host could not
+ * make a scratch file - would otherwise be erased by a chatty script's progress
+ * meter.
+ */
+function describeOutput(result: { stdout: string; stderr: string }): string {
+  const output = result.stderr.trim() || result.stdout.trim();
+  return output === '' ? '(no output)' : excerptUntrustedTail(output, SCRIPT_REFUSAL_STDERR_CHARS);
+}
+
 export function throwIfRefused(
   result: { code: number | null; stdout: string; stderr: string },
   file: RefusalFileRead,
@@ -244,25 +259,20 @@ export function throwIfRefused(
     // file, a file the agent could not read, or a runtime that never named one.
     // Blaming the script for the last two sends an operator hunting a typo in
     // code that is correct.
+    const output = describeOutput(result);
+    if (!channelOffered && !stated) {
+      // The AGENT never named a file, so the script had nowhere to put its
+      // reason. A class, not a sentence: the runtime leaves the health gate
+      // alone for this, and a decision worth having is worth forging - see
+      // `HostScratchError`.
+      throw new HostScratchError(`${REFUSAL_CHANNEL_MISSING_HINT} ${output}`);
+    }
     let hint = REFUSAL_CONTRACT_HINT;
     if (stated) {
       hint = REFUSAL_WRONG_EXIT_HINT;
-    } else if (!channelOffered) {
-      hint = REFUSAL_CHANNEL_MISSING_HINT;
     } else if (file.state === 'unreadable') {
       hint = REFUSAL_UNREADABLE_HINT;
     }
-    // The script's output is bounded HERE, not left for the log to clip: an
-    // operator log excerpts a long detail from its END, and the hint - the one
-    // line saying the contract was broken, or that this host cannot make a
-    // scratch file - sits at the front. A chatty script would otherwise erase
-    // it with its own progress meter.
-    const output = result.stderr.trim() || result.stdout.trim();
-    throw new ScriptExecutionError(
-      result.code,
-      `${hint} ${output === '' ? '(no output)' : excerptUntrustedTail(output, SCRIPT_REFUSAL_STDERR_CHARS)}`,
-      undefined,
-      result.stderr,
-    );
+    throw new ScriptExecutionError(result.code, `${hint} ${output}`, undefined, result.stderr);
   }
 }

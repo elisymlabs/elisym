@@ -20,6 +20,9 @@ import { decodeResult, resultDisplay } from '~/lib/fileResult';
  * Wallet-independent by design: everything runs off the Nostr identity, so
  * free-skill chats recover too. Runs once per Chat tab activation.
  */
+/** How many already-closed entries one reconcile asks the relays about. */
+const MAX_UNEXPLAINED_LOOKUPS = 20;
+
 export function useChatReconcile(agentPubkey: string): void {
   const { client } = useElisymClient();
   const idCtx = useIdentity();
@@ -66,12 +69,20 @@ export function useChatReconcile(agentPubkey: string): void {
       // offers Retry, which buys a deterministic refusal again at full price -
       // so recent failures with no reason yet are asked about too. Bounded to
       // the ageing window: older than that, nobody is still deciding.
-      const unexplained = mine.filter(
-        (entry) =>
-          entry.status === 'failed' &&
-          entry.refusal === undefined &&
-          Date.now() - entry.ts < UNPAID_PENDING_MAX_AGE_MS,
-      );
+      const unexplained = mine
+        .filter(
+          (entry) =>
+            entry.status === 'failed' &&
+            entry.refusal === undefined &&
+            Date.now() - entry.ts < UNPAID_PENDING_MAX_AGE_MS,
+        )
+        // Newest first, and only a handful: most of these failed for reasons
+        // that will never produce a refusal (an outage, a timeout, ageing), and
+        // nothing records that they were already asked about - so an unbounded
+        // list would re-download and re-verify the same events on every tab
+        // switch for a day.
+        .sort((left, right) => right.ts - left.ts)
+        .slice(0, MAX_UNEXPLAINED_LOOKUPS);
 
       let queryFailed = false;
       if (pendingEntries.length > 0 || unexplained.length > 0) {
