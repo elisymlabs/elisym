@@ -234,6 +234,24 @@ export interface ActiveBuySession {
   result: string | null;
   error: string | null;
   /**
+   * Whether `error` came back from the JOB or from this app.
+   *
+   * A job error is a provider's verdict, classified and rendered as one. An
+   * app error is a wallet rejection or an RPC failure, and classifying it would
+   * answer "insufficient SOL" with "Agent unavailable, try again later" beside
+   * a note promising a retry that is not coming.
+   */
+  errorFromJob?: boolean;
+  /**
+   * Whether the refusal reached the thread, where the failed bubble renders it.
+   *
+   * The inline note only stands down for a refusal it knows is shown elsewhere:
+   * the write can return false (the entry was trimmed, or storage refused it),
+   * and a customer whose job was refused must never be left with no reason on
+   * screen at all.
+   */
+  refusalInThread?: boolean;
+  /**
    * `true` once the on-chain payment has been confirmed and the
    * payment-completed feedback has been published. Stays `true` even after
    * an error arrives so the UI can distinguish "paid + provider failed"
@@ -978,7 +996,9 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // resumable branch above deliberately leaves it paid-`pending`.
                 void failEntry(agentPubkey, jobEventId);
                 setSession((prev) =>
-                  sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
+                  sessionMatches(prev)
+                    ? { ...prev, buying: false, error: msg, errorFromJob: false }
+                    : prev,
                 );
                 cleanupRef.current?.();
                 cleanupRef.current = null;
@@ -1136,17 +1156,31 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // charged: the entry must not offer Retry, which would buy the
               // same answer again.
               const kind = classifyJobError(errMsg);
+              const refused = kind === 'provider-refused';
               void failEntry(agentPubkey, jobEventId, {
-                ...(kind === 'provider-refused' ? { refusal: refusalFromJobError(errMsg) } : {}),
+                ...(refused ? { refusal: refusalFromJobError(errMsg) } : {}),
+              }).then((stored) => {
+                // Only once the bubble really holds it may the note stand down.
+                setSession((prev) =>
+                  sessionMatches(prev) ? { ...prev, refusalInThread: refused && stored } : prev,
+                );
               });
               setSession((prev) =>
-                sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
+                sessionMatches(prev)
+                  ? {
+                      ...prev,
+                      buying: false,
+                      error: errMsg,
+                      errorFromJob: true,
+                      refusalInThread: false,
+                    }
+                  : prev,
               );
               cleanupRef.current = null;
               // The same sentence the inline note is about to render, bounded
               // the same way: a provider's error feedback reaches here verbatim,
               // and a toast is no safer a place to paint it than the page is.
-              const toastMsg = customerErrorText(errMsg);
+              const toastMsg = customerErrorText(errMsg, kind);
               // Sonner does not always swap a multi-step `toast.loading`
               // chain to an error toast when given the same id (the
               // spinner sticks). Dismiss explicitly, then raise a fresh
@@ -1189,7 +1223,12 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 void failEntry(agentPubkey, jobEventId);
                 setSession((prev) =>
                   sessionMatches(prev)
-                    ? { ...prev, buying: false, error: 'Timed out waiting for the provider' }
+                    ? {
+                        ...prev,
+                        buying: false,
+                        error: 'Timed out waiting for the provider',
+                        errorFromJob: false,
+                      }
                     : prev,
                 );
                 cleanupRef.current = null;
@@ -1228,7 +1267,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         }
         await releaseSessionToken();
         setSession((prev) =>
-          sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
+          sessionMatches(prev) ? { ...prev, buying: false, error: msg, errorFromJob: false } : prev,
         );
         cleanupRef.current = null;
         toast.dismiss(toastId);
@@ -1436,6 +1475,10 @@ export interface ScopedBuyState {
   resultAttachments?: FileAttachment[];
   resultProviderPubkey?: string;
   error: string | null;
+  /** Whether `error` is the JOB's verdict or this app's own failure. */
+  errorFromJob: boolean;
+  /** Whether the agent's refusal is already rendered in the thread's bubble. */
+  refusalInThread: boolean;
   /**
    * Whether on-chain payment was completed for the current session before
    * the terminal state was reached. Used by the error UI to surface a
@@ -1506,6 +1549,8 @@ export function useBuyForCard(args: UseBuyForCardArgs): ScopedBuyState | null {
     resultAttachments: matches ? session?.resultAttachments : undefined,
     resultProviderPubkey: matches ? session?.resultProviderPubkey : undefined,
     error: matches ? (session?.error ?? null) : null,
+    errorFromJob: matches ? (session?.errorFromJob ?? false) : false,
+    refusalInThread: matches ? (session?.refusalInThread ?? false) : false,
     paid: matches ? (session?.paid ?? false) : false,
     pending: matches ? (session?.pending ?? false) : false,
     jobId: matches ? (session?.jobId ?? null) : null,

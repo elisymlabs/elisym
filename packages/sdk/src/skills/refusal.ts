@@ -175,9 +175,13 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
  * writing its file decided nothing, and reporting that to a customer as a
  * deliberate refusal would be a lie.
  *
- * Exit 43 with no reason is a failure, and the operator is told the contract was
- * not kept: a mistyped variable name otherwise looks exactly like a crash,
- * and the customer pays for "Internal processing error".
+ * Exit 43 with no reason is a FAILURE in every respect - the customer's generic
+ * message, the operator log, the health gate - and treated as one deliberately:
+ * 43 is also curl's `CURLE_BAD_FUNCTION_ARGUMENT`, so a script that never meant
+ * to refuse lands here, and an exit code that exempted itself from the breaker
+ * would be the one crash an agent could repeat forever while taking payment.
+ * The hint is what separates a copy bug from a crash for the operator; only a
+ * real refusal leaves health untouched.
  */
 export function throwIfRefused(
   result: { code: number | null; stdout: string; stderr: string },
@@ -201,19 +205,10 @@ export function throwIfRefused(
     // Blaming the script for the last two sends an operator hunting a typo in
     // code that is correct.
     let hint = REFUSAL_CONTRACT_HINT;
-    // And so does the health gate. The slip exemption exists for a COPY BUG in
-    // the skill - a mistyped variable name is no evidence about the operator's
-    // API key. The other two are the HOST failing: no descriptors left, or a
-    // temp directory it cannot write. An agent that can no longer make or read
-    // its own scratch file is exactly what the breaker is for, so those keep
-    // the ordinary gating and stop the agent selling jobs it cannot run.
-    let contractSlip = true;
     if (!channelOffered) {
       hint = REFUSAL_CHANNEL_MISSING_HINT;
-      contractSlip = false;
     } else if (file.state === 'unreadable') {
       hint = REFUSAL_UNREADABLE_HINT;
-      contractSlip = false;
     }
     // The script's output is bounded HERE, not left for the log to clip: an
     // operator log excerpts a long detail from its END, and the hint - the one
@@ -226,7 +221,6 @@ export function throwIfRefused(
       `${hint} ${output === '' ? '(no output)' : excerptUntrustedTail(output, SCRIPT_REFUSAL_STDERR_CHARS)}`,
       undefined,
       result.stderr,
-      contractSlip,
     );
   }
 }

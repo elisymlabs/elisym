@@ -1377,49 +1377,36 @@ describe('AgentRuntime', () => {
       );
     });
 
-    it('does not gate a key when a script exits 43 without a reason file', async () => {
-      // A refusal-contract slip is a copy bug in the skill. It says nothing
-      // about the operator's API key, so gating - let alone cascading across
-      // every model on that key - would take the agent offline for a typo.
+    it('gates a key when a script exits 43 without writing a reason', async () => {
+      // Whether the script MEANT to refuse and mistyped the variable, or never
+      // meant to refuse at all (43 is curl's CURLE_BAD_FUNCTION_ARGUMENT), the
+      // customer paid and got a generic failure. Exempting the code from the
+      // breaker would make it the one crash an agent can repeat forever while
+      // still taking payment; what the hint on `detail` buys the operator is
+      // knowing WHICH of the two it was. A refusal - one with a reason - is the
+      // only thing that leaves health alone.
       const monitor = monitorStub();
       await runOneJob(
         scriptSkillThatThrows(
-          // The flag the SDK sets, not a string in `detail`: `detail` falls
-          // back to stdout, which a customer can steer through an LLM proxy.
           new ScriptExecutionError(
             SCRIPT_EXIT_REFUSED,
-            `${REFUSAL_CONTRACT_HINT} unauthorized`,
+            `${REFUSAL_CONTRACT_HINT} could not resolve host`,
             undefined,
-            'unauthorized',
-            true,
+            'could not resolve host',
           ),
         ),
         monitor,
         'slipped-job',
       );
 
-      expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
-    });
-
-    it('still gates a key when a crash merely exits 43', async () => {
-      // 43 is also curl's CURLE_BAD_FUNCTION_ARGUMENT. A script failing that way
-      // on every job must still trip the circuit breaker; only a refusal whose
-      // contract slipped is exempt.
-      const monitor = monitorStub();
-      await runOneJob(
-        scriptSkillThatThrows(
-          new ScriptExecutionError(
-            SCRIPT_EXIT_REFUSED,
-            'curl: (43) bad argument',
-            undefined,
-            'curl: (43) bad argument',
-          ),
-        ),
-        monitor,
-        'crashed-43-job',
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'invalid',
+        expect.stringContaining('could not resolve host'),
+        // Skill-local: nothing here names the operator's key.
+        { cascade: false },
       );
-
-      expect(monitor.markUnhealthyFromJob).toHaveBeenCalled();
     });
 
     it('masks a generic script failure rather than quoting its summary', async () => {

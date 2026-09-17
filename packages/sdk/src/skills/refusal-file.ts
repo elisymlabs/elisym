@@ -12,13 +12,6 @@ import { StringDecoder } from 'node:string_decoder';
 import { SCRIPT_REFUSAL_FILE_MAX_BYTES } from './refusal';
 
 /**
- * What the refusal channel held after a job.
- *
- * `unreadable` is its own answer rather than folded into `absent`: a script
- * that wrote the file and left it mode 000 did keep the contract, and telling
- * its operator to go looking for a typo would be a wild goose chase.
- */
-/**
  * Read the path itself, and only if it is still what it looked like.
  *
  * `O_NOFOLLOW` refuses a symlink at the moment of opening, which is the check
@@ -30,6 +23,13 @@ import { SCRIPT_REFUSAL_FILE_MAX_BYTES } from './refusal';
 const READ_ONLY_NO_SYMLINK =
   constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
+/**
+ * What the refusal channel held after a job.
+ *
+ * `unreadable` is its own answer rather than folded into `absent`: a script
+ * that wrote the file and left it mode 000 did keep the contract, and telling
+ * its operator to go looking for a typo would be a wild goose chase.
+ */
 export type RefusalFileRead =
   | { state: 'absent' }
   | { state: 'unreadable' }

@@ -60,7 +60,6 @@ import {
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import { SCRIPT_EXIT_REFUSED } from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -272,6 +271,10 @@ const SCRIPT_KEY_LEVEL_MARKERS = [
   'authentication_error',
 ];
 
+/** How much of a gated pair's reason an operator is shown, and its lead-in. */
+const HEALTH_REASON_CHARS = 200;
+const SIGNAL_LEAD_CHARS = 80;
+
 /**
  * The first key-level marker in the text, or -1 - see `scriptSignalReason`.
  *
@@ -298,18 +301,19 @@ function keyLevelMarkerIndex(text: string): number {
  */
 function scriptSignalReason(diagnostic: string, signalAt: number): string {
   if (signalAt === -1) {
-    return excerptUntrustedTail(diagnostic, 200);
+    return excerptUntrustedTail(diagnostic, HEALTH_REASON_CHARS);
   }
   // A little BEFORE the marker, because the marker is rarely the sentence: the
   // phrase that matched `x-api-key` reads "invalid x-api-key", and starting
   // exactly at the match throws away the word that says what is wrong with it.
   const from = Math.max(0, signalAt - SIGNAL_LEAD_CHARS);
-  const quoted = excerptUntrusted(diagnostic.slice(from), 200);
-  return from === 0 ? quoted : `…${quoted}`;
+  if (from === 0) {
+    return excerptUntrusted(diagnostic, HEALTH_REASON_CHARS);
+  }
+  // The leading ellipsis comes OUT of the budget rather than on top of it: two
+  // ellipses around 200 characters would be 201, and would read as two cuts.
+  return `…${excerptUntrusted(diagnostic.slice(from), HEALTH_REASON_CHARS - 1)}`;
 }
-
-/** How much of the line before a matched marker the reason keeps. */
-const SIGNAL_LEAD_CHARS = 80;
 
 /**
  * Customer-facing message for both the preflight gate (cached
@@ -982,18 +986,6 @@ export class AgentRuntime {
       return false;
     }
     const tag = `[${jobId.slice(0, 8)}]`;
-
-    if (isScriptExecutionError(err) && err.refusalContractSlip) {
-      // The script meant to refuse and got the contract wrong (no reason file,
-      // or a typo in the variable name). That says nothing about the operator's
-      // API key, so gating it - let alone cascading across every model on it -
-      // would take the agent offline for a copy bug. The hint is already on the
-      // error's detail, which the operator log carries.
-      log(
-        `${tag} Skill "${skill.name}" exited ${SCRIPT_EXIT_REFUSED} without a reason file; health state unchanged.`,
-      );
-      return false;
-    }
 
     if (isScriptRefusalError(err)) {
       // A refusal is an answer, not a fault: the script ran, understood the

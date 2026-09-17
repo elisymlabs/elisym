@@ -36,7 +36,7 @@ const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
 const CONTROLS_EXCEPT_TAB_AND_NEWLINE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
 /** Every C0 and C1 control character becomes a space. */
-export function withoutControlCharacters(text: string): string {
+function withoutControlCharacters(text: string): string {
   return text.replace(CONTROLS, ' ');
 }
 
@@ -52,7 +52,7 @@ export function withoutControlCharacters(text: string): string {
  * customer spelled the way the provider wrote it.
  *
  */
-export function withoutFormatMarks(text: string): string {
+function withoutFormatMarks(text: string): string {
   return text.replace(FORMAT_MARKS, (mark) => (mark === ZWJ || mark === ZWNJ ? mark : ''));
 }
 
@@ -64,7 +64,7 @@ export function withoutFormatMarks(text: string): string {
  * an upstream that re-emits `ja<ZWJ>ne@example.com` must collapse back to what
  * the customer sent or the mask misses it and the address reaches the log.
  */
-export function withoutAnyFormatMarks(text: string): string {
+function withoutAnyFormatMarks(text: string): string {
   return text.replace(FORMAT_MARKS, '');
 }
 
@@ -75,12 +75,12 @@ export function withoutAnyFormatMarks(text: string): string {
  * orphaned at the start of what follows it, a HIGH one at the end of what
  * precedes it - so there is a function for each.
  */
-export function withoutLeadingDanglingSurrogate(text: string): string {
+function withoutLeadingDanglingSurrogate(text: string): string {
   const first = text.charCodeAt(0);
   return first >= 0xdc00 && first <= 0xdfff ? text.slice(1) : text;
 }
 
-export function withoutDanglingSurrogate(text: string): string {
+function withoutDanglingSurrogate(text: string): string {
   const last = text.charCodeAt(text.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
 }

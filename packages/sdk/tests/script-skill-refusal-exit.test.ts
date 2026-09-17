@@ -13,6 +13,7 @@ import {
   SCRIPT_REFUSAL_UNSTATED,
   ScriptRefusalError,
   REFUSAL_CONTRACT_HINT,
+  REFUSAL_UNREADABLE_HINT,
 } from '../src/skills/refusal';
 import { StaticScriptSkill } from '../src/skills/staticScriptSkill';
 import type { SkillOutput } from '../src/skills/types';
@@ -283,6 +284,24 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error).not.toBeInstanceOf(ScriptRefusalError);
     expect(error.detail).toContain(REFUSAL_CONTRACT_HINT);
     expect(error.detail).toContain('wrote nowhere');
+  });
+
+  it('blames the HOST when the reason file cannot be read', async () => {
+    // A directory where the file should be is the deterministic stand-in for
+    // the real shapes (mode 000, out of descriptors): the script kept its side
+    // of the contract, so the operator must not be sent hunting a typo - and
+    // unlike a copy bug, an agent that cannot read its own scratch file is
+    // failing at something it will fail at again, so this gates health.
+    fixture = setupScript(
+      `#!/bin/sh\nrm -f "$${SCRIPT_REFUSAL_FILE_ENV}"\nmkdir "$${SCRIPT_REFUSAL_FILE_ENV}"\n` +
+        `exit ${SCRIPT_EXIT_REFUSED}\n`,
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptExecutionError);
+    expect(error).not.toBeInstanceOf(ScriptRefusalError);
+    expect(error.detail.startsWith(REFUSAL_UNREADABLE_HINT)).toBe(true);
   });
 
   it('leaves a plain non-zero exit as a generic failure', async () => {

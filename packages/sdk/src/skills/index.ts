@@ -40,8 +40,13 @@ export { OnchainCallSkill } from './onchainCallSkill';
 export type { OnchainCallSkillParams } from './onchainCallSkill';
 export { X402ProxySkill } from './x402ProxySkill';
 export type { X402ProxySkillParams } from './x402ProxySkill';
-// The contract a script author needs (the code and the marker), the error the
-// runtime catches, and its guard. The parsing helpers behind them are internal.
+// The contract a script author needs (the exit code, the variable, the caps,
+// what is said when no reason was given), the error the runtime catches, and
+// its guard. The three operator-log hints go together or not at all: they are
+// the three arms of one decision - the script wrote nothing, the agent could
+// not read what it wrote, the agent never offered a file - and a consumer able
+// to match one has to be able to tell it from the other two. The file
+// reader behind them stays internal.
 export {
   isScriptRefusalError,
   REFUSAL_CHANNEL_MISSING_HINT,
@@ -52,6 +57,7 @@ export {
   SCRIPT_EXIT_REFUSED,
   SCRIPT_REFUSAL_FILE_ENV,
   SCRIPT_REFUSAL_MAX_CHARS,
+  SCRIPT_REFUSAL_UNSTATED,
   ScriptRefusalError,
 } from './refusal';
 export { resolveInsidePath, resolveInsidePathReal } from './path-safety';

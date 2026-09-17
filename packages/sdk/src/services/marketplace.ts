@@ -989,9 +989,12 @@ export class MarketplaceService {
     const chosen = new Map<string, { createdAt: number; id: string }>();
     const nowSecs = Math.floor(Date.now() / 1000);
     for (const ev of events) {
-      // Author first: a relay is not obliged to honour the filter, and a string
-      // comparison is free where a signature check is not.
-      if (ev.pubkey !== providerPubkey || !verifyEvent(ev)) {
+      // Every cheap test first, and the signature check last. A provider's
+      // feedback for one job is three or four events - the processing
+      // heartbeat, the payment request - and only the `error` one is wanted, so
+      // verifying before filtering pays for two or three signature checks per
+      // entry on a browser's main thread to throw them away.
+      if (ev.pubkey !== providerPubkey) {
         continue;
       }
       // Same clamp as everywhere else: a post-dated event must not win
@@ -1004,6 +1007,9 @@ export class MarketplaceService {
         continue;
       }
       if (ev.tags.find((t) => t[0] === 'status')?.[1] !== 'error') {
+        continue;
+      }
+      if (!verifyEvent(ev)) {
         continue;
       }
       // Newest wins, and the event id breaks a tie: feedback timestamps are

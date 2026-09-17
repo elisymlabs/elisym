@@ -83,7 +83,11 @@ export function useChatReconcile(agentPubkey: string): void {
         // `void reconcile()` and the open tab silently stops receiving live
         // results for the rest of the session.
         try {
-          for (const entry of pendingEntries) {
+          // Nothing to apply when the RESULT query failed: no entry can be
+          // completed, and a refusal must not close a job whose answer the
+          // failed half never fetched. Skipping says that once instead of
+          // walking every pending entry to do nothing.
+          for (const entry of results === null ? [] : pendingEntries) {
             if (cancelled) {
               return;
             }
@@ -114,12 +118,13 @@ export function useChatReconcile(agentPubkey: string): void {
             // a transient failure must not demote a PAID pending entry whose
             // job the provider's recovery loop may still deliver.
             //
-            // And never while the RESULT query failed: a result outranks the
-            // error that preceded it, and a relay that answered one query but
-            // not the other proved nothing about the result. Closing the entry
-            // on the half that did answer would withdraw the Retry button from
-            // a paid job whose answer is sitting on a relay, unread.
-            const message = queryFailed ? undefined : errors?.get(entry.jobEventId);
+            // A result outranks the error that preceded it, which is also why
+            // the loop above does not run at all when the result query failed:
+            // a relay that answered one query and not the other proved nothing,
+            // and closing the entry on the half that did answer would withdraw
+            // the Retry button from a paid job whose answer sits on a relay,
+            // unread.
+            const message = errors?.get(entry.jobEventId);
             if (message !== undefined && classifyJobError(message) === 'provider-refused') {
               await failEntry(agentPubkey, entry.jobEventId, {
                 refusal: refusalFromJobError(message),

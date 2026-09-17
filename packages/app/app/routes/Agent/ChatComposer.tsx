@@ -76,7 +76,7 @@ export function ChatComposer({
   const { setVisible } = useWalletModal();
   const [input, setInput] = useState('');
   const [file, setFile] = useState<File | null>(null);
-  const { buying, error, paid, jobId } = buyState;
+  const { buying, error, errorFromJob, refusalInThread, paid, jobId } = buyState;
   // A covering allowance means the send needs no per-job SOL - so the
   // wallet-balance gate must not block (or mis-tooltip) it, same as the
   // Products-tab Use button.
@@ -355,7 +355,14 @@ export function ChatComposer({
             File inputs require a paid capability - this one is free.
           </div>
         )}
-        {error && <BuyErrorNote error={error} paid={paid} refusalInThread />}
+        {error && (
+          <BuyErrorNote
+            error={error}
+            paid={paid}
+            fromJob={errorFromJob}
+            refusalInThread={refusalInThread}
+          />
+        )}
       </div>
     </div>
   );
