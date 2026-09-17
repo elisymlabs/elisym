@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -82,33 +81,21 @@ export class StaticScriptSkill implements Skill {
     this.scriptEnv = params.scriptEnv;
   }
 
-  /**
-   * The directory holding this skill's one out-of-band channel: the refusal
-   * reason. Created once per skill rather than once per job - a cron-style
-   * static skill fires on an interval, and two filesystem round trips a tick
-   * for a mode whose defining property is that it may touch no filesystem is
-   * not a trade worth making.
-   *
-   * `null` when it could not be created: a read-only or full tmpdir must not be
-   * what stops a static skill running, it just leaves the job no way to refuse.
-   */
-  private refusalDir: Promise<string | null> | undefined;
-
-  private refusalDirectory(): Promise<string | null> {
-    this.refusalDir ??= mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
-    return this.refusalDir;
-  }
-
   async execute(_input: SkillInput, ctx: SkillContext): Promise<SkillOutput> {
-    const dir = await this.refusalDirectory();
-    // Per job, because jobs run concurrently: two of them sharing one path
-    // would read each other's refusal.
-    const refusalFile = dir === null ? undefined : join(dir, `refusal-${randomUUID()}`);
+    // A directory per job for the one out-of-band channel this mode has: the
+    // refusal reason. Per job rather than per skill because a per-skill
+    // directory has no owner to remove it - nothing disposes a skill - and an
+    // agent restarted daily would leave one behind every time.
+    //
+    // A skill in this mode may touch no filesystem at all, so a read-only or
+    // full tmpdir must not be what stops it running: without the directory the
+    // job simply has no refusal channel, and the next job tries again.
+    const outDir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
     try {
-      return await this.run(ctx, refusalFile);
+      return await this.run(ctx, outDir === null ? undefined : join(outDir, 'refusal'));
     } finally {
-      if (refusalFile !== undefined) {
-        await rm(refusalFile, { force: true }).catch(() => {});
+      if (outDir !== null) {
+        await rm(outDir, { recursive: true, force: true }).catch(() => {});
       }
     }
   }

@@ -1,11 +1,12 @@
-import type { FileAttachment } from '@elisym/sdk';
+import { classifyJobError, type FileAttachment } from '@elisym/sdk';
 import { useEffect, useRef } from 'react';
 import { JOB_WAIT_TIMEOUT_MS } from '~/contexts/BuyContext';
 import { useElisymClient } from '~/hooks/useElisymClient';
 import { useIdentity } from '~/hooks/useIdentity';
 import { recordCompletion, UNPAID_PENDING_MAX_AGE_MS } from '~/lib/chatSession';
-import { agePendingEntries, completeEntry, readThread } from '~/lib/chatThread';
+import { agePendingEntries, completeEntry, failEntry, readThread } from '~/lib/chatThread';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
+import { storedRefusal } from '~/lib/refusal';
 
 /**
  * Tab-open reconcile (stage 2): when the Chat tab opens, run a one-shot
@@ -148,6 +149,18 @@ export function useChatReconcile(agentPubkey: string): void {
                 resultText,
                 resultAttachments,
               );
+            },
+            onError: (message: string) => {
+              // Without this the refusal that arrived while the tab was closed
+              // is dropped: a PAID entry then spins on "waiting for the
+              // result" forever (ageing skips entries with a txHash), and an
+              // unpaid one ages to `failed` with no reason, so the thread
+              // offers Retry and the customer buys the same refusal again.
+              void failEntry(agentPubkey, entry.jobEventId, {
+                ...(classifyJobError(message) === 'provider-refused'
+                  ? { refusal: storedRefusal(message) }
+                  : {}),
+              });
             },
           },
           timeoutMs: JOB_WAIT_TIMEOUT_MS - elapsed,

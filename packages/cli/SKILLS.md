@@ -425,11 +425,15 @@ On any other non-zero exit the customer receives a fixed generic message, becaus
 The refusal travels in its own file, named by `ELISYM_REFUSAL_FILE` - the same shape as `ELISYM_OUTPUT_FILE` and `ELISYM_CHARGE_FILE`, and set for `dynamic-script`, `static-script` and `onchain`:
 
 ```sh
-if [ "$unit" != "USD" ]; then
+if [ "$unit" != "USD" ] && [ -n "$ELISYM_REFUSAL_FILE" ]; then
   printf '%s' 'this venue sizes positions in USD, so write it as "size 300 USD".' > "$ELISYM_REFUSAL_FILE"
   exit 43  # SCRIPT_EXIT_REFUSED - the sentence above reaches the buyer
 fi
 ```
+
+The variable is set whenever the runtime could provide a scratch file, which is
+always unless the temp directory is unwritable; guard on it as above rather than
+redirecting into an empty path.
 
 - **the file is what decides, not the exit code.** Nothing a script PRINTS can be a refusal. Stdout is frequently not the script's own words - an LLM proxy echoes a model's completion - and a customer able to steer that completion could otherwise destroy their own paid job and have their own sentence handed back under the runtime's refusal label. Writing a file is something a script does on purpose.
 - **exit 43 is still the right exit code**, and a 43 with no file written is treated as the failure it looks like, with a line in the operator log saying the contract was not honoured. A file written without exit 43 is still a refusal: a script whose `exit 43` was swallowed by a pipeline meant what it wrote.

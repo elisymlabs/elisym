@@ -1345,6 +1345,27 @@ describe('AgentRuntime', () => {
       );
     });
 
+    it('does not gate a key when a script exits 43 without a reason file', async () => {
+      // A refusal-contract slip is a copy bug in the skill. It says nothing
+      // about the operator's API key, so gating - let alone cascading across
+      // every model on that key - would take the agent offline for a typo.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            SCRIPT_EXIT_REFUSED,
+            'exit 43 without writing ELISYM_REFUSAL_FILE: unauthorized',
+            undefined,
+            'unauthorized',
+          ),
+        ),
+        monitor,
+        'slipped-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
+    });
+
     it('masks a generic script failure rather than quoting its summary', async () => {
       // The customer-facing string is part of the contract: `classifyJobError`
       // keys the "what happened to my payment" note off it, so a skill failure

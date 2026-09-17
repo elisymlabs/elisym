@@ -59,6 +59,7 @@ import {
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
+import { SCRIPT_EXIT_REFUSED } from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -416,6 +417,12 @@ function customerSafeMessage(error: unknown): string {
     // treat it as proof of anything. The SDK has already flattened and capped
     // the sentence itself.
     return `${PROVIDER_REFUSED_PREFIX}${error.message}`;
+  }
+  if (isScriptBillingExhaustedError(error)) {
+    // Its `message` embeds stdout when stderr is empty; quote the halves the
+    // same way the health branch does, so the two never disagree about what the
+    // operator was shown.
+    return `script signalled billing exhausted: ${operatorExcerpt(error.stderr || error.stdout)}`;
   }
   if (isScriptExecutionError(error)) {
     // The fixed mask, not the error's own summary. `script failed (exit 1)`
@@ -883,6 +890,18 @@ export class AgentRuntime {
     }
     const tag = `[${jobId.slice(0, 8)}]`;
 
+    if (isScriptExecutionError(err) && err.exitCode === SCRIPT_EXIT_REFUSED) {
+      // The script meant to refuse and got the contract wrong (no reason file,
+      // or a typo in the variable name). That says nothing about the operator's
+      // API key, so gating it - let alone cascading across every model on it -
+      // would take the agent offline for a copy bug. The hint is already on the
+      // error's detail, which the operator log carries.
+      log(
+        `${tag} Skill "${skill.name}" exited ${SCRIPT_EXIT_REFUSED} without a reason file; health state unchanged.`,
+      );
+      return false;
+    }
+
     if (isScriptRefusalError(err)) {
       // A refusal is an answer, not a fault: the script ran, understood the
       // request and declined it. Gating the skill on it would take a capability
@@ -907,15 +926,16 @@ export class AgentRuntime {
       log(
         `${tag} Script signaled billing-exhausted (exit ${err.exitCode}). Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      // `err.stderr`, not `err.message`: the message falls back to stdout, and
-      // for an LLM proxy stdout is the model's completion - text the customer
-      // steers, stored here as the pair's reason and replayed on every gated
-      // job afterwards.
+      // stderr first, stdout only as a fallback. The DECISION here was the
+      // script's own exit 42, not anything in this text, so quoting stdout
+      // cannot be steered into gating a key - and the common proxy shape prints
+      // the upstream's 402 body to stdout, so insisting on stderr would record
+      // no reason at all.
       this.healthMonitor.markUnhealthyFromJob(
         provider,
         model,
         'billing',
-        operatorExcerpt(err.stderr, 200),
+        operatorExcerpt(err.stderr || err.stdout, 200),
       );
       return true;
     }

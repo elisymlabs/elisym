@@ -20,15 +20,24 @@ const ZWJ = String.fromCodePoint(0x200d);
  */
 const FORMAT_MARKS = /\p{Cf}/gu;
 
+/**
+ * Every C0 and C1 control character, and the variant that keeps tab and
+ * newline so they collapse as whitespace instead of welding words together.
+ *
+ * Regexes rather than a per-code-point loop: this runs on text bounded only by
+ * `MAX_SCRIPT_OUTPUT`, and neither class can match half of a surrogate pair, so
+ * the two forms are equivalent and only one of them walks a megabyte one
+ * character at a time. The lint suppression is the same one
+ * `packages/cli/src/logging.ts` carries for the identical class.
+ */
+// eslint-disable-next-line no-control-regex
+const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
+// eslint-disable-next-line no-control-regex
+const CONTROLS_EXCEPT_TAB_AND_NEWLINE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+
 /** Every C0 and C1 control character becomes a space. */
 export function withoutControlCharacters(text: string): string {
-  let out = '';
-  for (const character of text) {
-    const code = character.codePointAt(0);
-    const isControl = code !== undefined && (code < 0x20 || (code >= 0x7f && code <= 0x9f));
-    out += isControl ? ' ' : character;
-  }
-  return out;
+  return text.replace(CONTROLS, ' ');
 }
 
 /**
@@ -81,19 +90,6 @@ export function flattenUntrusted(text: string): string {
   return withoutFormatMarks(withoutControlCharacters(text)).replace(/\s+/g, ' ').trim();
 }
 
-/** Take at most `maxChars` characters from an already-split string. */
-function takeFrom(characters: string[], maxChars: number): string {
-  if (maxChars <= 0) {
-    return '';
-  }
-  const kept =
-    characters.length <= maxChars ? characters.join('') : characters.slice(0, maxChars).join('');
-  // On both branches: the text may already have been cut by code unit before it
-  // reached here, and appending an ellipsis to half a character is how a lone
-  // surrogate ends up in a result event.
-  return withoutDanglingSurrogate(kept);
-}
-
 /**
  * At most `maxChars` CHARACTERS, with an ellipsis when something was cut.
  *
@@ -102,18 +98,24 @@ function takeFrom(characters: string[], maxChars: number): string {
  * arithmetic that reaches zero ("what is left of the line") must not come back
  * with the whole input.
  */
-export function clipToCharacters(text: string, maxChars: number): string {
+export function clipToCharacters(text: string, maxChars: number, alreadyCut = false): string {
   if (maxChars <= 0) {
     return '';
   }
-  const characters = [...text];
-  if (characters.length <= maxChars) {
+  // A character is one or two code units, so the first `maxChars` of them
+  // cannot begin past `maxChars * 2`. Spreading the whole string would build a
+  // million-element array of single characters to keep a few hundred.
+  const characters = [...text.slice(0, maxChars * 2)];
+  const fits = characters.length <= maxChars && text.length <= maxChars * 2;
+  if (fits && !alreadyCut) {
     return withoutDanglingSurrogate(text);
   }
   if (maxChars === 1) {
     return '…';
   }
-  return `${takeFrom(characters, maxChars - 1).trimEnd()}…`;
+  // `alreadyCut` says the CALLER truncated its input: a result that fits is
+  // still an excerpt, and the ellipsis is the only thing that says so.
+  return `${withoutDanglingSurrogate(characters.slice(0, maxChars - 1).join('')).trimEnd()}…`;
 }
 
 /**
@@ -128,17 +130,9 @@ export function clipToCharacters(text: string, maxChars: number): string {
  * words on separate lines do not weld together before the collapse.
  */
 export function flattenForComparison(text: string): string {
-  let out = '';
-  for (const character of text) {
-    const code = character.codePointAt(0);
-    const isDeletableControl =
-      code !== undefined &&
-      ((code < 0x20 && code !== 0x09 && code !== 0x0a) || (code >= 0x7f && code <= 0x9f));
-    if (!isDeletableControl) {
-      out += character;
-    }
-  }
-  return withoutAnyFormatMarks(out).replace(/\s+/g, ' ').trim();
+  return withoutAnyFormatMarks(text.replace(CONTROLS_EXCEPT_TAB_AND_NEWLINE, ''))
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**
@@ -158,7 +152,8 @@ export function excerptUntrusted(text: string, maxChars: number): string {
   // window holding nothing - or, worse, its first letter. Any SHORT result from
   // a text that outran the window means the window was the limit rather than
   // the content, so pay for the whole thing once.
+  const outranWindow = text.length > window;
   const flattened =
-    [...windowed].length < maxChars && text.length > window ? flattenUntrusted(text) : windowed;
-  return clipToCharacters(flattened, maxChars);
+    [...windowed].length < maxChars && outranWindow ? flattenUntrusted(text) : windowed;
+  return clipToCharacters(flattened, maxChars, outranWindow && flattened === windowed);
 }

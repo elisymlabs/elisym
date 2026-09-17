@@ -134,7 +134,11 @@ export function isScriptExecutionError(value: unknown): value is ScriptExecution
 export function isScriptBillingExhaustedError(
   value: unknown,
 ): value is ScriptBillingExhaustedError {
-  return value instanceof Error && value.name === 'ScriptBillingExhaustedError';
+  return (
+    value instanceof Error &&
+    value.name === 'ScriptBillingExhaustedError' &&
+    typeof (value as ScriptBillingExhaustedError).stderr === 'string'
+  );
 }
 
 /**

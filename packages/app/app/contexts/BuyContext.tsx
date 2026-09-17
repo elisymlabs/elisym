@@ -82,6 +82,7 @@ import { DELEGATED_WALLET_UNSUPPORTED_MESSAGE, usesDelegatedRail } from '~/lib/d
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
 import { formatCardPrice, settledPriceForEntry } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
+import { storedRefusal } from '~/lib/refusal';
 import { rememberJobFile } from '~/lib/retryFiles';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
@@ -97,14 +98,6 @@ const WEB_ACCEPT_TRANSPORTS: TransportKind[] = ['blossom'];
 // Sync subscription window before a paid job flips to background polling.
 // Matches the MCP 10-min cap; the result (kind 6100) persists on the relays.
 // Exported for the Chat tab-open reconcile's re-subscription window.
-/**
- * What a refusal is allowed to occupy in the thread store.
- *
- * The runtime caps its own at 400 characters, but only a provider running this
- * build does - and the thread keeps 500 entries per agent in IndexedDB.
- */
-const MAX_STORED_REFUSAL_CHARS = 400;
-
 export const JOB_WAIT_TIMEOUT_MS = 600_000;
 // Cadence for re-polling the relays for a paid-but-not-yet-delivered result.
 const PENDING_POLL_INTERVAL_MS = 120_000;
@@ -1140,13 +1133,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // same answer again.
               const kind = classifyJobError(errMsg);
               void failEntry(agentPubkey, jobEventId, {
-                // Bounded before it is stored: the provider chose this text and
-                // the thread keeps 500 entries per agent. The runtime caps a
-                // refusal at 400 characters, but only a provider running this
-                // build does.
-                ...(kind === 'provider-refused'
-                  ? { refusal: errMsg.slice(0, MAX_STORED_REFUSAL_CHARS) }
-                  : {}),
+                ...(kind === 'provider-refused' ? { refusal: storedRefusal(errMsg) } : {}),
               });
               setSession((prev) =>
                 sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
