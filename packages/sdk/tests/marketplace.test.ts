@@ -467,6 +467,27 @@ describe('MarketplaceService.queryJobErrors', () => {
     expect(errors.get(reqId)).toBe('the real verdict');
   });
 
+  it('picks the same verdict whatever order the relays return it in', async () => {
+    // Feedback timestamps are whole seconds, so two verdicts published in the
+    // same one are common - and a refusal is terminal, so whichever wins is
+    // what closes the job. It must not depend on array order.
+    const provider = ElisymIdentity.generate();
+    const sameSecond = 4242;
+    const pair = [
+      feedback(provider, { content: 'verdict one', createdAt: sameSecond }),
+      feedback(provider, { content: 'verdict two', createdAt: sameSecond }),
+    ];
+    const read = async (events: Event[]) => {
+      const pool = createMockPool();
+      (pool.queryBatchedByTag as any).mockResolvedValue(events);
+      return (
+        await new MarketplaceService(pool as any).queryJobErrors([reqId], provider.publicKey)
+      ).get(reqId);
+    };
+
+    expect(await read(pair)).toBe(await read([...pair].reverse()));
+  });
+
   it('asks the relays nothing when there is nothing to ask about', async () => {
     const provider = ElisymIdentity.generate();
     const pool = createMockPool();

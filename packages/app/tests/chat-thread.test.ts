@@ -533,6 +533,26 @@ describe('chatThread store', () => {
       // The oldest NON-exempt entry was trimmed instead.
       expect(thread.some((entry) => entry.jobEventId === 'job-0')).toBe(false);
     });
+
+    it('exempts a paid entry the agent REFUSED', async () => {
+      // A refusal is terminal and, on a flat-priced skill, already charged, so
+      // this entry is the customer's only local record of a payment that bought
+      // nothing - the one the held-payment note sends them to check. Demoting
+      // it to `failed` must not quietly make it trimmable.
+      const { store } = createStore();
+      const base = Date.now() - 1_000_000;
+      await store.appendPendingEntry(
+        AGENT,
+        pendingEntry('job-refused', { ts: base - 10, txHash: 'paid-sig' }),
+      );
+      await store.failEntry(AGENT, 'job-refused', { refusal: 'size this in USD.' });
+      for (let i = 0; i < MAX_THREAD_ENTRIES; i += 1) {
+        await store.mergeHydratedEntry(AGENT, hydratedEntry(`job-${i}`, { ts: base + i }));
+      }
+      const thread = await store.readThread(AGENT);
+      expect(thread.some((entry) => entry.jobEventId === 'job-refused')).toBe(true);
+      expect(thread.some((entry) => entry.jobEventId === 'job-0')).toBe(false);
+    });
   });
 
   describe('unpaid aging', () => {

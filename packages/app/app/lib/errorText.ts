@@ -1,5 +1,9 @@
-import { classifyJobError, excerptUntrusted, hasVisibleText } from '@elisym/sdk';
-import { storedRefusal } from './refusal';
+import {
+  classifyJobError,
+  excerptUntrusted,
+  hasVisibleText,
+  refusalFromJobError,
+} from '@elisym/sdk';
 
 /**
  * What an unexplained failure may occupy on screen.
@@ -14,15 +18,27 @@ export const MAX_DISPLAYED_ERROR_CHARS = 400;
 export const UNSTATED_FAILURE = 'The job could not be completed.';
 
 /**
- * One line of an error, fit to show a customer.
+ * One line of an error, whoever wrote it.
  *
- * EVERY surface that renders a buy-flow error goes through here. Most of these
- * strings are the app's own ("Insufficient balance"), but a job error can be
- * the provider's `error` feedback verbatim - unbounded, and free to carry the
- * control characters and direction overrides that turn one toast into
- * something that reads as the app speaking. Classifying it and then rendering
- * the raw string anyway, as the toast did, is the same bug as not classifying
- * it at all.
+ * Nothing here interprets the string - it only refuses to paint an unbounded
+ * one, or one carrying the control characters and direction overrides that
+ * make a line read as something other than what it says. Use this for an error
+ * the app itself produced (a wallet rejection, an RPC failure): those are not
+ * job verdicts, and classifying them would answer "insufficient SOL" with
+ * "Agent unavailable".
+ */
+export function boundedErrorText(error: string): string {
+  const excerpt = excerptUntrusted(error, MAX_DISPLAYED_ERROR_CHARS);
+  return hasVisibleText(excerpt) ? excerpt : UNSTATED_FAILURE;
+}
+
+/**
+ * The same, for an error that came back from a JOB.
+ *
+ * Every surface that renders one goes through here. The string may be the
+ * provider's `error` feedback verbatim - a stranger's text, unbounded - so
+ * classifying it and then rendering the raw version anyway, as the toast did,
+ * is the same bug as not classifying it at all.
  */
 export function customerErrorText(error: string): string {
   const kind = classifyJobError(error);
@@ -30,8 +46,7 @@ export function customerErrorText(error: string): string {
     return 'Agent unavailable. Try again later.';
   }
   if (kind === 'provider-refused') {
-    return `The agent refused: ${storedRefusal(error)}`;
+    return `The agent refused: ${refusalFromJobError(error)}`;
   }
-  const excerpt = excerptUntrusted(error, MAX_DISPLAYED_ERROR_CHARS);
-  return hasVisibleText(excerpt) ? excerpt : UNSTATED_FAILURE;
+  return boundedErrorText(error);
 }

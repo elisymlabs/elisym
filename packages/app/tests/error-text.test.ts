@@ -1,6 +1,7 @@
 import { PROVIDER_REFUSED_PREFIX, SCRIPT_REFUSAL_MAX_CHARS } from '@elisym/sdk';
 import { describe, expect, it } from 'vitest';
 import {
+  boundedErrorText,
   customerErrorText,
   MAX_DISPLAYED_ERROR_CHARS,
   UNSTATED_FAILURE,
@@ -49,6 +50,17 @@ describe('what an error is allowed to put on screen', () => {
     const shown = customerErrorText(`${PROVIDER_REFUSED_PREFIX}${'y'.repeat(40_000)}`);
     expect([...shown].length).toBeLessThanOrEqual(
       'The agent refused: '.length + SCRIPT_REFUSAL_MAX_CHARS,
+    );
+  });
+
+  it('bounds the app`s own errors without reading them as verdicts', () => {
+    // A wallet saying "insufficient SOL" is not the agent being unavailable,
+    // so this path never classifies - but a wall of RPC JSON is still bounded.
+    expect(boundedErrorText('Insufficient SOL for this transaction')).toBe(
+      'Insufficient SOL for this transaction',
+    );
+    expect([...boundedErrorText('{'.repeat(40_000))].length).toBeLessThanOrEqual(
+      MAX_DISPLAYED_ERROR_CHARS,
     );
   });
 

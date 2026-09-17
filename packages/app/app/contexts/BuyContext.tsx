@@ -3,6 +3,7 @@ import {
   buildAuthMessage,
   buildPaymentInstructions,
   classifyJobError,
+  refusalFromJobError,
   deriveOwnerDelegationAta,
   encodeJobPayload,
   estimatePriorityFeeMicroLamports,
@@ -79,11 +80,10 @@ import {
 } from '~/lib/chatThread';
 import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { DELEGATED_WALLET_UNSUPPORTED_MESSAGE, usesDelegatedRail } from '~/lib/delegatedBuyMode';
-import { customerErrorText } from '~/lib/errorText';
+import { boundedErrorText, customerErrorText } from '~/lib/errorText';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
 import { formatCardPrice, settledPriceForEntry } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
-import { storedRefusal } from '~/lib/refusal';
 import { rememberJobFile } from '~/lib/retryFiles';
 
 const COMPUTE_UNIT_LIMIT = 200_000;
@@ -983,7 +983,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 cleanupRef.current?.();
                 cleanupRef.current = null;
                 toast.dismiss(toastId);
-                toast.error(msg);
+                // The app's own words, not a verdict to classify - but still
+                // bounded, since an RPC or wallet error can arrive as a wall of
+                // JSON.
+                toast.error(boundedErrorText(msg));
               }
             },
 
@@ -1134,7 +1137,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // same answer again.
               const kind = classifyJobError(errMsg);
               void failEntry(agentPubkey, jobEventId, {
-                ...(kind === 'provider-refused' ? { refusal: storedRefusal(errMsg) } : {}),
+                ...(kind === 'provider-refused' ? { refusal: refusalFromJobError(errMsg) } : {}),
               });
               setSession((prev) =>
                 sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
@@ -1229,7 +1232,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         );
         cleanupRef.current = null;
         toast.dismiss(toastId);
-        toast.error(msg);
+        toast.error(boundedErrorText(msg));
       }
     },
     [

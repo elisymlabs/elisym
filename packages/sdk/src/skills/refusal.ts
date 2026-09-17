@@ -23,6 +23,7 @@
  * script author reaching for it should not have to import from `llm-health`.
  */
 import { ScriptExecutionError } from '../llm-health/types';
+import { PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
 import type { RefusalFileRead } from './refusal-file';
 import { excerptUntrusted, flattenUntrusted, hasVisibleText } from './untrusted-text';
 
@@ -112,6 +113,22 @@ export function refusalMessage(reason: string): string {
 }
 
 /**
+ * The same sentence, recovered from the wire on the customer's side.
+ *
+ * The runtime prefixes a refusal with `PROVIDER_REFUSED_PREFIX` so a client can
+ * tell one from an outage; a client that goes on to RENDER it wants the
+ * provider's words without the label, since its own surface already says who
+ * refused. Here rather than in each client, because the label, the cap and the
+ * fallback are one rule and every client would otherwise re-implement it.
+ */
+export function refusalFromJobError(message: string): string {
+  const sentence = message.startsWith(PROVIDER_REFUSED_PREFIX)
+    ? message.slice(PROVIDER_REFUSED_PREFIX.length)
+    : message;
+  return refusalMessage(sentence);
+}
+
+/**
  * Thrown when a script wrote a reason to `ELISYM_REFUSAL_FILE`.
  *
  * Unlike `ScriptExecutionError`, `message` is the PROVIDER's own sentence rather
@@ -184,17 +201,26 @@ export function throwIfRefused(
     // Blaming the script for the last two sends an operator hunting a typo in
     // code that is correct.
     let hint = REFUSAL_CONTRACT_HINT;
+    // And so does the health gate. The slip exemption exists for a COPY BUG in
+    // the skill - a mistyped variable name is no evidence about the operator's
+    // API key. The other two are the HOST failing: no descriptors left, or a
+    // temp directory it cannot write. An agent that can no longer make or read
+    // its own scratch file is exactly what the breaker is for, so those keep
+    // the ordinary gating and stop the agent selling jobs it cannot run.
+    let contractSlip = true;
     if (!channelOffered) {
       hint = REFUSAL_CHANNEL_MISSING_HINT;
+      contractSlip = false;
     } else if (file.state === 'unreadable') {
       hint = REFUSAL_UNREADABLE_HINT;
+      contractSlip = false;
     }
     throw new ScriptExecutionError(
       result.code,
       `${hint} ${result.stderr.trim() || result.stdout.trim() || '(no output)'}`,
       undefined,
       result.stderr,
-      true,
+      contractSlip,
     );
   }
 }

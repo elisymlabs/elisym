@@ -1,4 +1,4 @@
-import { classifyJobError, type FileAttachment } from '@elisym/sdk';
+import { classifyJobError, refusalFromJobError, type FileAttachment } from '@elisym/sdk';
 import { useEffect, useRef } from 'react';
 import { JOB_WAIT_TIMEOUT_MS } from '~/contexts/BuyContext';
 import { useElisymClient } from '~/hooks/useElisymClient';
@@ -6,7 +6,6 @@ import { useIdentity } from '~/hooks/useIdentity';
 import { recordCompletion, UNPAID_PENDING_MAX_AGE_MS } from '~/lib/chatSession';
 import { agePendingEntries, completeEntry, failEntry, readThread } from '~/lib/chatThread';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
-import { storedRefusal } from '~/lib/refusal';
 
 /**
  * Tab-open reconcile (stage 2): when the Chat tab opens, run a one-shot
@@ -78,34 +77,47 @@ export function useChatReconcile(agentPubkey: string): void {
         ]);
         // transient relay error - the next tab open / hydration retries
         queryFailed = results === null;
-        for (const entry of pendingEntries) {
-          if (cancelled) {
-            return;
+        // One entry's IndexedDB write failing (quota, a blocked private
+        // window, an aborted transaction) must not cost every OTHER entry its
+        // re-subscription below: without this the rejection escapes a bare
+        // `void reconcile()` and the open tab silently stops receiving live
+        // results for the rest of the session.
+        try {
+          for (const entry of pendingEntries) {
+            if (cancelled) {
+              return;
+            }
+            const res = results?.get(entry.jobEventId);
+            // Skip missing or undecryptable results (the latter surfaces as
+            // empty content + decryptionFailed), like the live subscription.
+            if (res && !res.decryptionFailed && res.content) {
+              const decoded = decodeResult(res.content);
+              await completeReconciled(
+                entry.jobEventId,
+                entry.sessionId,
+                resultDisplay(decoded),
+                decoded.attachments,
+              );
+              continue;
+            }
+            // ONLY a refusal closes an entry from here. It is the one verdict
+            // that is terminal and deterministic, and this is the only path
+            // that reaches a refusal published while the tab was closed -
+            // including one past the 600s window, which is re-subscribed to by
+            // nothing. Every other error is left alone on purpose: an outage or
+            // a transient failure must not demote a PAID pending entry whose
+            // job the provider's recovery loop may still deliver.
+            const message = errors?.get(entry.jobEventId);
+            if (message !== undefined && classifyJobError(message) === 'provider-refused') {
+              await failEntry(agentPubkey, entry.jobEventId, {
+                refusal: refusalFromJobError(message),
+              });
+            }
           }
-          const res = results?.get(entry.jobEventId);
-          // Skip missing or undecryptable results (the latter surfaces as
-          // empty content + decryptionFailed), like the live subscription.
-          if (res && !res.decryptionFailed && res.content) {
-            const decoded = decodeResult(res.content);
-            await completeReconciled(
-              entry.jobEventId,
-              entry.sessionId,
-              resultDisplay(decoded),
-              decoded.attachments,
-            );
-            continue;
-          }
-          // ONLY a refusal closes an entry from here. It is the one verdict
-          // that is terminal and deterministic, and this is the only path that
-          // reaches a refusal published while the tab was closed - including
-          // one past the 600s window, which is re-subscribed to by nothing.
-          // Every other error is left alone on purpose: an outage or a
-          // transient failure must not demote a PAID pending entry whose job
-          // the provider's recovery loop may still deliver.
-          const message = errors?.get(entry.jobEventId);
-          if (message !== undefined && classifyJobError(message) === 'provider-refused') {
-            await failEntry(agentPubkey, entry.jobEventId, { refusal: storedRefusal(message) });
-          }
+        } catch {
+          // Nothing was proven about the entries this loop never reached, so
+          // ageing must not run either.
+          queryFailed = true;
         }
       }
 
@@ -181,7 +193,7 @@ export function useChatReconcile(agentPubkey: string): void {
                 return;
               }
               void failEntry(agentPubkey, entry.jobEventId, {
-                refusal: storedRefusal(message),
+                refusal: refusalFromJobError(message),
               });
             },
           },
@@ -198,7 +210,10 @@ export function useChatReconcile(agentPubkey: string): void {
       }
     };
 
-    void reconcile();
+    // Nothing here is worth an unhandled rejection: a reconcile that fails
+    // outright leaves the thread exactly as it found it, and hydration or the
+    // next tab open tries again.
+    void reconcile().catch(() => {});
     return () => {
       cancelled = true;
       for (const cleanup of subscriptionCleanups) {

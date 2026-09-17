@@ -27,7 +27,7 @@ import { createKeyedQueue, webLocks, type LocksAdapter } from './locks';
 
 export const CHAT_THREAD_KEY_PREFIX = 'chat-thread:';
 
-/** Per-agent entry cap; oldest-by-`ts` trimmed on write, paid `pending` exempt. */
+/** Per-agent entry cap; oldest-by-`ts` trimmed on write, paid unresolved exempt. */
 export const MAX_THREAD_ENTRIES = 500;
 
 /** Outcome of an on-chain call a job produced. See `ChatThreadEntry.callStatus`. */
@@ -85,9 +85,10 @@ export interface ChatThreadEntry {
    */
   refusal?: string;
   /**
-   * Solana signature of the payment, when one was sent. A paid entry stays
-   * `pending` indefinitely (never aged, never trimmed): money was sent, the
-   * state must stay visible.
+   * Solana signature of the payment, when one was sent. A paid entry is never
+   * aged out of `pending` and never trimmed while it is unresolved - `pending`
+   * or `failed`, a refusal included: money was sent, the state must stay
+   * visible.
    */
   txHash?: string;
   /**
@@ -220,8 +221,20 @@ const idbThreadStorage: ChatThreadStorageAdapter = {
   listKeys: (predicate) => cacheListKeys(predicate),
 };
 
-function isPaidPending(entry: ChatThreadEntry): boolean {
-  return entry.status === 'pending' && entry.txHash !== undefined;
+/**
+ * Money left the wallet and nothing came back for it.
+ *
+ * `pending` is a job still open; `failed` is one closed with no result, a
+ * refusal included - and a refusal is terminal AND charged, so that entry is
+ * the customer's only local record of a payment they got nothing for, the very
+ * one `heldPaymentNote` tells them to check against their wallet history. A
+ * completed paid entry (no `status` at all) may be trimmed: they got what they
+ * paid for.
+ */
+function isUnresolvedPaid(entry: ChatThreadEntry): boolean {
+  // `status` is cleared on completion, so "still has one" is what says the job
+  // never resolved.
+  return entry.txHash !== undefined && entry.status !== undefined;
 }
 
 function sessionUuidOf(entry: ChatThreadEntry): string | undefined {
@@ -232,7 +245,7 @@ function sortByTs(entries: ChatThreadEntry[]): ChatThreadEntry[] {
   return [...entries].sort((left, right) => left.ts - right.ts);
 }
 
-/** Drop oldest-by-`ts` entries over the cap; paid `pending` entries are exempt. */
+/** Drop oldest-by-`ts` entries over the cap; paid, unresolved entries are exempt. */
 function trimToCap(entries: ChatThreadEntry[]): ChatThreadEntry[] {
   if (entries.length <= MAX_THREAD_ENTRIES) {
     return entries;
@@ -240,7 +253,7 @@ function trimToCap(entries: ChatThreadEntry[]): ChatThreadEntry[] {
   let excess = entries.length - MAX_THREAD_ENTRIES;
   const kept: ChatThreadEntry[] = [];
   for (const entry of entries) {
-    if (excess > 0 && !isPaidPending(entry)) {
+    if (excess > 0 && !isUnresolvedPaid(entry)) {
       excess -= 1;
       continue;
     }

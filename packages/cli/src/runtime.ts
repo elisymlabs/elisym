@@ -245,6 +245,34 @@ function scriptMessageLooksLikeBillingOrInvalid(lowered: string): boolean {
 }
 
 /**
+ * The subset that names the KEY rather than this request - the only signals
+ * allowed to take every model on the operator's API key offline.
+ *
+ * The list above is deliberately permissive, because gating ONE skill's pair
+ * on a false positive costs the operator one capability until the recovery
+ * probe clears it. A cascade costs them every capability on that key, so it
+ * needs a phrase an unrelated failure does not produce: `insufficient` alone
+ * is a Solana builder saying "insufficient funds for rent" and `billing` alone
+ * is a form field, while nothing prints `invalid x-api-key` or `credit
+ * balance` except the provider whose key it is. The LLM path next door already
+ * demands an HTTP 401/402 before cascading; this is the script path's version
+ * of the same bar.
+ */
+const SCRIPT_KEY_LEVEL_MARKERS = [
+  'credit balance',
+  'insufficient_quota',
+  'x-api-key',
+  'invalid api key',
+  'invalid_api_key',
+  'authentication_error',
+  'unauthenticated',
+];
+
+function scriptMessageNamesTheKey(lowered: string): boolean {
+  return SCRIPT_KEY_LEVEL_MARKERS.some((marker) => lowered.includes(marker));
+}
+
+/**
  * Customer-facing message for both the preflight gate (cached
  * billing/invalid signal) and the post-execute path (skill.execute
  * surfaced billing/invalid mid-job). Kept identical between the two so
@@ -1074,7 +1102,9 @@ export class AgentRuntime {
           lower.includes('insufficient'))
           ? 'billing'
           : 'invalid';
-      const cascade = looksBillingOrInvalid;
+      // The gate and the cascade are separate questions, and the second one is
+      // much more expensive to get wrong - see `SCRIPT_KEY_LEVEL_MARKERS`.
+      const cascade = scriptMessageNamesTheKey(lower);
       const cascadeNote = cascade ? this.cascadeSuffix(provider, model) : ' (no cascade)';
       const signalNote = looksBillingOrInvalid
         ? `${reason} signal in stderr`

@@ -150,10 +150,15 @@ export function isScriptExecutionError(value: unknown): value is ScriptExecution
 export function isScriptBillingExhaustedError(
   value: unknown,
 ): value is ScriptBillingExhaustedError {
+  // BOTH streams, because both are read: a guard that vouches for one field
+  // and lets a caller dereference the other throws a TypeError inside the
+  // catch handler that was supposed to close the job - and the customer is
+  // then told nothing at all.
   return (
     value instanceof Error &&
     value.name === 'ScriptBillingExhaustedError' &&
-    typeof (value as ScriptBillingExhaustedError).stderr === 'string'
+    typeof (value as ScriptBillingExhaustedError).stderr === 'string' &&
+    typeof (value as ScriptBillingExhaustedError).stdout === 'string'
   );
 }
 

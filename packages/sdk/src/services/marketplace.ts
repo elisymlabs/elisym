@@ -970,14 +970,19 @@ export class MarketplaceService {
     }
     const wanted = new Set(requestIds);
     const events = await this.pool.queryBatchedByTag(
-      { kinds: [KIND_JOB_FEEDBACK] } as Filter,
+      // `authors`, so the relay does the binding too: job ids are public, and
+      // without it a customer opening this tab downloads - and verifies the signature of
+      // - every kind-7000 anyone ever tagged onto their job.
+      { kinds: [KIND_JOB_FEEDBACK], authors: [providerPubkey] } as Filter,
       'e',
       requestIds,
     );
-    const createdAtByRequest = new Map<string, number>();
+    const chosen = new Map<string, { createdAt: number; id: string }>();
     const nowSecs = Math.floor(Date.now() / 1000);
     for (const ev of events) {
-      if (!verifyEvent(ev) || ev.pubkey !== providerPubkey) {
+      // Author first: a relay is not obliged to honour the filter, and a string
+      // comparison is free where a signature check is not.
+      if (ev.pubkey !== providerPubkey || !verifyEvent(ev)) {
         continue;
       }
       // Same clamp as everywhere else: a post-dated event must not win
@@ -992,10 +997,18 @@ export class MarketplaceService {
       if (ev.tags.find((t) => t[0] === 'status')?.[1] !== 'error') {
         continue;
       }
-      if (ev.created_at < (createdAtByRequest.get(eTag) ?? 0)) {
+      // Newest wins, and the event id breaks a tie: feedback timestamps are
+      // whole seconds, so two verdicts published in the same one would
+      // otherwise resolve by the relay's arbitrary array order and a customer
+      // could see a different sentence on each tab open.
+      const prev = chosen.get(eTag);
+      if (
+        prev !== undefined &&
+        (ev.created_at < prev.createdAt || (ev.created_at === prev.createdAt && ev.id <= prev.id))
+      ) {
         continue;
       }
-      createdAtByRequest.set(eTag, ev.created_at);
+      chosen.set(eTag, { createdAt: ev.created_at, id: ev.id });
       errorByRequest.set(eTag, ev.content?.trim() || PROVIDER_ERROR_FALLBACK);
     }
     return errorByRequest;

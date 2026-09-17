@@ -1322,6 +1322,34 @@ describe('AgentRuntime', () => {
       );
     });
 
+    it('does not take a whole provider offline over the word "insufficient"', async () => {
+      // A Solana builder printing "insufficient funds for rent" says nothing
+      // about the operator's API key. Gating THIS pair is cheap and reversible;
+      // cascading refuses every skill on that key until a probe clears it, so
+      // the cascade needs a phrase only the key's provider produces.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            1,
+            'Error: insufficient funds for rent',
+            undefined,
+            'Error: insufficient funds for rent',
+          ),
+        ),
+        monitor,
+        'rent-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'billing',
+        expect.stringContaining('insufficient funds'),
+        { cascade: false },
+      );
+    });
+
     it('never gates a key on words the customer could have put on stdout', async () => {
       // For an LLM proxy, stdout is the model's completion. A buyer asking for
       // the word "unauthorized" must not be able to take the operator's whole
