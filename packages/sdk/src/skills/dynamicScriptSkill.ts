@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { throwIfRefused } from './refusal';
+import { readRefusalFile, SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
 import { runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
@@ -124,11 +124,17 @@ export class DynamicScriptSkill implements Skill {
     // charge file placed there would be delivered to the buyer as output and
     // would make a text-only skill look like a file skill.
     const chargeFile = join(outDir, 'charge');
+    // Out-of-band refusal channel. A sibling of the output files for the same
+    // reason the charge file is: what a script prints is frequently not its own
+    // words, and a refusal has to be something it did rather than something it
+    // echoed.
+    const refusalFile = join(outDir, 'refusal');
     const env: NodeJS.ProcessEnv = {
       ...(this.scriptEnv ?? scopedToolEnv()),
       ELISYM_OUTPUT_FILE: outputFile,
       ELISYM_OUTPUT_DIR: outputDir,
       ELISYM_CHARGE_FILE: chargeFile,
+      [SCRIPT_REFUSAL_FILE_ENV]: refusalFile,
     };
     if (input.filePath !== undefined) {
       env.ELISYM_INPUT_FILE = input.filePath;
@@ -167,14 +173,14 @@ export class DynamicScriptSkill implements Skill {
           'script could not be started',
         );
       }
+      // Before every other verdict, including billing: a written reason is the
+      // most deliberate thing a script can say, and it is what the customer
+      // needs to read. Runs on the success path too - a script that wrote a
+      // refusal and then exited 0 refused, whatever its exit code claims.
+      throwIfRefused(result, await readRefusalFile(refusalFile));
       if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {
         throw new ScriptBillingExhaustedError(result.code, result.stdout, result.stderr);
       }
-      // Both directions of the refusal contract, and the operator hint when a
-      // script exits 43 without honouring it. Runs before the generic non-zero
-      // branch AND before the success branch: a marker printed by a script that
-      // then exits 0 is a refusal, not a deliverable.
-      throwIfRefused(result);
       if (result.code !== 0) {
         const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
         // Generic message reaches the customer; raw stderr/stdout stays on `detail`

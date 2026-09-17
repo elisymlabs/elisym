@@ -9,41 +9,54 @@
  * request again. A capability that refuses precisely ends up indistinguishable
  * from one that is broken.
  *
+ * The reason travels OUT OF BAND, in the file named by `ELISYM_REFUSAL_FILE`,
+ * exactly as a file result travels through `ELISYM_OUTPUT_FILE` and a metered
+ * charge through `ELISYM_CHARGE_FILE`. Nothing a script prints can be a refusal,
+ * which matters because stdout is frequently not the script's own words: an LLM
+ * proxy echoes a model's completion, and a customer able to influence that
+ * completion could otherwise destroy their own paid job and have their own
+ * sentence handed back to them under the runtime's "The provider refused"
+ * label. Writing a file is something a script does on purpose.
+ *
  * This lives beside the script runners rather than with the health monitor: the
  * defining property of a refusal is that it does NOT touch health state, and a
  * script author reaching for it should not have to import from `llm-health`.
  */
+import { readFile, stat } from 'node:fs/promises';
 import { ScriptExecutionError } from '../llm-health/types';
-import {
-  clipToCharacters,
-  firstContentIndex,
-  flattenUntrusted,
-  withoutDanglingSurrogate,
-} from './untrusted-text';
+import { clipToCharacters, flattenUntrusted, withoutDanglingSurrogate } from './untrusted-text';
 
 /**
- * Exit code half of the contract. The other half is `SCRIPT_REFUSAL_MARKER` on
- * stdout, and BOTH are required.
+ * The exit code that says "what I wrote in the refusal file is why".
  *
- * An exit code alone cannot carry this meaning. 43 is `CURLE_BAD_FUNCTION_ARGUMENT`,
- * and a `set -e` script whose `curl` fails that way exits 43 without meaning
- * anything by it - that script is broken, its buyers should be told nothing
- * about their input, and its health gate must still flip. Demanding a marker
- * the script had to print keeps an accident on the failure path.
+ * It is not what makes a refusal - the file is - but a refusing script should
+ * still exit non-zero, and a dedicated code lets the runner tell an honoured
+ * contract from a crash that happened to leave a file behind.
  *
  * 43 sits beside `SCRIPT_EXIT_BILLING_EXHAUSTED` and outside the same ranges:
- * 1-2 generic, 64-78 `sysexits.h`, 126-128 shell-internal, 130+ signals.
+ * 1-2 generic, 64-78 `sysexits.h`, 126-128 shell-internal, 130+ signals. It is
+ * also `CURLE_BAD_FUNCTION_ARGUMENT`, which is one more reason the code alone
+ * decides nothing.
  */
 export const SCRIPT_EXIT_REFUSED = 43;
 
-/** What stdout must start with for exit 43 to mean a refusal. */
-export const SCRIPT_REFUSAL_MARKER = 'ELISYM-REFUSAL:';
+/** Environment variable naming the file a refusing script writes its reason to. */
+export const SCRIPT_REFUSAL_FILE_ENV = 'ELISYM_REFUSAL_FILE';
 
 /** How much of a refusal reaches the customer - long enough for a sentence or three. */
 export const SCRIPT_REFUSAL_MAX_CHARS = 400;
 
 /**
- * Said when a script marks a refusal but states nothing after the marker.
+ * The most of the refusal file that is ever read into memory.
+ *
+ * Generous against the 400-character cap because flattening only shortens, and
+ * bounded because a subprocess writes this file: a runaway script must not be
+ * able to make the agent read an arbitrary amount of it.
+ */
+export const SCRIPT_REFUSAL_FILE_MAX_BYTES = 8 * 1024;
+
+/**
+ * Said when a script refuses but leaves the file empty.
  *
  * A fragment, not a sentence: the runtime prefixes every refusal with its own
  * label, and "The provider refused: The capability refused this request" says
@@ -51,112 +64,61 @@ export const SCRIPT_REFUSAL_MAX_CHARS = 400;
  */
 export const SCRIPT_REFUSAL_UNSTATED = 'no reason was given.';
 
-/** Told to the operator when a script exits 43 without marking its stdout. */
-export const UNMARKED_REFUSAL_HINT =
-  `exit ${SCRIPT_EXIT_REFUSED} without a leading "${SCRIPT_REFUSAL_MARKER}" line on stdout, ` +
-  'so this was handled as a failure rather than a refusal - the customer was told nothing about their request:';
-
 /** How much of a refusing script's stderr the error carries for the operator. */
 export const SCRIPT_REFUSAL_STDERR_CHARS = 500;
 
-/**
- * How much of the refusal line is read.
- *
- * `runScript` captures up to a megabyte, and normalizing all of it to produce
- * 400 characters is work nobody asked for. The window is measured from the
- * first real character after the marker, so blank padding before the sentence
- * costs nothing - padding INSIDE it still counts, and a refusal that spends
- * 3200 characters on whitespace and prose gets the first 400 characters' worth
- * of what it said, not a "no reason given".
- */
-const SCAN_LIMIT = SCRIPT_REFUSAL_MAX_CHARS * 8;
+/** Told to the operator when a script exits 43 without writing the file. */
+export const REFUSAL_CONTRACT_HINT =
+  `exit ${SCRIPT_EXIT_REFUSED} without writing ${SCRIPT_REFUSAL_FILE_ENV}, so this was handled as a ` +
+  'failure rather than a refusal - the customer was told nothing about their request:';
 
 /**
- * Where the marker ends, or -1 when this stdout is not a refusal at all.
+ * What the customer is allowed to read of a refusal.
  *
- * Returns an index rather than a slice so the runners can decide and the error
- * can build its message from one scan of what may be a megabyte of stdout.
+ * The provider chose to write this, so it crosses the trust boundary - but as
+ * one plain paragraph and nothing else: `flattenUntrusted` drops the control
+ * characters and deceptive format marks, and the result is capped by character
+ * so no half of one survives the cut.
  */
-export function refusalMarkerEnd(stdout: string): number {
-  const marker = firstContentIndex(stdout);
-  if (marker === -1 || !stdout.startsWith(SCRIPT_REFUSAL_MARKER, marker)) {
-    return -1;
-  }
-  return marker + SCRIPT_REFUSAL_MARKER.length;
-}
-
-/**
- * Whether this stdout claims to be a refusal. Leading whitespace is allowed so
- * a heredoc or an indented `echo` still counts; anything else is not a refusal,
- * whatever the exit code said.
- */
-export function isRefusal(stdout: string): boolean {
-  return refusalMarkerEnd(stdout) !== -1;
-}
-
-/**
- * What the customer is allowed to read of a refusal: the rest of the MARKER'S
- * LINE, and nothing after it.
- *
- * Stopping at the newline is the part that matters. A script's stdout is not
- * written for a stranger - the line after the refusal is as likely to be a
- * debug dump with an internal hostname in it as anything else - and a contract
- * that forwards "everything after the marker" invites exactly that. One line is
- * also what the documentation can state without qualification.
- *
- * Within that line the provider chose to send this, so it crosses the trust
- * boundary - but as one plain paragraph and nothing else: `flattenUntrusted`
- * drops the control characters and deceptive format marks, and the result is
- * capped by character so no half of one survives the cut.
- */
-export function refusalMessage(stdout: string, markerEnd = refusalMarkerEnd(stdout)): string {
-  if (markerEnd === -1) {
-    return SCRIPT_REFUSAL_UNSTATED;
-  }
-  const start = firstContentIndex(stdout, markerEnd);
-  const lineEnd = stdout.indexOf('\n', markerEnd);
-  if (start === -1 || (lineEnd !== -1 && start > lineEnd)) {
-    return SCRIPT_REFUSAL_UNSTATED;
-  }
-  const end = Math.min(lineEnd === -1 ? stdout.length : lineEnd, start + SCAN_LIMIT);
-  const flattened = flattenUntrusted(withoutDanglingSurrogate(stdout.slice(start, end)));
+export function refusalMessage(reason: string): string {
+  const flattened = flattenUntrusted(withoutDanglingSurrogate(reason));
   return flattened === ''
     ? SCRIPT_REFUSAL_UNSTATED
     : clipToCharacters(flattened, SCRIPT_REFUSAL_MAX_CHARS);
 }
 
 /**
- * Thrown when a script exits with `SCRIPT_EXIT_REFUSED` AND marked its stdout.
+ * Thrown when a script wrote a reason to `ELISYM_REFUSAL_FILE`.
  *
  * Unlike `ScriptExecutionError`, `message` is the PROVIDER's own sentence rather
  * than a fixed summary, and it is meant to reach the customer - that is the
- * whole point of the exit code. `stderr` is the operator's half, kept separate
- * and already flattened and bounded: a caller logging it should not have to
- * know that the raw version can be a megabyte of terminal escapes.
+ * whole point of the channel. `stderr` is the operator's half, kept separate and
+ * already flattened and bounded: a caller logging it should not have to know
+ * that the raw version can be a megabyte of terminal escapes.
  */
 export class ScriptRefusalError extends Error {
-  readonly exitCode: number;
+  readonly exitCode: number | null;
   /** Flattened, single-line excerpt of the script's stderr. May be empty. */
   readonly stderr: string;
 
-  constructor(exitCode: number, stdout: string, stderr: string, markerEnd?: number) {
-    super(refusalMessage(stdout, markerEnd));
+  constructor(exitCode: number | null, reason: string, stderr: string) {
+    super(refusalMessage(reason));
     this.name = 'ScriptRefusalError';
     this.exitCode = exitCode;
     this.stderr = clipToCharacters(
-      flattenUntrusted(withoutDanglingSurrogate(stderr.slice(0, SCAN_LIMIT))),
+      flattenUntrusted(withoutDanglingSurrogate(stderr.slice(0, SCRIPT_REFUSAL_STDERR_CHARS * 8))),
       SCRIPT_REFUSAL_STDERR_CHARS,
     );
   }
 }
 
 /**
- * Type guard by name rather than `instanceof`.
+ * Type guard by name and shape rather than `instanceof`.
  *
  * The SDK builds each entry point as its own bundle (`splitting: false`), so a
  * class imported from `@elisym/sdk/llm-health` is a DIFFERENT class object from
  * the copy inside `@elisym/sdk/skills`, and `instanceof` across the two is
- * false however the source reads. Every consumer should use these guards.
+ * false however the source reads. Every consumer should use this.
  */
 export function isScriptRefusalError(value: unknown): value is ScriptRefusalError {
   return (
@@ -167,35 +129,50 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
 }
 
 /**
- * The refusal contract, enforced in both directions, for any script runner.
+ * Read what a script wrote to `ELISYM_REFUSAL_FILE`, or `undefined` for "it did
+ * not refuse".
  *
- * Exit 43 without the marker is a failure - 43 is also what a `set -eu` script
- * inherits from a failed `curl` - and the operator gets a hint on the error's
- * operator-side detail, because a mistyped marker otherwise looks exactly like
- * a crash and the buyer is charged for "Internal processing error".
- *
- * The MARKER without exit 43 is a refusal too. A script that prints it and then
- * exits 0 (its `exit 43` behind a pipeline that reset `$?`, say) would otherwise
- * have `ELISYM-REFUSAL: ...` delivered to the buyer as the thing they paid for.
+ * Adoption rule as elsewhere in this package: the path must exist, be a regular
+ * file and be non-empty. Anything unreadable is treated as no refusal rather
+ * than as an empty one - a refusal the runtime invented would be worse than a
+ * job that simply failed.
  */
-export function throwIfRefused(result: {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-}): void {
-  const markerEnd = refusalMarkerEnd(result.stdout);
-  if (markerEnd !== -1) {
-    throw new ScriptRefusalError(
-      result.code ?? SCRIPT_EXIT_REFUSED,
-      result.stdout,
-      result.stderr,
-      markerEnd,
-    );
+export async function readRefusalFile(path: string): Promise<string | undefined> {
+  const info = await stat(path).catch(() => null);
+  if (info === null || !info.isFile() || info.size === 0) {
+    return undefined;
+  }
+  const raw = await readFile(path, 'utf8').catch(() => null);
+  if (raw === null) {
+    return undefined;
+  }
+  return raw.slice(0, SCRIPT_REFUSAL_FILE_MAX_BYTES);
+}
+
+/**
+ * The refusal contract, for any script runner, in one place.
+ *
+ * A written reason is a refusal whatever the exit code says - the script went
+ * out of its way to produce it - EXCEPT when the process was killed rather than
+ * exited (`code === null`). A builder cut short by the execution timeout after
+ * writing its file decided nothing, and reporting that to a customer as a
+ * deliberate refusal would be a lie.
+ *
+ * Exit 43 with no reason is a failure, and the operator is told the contract was
+ * not kept: a mistyped variable name otherwise looks exactly like a crash,
+ * and the customer pays for "Internal processing error".
+ */
+export function throwIfRefused(
+  result: { code: number | null; stdout: string; stderr: string },
+  reason: string | undefined,
+): void {
+  if (reason !== undefined && result.code !== null) {
+    throw new ScriptRefusalError(result.code, reason, result.stderr);
   }
   if (result.code === SCRIPT_EXIT_REFUSED) {
     throw new ScriptExecutionError(
       result.code,
-      `${UNMARKED_REFUSAL_HINT} ${result.stderr.trim() || result.stdout.trim() || '(no output)'}`,
+      `${REFUSAL_CONTRACT_HINT} ${result.stderr.trim() || result.stdout.trim() || '(no output)'}`,
     );
   }
 }

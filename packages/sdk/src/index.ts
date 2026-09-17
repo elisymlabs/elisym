@@ -73,8 +73,8 @@ export type { DelegatedPaymentRequest } from './services/marketplace';
 export {
   clipToCharacters,
   flattenUntrusted,
+  withoutAnyFormatMarks,
   withoutDanglingSurrogate,
-  withoutFormatMarks,
 } from './skills/untrusted-text';
 export { isScriptBillingExhaustedError, isScriptExecutionError } from './llm-health/types';
 export { isScriptRefusalError } from './skills/refusal';

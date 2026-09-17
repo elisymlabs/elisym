@@ -1147,7 +1147,7 @@ describe('AgentRuntime', () => {
           .mockRejectedValue(
             new ScriptRefusalError(
               SCRIPT_EXIT_REFUSED,
-              `${SCRIPT_REFUSAL_MARKER} a size in tokens is refused - write it as "size 300 USD".`,
+              'a size in tokens is refused - write it as "size 300 USD".',
               'builder.ts:41',
             ),
           ),
@@ -1177,10 +1177,11 @@ describe('AgentRuntime', () => {
         'The provider refused: a size in tokens is refused - write it as "size 300 USD".',
       );
       expect(ledger.getStatus('paid-refused')).toBe('failed');
-      // Closed on purpose: the sentinel that carries that out of `recoverSingleJob`
-      // must not surface as an unhandled recovery error.
+      // Closed on purpose, so it must not also be reported as an unhandled
+      // recovery error - and the operator gets the refusal instead.
       const logs = onLog.mock.calls.map((c: any) => String(c[0])).join('\n');
-      expect(logs).not.toContain('recovery closed the job');
+      expect(logs).not.toContain('Recovery: failed:');
+      expect(logs).toContain('Recovery: refused: a size in tokens is refused');
     });
   });
 
@@ -1267,7 +1268,7 @@ describe('AgentRuntime', () => {
         scriptSkillThatThrows(
           new ScriptRefusalError(
             SCRIPT_EXIT_REFUSED,
-            `${SCRIPT_REFUSAL_MARKER} a size in tokens is refused rather than converted, so write it as "size 300 USD".`,
+            'a size in tokens is refused rather than converted, so write it as "size 300 USD".',
             'builder.ts:41 parse failed',
           ),
         ),
@@ -1304,8 +1305,9 @@ describe('AgentRuntime', () => {
         'claude-haiku-4-5',
         'invalid',
         expect.stringContaining('curl'),
-        // Never cascaded off a script's stderr: the markers are substrings, and
-        // "insufficient margin" in a trading script is not an exhausted key.
+        // Skill-local here because this stderr carries no billing or auth
+        // marker. One that does cascades to the provider's other models - see
+        // "marks pair unhealthy on script exit-1 carrying invalid-key signal".
         { cascade: false },
       );
     });

@@ -322,10 +322,11 @@ const EXAMPLE_SKILL_TEMPLATE = `# elisym skill template
 # # its own token limits).
 # #
 # # Refusing: a script that understood the request and will not do it
-# # prints "ELISYM-REFUSAL: <reason>" on stdout and exits 43. That
-# # sentence is the one thing a script says straight to the customer -
-# # every other failure gives them a generic message, and stderr never
-# # leaves the operator's log. It does not touch the health gate.
+# # writes why to the file named by ELISYM_REFUSAL_FILE and exits 43.
+# # That sentence is the one thing a script says straight to the
+# # customer - every other failure gives them a generic message, and
+# # stderr never leaves the operator's log. It does not touch the health
+# # gate, and nothing the script merely PRINTS can trigger it.
 # # provider: anthropic
 # # model: claude-haiku-4-5-20251001
 # # max_tokens: 4096

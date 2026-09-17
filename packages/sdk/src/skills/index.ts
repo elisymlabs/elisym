@@ -45,7 +45,8 @@ export type { X402ProxySkillParams } from './x402ProxySkill';
 export {
   isScriptRefusalError,
   SCRIPT_EXIT_REFUSED,
-  SCRIPT_REFUSAL_MARKER,
+  SCRIPT_REFUSAL_FILE_ENV,
+  SCRIPT_REFUSAL_MAX_CHARS,
   ScriptRefusalError,
 } from './refusal';
 export { resolveInsidePath, resolveInsidePathReal } from './path-safety';

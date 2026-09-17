@@ -46,6 +46,18 @@ export function withoutFormatMarks(text: string): string {
 }
 
 /**
+ * Strip EVERY format character, joiners included.
+ *
+ * For text that will be COMPARED rather than read: the x402 driver masks a
+ * customer's input out of an upstream's echo by matching it byte for byte, and
+ * an upstream that re-emits `ja<ZWJ>ne@example.com` must collapse back to what
+ * the customer sent or the mask misses it and the address reaches the log.
+ */
+export function withoutAnyFormatMarks(text: string): string {
+  return text.replace(FORMAT_MARKS, '');
+}
+
+/**
  * Drop a high surrogate a cut separated from its pair. Half a character is not
  * something to hand a log file, a terminal or a JSON encoder: it is not valid
  * UTF-8, and what survives the encoding is a replacement character at best.
@@ -67,18 +79,7 @@ export function flattenUntrusted(text: string): string {
   return withoutFormatMarks(withoutControlCharacters(text)).replace(/\s+/g, ' ').trim();
 }
 
-/**
- * The first `maxChars` CHARACTERS, with nothing added.
- *
- * Counting characters rather than UTF-16 code units is what keeps an emoji at
- * the boundary from being halved; the surrogate guard covers the case where the
- * text was already cut by code unit before it got here.
- */
-export function takeCharacters(text: string, maxChars: number): string {
-  return takeFrom([...text], maxChars);
-}
-
-/** `takeCharacters` over an already-split string, so nothing splits it twice. */
+/** Take at most `maxChars` characters from an already-split string. */
 function takeFrom(characters: string[], maxChars: number): string {
   if (maxChars <= 0) {
     return '';

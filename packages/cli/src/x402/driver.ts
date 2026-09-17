@@ -21,8 +21,8 @@ import {
   formatAssetAmount,
   resolveUsdcAsset,
   signerFromSecretKeyBase58,
+  withoutAnyFormatMarks,
   withoutDanglingSurrogate,
-  withoutFormatMarks,
 } from '@elisym/sdk';
 import type { Asset, Network } from '@elisym/sdk';
 import {
@@ -366,11 +366,12 @@ function flattenForOperator(text: string): string {
   // first would leave it as a space this never strips. What remains of the
   // whitespace class - the line and paragraph separators among it - then
   // collapses to a single space rather than welding two words together.
-  // Controls are DELETED here rather than spaced (which is what the SDK's
-  // `flattenUntrusted` does for a refusal): `maskCustomerInput` compares this
-  // text against what the customer sent, and an upstream echoing "ja\x01ne"
+  // Controls are DELETED here rather than spaced, and EVERY format mark goes,
+  // joiners included - both unlike the SDK's `flattenUntrusted`, which is for a
+  // sentence a customer reads. `maskCustomerInput` compares this text against
+  // what the customer sent, so an upstream echoing "ja\x01ne" or "ja<ZWJ>ne"
   // has to collapse back to "jane" for the mask to find it.
-  return withoutFormatMarks(sanitizeForTerminal(text)).replace(/\s+/g, ' ').trim();
+  return withoutAnyFormatMarks(sanitizeForTerminal(text)).replace(/\s+/g, ' ').trim();
 }
 
 /**

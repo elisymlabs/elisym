@@ -381,12 +381,12 @@ This is one mechanism, two declaration paths: `mode: 'llm'` skills get it throug
 
 The exit code from a script-mode skill controls how the runtime reacts:
 
-| Exit code                        | Meaning                                                                                                         | Health monitor effect                                                                                                                                                                                                                                      |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0                                | success                                                                                                         | none                                                                                                                                                                                                                                                       |
-| 42                               | upstream LLM provider is out of credits / 402                                                                   | runtime calls `markUnhealthyFromJob` on the declared `(provider, model)`; lazy recovery loop kicks in                                                                                                                                                      |
-| 43 + `ELISYM-REFUSAL:` on stdout | the skill understood the request and refuses it; the rest of that line is the reason, and the customer reads it | none - a refusal is an answer, not a fault                                                                                                                                                                                                                 |
-| anything else (non-zero)         | generic skill failure                                                                                           | flips the declared `(provider, model)` pair unhealthy when the skill declares one - skill-local for a plain exit, and cascading to that provider's other models when stderr carries a billing or auth signal; nothing to flip when the skill declares none |
+| Exit code                              | Meaning                                                                                             | Health monitor effect                                                                                                                                                                                                                                      |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0                                      | success                                                                                             | none                                                                                                                                                                                                                                                       |
+| 42                                     | upstream LLM provider is out of credits / 402                                                       | runtime calls `markUnhealthyFromJob` on the declared `(provider, model)`; lazy recovery loop kicks in                                                                                                                                                      |
+| 43 + a reason in `ELISYM_REFUSAL_FILE` | the skill understood the request and refuses it; that file is the reason, and the customer reads it | none - a refusal is an answer, not a fault                                                                                                                                                                                                                 |
+| anything else (non-zero)               | generic skill failure                                                                               | flips the declared `(provider, model)` pair unhealthy when the skill declares one - skill-local for a plain exit, and cascading to that provider's other models when stderr carries a billing or auth signal; nothing to flip when the skill declares none |
 
 ### 42: the health gate
 
@@ -422,22 +422,21 @@ echo "$body" | jq -r '.choices[0].message.content'
 
 On any other non-zero exit the customer receives a fixed generic message, because raw subprocess output is not safe to forward. That is right for a crash and wrong for a refusal: a capability that validates its input, checks a policy or parses an instruction has to be able to say **what to change**, or the customer pays, reads "script failed", and sends the same request again.
 
-Exit code 43 (`SCRIPT_EXIT_REFUSED`) is that channel, and it takes TWO things: the code, and stdout starting with the marker `ELISYM-REFUSAL:`.
+The refusal travels in its own file, named by `ELISYM_REFUSAL_FILE` - the same shape as `ELISYM_OUTPUT_FILE` and `ELISYM_CHARGE_FILE`, and set for `dynamic-script`, `static-script` and `onchain`:
 
 ```sh
 if [ "$unit" != "USD" ]; then
-  echo "ELISYM-REFUSAL: this venue sizes positions in USD, so write it as \"size 300 USD\"."
-  exit 43  # SCRIPT_EXIT_REFUSED - the line above reaches the buyer
+  printf '%s' 'this venue sizes positions in USD, so write it as "size 300 USD".' > "$ELISYM_REFUSAL_FILE"
+  exit 43  # SCRIPT_EXIT_REFUSED - the sentence above reaches the buyer
 fi
 ```
 
-- **the marker is what decides.** 43 on its own is also `CURLE_BAD_FUNCTION_ARGUMENT`, which a `set -eu` script inherits from a failed `curl` without meaning anything by it - such a script is broken, not refusing, so an unmarked 43 stays on the failure path (the buyer is told nothing about their input, the health gate still flips) and the operator log says the contract was not honoured. The reverse also holds: a marked line is a refusal even if the script then exits 0, because otherwise the buyer would be handed `ELISYM-REFUSAL: ...` as the thing they paid for.
-- **the rest of the marker's line** is the sentence the customer reads - and only that line. Whatever the script prints afterwards stays operator-side, so a debug dump below the refusal is not forwarded to a stranger. The SDK flattens the line to one paragraph, drops control characters and the format marks that reverse text (zero-width joiners survive - they spell words), and caps it at 400 characters (`SCRIPT_REFUSAL_MAX_CHARS`).
+- **the file is what decides, not the exit code.** Nothing a script PRINTS can be a refusal. Stdout is frequently not the script's own words - an LLM proxy echoes a model's completion - and a customer able to steer that completion could otherwise destroy their own paid job and have their own sentence handed back under the runtime's refusal label. Writing a file is something a script does on purpose.
+- **exit 43 is still the right exit code**, and a 43 with no file written is treated as the failure it looks like, with a line in the operator log saying the contract was not honoured. A file written without exit 43 is still a refusal: a script whose `exit 43` was swallowed by a pipeline meant what it wrote.
+- **a script the runtime killed never refuses.** A builder cut short by the execution timeout after writing its file decided nothing.
+- **the file's contents** are what the customer reads: flattened to one paragraph, stripped of control characters and the format marks that reverse text (zero-width joiners survive - they spell words), capped at 400 characters, and prefixed by the runtime with `The provider refused:`. At most 8 KB of the file is read.
 - **stderr** keeps its usual guarantee: operator-only, in the log, never sent anywhere.
-- marking a refusal and then saying nothing still refuses, with a fixed "gave no reason" message, so it cannot be mistaken for a result.
+- refusing with an empty file still refuses, with a fixed "no reason was given" message, so it cannot be mistaken for a result.
 - the health gate is untouched, unlike every other non-zero exit - refusing is the skill working.
-- the customer sees it prefixed with `The provider refused:`, which is the runtime's label and cannot be forged from inside a script.
-
-It applies to `dynamic-script`, `static-script` and `onchain`, which runs through the same runner.
 
 **Who pays for a refusal.** On the ordinary paid path the job is charged before the skill runs, so a refusal costs the buyer the full price and returns no result - price a refusing capability accordingly, and say so in its `description`. On the delegated path the pull happens after execution, so a refusal costs nothing.

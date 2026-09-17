@@ -31,10 +31,10 @@ const STILL_SOUGHT_NOTE =
  * What to tell a customer who has already sent a payment about the money, given
  * the failure they just hit - or `undefined` when there is nothing TRUE to say.
  *
- * The undefined case is the point. `classifyJobError` has only two buckets, so
- * every failure that is not an outage lands in the same one: a provider's
- * terminal verdicts ("no payment for this job was found on-chain", "the agent
- * did not recover within 24 hours") sit there beside a live payment timeout.
+ * The undefined case is the point. `classifyJobError` sorts a failure into an
+ * outage, a provider's refusal, or everything else - and that last bucket holds
+ * a provider's terminal verdicts ("no payment for this job was found on-chain",
+ * "the agent did not recover within 24 hours") beside a live payment timeout.
  * Promising that a job the provider has already closed is still being re-checked
  * for a day is worse than saying nothing - it is the message that keeps someone
  * waiting instead of contacting the provider while the transaction is fresh.

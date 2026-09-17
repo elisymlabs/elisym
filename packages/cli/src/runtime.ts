@@ -252,6 +252,22 @@ const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
 const OPERATOR_EXCERPT_CHARS = 500;
 
 /**
+ * One bounded, single-line excerpt of text a script controls.
+ *
+ * Sliced BEFORE flattening: `detail` is raw stderr bounded only by
+ * `MAX_SCRIPT_OUTPUT` (a megabyte), and normalizing all of it to print 500
+ * characters would walk a megabyte of code points on the event loop for every
+ * failed job. Flattened because a newline in it forges a second line on the
+ * operator's terminal and in the structured log.
+ */
+function operatorExcerpt(text: string): string {
+  return clipToCharacters(
+    flattenUntrusted(text.slice(0, OPERATOR_EXCERPT_CHARS * 8)),
+    OPERATOR_EXCERPT_CHARS,
+  );
+}
+
+/**
  * Re-thrown by the post-execute catch when the underlying skill failure
  * was a billing / invalid signal that just flipped the health pair to
  * unhealthy. Lets `processJob`'s sanitizer surface a stable
@@ -449,7 +465,7 @@ function describeForOperator(error: unknown): string {
     // Bounded and flattened, like the refusal above: `detail` is raw stderr,
     // capped only by `MAX_SCRIPT_OUTPUT` (a megabyte), and a newline in it
     // forges a second line on the operator's terminal and in the log.
-    return `${error.message}: ${clipToCharacters(flattenUntrusted(error.detail), OPERATOR_EXCERPT_CHARS)}`;
+    return `${error.message}: ${operatorExcerpt(error.detail)}`;
   }
   // Not every throw is an Error. The replaced expression (`e.message ?? …`)
   // read `message` off whatever was thrown, which threw its own TypeError on a
@@ -976,7 +992,7 @@ export class AgentRuntime {
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
         log(
-          `${tag} Script "${skill.name}" failed ("${message.slice(0, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+          `${tag} Script "${skill.name}" failed ("${operatorExcerpt(message).slice(0, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
         );
         return false;
       }
@@ -997,9 +1013,17 @@ export class AgentRuntime {
       log(
         `${tag} Script failure (${signalNote}). Marking ${provider}/${model} unhealthy${cascadeNote}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, message.slice(0, 200), {
-        cascade,
-      });
+      // Flattened: this is stored as the pair's `lastReason` and read back out
+      // on every gated job, so an unflattened copy forges a line each time.
+      this.healthMonitor.markUnhealthyFromJob(
+        provider,
+        model,
+        reason,
+        operatorExcerpt(message).slice(0, 200),
+        {
+          cascade,
+        },
+      );
       return true;
     }
 

@@ -94,6 +94,7 @@ x402 skills must be priced in `token: usdc` (the per-job margin check compares y
 | `ELISYM_INPUT_FILE`  | in        | Path to the fetched input file (set only when the job carried one). |
 | `ELISYM_OUTPUT_FILE` | out       | Write a non-empty file here to deliver a file result.               |
 | `ELISYM_CHARGE_FILE` | out       | Always set. A [metered](/providers/metered-pricing) skill writes what the job cost, in subunits; ignored otherwise. Never delivered to the buyer. |
+| `ELISYM_REFUSAL_FILE` | out      | Always set. Write why the request is being refused; the buyer reads that instead of a generic failure. See below. |
 
 Small `text/*` input is still piped to stdin; a robust script handles both. Declare `input_mime`, `output_mime`, and `input_text` as discovery hints so clients can present the right UI (these are hints, not enforced - the runtime content-sniffs the real file). File inputs require a **paid** skill - the runtime refuses `attachment + price 0` before payment.
 
@@ -150,7 +151,7 @@ A script that calls an upstream LLM can declare `provider` + `model` so the agen
 | ------------- | -------------------------------------- | ------------------------------------------------------ |
 | `0`           | success                                | none                                                   |
 | `42`          | upstream LLM out of credits (HTTP 402) | flips the `(provider, model)` health gate to unhealthy |
-| `43` + marker | understood the request and refuses it  | none; **the marker's line is sent to the customer as the reason** |
+| `43` + a reason file | understood the request and refuses it  | none; **that file is sent to the customer as the reason** |
 | anything else | generic skill failure                  | flips the declared `(provider, model)` pair unhealthy, when the skill declares one - and cascades to that provider's other models if stderr looks like a billing/auth problem |
 
 `42` is `SCRIPT_EXIT_BILLING_EXHAUSTED`, exported from `@elisym/sdk/llm-health`. Reserve it strictly for the billing case - misusing it degrades the health gate.
@@ -159,19 +160,20 @@ A script that calls an upstream LLM can declare `provider` + `model` so the agen
 
 On any non-zero exit other than `43`, the customer receives a fixed generic message: raw subprocess output is not safe to forward. That is right for a crash and wrong for a refusal. A skill that validates its input, applies a policy or parses an instruction needs to say what to change, or the buyer pays, reads "script failed" and sends the same request again.
 
-Exit `43` (`SCRIPT_EXIT_REFUSED`) is that channel, and it works for `dynamic-script`, `static-script` and `onchain`. It takes two things: the code, and stdout starting with `ELISYM-REFUSAL:`.
+The reason travels in its own file, named by `ELISYM_REFUSAL_FILE` - the same shape as `ELISYM_OUTPUT_FILE` and `ELISYM_CHARGE_FILE` - and it works for `dynamic-script`, `static-script` and `onchain`:
 
 ```sh
 if [ "$unit" != "USD" ]; then
-  echo "ELISYM-REFUSAL: this venue sizes positions in USD, so write it as \"size 300 USD\"."
-  exit 43  # the line above reaches the buyer
+  printf '%s' 'this venue sizes positions in USD, so write it as "size 300 USD".' > "$ELISYM_REFUSAL_FILE"
+  exit 43  # the sentence above reaches the buyer
 fi
 ```
 
-- **the marker is what decides.** 43 alone is also curl's `CURLE_BAD_FUNCTION_ARGUMENT`, which a `set -eu` script inherits from a failed request - without the marker that stays a failure, which is what it is. A marked line counts as a refusal even if the script then exits 0, so a printed refusal is never delivered to the buyer as a result.
-- **the rest of the marker's line** is what the buyer reads - only that line, so anything the script prints below it stays operator-side. It is flattened to one paragraph, stripped of control characters and the format marks that reverse text, capped at 400 characters, and prefixed by the runtime with `The provider refused:`.
+- **the file decides, not the exit code.** Nothing a script prints can be a refusal: stdout is often not the script's own words (an LLM proxy echoes a completion), and a buyer able to steer that text must not be able to destroy their own paid job and have their sentence returned under the runtime's label.
+- **exit 43 is still the right code.** A 43 with no file is handled as the failure it looks like, and the operator log says the contract was not honoured; a file written without 43 is still a refusal.
+- **the file's contents** are what the buyer reads: flattened to one paragraph, stripped of control characters and the format marks that reverse text, capped at 400 characters, and prefixed by the runtime with `The provider refused:`. At most 8 KB is read.
 - **stderr** stays operator-only, exactly as on every other exit code.
-- marking a refusal and saying nothing gives the buyer a fixed "gave no reason" message rather than silence.
+- refusing with an empty file gives the buyer a fixed "no reason was given" message rather than silence.
 - the health gate is untouched: refusing is the skill working, not failing.
 - **a refusal is still charged** on the ordinary paid path, where payment is collected before execution. On the delegated path, where the pull follows execution, it costs the buyer nothing.
 
