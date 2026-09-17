@@ -1,3 +1,4 @@
+import { classifyJobError } from '@elisym/sdk';
 import { describe, expect, it } from 'vitest';
 import { heldPaymentNote } from '../app/lib/heldPaymentNote';
 
@@ -51,6 +52,14 @@ describe('what a paying customer is told about their money', () => {
     for (const verdict of TERMINAL_VERDICTS) {
       expect(heldPaymentNote(verdict, true)).toBeUndefined();
     }
+  });
+
+  it('marks a refusal as its own kind, so the thread can withhold Retry', () => {
+    // The Retry button buys the job again. A refusal is deterministic and, on a
+    // flat-priced skill, already charged, so retrying spends money for the same
+    // sentence - `BuyContext` keys the entry's `refused` flag off this.
+    expect(classifyJobError('The provider refused: say the size in USD.')).toBe('provider-refused');
+    expect(classifyJobError('Internal processing error')).not.toBe('provider-refused');
   });
 
   it('says the job is closed and charged when the provider refused it', () => {

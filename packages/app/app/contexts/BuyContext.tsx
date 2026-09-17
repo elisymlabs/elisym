@@ -1127,15 +1127,17 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // ordinary failed bubble with Retry. If the provider completes
               // the job later anyway (crash-recovery re-execution), hydration
               // flips the failed entry back to completed.
-              void failEntry(agentPubkey, jobEventId);
+              // A refusal is terminal and, on a flat-priced skill, already
+              // charged: the entry must not offer Retry, which would buy the
+              // same answer again.
+              const kind = classifyJobError(errMsg);
+              void failEntry(agentPubkey, jobEventId, { refused: kind === 'provider-refused' });
               setSession((prev) =>
                 sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
               );
               cleanupRef.current = null;
               const toastMsg =
-                classifyJobError(errMsg) === 'agent-unavailable'
-                  ? 'Agent unavailable. Try again later.'
-                  : errMsg;
+                kind === 'agent-unavailable' ? 'Agent unavailable. Try again later.' : errMsg;
               // Sonner does not always swap a multi-step `toast.loading`
               // chain to an error toast when given the same id (the
               // spinner sticks). Dismiss explicitly, then raise a fresh

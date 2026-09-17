@@ -5,7 +5,7 @@ import { ElisymIdentity, NATIVE_SOL } from '@elisym/sdk';
 import type { BlossomBlobTransport } from '@elisym/sdk';
 import { ScriptExecutionError } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import { SCRIPT_EXIT_REFUSED, SCRIPT_REFUSAL_MARKER, ScriptRefusalError } from '@elisym/sdk/skills';
+import { SCRIPT_EXIT_REFUSED, ScriptRefusalError } from '@elisym/sdk/skills';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { ADDRESS_HISTORY_PROBE_ADDRESS, CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
@@ -1292,7 +1292,17 @@ describe('AgentRuntime', () => {
       // declared pair, a failure instead of a refusal.
       const monitor = monitorStub();
       const errorCall = await runOneJob(
-        scriptSkillThatThrows(new ScriptExecutionError(1, 'curl: (43) bad argument')),
+        // stderr passed separately: the health scan reads THAT, never `detail`,
+        // which falls back to stdout - and stdout is text a customer can steer
+        // through an LLM proxy.
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            1,
+            'curl: (43) bad argument',
+            undefined,
+            'curl: (43) bad argument',
+          ),
+        ),
         monitor,
         'failed-job',
       );
@@ -1312,6 +1322,29 @@ describe('AgentRuntime', () => {
       );
     });
 
+    it('never gates a key on words the customer could have put on stdout', async () => {
+      // For an LLM proxy, stdout is the model's completion. A buyer asking for
+      // the word "unauthorized" must not be able to take the operator's whole
+      // provider offline, so the marker scan reads stderr and nothing else.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(1, 'unauthorized, insufficient credit balance', undefined, ''),
+        ),
+        monitor,
+        'steered-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        // Skill-local, and never 'billing': the words were on stdout.
+        'invalid',
+        '',
+        { cascade: false },
+      );
+    });
+
     it('masks a generic script failure rather than quoting its summary', async () => {
       // The customer-facing string is part of the contract: `classifyJobError`
       // keys the "what happened to my payment" note off it, so a skill failure
@@ -1324,7 +1357,11 @@ describe('AgentRuntime', () => {
           priceSubunits: 0,
           asset: NATIVE_SOL,
           mode: 'dynamic-script',
-          execute: vi.fn().mockRejectedValue(new ScriptExecutionError(1, 'boom on stderr')),
+          execute: vi
+            .fn()
+            .mockRejectedValue(
+              new ScriptExecutionError(1, 'boom on stderr', undefined, 'boom on stderr'),
+            ),
         },
         monitorStub(),
         'masked-job',

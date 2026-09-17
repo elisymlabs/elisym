@@ -71,6 +71,15 @@ export interface ChatThreadEntry {
   /** Absent = completed. */
   status?: 'pending' | 'failed';
   /**
+   * The provider refused this job: it understood the request and declined it.
+   *
+   * Distinct from every other failure because it is DETERMINISTIC - the same
+   * request refuses again - and, on a flat-priced skill, already charged. The
+   * thread reads this to withhold the Retry affordance, which would otherwise
+   * invite the customer to pay a second time for the same answer.
+   */
+  refused?: boolean;
+  /**
    * Solana signature of the payment, when one was sent. A paid entry stays
    * `pending` indefinitely (never aged, never trimmed): money was sent, the
    * state must stay visible.
@@ -179,7 +188,11 @@ export interface ChatThreadStore {
     jobEventId: string,
     fields: CompleteEntryFields,
   ): Promise<boolean>;
-  failEntry(agentPubkey: string, jobEventId: string): Promise<boolean>;
+  failEntry(
+    agentPubkey: string,
+    jobEventId: string,
+    options?: { refused?: boolean },
+  ): Promise<boolean>;
   mergeHydratedEntry(agentPubkey: string, entry: HydratedChatEntry): Promise<MergeHydratedResult>;
   readThread(agentPubkey: string): Promise<ChatThreadEntry[]>;
   agePendingEntries(
@@ -548,7 +561,11 @@ export function createChatThreadStore(
     );
   }
 
-  function failEntry(agentPubkey: string, jobEventId: string): Promise<boolean> {
+  function failEntry(
+    agentPubkey: string,
+    jobEventId: string,
+    options?: { refused?: boolean },
+  ): Promise<boolean> {
     return mutateThread(
       chatThreadKey(agentPubkey),
       (entries) => {
@@ -560,7 +577,11 @@ export function createChatThreadStore(
           return { entries, changed: false, result: false };
         }
         const next = [...entries];
-        next[index] = { ...stored, status: 'failed' };
+        next[index] = {
+          ...stored,
+          status: 'failed',
+          ...(options?.refused === true ? { refused: true } : {}),
+        };
         return { entries: next, changed: true, result: true };
       },
       false,

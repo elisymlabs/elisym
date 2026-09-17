@@ -23,8 +23,7 @@ import {
   getProtocolProgramId,
   isDefinitelyUnpaid,
   LIMITS,
-  clipToCharacters,
-  flattenUntrusted,
+  excerptUntrusted,
   isScriptBillingExhaustedError,
   isScriptExecutionError,
   isScriptRefusalError,
@@ -251,20 +250,9 @@ const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
 /** How much of a script's own output an operator-log line carries. */
 const OPERATOR_EXCERPT_CHARS = 500;
 
-/**
- * One bounded, single-line excerpt of text a script controls.
- *
- * Sliced BEFORE flattening: `detail` is raw stderr bounded only by
- * `MAX_SCRIPT_OUTPUT` (a megabyte), and normalizing all of it to print 500
- * characters would walk a megabyte of code points on the event loop for every
- * failed job. Flattened because a newline in it forges a second line on the
- * operator's terminal and in the structured log.
- */
-function operatorExcerpt(text: string): string {
-  return clipToCharacters(
-    flattenUntrusted(text.slice(0, OPERATOR_EXCERPT_CHARS * 8)),
-    OPERATOR_EXCERPT_CHARS,
-  );
+/** One bounded, single-line excerpt of text a script or a provider controls. */
+function operatorExcerpt(text: string, maxChars = OPERATOR_EXCERPT_CHARS): string {
+  return excerptUntrusted(text, maxChars);
 }
 
 /**
@@ -918,7 +906,12 @@ export class AgentRuntime {
       log(
         `${tag} Script signaled billing-exhausted (exit ${err.exitCode}). Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      this.healthMonitor.markUnhealthyFromJob(provider, model, 'billing', err.message);
+      this.healthMonitor.markUnhealthyFromJob(
+        provider,
+        model,
+        'billing',
+        operatorExcerpt(err.message, 200),
+      );
       return true;
     }
 
@@ -943,7 +936,9 @@ export class AgentRuntime {
       log(
         `${tag} LLM provider returned HTTP ${status} (${reason}). Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, body);
+      // Flattened and bounded like the others: `lastReason` is read back out on
+      // every gated job, so an unflattened copy forges a log line each time.
+      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, operatorExcerpt(body, 200));
       return true;
     }
 
@@ -978,21 +973,24 @@ export class AgentRuntime {
     // self-flapping for chronic ones (acceptable - operator log makes
     // this visible).
     if (skill.mode !== 'llm') {
-      // Use the raw stderr/stdout (`detail`) for billing/invalid marker scanning
-      // and the operator log - the generic `.message` no longer carries it.
+      // STDERR only, and a bounded copy of it. `detail` falls back to stdout,
+      // and for an LLM proxy stdout is the model's completion - text the
+      // customer steers. A buyer asking for the word "unauthorized" must not be
+      // able to gate the operator's API key, let alone cascade it across every
+      // model on that key.
       let message: string;
       if (isScriptExecutionError(err)) {
-        message = err.detail;
+        message = operatorExcerpt(err.stderr ?? '');
       } else if (err instanceof Error) {
-        message = err.message;
+        message = operatorExcerpt(err.message);
       } else {
-        message = String(err);
+        message = operatorExcerpt(String(err));
       }
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
         log(
-          `${tag} Script "${skill.name}" failed ("${operatorExcerpt(message).slice(0, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+          `${tag} Script "${skill.name}" failed ("${operatorExcerpt(message, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
         );
         return false;
       }
@@ -1315,8 +1313,10 @@ export class AgentRuntime {
       const log = this.callbacks.onLog ?? console.log;
       // `describeForOperator`, not `e.message`: a rejected null or a thrown
       // string would make this line throw before the job is marked failed and
-      // before the customer is told anything at all.
-      log(`[${job.jobId.slice(0, 8)}] Error: ${describeForOperator(e)}`);
+      // before the customer is told anything at all. Computed once - it
+      // flattens and clips, and the same text is handed to `onJobError` below.
+      const operatorMessage = describeForOperator(e);
+      log(`[${job.jobId.slice(0, 8)}] Error: ${operatorMessage}`);
 
       // Status transitions on failure:
       //   - `executed`: never markFailed - delivery recovery will retry.
@@ -1359,7 +1359,6 @@ export class AgentRuntime {
       // Operator log keeps the full detail (including raw script stderr from a
       // ScriptExecutionError); the customer only ever receives an allowlisted,
       // generic message via `customerSafeMessage`.
-      const operatorMessage = describeForOperator(e);
       this.callbacks.onJobError?.(job.jobId, operatorMessage);
 
       // W8: only forward known-safe messages to the customer; everything else is

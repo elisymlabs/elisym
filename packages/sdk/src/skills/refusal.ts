@@ -22,9 +22,9 @@
  * defining property of a refusal is that it does NOT touch health state, and a
  * script author reaching for it should not have to import from `llm-health`.
  */
-import { readFile, stat } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { ScriptExecutionError } from '../llm-health/types';
-import { clipToCharacters, flattenUntrusted, withoutDanglingSurrogate } from './untrusted-text';
+import { excerptUntrusted } from './untrusted-text';
 
 /**
  * The exit code that says "what I wrote in the refusal file is why".
@@ -47,7 +47,7 @@ export const SCRIPT_REFUSAL_FILE_ENV = 'ELISYM_REFUSAL_FILE';
 export const SCRIPT_REFUSAL_MAX_CHARS = 400;
 
 /**
- * The most of the refusal file that is ever read into memory.
+ * The most of the refusal file that is ever read into memory, in BYTES.
  *
  * Generous against the 400-character cap because flattening only shortens, and
  * bounded because a subprocess writes this file: a runaway script must not be
@@ -81,10 +81,8 @@ export const REFUSAL_CONTRACT_HINT =
  * so no half of one survives the cut.
  */
 export function refusalMessage(reason: string): string {
-  const flattened = flattenUntrusted(withoutDanglingSurrogate(reason));
-  return flattened === ''
-    ? SCRIPT_REFUSAL_UNSTATED
-    : clipToCharacters(flattened, SCRIPT_REFUSAL_MAX_CHARS);
+  const excerpt = excerptUntrusted(reason, SCRIPT_REFUSAL_MAX_CHARS);
+  return excerpt === '' ? SCRIPT_REFUSAL_UNSTATED : excerpt;
 }
 
 /**
@@ -105,10 +103,7 @@ export class ScriptRefusalError extends Error {
     super(refusalMessage(reason));
     this.name = 'ScriptRefusalError';
     this.exitCode = exitCode;
-    this.stderr = clipToCharacters(
-      flattenUntrusted(withoutDanglingSurrogate(stderr.slice(0, SCRIPT_REFUSAL_STDERR_CHARS * 8))),
-      SCRIPT_REFUSAL_STDERR_CHARS,
-    );
+    this.stderr = excerptUntrusted(stderr, SCRIPT_REFUSAL_STDERR_CHARS);
   }
 }
 
@@ -142,11 +137,22 @@ export async function readRefusalFile(path: string): Promise<string | undefined>
   if (info === null || !info.isFile() || info.size === 0) {
     return undefined;
   }
-  const raw = await readFile(path, 'utf8').catch(() => null);
-  if (raw === null) {
+  // Read a bounded prefix rather than the file: a script that redirects a
+  // gigabyte here (`yes refused > "$ELISYM_REFUSAL_FILE"`) must not be able to
+  // pull it into the agent. Bytes, not code units - the cap is about memory.
+  const handle = await open(path, 'r').catch(() => null);
+  if (handle === null) {
     return undefined;
   }
-  return raw.slice(0, SCRIPT_REFUSAL_FILE_MAX_BYTES);
+  try {
+    const buffer = Buffer.alloc(Math.min(info.size, SCRIPT_REFUSAL_FILE_MAX_BYTES));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close().catch(() => {});
+  }
 }
 
 /**
@@ -173,6 +179,8 @@ export function throwIfRefused(
     throw new ScriptExecutionError(
       result.code,
       `${REFUSAL_CONTRACT_HINT} ${result.stderr.trim() || result.stdout.trim() || '(no output)'}`,
+      undefined,
+      result.stderr,
     );
   }
 }

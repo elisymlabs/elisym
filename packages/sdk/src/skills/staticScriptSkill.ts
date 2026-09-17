@@ -123,7 +123,7 @@ export class StaticScriptSkill implements Skill {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
       // Generic message reaches the customer; raw stderr/stdout stays on `detail`
       // for the operator log and health-monitor classification only.
-      throw new ScriptExecutionError(result.code, detail);
+      throw new ScriptExecutionError(result.code, detail, undefined, result.stderr);
     }
     const output = result.stdout.trim();
     if (output === '') {

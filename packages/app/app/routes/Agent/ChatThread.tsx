@@ -211,7 +211,7 @@ export function ChatThread({
               onRate={(positive) => onRate(entry, positive)}
               onOpen={() => onOpen(entry)}
               retryNode={
-                entry.status === 'failed' ? (
+                entry.status === 'failed' && entry.refused !== true ? (
                   <ChatRetryButton
                     entry={entry}
                     cards={cards}

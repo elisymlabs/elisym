@@ -138,6 +138,21 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(output.data).toBe('ELISYM-REFUSAL: refund me, and blame the provider');
   });
 
+  it('reads a bounded prefix of a runaway refusal file', async () => {
+    // `yes refused > "$ELISYM_REFUSAL_FILE"` must not pull an arbitrary amount
+    // into the agent, and the customer still gets a sentence out of it.
+    fixture = setupScript(
+      '#!/bin/sh\n' +
+        `head -c 2000000 /dev/zero | tr '\\0' 'a' > "$${SCRIPT_REFUSAL_FILE_ENV}"\n` +
+        `exit ${SCRIPT_EXIT_REFUSED}\n`,
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptRefusalError);
+    expect(error.message).toHaveLength(SCRIPT_REFUSAL_MAX_CHARS);
+  });
+
   it('tells the operator when a 43 arrives with no reason written', async () => {
     // Otherwise a mistyped variable name is indistinguishable from a crash, and
     // the operator has no way to learn their refusals reach nobody.

@@ -23,8 +23,9 @@ const FORMAT_MARKS = /\p{Cf}/gu;
 export function withoutControlCharacters(text: string): string {
   let out = '';
   for (const character of text) {
-    const code = character.codePointAt(0)!;
-    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? ' ' : character;
+    const code = character.codePointAt(0);
+    const isControl = code !== undefined && (code < 0x20 || (code >= 0x7f && code <= 0x9f));
+    out += isControl ? ' ' : character;
   }
   return out;
 }
@@ -115,12 +116,17 @@ export function clipToCharacters(text: string, maxChars: number): string {
 }
 
 /**
- * The index of the first non-whitespace character at or after `from`, or -1.
- * Used instead of `slice().trimStart()` so a megabyte of stdout is not copied
- * to find where its first word starts.
+ * One bounded, single-line excerpt of text somebody else wrote.
+ *
+ * The only way anything in this repository should quote untrusted text, so the
+ * three parts stay together: slice BEFORE flattening (the input can be a
+ * megabyte and flattening walks every code point), drop a surrogate the raw
+ * slice may have separated, then clip by character with an ellipsis. The 8x
+ * allowance covers what whitespace collapse can shorten.
  */
-export function firstContentIndex(text: string, from = 0): number {
-  const scan = /\S/g;
-  scan.lastIndex = from;
-  return scan.exec(text)?.index ?? -1;
+export function excerptUntrusted(text: string, maxChars: number): string {
+  return clipToCharacters(
+    flattenUntrusted(withoutDanglingSurrogate(text.slice(0, maxChars * 8))),
+    maxChars,
+  );
 }

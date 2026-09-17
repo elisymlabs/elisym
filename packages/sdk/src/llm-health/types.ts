@@ -85,12 +85,23 @@ export class ScriptBillingExhaustedError extends Error {
 export class ScriptExecutionError extends Error {
   readonly exitCode: number | null;
   readonly detail: string;
+  /**
+   * The script's stderr alone, when the runner had it to give.
+   *
+   * Kept apart from `detail` (which falls back to stdout) because the runtime
+   * scans this text for billing/auth markers to decide whether to gate an API
+   * key. Stdout is frequently NOT the script's own words - an LLM proxy echoes
+   * a completion the customer steers - so a buyer could otherwise ask for the
+   * word "unauthorized" and take the agent's whole provider offline.
+   */
+  readonly stderr: string | undefined;
 
-  constructor(exitCode: number | null, detail: string, summary?: string) {
+  constructor(exitCode: number | null, detail: string, summary?: string, stderr?: string) {
     super(summary ?? `script failed (exit ${exitCode ?? 'unknown'})`);
     this.name = 'ScriptExecutionError';
     this.exitCode = exitCode;
     this.detail = detail;
+    this.stderr = stderr;
   }
 }
 
