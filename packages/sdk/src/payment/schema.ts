@@ -11,6 +11,12 @@ const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
 // Solana addresses + reference keys are 32-byte ed25519 public keys, which
 // base58-encode to 32 - 44 characters. Tighter than naive `length>0`.
 const SOLANA_ADDRESS_LENGTH_RE = /^.{32,44}$/;
+/**
+ * How many failed fields a schema rejection names before it stops and reports a
+ * count. A hostile provider can fail every field at once; the message ends up in
+ * an LLM's context, so its length has to be bounded by us rather than by them.
+ */
+const MAX_REPORTED_ISSUES = 5;
 
 const lamportsSchema = z
   .number()
@@ -91,6 +97,32 @@ export type ParseResult =
   | { ok: false; error: ParseError };
 
 /**
+ * Describe why a payment request failed its schema, naming ONLY the field and a
+ * fixed reason - never the value that was rejected.
+ *
+ * A payment request is written by a remote provider, and Zod's own message
+ * quotes the rejected value back verbatim (`"received": "<whatever they sent>"`).
+ * Callers put this message in front of an LLM: `send_payment` returns it as tool
+ * output and `submit_and_pay_job` throws it. So the raw message is a direct
+ * channel from a hostile provider into the customer's model - the same
+ * boundary-bypass class already closed for provider error feedback and for the
+ * payment request itself. Naming the field is enough to debug with; the value
+ * adds nothing a caller needs and carries everything an attacker wants.
+ */
+function describeIssues(issues: readonly { path: PropertyKey[]; code: string }[]): string {
+  if (issues.length === 0) {
+    return 'Payment request does not match the expected shape.';
+  }
+  const described = issues.slice(0, MAX_REPORTED_ISSUES).map((issue) => {
+    const field = issue.path.length > 0 ? issue.path.map(String).join('.') : '(root)';
+    return `${field}: ${issue.code}`;
+  });
+  const omitted = issues.length - described.length;
+  const tail = omitted > 0 ? `, and ${omitted} more` : '';
+  return `Payment request is invalid - ${described.join('; ')}${tail}.`;
+}
+
+/**
  * Parse a JSON-encoded payment request through the Zod schema, optionally
  * enforcing a `maxAmountLamports` ceiling supplied by the caller (e.g. the
  * customer's per-job spending cap).
@@ -99,17 +131,19 @@ export function parsePaymentRequest(input: string, options?: ParseOptions): Pars
   let parsed: unknown;
   try {
     parsed = JSON.parse(input);
-  } catch (e) {
+  } catch {
+    // The parser error is NOT interpolated: it quotes the offending input, and a
+    // payment request arrives from a remote provider. See `describeIssues`.
     return {
       ok: false,
-      error: { code: 'invalid_json', message: `Invalid payment request JSON: ${e}` },
+      error: { code: 'invalid_json', message: 'Invalid payment request JSON.' },
     };
   }
   const result = PaymentRequestSchema.safeParse(parsed);
   if (!result.success) {
     return {
       ok: false,
-      error: { code: 'schema', message: result.error.message },
+      error: { code: 'schema', message: describeIssues(result.error.issues) },
     };
   }
   if (options?.maxAmountLamports !== undefined) {

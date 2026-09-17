@@ -54,7 +54,11 @@ export interface EstimatePriorityFeeOptions {
  * Falls back to a 1000 microLamport floor when the RPC returns no samples
  * (typical on private clusters or under maintenance), and clamps to a 5M
  * microLamport ceiling so a hostile RPC cannot inflate the fee arbitrarily.
- * Negative percentiles are clamped to the median.
+ * A negative or non-finite percentile falls back to the default (75th), not to
+ * an endpoint: both are caller mistakes, and resolving them to the lowest recent
+ * fee would under-bid exactly when the caller least wants it. Above 100 clamps
+ * to 100, because that endpoint errs toward paying more, which is the safe
+ * direction and is already bounded by the ceiling above.
  *
  * Cached per (network, accounts)-key for `ttlMs` (default 10s) using the same
  * in-process cache pattern as `getProtocolConfig` - `options.network` is
@@ -110,11 +114,13 @@ export function pickPercentileFee(
 }
 
 function clampPercentile(value: number): number {
-  if (!Number.isFinite(value)) {
+  // Nonsense in, DEFAULT out - and a negative percentile is nonsense in exactly
+  // the way NaN is, so it lands in the same place. Clamping it to 0 instead
+  // picked the LOWEST recent fee, which is the opposite of what a caller passing
+  // a bad value wants: an under-bid during congestion means the transaction is
+  // included late or not at all. Only a value inside the range is honoured.
+  if (!Number.isFinite(value) || value < 0) {
     return DEFAULT_PERCENTILE;
-  }
-  if (value < 0) {
-    return 0;
   }
   if (value > 100) {
     return 100;

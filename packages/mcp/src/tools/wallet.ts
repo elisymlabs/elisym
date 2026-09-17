@@ -935,7 +935,13 @@ export const walletTools: ToolDefinition[] = [
         input.expected_solana_recipient,
       );
       if (validation !== null) {
-        return errorResult(`Payment validation failed: ${validation.message}`);
+        // Second line, behind the SDK's own field-only message: `payment_request`
+        // is an argument this tool accepts from the caller and relays from a
+        // remote provider, and this string goes straight back to the LLM as tool
+        // output. Defence in depth - see `parsePaymentRequest`.
+        return errorResult(
+          `Payment validation failed: ${sanitizeUntrusted(validation.message, 'text').text}`,
+        );
       }
 
       // Session-wide spend cap - reserve atomically before signing so two
