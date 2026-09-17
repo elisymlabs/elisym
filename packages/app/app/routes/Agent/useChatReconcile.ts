@@ -1,4 +1,9 @@
-import { classifyJobError, refusalFromJobError, type FileAttachment } from '@elisym/sdk';
+import {
+  classifyJobError,
+  refusalFromJobError,
+  type FileAttachment,
+  type MarketplaceService,
+} from '@elisym/sdk';
 import { useEffect, useRef } from 'react';
 import { JOB_WAIT_TIMEOUT_MS } from '~/contexts/BuyContext';
 import { useElisymClient } from '~/hooks/useElisymClient';
@@ -22,6 +27,19 @@ import { decodeResult, resultDisplay } from '~/lib/fileResult';
  */
 /** How many already-closed entries one reconcile asks the relays about. */
 const MAX_UNEXPLAINED_LOOKUPS = 20;
+
+type JobResults = Awaited<ReturnType<MarketplaceService['queryJobResults']>>;
+
+/**
+ * Closed entries this session has already asked about, so a tab switch does not
+ * re-download and re-verify the same events.
+ *
+ * Most failures - an outage, a timeout, ageing - never produce a refusal, so
+ * without this each one is queried again on every activation for a day. In
+ * memory rather than in the thread: a reload asking once more is cheap, and it
+ * keeps a transient fact out of the customer's durable record.
+ */
+const askedAbout = new Set<string>();
 
 export function useChatReconcile(agentPubkey: string): void {
   const { client } = useElisymClient();
@@ -81,6 +99,7 @@ export function useChatReconcile(agentPubkey: string): void {
         // nothing records that they were already asked about - so an unbounded
         // list would re-download and re-verify the same events on every tab
         // switch for a day.
+        .filter((entry) => !askedAbout.has(entry.jobEventId))
         .sort((left, right) => right.ts - left.ts)
         .slice(0, MAX_UNEXPLAINED_LOOKUPS);
 
@@ -93,9 +112,13 @@ export function useChatReconcile(agentPubkey: string): void {
         // result, and a result outranks the error that preceded it.
         const [results, errors] = await Promise.all([
           // Results only for the OPEN ones; a closed entry is not waiting for
-          // one. The refusal query covers both.
+          // one. The refusal query covers both. The empty case is typed, not
+          // a bare `new Map()`: widening this to `Map<any, any>` would make the
+          // undecryptable-result guard below - the only thing stopping a
+          // delivered answer from being overwritten by a terminal refusal -
+          // compile against a field that no longer exists.
           jobIds.length === 0
-            ? Promise.resolve(new Map())
+            ? Promise.resolve<JobResults>(new Map())
             : client.marketplace
                 .queryJobResults(identity, jobIds, undefined, agentPubkey)
                 .catch(() => null),
@@ -103,9 +126,11 @@ export function useChatReconcile(agentPubkey: string): void {
         ]);
         // transient relay error - the next tab open / hydration retries
         queryFailed = results === null;
-        // And nothing is applied at all when it failed: no entry can be
+        // And nothing is applied to a PENDING entry when it failed: none can be
         // completed, and a refusal must not close a job whose answer the failed
-        // half never fetched.
+        // half never fetched. The closed entries below are unaffected - no
+        // result can arrive for one, since completing an entry clears its
+        // status.
         //
         // One entry's IndexedDB write failing (quota, a blocked private window,
         // an aborted transaction) must not cost every OTHER entry its
@@ -163,6 +188,12 @@ export function useChatReconcile(agentPubkey: string): void {
           for (const entry of unexplained) {
             if (cancelled) {
               return;
+            }
+            // Asked, whatever the answer: a second ask can only return the same
+            // nothing. A relay failure is the exception - `errors` is null then,
+            // and the entry stays in the list for the next activation.
+            if (errors !== null) {
+              askedAbout.add(entry.jobEventId);
             }
             const late = errors?.get(entry.jobEventId);
             if (late !== undefined && classifyJobError(late) === 'provider-refused') {

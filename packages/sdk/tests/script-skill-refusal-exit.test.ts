@@ -287,6 +287,20 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error.detail).toContain('wrote nowhere');
   });
 
+  it('never turns a 43 into a host fault, whatever went wrong with the channel', async () => {
+    // A host fault keeps a PAID job alive for the recovery loop. The script here
+    // ran and decided, so re-running it means the same refusal on every tick for
+    // 24 hours with the customer's money held for an answer that cannot change -
+    // whichever of the three channel problems produced the exit.
+    const { isHostScratchError } = await import('../src/skills/host-fault');
+    fixture = setupScript(`#!/bin/sh\necho "no channel here" >&2\nexit ${SCRIPT_EXIT_REFUSED}\n`);
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(isHostScratchError(error)).toBe(false);
+    expect(error).toBeInstanceOf(ScriptExecutionError);
+  });
+
   it('believes the exit code when a reason is written and the script then crashes', async () => {
     // A skill that validates early, writes why, and falls over further down has
     // NOT refused. Calling that a refusal would charge the customer for a crash

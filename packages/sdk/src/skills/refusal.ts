@@ -24,7 +24,6 @@
  */
 import { ScriptExecutionError } from '../llm-health/types';
 import { PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
-import { HostScratchError } from './host-fault';
 import type { RefusalFileRead } from './refusal-file';
 import { excerptUntrusted, excerptUntrustedTail, hasVisibleText } from './untrusted-text';
 
@@ -260,16 +259,17 @@ export function throwIfRefused(
     // Blaming the script for the last two sends an operator hunting a typo in
     // code that is correct.
     const output = describeOutput(result);
-    if (!channelOffered && !stated) {
-      // The AGENT never named a file, so the script had nowhere to put its
-      // reason. A class, not a sentence: the runtime leaves the health gate
-      // alone for this, and a decision worth having is worth forging - see
-      // `HostScratchError`.
-      throw new HostScratchError(`${REFUSAL_CHANNEL_MISSING_HINT} ${output}`);
-    }
+    // Not a `HostScratchError`, even though the missing channel is the agent's
+    // own doing: the script RAN and decided, and this job is now as finished as
+    // it will ever be. A host fault keeps a paid job alive for the recovery
+    // loop, which would re-run a script that refuses deterministically, on
+    // every tick, for 24 hours - the customer's money held the whole time for
+    // an answer that cannot change.
     let hint = REFUSAL_CONTRACT_HINT;
     if (stated) {
       hint = REFUSAL_WRONG_EXIT_HINT;
+    } else if (!channelOffered) {
+      hint = REFUSAL_CHANNEL_MISSING_HINT;
     } else if (file.state === 'unreadable') {
       hint = REFUSAL_UNREADABLE_HINT;
     }

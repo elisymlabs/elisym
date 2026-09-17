@@ -540,6 +540,12 @@ function customerSafeMessage(error: unknown): string {
  * the second copy unflattened and up to a megabyte long.
  */
 function describeForOperator(error: unknown): string {
+  if (isHostScratchError(error)) {
+    // The filesystem's own words. `message` is a fixed summary, so without this
+    // an agent running with no health monitor - the only other place that logs
+    // `detail` - is told a job failed for scratch space and never told why.
+    return `${error.message}: ${excerptUntrusted(error.detail, OPERATOR_EXCERPT_CHARS)}`;
+  }
   if (isScriptBillingExhaustedError(error)) {
     // Its `message` embeds stdout when stderr is empty; quote the halves the
     // same way the health branch does, so the two never disagree about what the

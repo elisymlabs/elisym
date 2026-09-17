@@ -1002,7 +1002,10 @@ export class MarketplaceService {
       if (ev.created_at > nowSecs + MAX_FUTURE_SKEW_SECS) {
         continue;
       }
-      const eTag = ev.tags.find((t) => t[0] === 'e')?.[1];
+      // The module's own reader, not a second copy of it: this is the one path
+      // that can terminally close a PAID job, so it must resolve a request id
+      // exactly as every other feedback reader here does.
+      const eTag = resolveRequestId(ev);
       if (eTag === undefined || !wanted.has(eTag)) {
         continue;
       }

@@ -36,9 +36,13 @@ export function BuyErrorNote({ error, paid, fromJob, refusalInThread = false }: 
   }
   // Classified ONCE, for both decisions below.
   const kind = classifyJobError(error);
-  const held = heldPaymentNote(error, paid, kind);
-  const restated = refusalInThread && kind === 'provider-refused';
-  return <Note body={restated ? undefined : customerErrorText(error, kind)} held={held} />;
+  if (refusalInThread && kind === 'provider-refused') {
+    // The bubble carries BOTH halves - the agent's sentence and where the money
+    // went - so this note has nothing left to add. Suppressing only the
+    // sentence would print the money paragraph twice.
+    return null;
+  }
+  return <Note body={customerErrorText(error, kind)} held={heldPaymentNote(error, paid, kind)} />;
 }
 
 function Note({ body, held }: { body?: string; held?: string }) {

@@ -31,18 +31,6 @@ const STILL_SOUGHT_NOTE =
   'If your payment did go through, it is not lost: the agent keeps re-checking the chain and delivers the result if it finds it, so do not send it again. If it never finds it, the job is closed within 24 hours.';
 
 /**
- * What to tell a customer who has already sent a payment about the money, given
- * the failure they just hit - or `undefined` when there is nothing TRUE to say.
- *
- * The undefined case is the point. `classifyJobError` sorts a failure into an
- * outage, a provider's refusal, or everything else - and that last bucket holds
- * a provider's terminal verdicts ("no payment for this job was found on-chain",
- * "the agent did not recover within 24 hours") beside a live payment timeout.
- * Promising that a job the provider has already closed is still being re-checked
- * for a day is worse than saying nothing - it is the message that keeps someone
- * waiting instead of contacting the provider while the transaction is fresh.
- */
-/**
  * The same money answer for a refusal the THREAD holds, with no buy session
  * behind it.
  *
@@ -55,6 +43,18 @@ export function refusedPaymentNote(paid: boolean): string | undefined {
   return paid ? REFUSED_NOTE : undefined;
 }
 
+/**
+ * What to tell a customer who has already sent a payment about the money, given
+ * the failure they just hit - or `undefined` when there is nothing TRUE to say.
+ *
+ * The undefined case is the point. `classifyJobError` sorts a failure into an
+ * outage, a provider's refusal, or everything else - and that last bucket holds
+ * a provider's terminal verdicts ("no payment for this job was found on-chain",
+ * "the agent did not recover within 24 hours") beside a live payment timeout.
+ * Promising that a job the provider has already closed is still being re-checked
+ * for a day is worse than saying nothing - it is the message that keeps someone
+ * waiting instead of contacting the provider while the transaction is fresh.
+ */
 export function heldPaymentNote(
   error: string,
   paid: boolean,
