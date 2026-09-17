@@ -381,12 +381,12 @@ This is one mechanism, two declaration paths: `mode: 'llm'` skills get it throug
 
 The exit code from a script-mode skill controls how the runtime reacts:
 
-| Exit code                | Meaning                                                                                          | Health monitor effect                                                                                 |
-| ------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| 0                        | success                                                                                          | none                                                                                                  |
-| 42                       | upstream LLM provider is out of credits / 402                                                    | runtime calls `markUnhealthyFromJob` on the declared `(provider, model)`; lazy recovery loop kicks in |
-| 43                       | the skill understood the request and refuses it; stdout is the reason, and the customer reads it | none - a refusal is an answer, not a fault                                                            |
-| anything else (non-zero) | generic skill failure                                                                            | none - treated as a transient skill bug, not a key problem                                            |
+| Exit code                        | Meaning                                                                                                         | Health monitor effect                                                                                                                                   |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0                                | success                                                                                                         | none                                                                                                                                                    |
+| 42                               | upstream LLM provider is out of credits / 402                                                                   | runtime calls `markUnhealthyFromJob` on the declared `(provider, model)`; lazy recovery loop kicks in                                                   |
+| 43 + `ELISYM-REFUSAL:` on stdout | the skill understood the request and refuses it; the rest of that line is the reason, and the customer reads it | none - a refusal is an answer, not a fault                                                                                                              |
+| anything else (non-zero)         | generic skill failure                                                                                           | flips the declared `(provider, model)` pair unhealthy when the skill declares one (reason `invalid`, no cascade); nothing to flip when it declares none |
 
 ### 42: the health gate
 

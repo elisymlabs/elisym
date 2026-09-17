@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { classifyJobError } from '../src/services/jobErrors';
+import { classifyJobError, PROVIDER_REFUSED_PREFIX } from '../src/services/jobErrors';
 
 describe('classifyJobError', () => {
+  it('reads a provider refusal as its own kind, whatever words it uses', () => {
+    // These are ordinary English in a refusal and outage markers as substrings.
+    for (const reason of [
+      'insufficient detail in the brief - add the target audience.',
+      'your billing address is missing a postal code.',
+      'that file is unauthorized for this capability.',
+    ]) {
+      expect(classifyJobError(`${PROVIDER_REFUSED_PREFIX}${reason}`)).toBe('provider-refused');
+    }
+  });
+
+  it('matches the label as a prefix, never as a substring', () => {
+    expect(classifyJobError(`some wrapper said "${PROVIDER_REFUSED_PREFIX}nope"`)).not.toBe(
+      'provider-refused',
+    );
+  });
+
   it('classifies the canonical runtime message', () => {
     expect(classifyJobError('Agent temporarily unavailable')).toBe('agent-unavailable');
   });

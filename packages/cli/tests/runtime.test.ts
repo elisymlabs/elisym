@@ -1107,6 +1107,81 @@ describe('AgentRuntime', () => {
       expect(ledger.getStatus('paid-crashed')).toBe('delivered');
       expect((transport as any).deliverResult).toHaveBeenCalled();
     });
+
+    it('tells the customer when the re-executed skill refuses', async () => {
+      // A refusal is deterministic: the input recovery replays is the input
+      // that was refused. Retrying it only spends the retry budget and ends in
+      // "permanently failed after maximum retries" - the generic message this
+      // channel exists to replace.
+      ledger.recordPaid({
+        job_id: 'paid-refused',
+        input: 'close my long 2 SOL',
+        input_type: 'text',
+        tags: ['elisym', 'text-gen'],
+        customer_id: 'cust',
+        net_amount: 9_700_000,
+        raw_event_json: JSON.stringify({
+          id: 'paid-refused',
+          pubkey: 'cust',
+          created_at: Math.floor(Date.now() / 1000),
+          kind: 5100,
+          tags: [
+            ['t', 'elisym'],
+            ['t', 'text-gen'],
+          ],
+          content: 'close my long 2 SOL',
+          sig: 'sig',
+        }),
+        created_at: Math.floor(Date.now() / 1000),
+      });
+
+      const refusingSkill: Skill = {
+        name: 'test-skill',
+        description: 'Refuses',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        execute: vi
+          .fn()
+          .mockRejectedValue(
+            new ScriptRefusalError(
+              SCRIPT_EXIT_REFUSED,
+              `${SCRIPT_REFUSAL_MARKER} a size in tokens is refused - write it as "size 300 USD".`,
+              'builder.ts:41',
+            ),
+          ),
+      };
+      const registry = makeFakeRegistry(refusingSkill);
+      const { transport } = makeFakeTransport();
+      const onLog = vi.fn();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog },
+      );
+
+      const runPromise = runtime.run();
+      await tick(100);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      const errorCall = (transport as any).sendFeedback.mock.calls.find(
+        (c: any) => c[1]?.type === 'error',
+      );
+      expect(errorCall?.[1].message).toBe(
+        'The provider refused: a size in tokens is refused - write it as "size 300 USD".',
+      );
+      expect(ledger.getStatus('paid-refused')).toBe('failed');
+      // Closed on purpose: the sentinel that carries that out of `recoverSingleJob`
+      // must not surface as an unhandled recovery error.
+      const logs = onLog.mock.calls.map((c: any) => String(c[0])).join('\n');
+      expect(logs).not.toContain('recovery closed the job');
+    });
   });
 
   describe('error handling', () => {

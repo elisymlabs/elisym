@@ -4,6 +4,8 @@ import type { SkillOnchainResolved } from '../src/onchain/types';
 import { NATIVE_SOL } from '../src/payment/assets';
 import { OnchainCallSkill } from '../src/skills/onchainCallSkill';
 import {
+  isRefusal,
+  isScriptRefusalError,
   refusalMessage,
   SCRIPT_EXIT_REFUSED,
   SCRIPT_REFUSAL_MARKER,
@@ -192,8 +194,55 @@ describe('refusalMessage', () => {
     expect(capped).toHaveLength(SCRIPT_REFUSAL_MAX_CHARS);
   });
 
+  it('keeps a reason that starts after a long padded block', () => {
+    // The scan window is measured from the first real character, not from the
+    // marker: a heredoc that indents its reason past the window would otherwise
+    // be reported as a refusal with no reason - the one outcome this channel
+    // exists to prevent.
+    const padded = `${SCRIPT_REFUSAL_MARKER}${' '.repeat(40_000)}write the size in USD.`;
+    expect(refusalMessage(padded)).toBe('write the size in USD.');
+  });
+
+  it('never cuts the scan window through a character', () => {
+    // The window ends mid-emoji; keeping its leading half would hand the result
+    // event a lone surrogate, which is not valid UTF-8.
+    const emoji = String.fromCodePoint(0x1f600);
+    const atWindowEdge = `${SCRIPT_REFUSAL_MARKER} ${'x'.repeat(SCRIPT_REFUSAL_MAX_CHARS * 8 - 1)}${emoji}`;
+    const message = refusalMessage(atWindowEdge);
+    expect(Buffer.from(message, 'utf8').toString('utf8')).toBe(message);
+  });
+
   it('falls back when there is nothing to say', () => {
     expect(refusalMessage(marked('   \n\t '))).toBe(SCRIPT_REFUSAL_UNSTATED);
+  });
+});
+
+describe('recognising a refusal', () => {
+  it('needs the marker, not just any first word', () => {
+    expect(isRefusal(`  ${SCRIPT_REFUSAL_MARKER} because`)).toBe(true);
+    expect(isRefusal('refused: because')).toBe(false);
+    expect(isRefusal('')).toBe(false);
+  });
+
+  it('identifies the error by name, since instanceof cannot cross SDK bundles', () => {
+    // Each SDK entry point is its own bundle, so the class the script runners
+    // throw is a different object from the one a consumer imports. The guard is
+    // what every consumer outside the module is supposed to use.
+    const thrown = new ScriptRefusalError(SCRIPT_EXIT_REFUSED, `${SCRIPT_REFUSAL_MARKER} no`, '');
+    const lookalike = Object.assign(new Error('no'), { name: 'ScriptExecutionError' });
+    expect(isScriptRefusalError(thrown)).toBe(true);
+    expect(isScriptRefusalError(lookalike)).toBe(false);
+    expect(isScriptRefusalError({ name: 'ScriptRefusalError' })).toBe(false);
+  });
+
+  it('carries stderr as a bounded single line', () => {
+    const noisy = new ScriptRefusalError(
+      SCRIPT_EXIT_REFUSED,
+      `${SCRIPT_REFUSAL_MARKER} nope`,
+      `first line\nsecond line${String.fromCharCode(27)}[31m`,
+    );
+    // The escape character becomes a space, like any other control character.
+    expect(noisy.stderr).toBe('first line second line [31m');
   });
 });
 

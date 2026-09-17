@@ -23,6 +23,7 @@ import {
   signerFromSecretKeyBase58,
 } from '@elisym/sdk';
 import type { Asset, Network } from '@elisym/sdk';
+import { UNICODE_FORMAT_MARKS, withoutDanglingSurrogate } from '@elisym/sdk/skills';
 import {
   address,
   createSolanaRpc,
@@ -353,15 +354,6 @@ function withPaymentIdentifier(
 }
 
 /**
- * Format characters: invisible, and survivors of control-stripping. The class
- * covers what an upstream would reach for to make a line read as something
- * other than what it says - direction overrides and isolates, zero-width
- * joiners, the byte-order mark, the tag block used to smuggle text past a
- * human reader - without this file having to enumerate them.
- */
-const UNICODE_FORMAT_MARKS = /\p{Cf}/gu;
-
-/**
  * Flatten untrusted text into something that cannot forge a line on the
  * operator's terminal: no C0/C1 controls, no format marks, and no newline to
  * turn one line into two. Everything an upstream can influence passes through
@@ -385,7 +377,7 @@ function flattenForOperator(text: string): string {
 function printedPrefix(flattened: string): string {
   return flattened.length <= X402_ERROR_EXCERPT_CHARS
     ? flattened
-    : flattened.slice(0, X402_ERROR_EXCERPT_CHARS).replace(/[\ud800-\udbff]$/, '');
+    : withoutDanglingSurrogate(flattened.slice(0, X402_ERROR_EXCERPT_CHARS));
 }
 
 /** Clip an already-flattened quote to one line's worth of terminal. */

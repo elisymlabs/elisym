@@ -95,6 +95,26 @@ export class ScriptExecutionError extends Error {
 }
 
 /**
+ * Type guards by name rather than `instanceof`.
+ *
+ * The SDK builds each entry point as its own bundle (`splitting: false`), so
+ * the copy of these classes inside `@elisym/sdk/skills` - the one the script
+ * runners actually throw - is a different class object from the one exported
+ * here. `instanceof` across the two is false however the source reads, which
+ * silently cost the runtime its `detail` (the raw stderr) on every script
+ * failure. Consumers outside this module should use these.
+ */
+export function isScriptExecutionError(value: unknown): value is ScriptExecutionError {
+  return value instanceof Error && value.name === 'ScriptExecutionError';
+}
+
+export function isScriptBillingExhaustedError(
+  value: unknown,
+): value is ScriptBillingExhaustedError {
+  return value instanceof Error && value.name === 'ScriptBillingExhaustedError';
+}
+
+/**
  * Per-skill rate-limit declaration. Snake-case in SKILL.md frontmatter,
  * camelCase here. Applies to any skill mode but the framework adds a
  * default cap only for free LLM skills.

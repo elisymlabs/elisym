@@ -24,6 +24,7 @@ import {
   isDefinitelyUnpaid,
   LIMITS,
   parseDelegatedPayment,
+  PROVIDER_REFUSED_PREFIX,
   readAcceptedTransports,
   resolveDelegationAsset,
   sendConfirmToTerminal,
@@ -50,13 +51,13 @@ import {
   FREE_LLM_GLOBAL_KEY,
   freeLlmCustomerKey,
   LlmHealthError,
-  ScriptBillingExhaustedError,
-  ScriptExecutionError,
+  isScriptBillingExhaustedError,
+  isScriptExecutionError,
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import { ScriptRefusalError } from '@elisym/sdk/skills';
+import { isScriptRefusalError } from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -246,17 +247,6 @@ function scriptMessageLooksLikeBillingOrInvalid(message: string): boolean {
 const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
 
 /**
- * Label on the one customer-facing message a PROVIDER writes.
- *
- * Every other string on the error feedback channel is the agent's own verdict -
- * a payment rejection, an availability notice - so a forwarded refusal without
- * a label is a sentence a provider could use to imitate one. The prefix is
- * added here rather than in the SDK because it is the runtime, not the skill,
- * that owns what the channel means.
- */
-const PROVIDER_REFUSED_PREFIX = 'The provider refused: ';
-
-/**
  * Sentinel for "recovery finished this job itself": it marked the entry failed
  * and told the customer why, so the caller must not log it again as an
  * unhandled recovery error.
@@ -267,9 +257,6 @@ class RecoveryJobClosed extends Error {
     this.name = 'RecoveryJobClosed';
   }
 }
-
-/** An operator-log excerpt of remote-derived text: one line, bounded. */
-const OPERATOR_EXCERPT_CHARS = 500;
 
 /**
  * Re-thrown by the post-execute catch when the underlying skill failure
@@ -410,35 +397,12 @@ const CUSTOMER_SAFE_MESSAGE_PREFIXES = ['Input too long', 'No skill matched', 'P
  * Resolve the error message that is safe to send to a remote customer. Inverts
  * the old leaky denylist (forward-unless-contains-"API") into an allowlist so
  * raw subprocess output or provider error bodies can never leak.
- */
-/**
- * What the operator reads when a job fails.
  *
- * A refusal keeps its two halves apart: the sentence the customer got, and the
- * script's stderr as a bounded single-line excerpt. Collapsing them (as an
- * error `detail` would) prints the same sentence twice, the second copy
- * unflattened and up to a megabyte long, and a multi-line copy forges extra
- * lines in the log.
+ * Every script-error test here is a NAME check, not `instanceof`: the SDK
+ * builds one bundle per entry point, so the class the script runners throw
+ * (from `@elisym/sdk/skills`) is a different class object from the one this
+ * file could import from `@elisym/sdk/llm-health`.
  */
-function describeForOperator(error: unknown): string {
-  if (error instanceof ScriptRefusalError) {
-    const aside = error.stderr.replace(/\s+/g, ' ').trim();
-    if (aside === '') {
-      return `refused: ${error.message}`;
-    }
-    const clipped =
-      aside.length > OPERATOR_EXCERPT_CHARS ? `${aside.slice(0, OPERATOR_EXCERPT_CHARS)}…` : aside;
-    return `refused: ${error.message} (stderr: ${clipped})`;
-  }
-  if (error instanceof ScriptExecutionError) {
-    return `${error.message}: ${error.detail}`;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return 'Unknown error';
-}
-
 function customerSafeMessage(error: unknown): string {
   if (
     error instanceof AgentUnavailableError ||
@@ -447,19 +411,19 @@ function customerSafeMessage(error: unknown): string {
   ) {
     return error.message;
   }
-  if (error instanceof ScriptRefusalError) {
+  if (isScriptRefusalError(error)) {
     // The one place a script's own words reach the customer. The prefix is the
-    // runtime's, and it is what keeps the channel impossible to imitate: every other
-    // message on this feedback channel is the agent's own verdict (a payment
-    // rejection, an availability notice), and without a label a provider could
-    // write one. The SDK has already flattened and capped the sentence itself.
+    // runtime's, and it is what keeps the channel honest: every other message
+    // on this feedback channel is the agent's own verdict (a payment rejection,
+    // an availability notice), and without a label a provider could write one.
+    // The SDK has already flattened and capped the sentence itself.
     return `${PROVIDER_REFUSED_PREFIX}${error.message}`;
   }
-  if (error instanceof ScriptExecutionError) {
+  if (isScriptExecutionError(error)) {
     // Generic summary only - `error.detail` (raw stderr/stdout) stays operator-side.
     return error.message;
   }
-  if (error instanceof ScriptBillingExhaustedError) {
+  if (isScriptBillingExhaustedError(error)) {
     return AGENT_UNAVAILABLE_MESSAGE;
   }
   if (
@@ -469,6 +433,35 @@ function customerSafeMessage(error: unknown): string {
     return error.message;
   }
   return 'Internal processing error';
+}
+
+/**
+ * What the operator reads when a job fails.
+ *
+ * A refusal keeps its two halves apart: the sentence the customer got, and the
+ * script's stderr, which the SDK has already flattened to one bounded line.
+ * Collapsing them (as an error `detail` would) prints the same sentence twice,
+ * the second copy unflattened and up to a megabyte long.
+ */
+function describeForOperator(error: unknown): string {
+  if (isScriptRefusalError(error)) {
+    return error.stderr === ''
+      ? `refused: ${error.message}`
+      : `refused: ${error.message} (stderr: ${error.stderr})`;
+  }
+  if (isScriptExecutionError(error)) {
+    return `${error.message}: ${error.detail}`;
+  }
+  // Not every throw is an Error: a rejected plain object with a `message` field
+  // still says more than "Unknown error", which is what the replaced expression
+  // (`e.message ?? 'Unknown error'`) forwarded.
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message !== '') {
+      return message;
+    }
+  }
+  return 'Unknown error';
 }
 
 /**
@@ -886,7 +879,7 @@ export class AgentRuntime {
     }
     const tag = `[${jobId.slice(0, 8)}]`;
 
-    if (err instanceof ScriptRefusalError) {
+    if (isScriptRefusalError(err)) {
       // A refusal is an answer, not a fault: the script ran, understood the
       // request and declined it. Gating the skill on it would take a capability
       // offline for doing exactly what it is meant to do. (The operator's log
@@ -894,7 +887,7 @@ export class AgentRuntime {
       return false;
     }
 
-    if (err instanceof ScriptBillingExhaustedError) {
+    if (isScriptBillingExhaustedError(err)) {
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
@@ -973,7 +966,7 @@ export class AgentRuntime {
       // Use the raw stderr/stdout (`detail`) for billing/invalid marker scanning
       // and the operator log - the generic `.message` no longer carries it.
       let message: string;
-      if (err instanceof ScriptExecutionError) {
+      if (isScriptExecutionError(err)) {
         message = err.detail;
       } else if (err instanceof Error) {
         message = err.message;
@@ -3557,20 +3550,13 @@ export class AgentRuntime {
           }
         };
 
-        // Session path, recovery flavor: same lock/open/append flow as live
-        // (slot-then-mutex holds - we run inside this.limit), with one
-        // deliberate difference: the history load excludes this job's own
-        // recorded turns. After a post-append SeedFailedError the transcript
-        // already holds this exchange; replaying it would ask the LLM the same
-        // question with its own undelivered answer in the prompt, and the
-        // `(jobId, role)`-deduped append skips the already-present lines.
         const runOrTellTheCustomer = async (
           run: () => Promise<SkillOutput>,
         ): Promise<SkillOutput> => {
           try {
             return await run();
           } catch (error) {
-            if (!(error instanceof ScriptRefusalError)) {
+            if (!isScriptRefusalError(error)) {
               throw error;
             }
             // A refusal is deterministic: the input that was refused is the
@@ -3583,6 +3569,13 @@ export class AgentRuntime {
           }
         };
 
+        // Session path, recovery flavor: same lock/open/append flow as live
+        // (slot-then-mutex holds - we run inside this.limit), with one
+        // deliberate difference: the history load excludes this job's own
+        // recorded turns. After a post-append SeedFailedError the transcript
+        // already holds this exchange; replaying it would ask the LLM the same
+        // question with its own undelivered answer in the prompt, and the
+        // `(jobId, role)`-deduped append skips the already-present lines.
         const output = await runOrTellTheCustomer(async () =>
           recoveryJobSession === null
             ? await runRecoveryExecution()

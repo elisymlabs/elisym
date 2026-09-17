@@ -13,6 +13,12 @@
  * defining property of a refusal is that it does NOT touch health state, and a
  * script author reaching for it should not have to import from `llm-health`.
  */
+import {
+  clipToCharacters,
+  firstContentIndex,
+  flattenUntrusted,
+  withoutDanglingSurrogate,
+} from './untrusted-text';
 
 /**
  * Exit code half of the contract. The other half is `SCRIPT_REFUSAL_MARKER` on
@@ -35,36 +41,42 @@ export const SCRIPT_REFUSAL_MARKER = 'ELISYM-REFUSAL:';
 /** How much of a refusal reaches the customer - long enough for a sentence or three. */
 export const SCRIPT_REFUSAL_MAX_CHARS = 400;
 
-/** Said when a script marks a refusal but prints nothing after the marker. */
-export const SCRIPT_REFUSAL_UNSTATED = 'The capability refused this request and gave no reason.';
+/**
+ * Said when a script marks a refusal but states nothing after the marker.
+ *
+ * A fragment, not a sentence: the runtime prefixes every refusal with its own
+ * label, and "The provider refused: The capability refused this request" says
+ * the same thing twice with two nouns for one actor.
+ */
+export const SCRIPT_REFUSAL_UNSTATED = 'no reason was given.';
+
+/** How much of a refusing script's stderr the error carries for the operator. */
+export const SCRIPT_REFUSAL_STDERR_CHARS = 500;
 
 /**
- * Cheap upper bound on what the cap can possibly need.
+ * Cheap upper bound on what the cap can possibly need, measured from the first
+ * real character rather than from the marker - a refusal padded with blank
+ * lines is still a refusal, and cutting on raw offset would drop its sentence
+ * and report that none was given.
  *
  * `runScript` captures up to a megabyte, and normalizing all of it to produce
  * 400 characters is work nobody asked for. Whitespace collapse and mark
- * stripping only ever shorten, so a prefix this long can never change the
- * capped result - an 8x allowance covers a refusal padded with whitespace.
+ * stripping only ever shorten, so an 8x window over real content cannot change
+ * the capped result.
  */
 const SCAN_LIMIT = SCRIPT_REFUSAL_MAX_CHARS * 8;
 
 /**
- * Format characters: invisible, and survivors of control-stripping. The class
- * covers what a provider could reach for to make a line read as something other
- * than what it says - direction overrides and isolates, zero-width joiners, the
- * byte-order mark, the tag block used to smuggle text past a human reader.
- * Mirrors `flattenForOperator` in the CLI's x402 driver.
+ * Where the reason begins, or -1 when this stdout is not a refusal at all.
+ * Indexes rather than slices: stdout can be a megabyte, and neither the check
+ * nor the message needs a copy of it.
  */
-const UNICODE_FORMAT_MARKS = /\p{Cf}/gu;
-
-/** Every C0 and C1 control character becomes a space. */
-function withoutControlCharacters(text: string): string {
-  let out = '';
-  for (const character of text) {
-    const code = character.codePointAt(0)!;
-    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? ' ' : character;
+function reasonStart(stdout: string): number {
+  const marker = firstContentIndex(stdout);
+  if (marker === -1 || !stdout.startsWith(SCRIPT_REFUSAL_MARKER, marker)) {
+    return -1;
   }
-  return out;
+  return firstContentIndex(stdout, marker + SCRIPT_REFUSAL_MARKER.length);
 }
 
 /**
@@ -73,43 +85,29 @@ function withoutControlCharacters(text: string): string {
  * whatever the exit code said.
  */
 export function isRefusal(stdout: string): boolean {
-  return stdout.trimStart().startsWith(SCRIPT_REFUSAL_MARKER);
+  const marker = firstContentIndex(stdout);
+  return marker !== -1 && stdout.startsWith(SCRIPT_REFUSAL_MARKER, marker);
 }
 
 /**
  * What the customer is allowed to read of a refusal.
  *
  * The provider chose to send this, so it crosses the trust boundary - but as
- * one plain paragraph and nothing else. Control characters and Unicode format
- * marks (escape sequences, direction overrides, anything that could redraw a
- * terminal or forge a line in a log) are dropped, runs of whitespace collapse,
- * and the result is capped.
- *
- * The cap counts CHARACTERS, not UTF-16 code units: cutting by code unit splits
- * a surrogate pair whenever a refusal carries an emoji near the limit, and the
- * half that survives is not valid UTF-8 once the message is serialized into the
- * result event.
+ * one plain paragraph and nothing else: `flattenUntrusted` drops the control
+ * characters and format marks that could redraw a terminal or reverse a line,
+ * and the result is capped by character so no half of one survives the cut.
  */
 export function refusalMessage(stdout: string): string {
-  const marked = stdout.trimStart();
-  const body = marked.startsWith(SCRIPT_REFUSAL_MARKER)
-    ? marked.slice(SCRIPT_REFUSAL_MARKER.length)
-    : marked;
-  const flattened = withoutControlCharacters(body.slice(0, SCAN_LIMIT))
-    .replace(UNICODE_FORMAT_MARKS, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (flattened === '') {
+  const start = reasonStart(stdout);
+  if (start === -1) {
     return SCRIPT_REFUSAL_UNSTATED;
   }
-  const characters = [...flattened];
-  if (characters.length > SCRIPT_REFUSAL_MAX_CHARS) {
-    return `${characters
-      .slice(0, SCRIPT_REFUSAL_MAX_CHARS - 1)
-      .join('')
-      .trimEnd()}…`;
-  }
-  return flattened;
+  const flattened = flattenUntrusted(
+    withoutDanglingSurrogate(stdout.slice(start, start + SCAN_LIMIT)),
+  );
+  return flattened === ''
+    ? SCRIPT_REFUSAL_UNSTATED
+    : clipToCharacters(flattened, SCRIPT_REFUSAL_MAX_CHARS);
 }
 
 /**
@@ -117,20 +115,34 @@ export function refusalMessage(stdout: string): string {
  *
  * Unlike `ScriptExecutionError`, `message` is the PROVIDER's own sentence rather
  * than a fixed summary, and it is meant to reach the customer - that is the
- * whole point of the exit code. The raw halves stay separate, as on
- * `ScriptBillingExhaustedError`, so a caller logging the operator's copy is not
- * handed a megabyte of unflattened stdout by accident.
+ * whole point of the exit code. `stderr` is the operator's half, kept separate
+ * and already flattened and bounded: a caller logging it should not have to
+ * know that the raw version can be a megabyte of terminal escapes.
  */
 export class ScriptRefusalError extends Error {
   readonly exitCode: number;
-  readonly stdout: string;
+  /** Flattened, single-line excerpt of the script's stderr. May be empty. */
   readonly stderr: string;
 
   constructor(exitCode: number, stdout: string, stderr: string) {
     super(refusalMessage(stdout));
     this.name = 'ScriptRefusalError';
     this.exitCode = exitCode;
-    this.stdout = stdout;
-    this.stderr = stderr;
+    this.stderr = clipToCharacters(
+      flattenUntrusted(withoutDanglingSurrogate(stderr.slice(0, SCAN_LIMIT))),
+      SCRIPT_REFUSAL_STDERR_CHARS,
+    );
   }
+}
+
+/**
+ * Type guard by name rather than `instanceof`.
+ *
+ * The SDK builds each entry point as its own bundle (`splitting: false`), so a
+ * class imported from `@elisym/sdk/llm-health` is a DIFFERENT class object from
+ * the copy inside `@elisym/sdk/skills`, and `instanceof` across the two is
+ * false however the source reads. Every consumer should use these guards.
+ */
+export function isScriptRefusalError(value: unknown): value is ScriptRefusalError {
+  return value instanceof Error && value.name === 'ScriptRefusalError';
 }

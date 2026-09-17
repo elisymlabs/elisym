@@ -26,6 +26,19 @@
  * always safe; removing one risks classifying a real outage as `unknown`.
  */
 
+/**
+ * The runtime's label on the one customer-facing message a PROVIDER wrote: the
+ * reason a skill refused the job (`SCRIPT_EXIT_REFUSED`).
+ *
+ * A cross-package contract, and matched as a PREFIX exactly like
+ * `Payment timeout` is in the app: the text after it is the provider's own
+ * sentence, and a refusal that says "insufficient detail in the brief" or
+ * "check your billing address" would otherwise be read as an outage by the
+ * substring markers below - telling the customer their payment is held for a
+ * job that is already closed and already charged.
+ */
+export const PROVIDER_REFUSED_PREFIX = 'The provider refused: ';
+
 const AGENT_UNAVAILABLE_MARKERS = [
   'agent temporarily unavailable',
   'internal processing error',
@@ -42,17 +55,23 @@ const AGENT_UNAVAILABLE_MARKERS = [
   'unauthenticated',
 ];
 
-export type JobErrorKind = 'agent-unavailable' | 'unknown';
+export type JobErrorKind = 'agent-unavailable' | 'provider-refused' | 'unknown';
 
 /**
  * Classify a customer-facing error string surfaced via
  * `JobUpdateCallbacks.onError` into a stable kind the UI can branch on.
  *
  * Match is case-insensitive against the message text. Returns
- * `agent-unavailable` for any known billing/auth/invalid-key signal;
- * `unknown` for everything else (timeouts, validation errors, transport).
+ * `provider-refused` when the runtime labelled the message as a skill's own
+ * refusal, `agent-unavailable` for any known billing/auth/invalid-key signal,
+ * and `unknown` for everything else (timeouts, validation errors, transport).
  */
 export function classifyJobError(message: string): JobErrorKind {
+  // Before the markers, and by prefix: everything after the label is the
+  // provider's own words, which may contain any of them innocently.
+  if (message.startsWith(PROVIDER_REFUSED_PREFIX)) {
+    return 'provider-refused';
+  }
   const lower = message.toLowerCase();
   for (const marker of AGENT_UNAVAILABLE_MARKERS) {
     if (lower.includes(marker)) {

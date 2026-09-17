@@ -66,7 +66,11 @@ export type {
 } from './services/reputation';
 export { MarketplaceService, parseDelegatedPayment } from './services/marketplace';
 export type { DelegatedPaymentRequest } from './services/marketplace';
-export { classifyJobError, JobWaitTimeoutError } from './services/jobErrors';
+export {
+  classifyJobError,
+  JobWaitTimeoutError,
+  PROVIDER_REFUSED_PREFIX,
+} from './services/jobErrors';
 export type { JobErrorKind } from './services/jobErrors';
 export { MediaService } from './services/media';
 export { BlossomService } from './services/blossom';

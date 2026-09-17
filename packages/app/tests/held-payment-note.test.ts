@@ -53,6 +53,19 @@ describe('what a paying customer is told about their money', () => {
     }
   });
 
+  it('says nothing about the money when the provider refused the job', () => {
+    // A refusal is terminal AND already charged on the paid path, so the outage
+    // note would be false twice over. It is also the message most likely to
+    // contain an outage marker by accident: these are ordinary English.
+    for (const reason of [
+      'insufficient detail in the brief - add the target audience.',
+      'your billing address is missing a postal code.',
+      'that file is unauthorized for this capability.',
+    ]) {
+      expect(heldPaymentNote(`The provider refused: ${reason}`, true)).toBeUndefined();
+    }
+  });
+
   it('still reassures through an agent outage, whatever the wording', () => {
     expect(heldPaymentNote('Internal processing error', true)).toMatch(/back online/);
     expect(heldPaymentNote('Agent temporarily unavailable', true)).toMatch(/back online/);
