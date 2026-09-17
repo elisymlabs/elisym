@@ -10,8 +10,10 @@ import {
   ScriptRefusalError,
   refusalMessage,
 } from '../src/llm-health';
+import type { SkillOnchainResolved } from '../src/onchain/types';
 import { NATIVE_SOL } from '../src/payment/assets';
 import { DynamicScriptSkill } from '../src/skills/dynamicScriptSkill';
+import { OnchainCallSkill } from '../src/skills/onchainCallSkill';
 import { StaticScriptSkill } from '../src/skills/staticScriptSkill';
 
 interface ScriptFixture {
@@ -104,6 +106,40 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error).toBeInstanceOf(ScriptRefusalError);
     expect(error.message).toBe(SCRIPT_REFUSAL_UNSTATED);
     expect(error.message).not.toContain('quiet failure');
+  });
+
+  it('reaches a mode: onchain capability too', async () => {
+    // The docs promise this, and it holds only because OnchainCallSkill runs
+    // its builder through DynamicScriptSkill. A refusal must arrive before the
+    // envelope check, since a refusing builder emits no envelope at all.
+    fixture = setupScript(
+      `#!/bin/sh\necho "name your wallet after the word wallet."\nexit ${SCRIPT_EXIT_REFUSED}\n`,
+    );
+    const onchain: SkillOnchainResolved = {
+      kind: 'perp-close',
+      programs: ['Gmso1uvJnLbawvw7yezdfCDcPydwW2s2iqG3w6MDucLo'],
+      requires: [],
+      params: [],
+      token: 'sol',
+      decimals: 9,
+      max_per_call_subunits: '0',
+      grants_authority: false,
+      max_authority_subunits: '0',
+    };
+    const skill = new OnchainCallSkill({
+      name: 'close',
+      description: 'close',
+      capabilities: ['onchain-call'],
+      priceSubunits: 1n,
+      asset: NATIVE_SOL,
+      scriptPath: fixture.scriptPath,
+      scriptArgs: [],
+      onchain,
+      network: 'mainnet',
+    });
+    const error = await skill.execute(MINIMAL_INPUT, MINIMAL_CTX).catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptRefusalError);
+    expect(error.message).toBe('name your wallet after the word wallet.');
   });
 
   it('leaves a plain non-zero exit as a generic failure', async () => {
