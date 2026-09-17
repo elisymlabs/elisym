@@ -153,6 +153,19 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error.message).toHaveLength(SCRIPT_REFUSAL_MAX_CHARS);
   });
 
+  it('treats an empty refusal file as a refusal with nothing said', async () => {
+    // Both docs promise this. The script created the file deliberately; only
+    // its ABSENCE means "this was not a refusal".
+    fixture = setupScript(
+      `#!/bin/sh\n: > "$${SCRIPT_REFUSAL_FILE_ENV}"\nexit ${SCRIPT_EXIT_REFUSED}\n`,
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptRefusalError);
+    expect(error.message).toBe(SCRIPT_REFUSAL_UNSTATED);
+  });
+
   it('tells the operator when a 43 arrives with no reason written', async () => {
     // Otherwise a mistyped variable name is indistinguishable from a crash, and
     // the operator has no way to learn their refusals reach nobody.

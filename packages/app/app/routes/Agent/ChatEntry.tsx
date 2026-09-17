@@ -199,7 +199,13 @@ export function ChatEntry({
           </div>
         }
       >
-        {entry.refusal ?? 'No result was delivered for this message.'}
+        {entry.refusal === undefined ? (
+          'No result was delivered for this message.'
+        ) : (
+          // Provider-authored text, like any other untrusted bubble in this
+          // file: wrapped, clamped, and never allowed to push the page sideways.
+          <p className="m-0 line-clamp-6 break-words whitespace-pre-wrap">{entry.refusal}</p>
+        )}
       </ChatBubble>
     );
   }

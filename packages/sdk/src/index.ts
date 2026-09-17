@@ -75,7 +75,11 @@ export {
   flattenForComparison,
   withoutDanglingSurrogate,
 } from './skills/untrusted-text';
-export { isScriptBillingExhaustedError, isScriptExecutionError } from './llm-health/types';
+export {
+  isLlmHealthError,
+  isScriptBillingExhaustedError,
+  isScriptExecutionError,
+} from './llm-health/types';
 export { isScriptRefusalError } from './skills/refusal';
 export {
   classifyJobError,

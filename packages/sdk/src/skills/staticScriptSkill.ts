@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -81,20 +82,33 @@ export class StaticScriptSkill implements Skill {
     this.scriptEnv = params.scriptEnv;
   }
 
+  /**
+   * The directory holding this skill's one out-of-band channel: the refusal
+   * reason. Created once per skill rather than once per job - a cron-style
+   * static skill fires on an interval, and two filesystem round trips a tick
+   * for a mode whose defining property is that it may touch no filesystem is
+   * not a trade worth making.
+   *
+   * `null` when it could not be created: a read-only or full tmpdir must not be
+   * what stops a static skill running, it just leaves the job no way to refuse.
+   */
+  private refusalDir: Promise<string | null> | undefined;
+
+  private refusalDirectory(): Promise<string | null> {
+    this.refusalDir ??= mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
+    return this.refusalDir;
+  }
+
   async execute(_input: SkillInput, ctx: SkillContext): Promise<SkillOutput> {
-    // A directory for the one out-of-band channel this mode has: the refusal
-    // reason. Removed on every path, unlike the dynamic runner's, which may
-    // outlive `execute` while a file result is seeded.
-    //
-    // A skill in this mode may touch no filesystem at all, so a read-only or
-    // full tmpdir must not be what stops it running: without the directory the
-    // job simply has no refusal channel.
-    const outDir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
+    const dir = await this.refusalDirectory();
+    // Per job, because jobs run concurrently: two of them sharing one path
+    // would read each other's refusal.
+    const refusalFile = dir === null ? undefined : join(dir, `refusal-${randomUUID()}`);
     try {
-      return await this.run(ctx, outDir === null ? undefined : join(outDir, 'refusal'));
+      return await this.run(ctx, refusalFile);
     } finally {
-      if (outDir !== null) {
-        await rm(outDir, { recursive: true, force: true }).catch(() => {});
+      if (refusalFile !== undefined) {
+        await rm(refusalFile, { force: true }).catch(() => {});
       }
     }
   }
@@ -116,6 +130,7 @@ export class StaticScriptSkill implements Skill {
         null,
         result.spawnError.message,
         'script could not be started',
+        result.spawnError.message,
       );
     }
     if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {

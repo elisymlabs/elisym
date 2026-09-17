@@ -172,6 +172,7 @@ export class DynamicScriptSkill implements Skill {
           null,
           result.spawnError.message,
           'script could not be started',
+          result.spawnError.message,
         );
       }
       if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {

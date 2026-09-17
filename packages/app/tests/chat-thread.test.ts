@@ -315,6 +315,38 @@ describe('chatThread store', () => {
       expect(await store.failEntry(AGENT, 'ghost-job')).toBe(false);
     });
 
+    it('attaches a refusal to an entry that already failed', async () => {
+      // An entry aged out to `failed` before its refusal arrived still needs
+      // the reason: without it the thread offers Retry, and Retry buys the same
+      // deterministic refusal again - on a flat-priced skill, for full price.
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+      expect(await store.failEntry(AGENT, 'job-1')).toBe(true);
+      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'say the size in USD.' })).toBe(true);
+      const [entry] = await store.readThread(AGENT);
+      expect(entry?.status).toBe('failed');
+      expect(entry?.refusal).toBe('say the size in USD.');
+    });
+
+    it('does not churn the store when the same refusal arrives twice', async () => {
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+      await store.failEntry(AGENT, 'job-1', { refusal: 'say the size in USD.' });
+      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'say the size in USD.' })).toBe(
+        false,
+      );
+    });
+
+    it('never demotes a completed entry, refusal or not', async () => {
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+      await store.completeEntry(AGENT, 'job-1', { result: 'answer' });
+      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'too late' })).toBe(false);
+      const [entry] = await store.readThread(AGENT);
+      expect(entry?.status).toBeUndefined();
+      expect(entry?.refusal).toBeUndefined();
+    });
+
     it('does not resurrect a purged entry via a late transition', async () => {
       const { store, storage } = createStore();
       await store.appendPendingEntry(AGENT, pendingEntry('job-1'));

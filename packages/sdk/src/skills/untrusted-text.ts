@@ -14,8 +14,9 @@ const ZWNJ = String.fromCodePoint(0x200c);
 const ZWJ = String.fromCodePoint(0x200d);
 
 /**
- * Safe to share despite the `g` flag: `String.prototype.replace` sets
- * `lastIndex` to 0 before and after a global regex, and this is its only use.
+ * Safe to share despite the `g` flag because every use below goes through
+ * `String.prototype.replace`, which sets `lastIndex` to 0 before and after a
+ * global regex. A `.test()` or `.exec()` on it would not be safe.
  */
 const FORMAT_MARKS = /\p{Cf}/gu;
 
@@ -150,12 +151,14 @@ export function flattenForComparison(text: string): string {
  * allowance covers what whitespace collapse can shorten.
  */
 export function excerptUntrusted(text: string, maxChars: number): string {
-  const windowed = flattenUntrusted(withoutDanglingSurrogate(text.slice(0, maxChars * 8)));
+  const window = maxChars * 8;
+  const windowed = flattenUntrusted(withoutDanglingSurrogate(text.slice(0, window)));
   // The window is a fast path, not a guarantee: whitespace collapses by an
-  // unbounded factor, so 3200 newlines followed by the real sentence would
-  // flatten to nothing and report a refusal with no reason. When the window
-  // came back empty and there is more text, pay for the whole thing once.
+  // unbounded factor, so 3200 newlines ahead of the real sentence leave the
+  // window holding nothing - or, worse, its first letter. Any SHORT result from
+  // a text that outran the window means the window was the limit rather than
+  // the content, so pay for the whole thing once.
   const flattened =
-    windowed === '' && text.length > maxChars * 8 ? flattenUntrusted(text) : windowed;
+    [...windowed].length < maxChars && text.length > window ? flattenUntrusted(text) : windowed;
   return clipToCharacters(flattened, maxChars);
 }

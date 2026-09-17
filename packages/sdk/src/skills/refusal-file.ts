@@ -13,15 +13,20 @@ import { SCRIPT_REFUSAL_FILE_MAX_BYTES } from './refusal';
  * Read what a script wrote to `ELISYM_REFUSAL_FILE`, or `undefined` for "it did
  * not refuse".
  *
- * Adoption rule as elsewhere in this package: the path must exist, be a regular
- * file and be non-empty. Anything unreadable is treated as no refusal rather
- * than as an empty one - a refusal the runtime invented would be worse than a
- * job that simply failed.
+ * The path must exist and be a regular file; an empty one is a refusal with
+ * nothing said. Anything unreadable is treated as no refusal at all - a refusal
+ * the runtime invented would be worse than a job that simply failed.
  */
 export async function readRefusalFile(path: string): Promise<string | undefined> {
   const info = await stat(path).catch(() => null);
-  if (info === null || !info.isFile() || info.size === 0) {
+  if (info === null || !info.isFile()) {
     return undefined;
+  }
+  // An EMPTY file is still a refusal: the script created it deliberately and
+  // then had nothing to say, which the customer hears as "no reason was given".
+  // Only the absence of the file means "this was not a refusal".
+  if (info.size === 0) {
+    return '';
   }
   // Read a bounded prefix rather than the file: a script that redirects a
   // gigabyte here (`yes refused > "$ELISYM_REFUSAL_FILE"`) must not be able to

@@ -115,6 +115,14 @@ export class ScriptExecutionError extends Error {
  * silently cost the runtime its `detail` (the raw stderr) on every script
  * failure. Consumers outside this module should use these.
  */
+export function isLlmHealthError(value: unknown): value is LlmHealthError {
+  return (
+    value instanceof Error &&
+    value.name === 'LlmHealthError' &&
+    typeof (value as LlmHealthError).reason === 'string'
+  );
+}
+
 export function isScriptExecutionError(value: unknown): value is ScriptExecutionError {
   return (
     value instanceof Error &&

@@ -24,6 +24,7 @@ import {
   isDefinitelyUnpaid,
   LIMITS,
   excerptUntrusted,
+  isLlmHealthError,
   isScriptBillingExhaustedError,
   isScriptExecutionError,
   isScriptRefusalError,
@@ -54,7 +55,6 @@ import {
   createFreeLlmLimiterSet,
   FREE_LLM_GLOBAL_KEY,
   freeLlmCustomerKey,
-  LlmHealthError,
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
@@ -462,7 +462,7 @@ function describeForOperator(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'message' in error) {
     const message = (error as { message?: unknown }).message;
     if (typeof message === 'string' && message !== '') {
-      return message;
+      return operatorExcerpt(message);
     }
   }
   return 'Unknown error';
@@ -907,11 +907,15 @@ export class AgentRuntime {
       log(
         `${tag} Script signaled billing-exhausted (exit ${err.exitCode}). Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
+      // `err.stderr`, not `err.message`: the message falls back to stdout, and
+      // for an LLM proxy stdout is the model's completion - text the customer
+      // steers, stored here as the pair's reason and replayed on every gated
+      // job afterwards.
       this.healthMonitor.markUnhealthyFromJob(
         provider,
         model,
         'billing',
-        operatorExcerpt(err.message, 200),
+        operatorExcerpt(err.stderr, 200),
       );
       return true;
     }
@@ -1217,8 +1221,10 @@ export class AgentRuntime {
       }
 
       this.limit(() => this.processJob(job))
-        .catch((e: any) => {
-          this.callbacks.onJobError?.(job.jobId, e.message);
+        .catch((e: unknown) => {
+          // `describeForOperator`, not `e.message`: a rejected null here throws
+          // inside the catch handler, and nothing downstream would report it.
+          this.callbacks.onJobError?.(job.jobId, describeForOperator(e));
         })
         .finally(() => {
           this.inFlight.delete(job.jobId);
@@ -1364,9 +1370,11 @@ export class AgentRuntime {
       if (keepPaidForRecovery) {
         log(`[${job.jobId.slice(0, 8)}] Keeping status=paid; recovery will retry (24h cutoff).`);
       }
-      // Operator log keeps the full detail (including raw script stderr from a
-      // ScriptExecutionError); the customer only ever receives an allowlisted,
-      // generic message via `customerSafeMessage`.
+      // The operator's copy is a flattened, bounded excerpt of the script's own
+      // output - the full stderr is not kept anywhere, on purpose: it is
+      // attacker-influenced text headed for a terminal and a structured log.
+      // The customer only ever receives an allowlisted, generic message via
+      // `customerSafeMessage`.
       this.callbacks.onJobError?.(job.jobId, operatorMessage);
 
       // W8: only forward known-safe messages to the customer; everything else is
@@ -3449,7 +3457,7 @@ export class AgentRuntime {
           try {
             await this.healthMonitor.assertReady(healthPair.provider, healthPair.model);
           } catch (err) {
-            if (err instanceof LlmHealthError) {
+            if (isLlmHealthError(err)) {
               log(
                 `[${entry.job_id.slice(0, 8)}] Recovery: pair ${healthPair.provider}/${healthPair.model} still unhealthy (${err.reason}); waiting for recovery probe.`,
               );
