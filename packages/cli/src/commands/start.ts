@@ -53,6 +53,7 @@ import { address, createSolanaRpc } from '@solana/kit';
 import { probeRelays } from '../diagnostics.js';
 import {
   fetchSplBalance,
+  findSharedPayoutNeighbors,
   formatSplBalanceValue,
   getRpcUrl,
   MAX_CONCURRENT_JOBS,
@@ -211,6 +212,44 @@ export async function cmdStart(
       '  ! Paid skills require a Solana address. Run `npx @elisym/cli profile` to configure.\n',
     );
     process.exit(1);
+  }
+
+  // A second agent behind the same payout address is not a misconfiguration
+  // anyone would notice, and on the flat paid rail one transaction carrying two
+  // jobs' references settles both. Not refused and not locked - a safe needs a
+  // cross-process lock this repository does not have - but said out loud.
+  //
+  // Its own try/catch, at the CALL: the rule "every reach into somebody else's
+  // directory is guarded" lives inside the scan, but there is no margin here
+  // and the cost of an unaccounted throw is out of all proportion - a cosmetic
+  // warning turning into a refusal to start a paid agent. A separate branch
+  // rather than reusing the gate above: from `hasPaid && !solanaAddress`
+  // TypeScript cannot tell that `solanaAddress` is defined, and non-null
+  // assertions are forbidden here.
+  if (hasPaid && solanaAddress) {
+    try {
+      const neighbors = await findSharedPayoutNeighbors(
+        cwd,
+        loaded.dir,
+        walletNetwork,
+        solanaAddress,
+      );
+      for (const neighbor of neighbors) {
+        console.log(
+          `  ! WARNING: agent "${neighbor.name}" (${neighbor.dir}) is paid at the same ` +
+            `address on ${walletNetwork}. On the flat paid rail one transaction can be counted ` +
+            `for jobs of both agents, so a customer could be served twice for one transfer.` +
+            (neighbor.paid === 'unknown'
+              ? ' Could not determine whether that agent has paid skills.'
+              : ''),
+        );
+      }
+      if (neighbors.length > 0) {
+        console.log();
+      }
+    } catch {
+      // Deliberately silent: this is a warning, not a gate.
+    }
   }
 
   // -- Step 6: LLM check (only when at least one skill needs it) --
@@ -1002,7 +1041,7 @@ export async function cmdStart(
   );
 
   // Tee: banner-style indent line on stdout (existing UX) + structured
-  // stderr pino entry with shared redact paths (defence against future
+  // stderr pino entry with shared redact paths (defense against future
   // slips where a diagnostic string might embed user input).
   const diagLog = (msg: string): void => {
     logWithIndent(msg);
@@ -1140,7 +1179,7 @@ export function buildCapabilityCard(skill: Skill, inputs: CapabilityCardInputs):
     // half alone would advertise pay-per-use on a card that ships no delegation
     // block - the buyer would be told "you pay for what you use" while the only
     // rail they can reach charges the ceiling. The loader already refuses
-    // `metered` without `delegation`, so this is defence in depth.
+    // `metered` without `delegation`, so this is defense in depth.
     // `solanaAddress` is in the gate too: without it the `payment` block below
     // is omitted, and a metered descriptor with no price to clamp against is
     // incoherent by construction - the write-side mirror would then reject the

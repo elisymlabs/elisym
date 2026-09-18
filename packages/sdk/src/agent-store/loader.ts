@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import YAML from 'yaml';
 import { validateAgentName } from '../primitives/config';
 import { isEncrypted, decryptSecret } from '../primitives/encryption';
+import { isBlockingNode } from './node-type';
 import { agentPaths } from './paths';
 import { resolveAgent, type AgentSource, type ResolvedAgent } from './resolver';
 import { ElisymYamlSchema, SecretsSchema, type ElisymYaml, type Secrets } from './schema';
@@ -26,6 +27,9 @@ export async function readAgentPublic(
   resolved: ResolvedAgent,
 ): Promise<{ resolved: ResolvedAgent; yaml: ElisymYaml }> {
   const paths = agentPaths(resolved.dir);
+  if (await isBlockingNode(paths.yaml)) {
+    throw new Error(`Refusing to read ${paths.yaml}: not a regular file`);
+  }
   const yamlRaw = await readFile(paths.yaml, 'utf-8');
   const parsed = YAML.parse(yamlRaw);
   const yaml = ElisymYamlSchema.parse(parsed ?? {});
