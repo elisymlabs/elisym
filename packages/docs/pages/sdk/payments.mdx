@@ -51,7 +51,35 @@ import { getProtocolConfig, clearProtocolConfigCache, getProtocolProgramId } fro
 
 These APIs are network-explicit: request creation stamps the provider's `network` into the request, `SolanaPaymentStrategy.validatePaymentRequest` takes the customer's network and rejects a cross-network request before any money check, and `buildPaymentInstructions` requires an explicit `programId` (no silent devnet default - the program id is cluster-ambiguous by design).
 
+`validatePaymentRequest` also refuses a **degenerate reference** - one that is itself an address this payment is computed from, the recipient or the treasury among them. Verification finds a transfer by listing its reference's history, so such a reference cannot single the payment out: the customer's transfer falls off the end of the window and is never found again. `verifyPayment` refuses the same thing with `code: 'degenerate_reference'` on `VerifyResult`, and both `degenerateReferenceSync` and `degenerateReference` are exported if you want the check on its own. Both throw on an asset they cannot resolve - the mint is part of what they compare - so resolve the asset first if you are not already past that point.
+
 `validatePaymentRequest` also binds the asset. It refuses any asset that does not exist on the customer's network (the other cluster's USDC, or a mainnet-only asset quoted to a devnet customer), and `options.expectedAsset` closes the currency bait-and-switch the same way `expectedRecipient` closes payment redirection - pass the asset you agreed to pay and a request debiting a different one is rejected with `asset_mismatch`. The membership check alone cannot catch that: USDC and LSM are both mainnet assets with 6 decimals, so the same number in the wrong currency passes everything else.
+
+## Accepting a payment exactly once
+
+`verifyPayment` answers "a transaction satisfying this request exists". That is not "this transaction is mine to keep": one transfer can carry several jobs' references, so the same payment can satisfy several requests. Binding a settlement to exactly one job is the caller's duty, and `ProviderPaymentAcceptor` is that duty done for you.
+
+```ts
+import { ProviderPaymentAcceptor, SolanaPaymentStrategy } from '@elisym/sdk';
+import { createFileSettlementStore } from '@elisym/sdk/node';
+
+const acceptor = new ProviderPaymentAcceptor({
+  strategy: new SolanaPaymentStrategy(),
+  rpc,
+  store: createFileSettlementStore('./settlements.json'),
+});
+
+const result = await acceptor.accept(
+  { paymentRequest, jobIdentity: job.id, txSignature: customerSuppliedSignature },
+  protocolConfig,
+);
+```
+
+`jobIdentity` has to be unique per job and stable across restarts. Deriving it from something stable but SHARED - the customer's pubkey, the request's reference, a skill name - closes several jobs with one signature and defeats the whole thing.
+
+On success you get `{ accepted: true, txSignature }`, the settlement now bound to this job and to no other. A refusal carries a `reason`, and the only one that means "nobody paid" is `window-empty`: it is withheld unless the reference's window was read whole and found empty. `inconclusive` means the pass did not see everything - a listing that failed, a candidate that did not verify, one skipped as another job's, a full window, a deadline that expired - and the job should be retried until the request's own expiry, which the acceptor does not check for you. `unusable-request` and `degenerate_reference` are terminal: no configuration would have made that request payable.
+
+Bring your own store if you already have one. `SettlementStore` is four methods, and the one constraint that matters is that `claim` is **synchronous**: the read and the write have to happen in one uninterrupted step, or two concurrent jobs both see a signature as unclaimed. A database, a KV or IndexedDB cannot implement it. `claim` also throws on an empty signature or an empty `jobIdentity`, and `prune` throws below `MIN_SETTLEMENT_RETENTION_MS` (30 days) - a signature dropped from the index has to be unverifiable on-chain by then, or it settles a second job.
 
 ## Estimating cost
 
