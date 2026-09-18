@@ -11,6 +11,21 @@ import { decodeResult, resultDisplay } from '~/lib/fileResult';
 const MAX_UNEXPLAINED_LOOKUPS = 20;
 
 /**
+ * How long before the same closed entry is asked about again.
+ *
+ * Asking once and never again is how a LATE verdict is missed - the provider's
+ * recovery loop decides minutes, sometimes hours, after the failure. Asking on
+ * every tab activation never converges: a thread of twenty ordinary crashes
+ * re-fetches the same twenty answers for a week. An hour is long enough that a
+ * session of tab switching costs one round trip and short enough that a verdict
+ * is found the same afternoon.
+ */
+const ASK_AGAIN_AFTER_MS = 60 * 60 * 1000;
+
+/** When each closed entry was last asked about, for this session only. */
+const lastAskedAt = new Map<string, number>();
+
+/**
  * How far back a closed entry may still be asked about.
  *
  * Not the unpaid-ageing window: that one measures whether a job nobody paid for
@@ -92,12 +107,14 @@ export function useChatReconcile(agentPubkey: string): void {
             // bounds it.
             Date.now() - entry.ts < UNEXPLAINED_LOOKUP_MAX_AGE_MS,
         )
-        // Newest first, and only a handful. Asked again on every activation on
-        // purpose: the refusal these are waiting for is published LATER than the
-        // failure - the provider's recovery loop decides minutes after the wait
-        // window closed - so remembering "already asked, nothing there" is
-        // exactly how the late verdict would be missed. The cap is what bounds
-        // the cost instead.
+        // Newest first, only a handful, and not one asked about within the last
+        // hour: the refusal these wait for is published LATER than the failure,
+        // so "asked once, nothing there" is how a late verdict gets missed - but
+        // asking on every activation never converges either. See
+        // `ASK_AGAIN_AFTER_MS`.
+        .filter(
+          (entry) => Date.now() - (lastAskedAt.get(entry.jobEventId) ?? 0) > ASK_AGAIN_AFTER_MS,
+        )
         .sort((left, right) => right.ts - left.ts)
         .slice(0, MAX_UNEXPLAINED_LOOKUPS);
 
@@ -212,6 +229,12 @@ export function useChatReconcile(agentPubkey: string): void {
                 decoded.attachments,
               );
               continue;
+            }
+            // Stamped whatever the answer, so a thread of ordinary crashes is not
+            // re-fetched on every tab switch. Only when the relays ANSWERED: a
+            // failed query proved nothing worth remembering.
+            if (errors !== null) {
+              lastAskedAt.set(entry.jobEventId, Date.now());
             }
             const late = errors?.get(entry.jobEventId);
             if (late !== undefined && classifyJobError(late) === 'provider-refused') {

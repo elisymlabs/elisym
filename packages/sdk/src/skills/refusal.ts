@@ -27,8 +27,8 @@ import { AGENT_REFUSED_LABEL, PROVIDER_REFUSED_PREFIX } from '../services/jobErr
 import type { RefusalFileRead } from './refusal-file';
 import {
   clipToCharacters,
+  excerptOwnMessage,
   excerptUntrustedTail,
-  flattenUntrusted,
   hasVisibleText,
 } from './untrusted-text';
 
@@ -69,6 +69,14 @@ export const SCRIPT_REFUSAL_FILE_MAX_BYTES = 8 * 1024;
  * the same thing twice with two nouns for one actor.
  */
 export const SCRIPT_REFUSAL_UNSTATED = 'no reason was given.';
+
+/**
+ * Headroom for a label the excerpt may carry in before it is stripped.
+ *
+ * Both labels are shorter than this, so a reason at the cap comes back whole
+ * rather than shortened to make room for something that is about to be removed.
+ */
+const LABEL_ROOM_CHARS = 64;
 
 /** How much of a refusing script's stderr the error carries for the operator. */
 export const SCRIPT_REFUSAL_STDERR_CHARS = 500;
@@ -126,18 +134,24 @@ export function refusalMessage(reason: string): string {
   // runtime and the client put it there, and a doubled one reaches a reader as
   // the provider's own words wearing the app's voice.
   //
-  // FLATTENED FIRST, then stripped, then clipped - one pass each. `trimStart`
-  // alone is not something to strip against: a NUL or an escape byte ahead of a
-  // label is not whitespace, so `\u0001The provider refused: ...` walks past the
-  // test and a later flatten turns it back into a clean forged label. Control
-  // characters and deceptive marks must be gone BEFORE the label is looked for,
-  // which is why the clip below must not flatten again.
+  // FLATTENED FIRST, then stripped, then clipped. `trimStart` alone is not
+  // something to strip against: a NUL or an escape byte ahead of a label is not
+  // whitespace, so `\u0001The provider refused: ...` walks past the test and a
+  // later flatten turns it back into a clean forged label. Control characters
+  // and deceptive marks must be gone BEFORE the label is looked for, which is
+  // why the clip below must not flatten again.
   //
   // One loop over both labels, because `The agent refused: The provider refused:
   // ...` interleaves them and a pass per label leaves whichever came second; and
   // stripped before the clip, so the customer's 400 characters are spent on the
   // reason rather than on a label.
-  let sentence = flattenUntrusted(reason);
+  // `excerptOwnMessage` FIRST, for the flatten: it windows a long input before
+  // walking it - this function also runs on a wire string in the browser's
+  // render path, where a provider can publish hundreds of KB - and it keeps the
+  // fallback that finds a sentence sitting behind four thousand newlines, which
+  // a plain front window would cut away. A little over the budget, so that
+  // stripping a label off the front does not leave the reason short.
+  let sentence = excerptOwnMessage(reason, SCRIPT_REFUSAL_MAX_CHARS + LABEL_ROOM_CHARS);
   for (;;) {
     const stripped = withoutLeadingLabel(sentence);
     if (stripped === sentence) {
@@ -163,13 +177,6 @@ export function refusalMessage(reason: string): string {
 }
 
 /**
- * One label off the front, if one is there.
- *
- * Matched up to the colon and then past whatever separator follows, because
- * flattening cannot put back a space the script never typed: `The provider
- * refused:size it in USD.` is the same forgery as the spaced form.
- */
-/**
  * Whitespace and the two marks flattening deliberately keeps, neither of which
  * a reader can see.
  *
@@ -180,6 +187,15 @@ export function refusalMessage(reason: string): string {
  */
 const LEADING_UNSEEN = /^[\s\u200c\u200d]+/u;
 
+/**
+ * One label off the front, if one is there.
+ *
+ * Matched up to the colon and then past whatever separator follows, because
+ * flattening cannot put back a space the script never typed: `The provider
+ * refused:size it in USD.` is the same forgery as the spaced form. The caller
+ * has already flattened, so what can sit in front of a label here is whitespace
+ * and the two joiners `LEADING_UNSEEN` covers.
+ */
 function withoutLeadingLabel(sentence: string): string {
   // The caller has already flattened, so what can sit in front of a label here
   // is whitespace and those two joiners.

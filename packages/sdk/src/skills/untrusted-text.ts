@@ -301,8 +301,12 @@ function excerptWindow(
   const from = keepEnd ? onCharacterBoundary(text, Math.max(0, text.length - window)) : 0;
   const sliced = keepEnd ? text.slice(from) : text.slice(0, window);
   const windowed = scrub(flattenUntrusted(trimDanglingSurrogates(sliced)));
-  const flattened =
-    [...windowed].length < maxChars && outranWindow ? scrub(flattenUntrusted(text)) : windowed;
+  // `length < maxChars` first: code units are never fewer than characters, so a
+  // window already shorter than the budget answers this for free - and spreading
+  // a 12,000-character window into an array to compare one number is the cost
+  // this module tells its own callers to avoid.
+  const shortWindow = windowed.length < maxChars || [...windowed].length < maxChars;
+  const flattened = shortWindow && outranWindow ? scrub(flattenUntrusted(text)) : windowed;
   // Only text that was actually dropped counts as a cut: a refusal padded with
   // trailing newlines is complete, and claiming otherwise both lies to the
   // reader and eats one of its characters to make room for the ellipsis. The

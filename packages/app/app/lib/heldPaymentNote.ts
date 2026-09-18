@@ -101,10 +101,11 @@ export function heldPaymentNote(
   // function the thread bubble calls, so the two surfaces cannot drift into
   // telling one customer two things about one job.
   if (kind === 'provider-refused') {
-    // `paid` is already true here - the early return above saw to that - so the
-    // note itself, not another test of it. `refusedPaymentNote` is the same
-    // sentence for the thread bubble, which has no session to ask.
-    return REFUSED_NOTE;
+    // Through the same function the thread bubble calls, so a future condition
+    // on it - a delegated-rail carve-out, say - cannot reach one surface and
+    // miss the other. `paid` is already true here; passing it keeps the rule in
+    // one place rather than splitting it across two call sites.
+    return refusedPaymentNote(paid);
   }
   // Case-insensitively: agents on an older CLI send the same prefix lowercased,
   // and a customer whose payment really is still being looked for should not

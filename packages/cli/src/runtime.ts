@@ -674,7 +674,10 @@ function describeForOperator(error: unknown): string {
   }
   if (isScriptBillingExhaustedError(error)) {
     // Its `message` embeds stdout when stderr is empty; quote the halves the
-    // same way the health branch does, so the two never disagree about what the
+    // same way the health branch does - the same text, though a longer excerpt:
+    // a log line is read once beside its job, while the health monitor's reason
+    // is re-printed on every gated job and stays deliberately short. What must
+    // not differ is WHICH stream each of them shows about the
     // operator was shown. The CUSTOMER still gets `AGENT_UNAVAILABLE_MESSAGE`.
     const said = error.stderr.trim() || error.stdout.trim() || '(no output)';
     return `script signalled billing exhausted: ${excerptUntrustedTail(said, OPERATOR_EXCERPT_CHARS)}`;
@@ -1762,12 +1765,13 @@ export class AgentRuntime {
     // asked to pay for a job this host cannot run. Armed only after such a
     // failure has been seen, and re-probed here, so a host that recovers starts
     // selling again on its own. `llm` mode needs no scratch space.
-    // Only the modes that NEED scratch space. A `static-script` skill runs
-    // without a channel - the refusal file is the one thing it loses - so
-    // refusing its jobs over a full temp directory would take a working
-    // capability offline for a problem it does not have.
+    // Only the modes that NEED scratch space - which is every script mode: each
+    // one raises `HostScratchError` rather than running without a channel, so
+    // without this gate a broken disk would take payment for a job it is about
+    // to hold for recovery.
     const needsScratch =
       matched?.mode === 'dynamic-script' ||
+      matched?.mode === 'static-script' ||
       matched?.mode === 'onchain' ||
       // Any mode fetching an input FILE needs a directory of its own for it, so
       // a broken disk closes those jobs too - after payment, unless this refuses
@@ -3889,7 +3893,18 @@ export class AgentRuntime {
             entry.customer_id,
             recoveryAbort.signal,
           );
-        } catch {
+        } catch (err: unknown) {
+          if (isHostScratchError(err)) {
+            // This agent's disk, not a blob nobody can fetch. The live path keeps
+            // such a job PAID because the disk may recover; failing it here on
+            // the next tick would undo that and charge the customer for it. Left
+            // alone, so a later tick tries again once the disk answers.
+            this.scratchFailed = true;
+            log(
+              `[${entry.job_id.slice(0, 8)}] Recovery: no scratch space for the input file; leaving the job paid.`,
+            );
+            return;
+          }
           log(`[${entry.job_id.slice(0, 8)}] Recovery: input file unavailable, marking failed`);
           await this.failRecoveredJob(entry, fakeJob, RECOVERY_INPUT_UNAVAILABLE_CUSTOMER_MESSAGE);
           return;

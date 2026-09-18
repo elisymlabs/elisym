@@ -83,23 +83,19 @@ export class StaticScriptSkill implements Skill {
   }
 
   async execute(_input: SkillInput, ctx: SkillContext): Promise<SkillOutput> {
-    // A directory per JOB, exactly as `DynamicScriptSkill` does it. One shared
-    // directory would be cheaper on a cron-shaped skill that never writes to
-    // it, but it would also be enumerable: `ls "$(dirname "$ELISYM_REFUSAL_FILE")"`
-    // from one job's script reaches the channel of every other job running
-    // beside it, and forging a refusal there closes a different customer's paid
-    // job. `mkdtemp` gives each one a directory only its own script is told
-    // about.
+    // A directory per JOB, and a `HostScratchError` when the disk refuses one.
     //
-    // A read-only or full tmpdir must not be what stops a static skill running:
-    // the job simply has no refusal channel, and the next one tries again.
-    // A `HostScratchError`, exactly as in `DynamicScriptSkill`, rather than
-    // running the script without a channel: the runtime reads this type to leave
-    // the health gate alone (a full disk is not the operator's API key), to keep
-    // a paid job for the recovery loop, and to refuse the NEXT customer before
-    // they pay. Running anyway meant a script that refused had its reason
-    // dropped, the customer charged for a "crash", and the operator's capability
-    // gated for a local disk problem.
+    // Per job because a shared directory is enumerable: `ls "$(dirname
+    // "$ELISYM_REFUSAL_FILE")"` from one job's script reaches the channel of
+    // every other job running beside it, and forging a refusal there closes a
+    // different customer's paid job.
+    //
+    // And an error rather than running without a channel, which is what this
+    // used to do: a script that refused then had its reason dropped, the
+    // customer was charged for a "crash", and the operator's capability was
+    // gated for a local disk problem. The runtime reads this type instead to
+    // leave the health gate alone, keep a paid job for recovery, and refuse the
+    // next customer before they pay.
     const dir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch((err: unknown) => {
       throw new HostScratchError(err instanceof Error ? err.message : String(err));
     });
@@ -119,9 +115,7 @@ export class StaticScriptSkill implements Skill {
       // No caller-provided env -> scoped copy of process.env (secret vars
       // stripped), never the raw parent env with the operator's key ring. A
       // caller-provided one is a spread of `process.env` too, so an INHERITED
-      // channel is stripped either way: with no scratch file of our own, the
-      // script must find the variable unset rather than pointing at a stranger's
-      // - the runtime is about to tell its operator the channel was not offered.
+      // channel is stripped either way before this job's own is written in.
       env:
         this.scriptEnv === undefined
           ? scopedToolEnv(channels)

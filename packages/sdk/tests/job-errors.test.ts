@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { classifyJobError, PROVIDER_REFUSED_PREFIX } from '../src/services/jobErrors';
+import {
+  classifyJobError,
+  PROVIDER_FAILED_MESSAGE,
+  PROVIDER_REFUSED_PREFIX,
+} from '../src/services/jobErrors';
 
 describe('classifyJobError', () => {
   it('reads a provider refusal as its own kind, whatever words it uses', () => {
@@ -30,9 +34,12 @@ describe('classifyJobError', () => {
     expect(classifyJobError('Internal processing error')).toBe('unknown');
   });
 
-  it('still reads the health gate`s own message as an outage', () => {
-    // That one really does keep the job paid for the recovery loop.
-    expect(classifyJobError('Agent temporarily unavailable')).toBe('agent-unavailable');
+  it('does not read the terminal sentence as an outage', () => {
+    // The distinction that matters: the gate's message keeps the job paid for
+    // the recovery loop, so "held, it will be retried" is true of it. This one
+    // is what the runtime says when a job is CLOSED, and promising a retry for
+    // it keeps someone waiting instead of contacting the provider.
+    expect(classifyJobError(PROVIDER_FAILED_MESSAGE)).not.toBe('agent-unavailable');
   });
 
   it('classifies raw Anthropic auth errors that leak through script skills', () => {
