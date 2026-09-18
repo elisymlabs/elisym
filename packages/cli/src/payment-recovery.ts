@@ -873,9 +873,9 @@ export class PaymentRecovery {
       if (!isUsableSignature(candidate)) {
         // Signatures arrive raw from the node's answer, and a broken or
         // rewriting proxy can blank one. Verifying it takes the same falsy
-        // dispatch into the reference path, and `:878` below would then hand
-        // the blank back as the settlement to claim. Skipping is not enough on
-        // its own - see `skippedUnusable` at the bottom.
+        // dispatch into the reference path, and the `verified` return below
+        // would then hand the blank back as the settlement to claim. Skipping
+        // is not enough on its own - see `skippedUnusable` at the bottom.
         skippedUnusable = true;
         continue;
       }
@@ -1087,7 +1087,11 @@ export class PaymentRecovery {
           verify,
         );
         if (scan.outcome === 'none') {
-          if (ownSignature !== undefined) {
+          // The same predicate as the gate above, not `!== undefined`: an empty
+          // string means this job owns NOTHING, and reading it as ownership
+          // here would log a sentence naming no settlement at all and hold the
+          // entry to the 24h cutoff instead of letting the verdict land.
+          if (isUsableSignature(ownSignature)) {
             // The ledger says this job owns a settlement; an RPC that no longer
             // lists it has aged past its history horizon, which is not evidence
             // of non-payment. Never force-fail a job we recorded as paid.

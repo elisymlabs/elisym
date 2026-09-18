@@ -15,6 +15,10 @@ import { listAgents, readAgentPublic } from '../src/agent-store';
  * one it reads the yaml, finds it valid, and differs from the fixed code by a
  * verdict.
  */
+/** Saved so a reused vitest worker does not inherit a deleted temp HOME. */
+const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
+
 let sandbox: string;
 let home: string;
 let work: string;
@@ -60,13 +64,29 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const writer of writers.splice(0)) {
+    // `-0` is not a harmless no-op: `process.kill(-0, …)` signals OUR OWN
+    // process group, which is the vitest run.
+    if (writer.pid === undefined) {
+      writer.kill('SIGKILL');
+      continue;
+    }
     try {
-      process.kill(-(writer.pid ?? 0));
+      process.kill(-writer.pid);
     } catch {
       writer.kill('SIGKILL');
     }
   }
   rmSync(sandbox, { recursive: true, force: true });
+  if (savedHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = savedHome;
+  }
+  if (savedUserProfile === undefined) {
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = savedUserProfile;
+  }
 });
 
 describe('an agent directory whose yaml is a node that blocks', () => {
@@ -110,6 +130,6 @@ describe('an agent directory whose yaml is a node that blocks', () => {
 
     await expect(
       readAgentPublic({ name: 'linked', dir, source: 'home', shadowsGlobal: false }),
-    ).rejects.toThrow(/not a regular file/);
+    ).rejects.toThrow(/pipe, socket or device/);
   });
 });

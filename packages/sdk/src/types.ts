@@ -475,11 +475,6 @@ export interface PaymentRequestData {
 }
 
 /**
- * Outcome of a stateless on-chain payment verification - `verified: true` means
- * a transaction targeted this request and moved at least the expected amounts,
- * NOT that it is exclusive to this request. See `PaymentStrategy.verifyPayment`.
- */
-/**
  * Why a verification refused, where the caller can act on the answer.
  *
  * THIS LIST GROWS IN MINOR RELEASES. Do not write an exhaustive `switch` with
@@ -488,6 +483,11 @@ export interface PaymentRequestData {
  */
 export type VerifyRefusalCode = 'degenerate_reference';
 
+/**
+ * Outcome of a stateless on-chain payment verification - `verified: true` means
+ * a transaction targeted this request and moved at least the expected amounts,
+ * NOT that it is exclusive to this request. See `PaymentStrategy.verifyPayment`.
+ */
 export interface VerifyResult {
   verified: boolean;
   /**
@@ -514,7 +514,8 @@ export interface VerifyOptions {
  *
  * THIS LIST GROWS IN MINOR RELEASES. Do not write an exhaustive `switch` with
  * a `never` branch over it - match the members you handle and show `message`
- * for the rest, which is what every caller in this repository does.
+ * for the rest. No caller in this repository reads the code at all today; they
+ * all relay `message`.
  */
 export type PaymentValidationCode =
   | 'invalid_json'

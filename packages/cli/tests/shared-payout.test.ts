@@ -18,6 +18,10 @@ import { findSharedPayoutNeighbors } from '../src/helpers.js';
 const ADDRESS = 'DLZ1JYbYLEe4QowxxuNtGEzeYkJiSqmNHZhQSiAfzHms';
 const OTHER_ADDRESS = 'JAJY3XFw5RJXQBjWG4VSTFVXaW53FvxDeve1kVbVJZYD';
 
+/** Saved so a reused vitest worker does not inherit a deleted temp HOME. */
+const savedHome = process.env.HOME;
+const savedUserProfile = process.env.USERPROFILE;
+
 let sandbox: string;
 let home: string;
 let work: string;
@@ -86,13 +90,29 @@ function startWriter(path: string, contents: string): void {
 
 afterEach(() => {
   for (const writer of writers.splice(0)) {
+    // `-0` is not a harmless no-op: `process.kill(-0, …)` signals OUR OWN
+    // process group, which is the vitest run.
+    if (writer.pid === undefined) {
+      writer.kill('SIGKILL');
+      continue;
+    }
     try {
-      process.kill(-(writer.pid ?? 0));
+      process.kill(-writer.pid);
     } catch {
       writer.kill('SIGKILL');
     }
   }
   rmSync(sandbox, { recursive: true, force: true });
+  if (savedHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = savedHome;
+  }
+  if (savedUserProfile === undefined) {
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = savedUserProfile;
+  }
 });
 
 describe('agents that would be paid at the same address', () => {
@@ -232,19 +252,24 @@ describe('what a neighbor directory is allowed to be called', () => {
   });
 
   it('strips a control character out of the printed PATH', async () => {
-    // Two different defenses: the name is checked by a pattern that admits
-    // nothing the sanitizer touches, while the path carries an operator's
-    // project root that nobody validates.
-    const weirdRoot = join(home, '.elisym', 'node');
-    mkdirSync(weirdRoot, { recursive: true });
-    const own = makeAgent(projectRoot, 'starter');
-    makeAgent(weirdRoot, 'neighbor');
+    // The byte has to sit in a path component the neighbor's `dir` actually
+    // CARRIES - an operator's project root - not one level deeper inside the
+    // `.elisym` root. A directory there is a candidate in its own right, has no
+    // `elisym.yaml`, and is dropped by the listing before any name check runs:
+    // the earlier version of this fixture found nothing at all and asserted
+    // over an empty list.
+    const weirdWork = join(sandbox, 'wo\u0001rk');
+    const weirdProjectRoot = join(weirdWork, '.elisym');
+    mkdirSync(weirdProjectRoot, { recursive: true });
+    const own = makeAgent(weirdProjectRoot, 'starter');
+    makeAgent(weirdProjectRoot, 'neighbor');
 
-    const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
-    // The neighbor under a control-charactered parent is not listed by name
-    // rules, so assert on what IS printed instead: nothing carries the byte.
-    for (const neighbor of found) {
-      expect(neighbor.dir).not.toContain('');
-    }
+    const found = await findSharedPayoutNeighbors(weirdWork, own, 'devnet', ADDRESS);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.dir).not.toContain('\u0001');
+    // And the path is still the one the operator has on disk, minus the byte -
+    // not a dereferenced `/private/var/...` they would not recognize.
+    expect(found[0]?.dir).toContain('neighbor');
   });
 });

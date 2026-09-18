@@ -139,7 +139,11 @@ export type {
 } from './payment/feeEstimate';
 export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
-export { ProviderPaymentAcceptor, MIN_SETTLEMENT_RETENTION_MS } from './payment/acceptor';
+export {
+  ProviderPaymentAcceptor,
+  MIN_SETTLEMENT_RETENTION_MS,
+  isUsableSignature,
+} from './payment/acceptor';
 export type {
   SettlementClaim,
   SettlementStore,

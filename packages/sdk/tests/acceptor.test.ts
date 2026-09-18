@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Address, address, getAddressDecoder } from '@solana/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SolanaPaymentStrategy } from '../src';
 import {
   MIN_SETTLEMENT_RETENTION_MS,
   ProviderPaymentAcceptor,
@@ -157,6 +158,81 @@ describe('one settlement settles one job', () => {
   });
 });
 
+describe('the signature the customer sent', () => {
+  it('is accepted and bound, without listing anything', async () => {
+    const result = await makeAcceptor(strategyVerifying(SIG_A)).accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', txSignature: SIG_A },
+      CONFIG,
+    );
+
+    expect(result).toEqual({ accepted: true, txSignature: SIG_A });
+    expect(store.owner(SIG_A)).toBe('job-1');
+    expect(listCalls).toBe(0);
+  });
+
+  it('marks the pass when it does not verify, so an empty window cannot follow', async () => {
+    // The signature may simply not be indexed yet. Without the mark the verdict
+    // would land on `window-empty` for a customer who paid a minute ago.
+    listedPages = [[]];
+    const result = await makeAcceptor(strategyVerifying()).accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', txSignature: SIG_A },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+  });
+});
+
+describe('a claim the disk refuses', () => {
+  /** Verifies anything, and cannot write. */
+  function unwritableStore(): SettlementStore {
+    return {
+      claim: () => 'not-persisted',
+      owner: () => undefined,
+      claimedSignature: () => undefined,
+      prune: () => 0,
+    };
+  }
+
+  it('refuses the payment rather than deliver against a claim that is not there', async () => {
+    listedPages = [[{ signature: SIG_A, err: null }]];
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(SIG_A),
+      rpc: makeRpc(),
+      store: unwritableStore(),
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'not-persisted' });
+  });
+
+  it('accepts anyway when the job already owned that settlement', async () => {
+    // The one exception, and it is not generosity: the signature is already
+    // persistent and already this job's, so the claim here only refreshes a
+    // timestamp. A disk refusal does not get to undo proven ownership.
+    const owning: SettlementStore = {
+      ...unwritableStore(),
+      claimedSignature: () => SIG_A,
+    };
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(SIG_A),
+      rpc: makeRpc(),
+      store: owning,
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    expect(result).toEqual({ accepted: true, txSignature: SIG_A });
+  });
+});
+
 describe('a third-party store whose reverse view disagrees', () => {
   it("does not skip the job's OWN signature when it turns up in the window", async () => {
     // The walk skips a candidate that belongs to ANOTHER job, not one that
@@ -251,6 +327,20 @@ describe('what may become a terminal "nobody paid"', () => {
     listedPages = [[]];
     const result = await makeAcceptor(strategyVerifying()).accept(
       { paymentRequest: makeRequest(), jobIdentity: 'job-1', budget: { listAttempts: 0 } },
+      CONFIG,
+    );
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(listCalls).toBe(0);
+  });
+
+  it('never says it when the caller aborted', async () => {
+    // A pass the caller gave up on has seen less than the whole window, so it
+    // gets the same treatment as one that ran out of budget. Without this the
+    // `signal` on the public input would be a promise of cancellation that
+    // nothing keeps.
+    listedPages = [[]];
+    const result = await makeAcceptor(strategyVerifying()).accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', signal: AbortSignal.abort() },
       CONFIG,
     );
     expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
@@ -383,9 +473,86 @@ describe('the store contract', () => {
     expect(store.owner(SIG_A)).toBeUndefined();
   });
 
+  it('refuses to read an index it cannot parse, instead of treating it as empty', () => {
+    // The failure this whole file prevents: an index read as empty reports every
+    // signature as unclaimed, and one transfer carrying several jobs'
+    // references settles them all over again. A truncated file is not exotic -
+    // `rename` buys atomic visibility, not durability - so refusing to start is
+    // the direction that cannot lose money.
+    const path = join(dir, 'corrupt.json');
+    writeFileSync(path, '{"version":1,"settlements":{"AAA":{"job":', 'utf-8');
+
+    expect(() => createFileSettlementStore(path)).toThrow(/not readable JSON/);
+  });
+
+  it('refuses an index written by a different format version', () => {
+    // Same class without the crash: a future layout read by today's rules
+    // reports its settlements as unclaimed.
+    const path = join(dir, 'v2.json');
+    writeFileSync(path, JSON.stringify({ version: 2, settlements: {} }), 'utf-8');
+
+    expect(() => createFileSettlementStore(path)).toThrow(/format version 2/);
+  });
+
+  it('starts clean when the file is merely absent', () => {
+    // ENOENT is the one absence, and it must stay distinguishable from a file
+    // that could not be read.
+    expect(() => createFileSettlementStore(join(dir, 'fresh.json'))).not.toThrow();
+  });
+
+  it('keeps a settlement whose timestamp is unreadable', () => {
+    // `0` would be older than any cutoff, so the next prune would release a
+    // binding settlement. Holding one too long costs nothing.
+    const path = join(dir, 'no-timestamp.json');
+    writeFileSync(
+      path,
+      JSON.stringify({ version: 1, settlements: { [SIG_A]: { job: 'job-1' } } }),
+      'utf-8',
+    );
+    const seeded = createFileSettlementStore(path);
+
+    expect(seeded.prune(MIN_SETTLEMENT_RETENTION_MS)).toBe(0);
+    expect(seeded.owner(SIG_A)).toBe('job-1');
+  });
+
   it('refuses a retention short enough to free a still-verifiable settlement', () => {
     expect(() => store.prune(MIN_SETTLEMENT_RETENTION_MS - 1)).toThrow(/at least/);
     expect(store.prune(MIN_SETTLEMENT_RETENTION_MS)).toBe(0);
+  });
+});
+
+describe('the usability predicate against the real verifier', () => {
+  /**
+   * The parity the predicate's own docstring promises. It is a MIRROR of the
+   * verifier's preconditions, not an extraction from them, so the two can drift
+   * - and the direction that costs money is one-way: `unusable-request` is
+   * terminal, so anything it calls unpayable had better be something the real
+   * verifier also refuses. The reverse is allowed: the verifier may refuse more.
+   */
+  const realStrategy = new SolanaPaymentStrategy();
+  const rpcThatFindsNothing = {
+    getTransaction: () => ({ send: async () => null }),
+    getSignaturesForAddress: () => ({ send: async () => [] }),
+  } as never;
+
+  it.each([
+    ['a missing reference', { reference: undefined }],
+    ['a malformed reference', { reference: 'not-an-address' }],
+    ['a missing recipient', { recipient: undefined }],
+    ['a zero amount', { amount: 0 }],
+    ['a non-integer amount', { amount: 1.5 }],
+    ['a negative fee amount', { fee_amount: -1 }],
+    ['an unresolvable asset', { asset: { chain: 'solana', token: 'nosuch', decimals: 6 } }],
+  ])('refuses %s in both, never only in the predicate', async (_label, overrides) => {
+    const request = makeRequest(overrides as never);
+
+    expect(classifyRequestUsability(request, CONFIG)).toBe('unusable-request');
+    const verified = await realStrategy.verifyPayment(rpcThatFindsNothing, request, CONFIG, {
+      txSignature: SIG_A,
+      retries: 1,
+      intervalMs: 0,
+    });
+    expect(verified.verified).toBe(false);
   });
 });
 

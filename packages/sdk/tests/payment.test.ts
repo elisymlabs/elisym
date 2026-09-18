@@ -809,10 +809,12 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.verified).toBe(true);
     });
 
-    it('refuses a reference equal to the recipient, before it ever lists it', async () => {
+    it('refuses a reference equal to the recipient, before it fetches anything', async () => {
       // No RPC answer is configured on purpose: the refusal has to come before
-      // either path runs, because both of them list the reference's history and
-      // that is exactly what a degenerate reference makes useless.
+      // either path runs. This one drives the SIGNATURE path, which does not
+      // list anything - it fetches one transaction and checks the reference is
+      // present, and a reference equal to the recipient makes that check a
+      // tautology.
       const rpc = createMockRpc({
         getTransaction: () => ({
           send: () => Promise.reject(new Error('the verifier must not get this far')),
@@ -832,10 +834,11 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
 
     it('refuses when the balance arrays disagree on length', async () => {
       // `pre[i]` and `post[i]` are the same account; different lengths mean the
-      // pairing is meaningless. Without the guard a missing slot reads as 0n,
-      // which invents a balance instead of reporting that one is absent - here
-      // the recipient's own pre-balance would vanish and its delta would read
-      // as the full post-balance.
+      // answer cannot be interpreted. Without the guard this particular shape
+      // fails somewhere else entirely - the index map is built over the SHORTER
+      // array, so the reference at index 3 never gets mapped and the refusal
+      // reads "Reference key not found - possible replay", blaming the customer
+      // for a page we could not read.
       const rpc = createMockRpc({
         getTransaction: () => ({
           send: () =>

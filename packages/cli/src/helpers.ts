@@ -1,8 +1,8 @@
-import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { join } from 'node:path';
 /**
  * Shared CLI helpers - RPC URLs, SOL formatting, price validation.
  */
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type Asset,
   type Network,
@@ -20,7 +20,7 @@ import {
   readAgentPublic,
   resolveInHome,
 } from '@elisym/sdk/agent-store';
-import { loadSkillsFromDir } from '@elisym/sdk/skills';
+import { type Skill, loadSkillsFromDir } from '@elisym/sdk/skills';
 import { type Rpc, type SolanaRpcApi, address } from '@solana/kit';
 
 // --- Constants ---
@@ -209,6 +209,11 @@ export interface SharedPayoutNeighbor {
 /**
  * Agents other than this one that would be paid at the same address.
  *
+ * Scope, so the quiet answer is not mistaken for a clean bill: this sees the
+ * home root and the ONE project root reachable by walking up from `cwd`. Two
+ * agents in two different project trees, both paid at one address, are a real
+ * collision this cannot see.
+ *
  * Not a lock, and deliberately not a refusal: a safe would need a cross-process
  * lock this repository does not have. One transaction carrying two jobs'
  * references settles both on the flat paid rail, and two agents behind one
@@ -390,7 +395,7 @@ async function neighborPaidState(
       allowFreeSkills: true,
       allowX402Skills: true,
       logger: { warn: () => {} },
-    })) as unknown as { priceSubunits: bigint }[];
+    })) as Skill[];
   } catch {
     return 'unknown';
   }

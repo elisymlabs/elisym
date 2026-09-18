@@ -1,5 +1,5 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   MIN_SETTLEMENT_RETENTION_MS,
   type SettlementClaim,
@@ -40,15 +40,15 @@ export class FileSettlementStore implements SettlementStore {
   constructor(private readonly path: string) {
     const dir = dirname(path);
     mkdirSync(dir, { recursive: true, mode: STORE_DIR_MODE });
-    // A path that does not resolve gets a VALID empty index rather than being
-    // left absent: `renameSync` works by path, so if the path were a symlink the
-    // first write would replace it with a regular file and two instances would
-    // silently diverge onto different inodes.
-    try {
-      this.read();
-    } catch {
-      this.write(emptyFile());
-    }
+    // Read once here so an unreadable index fails LOUDLY, at construction,
+    // rather than at the first claim - and deliberately without a `catch` that
+    // would replace it. An index that cannot be read is not an empty one: every
+    // signature would come back unclaimed, and one transfer carrying several
+    // jobs' references would settle them all again. That is the exact failure
+    // this file exists to prevent, so refusing to start is the safe direction.
+    // A file that is merely ABSENT is a different case and does not throw -
+    // `read` answers with an empty index for ENOENT alone.
+    this.read();
   }
 
   private read(): StoreFile {
@@ -56,14 +56,38 @@ export class FileSettlementStore implements SettlementStore {
     try {
       raw = readFileSync(this.path, 'utf-8');
     } catch (error) {
+      // ENOENT is the ONLY absence. Everything else - a permission error, a
+      // directory in the way - is a file we could not read, and answering
+      // "nothing is claimed" to that frees every settlement at once.
       if ((error as { code?: string }).code === 'ENOENT') {
         return emptyFile();
       }
       throw error;
     }
-    const parsed = JSON.parse(raw) as Partial<StoreFile> | null;
+    let parsed: Partial<StoreFile> | null;
+    try {
+      parsed = JSON.parse(raw) as Partial<StoreFile> | null;
+    } catch (error) {
+      throw new Error(
+        `Settlement index at ${this.path} is not readable JSON ` +
+          `(${error instanceof Error ? error.message : String(error)}). Refusing to treat it as ` +
+          `empty: that would free every settlement it records and let one transfer settle a ` +
+          `second job. Move the file aside to start a fresh index.`,
+      );
+    }
     if (parsed === null || typeof parsed !== 'object' || typeof parsed.settlements !== 'object') {
-      return emptyFile();
+      throw new Error(
+        `Settlement index at ${this.path} is JSON but not a settlement index. Refusing to treat ` +
+          `it as empty - move the file aside to start a fresh one.`,
+      );
+    }
+    // A future version may key or shape these differently, and reading it with
+    // today's rules would silently report its settlements as unclaimed.
+    if (parsed.version !== undefined && parsed.version !== FORMAT_VERSION) {
+      throw new Error(
+        `Settlement index at ${this.path} is format version ${String(parsed.version)}, and this ` +
+          `build reads version ${FORMAT_VERSION}. Refusing to read it as empty.`,
+      );
     }
     const settlements: Record<string, SettlementRecord> = {};
     for (const [signature, record] of Object.entries(parsed.settlements ?? {})) {
@@ -80,15 +104,28 @@ export class FileSettlementStore implements SettlementStore {
       }
       settlements[signature] = {
         job: candidate.job,
-        at: typeof candidate.at === 'number' ? candidate.at : 0,
+        // An unreadable timestamp becomes NOW, never 0: `0 < cutoff` is always
+        // true, so zero would hand the next `prune` a reason to release a
+        // settlement that is still binding. Holding one too long costs nothing;
+        // releasing one early is the whole failure.
+        at: typeof candidate.at === 'number' ? candidate.at : Date.now(),
       };
     }
     return { version: FORMAT_VERSION, settlements };
   }
 
-  /** `rename` last, so a reader never sees a half-written index. */
+  /**
+   * `rename` last, so a reader never sees a half-written index.
+   *
+   * No `fsync`, matching the ledger and session stores in this repository:
+   * `rename` buys atomic VISIBILITY, not durability, so a power loss can still
+   * leave a truncated file. That case is handled by refusing to read it rather
+   * than by replacing it - see the constructor.
+   */
   private write(file: StoreFile): void {
-    const tmp = join(dirname(this.path), `.${FORMAT_VERSION}.${process.pid}.tmp`);
+    // Named after the target file, not just the pid: two stores in one process
+    // writing sibling indexes would otherwise share one temporary path.
+    const tmp = join(dirname(this.path), `.${basename(this.path)}.${process.pid}.tmp`);
     writeFileSync(tmp, JSON.stringify(file), { encoding: 'utf-8', mode: STORE_FILE_MODE });
     chmodSync(tmp, STORE_FILE_MODE);
     renameSync(tmp, this.path);
@@ -138,7 +175,10 @@ export class FileSettlementStore implements SettlementStore {
   }
 
   prune(retentionMs: number): number {
-    if (!Number.isFinite(retentionMs) || retentionMs < MIN_SETTLEMENT_RETENTION_MS) {
+    // `Infinity` is allowed deliberately - it means "never release anything",
+    // which is the safest retention there is, and `Number.isFinite` alone would
+    // reject exactly that.
+    if (Number.isNaN(retentionMs) || retentionMs < MIN_SETTLEMENT_RETENTION_MS) {
       throw new Error(
         `retentionMs must be at least ${MIN_SETTLEMENT_RETENTION_MS}ms: a signature dropped from ` +
           `this index has to be unverifiable on-chain by then, or it settles a second job`,

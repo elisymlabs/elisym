@@ -1,4 +1,4 @@
-import { type Rpc, type SolanaRpcApi, isAddress } from '@solana/kit';
+import { type Rpc, type SolanaRpcApi, address, isAddress } from '@solana/kit';
 import { DEFAULTS } from '../constants';
 import type { PaymentRequestData, VerifyResult } from '../types';
 import { resolveAssetFromPaymentRequest } from './assets';
@@ -12,7 +12,12 @@ export type SettlementClaim = 'claimed' | 'consumed-by-other' | 'not-persisted';
 /**
  * A signature a settlement claim can be keyed on.
  *
- * Written once and read everywhere rather than spelled out at each gate,
+ * `@elisym/cli` carries a second copy in its own ledger, deliberately: this one
+ * is not part of the package's public API, so the CLI cannot import it. The two
+ * are kept identical by hand, and they have to be - a gate spelled `!== undefined`
+ * on one side of that line lets an empty string through where the other refuses.
+ *
+ * Written once per package and read everywhere rather than spelled out at each gate,
  * because the gates have to agree: two differing by an `=== undefined` is how
  * an empty string gets through one and not the next. An empty string owns
  * nothing - the index drops it - so a claim keyed on one leaves the
@@ -97,6 +102,12 @@ export interface AcceptPaymentInput {
    * claim.
    */
   txSignature?: string;
+  /**
+   * Checked wherever the deadline is, and with the same effect: the pass stops
+   * where it stands and reports `inconclusive`, never `window-empty`. An
+   * abandoned look has seen less than the whole window, so it must not be able
+   * to produce the one verdict a provider may act on.
+   */
   signal?: AbortSignal;
   /**
    * Defaults apply through `??`, never `||`: zeros are meaningful here
@@ -245,6 +256,13 @@ export class ProviderPaymentAcceptor {
           'verification down the reference path and return a settlement this job may not claim',
       );
     }
+    // Checked here rather than left to whichever call happens to touch it
+    // first: `calculateProtocolFee` throws on a fractional rate while `NaN > 0`
+    // is merely false, so without this the same request answers with a verdict
+    // or with an exception depending on what the chain happens to hold.
+    if (!Number.isInteger(config.feeBps) || config.feeBps < 0) {
+      throw new Error(`feeBps must be a non-negative integer, got ${String(config.feeBps)}`);
+    }
 
     const budget = input.budget ?? {};
     const retriesPerCandidate = budget.retriesPerCandidate ?? DEFAULT_RETRIES_PER_CANDIDATE;
@@ -255,15 +273,17 @@ export class ProviderPaymentAcceptor {
     const deadline = Date.now() + deadlineMs;
 
     /**
+     * Stop early: the caller gave up, or the budget ran out.
+     *
      * `>=`, not `>`. With `deadlineMs: 0` the two differ only in the single
      * millisecond where the clock EQUALS the deadline, and `>` leaves the
-     * fixture that passes zero depending on whether any wall-clock time happened
-     * to elapse first. No test pins this - pinning it would need frozen clocks,
-     * and a frozen clock never lets the listing pause expire - so it is a
-     * deliberate choice caught by diff review, made for determinism rather than
-     * against an observable mutant.
+     * fixture that passes zero depending on whether any wall-clock time
+     * happened to elapse first. No test pins that - pinning it would need
+     * frozen clocks, and a frozen clock never lets the listing pause expire -
+     * so it is a deliberate choice caught by diff review, made for determinism
+     * rather than against an observable mutant.
      */
-    const pastDeadline = () => Date.now() >= deadline;
+    const pastDeadline = () => input.signal?.aborted === true || Date.now() >= deadline;
 
     let imperfectPass = false;
     let deadlineHit = false;
@@ -328,7 +348,7 @@ export class ProviderPaymentAcceptor {
         intervalMs,
       );
       if (verified.verified) {
-        const settled = this.settle(ownSignature, jobIdentity, 'own');
+        const settled = this.settle(ownSignature, jobIdentity);
         if (settled.accepted) {
           return settled;
         }
@@ -339,9 +359,6 @@ export class ProviderPaymentAcceptor {
           return { accepted: true, txSignature: ownSignature };
         }
         imperfectPass = true;
-        if (carvedOut) {
-          return { accepted: false, reason: 'inconclusive', error: lastError };
-        }
       } else {
         // Deliberately does NOT mark the pass imperfect - that is what keeps
         // the step-6 rule "`claimedSignature` is set -> inconclusive" from
@@ -369,7 +386,7 @@ export class ProviderPaymentAcceptor {
         intervalMs,
       );
       if (verified.verified) {
-        const settled = this.settle(input.txSignature, jobIdentity, 'sent');
+        const settled = this.settle(input.txSignature, jobIdentity);
         if (settled.accepted) {
           return settled;
         }
@@ -401,7 +418,7 @@ export class ProviderPaymentAcceptor {
         }
         try {
           const page = (await this.deps.rpc
-            .getSignaturesForAddress(paymentRequest.reference as never, {
+            .getSignaturesForAddress(address(paymentRequest.reference), {
               limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
               commitment: 'confirmed',
             })
@@ -450,7 +467,7 @@ export class ProviderPaymentAcceptor {
           intervalMs,
         );
         if (verified.verified) {
-          const settled = this.settle(candidate, jobIdentity, 'candidate');
+          const settled = this.settle(candidate, jobIdentity);
           if (settled.accepted) {
             return settled;
           }
@@ -501,16 +518,14 @@ export class ProviderPaymentAcceptor {
   }
 
   /**
+   * STEP 5 - the claim.
+   *
    * Claim exactly the signature we ASKED about - never `VerifyResult.txSignature`,
    * which an injected strategy controls. If this guard fires at all the
    * implementation is broken, and the outcome is spelled out rather than left to
    * chance: treated as `consumed-by-other`, never as an accept.
    */
-  private settle(
-    signature: string,
-    jobIdentity: string,
-    _step: 'own' | 'sent' | 'candidate',
-  ): AcceptPaymentResult {
+  private settle(signature: string, jobIdentity: string): AcceptPaymentResult {
     if (!isUsableSignature(signature)) {
       return { accepted: false, reason: 'inconclusive' };
     }
@@ -525,6 +540,10 @@ export class ProviderPaymentAcceptor {
         error: 'the settlement claim could not be written to disk',
       };
     }
-    return { accepted: false, reason: 'inconclusive' };
+    return {
+      accepted: false,
+      reason: 'inconclusive',
+      error: `settlement ${signature} is already bound to another job`,
+    };
   }
 }

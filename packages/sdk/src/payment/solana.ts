@@ -508,9 +508,13 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     const mint = asset.mint;
 
     // After the asset resolves (the check compares the mint and its token
-    // program, so it throws without one) and before either path runs: both list
-    // the reference's history, which is exactly what a degenerate reference
-    // makes useless.
+    // program, so it throws without one) and before either path runs. Each path
+    // is ruined differently, which is why the check sits ahead of both rather
+    // than inside one: the REFERENCE path lists the reference's history, and a
+    // degenerate one lists a whole wallet instead of this payment; the
+    // SIGNATURE path fetches one transaction and checks the reference is in it,
+    // which a degenerate reference turns into a tautology - any transfer
+    // crediting the recipient enough would pass.
     if (
       (await degenerateReference(paymentRequest, paymentRequest.network ?? 'devnet', treasury)) !==
       undefined
@@ -730,9 +734,13 @@ type BalanceVerdict = { ok: true } | { ok: false; reason: string };
 
 function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   // The two arrays are indexed in lockstep - `pre[i]` and `post[i]` are the
-  // same account - so a length mismatch means the pairing is meaningless. It
-  // cannot be waved through: `bigIntDelta` reads a missing slot as 0n, which
-  // invents a balance rather than reporting that one is absent.
+  // same account - so a length mismatch means this answer cannot be
+  // interpreted at all. Refused by name rather than read anyway: the index map
+  // is built over `preBalances.length`, so a short `post` would silently give
+  // every mapped account a delta of `0n - pre`. That direction happens to be
+  // fail-closed, but it reports "the recipient was short-changed" about an
+  // answer we simply could not read, and sends the operator after the wrong
+  // thing.
   if (input.preBalances.length !== input.postBalances.length) {
     return {
       ok: false,

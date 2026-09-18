@@ -28,7 +28,7 @@ export async function readAgentPublic(
 ): Promise<{ resolved: ResolvedAgent; yaml: ElisymYaml }> {
   const paths = agentPaths(resolved.dir);
   if (await isBlockingNode(paths.yaml)) {
-    throw new Error(`Refusing to read ${paths.yaml}: not a regular file`);
+    throw new Error(`Refusing to read ${paths.yaml}: it is a pipe, socket or device, not a file`);
   }
   const yamlRaw = await readFile(paths.yaml, 'utf-8');
   const parsed = YAML.parse(yamlRaw);
