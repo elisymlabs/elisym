@@ -12,6 +12,22 @@ const LEDGER_FILE_MODE = 0o600;
 
 export type LedgerStatus = 'paid' | 'executed' | 'delivered' | 'failed';
 
+/**
+ * A signature this ledger can actually key a de-duplication claim on.
+ *
+ * The form is written once and imported everywhere rather than spelled out at
+ * each gate, because the gates have to agree: two of them differing by an
+ * `=== undefined` instead of this would let an empty string through one and
+ * not the other, and an empty string is the value that both a hand-edited
+ * ledger and a proxy rewriting an RPC page produce. A claim keyed on one owns
+ * nothing, so the transaction it stood for stays free for the next job to
+ * settle against - the payment is accepted and the de-duplication record is
+ * not written.
+ */
+export function isUsableSignature(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
 export interface LedgerEntry {
   job_id: string;
   status: LedgerStatus;
@@ -305,7 +321,7 @@ export class JobLedger {
       // Index STRINGS only: a hand-edited ledger can carry a number, object or
       // null here, and keying the map on one blocks a slot no ordinary claim can
       // ever collide with. Ignoring it just means the entry owns nothing.
-      if (typeof paymentSignature !== 'string' || paymentSignature.length === 0) {
+      if (!isUsableSignature(paymentSignature)) {
         continue;
       }
       const owner = this.paymentSignatureOwners.get(paymentSignature);
@@ -541,7 +557,7 @@ export class JobLedger {
         entry.created_at < cutoff
       ) {
         this.entries.delete(id);
-        if (typeof entry.payment_signature === 'string' && entry.payment_signature.length > 0) {
+        if (isUsableSignature(entry.payment_signature)) {
           prunedSignatures.add(entry.payment_signature);
         }
         deleted += 1;

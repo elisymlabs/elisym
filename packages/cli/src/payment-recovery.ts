@@ -30,6 +30,7 @@ import { address as asAddress, createSolanaRpc } from '@solana/kit';
 import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
 import { getRpcUrl } from './helpers.js';
 import type { JobLedger, LedgerEntry, PaymentSignatureClaim } from './ledger.js';
+import { isUsableSignature } from './ledger.js';
 
 // --- Constants ---
 
@@ -824,7 +825,7 @@ export class PaymentRecovery {
    * the SDK default of 10 retries x 3s x a full window - over ten minutes for
    * one deferred entry.
    *
-   * TERMINAL ("none") REQUIRES ALL THREE, and the caller adds two more:
+   * TERMINAL ("none") REQUIRES ALL FOUR, and the caller adds two more:
    *   1. the listing SUCCEEDED and came back SHORT of the window, so this is the
    *      reference's whole history rather than a truncated page. A flood that
    *      fills the window could be hiding the payment behind it, which is
@@ -836,7 +837,10 @@ export class PaymentRecovery {
    *      evidence of non-payment;
    *   3. no candidate was SKIPPED for belonging to another job. A skip means
    *      something did touch this reference and we chose not to look at it, so
-   *      the scan saw less than the whole truth.
+   *      the scan saw less than the whole truth;
+   *   4. no candidate was SKIPPED for an unusable signature. Same reasoning as
+   *      3, with the node rather than the ledger as the reason we did not look:
+   *      a blanked signature is still a transaction on this reference.
    * The caller then requires the payment request's own expiry to have passed and
    * a second consecutive sighting. Anything else is inconclusive: a false
    * deferral costs latency, a false "unpaid" destroys the customer's money.
@@ -860,10 +864,20 @@ export class PaymentRecovery {
     // flood must still be found. `windowFull` only disqualifies the verdict at
     // the bottom.
     let skippedConsumed = false;
+    let skippedUnusable = false;
     let unverifiableCandidate: string | undefined;
     for (const candidate of listed.signatures) {
       if (Date.now() > deadline) {
         return { outcome: 'inconclusive', error: 'the reference scan ran out of time' };
+      }
+      if (!isUsableSignature(candidate)) {
+        // Signatures arrive raw from the node's answer, and a broken or
+        // rewriting proxy can blank one. Verifying it takes the same falsy
+        // dispatch into the reference path, and `:878` below would then hand
+        // the blank back as the settlement to claim. Skipping is not enough on
+        // its own - see `skippedUnusable` at the bottom.
+        skippedUnusable = true;
+        continue;
       }
       const owner = this.ledger.paymentSignatureOwner(candidate);
       if (owner !== undefined && owner !== jobId) {
@@ -893,6 +907,14 @@ export class PaymentRecovery {
         error:
           'the reference carries a transaction another job already settled, so this scan did ' +
           'not see the whole picture',
+      };
+    }
+    if (skippedUnusable) {
+      return {
+        outcome: 'inconclusive',
+        error:
+          'the reference carries a transaction whose signature the node reported unusably, so ' +
+          'this scan did not see the whole picture',
       };
     }
     if (unverifiableCandidate !== undefined) {
@@ -1009,7 +1031,13 @@ export class PaymentRecovery {
       // Own evidence first - see the evidence-order note above.
       const ownSignature = entry.payment_signature;
       let txSignature: string | undefined;
-      if (ownSignature !== undefined) {
+      // Not `!== undefined`: an empty string is what a hand-edited ledger
+      // carries, and it passes that test while owning nothing. Re-verifying it
+      // sends `{ txSignature: '' }` into the strategy, whose falsy dispatch
+      // routes to the REFERENCE path, returns the first transaction carrying
+      // this reference - a stranger's, if one is there - and claims the empty
+      // string over it, leaving the real signature free for the next job.
+      if (isUsableSignature(ownSignature)) {
         const own = await verify(ownSignature, OWN_SETTLEMENT_VERIFY_RETRIES);
         if (own.verified) {
           txSignature = ownSignature;

@@ -808,6 +808,34 @@ describe('one settlement transaction settles one job', () => {
     expect(skill.execute).not.toHaveBeenCalled();
     expect(deliveredJobIds(transport)).toEqual([]);
   });
+
+  it('a verification naming an EMPTY settlement is refused the same way', async () => {
+    // Same branch, the value that actually reaches it in the field. The
+    // reference path asks about no signature, so whatever the answer carries is
+    // what would be claimed - and a proxy rewriting an RPC page carries an
+    // empty string, not `undefined`. A claim keyed on one owns nothing: the
+    // ledger index drops it, the transaction it stood for stays free for the
+    // next job carrying this reference, and the job is marked paid regardless.
+    refPathVerify = () => ({ verified: true, txSignature: '' });
+    const skill = makePaidSkill();
+    const { transport, triggerJob } = makeFakeTransport(always(null));
+    const runtime = makeRuntime(skill, transport);
+
+    const runPromise = runtime.run();
+    await tick();
+    triggerJob(makeJob('blank-settlement'));
+    await waitFor(
+      () => errorMessages(transport, 'blank-settlement').length > 0,
+      'job resolved with an error',
+    );
+    runtime.stop();
+    await runPromise.catch(() => {});
+
+    expect(skill.execute).not.toHaveBeenCalled();
+    expect(deliveredJobIds(transport)).toEqual([]);
+    const entry = ledger.allEntries().find((candidate) => candidate.job_id === 'blank-settlement');
+    expect(entry?.payment_signature).toBeUndefined();
+  });
 });
 
 describe("a refused settlement never ends an honest customer's job", () => {

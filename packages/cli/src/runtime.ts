@@ -72,7 +72,7 @@ import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import pLimit from 'p-limit';
 import { LEDGER_RETENTION_MS, MAX_PAID_AGE_MS, getRpcUrl } from './helpers.js';
-import { JobLedger, UsedNonceStore } from './ledger.js';
+import { JobLedger, UsedNonceStore, isUsableSignature } from './ledger.js';
 import {
   PaymentRecovery,
   RecoveryDeferrals,
@@ -3290,10 +3290,14 @@ export class AgentRuntime {
             return;
           }
           const txSignature = askedSignature ?? verified.txSignature;
-          if (txSignature === undefined) {
+          if (!isUsableSignature(txSignature)) {
             // A verification we cannot name cannot be de-duplicated. Every
             // real SDK success carries its signature, so this is a broken
             // strategy implementation, not a customer state - fail closed.
+            // An empty string is exactly such a name: the reference path asks
+            // about no signature, so whatever the answer carries is what gets
+            // claimed, and a blank claim owns nothing while the job is marked
+            // paid.
             paymentRefusal = { consumedByOther: false, sentence: UNNAMED_SETTLEMENT_SENTENCE };
             lose({ verified: false }, `${pathLabel}: ${UNNAMED_SETTLEMENT_SENTENCE}`);
             return;
