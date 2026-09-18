@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import YAML from 'yaml';
 import { validateAgentName } from '../primitives/config';
 import { encryptSecret, isEncrypted } from '../primitives/encryption';
+import { isBlockingNode } from './node-type';
 import { agentPaths, type AgentPaths } from './paths';
 import { elisymRootFor, type AgentSource } from './resolver';
 import { ElisymYamlSchema, SecretsSchema, type ElisymYaml, type Secrets } from './schema';
@@ -71,6 +72,13 @@ async function ensureGitignoreHasEntries(
   entries: readonly string[],
 ): Promise<void> {
   const gitignorePath = join(elisymRoot, '.gitignore');
+  // Same class as every other read of a file in somebody's `.elisym` root: a
+  // FIFO left here never settles, and this one runs while an agent is being
+  // created. Leaving the file alone is what the `catch` below already does for
+  // every other reason it cannot be read.
+  if (await isBlockingNode(gitignorePath)) {
+    return;
+  }
   let current: string;
   try {
     current = await readFile(gitignorePath, 'utf-8');

@@ -247,8 +247,16 @@ export async function cmdStart(
       if (neighbors.length > 0) {
         console.log();
       }
-    } catch {
-      // Deliberately silent: this is a warning, not a gate.
+    } catch (error) {
+      // Never a gate - a failed check must not stop a paid agent from starting.
+      // But not silent either: silence here is indistinguishable from "no
+      // neighbor shares this address", and the operator would read a check that
+      // never ran as a clean bill of health.
+      console.log(
+        `  ! Could not check whether another agent is paid at this address ` +
+          `(${error instanceof Error ? error.message : String(error)}). Starting anyway.`,
+      );
+      console.log();
     }
   }
 

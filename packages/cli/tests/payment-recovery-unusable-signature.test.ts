@@ -5,7 +5,11 @@ import { SolanaPaymentStrategy } from '@elisym/sdk';
 import { getAddressDecoder } from '@solana/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JobLedger, type LedgerEntry } from '../src/ledger.js';
-import { REFERENCE_SCAN_DEADLINE_MS, PaymentRecovery } from '../src/payment-recovery.js';
+import {
+  REFERENCE_SCAN_DEADLINE_MS,
+  REFERENCE_SCAN_WINDOW,
+  PaymentRecovery,
+} from '../src/payment-recovery.js';
 
 /**
  * Lives in its own file because it replaces `createSolanaRpc`, and because the
@@ -295,6 +299,85 @@ describe('a signature the ledger cannot key a claim on', () => {
 
       expect(outcome).toBe('verified');
       expect(entryUnderTest().payment_signature).toBe(REAL_SIGNATURE);
+    });
+  });
+
+  describe('a pass the operator has already stopped', () => {
+    it('does not list anything, and cannot reach a verdict', async () => {
+      // `runtime.stop()` aborts the recovery signal, but the tick in flight
+      // plays out to the end. The signal used to reach the scan only through
+      // the verification closure - which an EMPTY listing never calls - so an
+      // abandoned pass could still walk down to `no-payment` and fail a paid
+      // job. The acceptor reads the signal wherever it reads the clock; this is
+      // the same policy on this rail.
+      seedLedger();
+      listedSignatures = [];
+      const controller = new AbortController();
+      controller.abort();
+
+      const outcome = await recovery.reVerifyPayment(
+        entryUnderTest(),
+        paymentRequestJson(),
+        PRICE,
+        log,
+        controller.signal,
+      );
+
+      expect(outcome).toBe('deferred');
+      expect(listCalls).toBe(0);
+    });
+
+    it("does not re-verify the job's own settlement either", async () => {
+      // The step before the scan, and the comment above the deadline claims it
+      // is bounded by the same budget. It was not: the own-signature
+      // re-verification read neither the clock nor the signal, and spent its
+      // whole retry budget of a slot shared with live intake after the operator
+      // had stopped the agent.
+      //
+      // The discriminator is the LOG, not the outcome: unbounded, the abort
+      // surfaces as an exception out of the verification and the pass defers
+      // with a different sentence.
+      seedLedger(REAL_SIGNATURE);
+      transactionsBySignature.set(REAL_SIGNATURE, payingTransaction());
+      const controller = new AbortController();
+      controller.abort();
+
+      const outcome = await recovery.reVerifyPayment(
+        entryUnderTest(),
+        paymentRequestJson(),
+        PRICE,
+        log,
+        controller.signal,
+      );
+
+      expect(outcome).toBe('deferred');
+      expect(logs.join('\n')).toContain('ran out of time');
+      expect(logs.join('\n')).not.toContain('re-verification error');
+    });
+  });
+
+  describe('a reference flooded with transactions that failed on chain', () => {
+    it('is a truncated history, not an empty one', async () => {
+      // `windowFull` is counted on the RAW page, before the failed transactions
+      // are dropped - and nothing measured that. Counted after the filter, a
+      // full window of deliberately failing transfers reads as "nothing on this
+      // reference at all", which is the terminal verdict. The flood costs an
+      // attacker a few thousand lamports per transaction.
+      seedLedger();
+      listedSignatures = Array.from({ length: REFERENCE_SCAN_WINDOW }, (_unused, index) => ({
+        signature: `${index}`.padStart(88, 'F'),
+        err: { InstructionError: [0, 'Custom'] },
+      }));
+
+      const outcome = await recovery.reVerifyPayment(
+        entryUnderTest(),
+        paymentRequestJson(),
+        PRICE,
+        log,
+      );
+
+      expect(outcome).toBe('deferred');
+      expect(logs.join('\n')).toContain('truncated');
     });
   });
 

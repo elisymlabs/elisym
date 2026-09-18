@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 
 /**
@@ -25,9 +26,33 @@ import { stat } from 'node:fs/promises';
  */
 export async function isBlockingNode(path: string): Promise<boolean> {
   try {
-    const stats = await stat(path);
-    return stats.isFIFO() || stats.isSocket() || stats.isCharacterDevice() || stats.isBlockDevice();
+    return blocks(await stat(path));
   } catch {
     return false;
   }
+}
+
+/**
+ * The same gate for the synchronous readers.
+ *
+ * There are several, and they are the worse half: `readFileSync` on a FIFO
+ * takes the whole event loop with it, so the process does not hang a worker -
+ * it stops entirely, before any timeout anyone set can fire.
+ */
+export function isBlockingNodeSync(path: string): boolean {
+  try {
+    return blocks(statSync(path));
+  } catch {
+    return false;
+  }
+}
+
+/** Only the socket case is covered by a test; the device cases need root. */
+function blocks(stats: {
+  isFIFO(): boolean;
+  isSocket(): boolean;
+  isCharacterDevice(): boolean;
+  isBlockDevice(): boolean;
+}): boolean {
+  return stats.isFIFO() || stats.isSocket() || stats.isCharacterDevice() || stats.isBlockDevice();
 }

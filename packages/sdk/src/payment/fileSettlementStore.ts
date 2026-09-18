@@ -227,8 +227,12 @@ export class FileSettlementStore implements SettlementStore {
         deleted += 1;
       }
     }
-    // Writing nothing when nothing was deleted is contract, not liberty: the
-    // test for "another process's prune does not erase a claim" depends on it.
+    // Writing nothing when nothing was deleted narrows the window in which this
+    // prune can erase a claim another process made after the read above. It
+    // does not close it: a prune that DOES delete still writes by a snapshot
+    // taken moments earlier. NO TEST KILLS THIS - the interleaving it guards
+    // needs two processes and a hook between the read and the write, and it is
+    // kept on diff review rather than on measurement.
     if (deleted > 0) {
       this.write(file);
     }

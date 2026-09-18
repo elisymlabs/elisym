@@ -9,6 +9,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Network } from '@elisym/sdk';
+import { isBlockingNodeSync } from '@elisym/sdk/agent-store';
 import {
   DEFAULT_SCRIPT_TIMEOUT_MS,
   parseSkillMd,
@@ -258,6 +259,12 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions)
 
     const skillMdPath = join(entryPath, 'SKILL.md');
     try {
+      // The first thing `elisym start` reads out of an agent directory, and a
+      // synchronous read: a FIFO here stops the process outright rather than
+      // failing. Reported and skipped like any other unreadable skill.
+      if (isBlockingNodeSync(skillMdPath)) {
+        throw new Error('it is a pipe, socket or device, not a file');
+      }
       const content = readFileSync(skillMdPath, 'utf-8');
       const { frontmatter, systemPrompt } = parseSkillMd(content);
       const parsed = validateSkillFrontmatter(frontmatter, systemPrompt, {

@@ -1,9 +1,19 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listAgents, loadAgent, readAgentPublic } from '../src/agent-store';
+import {
+  ensureGitignoreHasIrohEntry,
+  isBlockingNode,
+  listAgents,
+  loadAgent,
+  loadPoliciesFromDir,
+  readAgentPublic,
+  readMediaCache,
+} from '../src/agent-store';
+import { loadSkillsFromDir } from '../src/skills';
 
 /**
  * A neighbor's `elisym.yaml` is a path nobody validates, and a FIFO left there
@@ -43,6 +53,22 @@ function startWriter(path: string, contents: string): void {
   writers.push(writer);
 }
 
+/**
+ * Writes ONCE and exits. Opening a FIFO for writing blocks until a reader
+ * arrives, so a single write still meets whatever read comes - and unlike the
+ * reopening writer above it cannot deliver the payload twice, which is what a
+ * JSON reader would choke on (measured: with the looping writer the mutant
+ * parsed a concatenation, failed, and answered `{}` like the fixed code).
+ */
+function startWriterOnce(path: string, contents: string): void {
+  const writer = spawn(
+    process.execPath,
+    ['-e', `require('fs').writeFileSync(${JSON.stringify(path)}, ${JSON.stringify(contents)});`],
+    { detached: true, stdio: 'ignore' },
+  );
+  writers.push(writer);
+}
+
 function makeAgent(root: string, name: string, yaml: string): string {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
@@ -51,6 +77,13 @@ function makeAgent(root: string, name: string, yaml: string): string {
 }
 
 const VALID_YAML = 'display_name: neighbor\n';
+/** Named per skill, so the two in the fixture below are told apart by NAME. */
+function skillMd(name: string): string {
+  return `---\nname: ${name}\ndescription: a skill for the fixture\ncapabilities: [text-gen]\nprice: 1000000\n---\n\nBody.\n`;
+}
+const VALID_POLICY_MD = '---\ntitle: Terms of Service\nversion: "1.0"\n---\n\nBody.\n';
+
+const sockets: Server[] = [];
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'elisym-blocking-'));
@@ -63,6 +96,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const socket of sockets.splice(0)) {
+    socket.close();
+  }
   for (const writer of writers.splice(0)) {
     // `-0` is not a harmless no-op: `process.kill(-0, …)` signals OUR OWN
     // process group, which is the vitest run.
@@ -133,6 +169,20 @@ describe('an agent directory whose yaml is a node that blocks', () => {
     ).rejects.toThrow(/pipe, socket or device/);
   });
 
+  it('is not only about pipes: a socket is refused the same way', async () => {
+    // The gate names four node types and only the FIFO ones are reachable from
+    // a fixture - a character or block device needs root. A unix socket does
+    // not, so at least the second disjunct is measured rather than asserted in
+    // a comment. The path is kept SHORT deliberately: the sun_path limit is
+    // about a hundred characters, and a temp directory eats most of it.
+    const path = join(sandbox, 's');
+    const server = createServer();
+    sockets.push(server);
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+
+    expect(await isBlockingNode(path)).toBe(true);
+  });
+
   it.each([['elisym.yaml'], ['.secrets.json']])(
     'is refused by loadAgent when %s is one',
     async (filename) => {
@@ -152,4 +202,94 @@ describe('an agent directory whose yaml is a node that blocks', () => {
       await expect(loadAgent('loaded', work)).rejects.toThrow(/pipe, socket or device/);
     },
   );
+});
+
+/**
+ * The other three files an agent directory holds. `elisym.yaml` and
+ * `.secrets.json` were gated first, and gating only those left `elisym start`
+ * reading each of these on the way up - two of them SYNCHRONOUSLY, which does
+ * not burn a worker but stops the process outright, before any timeout anyone
+ * set can fire. Measured: a FIFO in any of these three hangs the start.
+ */
+describe('the rest of the files an agent directory holds', () => {
+  it('skips a skill whose SKILL.md blocks, and loads the rest', () => {
+    const skills = join(sandbox, 'skills');
+    mkdirSync(join(skills, 'good'), { recursive: true });
+    writeFileSync(join(skills, 'good', 'SKILL.md'), skillMd('good'), 'utf-8');
+    const pipedDir = join(skills, 'piped');
+    mkdirSync(pipedDir, { recursive: true });
+    const piped = join(pipedDir, 'SKILL.md');
+    makeFifo(piped);
+    // The writer feeds a VALID skill, so the mutant loads two and the fixed
+    // code loads one: the two differ by a result, not by a hang.
+    startWriter(piped, skillMd('piped'));
+
+    const loaded = loadSkillsFromDir(skills, { network: 'devnet' });
+
+    expect(loaded.map((skill) => skill.name)).toEqual(['good']);
+  });
+
+  it('skips a policy that blocks, and loads the rest', () => {
+    const dir = join(sandbox, 'policies');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'tos.md'), VALID_POLICY_MD, 'utf-8');
+    const piped = join(dir, 'privacy.md');
+    makeFifo(piped);
+    startWriter(piped, VALID_POLICY_MD);
+
+    const loaded = loadPoliciesFromDir(dir);
+
+    expect(loaded.map((policy) => policy.type)).toEqual(['tos']);
+  });
+
+  it('leaves a .gitignore that blocks exactly as it found it', async () => {
+    // The write path rather than the start path, and the same class: this runs
+    // while an agent is being created, in a `.elisym` root a project may share.
+    // Without the gate the read never settles - and if it did, the entry-adding
+    // write would rename a regular file over the node.
+    const root = join(sandbox, 'root-with-gitignore');
+    mkdirSync(root, { recursive: true });
+    const piped = join(root, '.gitignore');
+    makeFifo(piped);
+    startWriter(piped, 'node_modules\n');
+
+    // Raced against a timer, and the assertion is that the call RETURNED.
+    // Everything else in this file can measure a verdict instead, because a
+    // reader answers something; here the ungated path hangs on the write side
+    // too - opening a FIFO for writing blocks until somebody reads it - so
+    // "hung" IS the observable, and racing it is what turns it into a red
+    // assertion in two seconds instead of a suite that dies of its timeout.
+    const finished = await Promise.race([
+      ensureGitignoreHasIrohEntry(root).then(() => 'returned' as const),
+      new Promise<'hung'>((resolve) => {
+        setTimeout(() => resolve('hung'), 2_000);
+      }),
+    ]);
+
+    expect(finished).toBe('returned');
+    expect(statSync(piped).isFIFO()).toBe(true);
+  });
+
+  it('reads an empty media cache rather than waiting on one that blocks', async () => {
+    const dir = join(sandbox, 'agent-with-cache');
+    mkdirSync(dir, { recursive: true });
+    const piped = join(dir, '.media-cache.json');
+    makeFifo(piped);
+    // Valid content again: the mutant comes back with this entry, the fixed
+    // code with an empty cache.
+    // Valid against the STRICT schema - a payload it rejects collapses to `{}`
+    // as well, and the fixture would pass against the mutant too. Measured.
+    startWriterOnce(
+      piped,
+      JSON.stringify({
+        'file.png': {
+          url: 'https://example.invalid/x.png',
+          sha256: 'a'.repeat(64),
+          uploaded_at: '2026-01-01T00:00:00.000Z',
+        },
+      }),
+    );
+
+    expect(await readMediaCache(dir)).toEqual({});
+  });
 });

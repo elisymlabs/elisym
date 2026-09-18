@@ -5,6 +5,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { isBlockingNode } from './node-type';
 import { agentPaths } from './paths';
 import { MediaCacheSchema, type MediaCache, type MediaCacheEntry } from './schema';
 import { writeFileAtomic } from './writer';
@@ -12,6 +13,13 @@ import { writeFileAtomic } from './writer';
 /** Read .media-cache.json. Returns empty object if missing or corrupt. */
 export async function readMediaCache(agentDir: string): Promise<MediaCache> {
   const path = agentPaths(agentDir).mediaCache;
+  // Same answer as an absent or corrupt cache, which is what this function
+  // promises - and the only safe one: a FIFO here never settles the read, so
+  // the `catch` below would never run and a libuv worker would be gone for the
+  // life of the process.
+  if (await isBlockingNode(path)) {
+    return {};
+  }
   let raw: string;
   try {
     raw = await readFile(path, 'utf-8');

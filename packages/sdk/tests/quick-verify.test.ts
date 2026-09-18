@@ -136,6 +136,31 @@ describe('verifyJobPaymentQuick', () => {
     expect(result.reason).toBe('recipient_mismatch');
   });
 
+  it('refuses when the STATIC half is malformed, which shifts the most', async () => {
+    // The same hostile or broken proxy, one field over. A string in
+    // `accountKeys` is spread inside the prefix every balance index is read
+    // against, so it does not merely add junk - it moves every loaded address
+    // onto another account's slot. The merge therefore answers with no keys at
+    // all rather than with a shifted list.
+    const recipient = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: 'ab' as unknown as (string | null)[],
+            loadedAddresses: { writable: [recipient], readonly: [] },
+            pre: [10_000_000, 0, 0],
+            post: [8_000_000, 0, 1_000_000],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-bad-static', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
   it('returns verified=true when recipient receives native SOL', async () => {
     const recipient = makeAddress();
     const payer = makeAddress();

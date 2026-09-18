@@ -89,6 +89,8 @@ Until all three hold, treat `window-empty` exactly as you treat `inconclusive`: 
 
 Bring your own store if you already have one. `SettlementStore` is four methods, and the one constraint that matters is that `claim` is **synchronous**: the read and the write have to happen in one uninterrupted step, or two concurrent jobs both see a signature as unclaimed. A database, a KV or IndexedDB cannot implement it. `claim` also throws on an empty signature or an empty `jobIdentity`, and `prune` throws below `MIN_SETTLEMENT_RETENTION_MS` (30 days) - a signature dropped from the index has to be unverifiable on-chain by then, or it settles a second job. Nothing calls `prune` for you: the acceptor never does, so the index grows until you schedule it yourself.
 
+**One process per index file.** The file-backed store has no cross-process lock: two processes racing on one `settlements.json` can both believe they claimed a signature, and one transfer then settles two jobs. That is the same rule the CLI follows with one `elisym start` per agent directory - if you run several workers, give each its own index, or put the claim behind a store of your own that is atomic across them.
+
 The file-backed store refuses to start on an index it cannot read - unparseable, wrong shape, or written by a different format version - rather than treating it as empty. An index read as empty reports every settlement as unclaimed, which is the exact failure the store exists to prevent, so a corrupt file is something to move aside deliberately rather than something to recover from silently.
 
 ## Estimating cost

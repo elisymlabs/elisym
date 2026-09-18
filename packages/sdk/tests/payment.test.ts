@@ -560,6 +560,8 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     recipientAfter: number;
     treasuryBefore: number;
     treasuryAfter: number;
+    /** Drops this many entries off `postBalances`, which this path never reads. */
+    dropPostLamports?: number;
   }) {
     const entry = (owner: string, index: number, raw: number) => ({
       accountIndex: index,
@@ -571,7 +573,9 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       meta: {
         err: null,
         preBalances: opts.keys.map(() => 0n),
-        postBalances: opts.keys.map(() => 0n),
+        postBalances: opts.keys
+          .map(() => 0n)
+          .slice(0, opts.keys.length - (opts.dropPostLamports ?? 0)),
         preTokenBalances: [
           entry(recipientAddr, 1, opts.recipientBefore),
           entry(TEST_TREASURY, 3, opts.treasuryBefore),
@@ -832,6 +836,37 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.code).toBe('degenerate_reference');
     });
 
+    it('refuses it on the REFERENCE path too, without listing anything', async () => {
+      // The half the row above cannot reach, and the more dangerous one: with
+      // no `txSignature` the call lists the reference's history, and a
+      // degenerate reference makes that a listing of a whole wallet rather than
+      // of this payment. The check sits ahead of BOTH branches, and only a
+      // fixture that takes this branch keeps it there - moving it inside the
+      // signature branch leaves every other test in this file green.
+      const listing = vi.fn(() => ({
+        send: () => Promise.reject(new Error('the verifier must not list a degenerate reference')),
+      }));
+      const rpc = createMockRpc({
+        getSignaturesForAddress: listing,
+        getTransaction: () => ({
+          send: () => Promise.reject(new Error('the verifier must not get this far')),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ reference: recipientAddr }),
+        CONFIG,
+        {
+          ...FAST,
+        },
+      );
+
+      expect(result.verified).toBe(false);
+      expect(result.code).toBe('degenerate_reference');
+      expect(listing).not.toHaveBeenCalled();
+    });
+
     it('refuses when the balance arrays disagree on length', async () => {
       // A SHORT `pre` with the reference PAST the prefix. Without the guard the
       // map is built over `preBalances.length`, the reference at index 3 never
@@ -964,6 +999,37 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.verified).toBe(false);
       expect(result.error).toMatch(/Recipient received -1 tokens/);
       expect(result.error).not.toMatch(/not found/);
+    });
+
+    it('takes an SPL transfer whose LAMPORT arrays disagree, reading none of them', async () => {
+      // The length guard is native-only, and this fixture is why. This path
+      // pairs accounts by owner and mint out of `pre/postTokenBalances`; it
+      // opens no lamport slot, so a disagreement there cannot make it read a
+      // wrong slot as a payment. Gating it here would refuse a USDC transfer
+      // the token balances prove, over arrays the path never touches - the
+      // customer pays and is never delivered to.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+                dropPostLamports: 1,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splShortPostSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(true);
     });
 
     it('still says so when the recipient really has no token account', async () => {

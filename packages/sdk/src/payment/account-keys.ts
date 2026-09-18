@@ -33,6 +33,14 @@ export function mergeAccountKeys(
   accountKeys: readonly string[],
   loadedAddresses?: LoadedAddresses,
 ): readonly string[] {
+  // The static half gets the same treatment, and it is the worse one to skip:
+  // a string here is spread character by character INSIDE the prefix every
+  // index is read against, so every loaded address after it lands on somebody
+  // else's balance slot. There is nothing to fall back to, so the answer is no
+  // keys at all - which finds no recipient and refuses.
+  if (!Array.isArray(accountKeys)) {
+    return [];
+  }
   if (!loadedAddresses) {
     return accountKeys;
   }

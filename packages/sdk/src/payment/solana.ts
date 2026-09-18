@@ -733,8 +733,8 @@ interface TxDiffInput {
 type BalanceVerdict = { ok: true } | { ok: false; reason: string };
 
 function checkTxDiff(input: TxDiffInput): BalanceVerdict {
-  // The two arrays are indexed in lockstep - `pre[i]` and `post[i]` are the
-  // same account - so a length mismatch means this answer cannot be
+  // The two lamport arrays are indexed in lockstep - `pre[i]` and `post[i]` are
+  // the same account - so a length mismatch means the pairing below cannot be
   // interpreted at all.
   //
   // THIS GUARD IS NOT COSMETIC, and it is not one-sided either. Both
@@ -746,12 +746,25 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   //
   // `keyToIdx` is built over `min(keys.length, preBalances.length)`, so every
   // name inside that prefix pairs with a correct slot and nothing notices the
-  // ones past it. Whether a given mismatch instead surfaces as a refusal - the
-  // misdirected "reference not found - possible replay", which blames the
-  // customer for our own unreadable answer - depends only on where the
-  // reference happens to sit among the keys. That is not a safety property to
-  // lean on, so the pairing is refused by name rather than read anyway.
-  if (input.preBalances.length !== input.postBalances.length) {
+  // ones past it. The mismatches that do NOT slip through land as a refusal,
+  // and there are three separate shapes of it, all measured: a reference past
+  // the short prefix gives "Reference key not found - possible replay", while a
+  // recipient or treasury slot past the end of a short `post` reads as
+  // `undefined`, which `bigIntDelta` takes for `0n` and reports as "Recipient
+  // received 0", "Recipient received -N" or "Treasury received 0". Every one of
+  // those blames the customer for an answer WE could not read, and which one a
+  // given page produces is a question of layout, not a safety property. So the
+  // pairing is refused by name rather than read anyway.
+  //
+  // NATIVE ONLY, and that is the narrow half deliberately: the SPL path below
+  // pairs accounts by owner and mint out of `pre/postTokenBalances` and opens
+  // no lamport slot at all. A disagreement there cannot make a wrong slot read
+  // as a payment - the worst it does is shorten the prefix `keyToIdx` is built
+  // over, which loses the reference and REFUSES. Gating that path too would
+  // refuse a USDC or LSM transfer the token balances prove, over an
+  // inconsistency in arrays it never opens, and cost a paying customer their
+  // delivery.
+  if (!input.mint && input.preBalances.length !== input.postBalances.length) {
     return {
       ok: false,
       reason:

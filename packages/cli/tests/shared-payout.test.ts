@@ -196,6 +196,36 @@ describe('agents that would be paid at the same address', () => {
     expect(found.map((n) => [n.name, n.paid])).toEqual([['opaque', 'unknown']]);
   });
 
+  it("says 'unknown' when the loader silently dropped a skill it could read", async () => {
+    // The other half of the denominator, and the one `sawLess` cannot see: the
+    // file reads fine, `loadSkillsFromDir` refuses it (a frontmatter it will not
+    // validate), and the loader reports that by returning FEWER skills rather
+    // than by throwing. Without the count comparison the neighbor comes back
+    // with no paid skills and no warning at all.
+    const own = makeAgent(projectRoot, 'starter');
+    const neighbor = makeAgent(homeRoot, 'loader-refuses', { paid: false });
+    const broken = join(neighbor, 'skills', 'malformed');
+    mkdirSync(broken, { recursive: true });
+    writeFileSync(join(broken, 'SKILL.md'), '---\nname: 💥 not a name\n---\n\nBody.\n', 'utf-8');
+
+    const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
+
+    expect(found.map((n) => [n.name, n.paid])).toEqual([['loader-refuses', 'unknown']]);
+  });
+
+  it('does not warn about a neighbor that simply has no skills directory', async () => {
+    // ENOENT is the one absolute answer: there is no directory, so there are no
+    // paid skills, and saying `unknown` about it would warn on every agent that
+    // has not added a skill yet. Everything else - EACCES, ENOTDIR - may be a
+    // fact about OUR process rather than about the agent.
+    const own = makeAgent(projectRoot, 'starter');
+    makeAgent(homeRoot, 'no-skills-dir', { skills: false });
+
+    const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
+
+    expect(found).toEqual([]);
+  });
+
   it('does not let a stray file tip a neighbor into unknown', async () => {
     // The denominator is subdirectories whose SKILL.md reads - not `readdir`
     // entries - or a single `.DS_Store` would make every neighbor unknown
@@ -250,6 +280,24 @@ describe('what a neighbor directory is allowed to be called', () => {
     const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
 
     expect(found.map((n) => n.name)).toEqual(['anchor']);
+  });
+
+  it('keeps a newline in a path from breaking the banner across lines', async () => {
+    // A newline is legal in a POSIX path and the sanitizer deliberately keeps
+    // it - it is one of the two characters it does not delete. Left in the
+    // printed path it splits the warning into two lines, and the second one can
+    // be made to read like a line the agent itself printed.
+    const oddWork = join(sandbox, 'wo\nrk');
+    const oddProjectRoot = join(oddWork, '.elisym');
+    mkdirSync(oddProjectRoot, { recursive: true });
+    const own = makeAgent(oddProjectRoot, 'starter');
+    makeAgent(oddProjectRoot, 'neighbor');
+
+    const found = await findSharedPayoutNeighbors(oddWork, own, 'devnet', ADDRESS);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.dir).not.toContain('\n');
+    expect(found[0]?.dir).toBe(join(sandbox, 'wo rk', '.elisym', 'neighbor'));
   });
 
   it('strips a control character out of the printed PATH', async () => {

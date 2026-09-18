@@ -370,8 +370,10 @@ export class ProviderPaymentAcceptor {
     // `@elisym/cli` carves the same exception out of its own recovery pass, for
     // this same reason; the two rails must not answer this differently.
     //
-    // The lookup happens only when there IS a verdict - otherwise the ordinary
-    // path pays for a file read it does not need.
+    // Read HERE rather than at step 1 when there is a verdict, because that is
+    // where the answer is needed first; step 1 reuses it through
+    // `ownSignatureRead`. It is one file read either way - this buys ordering,
+    // not a saving.
     let ownSignature: string | undefined;
     let ownSignatureRead = false;
     if (stepZero !== undefined) {
@@ -528,6 +530,11 @@ export class ProviderPaymentAcceptor {
           if (settled.reason === 'not-persisted') {
             return settled;
           }
+          // Kept as the pass's reason: "this transaction verified but belongs
+          // to another job" is the most informative sentence this walk can
+          // produce, and dropping it hands the operator whatever earlier
+          // candidate happened to fail - or nothing at all.
+          lastError = settled.error ?? lastError;
           imperfectPass = true;
           continue;
         }

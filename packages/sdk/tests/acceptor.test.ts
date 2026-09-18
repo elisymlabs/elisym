@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Address, address, getAddressDecoder } from '@solana/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SolanaPaymentStrategy } from '../src';
+import { DEFAULTS, SolanaPaymentStrategy } from '../src';
 import {
   MIN_SETTLEMENT_RETENTION_MS,
   ProviderPaymentAcceptor,
@@ -139,6 +139,53 @@ describe('one settlement settles one job', () => {
     expect(store.owner(SIG_A)).toBe('job-1');
   });
 
+  it("keeps walking past another job's candidate to the one that is ours", async () => {
+    // Every other fixture in this file lists exactly ONE signature, so `continue`
+    // and `break` are indistinguishable to all of them - measured. And a
+    // stranger's transaction ahead of ours is the ordinary case, not a
+    // pathology: the reference is public, and one transfer can carry several
+    // jobs' references. With `break` the customer has paid, their transfer sits
+    // one row lower in the same window, and the job refuses forever.
+    store.claim(SIG_B, 'job-other');
+    listedPages = [
+      [
+        { signature: SIG_B, err: null },
+        { signature: SIG_A, err: null },
+      ],
+    ];
+
+    const result = await makeAcceptor(strategyVerifying(SIG_A)).accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    expect(result).toEqual({ accepted: true, txSignature: SIG_A });
+  });
+
+  it('asks for the whole window, at the commitment the verdict depends on', async () => {
+    // `windowFull` compares the page against `VERIFY_SIGNATURE_LIMIT` rather
+    // than against what was actually requested, so "short page means the whole
+    // history" holds only while the two numbers are the same one. Nothing else
+    // holds them together - the mock ignores the options object entirely.
+    //
+    // `confirmed` is pinned for the other half of the same verdict: the RPC
+    // default is `finalized`, where a payment confirmed seconds ago is not in
+    // the listing at all and an empty window means nothing.
+    const rpc = makeRpc();
+    listedPages = [[]];
+    const acceptor = new ProviderPaymentAcceptor({ strategy: strategyVerifying(), rpc, store });
+
+    await acceptor.accept({ paymentRequest: makeRequest(), jobIdentity: 'job-1' }, CONFIG);
+
+    expect(
+      (rpc as unknown as { getSignaturesForAddress: ReturnType<typeof vi.fn> })
+        .getSignaturesForAddress,
+    ).toHaveBeenCalledWith(expect.anything(), {
+      limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
+      commitment: 'confirmed',
+    });
+  });
+
   it('does not even verify a candidate that belongs to another job', async () => {
     // One invariant, two guards - this skip and the store's `consumed-by-other`
     // - and either one alone keeps `refuses the same transaction to a second
@@ -179,6 +226,34 @@ describe('one settlement settles one job', () => {
 
     expect(result).toEqual({ accepted: true, txSignature: SIG_A });
     expect(store.owner(SIG_B)).toBeUndefined();
+  });
+});
+
+describe('a caller that has already given up', () => {
+  it('runs neither step 1 nor step 2', async () => {
+    // The two steps before the listing are covered for each other by a sticky
+    // `deadlineHit` flag: any surviving check stops the listing, so removing
+    // BOTH of these leaves every other fixture green - measured. What it costs
+    // is what the docstring for `signal` promises: an abandoned pass still
+    // spends `retriesForOwnSettlement` plus `retriesPerCandidate` verifications
+    // at `intervalMs` apart, which is tens of seconds of work for a caller that
+    // is no longer there.
+    store.claim(SIG_A, 'job-1');
+    const strategy = strategyVerifying(SIG_A);
+
+    const result = await makeAcceptor(strategy).accept(
+      {
+        paymentRequest: makeRequest(),
+        jobIdentity: 'job-1',
+        txSignature: SIG_A,
+        signal: AbortSignal.abort(),
+      },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(strategy.verifyPayment).not.toHaveBeenCalled();
+    expect(listCalls).toBe(0);
   });
 });
 
@@ -289,6 +364,37 @@ describe('a third-party store whose reverse view disagrees', () => {
   });
 });
 
+describe('a candidate that verified but lost the race for the claim', () => {
+  it('marks the pass, so the window cannot be called empty', async () => {
+    // Reachable only through a store whose forward view and `claim` disagree -
+    // the acceptor skips such a candidate first when they agree - which is
+    // exactly why it needs a fixture: a public interface is implemented by
+    // people who are not us. Without the mark the walk ends with nothing
+    // recorded and the verdict lands on `window-empty`, the one a provider may
+    // read as "nobody paid", about a transaction that verified.
+    const losing: SettlementStore = {
+      claim: () => 'consumed-by-other',
+      owner: () => undefined,
+      claimedSignature: () => undefined,
+      prune: () => 0,
+    };
+    listedPages = [[{ signature: SIG_A, err: null }]];
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(SIG_A),
+      rpc: makeRpc(),
+      store: losing,
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(result).not.toMatchObject({ reason: 'window-empty' });
+  });
+});
+
 describe('what may become a terminal "nobody paid"', () => {
   it('says window-empty only for a window it read whole and found empty', async () => {
     listedPages = [[]];
@@ -296,7 +402,9 @@ describe('what may become a terminal "nobody paid"', () => {
       { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
       CONFIG,
     );
-    expect(result).toMatchObject({ accepted: false, reason: 'window-empty' });
+    // `toEqual`, not `toMatchObject`: the docstring promises no `error` on this
+    // verdict, and a partial match is true of a shape carrying one.
+    expect(result).toEqual({ accepted: false, reason: 'window-empty' });
   });
 
   it('never says it when a candidate failed to verify', async () => {
@@ -501,19 +609,58 @@ describe('a request that cannot be paid at all', () => {
     // Written against the REAL strategy deliberately. An injected one that
     // verifies anything answers `accepted: true` here and would pin the
     // opposite of what ships.
+    //
+    // And the assertion that carries it is `getTransaction` never being called,
+    // not the verdict: with the degenerate check taken out of `verifyPayment`
+    // the verdict is STILL `inconclusive` - the retries simply run out against
+    // an RPC that answers `null` - and this fixture then goes red by TIMEOUT
+    // rather than by measurement. A hung fixture is not a killed mutant.
     store.claim(SIG_A, 'job-1');
+    const rpc = makeRpc();
     const acceptor = new ProviderPaymentAcceptor({
       strategy: new SolanaPaymentStrategy(),
-      rpc: makeRpc(),
+      rpc,
       store,
     });
 
     const result = await acceptor.accept(
-      { paymentRequest: makeRequest({ reference: RECIPIENT }), jobIdentity: 'job-1' },
+      {
+        paymentRequest: makeRequest({ reference: RECIPIENT }),
+        jobIdentity: 'job-1',
+        // A one-shot budget, so the mutant answers in milliseconds and this
+        // fixture goes red on the ASSERTION below. Left at the defaults it
+        // spends five retries two seconds apart and dies of the vitest timeout
+        // instead - a hang, which proves nothing.
+        budget: { retriesForOwnSettlement: 1, retriesPerCandidate: 1, intervalMs: 0 },
+      },
       CONFIG,
     );
 
     expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(listCalls).toBe(0);
+    expect(
+      (rpc as unknown as { getTransaction: ReturnType<typeof vi.fn> }).getTransaction,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('is terminal for an asset nothing can resolve, and does not throw on it', async () => {
+    // Step 0 runs the usability predicate FIRST and the reference check second,
+    // and that order is load-bearing rather than tidy: the reference check
+    // resolves the asset inside itself and THROWS on one it does not know.
+    // Reversed, this call leaves `accept` as an exception rather than a verdict
+    // and takes the provider's loop with it - measured. Nothing else in this
+    // file reaches step 0 with an unresolvable asset.
+    const result = await makeAcceptor(strategyVerifying()).accept(
+      {
+        paymentRequest: makeRequest({
+          asset: { chain: 'solana', token: 'nosuch', decimals: 6 },
+        } as never),
+        jobIdentity: 'job-1',
+      },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'unusable-request' });
     expect(listCalls).toBe(0);
   });
 
@@ -547,6 +694,20 @@ describe('inputs the acceptor refuses to start on', () => {
         CONFIG,
       ),
     ).rejects.toThrow(/jobIdentity/);
+  });
+
+  it.each([[Number.NaN], [-1], [1.5]])('throws on a feeBps of %s', async (bad) => {
+    // The last check before an INJECTED strategy is handed the request. With a
+    // rate that is not a non-negative integer the fee gate inside the predicate
+    // is skipped whole (`NaN > 0` is merely false), and a payment is accepted
+    // with no fee check at all. `SolanaPaymentStrategy` catches it again; the
+    // interface does not require that of anyone else.
+    await expect(
+      makeAcceptor(strategyVerifying()).accept(
+        { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
+        { feeBps: bad as number, treasury: TREASURY },
+      ),
+    ).rejects.toThrow(/feeBps/);
   });
 
   it.each([[''], [null]])('throws on a txSignature of %s', async (bad) => {
@@ -658,6 +819,8 @@ describe('the store contract', () => {
   it.each([
     ['a null settlements map', { version: 1, settlements: null }],
     ['an array where the map belongs', { version: 1, settlements: [] }],
+    ['a number where the map belongs', { version: 1, settlements: 42 }],
+    ['no settlements map at all', { version: 1 }],
     ['a top-level array', []],
     ['no version at all', { settlements: {} }],
   ])('refuses %s rather than read it as empty', (_label, contents) => {
@@ -689,6 +852,18 @@ describe('the store contract', () => {
     expect(() => createFileSettlementStore(path)).toThrow(/format version 2/);
   });
 
+  it('refuses a path it could not read at all, which is not an absent one', () => {
+    // ENOENT is the ONE absence, and the discriminator is otherwise killed by
+    // nothing - measured. A directory where the file belongs (EISDIR), a file
+    // owned by another uid (EACCES), a volume mounted read-only: reading any of
+    // those as an empty index reports every settlement as unclaimed, and one
+    // transfer carrying several jobs' references settles them all again.
+    const path = join(dir, 'as-a-directory.json');
+    mkdirSync(path);
+
+    expect(() => createFileSettlementStore(path)).toThrow(/EISDIR|illegal operation/);
+  });
+
   it('starts clean when the file is merely absent', () => {
     // ENOENT is the one absence, and it must stay distinguishable from a file
     // that could not be read.
@@ -698,10 +873,14 @@ describe('the store contract', () => {
   it('keeps a settlement whose timestamp is unreadable', () => {
     // `0` would be older than any cutoff, so the next prune would release a
     // binding settlement. Holding one too long costs nothing.
+    // `null` rather than an absent field, and the difference is the whole
+    // fixture: `undefined < cutoff` is false, so a missing `at` survives a
+    // prune however the value is read, and the row was green with the type
+    // check removed. `null < cutoff` coerces to `0 < cutoff` and is TRUE.
     const path = join(dir, 'no-timestamp.json');
     writeFileSync(
       path,
-      JSON.stringify({ version: 1, settlements: { [SIG_A]: { job: 'job-1' } } }),
+      JSON.stringify({ version: 1, settlements: { [SIG_A]: { job: 'job-1', at: null } } }),
       'utf-8',
     );
     const seeded = createFileSettlementStore(path);
@@ -753,6 +932,81 @@ describe('the store contract', () => {
       expect(fresh.claim(inherited, 'job-1')).toBe('claimed');
     },
   );
+
+  it('answers not-persisted when the disk refuses the write, rather than throwing', () => {
+    // The only source of `not-persisted` in the store that ships - every other
+    // fixture for that outcome injects a store that cannot write. The branch it
+    // feeds (step 1, step 2 and step 4 of `accept`, the member of
+    // `SettlementClaim`, and the paragraph of documentation telling providers to
+    // handle it separately) rested on a try/catch no test entered.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits, so there is nothing to refuse
+    }
+    const locked = join(dir, 'locked');
+    const path = join(locked, 'settlements.json');
+    const store = createFileSettlementStore(path);
+    chmodSync(locked, 0o500);
+    try {
+      expect(store.claim(SIG_A, 'job-1')).toBe('not-persisted');
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+
+  it.each([
+    ['a job that is not a string', { job: 42, at: Date.now() }],
+    ['an empty job identity', { job: '', at: Date.now() }],
+    // `null` is the row that carries the object guard: reading `.job` off it
+    // THROWS, so without that guard the whole index refuses to load over one
+    // hand-edited entry. A bare string simply has no `job` and is dropped by
+    // the next guard either way.
+    ['a null record', null],
+    ['a record that is a bare string', 'nonsense'],
+  ])('drops %s instead of admitting it to the index', (_label, record) => {
+    // A hand-edited or half-written record must not become an owner: the
+    // acceptor skips any candidate whose `owner` is neither undefined nor this
+    // job, so an entry keyed on a bogus identity would put that signature out
+    // of every job's reach permanently, and `claim` would answer
+    // `consumed-by-other` about a claim nobody made.
+    const path = join(dir, `bad-record-${String(_label).replace(/\W+/g, '-')}.json`);
+    writeFileSync(path, JSON.stringify({ version: 1, settlements: { [SIG_A]: record } }), 'utf-8');
+    const seeded = createFileSettlementStore(path);
+
+    expect(seeded.owner(SIG_A)).toBeUndefined();
+    expect(seeded.claim(SIG_A, 'job-1')).toBe('claimed');
+  });
+
+  it('writes the index owner-only, which is the first line of the file', () => {
+    // The index names which job a transfer paid for, so the mode is a property
+    // of the file and not of the temporary it was written through - and
+    // `writeFileSync`'s `mode` is a REQUEST, filtered by the umask, which is
+    // why the store chmods after writing. Nothing else measured either.
+    if (process.getuid?.() === 0) {
+      return; // root's umask games do not tell us anything here
+    }
+    // In a directory the STORE creates, not the one `mkdtemp` made: that one is
+    // 0o700 whatever this file does, and asserting on it would pass against any
+    // `STORE_DIR_MODE` at all.
+    const made = join(dir, 'made-by-the-store');
+    const path = join(made, 'modes.json');
+    const seeded = createFileSettlementStore(path);
+    seeded.claim(SIG_A, 'job-1');
+
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(made).mode & 0o777).toBe(0o700);
+
+    // And once more over a STALE temporary: a crash between the write and the
+    // rename leaves one behind, and `writeFileSync` applies its `mode` only
+    // when it CREATES the file. Reusing a world-readable leftover is how the
+    // index loses its mode without anything in this file changing, so the
+    // chmod after the write is what holds it - and nothing else measured that.
+    const stale = join(made, `.${'modes.json'}.${process.pid}.tmp`);
+    writeFileSync(stale, '{}', { encoding: 'utf-8', mode: 0o644 });
+    chmodSync(stale, 0o644);
+    seeded.claim(SIG_B, 'job-2');
+
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
 
   it('refuses a retention that is a string, however numeric it looks', () => {
     // A relational test coerces, so `'2592000000' >= MIN` is true. Only the

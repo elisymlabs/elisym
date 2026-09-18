@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
+import { isBlockingNodeSync } from '../agent-store/node-type';
 import { LIMITS } from '../constants';
 import { type SkillDelegation, validateSkillDelegation } from '../delegation';
 import type { SkillRateLimit } from '../llm-health/types';
@@ -1495,6 +1496,12 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions)
 
     const skillMdPath = join(entryPath, 'SKILL.md');
     try {
+      // Inside the try, so a blocking node is reported and skipped exactly like
+      // any other unreadable skill. `readFileSync` on a FIFO does not fail - it
+      // takes the event loop with it, and the agent never finishes starting.
+      if (isBlockingNodeSync(skillMdPath)) {
+        throw new Error(`it is a pipe, socket or device, not a file`);
+      }
       const content = readFileSync(skillMdPath, 'utf-8');
       const { frontmatter, systemPrompt } = parseSkillMd(content);
       const parsed = validateSkillFrontmatter(frontmatter, systemPrompt, options);

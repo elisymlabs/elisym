@@ -12,7 +12,12 @@ import {
 } from '@solana-program/token';
 import { type Address, address, getAddressDecoder } from '@solana/kit';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ELISYM_PROTOCOL_TAG, USDC_SOLANA_DEVNET, getProtocolProgramId } from '../src';
+import {
+  ELISYM_PROTOCOL_TAG,
+  LSM_SOLANA_MAINNET,
+  USDC_SOLANA_DEVNET,
+  getProtocolProgramId,
+} from '../src';
 import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR } from '../src/onchain/checks';
 import { SYSTEM_PROGRAM_ADDRESS_STR } from '../src/onchain/constants';
 import { TOKEN_2022_PROGRAM_ADDRESS_STR } from '../src/payment/assets';
@@ -56,6 +61,15 @@ const usdcAsset = {
   decimals: USDC_SOLANA_DEVNET.decimals,
 };
 
+/** The one Token-2022 asset that ships, and the only one whose ATAs derive
+ * under a different token program. */
+const lsmAsset = {
+  chain: 'solana',
+  token: 'lsm',
+  mint: LSM_SOLANA_MAINNET.mint,
+  decimals: LSM_SOLANA_MAINNET.decimals,
+};
+
 beforeEach(() => {
   resetDegenerateReferenceCache();
 });
@@ -94,6 +108,12 @@ describe('a reference the payment is computed from', () => {
     it('does not treat an absent fee address as a match', () => {
       // `undefined` must not "equal" a missing field: a third-party provider
       // can leave `fee_address` out, and every reference would otherwise refuse.
+      //
+      // Honest about what this row is: it pins the OUTCOME, not a removable
+      // guard. Dropping the `!== undefined` test in `staticDenylist` only puts
+      // an `undefined` member into a set no string reference can equal, so this
+      // stays green either way - measured. The contract is still worth a
+      // fixture; the guard it looks like it defends is a type narrowing.
       const request = makeRequest({ fee_address: undefined });
       expect(degenerateReferenceSync(request, 'devnet', TREASURY)).toBeUndefined();
     });
@@ -133,6 +153,26 @@ describe('a reference the payment is computed from', () => {
       expect(await degenerateReference(request, 'devnet', TREASURY)).toBe('degenerate_reference');
     });
 
+    it("refuses a reference equal to the recipient's Token-2022 account", async () => {
+      // The whole derived half above runs under the CLASSIC token program, so
+      // the `?? TOKEN_PROGRAM_ADDRESS` fallback in `tokenProgramOf` was covered
+      // by nothing: a mutant that always answers "classic" derives the wrong
+      // ATA for LSM - the one mainnet Token-2022 asset that ships - and the
+      // recipient's real token account reads as an ordinary reference.
+      const [ata] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(LSM_SOLANA_MAINNET.mint as string),
+        tokenProgram: address(TOKEN_2022_PROGRAM_ADDRESS_STR),
+      });
+      const request = makeRequest({
+        network: 'mainnet',
+        reference: ata as string,
+        asset: lsmAsset,
+      } as never);
+
+      expect(await degenerateReference(request, 'mainnet', TREASURY)).toBe('degenerate_reference');
+    });
+
     it('does not throw on an owner that is not an address', async () => {
       // `findAssociatedTokenPda` encodes its owner and throws on a bad string.
       // A malformed owner contributes no ATA and is caught by the check that
@@ -164,6 +204,43 @@ describe('a reference the payment is computed from', () => {
       );
 
       expect(degenerateReferenceDerivations()).toBe(2);
+    });
+
+    it('does not answer a USDC request out of a native request cache', async () => {
+      // `NATIVE_SOL` and the USDC assets all leave `tokenProgram` unset, so
+      // without the MINT in the cache key their entries collide outright. The
+      // native set holds no ATA at all, so the recipient's own token account
+      // would read as an ordinary reference - and the customer pays to a
+      // reference whose history is that whole account.
+      const [ata] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_SOLANA_DEVNET.mint as string),
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+      await degenerateReference(makeRequest(), 'devnet', TREASURY);
+
+      const usdc = makeRequest({ reference: ata as string, asset: usdcAsset } as never);
+      expect(await degenerateReference(usdc, 'devnet', TREASURY)).toBe('degenerate_reference');
+    });
+
+    it("does not answer a request out of another fee address's cache", async () => {
+      // Same collision, the other component. The fee address is a THIRD party's
+      // - a request can name one this provider never saw - and its ATA is in
+      // the derived half only.
+      const otherFee = makeAddress();
+      const [ata] = await findAssociatedTokenPda({
+        owner: address(otherFee),
+        mint: address(USDC_SOLANA_DEVNET.mint as string),
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+      await degenerateReference(makeRequest({ asset: usdcAsset } as never), 'devnet', TREASURY);
+
+      const second = makeRequest({
+        fee_address: otherFee,
+        reference: ata as string,
+        asset: usdcAsset,
+      } as never);
+      expect(await degenerateReference(second, 'devnet', TREASURY)).toBe('degenerate_reference');
     });
 
     it('derives again after the treasury rotates', async () => {

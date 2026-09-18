@@ -761,7 +761,7 @@ export class PaymentRecovery {
   private async listReferenceCandidates(
     reference: Address,
     rpc: Rpc<SolanaRpcApi>,
-    deadline: number,
+    pastDeadline: () => boolean,
   ): Promise<{ signatures: string[]; windowFull: boolean } | { error: string }> {
     let lastMessage = 'unknown error';
     let attempts = 0;
@@ -782,7 +782,7 @@ export class PaymentRecovery {
         };
       } catch (e: any) {
         lastMessage = e?.message ?? 'unknown error';
-        if (Date.now() >= deadline) {
+        if (pastDeadline()) {
           break;
         }
         if (attempt < REFERENCE_SCAN_LIST_ATTEMPTS - 1) {
@@ -825,7 +825,9 @@ export class PaymentRecovery {
    * the SDK default of 10 retries x 3s x a full window - over ten minutes for
    * one deferred entry.
    *
-   * TERMINAL ("none") REQUIRES ALL FOUR, and the caller adds two more:
+   * TERMINAL ("none") REQUIRES ALL FOUR OF THESE, and the caller adds four more
+   * on top (they are counted as six in the docs, where 2-4 below are read as one
+   * condition - "nothing was skipped and nothing was left unverified"):
    *   1. the listing SUCCEEDED and came back SHORT of the window, so this is the
    *      reference's whole history rather than a truncated page. A flood that
    *      fills the window could be hiding the payment behind it, which is
@@ -841,9 +843,12 @@ export class PaymentRecovery {
    *   4. no candidate was SKIPPED for an unusable signature. Same reasoning as
    *      3, with the node rather than the ledger as the reason we did not look:
    *      a blanked signature is still a transaction on this reference.
-   * The caller then requires the payment request's own expiry to have passed and
-   * a second consecutive sighting. Anything else is inconclusive: a false
-   * deferral costs latency, a false "unpaid" destroys the customer's money.
+   * The caller then requires, in this order: that the job owns no settlement of
+   * its own, that the payment request's own expiry has passed, that the endpoint
+   * proved its cluster and that it serves address history, and - one level up,
+   * in `runtime.ts` - a second consecutive sighting. Anything else is
+   * inconclusive: a false deferral costs latency, a false "unpaid" destroys the
+   * customer's money.
    *
    * What "none" therefore means is narrow and honest: after the failed-on-chain
    * transactions are dropped, the reference's entire history is EMPTY - there
@@ -853,10 +858,16 @@ export class PaymentRecovery {
     reference: Address,
     rpc: Rpc<SolanaRpcApi>,
     jobId: string,
-    deadline: number,
+    pastDeadline: () => boolean,
     verifySignature: (txSignature: string, retries: number) => Promise<VerifyResult>,
   ): Promise<ReferenceScan> {
-    const listed = await this.listReferenceCandidates(reference, rpc, deadline);
+    // Before the listing as well: a pass the caller has already abandoned, or
+    // one whose budget went on the steps before this, must not spend a shared
+    // slot on an RPC call whose answer it may not use.
+    if (pastDeadline()) {
+      return { outcome: 'inconclusive', error: 'the reference scan ran out of time' };
+    }
+    const listed = await this.listReferenceCandidates(reference, rpc, pastDeadline);
     if ('error' in listed) {
       return { outcome: 'inconclusive', error: listed.error };
     }
@@ -867,7 +878,7 @@ export class PaymentRecovery {
     let skippedUnusable = false;
     let unverifiableCandidate: string | undefined;
     for (const candidate of listed.signatures) {
-      if (Date.now() > deadline) {
+      if (pastDeadline()) {
         return { outcome: 'inconclusive', error: 'the reference scan ran out of time' };
       }
       if (!isUsableSignature(candidate)) {
@@ -899,11 +910,7 @@ export class PaymentRecovery {
     // `none` is what closes a paying customer's job. `listReferenceCandidates`
     // reads the clock only in its `catch`, so a slow but SUCCESSFUL call never
     // sees the deadline at all.
-    //
-    // `>=`, matching `listReferenceCandidates` and the acceptor; the candidate
-    // loop above uses `>` and is left alone, since one extra candidate read is
-    // not what this is guarding against.
-    if (Date.now() >= deadline) {
+    if (pastDeadline()) {
       return { outcome: 'inconclusive', error: 'the reference scan ran out of time' };
     }
     if (listed.windowFull) {
@@ -1010,6 +1017,12 @@ export class PaymentRecovery {
       // slow config could spend the whole allowance before the scan began, and
       // the scan would then answer as though it had looked.
       deadline = Date.now() + REFERENCE_SCAN_DEADLINE_MS;
+      // Reads the SIGNAL as well as the clock, exactly as the acceptor's does.
+      // The signal used to reach the scan only through the `verify` closure -
+      // which an EMPTY listing never calls, so a pass the operator had already
+      // stopped could still walk out with `no-payment` and fail a paid job on
+      // the way down. One policy on both rails, or neither rail has one.
+      const pastDeadline = () => signal?.aborted === true || Date.now() >= deadline;
 
       // After the config, because the treasury comes from it and a reference
       // equal to the treasury drowns the payment in its history whether or not
@@ -1100,7 +1113,7 @@ export class PaymentRecovery {
       // routes to the REFERENCE path, returns the first transaction carrying
       // this reference - a stranger's, if one is there - and claims the empty
       // string over it, leaving the real signature free for the next job.
-      if (isUsableSignature(ownSignature)) {
+      if (isUsableSignature(ownSignature) && !pastDeadline()) {
         const own = await verify(ownSignature, OWN_SETTLEMENT_VERIFY_RETRIES);
         if (own.verified) {
           txSignature = ownSignature;
@@ -1117,7 +1130,7 @@ export class PaymentRecovery {
           reference,
           rpc,
           entry.job_id,
-          deadline,
+          pastDeadline,
           verify,
         );
         if (scan.outcome === 'none') {

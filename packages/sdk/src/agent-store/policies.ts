@@ -13,6 +13,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { LIMITS, POLICY_TYPE_REGEX } from '../constants';
+import { isBlockingNodeSync } from './node-type';
 
 export interface LoadedPolicy {
   /** Slug derived from filename (e.g. `tos`, `privacy`, `refund`). */
@@ -117,6 +118,12 @@ export function loadPoliciesFromDir(dir: string): LoadedPolicy[] {
     const fullPath = join(dir, filename);
     let raw: string;
     try {
+      // A blocking node here does not fail the read, it ends the process: this
+      // is a synchronous read, and the policies are loaded while the agent is
+      // starting. Reported and skipped like any other unreadable policy.
+      if (isBlockingNodeSync(fullPath)) {
+        throw new Error('it is a pipe, socket or device, not a file');
+      }
       raw = readFileSync(fullPath, 'utf-8');
     } catch (err) {
       console.warn(`  ! Skipping policy "${filename}": ${(err as Error).message}`);
