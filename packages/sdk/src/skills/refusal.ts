@@ -307,9 +307,26 @@ export function scriptOutput(result: { stdout: string; stderr: string }): string
  * make a scratch file - would otherwise be erased by a chatty script's progress
  * meter.
  */
-function describeOutput(result: { stdout: string; stderr: string }): string {
-  return excerptUntrustedTail(scriptOutput(result), SCRIPT_REFUSAL_STDERR_CHARS);
+function describeOutput(
+  result: { stdout: string; stderr: string },
+  budget = SCRIPT_REFUSAL_STDERR_CHARS,
+): string {
+  return excerptUntrustedTail(scriptOutput(result), budget);
 }
+
+/**
+ * Room left for the script's output once the hint in front of it is placed.
+ *
+ * `ScriptRefusalError` keeps the TAIL of whatever it is handed, at the full
+ * budget - right for a bare stderr, wrong for a string whose first line is the
+ * diagnosis. Bounding the output to what is left over means the hint is still
+ * there after that second pass, so an operator whose script printed a progress
+ * meter is still told the agent never offered it a channel.
+ */
+const CHANNEL_MISSING_OUTPUT_CHARS = Math.max(
+  0,
+  SCRIPT_REFUSAL_STDERR_CHARS - REFUSAL_CHANNEL_MISSING_HINT.length - 1,
+);
 
 /**
  * The refusal contract, for any script runner, in one place.
@@ -364,7 +381,7 @@ export function throwIfRefused(
     throw new ScriptRefusalError(
       result.code,
       '',
-      `${REFUSAL_CHANNEL_MISSING_HINT} ${describeOutput(result)}`,
+      `${REFUSAL_CHANNEL_MISSING_HINT} ${describeOutput(result, CHANNEL_MISSING_OUTPUT_CHARS)}`,
     );
   }
   if (result.code === 0) {

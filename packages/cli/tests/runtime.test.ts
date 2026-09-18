@@ -14,7 +14,7 @@ import {
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { ADDRESS_HISTORY_PROBE_ADDRESS, CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
-import { AgentRuntime, type RuntimeConfig } from '../src/runtime.js';
+import { AgentRuntime, needsScratchSpace, type RuntimeConfig } from '../src/runtime.js';
 import { SkillRegistry } from '../src/skill';
 import type { Skill } from '../src/skill';
 import type { NostrTransport, IncomingJob } from '../src/transport/nostr.js';
@@ -1409,6 +1409,25 @@ describe('AgentRuntime', () => {
         'unauthorized, insufficient credit balance',
         { cascade: false },
       );
+    });
+
+    it('lets a static-script job through the pre-payment disk gate', () => {
+      // The gate exists so nobody pays for a job this host cannot run. A
+      // `static-script` job CAN run on a read-only tmpdir - it loses only its
+      // refusal channel, and reports a 43 as a refusal with no reason given -
+      // so refusing it before payment would take a whole mode off the market
+      // for a lost channel. `dynamic-script` cannot: it raises
+      // `HostScratchError` before the script starts.
+      expect(needsScratchSpace('static-script', false)).toBe(false);
+      expect(needsScratchSpace('dynamic-script', false)).toBe(true);
+      expect(needsScratchSpace('x402', false)).toBe(true);
+      expect(needsScratchSpace('llm', false)).toBe(false);
+      expect(needsScratchSpace('static-file', false)).toBe(false);
+      // An input FILE lands on this disk whatever the mode routes to, and an
+      // unmatched job runs nothing of its own.
+      expect(needsScratchSpace('static-script', true)).toBe(true);
+      expect(needsScratchSpace(undefined, true)).toBe(true);
+      expect(needsScratchSpace(undefined, false)).toBe(false);
     });
 
     it('does not gate a key when THIS AGENT could not give the job scratch space', async () => {

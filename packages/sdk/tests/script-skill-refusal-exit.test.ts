@@ -13,9 +13,11 @@ import {
   SCRIPT_REFUSAL_MAX_CHARS,
   SCRIPT_REFUSAL_UNSTATED,
   ScriptRefusalError,
+  REFUSAL_CHANNEL_MISSING_HINT,
   REFUSAL_CONTRACT_HINT,
   REFUSAL_UNREADABLE_HINT,
   REFUSAL_WRONG_EXIT_HINT,
+  throwIfRefused,
 } from '../src/skills/refusal';
 import { StaticScriptSkill } from '../src/skills/staticScriptSkill';
 import type { SkillOutput } from '../src/skills/types';
@@ -292,6 +294,32 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error).not.toBeInstanceOf(ScriptRefusalError);
     expect(error.detail).toContain(REFUSAL_CONTRACT_HINT);
     expect(error.detail).toContain('wrote nowhere');
+  });
+
+  it('keeps the channel-missing hint in front of a chatty script', async () => {
+    // A 43 the agent had nowhere to record. The hint is the whole diagnosis -
+    // the script refused correctly and this host gave it nowhere to write - and
+    // `ScriptRefusalError` keeps the TAIL of what it is handed, so output left
+    // unbounded in front of that second cut would push the hint out and leave
+    // the operator reading a refusal that looks like it simply said nothing.
+    const meter = 'downloading chunk 123 '.repeat(200);
+    let error: unknown;
+    try {
+      throwIfRefused(
+        { code: SCRIPT_EXIT_REFUSED, stdout: '', stderr: meter },
+        { state: 'absent' },
+        false,
+      );
+    } catch (thrown) {
+      error = thrown;
+    }
+    expect(isScriptRefusalError(error)).toBe(true);
+    const refusal = error as ScriptRefusalError;
+    // A refusal with nothing said, not a crash: the customer is not charged for
+    // a decision and the operator's capability is not gated.
+    expect(refusal.message).toBe(SCRIPT_REFUSAL_UNSTATED);
+    expect(refusal.stderr.startsWith(REFUSAL_CHANNEL_MISSING_HINT)).toBe(true);
+    expect(refusal.stderr).toContain('downloading chunk');
   });
 
   it('does not read a refusal file that is a HARD link to something else', async () => {

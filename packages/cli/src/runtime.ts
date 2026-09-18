@@ -67,7 +67,7 @@ import {
   isScriptRefusalError,
   startsWithRefusalHint,
 } from '@elisym/sdk/skills';
-import type { ChatTurn } from '@elisym/sdk/skills';
+import type { ChatTurn, SkillMode } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import pLimit from 'p-limit';
@@ -666,6 +666,29 @@ function customerSafeMessage(error: unknown): string {
   // nothing and read as jargon; a client that matches this sentence can at
   // least say where the money went.
   return PROVIDER_FAILED_MESSAGE;
+}
+
+/**
+ * Whether a job would touch this host's disk before it could be delivered.
+ *
+ * Named by what does NOT touch it rather than by a list of what does, so a mode
+ * added later is gated by default until someone decides otherwise. `llm` and
+ * `static-file` write nothing. `static-script` writes only its refusal channel,
+ * and having lost it runs anyway and reports a refusal with no reason given -
+ * refusing those jobs here would widen one read-only tmpdir from a lost channel
+ * into a whole mode taken off the market. Everything else - `dynamic-script`,
+ * which raises `HostScratchError` rather than run at all, and `x402`, which
+ * saves the result it has just PAID an upstream for - fails on a full volume
+ * after the customer has paid.
+ *
+ * An unmatched job (`undefined`) needs nothing by itself; a job fetching an
+ * input FILE needs the disk whatever its mode.
+ */
+export function needsScratchSpace(mode: SkillMode | undefined, hasAttachment: boolean): boolean {
+  if (hasAttachment) {
+    return true;
+  }
+  return mode !== undefined && mode !== 'llm' && mode !== 'static-file' && mode !== 'static-script';
 }
 
 /**
@@ -1791,21 +1814,11 @@ export class AgentRuntime {
     // The agent's own disk, checked where its API key is: a customer must not be
     // asked to pay for a job this host cannot run. Armed only after such a
     // failure has been seen, and re-probed here, so a host that recovers starts
-    // selling again on its own. `llm` mode needs no scratch space.
-    // Only the modes that NEED scratch space - which is every script mode: each
-    // one raises `HostScratchError` rather than running without a channel, so
-    // without this gate a broken disk would take payment for a job it is about
-    // to hold for recovery.
-    // Every mode that touches the disk, named by what it does NOT need rather
-    // than by a list of what does: `llm` and `static-file` write nothing, and
-    // everything else - the script modes, and `x402`, which saves the result it
-    // has just PAID an upstream for - fails on a full volume after the customer
-    // has paid. A list would keep missing the next mode added.
-    const needsScratch =
-      (matched !== null && matched.mode !== 'llm' && matched.mode !== 'static-file') ||
-      // And any job fetching an input FILE, whatever its mode.
-      job.attachment !== undefined;
-    if (needsScratch && !(await this.scratchSpaceUsable())) {
+    // selling again on its own.
+    if (
+      needsScratchSpace(matched?.mode, job.attachment !== undefined) &&
+      !(await this.scratchSpaceUsable())
+    ) {
       log(
         `[${job.jobId.slice(0, 8)}] Refusing job before payment: this agent cannot create scratch space (check the temp directory).`,
       );
