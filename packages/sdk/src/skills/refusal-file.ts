@@ -76,14 +76,23 @@ export async function readRefusalFile(path: string): Promise<RefusalFileRead> {
   }
   try {
     const info = await handle.stat();
-    // A regular file with exactly ONE name. `O_NOFOLLOW` refuses a symlink, but
-    // a HARD link is not one: `ln ~/.elisym/agent.json "$ELISYM_REFUSAL_FILE"`
-    // passes every other check here, and on a host whose tmpdir shares a volume
-    // with the agent's home (macOS by default) that would publish the first
-    // 8 KB of the target to a relay as the provider's own refusal. A file the
-    // script wrote where the runtime put it has one link.
-    if (!info.isFile() || info.nlink !== 1) {
+    if (!info.isFile()) {
       return { state: 'unreadable' };
+    }
+    // A HARD link is not a symlink, so `O_NOFOLLOW` does not stop one: `ln
+    // ~/.elisym/agent.json "$ELISYM_REFUSAL_FILE"` passes every other check
+    // here, and on a host whose tmpdir shares a volume with the agent's home
+    // (macOS by default) that would publish the first 8 KB of the target to a
+    // relay as the provider's own refusal. A file the script wrote where the
+    // runtime put it has one name.
+    //
+    // A REFUSAL WITH NO REASON, not `unreadable`: the script did exit 43 on
+    // purpose, and `unreadable` makes the runtime treat that as a crash - which
+    // gates the operator's capability. Some network and FUSE mounts report a
+    // link count this check cannot trust, and a correct skill on one of those
+    // must not take itself offline on every job.
+    if (info.nlink !== 1) {
+      return { state: 'read', reason: '' };
     }
     if (info.size === 0) {
       return { state: 'read', reason: '' };

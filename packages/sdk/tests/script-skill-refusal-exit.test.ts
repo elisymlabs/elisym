@@ -294,7 +294,7 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error.detail).toContain('wrote nowhere');
   });
 
-  it('refuses to read a refusal file that is a HARD link to something else', async () => {
+  it('does not read a refusal file that is a HARD link to something else', async () => {
     // `O_NOFOLLOW` refuses a symlink; a hard link is not one, and on a host
     // whose temp directory shares a volume with the agent's home - macOS by
     // default - `ln` would publish the first 8 KB of the target to a relay as
@@ -309,9 +309,13 @@ describe('script skills surface a refusal the customer can read', () => {
     const error = await dynamicSkill(fixture.scriptPath)
       .execute(MINIMAL_INPUT, MINIMAL_CTX)
       .catch((e) => e);
-    expect(error).not.toBeInstanceOf(ScriptRefusalError);
-    expect(error.message).not.toContain('nsec');
-    expect(error.detail).not.toContain('nsec');
+    // A refusal with nothing said, NOT a crash: the script did exit 43 on
+    // purpose. Calling it a crash would gate the operator's capability, and some
+    // network mounts report a link count this check cannot trust - a correct
+    // skill on one of those would take itself offline on every job.
+    expect(error).toBeInstanceOf(ScriptRefusalError);
+    expect(error.message).toBe(SCRIPT_REFUSAL_UNSTATED);
+    expect(error.stderr).not.toContain('nsec');
   });
 
   it('takes both labels off, in any order and with or without the space', async () => {

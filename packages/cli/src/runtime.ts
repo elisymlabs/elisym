@@ -201,7 +201,7 @@ function resolveJobAsset(tags: string[], skills: SkillRegistry): Asset {
 
 /**
  * Markers that indicate a script-skill failure (non-zero exit, non-42)
- * actually carried a billing / invalid-key signal in its stderr/stdout.
+ * actually carried a billing / invalid-key signal in its STDERR.
  * Reserved for the case where the script author did not honor the
  * `SCRIPT_EXIT_BILLING_EXHAUSTED = 42` contract - common with shell
  * proxies that exit 1 on every error path and dump the provider's body
@@ -212,9 +212,10 @@ function resolveJobAsset(tags: string[], skills: SkillRegistry): Asset {
  * refused at the preflight gate (before payment) instead of paying for
  * a job that will fail identically.
  *
- * Superset of `BILLING_BODY_MARKERS`: adds auth-language markers
- * (`x-api-key`, `invalid api key`, `unauthorized`, ...) that are
- * specific to the auth/invalid bucket rather than the billing bucket.
+ * The SOURCE list: `BILLING_BODY_MARKERS` is derived from the `billing` column
+ * below, so the money phrases are written once. This table adds the
+ * auth-language ones (`x-api-key`, `invalid api key`, `unauthorized`, ...) that
+ * belong to the auth bucket rather than the billing one.
  */
 // Scanned against a script's STDERR only. Stdout was the documented source -
 // shell proxies dump the provider's body there - but for an LLM-proxy skill
@@ -263,16 +264,6 @@ const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{
 ];
 
 /**
- * Everything the health gate wants to know about a script's own words, from one
- * pass over them.
- *
- * Lowered HERE, once: a precondition that lives in a parameter name is one a
- * future caller reads as a description (a raw `Invalid x-api-key` would match
- * nothing and be classified a generic exit), and the text is bounded only by
- * `MAX_SCRIPT_OUTPUT`, so a second copy of a megabyte for the same scan is a
- * megabyte too many.
- */
-/**
  * Markers that indicate an LLM provider's HTTP response body is about billing or
  * quota exhaustion rather than something benign.
  *
@@ -285,6 +276,16 @@ const BILLING_BODY_MARKERS = SCRIPT_BILLING_INVALID_MARKERS.filter((marker) => m
   (marker) => marker.phrase,
 );
 
+/**
+ * Everything the health gate wants to know about a script's own words, from one
+ * pass over them.
+ *
+ * Case-insensitively and in one pass: a precondition that lives in a parameter
+ * name is one a future caller reads as a description (a raw `Invalid x-api-key`
+ * would match nothing and be classified a generic exit), and the text is bounded
+ * only by `MAX_SCRIPT_OUTPUT`, so a lowercased copy plus a scan per question was
+ * a megabyte walked three times per failed job.
+ */
 function classifyScriptSignal(message: string): {
   looksBillingOrInvalid: boolean;
   reason: 'billing' | 'invalid';
@@ -302,13 +303,15 @@ function classifyScriptSignal(message: string): {
   let signalAt = -1;
   if (ALL_MARKERS_RE !== null) {
     for (const match of message.matchAll(ALL_MARKERS_RE)) {
+      // A match this map cannot name still counts as a signal. The regex is
+      // case-INSENSITIVE, and its case folding accepts letters whose lowercase
+      // form is not a key here at all - Turkish I among them. Dropping such a
+      // match would report "no billing/invalid markers" for text that plainly
+      // carries one; the safe flags are the ones that gate this pair only.
       const marker = MARKER_BY_PHRASE.get(match[0].toLowerCase());
-      if (marker === undefined) {
-        continue;
-      }
       looksBillingOrInvalid = true;
-      billing = billing || marker.billing;
-      cascade = cascade || marker.cascades;
+      billing = billing || marker?.billing === true;
+      cascade = cascade || marker?.cascades === true;
       if (signalAt === -1) {
         signalAt = match.index;
       }
@@ -316,9 +319,6 @@ function classifyScriptSignal(message: string): {
   }
   return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid', cascade, signalAt };
 }
-
-/** How long a scratch-space failure keeps the pre-payment probe armed. */
-const SCRATCH_RECHECK_MS = 5 * 60 * 1000;
 
 /**
  * How much of a gated pair's reason an operator is shown, and its lead-in.
@@ -370,7 +370,6 @@ function markerPattern(phrases: readonly string[], flags = 'i'): RegExp | null {
   );
 }
 
-const ANY_MARKER_RE = markerPattern(SCRIPT_BILLING_INVALID_MARKERS.map((marker) => marker.phrase));
 const ALL_MARKERS_RE = markerPattern(
   SCRIPT_BILLING_INVALID_MARKERS.map((marker) => marker.phrase),
   'gi',
@@ -388,7 +387,16 @@ const MARKER_BY_PHRASE = new Map(
  * that followed it.
  */
 function signalIndex(text: string): number {
-  return ANY_MARKER_RE?.exec(text)?.index ?? -1;
+  if (ALL_MARKERS_RE === null) {
+    return -1;
+  }
+  // The same compiled pattern the classifier walks, so the two cannot disagree
+  // about what a signal is. `lastIndex` is reset because it carries the `g`
+  // flag - shared global state between calls otherwise.
+  ALL_MARKERS_RE.lastIndex = 0;
+  const found = ALL_MARKERS_RE.exec(text)?.index ?? -1;
+  ALL_MARKERS_RE.lastIndex = 0;
+  return found;
 }
 
 /**
@@ -1111,25 +1119,24 @@ export class AgentRuntime {
    * directory refused it. That is not the operator's API key, so it must not
    * gate the health pair - but SOMETHING has to stop the next customer paying
    * into an agent that will fail them the same way, which is what the health
-   * gate used to do by accident. Probed before payment, and only after such a
-   * failure has been seen: a working host pays nothing for this.
+   * gate used to do by accident. Probed before payment, and only once such a
+   * failure has been seen - a working host pays nothing for this, and a broken
+   * one is asked again on every job rather than after a timer: an agent whose
+   * jobs arrive minutes apart would otherwise let every customer through.
    */
-  private scratchFailedAt = 0;
+  private scratchFailed = false;
 
   private async scratchSpaceUsable(): Promise<boolean> {
-    if (Date.now() - this.scratchFailedAt > SCRATCH_RECHECK_MS) {
+    if (!this.scratchFailed) {
       return true;
     }
     const probe = await mkdtemp(join(tmpdir(), 'elisym-probe-')).catch(() => null);
     if (probe === null) {
-      // Re-stamped: the probe has just proved the disk is STILL broken. Without
-      // this the window expires on the ORIGINAL failure and lets one paying
-      // customer through every five minutes, each one re-arming it by failing.
-      this.scratchFailedAt = Date.now();
       return false;
     }
     await rm(probe, { recursive: true, force: true }).catch(() => {});
-    this.scratchFailedAt = 0;
+    // Recovered: stop probing until something fails that way again.
+    this.scratchFailed = false;
     return true;
   }
 
@@ -1315,7 +1322,8 @@ export class AgentRuntime {
       }
       const { looksBillingOrInvalid, reason, cascade, signalAt } = classifyScriptSignal(message);
       // The gate and the cascade are separate questions, and the second one is
-      // much more expensive to get wrong - see `SCRIPT_KEY_LEVEL_MARKERS`. Both
+      // much more expensive to get wrong - see the `cascades` column of
+      // `SCRIPT_BILLING_INVALID_MARKERS`. Both
       // answered off the same scan above.
       const cascadeNote = cascade ? this.cascadeSuffix(provider, model) : ' (no cascade)';
       const signalNote = looksBillingOrInvalid
@@ -1659,7 +1667,7 @@ export class AgentRuntime {
         // the agent has no monitor - a fleet of static-script skills declaring no
         // pair - and the next customer would then still pay into a host that
         // cannot run their job. See `scratchSpaceUsable`.
-        this.scratchFailedAt = Date.now();
+        this.scratchFailed = true;
       }
       const currentStatus = this.ledger.getStatus(job.jobId);
       const keepPaidForRecovery =
@@ -3938,7 +3946,7 @@ export class AgentRuntime {
               // Recovery proves the disk is broken just as well as a live job
               // does, and it runs on a tick of its own - without this a host
               // draining a backlog keeps asking NEW customers to pay.
-              this.scratchFailedAt = Date.now();
+              this.scratchFailed = true;
             }
             // Mirror the primary executeJob path: a billing/invalid signal raised
             // during recovery must flip the (provider, model) pair to unhealthy.

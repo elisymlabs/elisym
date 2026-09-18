@@ -25,12 +25,7 @@
 import { ScriptExecutionError } from '../llm-health/types';
 import { AGENT_REFUSED_LABEL, PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
 import type { RefusalFileRead } from './refusal-file';
-import {
-  excerptOwnMessage,
-  excerptUntrustedTail,
-  flattenUntrusted,
-  hasVisibleText,
-} from './untrusted-text';
+import { excerptOwnMessage, excerptUntrustedTail, hasVisibleText } from './untrusted-text';
 
 /**
  * The exit code that says "what I wrote in the refusal file is why".
@@ -94,19 +89,8 @@ export const REFUSAL_WRONG_EXIT_HINT =
   `than ${SCRIPT_EXIT_REFUSED}, so this was handled as the crash the exit code describes and the ` +
   'customer was told nothing about their request - a refusal must exit 43 (or 0):';
 
-/** Told instead when the runtime never gave the script a file to write. */
-export const REFUSAL_CHANNEL_MISSING_HINT =
-  `exit ${SCRIPT_EXIT_REFUSED}, but this agent could not create a scratch file, so ` +
-  `${SCRIPT_REFUSAL_FILE_ENV} was never set and the script had nowhere to put its reason ` +
-  '(check the temp directory):';
-
-/** All four arms, so none of them can be left out of a reader by accident. */
-const REFUSAL_HINTS = [
-  REFUSAL_CONTRACT_HINT,
-  REFUSAL_CHANNEL_MISSING_HINT,
-  REFUSAL_UNREADABLE_HINT,
-  REFUSAL_WRONG_EXIT_HINT,
-];
+/** All three arms, so none of them can be left out of a reader by accident. */
+const REFUSAL_HINTS = [REFUSAL_CONTRACT_HINT, REFUSAL_UNREADABLE_HINT, REFUSAL_WRONG_EXIT_HINT];
 
 /**
  * Whether this detail opens with one of the hints above.
@@ -137,15 +121,12 @@ export function refusalMessage(reason: string): string {
   // runtime and the client put it there, and a doubled one reaches a reader as
   // the provider's own words wearing the app's voice.
   //
-  // After flattening, not before: a leading newline or byte-order mark would
-  // otherwise carry the label past a `startsWith` and straight into the excerpt
-  // the customer reads.
-  // Flattened first, so a leading newline cannot carry a label past the test;
-  // stripped before the excerpt, so the customer's 400 characters are spent on
-  // the reason rather than on a label; and ONE loop over both labels, because
-  // `The agent refused: The provider refused: ...` interleaves them and a pass
-  // per label leaves whichever came second.
-  let sentence = flattenUntrusted(reason);
+  // Stripped before the excerpt, so the customer's 400 characters are spent on
+  // the reason rather than on a label; ONE loop over both labels, because `The
+  // agent refused: The provider refused: ...` interleaves them and a pass per
+  // label leaves whichever came second; and off the RAW text, because flattening
+  // here as well would walk an 8 KB file twice - the excerpt flattens anyway.
+  let sentence = reason;
   for (;;) {
     const stripped = withoutLeadingLabel(sentence);
     if (stripped === sentence) {
@@ -173,14 +154,17 @@ export function refusalMessage(reason: string): string {
  * refused:size it in USD.` is the same forgery as the spaced form.
  */
 function withoutLeadingLabel(sentence: string): string {
-  const lowered = sentence.toLowerCase();
+  // `trimStart` rather than a flatten pass upstream: a leading newline or
+  // byte-order mark is all that stands between a forged label and this test.
+  const trimmed = sentence.trimStart();
+  const lowered = trimmed.toLowerCase();
   for (const label of [PROVIDER_REFUSED_PREFIX, AGENT_REFUSED_LABEL]) {
     // Case-INSENSITIVELY: a skill author copying the label out of prose rather
     // than out of the constant writes `the provider refused:`, and an exact-case
     // test leaves it standing for the runtime to prefix a second one in front of.
     const anchor = label.trimEnd().toLowerCase();
     if (lowered.startsWith(anchor)) {
-      return sentence.slice(anchor.length).trimStart();
+      return trimmed.slice(anchor.length).trimStart();
     }
   }
   return sentence;
@@ -284,7 +268,6 @@ function describeOutput(result: { stdout: string; stderr: string }): string {
 export function throwIfRefused(
   result: { code: number | null; stdout: string; stderr: string },
   file: RefusalFileRead,
-  channelOffered = true,
 ): void {
   // `hasVisibleText`, not `!== ''`: a file holding one newline, a NUL or a
   // zero-width joiner is as empty as no bytes at all - the same question the
@@ -318,14 +301,13 @@ export function throwIfRefused(
     return;
   }
   // Which hint depends on whose fault it was: a script that wrote a reason and
-  // then crashed, one that never wrote the file, a file the agent would not
-  // read, or a runtime that never named one. Blaming the script for the last two
-  // sends an operator hunting a typo in code that is correct.
+  // then crashed, one that never wrote the file, or a file the agent would not
+  // read. Blaming the script for the last sends an operator hunting a typo in
+  // code that is correct. (A runtime that could not make the file at all never
+  // reaches here - that is a `HostScratchError` before the script runs.)
   let hint = REFUSAL_CONTRACT_HINT;
   if (stated) {
     hint = REFUSAL_WRONG_EXIT_HINT;
-  } else if (!channelOffered) {
-    hint = REFUSAL_CHANNEL_MISSING_HINT;
   } else if (file.state === 'unreadable') {
     hint = REFUSAL_UNREADABLE_HINT;
   }

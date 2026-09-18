@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
+import { HostScratchError } from './host-fault';
 import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
 import { jobScriptEnv, runScript, scopedToolEnv } from './scriptSkill';
@@ -92,20 +93,25 @@ export class StaticScriptSkill implements Skill {
     //
     // A read-only or full tmpdir must not be what stops a static skill running:
     // the job simply has no refusal channel, and the next one tries again.
-    const dir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
-    const refusalFile = dir === null ? undefined : join(dir, 'refusal');
+    // A `HostScratchError`, exactly as in `DynamicScriptSkill`, rather than
+    // running the script without a channel: the runtime reads this type to leave
+    // the health gate alone (a full disk is not the operator's API key), to keep
+    // a paid job for the recovery loop, and to refuse the NEXT customer before
+    // they pay. Running anyway meant a script that refused had its reason
+    // dropped, the customer charged for a "crash", and the operator's capability
+    // gated for a local disk problem.
+    const dir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch((err: unknown) => {
+      throw new HostScratchError(err instanceof Error ? err.message : String(err));
+    });
     try {
-      return await this.run(ctx, refusalFile);
+      return await this.run(ctx, join(dir, 'refusal'));
     } finally {
-      if (dir !== null) {
-        await rm(dir, { recursive: true, force: true }).catch(() => {});
-      }
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
   }
 
-  private async run(ctx: SkillContext, refusalFile: string | undefined): Promise<SkillOutput> {
-    const channels: NodeJS.ProcessEnv =
-      refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile };
+  private async run(ctx: SkillContext, refusalFile: string): Promise<SkillOutput> {
+    const channels: NodeJS.ProcessEnv = { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile };
     const result = await runScript(this.scriptPath, this.scriptArgs, {
       cwd: dirname(this.scriptPath),
       signal: ctx.signal,
@@ -141,11 +147,7 @@ export class StaticScriptSkill implements Skill {
     // lying around. Otherwise a written reason wins, including over the
     // success path - a script that wrote one and then exited 0 refused,
     // whatever its exit code claims.
-    throwIfRefused(
-      result,
-      refusalFile === undefined ? { state: 'absent' } : await readRefusalFile(refusalFile),
-      refusalFile !== undefined,
-    );
+    throwIfRefused(result, await readRefusalFile(refusalFile));
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
       // Generic message reaches the customer; raw stderr/stdout stays on `detail`

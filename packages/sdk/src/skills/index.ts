@@ -42,15 +42,15 @@ export { X402ProxySkill } from './x402ProxySkill';
 export type { X402ProxySkillParams } from './x402ProxySkill';
 // The contract a script author needs (the exit code, the variable, the caps,
 // what is said when no reason was given), the error the runtime catches, and
-// its guard. The four operator-log hints go together or not at all: they are
-// the four arms of one decision - the script wrote nothing, it wrote a reason
-// and then crashed, the agent would not read what it wrote, the agent never
-// offered a file - and the runtime itself branches on the last two, since a
-// host that cannot give a script a scratch file is not an API key going bad. The file
+// its guard. The three operator-log hints go together or not at all: they are
+// the three arms of one decision - the script wrote nothing, it wrote a reason
+// and then crashed, the agent would not read what it wrote. A host that cannot
+// make the file at all never gets that far: it raises `HostScratchError` before
+// the script runs, which the runtime reads as its own fault rather than a key
+// going bad. The file
 // reader behind them stays internal.
 export {
   isScriptRefusalError,
-  REFUSAL_CHANNEL_MISSING_HINT,
   REFUSAL_CONTRACT_HINT,
   REFUSAL_UNREADABLE_HINT,
   REFUSAL_WRONG_EXIT_HINT,

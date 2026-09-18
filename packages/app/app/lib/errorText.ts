@@ -53,11 +53,16 @@ export const UNSTATED_LOCAL_FAILURE = 'The request could not be completed.';
  * One line of an error, whoever wrote it.
  *
  * Nothing here interprets the string - it only refuses to paint an unbounded
- * one, or one carrying the control characters and direction overrides that
- * make a line read as something other than what it says. Use this for an error
- * the app itself produced (a wallet rejection, an RPC failure): those are not
- * job verdicts, and classifying them would answer "insufficient SOL" with
- * "Agent unavailable".
+ * one, or one carrying the control characters and direction overrides that make
+ * a line read as something other than what it says.
+ *
+ * Two callers, both deliberate. An error the APP produced (a wallet rejection,
+ * an RPC failure) is not a job verdict, and classifying it would answer
+ * "insufficient SOL" with "Agent unavailable". A job error the classifier could
+ * not place is a provider's own free text, and it comes here for the same reason
+ * a refusal does: no credential pass, because the sentence is meant to be acted
+ * on and redaction eats the half that says what to do. What a script PRINTED is
+ * a different matter and is redacted at the source, in the runtime.
  */
 export function boundedErrorText(error: string, fallback = UNSTATED_LOCAL_FAILURE): string {
   // `excerptOwnMessage`: no credential redaction. A wallet or RPC sentence
