@@ -42,6 +42,8 @@ import type {
   VerifyOptions,
   VerifyResult,
 } from '../types';
+import type { LoadedAddresses } from './account-keys';
+import { mergeAccountKeys } from './account-keys';
 import {
   type Asset,
   NATIVE_SOL,
@@ -673,20 +675,6 @@ interface TokenBalanceEntry {
   uiTokenAmount: { amount: string };
 }
 
-/**
- * The addresses a v0 transaction pulled in from an Address Lookup Table.
- *
- * Absent on a legacy transaction, and absent from `accountKeys` on a v0 one:
- * with `encoding: 'json'` the RPC returns only the STATIC keys there and puts
- * the rest here. The balance arrays cover all of them, ordered static keys
- * first, then the writable loaded ones, then the read-only loaded ones - which
- * is the order this pair has to be appended in.
- */
-interface LoadedAddresses {
-  readonly writable: readonly string[];
-  readonly readonly: readonly string[];
-}
-
 interface TxDiffInput {
   accountKeys: readonly string[];
   /** Absent for a legacy transaction, and for a v0 one that used no table. */
@@ -707,6 +695,18 @@ interface TxDiffInput {
 type BalanceVerdict = { ok: true } | { ok: false; reason: string };
 
 function checkTxDiff(input: TxDiffInput): BalanceVerdict {
+  // The two arrays are indexed in lockstep - `pre[i]` and `post[i]` are the
+  // same account - so a length mismatch means the pairing is meaningless. It
+  // cannot be waved through: `bigIntDelta` reads a missing slot as 0n, which
+  // invents a balance rather than reporting that one is absent.
+  if (input.preBalances.length !== input.postBalances.length) {
+    return {
+      ok: false,
+      reason:
+        `Balance arrays disagree on length (pre ${input.preBalances.length}, ` +
+        `post ${input.postBalances.length}) - cannot pair an account with its balance`,
+    };
+  }
   const balanceCount = input.preBalances.length;
   // The LOOKED-UP addresses count as being in the transaction. Reading only
   // `accountKeys` means a v0 transaction that put the reference, the recipient
@@ -714,11 +714,7 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   // composer builds - is rejected as "possible replay" though the customer
   // paid: fail-closed, and wrong. The concatenation order is the one the
   // balance arrays are indexed by, so the indices below stay aligned.
-  const keys = [
-    ...input.accountKeys,
-    ...(input.loadedAddresses?.writable ?? []),
-    ...(input.loadedAddresses?.readonly ?? []),
-  ];
+  const keys = mergeAccountKeys(input.accountKeys, input.loadedAddresses);
   const keyToIdx = new Map<string, number>();
   for (let i = 0; i < Math.min(keys.length, balanceCount); i++) {
     const key = keys[i];

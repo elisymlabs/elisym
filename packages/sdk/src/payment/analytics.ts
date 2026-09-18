@@ -14,6 +14,8 @@ import {
   PROTOCOL_PROGRAM_ID_MAINNET,
 } from '../constants';
 import type { Network } from '../types';
+import type { LoadedAddresses } from './account-keys';
+import { mergeAccountKeys } from './account-keys';
 import { KNOWN_ASSETS, NATIVE_SOL, assetKey, resolveUsdcAsset } from './assets';
 
 /**
@@ -124,6 +126,7 @@ interface RawTransaction {
     postBalances: readonly bigint[];
     preTokenBalances?: readonly TokenBalanceEntry[];
     postTokenBalances?: readonly TokenBalanceEntry[];
+    loadedAddresses?: LoadedAddresses;
   } | null;
   transaction: {
     message: {
@@ -173,7 +176,12 @@ function accumulateTransfers(
   accumulateNativeDeltas(
     meta.preBalances,
     meta.postBalances,
-    raw.transaction.message.accountKeys,
+    // Balance slots cover the looked-up addresses too. Indexing a merged list
+    // keeps the bookkeeping-PDA skip below working for a PDA a lookup table
+    // supplied; against `accountKeys` alone that slot reads `undefined`, the
+    // skip never fires, and the PDA's one-time rent deposit is counted as
+    // payment volume.
+    mergeAccountKeys(raw.transaction.message.accountKeys, meta.loadedAddresses),
     bookkeepingAddresses,
     volumeByAsset,
   );

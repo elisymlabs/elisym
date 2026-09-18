@@ -18,6 +18,7 @@ function makeTx(opts: {
   err?: unknown;
   preTokenBalances?: unknown;
   postTokenBalances?: unknown;
+  loadedAddresses?: unknown;
 }) {
   return {
     meta: {
@@ -26,6 +27,7 @@ function makeTx(opts: {
       postBalances: opts.post.map((value) => BigInt(value)),
       preTokenBalances: opts.preTokenBalances,
       postTokenBalances: opts.postTokenBalances,
+      loadedAddresses: opts.loadedAddresses,
     },
     transaction: {
       message: {
@@ -48,6 +50,60 @@ describe('verifyJobPaymentQuick', () => {
 
   afterEach(() => {
     clearQuickVerifyCache();
+  });
+
+  it('finds a recipient a lookup table supplied, not just a static key', async () => {
+    const recipient = makeAddress();
+    const payer = makeAddress();
+    const writableFromTable = makeAddress();
+    // The recipient is NOT in `accountKeys` - a v0 transaction built by a
+    // router puts it in the table - but the balance arrays cover it, at the
+    // slot that follows the static keys.
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer],
+            loadedAddresses: { writable: [writableFromTable, recipient], readonly: [] },
+            pre: [10_000_000, 0, 0],
+            post: [8_000_000, 0, 1_000_000],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-table-recipient', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(true);
+  });
+
+  it('refuses rather than misreads when the loaded half is malformed', async () => {
+    const recipient = makeAddress();
+    const payer = makeAddress();
+    // A proxy answering with a string for one half would be spread character by
+    // character: two junk keys here, which push the recipient from slot 1 to
+    // slot 3 and read some other account's delta as its own. The recipient must
+    // therefore sit BEHIND the malformed half - a fixture that keeps it among
+    // the static keys is green either way and proves nothing.
+    //
+    // The merge falls back to the static keys alone, so the recipient is not
+    // found and the payment is refused. That is the intended trade: a refusal a
+    // retry can fix, never a credit read off the wrong account.
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer],
+            loadedAddresses: { writable: 'ab', readonly: [recipient] },
+            pre: [10_000_000, 0, 0, 0],
+            post: [8_000_000, 0, 0, 1_000_000],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-bad-loaded', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
   });
 
   it('returns verified=true when recipient receives native SOL', async () => {

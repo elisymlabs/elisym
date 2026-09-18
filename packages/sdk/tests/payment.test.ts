@@ -796,6 +796,33 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.verified).toBe(true);
     });
 
+    it('refuses when the balance arrays disagree on length', async () => {
+      // `pre[i]` and `post[i]` are the same account; different lengths mean the
+      // pairing is meaningless. Without the guard a missing slot reads as 0n,
+      // which invents a balance instead of reporting that one is absent - here
+      // the recipient's own pre-balance would vanish and its delta would read
+      // as the full post-balance.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+                pre: [200_000_000, 0, 0],
+                post: [200_000_000 - amount, netAmount, feeAmount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'lenMismatchSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/disagree on length/);
+    });
+
     it('still refuses a transaction the reference is in no half of', async () => {
       const rpc = createMockRpc({
         getTransaction: () => ({

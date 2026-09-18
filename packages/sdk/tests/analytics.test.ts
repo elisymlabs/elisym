@@ -41,6 +41,7 @@ interface FakeTransaction {
     postBalances: bigint[];
     preTokenBalances?: FakeTokenBalance[];
     postTokenBalances?: FakeTokenBalance[];
+    loadedAddresses?: { writable: string[]; readonly: string[] };
   } | null;
   transaction: {
     message: { accountKeys: string[] };
@@ -134,6 +135,32 @@ describe('aggregateNetworkStats', () => {
         },
         transaction: {
           message: { accountKeys: ['payer', 'recipient', sentinelPda as string] },
+        },
+      },
+    });
+    const result = await aggregateNetworkStats(rpc);
+    expect(result.volumeByAsset.native).toBe(194_000_000n);
+  });
+
+  it('excludes that PDA even when a lookup table supplied it', async () => {
+    // Same money as the test above, but the PDA arrives through the table, so
+    // it is absent from `accountKeys` while still holding a balance slot. Read
+    // against the static keys alone that slot has no name, the bookkeeping skip
+    // never fires, and the rent deposit is counted as payment volume.
+    const sentinelPda = await deriveAssetStatsAddress(
+      PROTOCOL_PROGRAM_ID_DEVNET,
+      NATIVE_ASSET_SENTINEL,
+    );
+    const rpc = makeRpc([{ signature: 'native-table', err: null }], {
+      'native-table': {
+        meta: {
+          err: null,
+          preBalances: [1_000_000_000n, 0n, 0n],
+          postBalances: [797_925_920n, 194_000_000n, 1_851_360n],
+          loadedAddresses: { writable: [sentinelPda as string], readonly: [] },
+        },
+        transaction: {
+          message: { accountKeys: ['payer', 'recipient'] },
         },
       },
     });

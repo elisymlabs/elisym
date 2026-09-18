@@ -1,5 +1,7 @@
 import { type Address, type Rpc, type Signature, type SolanaRpcApi, isAddress } from '@solana/kit';
 import type { Network } from '../types';
+import type { LoadedAddresses } from './account-keys';
+import { mergeAccountKeys } from './account-keys';
 
 /**
  * Lightweight payment verifier used by discovery ranking.
@@ -130,7 +132,14 @@ async function doVerifyOnce(
     return { receivedFunds: false, txSignature: sigStr, reason: 'tx_failed' };
   }
 
-  const accountKeys = tx.transaction.message.accountKeys as readonly string[];
+  // Lookup-table addresses are part of the transaction and part of the balance
+  // arrays, but not part of `accountKeys` - a recipient supplied by a table is
+  // invisible to `indexOf`, and the SOL branch below then falls through to
+  // `recipient_mismatch` on a payment that actually happened.
+  const accountKeys = mergeAccountKeys(
+    tx.transaction.message.accountKeys as readonly string[],
+    tx.meta.loadedAddresses as LoadedAddresses | undefined,
+  );
   const recipientStr = expectedRecipient as string;
 
   const recipientIdx = accountKeys.indexOf(recipientStr);
