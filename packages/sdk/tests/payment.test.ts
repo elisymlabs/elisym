@@ -458,6 +458,67 @@ describe('buildPaymentInstructions', () => {
     ).rejects.toThrow(/computed from/);
   });
 
+  it('creates no treasury token account on a ZERO-fee payment', async () => {
+    // Every mainnet payment takes this branch (`feeBps` is 0 there), and the
+    // idempotent create is not free: the customer pays the rent for an account
+    // this transaction will never credit. Three instructions, not four.
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: TEST_TREASURY,
+        fee_amount: 0,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'usdc',
+          mint: USDC_SOLANA_DEVNET.mint,
+          decimals: USDC_SOLANA_DEVNET.decimals,
+        },
+      } as never,
+      signer as never,
+      { programId: TEST_PROGRAM_ID, treasury: TEST_TREASURY },
+    );
+
+    expect(instructions.length).toBe(3);
+  });
+
+  it('refuses a malformed fee address when the fee is POSITIVE', async () => {
+    // The half the zero-fee row cannot reach. `providerAmount` subtracts the fee
+    // on the mere presence of the field, while the fee leg is built only for an
+    // address that parses - so this used to produce a transaction paying the
+    // recipient `amount - fee` and nobody the fee. The customer signs an
+    // underpayment and the provider's own verifier refuses it: the whole job's
+    // money, for a job that can never be accepted.
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: makeAddress(),
+          fee_address: 'not-an-address',
+          fee_amount: 5_000_000,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/fee address/);
+  });
+
   it('does not throw on a malformed fee address that a zero fee never spends', async () => {
     // Payable today: with `fee_amount: 0` no fee leg is built, so nothing in
     // this function used to look at the field at all. The degenerate check now
@@ -485,7 +546,18 @@ describe('buildPaymentInstructions', () => {
       { programId: TEST_PROGRAM_ID },
     );
 
-    expect(instructions.length).toBeGreaterThan(0);
+    // Payable means the RECIPIENT is paid in full, not merely that we got here:
+    // a zero fee builds no fee leg, so nothing may be subtracted.
+    const transfer = instructions.find(
+      (instruction): instruction is { data: Uint8Array; accounts: unknown[] } =>
+        typeof instruction === 'object' &&
+        instruction !== null &&
+        'data' in instruction &&
+        (instruction as { accounts?: unknown[] }).accounts !== undefined &&
+        (instruction as { accounts: unknown[] }).accounts.length > 4,
+    );
+    expect(transfer).toBeDefined();
+    expect(instructions.length).toBe(3);
   });
 
   it('fee + providerAmount === totalAmount for various amounts', async () => {

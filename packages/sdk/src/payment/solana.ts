@@ -984,6 +984,20 @@ export async function buildPaymentInstructions(
   const protocolTag = address(ELISYM_PROTOCOL_TAG);
   const programId = options.programId;
   const feeAmount = paymentRequest.fee_amount ?? 0;
+  // A POSITIVE fee needs a destination that exists. Without this the two halves
+  // disagree: `providerAmount` below subtracts the fee on the mere presence of
+  // the field, while the fee leg is built only for an address that parses - so
+  // a malformed `fee_address` used to produce a transaction paying the
+  // recipient `amount - fee` and nobody the fee. The customer signs an
+  // underpayment, the provider's verifier answers `Recipient received N,
+  // expected >= amount`, and the job can never be accepted. A zero fee stays
+  // payable: no leg is built either way, which is what the request shape a
+  // third-party provider issues on mainnet looks like.
+  if (paymentRequest.fee_address && feeAmount > 0 && !isAddress(paymentRequest.fee_address)) {
+    throw new Error(
+      `Invalid fee address: ${paymentRequest.fee_address}. A positive fee has no valid destination.`,
+    );
+  }
   const providerAmount =
     paymentRequest.fee_address && feeAmount > 0
       ? paymentRequest.amount - feeAmount
@@ -1112,6 +1126,10 @@ export async function buildPaymentInstructions(
   // a zero fee `fee_address` is optional, and the provider's denylist reads the
   // treasury from the config rather than from the request.
   let configTreasuryAta: Address | undefined;
+  // The `isAddress` here is NOT KILLED BY ANY TEST and cannot be: this value
+  // comes from the on-chain config, which `assertConfig` has already checked on
+  // every first-party path, and 32 bytes off the chain always decode. It is the
+  // mirror of the guard on `fee_address` above, which is a third party's field.
   if (
     options.treasury !== undefined &&
     options.treasury !== feeOwner &&

@@ -32,6 +32,7 @@ import {
   type Network,
 } from '@elisym/sdk';
 import {
+  ensureGitignoreHasPrivateStateEntries,
   isBlockingNodeSync,
   agentPaths,
   ensureGitignoreHasDelegationNoncesEntry,
@@ -878,6 +879,22 @@ export async function cmdStart(
     }
   }
 
+  // Opened HERE, before any card goes out, for the same reason the job ledger
+  // is: its constructor refuses a file it cannot read - an empty nonce set lets
+  // a delegated pull be replayed - and a refusal after the cards are published
+  // leaves a live paid provider advertised by an agent that has already exited.
+  // Only wired when the agent can actually settle delegated jobs.
+  const nonceStore =
+    delegateSigner !== undefined
+      ? new UsedNonceStore(join(loaded.dir, '.delegation-nonces.json'))
+      : undefined;
+  if (nonceStore !== undefined) {
+    // Same gitignore migration as the other private stores: the nonce set is
+    // keyed by customer owner addresses and must never be committable from a
+    // project-local agent dir.
+    await ensureGitignoreHasDelegationNoncesEntry(dirname(loaded.dir));
+  }
+
   const buildCard = (skill: (typeof allSkills)[0]): CapabilityCard =>
     buildCapabilityCard(skill, { walletNetwork, solanaAddress, delegatePubkey });
 
@@ -1001,6 +1018,11 @@ export async function cmdStart(
   // Migration: ensure a project-local .gitignore created before `.iroh/` became a
   // default ignore entry still excludes the (cleartext) blob store.
   await ensureGitignoreHasIrohEntry(dirname(loaded.dir));
+  // And the three private files that are written through a temporary. An agent
+  // created by an older build has the narrow names - `.secrets.json` rather
+  // than `.secrets.json*` - which no longer match a temporary whose suffix is
+  // random. What sits in those files is the agent's keys and the ledger.
+  await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
   if (x402Skills.length > 0) {
     // Same migration for the x402 idempotency cache (customer inputs/results
     // + upstream payment history) - `x402 add` also ensures this, but a
@@ -1030,19 +1052,6 @@ export async function cmdStart(
     // the payment key) to execute post-work pulls from customer delegations.
     delegateSigner,
   };
-
-  // Durable single-use nonce set for delegated job payment - only wired when
-  // the agent can actually settle delegated jobs (delegate key resolved).
-  const nonceStore =
-    delegateSigner !== undefined
-      ? new UsedNonceStore(join(loaded.dir, '.delegation-nonces.json'))
-      : undefined;
-  if (nonceStore !== undefined) {
-    // Same gitignore migration as the other private stores: the nonce set is
-    // keyed by customer owner addresses and must never be committable from a
-    // project-local agent dir.
-    await ensureGitignoreHasDelegationNoncesEntry(dirname(loaded.dir));
-  }
 
   // Custom SOLANA_RPC_URL values (Helius, Alchemy, QuickNode) routinely
   // embed API keys in the query string. Strip query + auth before logging

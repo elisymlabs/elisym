@@ -173,8 +173,8 @@ export class FileSettlementStore implements SettlementStore {
       dirname(this.path),
       `.${basename(this.path)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
     );
-    writeFileSync(tmp, JSON.stringify(file), { encoding: 'utf-8', mode: STORE_FILE_MODE });
     try {
+      writeFileSync(tmp, JSON.stringify(file), { encoding: 'utf-8', mode: STORE_FILE_MODE });
       chmodSync(tmp, STORE_FILE_MODE);
       renameSync(tmp, this.path);
     } catch (error) {

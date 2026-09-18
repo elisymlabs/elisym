@@ -24,7 +24,7 @@
  * paths handed out for delivery must NOT be cleaned up by callers.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isBlockingNode } from '@elisym/sdk/agent-store';
 import { X402_CACHE_TTL_MS } from './constants.js';
@@ -125,12 +125,39 @@ export class X402JobStore {
     // Random suffix: a predictable temporary is a path somebody else can put a
     // FIFO on, and a write to one never returns.
     const tempPath = `${this.jobsPath}.tmp.${randomBytes(6).toString('hex')}`;
-    await writeFile(tempPath, JSON.stringify(file, null, 2), 'utf-8');
-    await rename(tempPath, this.jobsPath);
+    // Cleaned up like every other temporary here: a random name is never
+    // reused, so a failure would otherwise strand a full copy of this index -
+    // which records what the bridge has already paid for - for good.
+    try {
+      await writeFile(tempPath, JSON.stringify(file, null, 2), 'utf-8');
+      await rename(tempPath, this.jobsPath);
+    } catch (error) {
+      try {
+        await rm(tempPath, { force: true });
+      } catch {
+        /* the caller's error is the one worth reporting */
+      }
+      throw error;
+    }
   }
 
   resultFilePath(jobId: string): string {
     return join(this.resultsDir, sanitizeJobId(jobId));
+  }
+
+  /** Remove `<result>.tmp.<hex>` leftovers for one job. Best effort. */
+  private async sweepStrandedTemporaries(jobId: string): Promise<void> {
+    const prefix = `${sanitizeJobId(jobId)}.tmp.`;
+    try {
+      const entries = await readdir(this.resultsDir);
+      await Promise.all(
+        entries
+          .filter((entry) => entry.startsWith(prefix))
+          .map((entry) => rm(join(this.resultsDir, entry), { force: true })),
+      );
+    } catch {
+      /* the directory may not exist yet; nothing to sweep */
+    }
   }
 
   /**
@@ -295,6 +322,10 @@ export class X402JobStore {
         delete file[jobId];
         changed = true;
         await rm(this.resultFilePath(jobId), { force: true }).catch(() => {});
+        // And any temporary stranded by a crash between its write and its
+        // rename: the name is random, so nothing else will ever reuse or
+        // remove it, and it holds a result somebody has already paid for.
+        await this.sweepStrandedTemporaries(jobId);
       }
       if (changed) {
         await this.save(file);

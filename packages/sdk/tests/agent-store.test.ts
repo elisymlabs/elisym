@@ -15,6 +15,7 @@ import {
   loadAgent,
   createAgentDir,
   ensureGitignoreHasIrohEntry,
+  ensureGitignoreHasPrivateStateEntries,
   renderInitialYaml,
   writeYaml,
   writeYamlInitial,
@@ -303,13 +304,43 @@ describe('createAgentDir', () => {
     expect(result.source).toBe('project');
     expect(result.createdNewElisymRoot).toBe(true);
     const gitignore = await readFile(join(work, '.elisym', '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('.secrets.json');
-    expect(gitignore).toContain('.media-cache.json');
-    expect(gitignore).toContain('.jobs.json');
+    // Exact LINES, not substrings: `.secrets.json` matches `.secrets.json*` as a
+    // substring, so a narrowed entry would pass unnoticed - and the narrow form
+    // no longer covers the temporaries these files are written through, whose
+    // suffix is random. What sits in them is the agent's keys and the ledger.
+    const lines = gitignore.split('\n');
+    expect(lines).toContain('.secrets.json*');
+    expect(lines).toContain('.media-cache.json*');
+    expect(lines).toContain('.jobs.json*');
     // The iroh blob store holds cleartext job payloads - must be ignored.
     expect(gitignore).toContain('.iroh/');
     // The delegation nonce set maps which customer wallets delegated here.
     expect(gitignore).toContain('.delegation-nonces.json*');
+  });
+
+  it('migrates an older .gitignore to the widened private-state entries', async () => {
+    // `GITIGNORE_CONTENT` is written ONCE, at directory creation, so an agent
+    // created by an older build keeps the narrow names for good - and those no
+    // longer match a temporary whose suffix is random. Every other entry added
+    // after the fact has a migration like this one; these three did not.
+    const root = join(work, '.elisym');
+    mkdirSync(root, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(
+      gitignorePath,
+      ['# elisym private state - do not commit.', '.secrets.json', '.jobs.json', ''].join('\n'),
+      'utf-8',
+    );
+
+    await ensureGitignoreHasPrivateStateEntries(root);
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('.secrets.json*');
+    expect(lines).toContain('.media-cache.json*');
+    expect(lines).toContain('.jobs.json*');
+    // Append-only: what was there stays, so an older build reading this file
+    // still finds the names it wrote.
+    expect(lines).toContain('.secrets.json');
   });
 
   it('reuses existing .elisym dir when creating additional agent', async () => {

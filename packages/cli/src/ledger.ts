@@ -156,14 +156,16 @@ export class JobLedger {
   }
 
   private load(): void {
-    // BEFORE the try, and it throws rather than starting empty. Two reasons,
-    // both measured: a FIFO here does not fail the read, it takes the event
-    // loop with it - and the agent has already published its capability cards
-    // by the time this runs, so it would sit in discovery as a live paid
-    // provider that never answers. Starting with an EMPTY ledger instead would
-    // be worse still: this index is what keeps one transaction from paying two
-    // jobs. Outside the try because the `catch` below renames what it cannot
-    // parse to `.corrupt.<ts>`, and somebody else's node is not ours to move.
+    // BEFORE the try, and it throws rather than starting empty. A FIFO here
+    // does not fail the read, it takes the event loop with it - and starting
+    // with an EMPTY ledger would be worse than either: this index is what keeps
+    // one transaction from paying two jobs.
+    //
+    // `cmdStart` opens this BEFORE it publishes anything, precisely so a
+    // refusal cannot leave a live paid provider advertised by an agent that has
+    // already exited. Outside the try because the `catch` below renames what it
+    // cannot parse to `.corrupt.<ts>`, and somebody else's node is not ours to
+    // move.
     if (isBlockingNodeSync(this.path)) {
       throw new Error(
         `Refusing to read the job ledger at ${this.path}: it is a pipe, socket or device, not a ` +
@@ -262,7 +264,6 @@ export class JobLedger {
     // from outside. Reading is gated by node type; writing is protected by
     // there being nothing to plant.
     const tmp = `${this.path}.tmp.${randomBytes(6).toString('hex')}`;
-    writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: LEDGER_FILE_MODE });
     // Cleaned up on any failure below, and that only became worth doing once
     // the name became random: with one fixed name the next flush reused the
     // leftover, so the garbage bounded itself. Now every failure between the
@@ -284,6 +285,7 @@ export class JobLedger {
     //
     // `UsedNonceStore.flush` deliberately keeps the opposite order; see there.
     try {
+      writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: LEDGER_FILE_MODE });
       chmodSync(tmp, LEDGER_FILE_MODE);
       renameSync(tmp, this.path);
     } catch (error) {
@@ -704,7 +706,8 @@ export class UsedNonceStore {
       if (typeof e?.code === 'string' && e.code !== 'ENOENT') {
         throw new Error(
           `Refusing to start on a nonce store that cannot be read (${e.code}) at ${this.path}. ` +
-            `An empty store would let a delegated pull be replayed.`,
+            `An empty store would let a delegated pull be replayed. Check the file's owner and ` +
+            `mode (a store written under sudo needs a chown).`,
         );
       }
       if (e?.code !== 'ENOENT') {
@@ -726,7 +729,6 @@ export class UsedNonceStore {
     const obj = Object.fromEntries(this.entries);
     // Random suffix for the same reason as `JobLedger.flush`.
     const tmp = `${this.path}.tmp.${randomBytes(6).toString('hex')}`;
-    writeFileSync(tmp, JSON.stringify(obj), { mode: LEDGER_FILE_MODE });
     // The REVERSE of `JobLedger.flush`, and deliberately so. This store's only
     // writers (`markUsed`, `prune`) swallow a flush failure and KEEP the
     // in-memory mark, because an unpersisted nonce still enforces single-use for
@@ -740,6 +742,7 @@ export class UsedNonceStore {
     // cleanup exists because the temporary now carries a random name and would
     // otherwise be left behind for good.
     try {
+      writeFileSync(tmp, JSON.stringify(obj), { mode: LEDGER_FILE_MODE });
       renameSync(tmp, this.path);
     } catch (error) {
       try {

@@ -36,6 +36,13 @@ const JOB_SESSIONS_GITIGNORE_ENTRY = '.job-sessions.json';
  */
 const DELEGATION_NONCES_GITIGNORE_ENTRY = '.delegation-nonces.json*';
 
+/** Written through a temporary whose name is random - see the migration below. */
+const PRIVATE_STATE_GITIGNORE_ENTRIES = [
+  '.secrets.json*',
+  '.media-cache.json*',
+  '.jobs.json*',
+] as const;
+
 const GITIGNORE_CONTENT = [
   '# elisym private state - do not commit.',
   // Trailing `*` on the files that are written through a TEMPORARY: the
@@ -46,9 +53,7 @@ const GITIGNORE_CONTENT = [
   // `.jobs.json*` swallows the `.corrupt.*` sibling that used to need its own
   // line. Append-only file: these widen existing lines rather than adding new
   // ones, so an agent created by an older build keeps working.
-  '.secrets.json*',
-  '.media-cache.json*',
-  '.jobs.json*',
+  ...PRIVATE_STATE_GITIGNORE_ENTRIES,
   '.customer-history.json',
   '.contacts.json',
   MESSAGES_GITIGNORE_ENTRY,
@@ -171,6 +176,24 @@ export async function ensureGitignoreHasJobSessionsEntry(elisymRoot: string): Pr
  */
 export async function ensureGitignoreHasDelegationNoncesEntry(elisymRoot: string): Promise<void> {
   await ensureGitignoreHasEntries(elisymRoot, [DELEGATION_NONCES_GITIGNORE_ENTRY]);
+}
+
+/**
+ * The three private files that are written through a TEMPORARY, plus their
+ * siblings: `.secrets.json.tmp.<hex>` (the agent's nostr and solana keys),
+ * `.media-cache.json.tmp.<hex>`, `.jobs.json.tmp.<hex>` (a full copy of the
+ * ledger - customer inputs in the clear and every payment's settlement
+ * signature), and `.jobs.json.corrupt.<ts>`.
+ *
+ * A migration rather than only a line in the template, and that is the whole
+ * point: `GITIGNORE_CONTENT` is written ONCE, when the agent directory is
+ * created, so every agent that already exists carries the narrow lines. The
+ * temporaries used to share one fixed name that the next write reused, so an
+ * exposure cleared itself; a random name never does, and a project-local agent
+ * lives inside somebody's git repository.
+ */
+export async function ensureGitignoreHasPrivateStateEntries(elisymRoot: string): Promise<void> {
+  await ensureGitignoreHasEntries(elisymRoot, PRIVATE_STATE_GITIGNORE_ENTRIES);
 }
 
 export interface CreateAgentDirOptions {

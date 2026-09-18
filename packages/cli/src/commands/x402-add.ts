@@ -661,8 +661,16 @@ export async function cmdX402Add(
     allowX402Skills: true,
   });
 
-  await mkdir(targetDir, { recursive: true });
-  await writeFile(join(targetDir, 'SKILL.md'), content, 'utf-8');
+  await mkdir(targetDir, { recursive: true, mode: 0o700 });
+  const skillMdPath = join(targetDir, 'SKILL.md');
+  // The last write of this class, and the window is the interactive prompt
+  // between the existence check above and this line: a neighbor with write
+  // access to `skills/` can put a FIFO here, and `writeFile` onto one never
+  // settles - the command hangs with nothing to show for it.
+  if (isBlockingNodeSync(skillMdPath)) {
+    throw new Error(`Refusing to write ${skillMdPath}: it is a pipe, socket or device, not a file`);
+  }
+  await writeFile(skillMdPath, content, 'utf-8');
   await ensureGitignoreHasX402Entries(dirname(loaded.dir));
 
   console.log(`\n  Wrote ${join(targetDir, 'SKILL.md')}`);

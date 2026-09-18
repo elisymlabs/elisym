@@ -593,6 +593,9 @@ describe('a session file that is a node which blocks', () => {
     // a FIFO non-blocking for reading succeeds at once, so the append below
     // cannot race a child that has not started yet. A fixture that can hang on
     // a timing accident is a fixture that measures the clock.
+    //
+    // It does not DRAIN, so the payload has to stay under the pipe buffer
+    // (64 KiB on Linux and macOS). One exchange is a few hundred bytes.
     const reader = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const logged: string[] = [];

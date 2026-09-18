@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 /**
  * SessionStore - provider-side conversation sessions for NIP-90 jobs.
  *
@@ -19,6 +18,7 @@ import { randomBytes } from 'node:crypto';
  *
  * Design doc: docs/plans/job-conversation-context.md (§2, §3, §4, §5).
  */
+import { randomBytes } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -597,10 +597,11 @@ export class SessionStore {
       const payload =
         lines.map((line) => JSON.stringify(line)).join('\n') + (lines.length > 0 ? '\n' : '');
       const tempPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
-      writeFileSync(tempPath, payload, { mode: FILE_MODE });
-      // Cleaned up if the rename never happens: the name is random, so nothing
-      // ever reuses or sweeps a leftover.
+      // Write and rename together: the name is random, so nothing ever reuses
+      // or sweeps a leftover - a write that fails part way through has to take
+      // its own fragment with it.
       try {
+        writeFileSync(tempPath, payload, { mode: FILE_MODE });
         renameSync(tempPath, path);
       } catch (error) {
         try {
@@ -688,9 +689,9 @@ export class SessionStore {
     const oldSize = existsSync(path) ? statSync(path).size : 0;
     const tempPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
     mkdirSync(join(this.root, customerId), { recursive: true, mode: DIR_MODE });
-    writeFileSync(tempPath, payload, { mode: FILE_MODE });
     // Same cleanup as the torn-file repair above.
     try {
+      writeFileSync(tempPath, payload, { mode: FILE_MODE });
       renameSync(tempPath, path);
     } catch (error) {
       try {

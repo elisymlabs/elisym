@@ -1,5 +1,13 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Address, address, getAddressDecoder } from '@solana/kit';
@@ -141,12 +149,13 @@ describe('one settlement settles one job', () => {
   });
 
   it("keeps walking past another job's candidate to the one that is ours", async () => {
-    // Every other fixture in this file lists exactly ONE signature, so `continue`
-    // and `break` are indistinguishable to all of them - measured. And a
-    // stranger's transaction ahead of ours is the ordinary case, not a
-    // pathology: the reference is public, and one transfer can carry several
-    // jobs' references. With `break` the customer has paid, their transfer sits
-    // one row lower in the same window, and the job refuses forever.
+    // No other fixture reaches this branch with a SECOND candidate behind the
+    // skipped one, so `continue` and `break` are indistinguishable to all of
+    // them - measured. And a stranger's transaction ahead of ours is the
+    // ordinary case, not a pathology: the reference is public, and one transfer
+    // can carry several jobs' references. With `break` the customer has paid,
+    // their transfer sits one row lower in the same window, and the job refuses
+    // forever.
     store.claim(SIG_B, 'job-other');
     listedPages = [
       [
@@ -1019,14 +1028,25 @@ describe('the store contract', () => {
     // The DRAINER is what makes this a measurement rather than a hang.
     const path = join(dir, 'guessable.json');
     const store = createFileSettlementStore(path);
-    const guessed = join(dir, `.guessable.json.${process.pid}.tmp`);
-    execFileSync('mkfifo', [guessed]);
+    // Three plausible schemes, not one: the point is that NO name can be
+    // guessed, and a fixture that plants a single one measures only that
+    // scheme. These are the two this file has used and the one the CLI's
+    // sibling fixtures use.
+    const guessed = [
+      join(dir, `.guessable.json.${process.pid}.tmp`),
+      join(dir, '.guessable.json.tmp'),
+      `${path}.tmp`,
+    ];
+    for (const candidate of guessed) {
+      execFileSync('mkfifo', [candidate]);
+    }
     const drainer = spawn(
       process.execPath,
       [
         '-e',
         `const fs=require('fs');
-         const loop=()=>{ try { fs.readFileSync(${JSON.stringify(guessed)}); } catch {} setImmediate(loop); };
+         const paths=${JSON.stringify(guessed)};
+         const loop=()=>{ for (const p of paths) { try { fs.readFileSync(p); } catch {} } setImmediate(loop); };
          loop();`,
       ],
       { detached: true, stdio: 'ignore' },
@@ -1034,8 +1054,18 @@ describe('the store contract', () => {
     try {
       expect(store.claim(SIG_A, 'job-1')).toBe('claimed');
 
-      expect(createFileSettlementStore(path).owner(SIG_A)).toBe('job-1');
-      expect(statSync(guessed).isFIFO()).toBe(true);
+      // Asserted on the DISK, before reopening the store: with a guessable name
+      // the write goes into the pipe and the rename leaves a FIFO where the
+      // index belongs, so a second `createFileSettlementStore` would die on the
+      // node-type gate instead - red for a reason next door to this one.
+      expect(statSync(path).isFile()).toBe(true);
+      const onDisk = JSON.parse(readFileSync(path, 'utf-8')) as {
+        settlements: Record<string, { job: string }>;
+      };
+      expect(onDisk.settlements[SIG_A]?.job).toBe('job-1');
+      for (const candidate of guessed) {
+        expect(statSync(candidate).isFIFO()).toBe(true);
+      }
     } finally {
       // `-0` would signal OUR OWN process group, which is the vitest run.
       if (drainer.pid === undefined) {
@@ -1220,10 +1250,9 @@ describe('the store contract', () => {
     //
     // What this row pins is the PAIR: `writeFileSync`'s `mode` is a request the
     // umask filters, so the store chmods after writing, and removing BOTH turns
-    // this red. Removing the chmod ALONE kills nothing and cannot - an ordinary
-    // umask strips no bit from 0o600, the temporary now carries a random suffix
-    // so no stale one can be reused, and `process.umask` is not settable inside
-    // a vitest worker. Measured, not assumed.
+    // this red. Removing the chmod ALONE kills nothing and cannot: an ordinary
+    // umask strips no bit from 0o600, and the temporary now carries a random
+    // suffix, so there is never a stale one to reuse. Measured, not assumed.
     const made = join(dir, 'made-by-the-store');
     const path = join(made, 'modes.json');
     const seeded = createFileSettlementStore(path);
@@ -1371,6 +1400,22 @@ describe('the usability predicate mirrors the verifier, and says so', () => {
         makeRequest({ fee_address: undefined, fee_amount: undefined }),
         CONFIG,
       ),
+    ).toBeUndefined();
+  });
+
+  it('calls a request paying EXACTLY the fee payable, which is every request under a live fee', () => {
+    // The positive control the live-fee half never had. Every `toBeUndefined`
+    // in this file runs at `feeBps: 0`, where the gate is skipped whole - so
+    // `feeAmount < expectedFee` read as `<=` leaves the file green, and that
+    // mutant makes a correctly built request `inconclusive` FOREVER the moment
+    // governance sets a non-zero rate. `createPaymentRequest` stamps
+    // `fee_amount` at exactly `calculateProtocolFee`, so the boundary is the
+    // ordinary case rather than an edge.
+    expect(
+      classifyRequestUsability(makeRequest({ fee_amount: 30_000 }), {
+        feeBps: 300,
+        treasury: TREASURY,
+      }),
     ).toBeUndefined();
   });
 

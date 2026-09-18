@@ -18,11 +18,10 @@ import { X402JobStore } from '../src/x402/store.js';
  * takes - not just the two the first version of this gate covered.
  *
  * The failure is not an error: a FIFO where one of these belongs makes the read
- * never return. The synchronous ones stop the process outright, and they run
- * AFTER the agent has published its capability cards - so the agent sits in
- * discovery as a live paid provider that never answers, prints nothing, and
- * ticks no recovery while the jobs it already took age into the 24-hour
- * "the agent did not recover" cutoff with the customer's money spent.
+ * never return, and the synchronous ones stop the process outright. The two
+ * indexes that decide money - the job ledger and the nonce store - are opened
+ * before anything is published for exactly that reason; the rest run while an
+ * agent is serving, where a hang means a paid customer waits forever.
  *
  * Each fixture needs a WRITER: without one the ungated build HANGS rather than
  * going red, and a hung run has measured nothing. With one it reads a perfectly
@@ -213,6 +212,25 @@ describe('an x402 job index written through a guessable temporary', () => {
   });
 });
 
+describe('the directory an x402 result lands in', () => {
+  it('is created owner-only, like every other store of agent state', async () => {
+    // Created by the STORE, not by the fixture: a directory the test makes
+    // itself would pass against any mode at all. What lands here is a result
+    // somebody has already been charged for.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const agentDir = join(sandbox, 'agent-modes');
+    mkdirSync(agentDir, { recursive: true });
+    const store = new X402JobStore(agentDir);
+
+    await store.saveFileResult('job-1', 'image/png', new Uint8Array([1, 2, 3]));
+
+    expect(statSync(join(agentDir, '.x402-results')).mode & 0o777).toBe(0o700);
+    expect(statSync(join(agentDir, '.x402-results', 'job-1')).mode & 0o777).toBe(0o600);
+  });
+});
+
 describe('an x402 result path somebody can guess', () => {
   it('cannot swallow a result the upstream was already paid for', async () => {
     // The final name is derived from the job id, which is a public Nostr event
@@ -223,10 +241,17 @@ describe('an x402 result path somebody can guess', () => {
     const agentDir = join(sandbox, 'agent');
     mkdirSync(agentDir, { recursive: true });
     const store = new X402JobStore(agentDir);
-    const resultPath = join(agentDir, '.x402-results', 'job-1');
-    mkdirSync(join(agentDir, '.x402-results'), { recursive: true });
+    const resultsDir = join(agentDir, '.x402-results');
+    const resultPath = join(resultsDir, 'job-1');
+    mkdirSync(resultsDir, { recursive: true });
     makeFifo(resultPath);
+    // The guessable temporary too, not only the final name: whoever can guess
+    // `job-1` can guess `job-1.tmp`, so the fix is the random suffix and not
+    // merely the use of a temporary.
+    const guessedTemp = `${resultPath}.tmp`;
+    makeFifo(guessedTemp);
     startDrainer(resultPath);
+    startDrainer(guessedTemp);
 
     await store.saveFileResult('job-1', 'image/png', new Uint8Array([1, 2, 3]));
 
@@ -237,6 +262,7 @@ describe('an x402 result path somebody can guess', () => {
     expect(await store.getResult('job-1')).toMatchObject({ outputMime: 'image/png' });
     expect(statSync(resultPath).isFile()).toBe(true);
     expect(readFileSync(resultPath)).toEqual(Buffer.from([1, 2, 3]));
+    expect(statSync(guessedTemp).isFIFO()).toBe(true);
   });
 });
 

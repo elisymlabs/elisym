@@ -244,8 +244,10 @@ export function classifyRequestUsability(
     if (feeAmount < expectedFee) {
       return 'inconclusive';
     }
-    // PROVABLY REDUNDANT, and kept as a mirror: the next line answers the same
-    // for a missing address, because `undefined !== config.treasury`. It is
+    // PROVABLY REDUNDANT for any real config, and kept as a mirror: the next
+    // line answers the same for a missing address, because `undefined !==
+    // config.treasury` - the two diverge only if the treasury were itself
+    // undefined, which the type forbids and `accept` would have thrown on. It is
     // written out because this predicate mirrors `verifyPayment`'s preconditions
     // line by line (`solana.ts`), and a mirror with a line missing is a mirror
     // somebody has to re-derive. No mutation can kill it - measured.
