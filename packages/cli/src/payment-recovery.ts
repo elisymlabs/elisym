@@ -893,6 +893,19 @@ export class PaymentRecovery {
       }
       unverifiableCandidate ??= verified.error ?? 'no reason given';
     }
+    // Checked again HERE, and not only inside the loop above: an empty page
+    // means that loop never runs, so a listing that took longer than the whole
+    // budget would otherwise fall straight through to `none` - and on this rail
+    // `none` is what closes a paying customer's job. `listReferenceCandidates`
+    // reads the clock only in its `catch`, so a slow but SUCCESSFUL call never
+    // sees the deadline at all.
+    //
+    // `>=`, matching `listReferenceCandidates` and the acceptor; the candidate
+    // loop above uses `>` and is left alone, since one extra candidate read is
+    // not what this is guarding against.
+    if (Date.now() >= deadline) {
+      return { outcome: 'inconclusive', error: 'the reference scan ran out of time' };
+    }
     if (listed.windowFull) {
       return {
         outcome: 'inconclusive',
@@ -983,45 +996,48 @@ export class PaymentRecovery {
       );
       return 'corrupt-state';
     }
-    // The whole re-verification, the job's own settlement included, is bounded
-    // by one deadline. Left outside it, a claimed settlement that has aged out
-    // of RPC history costs a full retry budget of a shared `p-limit` slot on
-    // every single tick, before the scan it is supposed to precede even starts.
-    const deadline = Date.now() + REFERENCE_SCAN_DEADLINE_MS;
+    let deadline: number;
     try {
       const rpc = createSolanaRpc(getRpcUrl(this.network));
       const protocolConfig = await this.fetchProtocolConfig();
+      // The whole re-verification, the job's own settlement included, is bounded
+      // by one deadline. Left outside it, a claimed settlement that has aged out
+      // of RPC history costs a full retry budget of a shared `p-limit` slot on
+      // every single tick, before the scan it is supposed to precede even starts.
+      //
+      // Started AFTER the config read, which is an on-chain fetch of its own and
+      // refreshes on every tick: counting it against the scan's budget meant a
+      // slow config could spend the whole allowance before the scan began, and
+      // the scan would then answer as though it had looked.
+      deadline = Date.now() + REFERENCE_SCAN_DEADLINE_MS;
 
       // After the config, because the treasury comes from it and a reference
       // equal to the treasury drowns the payment in its history whether or not
       // the request names it.
       //
-      // Gated on the job NOT already owning a settlement, and the reason is not
-      // the one it looks like. It is NOT "such a job can re-verify its own
+      // Computed unconditionally, GATED on action - the same shape the acceptor
+      // uses. Gating the check itself would leave a job that owns a settlement
+      // walking into the scan and listing a degenerate reference: for one equal
+      // to the recipient that lists the provider's own wallet, which is always
+      // full, so the operator is told "its history is truncated and a payment
+      // could be hidden behind the flood" about their own address - the exact
+      // misdirection this check exists to remove.
+      //
+      // The carve-out itself is NOT "such a job can re-verify its own
       // signature" - it cannot: the denylist inside `verifyPayment` sits ahead
-      // of both its branches, so that path refuses too, and the entry defers to
-      // the 24h cutoff. The reason is that this list GROWS IN MINOR RELEASES
-      // (see `VerifyRefusalCode`), so a job paid and settled under an older
-      // build can be re-read as degenerate by a newer one. A deferral is
-      // recoverable - an operator who reads the log and rolls the SDK back
-      // inside the window gets the settlement re-verified under the list it was
-      // accepted with, and the job delivers. A terminal verdict is not
-      // recoverable by anything.
+      // of both branches. It is that the denylist GROWS between releases, and
+      // the condition matches that scenario exactly rather than approximately:
+      // to own a `payment_signature` at all, the job must once have passed
+      // `verifyPayment`, which refuses a degenerate reference - so "owns a
+      // settlement AND the reference reads degenerate now" can only mean the
+      // list grew since. A deferral is recoverable by rolling the SDK back
+      // inside the window; a terminal verdict is recoverable by nothing.
       //
-      // `ProviderPaymentAcceptor` carves the same exception out for the same
-      // reason; the two rails must not answer this differently.
-      //
-      // Honest about what the check buys where it does apply: it finds no
-      // money. The request is unpayable either way. What changes is that a job
-      // with nothing to fall back on fails NOW, naming the real problem,
-      // instead of spending a day to die as "the agent did not recover".
-      if (!isUsableSignature(entry.payment_signature)) {
-        const degenerate = await degenerateReference(
-          request,
-          this.network,
-          protocolConfig.treasury,
-        );
-        if (degenerate !== undefined) {
+      // `ProviderPaymentAcceptor` carves the same exception, for this reason;
+      // the two rails must not answer this differently.
+      const degenerate = await degenerateReference(request, this.network, protocolConfig.treasury);
+      if (degenerate !== undefined) {
+        if (!isUsableSignature(entry.payment_signature)) {
           log(
             `[${shortId}] Recovery: the payment request's reference (${request.reference}) is an ` +
               `address the payment itself is computed from, so the transfer cannot be singled ` +
@@ -1029,6 +1045,14 @@ export class PaymentRecovery {
           );
           return 'corrupt-state';
         }
+        log(
+          `[${shortId}] Recovery: the reference (${request.reference}) is an address the payment ` +
+            `is computed from, but this job already owns settlement ${entry.payment_signature} - ` +
+            `deferring rather than failing it, in case this build's list grew past what the ` +
+            `settlement was accepted under. Not listing the reference: it cannot single out a ` +
+            `payment.`,
+        );
+        return 'deferred';
       }
 
       /**

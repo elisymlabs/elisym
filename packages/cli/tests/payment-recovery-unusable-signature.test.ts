@@ -5,7 +5,7 @@ import { SolanaPaymentStrategy } from '@elisym/sdk';
 import { getAddressDecoder } from '@solana/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JobLedger, type LedgerEntry } from '../src/ledger.js';
-import { PaymentRecovery } from '../src/payment-recovery.js';
+import { REFERENCE_SCAN_DEADLINE_MS, PaymentRecovery } from '../src/payment-recovery.js';
 
 /**
  * Lives in its own file because it replaces `createSolanaRpc`, and because the
@@ -19,6 +19,13 @@ import { PaymentRecovery } from '../src/payment-recovery.js';
  */
 let listedSignatures: unknown[] = [];
 let transactionsBySignature = new Map<unknown, unknown>();
+/** Counted so a fixture can assert the reference was never listed AT ALL. */
+let listCalls = 0;
+/** How much wall clock a SUCCESSFUL listing burns, without burning any. */
+let listingCostsMs = 0;
+/** The same, for the on-chain protocol-config read that precedes the scan. */
+let configCostsMs = 0;
+let clockSkewMs = 0;
 
 vi.mock('@solana/kit', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -26,7 +33,11 @@ vi.mock('@solana/kit', async (importOriginal) => {
     ...actual,
     createSolanaRpc: vi.fn().mockReturnValue({
       getSignaturesForAddress: vi.fn(() => ({
-        send: async () => listedSignatures,
+        send: async () => {
+          listCalls += 1;
+          clockSkewMs += listingCostsMs;
+          return listedSignatures;
+        },
       })),
       // Keyed by the signature ASKED FOR, and answering for the unusable one
       // too: a stub that only knew the real signature would send the mutant
@@ -129,7 +140,10 @@ function seedLedger(paymentSignature?: unknown, reference: string = REFERENCE): 
   recovery = new PaymentRecovery(
     ledger,
     'devnet',
-    async () => ({ feeBps: 0, treasury: TREASURY }),
+    async () => {
+      clockSkewMs += configCostsMs;
+      return { feeBps: 0, treasury: TREASURY };
+    },
     new SolanaPaymentStrategy(),
   );
 }
@@ -142,15 +156,30 @@ function entryUnderTest(): LedgerEntry {
   return found;
 }
 
+/**
+ * The clock is a SPY rather than vitest's fake timers: the code under test
+ * awaits real promises and sleeps between retries, and a frozen timer loop never
+ * lets those resolve. Skewing `Date.now` lets a listing cost half a minute of
+ * budget without costing the suite half a minute.
+ */
+const realDateNow = Date.now.bind(Date);
+let clock: ReturnType<typeof vi.spyOn>;
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'elisym-unusable-'));
   ledgerPath = join(dir, 'jobs.json');
   logs.length = 0;
   listedSignatures = [];
   transactionsBySignature = new Map();
+  listCalls = 0;
+  listingCostsMs = 0;
+  configCostsMs = 0;
+  clockSkewMs = 0;
+  clock = vi.spyOn(Date, 'now').mockImplementation(() => realDateNow() + clockSkewMs);
 });
 
 afterEach(() => {
+  clock.mockRestore();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -221,6 +250,54 @@ describe('a signature the ledger cannot key a claim on', () => {
     });
   });
 
+  describe('a listing that outlived the budget it was given', () => {
+    it('is inconclusive, not an empty history', async () => {
+      // The budget is checked inside the candidate loop, and an EMPTY page means
+      // that loop never runs. `listReferenceCandidates` reads the clock only in
+      // its `catch`, so a listing that succeeds after the whole budget is spent
+      // reaches the verdict with nothing standing between it and `none` - which
+      // on this rail is what fails a paying customer's job as "the customer did
+      // not pay".
+      seedLedger();
+      listedSignatures = [];
+      listingCostsMs = REFERENCE_SCAN_DEADLINE_MS + 1_000;
+
+      const outcome = await recovery.reVerifyPayment(
+        entryUnderTest(),
+        paymentRequestJson(),
+        PRICE,
+        log,
+      );
+
+      expect(outcome).toBe('deferred');
+      // Named, because `deferred` alone is reachable through several gates: only
+      // the scan says this, and with an empty page only the check after the loop
+      // can say it.
+      expect(logs.join('\n')).toContain('ran out of time');
+    });
+
+    it('still gives the scan its whole budget after a slow config read', async () => {
+      // The protocol config is its own on-chain fetch and refreshes every tick.
+      // Counted against the scan's budget, a slow one spends the whole allowance
+      // before the scan starts - and the scan then answers as though it had
+      // looked. Here the payment is sitting on the reference in plain sight.
+      seedLedger();
+      configCostsMs = REFERENCE_SCAN_DEADLINE_MS + 1_000;
+      listedSignatures = [{ signature: REAL_SIGNATURE, err: null }];
+      transactionsBySignature.set(REAL_SIGNATURE, payingTransaction());
+
+      const outcome = await recovery.reVerifyPayment(
+        entryUnderTest(),
+        paymentRequestJson(),
+        PRICE,
+        log,
+      );
+
+      expect(outcome).toBe('verified');
+      expect(entryUnderTest().payment_signature).toBe(REAL_SIGNATURE);
+    });
+  });
+
   describe('a reference the payment is computed from', () => {
     it('fails the job now instead of deferring it for a day', async () => {
       // Listing this reference lists the provider's own wallet, so the
@@ -264,6 +341,13 @@ describe('a signature the ledger cannot key a claim on', () => {
       expect(outcome).toBe('deferred');
       // Still owns what it owned: nothing was released on the way through.
       expect(entryUnderTest().payment_signature).toBe(REAL_SIGNATURE);
+      // And the reference was never LISTED. This is the half the outcome cannot
+      // show: carving the CHECK out instead of the ACTION also answers
+      // `deferred` here, having first listed an address the payment is computed
+      // from - for `reference === recipient` that is the provider's own wallet,
+      // which is always full, so the operator is told their own address is a
+      // flood hiding the payment.
+      expect(listCalls).toBe(0);
     });
   });
 });

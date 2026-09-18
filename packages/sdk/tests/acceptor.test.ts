@@ -139,6 +139,30 @@ describe('one settlement settles one job', () => {
     expect(store.owner(SIG_A)).toBe('job-1');
   });
 
+  it('does not even verify a candidate that belongs to another job', async () => {
+    // One invariant, two guards - this skip and the store's `consumed-by-other`
+    // - and either one alone keeps `refuses the same transaction to a second
+    // job` green. So each is pinned where it LIVES: removing this one has to
+    // turn this fixture red, removing the other one the store fixture below.
+    //
+    // The discriminator is whether the strategy was ASKED, not what the pass
+    // returned: sending somebody else's settlement to `verifyPayment` is the
+    // step that leaves only the store between a stranger's transfer and a second
+    // delivery.
+    store.claim(SIG_A, 'job-1');
+    listedPages = [[{ signature: SIG_A, err: null }]];
+    const strategy = strategyVerifying(SIG_A);
+
+    const result = await makeAcceptor(strategy).accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-2' },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(strategy.verifyPayment).not.toHaveBeenCalled();
+    expect(store.owner(SIG_A)).toBe('job-1');
+  });
+
   it('claims the signature it ASKED about, not the one the strategy echoed', async () => {
     // An injected strategy is not trusted to name the settlement: echoing back
     // another job's transaction would redirect the de-duplication claim.
@@ -467,6 +491,32 @@ describe('a request that cannot be paid at all', () => {
     expect(listCalls).toBe(0);
   });
 
+  it('is inconclusive, not accepted, when the carved-out job has a degenerate reference', async () => {
+    // The OTHER half of the carve-out, and it lands differently from the row
+    // above: the real verifier runs the same degenerate-reference check ahead of
+    // both its branches, so step 1 cannot accept either and the pass ends
+    // `inconclusive` - a recoverable verdict, which is the whole point of
+    // carving the step-0 refusal out.
+    //
+    // Written against the REAL strategy deliberately. An injected one that
+    // verifies anything answers `accepted: true` here and would pin the
+    // opposite of what ships.
+    store.claim(SIG_A, 'job-1');
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: new SolanaPaymentStrategy(),
+      rpc: makeRpc(),
+      store,
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest({ reference: RECIPIENT }), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(listCalls).toBe(0);
+  });
+
   it('answers inconclusive - never terminal - for a fee the config disagrees with', async () => {
     // The fee rate lives on-chain and changes without a client release, so a
     // request incompatible with today's fee is polled until its own expiry
@@ -531,6 +581,66 @@ describe('the store contract', () => {
     store.claim(SIG_B, 'job-1');
     expect(store.claimedSignature('job-1')).toBe(SIG_B);
     expect(store.owner(SIG_A)).toBeUndefined();
+  });
+
+  it('refuses a signature another job already holds, and does not move it', () => {
+    // The second guard of the de-duplication invariant. The acceptor skips such
+    // a candidate before it ever reaches here, which is exactly why this half is
+    // pinned at the store: a `SettlementStore` is public, and an acceptor is not
+    // the only thing that may call `claim`.
+    expect(store.claim(SIG_A, 'job-1')).toBe('claimed');
+
+    expect(store.claim(SIG_A, 'job-2')).toBe('consumed-by-other');
+    expect(store.owner(SIG_A)).toBe('job-1');
+    expect(store.claimedSignature('job-2')).toBeUndefined();
+  });
+
+  it('keeps a settlement the file names __proto__ as an ordinary key', () => {
+    // The READ path, which the fresh-index rows below do not reach. Written as
+    // raw JSON rather than through `JSON.stringify`: an object literal with a
+    // `__proto__:` key sets the prototype instead of the key, so the fixture
+    // would ship an empty index and prove nothing.
+    //
+    // With `{}` in place of `Object.create(null)` the assignment REPLACES the
+    // prototype, the entry disappears from `Object.entries`, and the reverse
+    // lookup stops finding a settlement the file plainly records - which is the
+    // job being told to pay again.
+    const path = join(dir, 'proto-key.json');
+    writeFileSync(
+      path,
+      `{"version":1,"settlements":{"__proto__":{"job":"job-1","at":${Date.now()}}}}`,
+      'utf-8',
+    );
+    const seeded = createFileSettlementStore(path);
+
+    expect(seeded.claimedSignature('job-1')).toBe('__proto__');
+    expect(seeded.owner('__proto__')).toBe('job-1');
+  });
+
+  it('releases a settlement older than the retention, and keeps a fresh one', () => {
+    // The deleting half of `prune` is otherwise dead for this whole suite: every
+    // other row either refuses the retention or passes an infinite one, so the
+    // `delete` and the counter could both be removed with the file green.
+    const path = join(dir, 'aging.json');
+    const now = Date.now();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        settlements: {
+          [SIG_A]: { job: 'job-1', at: now - MIN_SETTLEMENT_RETENTION_MS - 1_000 },
+          [SIG_B]: { job: 'job-2', at: now },
+        },
+      }),
+      'utf-8',
+    );
+    const seeded = createFileSettlementStore(path);
+
+    expect(seeded.prune(MIN_SETTLEMENT_RETENTION_MS)).toBe(1);
+    expect(seeded.owner(SIG_A)).toBeUndefined();
+    expect(seeded.owner(SIG_B)).toBe('job-2');
+    // And it was WRITTEN, not merely dropped from the one read that computed it.
+    expect(createFileSettlementStore(path).owner(SIG_A)).toBeUndefined();
   });
 
   it('refuses to read an index it cannot parse, instead of treating it as empty', () => {

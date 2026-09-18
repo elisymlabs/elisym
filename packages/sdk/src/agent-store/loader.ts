@@ -62,10 +62,22 @@ export async function loadResolvedAgent(
 ): Promise<LoadedAgent> {
   const paths = agentPaths(resolved.dir);
 
+  // Guarded here too, not only in `readAgentPublic`: this is the path `loadAgent`
+  // takes, which is what nearly every command uses. A blocking node at either
+  // path does not fail the read - the promise never settles, the `catch` below
+  // never runs, and the worker is gone for the life of the process.
+  if (await isBlockingNode(paths.yaml)) {
+    throw new Error(`Refusing to read ${paths.yaml}: it is a pipe, socket or device, not a file`);
+  }
   const yamlRaw = await readFile(paths.yaml, 'utf-8');
   const parsedYaml = YAML.parse(yamlRaw);
   const yaml = ElisymYamlSchema.parse(parsedYaml ?? {});
 
+  if (await isBlockingNode(paths.secrets)) {
+    throw new Error(
+      `Refusing to read ${paths.secrets}: it is a pipe, socket or device, not a file`,
+    );
+  }
   let secretsRaw: string;
   try {
     secretsRaw = await readFile(paths.secrets, 'utf-8');

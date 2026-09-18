@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listAgents, readAgentPublic } from '../src/agent-store';
+import { listAgents, loadAgent, readAgentPublic } from '../src/agent-store';
 
 /**
  * A neighbor's `elisym.yaml` is a path nobody validates, and a FIFO left there
@@ -132,4 +132,24 @@ describe('an agent directory whose yaml is a node that blocks', () => {
       readAgentPublic({ name: 'linked', dir, source: 'home', shadowsGlobal: false }),
     ).rejects.toThrow(/pipe, socket or device/);
   });
+
+  it.each([['elisym.yaml'], ['.secrets.json']])(
+    'is refused by loadAgent when %s is one',
+    async (filename) => {
+      // `loadAgent` is the path nearly every command takes - `start`, `wallet`,
+      // `profile`, `identity`, the MCP config reader. Guarding only the two
+      // listing helpers would have left the busiest reader open, and
+      // `.secrets.json` guarded nowhere at all.
+      const root = join(home, '.elisym');
+      const dir = join(root, 'loaded');
+      mkdirSync(dir, { recursive: true });
+      const other = filename === 'elisym.yaml' ? '.secrets.json' : 'elisym.yaml';
+      writeFileSync(join(dir, other), other === 'elisym.yaml' ? VALID_YAML : '{}', 'utf-8');
+      const blocked = join(dir, filename);
+      makeFifo(blocked);
+      startWriter(blocked, filename === 'elisym.yaml' ? VALID_YAML : '{}');
+
+      await expect(loadAgent('loaded', work)).rejects.toThrow(/pipe, socket or device/);
+    },
+  );
 });

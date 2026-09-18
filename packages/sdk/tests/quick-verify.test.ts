@@ -106,6 +106,36 @@ describe('verifyJobPaymentQuick', () => {
     expect(result.reason).toBe('recipient_mismatch');
   });
 
+  it('refuses on the OTHER malformed half too, though nothing shifts', async () => {
+    // The mirror of the row above, and it needs its own words because the harm
+    // is not the same one. `readonly` is spread LAST, so junk characters there
+    // move no real account off its slot - the recipient sits in the writable
+    // half and would still be read correctly. What the guard buys here is that a
+    // container malformed in one half is not PARTIALLY trusted: the merge falls
+    // back to the static keys alone and the payment is refused.
+    //
+    // Checking only `writable` therefore still passes the row above, and only
+    // this fixture tells the two apart.
+    const recipient = makeAddress();
+    const payer = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer],
+            loadedAddresses: { writable: [recipient], readonly: 'ab' },
+            pre: [10_000_000, 0],
+            post: [8_000_000, 1_000_000],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-bad-readonly', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
   it('returns verified=true when recipient receives native SOL', async () => {
     const recipient = makeAddress();
     const payer = makeAddress();

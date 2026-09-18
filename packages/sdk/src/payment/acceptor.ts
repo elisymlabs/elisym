@@ -133,6 +133,28 @@ export type AcceptPaymentResult =
   | { accepted: true; txSignature: string }
   | {
       accepted: false;
+      /**
+       * `window-empty` is NOT the verdict "the customer did not pay".
+       *
+       * It says one thing: in this one pass the reference's window was read
+       * whole and held no payment for this request. The CLI's terminal verdict
+       * stands on six conditions, and this class supplies only three - a short
+       * window rather than a truncated one, nothing skipped or left unverified,
+       * and a job that owns no settlement of its own. The caller owes the other
+       * three before closing a job on it:
+       *
+       *   - the payment request's OWN expiry has passed (`created_at +
+       *     expiry_secs`); `accept` does not check it;
+       *   - a SECOND CONSECUTIVE pass says the same, with real time between the
+       *     two looks - two listings a minute apart against an index the RPC
+       *     lags are not independent, and independence is why a second look is
+       *     required at all;
+       *   - the ENDPOINT has proven its cluster and that it keeps a history
+       *     index; an empty answer from a node that indexes nothing is evidence
+       *     of nothing.
+       *
+       * Until all three hold, treat it exactly as `inconclusive`.
+       */
       reason:
         | 'window-empty'
         | 'inconclusive'
@@ -326,15 +348,24 @@ export class ProviderPaymentAcceptor {
     // The carve-out: a job that already owns a settlement is NOT closed by a
     // step-0 verdict.
     //
-    // The reason is NOT that such a job can re-verify its own signature. It
-    // cannot, and measuring it says so: `verifyPayment` runs the same
-    // degenerate-reference check ahead of both its branches, so step 1 refuses
-    // too and the call ends `inconclusive`. The reason is that BOTH lists here
-    // grow in minor releases, so a job paid and settled under an older build
-    // can be re-read as unpayable by a newer one. `inconclusive` is
-    // recoverable - the provider keeps asking, and an operator who rolls back
-    // gets the settlement verified under the list it was accepted with. A
-    // terminal verdict is recoverable by nothing.
+    // What step 1 can then do differs by BRANCH, and the two were measured
+    // rather than assumed:
+    //
+    //   degenerate_reference -> step 1 cannot accept either. `verifyPayment`
+    //     runs the same degenerate-reference check ahead of both its branches,
+    //     so it refuses too and the call ends `inconclusive`. The carve-out
+    //     buys a recoverable verdict, nothing more.
+    //   unusable-request -> step 1 is LIVE and can accept. The predicate reads
+    //     the REQUEST; `verifyPayment` reads the CHAIN, and a settled job's own
+    //     signature still verifies against a request this build calls unusable.
+    //     The suite pins this: a settled job whose request our predicate
+    //     rejects comes back `accepted: true` through step 1.
+    //
+    // The reason for both is that BOTH lists here grow in minor releases, so a
+    // job paid and settled under an older build can be re-read as unpayable by
+    // a newer one. `inconclusive` is recoverable - the provider keeps asking,
+    // and an operator who rolls back gets the settlement verified under the
+    // list it was accepted with. A terminal verdict is recoverable by nothing.
     //
     // `@elisym/cli` carves the same exception out of its own recovery pass, for
     // this same reason; the two rails must not answer this differently.
