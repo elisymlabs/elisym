@@ -213,9 +213,11 @@ export interface ChatThreadStore {
   /**
    * Flip an entry to `failed`, optionally attaching the agent's refusal.
    *
-   * Resolves true when the entry ENDS UP carrying the refusal that was passed -
-   * including when another writer stored the same one first - and false when it
-   * does not, so a caller can tell "the thread says this" from "it does not".
+   * With a refusal, resolves true when the entry ENDS UP carrying THAT refusal -
+   * including when another writer stored the same one first - so a caller can
+   * tell "the thread says this" from "it does not". Without one, it answers the
+   * older question: whether this call performed the flip, which is false for an
+   * entry that was already failed or completed.
    */
   failEntry(
     agentPubkey: string,

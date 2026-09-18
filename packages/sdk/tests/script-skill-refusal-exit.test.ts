@@ -487,6 +487,19 @@ describe('excerpting for the operator', () => {
     expect(hasVisibleText(' hello ')).toBe(true);
   });
 
+  it('keeps the operator`s own API key out of a quote of their script', async () => {
+    const { excerptUntrustedTail, excerptUntrusted } = await import('../src/skills/untrusted-text');
+    // A proxy run with `curl -v` prints the request header. The quote of that
+    // failure is stored as the health monitor's reason and re-printed on every
+    // job the gate refuses afterwards, so a key in it is a key in the log
+    // forever.
+    const verbose = '> POST /v1/messages\n> x-api-key: sk-ant-api03-DEADBEEFcafe1234\n< HTTP 500';
+    expect(excerptUntrustedTail(verbose, 200)).not.toContain('DEADBEEF');
+    expect(excerptUntrusted(verbose, 200)).toContain('[redacted]');
+    expect(excerptUntrusted('Authorization: Bearer abcdef1234567890', 200)).not.toContain('abcdef');
+    expect(excerptUntrusted('token sk-proj-ABCDEFGHIJKLMNOP failed', 200)).toContain('[redacted]');
+  });
+
   it('gives back nothing when asked for nothing, from either end', async () => {
     const { excerptUntrusted, excerptUntrustedTail } = await import('../src/skills/untrusted-text');
     // Arithmetic that reaches zero ("what is left of the line") must not come

@@ -86,10 +86,10 @@ export {
 export {
   isScriptRefusalError,
   refusalFromJobError,
-  refusalMessage,
   SCRIPT_REFUSAL_MAX_CHARS,
 } from './skills/refusal';
 export {
+  AGENT_REFUSED_LABEL,
   classifyJobError,
   JobWaitTimeoutError,
   PROVIDER_FAILED_MESSAGE,

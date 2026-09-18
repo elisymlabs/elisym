@@ -379,7 +379,10 @@ function JobInputInner({
           File inputs require a paid capability - this one is free.
         </div>
       )}
-      {error && <BuyErrorNote error={error} paid={paid} fromJob={errorFromJob} />}
+      {error && (
+        // No thread on the Products tab, so nothing is showing this refusal yet.
+        <BuyErrorNote error={error} paid={paid} fromJob={errorFromJob} refusalInThread={false} />
+      )}
     </div>
   );
 }

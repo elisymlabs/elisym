@@ -1219,10 +1219,12 @@ describe('AgentRuntime', () => {
       runtime.stop();
       await runPromise.catch(() => {});
 
-      // Error feedback should be sanitized (no API details)
+      // Error feedback should be sanitized (no API details). One sentence for
+      // every terminal failure the runtime will not describe, so a client can
+      // recognise it and say where the money went.
       const feedbackCalls = (transport as any).sendFeedback.mock.calls;
       const errorCall = feedbackCalls.find((c: any) => c[1]?.type === 'error');
-      expect(errorCall[1].message).toBe('Internal processing error');
+      expect(errorCall[1].message).toBe('The agent could not complete this job.');
     });
 
     /** A skill that fails the way `err` says, with a health pair to gate on. */
@@ -3411,7 +3413,7 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
    * Two different strings come out of a failed job, and they must not be
    * confused: `onJobError` gets the OPERATOR message (the raw error, script
    * stderr and all), while the customer gets whatever `customerSafeMessage`
-   * allows through. "Internal processing error" only ever exists on the second
+   * allows through. The generic terminal sentence only ever exists on the second
    * one, so asserting it against the first can never fail.
    */
   async function drivePaidJobToTimeout(
@@ -3452,7 +3454,7 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
     // Reference path ran clean and found nothing; no signature ever asserted.
     // The customer gets the allowlisted payment-timeout message verbatim - a
     // message that stops matching `CUSTOMER_SAFE_MESSAGE_PREFIXES` collapses to
-    // "Internal processing error" and blames the provider for a job the
+    // the generic terminal sentence and blames the provider for a job the
     // customer simply never paid for.
     mockVerifyResult = {
       verified: false,
@@ -3467,7 +3469,7 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
     // Asserted on what the CUSTOMER actually received, which is the only place
     // the masked string can appear.
     expect(customerMessages).toContain('Payment timeout: no payment received before the deadline.');
-    expect(customerMessages).not.toContain('Internal processing error');
+    expect(customerMessages).not.toContain('The agent could not complete this job.');
     // Recoverable on the provider side: the live path never concludes
     // non-payment - recovery does.
     expect(logs.some((line) => /recovery makes the final call/i.test(line))).toBe(true);

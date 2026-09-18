@@ -5,8 +5,10 @@
  *   - The runtime's stable `Agent temporarily unavailable` string when the
  *     LLM health gate refuses a job (preflight) or an in-flight skill
  *     surfaced a billing/invalid signal.
- *   - The runtime's `Internal processing error` sanitization mask for any
- *     "<Provider> API error: ..." string that leaks out of an LLM call.
+ *   - The runtime's one sentence for a terminal failure it will not describe
+ *     (`PROVIDER_FAILED_MESSAGE`) - the mask for any "<Provider> API error: ..."
+ *     string that would otherwise leak out of an LLM call, and for a script
+ *     crash.
  *   - Raw script-skill failures the runtime forwards as-is when the
  *     message does not contain "API" - e.g. shell scripts that reach
  *     Anthropic's `count_tokens` endpoint and exit 1 with the body in
@@ -46,6 +48,17 @@
 export const PROVIDER_REFUSED_PREFIX = 'The provider refused: ';
 
 /**
+ * How a CLIENT introduces the same refusal on screen.
+ *
+ * Here, beside the wire label, for two reasons: the two must not drift into
+ * calling one actor by two names in one product, and a skill author who has read
+ * the web app may write THIS sentence into their reason file - so the stripper
+ * has to know it as well. A buyer never meets both, because the wire label is
+ * removed before display.
+ */
+export const AGENT_REFUSED_LABEL = 'The agent refused: ';
+
+/**
  * What a customer is told when a provider's skill CRASHED.
  *
  * Deliberately says nothing about the failure - a crash's output is the
@@ -57,13 +70,13 @@ export const PROVIDER_REFUSED_PREFIX = 'The provider refused: ';
 export const PROVIDER_FAILED_MESSAGE = 'The agent could not complete this job.';
 
 /**
- * NOT in this list: `Internal processing error`, the runtime's mask for a
- * terminal failure it will not describe. It reads like an outage and is not
- * one - the job is closed and nothing will retry it - so classifying it as
- * `agent-unavailable` had the app promise a paying customer that their payment
- * was held and the result would arrive automatically. `Agent temporarily
- * unavailable` stays: that one IS the health gate, and the job it refuses
- * really does keep its payment for the recovery loop.
+ * NOT in this list: `PROVIDER_FAILED_MESSAGE`, the runtime's one sentence for a
+ * terminal failure it will not describe. It is not an outage - the job is closed
+ * and nothing will retry it - so classifying it as `agent-unavailable` had the
+ * app promise a paying customer that their payment was held and the result would
+ * arrive automatically. `Agent temporarily unavailable` stays: that one IS the
+ * health gate, and every job it refuses really does keep its payment for the
+ * recovery loop.
  */
 const AGENT_UNAVAILABLE_MARKERS = [
   'agent temporarily unavailable',

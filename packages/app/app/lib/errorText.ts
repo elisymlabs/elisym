@@ -1,4 +1,5 @@
 import {
+  AGENT_REFUSED_LABEL,
   classifyJobError,
   excerptUntrusted,
   hasVisibleText,
@@ -19,16 +20,13 @@ export const MAX_DISPLAYED_ERROR_CHARS = SCRIPT_REFUSAL_MAX_CHARS;
 /**
  * How a refusal is introduced wherever one is shown.
  *
- * One constant, because two surfaces say it: the failed bubble in the thread
- * and this module's own line. The sentence after it is the AGENT's and the
- * label is the app's, so it has to be unmistakably ours.
+ * Re-exported from the SDK, which owns it beside the wire label so the two
+ * cannot drift into two names for one actor - and so the SDK can strip this one
+ * too, for a skill author who read the app and wrote it into their reason file.
+ * "Agent", not "provider": a buyer here has only ever seen the word agent, on
+ * the page they are standing on.
  */
-export const AGENT_REFUSED_LABEL = 'The agent refused: ';
-// "Agent", not "provider": the wire label the runtime attaches says provider,
-// and the provider-facing docs use that word for the operator selling the
-// capability - but a buyer in this app has only ever seen the word agent, on
-// the page they are standing on. The wire label is stripped before display, so
-// no customer meets both.
+export { AGENT_REFUSED_LABEL };
 
 /**
  * Said when the error carries nothing a reader could act on.

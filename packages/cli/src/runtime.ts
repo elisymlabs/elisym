@@ -237,7 +237,14 @@ const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{ phrase: string; cascades: 
   { phrase: 'billing', cascades: false },
   { phrase: 'insufficient', cascades: false },
   { phrase: 'insufficient_quota', cascades: true },
-  { phrase: 'x-api-key', cascades: true },
+  // Gates this pair, never cascades: `x-api-key` is the name of a REQUEST
+  // HEADER, which `curl -v` and any client that prints its own headers emit on a
+  // perfectly ordinary failure. Taking every model on the key offline for that
+  // is the expensive direction; `invalid x-api-key` below is the provider
+  // actually rejecting it.
+  { phrase: 'x-api-key', cascades: false },
+  // The provider REJECTING the key, which no request header says.
+  { phrase: 'invalid x-api-key', cascades: true },
   { phrase: 'invalid api key', cascades: true },
   { phrase: 'invalid_api_key', cascades: true },
   { phrase: 'authentication_error', cascades: true },
@@ -586,7 +593,13 @@ function customerSafeMessage(error: unknown): string {
   ) {
     return error.message;
   }
-  return 'Internal processing error';
+  // The same sentence a script crash gets. This is the mask for everything the
+  // runtime will not describe - a leaky provider error, a rejected onchain
+  // build, a tool loop out of rounds - and all of it ends the job the same way:
+  // closed, charged, no result. "Internal processing error" told the customer
+  // nothing and read as jargon; a client that matches this sentence can at
+  // least say where the money went.
+  return PROVIDER_FAILED_MESSAGE;
 }
 
 /**
@@ -3490,13 +3503,21 @@ export class AgentRuntime {
       this.limit(async () => {
         try {
           await this.recoverSingleJob(entry, log);
-        } catch (e: any) {
-          log(`[${entry.job_id.slice(0, 8)}] Recovery: failed: ${e.message}`);
+        } catch (err: unknown) {
+          // `describeForOperator`, not `err.message`: a rejected null throws
+          // inside the catch itself, and a message is attacker-influenced text
+          // headed for a terminal and a structured log - unflattened, it forges
+          // lines there.
+          log(`[${entry.job_id.slice(0, 8)}] Recovery: failed: ${describeForOperator(err)}`);
         } finally {
           this.inFlight.delete(entry.job_id);
           this.pending--;
         }
-      });
+        // The `try` above swallows everything from the job itself; this covers
+        // what is left - a `log` callback that throws, or the limiter rejecting -
+        // so a recovery tick cannot take the agent down with an unhandled
+        // rejection while other paid jobs are mid-recovery.
+      }).catch(() => {});
     }
   }
 

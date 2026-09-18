@@ -99,6 +99,37 @@ export function flattenUntrusted(text: string): string {
 }
 
 /**
+ * Anything shaped like a credential, replaced.
+ *
+ * Quoting untrusted text back to an operator means quoting whatever a script
+ * printed, and a proxy run with `curl -v`, `set -x`, or a client that dumps its
+ * own headers prints the request header holding the operator's own API key. The
+ * quote then lands in a log file and, worse, in the health monitor's stored
+ * reason, which is re-printed on every job the gate refuses afterwards.
+ *
+ * Shape-based and deliberately broad: a header line naming any `*-api-key` or
+ * `authorization`, and the vendor prefixes whose keys are obvious on sight.
+ * A false positive costs an operator a few characters of a diagnostic; a miss
+ * costs them their key in a log they may paste somewhere.
+ */
+const CREDENTIAL_SHAPES: ReadonlyArray<RegExp> = [
+  /\b[\w-]*api[_-]?key\b\s*[:=]\s*\S+/gi,
+  // The scheme word is part of the header, not of the secret: without it the
+  // replacement would stop at "Bearer" and leave the token standing.
+  /\bauthorization\b\s*[:=]\s*(?:bearer|basic|token)?\s*\S+/gi,
+  /\b(?:bearer|basic)\s+[\w./+=-]{8,}/gi,
+  /\b(?:sk|pk|rk|xai|gsk|ghp|gho|glpat)-[A-Za-z0-9_-]{8,}/g,
+];
+
+export function withoutCredentials(text: string): string {
+  let redacted = text;
+  for (const shape of CREDENTIAL_SHAPES) {
+    redacted = redacted.replace(shape, '[redacted]');
+  }
+  return redacted;
+}
+
+/**
  * At most `maxChars` CHARACTERS, with an ellipsis when something was cut.
  *
  * Counting characters rather than UTF-16 code units is what keeps an emoji at
@@ -262,9 +293,11 @@ function excerptWindow(
   const outranWindow = text.length > window;
   const from = keepEnd ? onCharacterBoundary(text, Math.max(0, text.length - window)) : 0;
   const sliced = keepEnd ? text.slice(from) : text.slice(0, window);
-  const windowed = flattenUntrusted(trimDanglingSurrogates(sliced));
+  const windowed = withoutCredentials(flattenUntrusted(trimDanglingSurrogates(sliced)));
   const flattened =
-    [...windowed].length < maxChars && outranWindow ? flattenUntrusted(text) : windowed;
+    [...windowed].length < maxChars && outranWindow
+      ? withoutCredentials(flattenUntrusted(text))
+      : windowed;
   // Only text that was actually dropped counts as a cut: a refusal padded with
   // trailing newlines is complete, and claiming otherwise both lies to the
   // reader and eats one of its characters to make room for the ellipsis. The

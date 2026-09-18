@@ -187,3 +187,4 @@ zeroize
 zeroized
 zod
 ZWNJ
+glpat

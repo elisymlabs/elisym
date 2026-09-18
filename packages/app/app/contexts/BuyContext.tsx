@@ -1191,13 +1191,19 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 ...(refused ? { refusal: refusalFromJobError(errMsg) } : {}),
               })
                 .then((stored) => {
+                  if (!refused) {
+                    // Nothing to stand down: the flag was already set false
+                    // synchronously, and writing it again would allocate a new
+                    // session object and re-render every consumer for no change.
+                    return;
+                  }
                   // Only once the bubble really holds it may the note stand
                   // down - and only for the job it was written for: a slow
                   // IndexedDB write resolving after the customer has started
                   // the next job would otherwise silence that job's note.
                   setSession((prev) =>
                     sessionMatches(prev) && prev.jobId === jobEventId
-                      ? { ...prev, refusalInThread: refused && stored && txRecorded }
+                      ? { ...prev, refusalInThread: stored && txRecorded }
                       : prev,
                   );
                 })

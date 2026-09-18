@@ -23,7 +23,7 @@
  * script author reaching for it should not have to import from `llm-health`.
  */
 import { ScriptExecutionError } from '../llm-health/types';
-import { PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
+import { AGENT_REFUSED_LABEL, PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
 import type { RefusalFileRead } from './refusal-file';
 import { excerptUntrusted, excerptUntrustedTail, hasVisibleText } from './untrusted-text';
 
@@ -127,17 +127,19 @@ export function startsWithRefusalHint(detail: string): boolean {
  * would be two caps to keep in step.
  */
 export function refusalMessage(reason: string): string {
-  // A script writing the runtime's own label gets it taken off: the label says
-  // WHO is speaking, the runtime puts it there, and a doubled `The provider
-  // refused: The provider refused: ...` reaches a client that strips one and
-  // renders the other as the provider's own words.
+  // A script writing a LABEL gets it taken off - either the runtime's wire one
+  // or the one clients print on screen. The label says who is speaking, the
+  // runtime and the client put it there, and a doubled one reaches a reader as
+  // the provider's own words wearing the app's voice.
   //
   // After flattening, not before: a leading newline or byte-order mark would
   // otherwise carry the label past a `startsWith` and straight into the excerpt
   // the customer reads.
   let sentence = excerptUntrusted(reason, SCRIPT_REFUSAL_MAX_CHARS);
-  while (sentence.startsWith(PROVIDER_REFUSED_PREFIX)) {
-    sentence = sentence.slice(PROVIDER_REFUSED_PREFIX.length).trimStart();
+  for (const label of [PROVIDER_REFUSED_PREFIX, AGENT_REFUSED_LABEL]) {
+    while (sentence.startsWith(label)) {
+      sentence = sentence.slice(label.length).trimStart();
+    }
   }
   return hasVisibleText(sentence) ? sentence : SCRIPT_REFUSAL_UNSTATED;
 }

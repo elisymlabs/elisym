@@ -13,17 +13,20 @@ interface Props {
    */
   fromJob: boolean;
   /**
-   * Set when the agent's refusal is already on screen in the thread's failed
-   * bubble - the note then carries only what the bubble does not, which is
-   * where the money went. Never assumed from the tab: the bubble is a separate
-   * write that can fail, and a refusal nobody explains is the worst outcome
-   * here.
+   * Whether the agent's refusal is already on screen in the thread's failed
+   * bubble; then this note has nothing left to add and renders nothing.
+   *
+   * Required, with no default: a surface that forgets it would print the
+   * refusal and the money paragraph twice, and "false" has to be something a
+   * call site decided rather than something it omitted. Never inferred from the
+   * tab either - the bubble is a separate write that can fail, and a refusal
+   * nobody explains is the worst outcome here.
    */
-  refusalInThread?: boolean;
+  refusalInThread: boolean;
 }
 
 /** Inline buy-flow error, shared by the Products-tab JobInput and the Chat composer. */
-export function BuyErrorNote({ error, paid, fromJob, refusalInThread = false }: Props) {
+export function BuyErrorNote({ error, paid, fromJob, refusalInThread }: Props) {
   // Bounded and flattened whoever wrote it - most of these are the app's own
   // words, but a job error can be a stranger's, and neither surface may paint
   // control characters or thousands of unbroken characters into the page.
