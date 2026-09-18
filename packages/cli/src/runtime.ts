@@ -23,9 +23,17 @@ import {
   getProtocolProgramId,
   isDefinitelyUnpaid,
   LIMITS,
+  excerptUntrusted,
+  excerptUntrustedTail,
+  isLlmHealthError,
+  isScriptBillingExhaustedError,
+  isScriptExecutionError,
   parseDelegatedPayment,
+  PROVIDER_FAILED_MESSAGE,
+  PROVIDER_REFUSED_PREFIX,
   readAcceptedTransports,
   resolveDelegationAsset,
+  scriptOutput,
   sendConfirmToTerminal,
   utf8ByteLength,
   verifyDelegationAuthProof,
@@ -49,14 +57,17 @@ import {
   createFreeLlmLimiterSet,
   FREE_LLM_GLOBAL_KEY,
   freeLlmCustomerKey,
-  LlmHealthError,
-  ScriptBillingExhaustedError,
-  ScriptExecutionError,
   type FreeLlmLimiterSet,
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import type { ChatTurn } from '@elisym/sdk/skills';
+import {
+  HostScratchError,
+  isHostScratchError,
+  isScriptRefusalError,
+  startsWithRefusalHint,
+} from '@elisym/sdk/skills';
+import type { ChatTurn, SkillMode } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import pLimit from 'p-limit';
@@ -190,18 +201,8 @@ function resolveJobAsset(tags: string[], skills: SkillRegistry): Asset {
 }
 
 /**
- * Markers that indicate an LLM provider's HTTP response body is about
- * billing / quota exhaustion rather than something benign. Mirrors the
- * marker sets in `cli/src/llm/providers/{anthropic,openai,openai-compatible}.ts`
- * (kept as a permissive superset so any provider's billing language is
- * detected when classifying mid-job errors). Refactoring to a single
- * shared module is out of scope here - just keep this list in sync.
- */
-const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient', 'insufficient_quota'];
-
-/**
  * Markers that indicate a script-skill failure (non-zero exit, non-42)
- * actually carried a billing / invalid-key signal in its stderr/stdout.
+ * actually carried a billing / invalid-key signal in its STDERR.
  * Reserved for the case where the script author did not honor the
  * `SCRIPT_EXIT_BILLING_EXHAUSTED = 42` contract - common with shell
  * proxies that exit 1 on every error path and dump the provider's body
@@ -212,26 +213,241 @@ const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient', 'insu
  * refused at the preflight gate (before payment) instead of paying for
  * a job that will fail identically.
  *
- * Superset of `BILLING_BODY_MARKERS`: adds auth-language markers
- * (`x-api-key`, `invalid api key`, `unauthorized`, ...) that are
- * specific to the auth/invalid bucket rather than the billing bucket.
+ * The SOURCE list: `BILLING_BODY_MARKERS` is derived from the `billing` column
+ * below, so the money phrases are written once. This table adds the
+ * auth-language ones (`x-api-key`, `invalid api key`, `unauthorized`, ...) that
+ * belong to the auth bucket rather than the billing one.
  */
-const SCRIPT_BILLING_INVALID_MARKERS = [
-  'credit balance',
-  'billing',
-  'insufficient',
-  'insufficient_quota',
-  'x-api-key',
-  'invalid api key',
-  'invalid_api_key',
-  'authentication_error',
-  'unauthorized',
-  'unauthenticated',
+// Scanned against a script's STDERR only. Stdout was the documented source -
+// shell proxies dump the provider's body there - but for an LLM-proxy skill
+// stdout is the model's completion, which the customer steers: a buyer asking
+// for the word "unauthorized" could otherwise gate the operator's key and
+// cascade it across every model on it. A proxy that wants its 402 detected
+// should write the upstream's body to stderr as well.
+const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{
+  phrase: string;
+  cascades: boolean;
+  billing: boolean;
+}> = [
+  // Three questions, one row each, so an edit cannot land half-applied: does
+  // this phrase gate THIS pair at all, does it also take every model on the
+  // operator's key offline (`cascades`), and is it about money rather than
+  // credentials (`billing`, which picks the reason the operator is shown and
+  // the recovery probe reads).
+  //
+  // `cascades` is the expensive one. Gating ONE pair on a false positive costs
+  // the operator a capability until the recovery probe clears it; a cascade
+  // costs them every capability on that key. So it needs a phrase an unrelated
+  // failure does not produce: `insufficient` alone is a Solana builder saying
+  // "insufficient funds for rent" and `billing` alone is a form field, while
+  // nothing prints `invalid x-api-key` or `credit balance` except the provider
+  // whose key it is. The bare status words carry `cascades: false` for the same
+  // reason - `unauthorized` is what any proxy says when it did not like a
+  // request. The LLM path next door demands an HTTP 401/402 before cascading;
+  // this is the script path's version of that bar.
+  { phrase: 'credit balance', cascades: true, billing: true },
+  { phrase: 'billing', cascades: false, billing: true },
+  { phrase: 'insufficient', cascades: false, billing: true },
+  { phrase: 'insufficient_quota', cascades: true, billing: true },
+  // Gates this pair, never cascades: `x-api-key` is the name of a REQUEST
+  // HEADER, which `curl -v` and any client that prints its own headers emit on a
+  // perfectly ordinary failure. Taking every model on the key offline for that
+  // is the expensive direction; `invalid x-api-key` below is the provider
+  // actually rejecting it.
+  { phrase: 'x-api-key', cascades: false, billing: false },
+  // The provider REJECTING the key, which no request header says.
+  { phrase: 'invalid x-api-key', cascades: true, billing: false },
+  { phrase: 'invalid api key', cascades: true, billing: false },
+  { phrase: 'invalid_api_key', cascades: true, billing: false },
+  { phrase: 'authentication_error', cascades: true, billing: false },
+  { phrase: 'unauthorized', cascades: false, billing: false },
+  { phrase: 'unauthenticated', cascades: false, billing: false },
 ];
 
-function scriptMessageLooksLikeBillingOrInvalid(message: string): boolean {
-  const lower = message.toLowerCase();
-  return SCRIPT_BILLING_INVALID_MARKERS.some((marker) => lower.includes(marker));
+/**
+ * Markers that indicate an LLM provider's HTTP response body is about billing or
+ * quota exhaustion rather than something benign.
+ *
+ * DERIVED from the table above rather than typed a second time: the two lists
+ * held the same phrases and had to be edited in lockstep, which is exactly how
+ * one of them goes stale. Still a permissive superset for the LLM path, which
+ * only asks "is this body about money".
+ */
+const BILLING_BODY_MARKERS = SCRIPT_BILLING_INVALID_MARKERS.filter((marker) => marker.billing).map(
+  (marker) => marker.phrase,
+);
+
+/**
+ * Everything the health gate wants to know about a script's own words, from one
+ * pass over them.
+ *
+ * Case-insensitively and in one pass: a precondition that lives in a parameter
+ * name is one a future caller reads as a description (a raw `Invalid x-api-key`
+ * would match nothing and be classified a generic exit), and the text is bounded
+ * only by `MAX_SCRIPT_OUTPUT`, so a lowercased copy plus a scan per question was
+ * a megabyte walked three times per failed job.
+ */
+function classifyScriptSignal(message: string): {
+  looksBillingOrInvalid: boolean;
+  reason: 'billing' | 'invalid';
+  cascade: boolean;
+  /** Where the first signal sits, so the operator's quote need not scan again. */
+  signalAt: number;
+} {
+  // ONE pass over the text for all three answers - gate, reason, cascade. The
+  // text is bounded only by `MAX_SCRIPT_OUTPUT`, so a lowercased copy plus a
+  // scan per question was a megabyte copied and walked three times per failed
+  // job. The regex is case-insensitive, so the copy is not needed at all.
+  let looksBillingOrInvalid = false;
+  let billing = false;
+  let cascade = false;
+  let signalAt = -1;
+  for (const match of message.matchAll(ALL_MARKERS_RE)) {
+    // A match this map cannot name still counts as a signal. The regex is
+    // case-INSENSITIVE, and its case folding accepts letters whose lowercase
+    // form is not a key here at all - Turkish I among them. Dropping such a
+    // match would report "no billing/invalid markers" for text that plainly
+    // carries one; the safe flags are the ones that gate this pair only.
+    const marker = MARKER_BY_PHRASE.get(match[0].toLowerCase());
+    looksBillingOrInvalid = true;
+    billing = billing || marker?.billing === true;
+    cascade = cascade || marker?.cascades === true;
+    if (signalAt === -1) {
+      signalAt = match.index;
+    }
+  }
+  return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid', cascade, signalAt };
+}
+
+/**
+ * Codes that mean the agent's own storage, not the job.
+ *
+ * Read off OUR filesystem errors, never off text somebody sent us - there is
+ * nothing here an attacker can write. Raw, one of these closes a paid job and
+ * keeps the money; as a `HostScratchError` the job keeps its payment for the
+ * recovery loop and the pre-payment probe is armed for the next customer.
+ */
+const HOST_DISK_CODES = new Set(['ENOSPC', 'EROFS', 'EDQUOT', 'EMFILE', 'ENFILE', 'EIO']);
+
+function asHostScratchFailure(error: unknown): HostScratchError | undefined {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === undefined || !HOST_DISK_CODES.has(code)) {
+    return undefined;
+  }
+  return new HostScratchError(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * How much of a gated pair's reason an operator is shown, and its lead-in.
+ *
+ * Roomy on purpose: the refusal hints run to 236 characters, and a budget under
+ * that would cut the diagnosis in half and leave no room for the script's own
+ * output behind it.
+ */
+const HEALTH_REASON_CHARS = 500;
+/**
+ * The lead-in, in UTF-16 CODE UNITS - the unit the marker index comes back in.
+ *
+ * Deliberately not characters: this is index arithmetic on the raw text, and
+ * mixing the two would be a slice at an offset that means nothing in the string
+ * it cuts. On astral-heavy text it buys fewer characters than 80, which is fine
+ * for a lead-in whose job is to keep the word in front of the phrase; what
+ * follows is budgeted in characters by the excerpt.
+ */
+const SIGNAL_LEAD_UNITS = 80;
+
+/**
+ * Where a marker sits in the text, or -1.
+ *
+ * Matched case-insensitively against the ORIGINAL text rather than by index into
+ * a lowercased copy: `toLowerCase` is not length-preserving (one `İ` becomes two
+ * code units), so an index taken from the copy can point hundreds of characters
+ * past the signal in the text it is used to quote.
+ *
+ * The table it is built from is a non-empty literal, so there is no empty-list
+ * case to guard: an empty alternation would be `new RegExp('')`, which matches at
+ * index 0 of every string and would turn "did we find a signal" into "always".
+ * Keep the table non-empty.
+ */
+function markerPattern(phrases: readonly string[], flags: string): RegExp {
+  // LONGEST first: an alternation is first-match-wins, so with `insufficient`
+  // ahead of `insufficient_quota` the shorter phrase always wins and the longer
+  // row's flags - including its `cascades: true` - become unreachable.
+  //
+  // Escaped: today's markers carry no metacharacters, but a future
+  // `insufficient_quota?` would silently change the match, and a `402 (` would
+  // throw at import time and take the whole CLI down before it serves a job.
+  const longestFirst = [...phrases].sort((left, right) => right.length - left.length);
+  return new RegExp(
+    longestFirst.map((phrase) => phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+    flags,
+  );
+}
+
+const ALL_MARKERS_RE = markerPattern(
+  SCRIPT_BILLING_INVALID_MARKERS.map((marker) => marker.phrase),
+  'gi',
+);
+const MARKER_BY_PHRASE = new Map(
+  SCRIPT_BILLING_INVALID_MARKERS.map((marker) => [marker.phrase, marker]),
+);
+
+/**
+ * Where ANY billing or auth signal is, for the operator's quote.
+ *
+ * A different question from the cascade: `HTTP 401 unauthorized` gates this pair
+ * without taking the whole key offline, and it is still the line the operator
+ * needs to see - quoting the tail instead hands them the curl progress meter
+ * that followed it.
+ */
+function signalIndex(text: string): number {
+  // The same compiled pattern the classifier walks, so the two cannot disagree
+  // about what a signal is. `lastIndex` is reset because it carries the `g`
+  // flag - shared global state between calls otherwise.
+  ALL_MARKERS_RE.lastIndex = 0;
+  const found = ALL_MARKERS_RE.exec(text)?.index ?? -1;
+  ALL_MARKERS_RE.lastIndex = 0;
+  return found;
+}
+
+/**
+ * What an operator is told a failure was, in one bounded line.
+ *
+ * Three cases, in this order. A hint the SDK front-loaded onto the text is the
+ * whole diagnosis, so it is quoted from the FRONT. Otherwise a billing or auth
+ * signal is quoted from where it sits, because a proxy that printed `invalid
+ * x-api-key` and then four kilobytes of retry chatter would otherwise have the
+ * chatter given as the reason its operator's whole provider went offline.
+ * Failing both, the END, where a script's diagnostic lands.
+ *
+ * The index is computed HERE, against the text being quoted: taking it from a
+ * different string - the raw stderr the cascade decision is made on - would
+ * slice this one at an offset that means nothing in it.
+ */
+function operatorReason(diagnostic: string, known?: number, budget = HEALTH_REASON_CHARS): string {
+  if (startsWithRefusalHint(diagnostic)) {
+    return excerptUntrusted(diagnostic, budget);
+  }
+  // `known` is the index the classifier already found, passed when the text being
+  // quoted IS the text it scanned: a megabyte of stderr should be walked once.
+  const signalAt = known ?? signalIndex(diagnostic);
+  if (signalAt === -1) {
+    return excerptUntrustedTail(diagnostic, budget);
+  }
+  // A little BEFORE the marker, because the marker is rarely the sentence: the
+  // phrase that matched `x-api-key` reads "invalid x-api-key", and starting
+  // exactly at the match throws away the word that says what is wrong with it.
+  const from = Math.max(0, signalAt - SIGNAL_LEAD_UNITS);
+  if (from === 0) {
+    return excerptUntrusted(diagnostic, budget);
+  }
+  // A bounded window, not the rest of the text: stderr is capped only by
+  // `MAX_SCRIPT_OUTPUT`, so slicing to the end would copy a megabyte per failed
+  // job to quote 500 characters of it. The 8x allowance is the excerpt's own.
+  // The leading ellipsis comes OUT of the budget rather than on top of it: two
+  // ellipses around one budget would be one character over, and would read as
+  // two cuts.
+  return `…${excerptUntrusted(diagnostic.slice(from, from + budget * 8), budget - 1)}`;
 }
 
 /**
@@ -243,6 +459,16 @@ function scriptMessageLooksLikeBillingOrInvalid(message: string): boolean {
  * subscription as the `onError` argument.
  */
 const AGENT_UNAVAILABLE_MESSAGE = 'Agent temporarily unavailable';
+
+/**
+ * How much of a script's own output an operator-log line carries.
+ *
+ * Generous because this is the ONLY copy: the full text is deliberately kept
+ * nowhere, being attacker-influenced text headed for a terminal and a
+ * structured log, and a Python traceback or a jq parse error is unreadable at a
+ * few hundred characters.
+ */
+const OPERATOR_EXCERPT_CHARS = 1500;
 
 /**
  * Re-thrown by the post-execute catch when the underlying skill failure
@@ -383,6 +609,11 @@ const CUSTOMER_SAFE_MESSAGE_PREFIXES = ['Input too long', 'No skill matched', 'P
  * Resolve the error message that is safe to send to a remote customer. Inverts
  * the old leaky denylist (forward-unless-contains-"API") into an allowlist so
  * raw subprocess output or provider error bodies can never leak.
+ *
+ * Every script-error test here is a NAME check, not `instanceof`: the SDK
+ * builds one bundle per entry point, so the class the script runners throw
+ * (from `@elisym/sdk/skills`) is a different class object from the one this
+ * file could import from `@elisym/sdk/llm-health`.
  */
 function customerSafeMessage(error: unknown): string {
   if (
@@ -392,11 +623,34 @@ function customerSafeMessage(error: unknown): string {
   ) {
     return error.message;
   }
-  if (error instanceof ScriptExecutionError) {
-    // Generic summary only - `error.detail` (raw stderr/stdout) stays operator-side.
-    return error.message;
+  if (isScriptRefusalError(error)) {
+    // The one place a script's own words reach the customer. The prefix marks
+    // them as the SKILL's rather than the agent's, so a refusal cannot be read
+    // as one of the runtime's own verdicts (a payment rejection, an
+    // availability notice). It is a discriminator inside this runtime and NOT
+    // a signature: another agent can emit the same string, so no client should
+    // treat it as proof of anything. The SDK has already flattened and capped
+    // the sentence itself.
+    return `${PROVIDER_REFUSED_PREFIX}${error.message}`;
   }
-  if (error instanceof ScriptBillingExhaustedError) {
+  if (isScriptExecutionError(error)) {
+    // A fixed mask - the summary and `error.detail` stay operator-side - but
+    // NOT the outage wording. A script crash closes the job: the ledger marks
+    // it failed and recovery never looks at it again, so classifying it as an
+    // outage tells a customer who just paid that their payment is held and the
+    // job will be retried automatically, which is false.
+    return PROVIDER_FAILED_MESSAGE;
+  }
+  // The three shapes whose job KEEPS its payment for the recovery loop, and so
+  // the three the outage wording is true of: an exhausted key the operator can
+  // top up, a temp directory that may not be full in five minutes, an upstream
+  // that hiccuped after the customer paid. The app reads this message as "held
+  // and it will be retried", which is exactly what happens to these.
+  if (
+    isScriptBillingExhaustedError(error) ||
+    isHostScratchError(error) ||
+    error instanceof X402TransientError
+  ) {
     return AGENT_UNAVAILABLE_MESSAGE;
   }
   if (
@@ -405,7 +659,91 @@ function customerSafeMessage(error: unknown): string {
   ) {
     return error.message;
   }
-  return 'Internal processing error';
+  // The same sentence a script crash gets. This is the mask for everything the
+  // runtime will not describe - a leaky provider error, a rejected onchain
+  // build, a tool loop out of rounds - and all of it ends the job the same way:
+  // closed, charged, no result. "Internal processing error" told the customer
+  // nothing and read as jargon; a client that matches this sentence can at
+  // least say where the money went.
+  return PROVIDER_FAILED_MESSAGE;
+}
+
+/**
+ * Whether a job would touch this host's disk before it could be delivered.
+ *
+ * Named by what does NOT touch it rather than by a list of what does, so a mode
+ * added later is gated by default until someone decides otherwise. `llm` and
+ * `static-file` write nothing. `static-script` writes only its refusal channel,
+ * and having lost it runs anyway and reports a refusal with no reason given -
+ * refusing those jobs here would widen one read-only tmpdir from a lost channel
+ * into a whole mode taken off the market. Everything else - `dynamic-script`,
+ * which raises `HostScratchError` rather than run at all, and `x402`, which
+ * saves the result it has just PAID an upstream for - fails on a full volume
+ * after the customer has paid.
+ *
+ * An unmatched job (`undefined`) needs nothing by itself; a job fetching an
+ * input FILE needs the disk whatever its mode.
+ */
+export function needsScratchSpace(mode: SkillMode | undefined, hasAttachment: boolean): boolean {
+  if (hasAttachment) {
+    return true;
+  }
+  return mode !== undefined && mode !== 'llm' && mode !== 'static-file' && mode !== 'static-script';
+}
+
+/**
+ * What the operator reads when a job fails.
+ *
+ * A refusal keeps its two halves apart: the sentence the customer got, and the
+ * script's stderr, which the SDK has already flattened to one bounded line.
+ * Collapsing them (as an error `detail` would) prints the same sentence twice,
+ * the second copy unflattened and up to a megabyte long.
+ */
+function describeForOperator(error: unknown): string {
+  if (isHostScratchError(error)) {
+    // The filesystem's own words. `message` is a fixed summary, so without this
+    // an agent running with no health monitor - the only other place that logs
+    // `detail` - is told a job failed for scratch space and never told why.
+    return `${error.message}: ${excerptUntrusted(error.detail, OPERATOR_EXCERPT_CHARS)}`;
+  }
+  if (isScriptBillingExhaustedError(error)) {
+    // Its `message` embeds stdout when stderr is empty; quote the halves the
+    // same way the health branch does - the same text, though a longer excerpt:
+    // a log line is read once beside its job, while the health monitor's reason
+    // is re-printed on every gated job and stays deliberately short. What must
+    // not differ is WHICH stream each of them quotes, which is why both go
+    // through `scriptOutput`: two lines about one job that disagreed on that
+    // would leave the operator guessing where the script actually complained.
+    // The CUSTOMER still gets `AGENT_UNAVAILABLE_MESSAGE`.
+    return `script signalled billing exhausted: ${excerptUntrustedTail(scriptOutput(error), OPERATOR_EXCERPT_CHARS)}`;
+  }
+  if (isScriptRefusalError(error)) {
+    return error.stderr === ''
+      ? `refused: ${error.message}`
+      : `refused: ${error.message} (stderr: ${error.stderr})`;
+  }
+  if (isScriptExecutionError(error)) {
+    // Bounded and flattened, like the refusal above: `detail` is raw stderr,
+    // capped only by `MAX_SCRIPT_OUTPUT` (a megabyte), and a newline in it
+    // forges a second line on the operator's terminal and in the log.
+    // The tail: a traceback's exception line and a jq parse error both land at
+    // the end, and this excerpt is the only copy kept.
+    return `${error.message}: ${excerptUntrustedTail(error.detail, OPERATOR_EXCERPT_CHARS)}`;
+  }
+  // Not every throw is an Error. The replaced expression (`e.message ?? …`)
+  // read `message` off whatever was thrown, which threw its own TypeError on a
+  // rejected `null` and forwarded a non-string `message` verbatim.
+  if (typeof error === 'string') {
+    // A thrown string carries its only diagnostic in itself.
+    return excerptUntrusted(error, OPERATOR_EXCERPT_CHARS);
+  }
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message !== '') {
+      return excerptUntrusted(message, OPERATOR_EXCERPT_CHARS);
+    }
+  }
+  return 'Unknown error';
 }
 
 /**
@@ -812,6 +1150,44 @@ export class AgentRuntime {
     return ` (cascading to ${siblings} other model(s) for ${provider} sharing the same API key)`;
   }
 
+  /**
+   * Whether this agent can still make itself a scratch directory.
+   *
+   * A `HostScratchError` says the last job could not run because the temp
+   * directory refused it. That is not the operator's API key, so it must not
+   * gate the health pair - but SOMETHING has to stop the next customer paying
+   * into an agent that will fail them the same way, which is what the health
+   * gate used to do by accident. Probed before payment, and only once such a
+   * failure has been seen - a working host pays nothing for this, and a broken
+   * one is asked again on every job rather than after a timer: an agent whose
+   * jobs arrive minutes apart would otherwise let every customer through.
+   */
+  private scratchFailed = false;
+
+  private async scratchSpaceUsable(): Promise<boolean> {
+    if (!this.scratchFailed) {
+      return true;
+    }
+    const probe = await mkdtemp(join(tmpdir(), 'elisym-probe-')).catch(() => null);
+    if (probe === null) {
+      return false;
+    }
+    // And WRITE a byte. A directory needs an inode; the failures that arm this
+    // gate are writes - a history file, a fetched attachment, a result - and a
+    // volume out of blocks but not out of inodes makes a directory happily. A
+    // probe weaker than what failed disarms the gate on the very next job.
+    const wrote = await writeFile(join(probe, 'probe'), 'x')
+      .then(() => true)
+      .catch(() => false);
+    await rm(probe, { recursive: true, force: true }).catch(() => {});
+    if (!wrote) {
+      return false;
+    }
+    // Recovered: stop probing until something fails that way again.
+    this.scratchFailed = false;
+    return true;
+  }
+
   private markHealthFromExecuteError(
     skill: import('./skill').Skill,
     err: unknown,
@@ -823,7 +1199,27 @@ export class AgentRuntime {
     }
     const tag = `[${jobId.slice(0, 8)}]`;
 
-    if (err instanceof ScriptBillingExhaustedError) {
+    if (isHostScratchError(err)) {
+      // This agent's own temp directory, not the operator's API key. Gating the
+      // declared pair would refuse every capability on that key for a local disk
+      // problem, and the recovery probe - which tests the KEY - would clear it
+      // on the next tick and gate it again on the next job. The HEAD of the
+      // detail, where the SDK puts the diagnosis.
+      log(
+        `${tag} Skill "${skill.name}" could not be given scratch space by THIS AGENT: ${excerptUntrusted(err.detail, 300)} Health state unchanged; the job stays paid for recovery.`,
+      );
+      return false;
+    }
+
+    if (isScriptRefusalError(err)) {
+      // A refusal is an answer, not a fault: the script ran, understood the
+      // request and declined it. Gating the skill on it would take a capability
+      // offline for doing exactly what it is meant to do. (The operator's log
+      // line lives in `processJob`, which runs with or without a monitor.)
+      return false;
+    }
+
+    if (isScriptBillingExhaustedError(err)) {
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
@@ -839,7 +1235,17 @@ export class AgentRuntime {
       log(
         `${tag} Script signaled billing-exhausted (exit ${err.exitCode}). Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      this.healthMonitor.markUnhealthyFromJob(provider, model, 'billing', err.message);
+      // stderr first, stdout only as a fallback. The DECISION here was the
+      // script's own exit 42, not anything in this text, so quoting stdout
+      // cannot be steered into gating a key - and the common proxy shape prints
+      // the upstream's 402 body to stdout, so insisting on stderr would record
+      // no reason at all.
+      this.healthMonitor.markUnhealthyFromJob(
+        provider,
+        model,
+        'billing',
+        excerptUntrustedTail(scriptOutput(err), 200),
+      );
       return true;
     }
 
@@ -850,7 +1256,7 @@ export class AgentRuntime {
         return false;
       }
       const status = Number(match[1]);
-      const body = (match[2] ?? '').slice(0, 200);
+      const body = excerptUntrusted(match[2] ?? '', 200);
       const isBillingStatus = status === 402;
       const isAuthStatus = status === 401 || status === 403;
       const isBilling400 = status === 400 && bodyLooksLikeBilling(body);
@@ -864,6 +1270,9 @@ export class AgentRuntime {
       log(
         `${tag} LLM provider returned HTTP ${status} (${reason}). Marking ${provider}/${model} unhealthy${this.cascadeSuffix(provider, model)}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
+      // `body` is already the bounded, flattened excerpt: `lastReason` is read
+      // back out on every gated job, so an unflattened copy would forge a log
+      // line each time.
       this.healthMonitor.markUnhealthyFromJob(provider, model, reason, body);
       return true;
     }
@@ -899,44 +1308,86 @@ export class AgentRuntime {
     // self-flapping for chronic ones (acceptable - operator log makes
     // this visible).
     if (skill.mode !== 'llm') {
-      // Use the raw stderr/stdout (`detail`) for billing/invalid marker scanning
-      // and the operator log - the generic `.message` no longer carries it.
+      // STDERR only, and a bounded copy of it. `detail` falls back to stdout,
+      // and for an LLM proxy stdout is the model's completion - text the
+      // customer steers. A buyer asking for the word "unauthorized" must not be
+      // able to gate the operator's API key, let alone cascade it across every
+      // model on that key.
+      // The WHOLE of it, with no excerpt: an API's "insufficient credit balance"
+      // lands at the END of stderr, after whatever progress meter the script's
+      // curl printed, so scanning a prefix would miss the one signal worth
+      // gating on. Each consumer below excerpts for itself.
       let message: string;
-      if (err instanceof ScriptExecutionError) {
-        message = err.detail;
+      // Where the scanned text came from, for the operator's log line: only a
+      // `ScriptExecutionError` carries a real stderr. Any other throw from a
+      // non-llm skill puts its own `message` under the scan, and telling an
+      // operator to go read a stderr that never held those words sends them
+      // grepping for nothing.
+      let scanned: 'stderr' | 'the skill error';
+      // What an OPERATOR reads. The scan must not touch stdout, but the
+      // sentence saying WHY their key was gated still has to say something,
+      // and a script that printed its diagnosis to stdout and exited non-zero
+      // leaves stderr empty. Nothing here decides anything - the exit code
+      // already did - so quoting stdout carries no steering risk.
+      let diagnostic: string;
+      if (isScriptExecutionError(err)) {
+        // `?? detail` and not `|| detail`: an EMPTY stderr is an answer (the
+        // script said nothing), while an ABSENT one means the error was built
+        // by something that predates the field, and losing the diagnostic
+        // silently is worse than the stdout-steering risk it guards.
+        message = err.stderr ?? err.detail;
+        // `detail` whenever the SDK front-loaded a hint onto it. That line -
+        // the contract was not kept, the agent could not read the file, it
+        // never offered one - is the whole diagnosis, and it is not in stderr
+        // at all: without this the operator asking why their key is gated reads
+        // the script's progress meter instead.
+        diagnostic =
+          startsWithRefusalHint(err.detail) || message.trim() === '' ? err.detail : message;
+        // The FIELD, not the class: an error built without one falls back to
+        // `detail`, which falls back to stdout, and telling an operator to grep
+        // a stderr that never held those words is the confusion this avoids.
+        scanned = err.stderr === undefined ? 'the skill error' : 'stderr';
       } else if (err instanceof Error) {
         message = err.message;
+        diagnostic = message;
+        scanned = 'the skill error';
       } else {
         message = String(err);
+        diagnostic = message;
+        scanned = 'the skill error';
       }
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
+        // The same three-case quote as a gated pair gets: this is the branch a
+        // `static-script` skill takes (most declare no pair), so quoting the
+        // tail here would drop the hint for exactly the skills most likely to
+        // break the refusal contract.
         log(
-          `${tag} Script "${skill.name}" failed ("${message.slice(0, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+          `${tag} Script "${skill.name}" failed ("${operatorReason(diagnostic)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
         );
         return false;
       }
-      const lower = message.toLowerCase();
-      const looksBillingOrInvalid = scriptMessageLooksLikeBillingOrInvalid(message);
-      const reason: 'billing' | 'invalid' =
-        looksBillingOrInvalid &&
-        (lower.includes('credit balance') ||
-          lower.includes('billing') ||
-          lower.includes('insufficient'))
-          ? 'billing'
-          : 'invalid';
-      const cascade = looksBillingOrInvalid;
+      const { looksBillingOrInvalid, reason, cascade, signalAt } = classifyScriptSignal(message);
+      // The gate and the cascade are separate questions, and the second one is
+      // much more expensive to get wrong - see the `cascades` column of
+      // `SCRIPT_BILLING_INVALID_MARKERS`. Both
+      // answered off the same scan above.
       const cascadeNote = cascade ? this.cascadeSuffix(provider, model) : ' (no cascade)';
       const signalNote = looksBillingOrInvalid
-        ? `${reason} signal in stderr`
+        ? `${reason} signal in ${scanned}`
         : `generic exit (no billing/invalid markers, classified as ${reason}, skill-local)`;
       log(
         `${tag} Script failure (${signalNote}). Marking ${provider}/${model} unhealthy${cascadeNote}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, message.slice(0, 200), {
-        cascade,
-      });
+      this.healthMonitor.markUnhealthyFromJob(
+        provider,
+        model,
+        reason,
+        // The index only when the quote is of the same string the scan read.
+        operatorReason(diagnostic, diagnostic === message ? signalAt : undefined),
+        { cascade },
+      );
       return true;
     }
 
@@ -1124,8 +1575,11 @@ export class AgentRuntime {
       }
 
       this.limit(() => this.processJob(job))
-        .catch((e: any) => {
-          this.callbacks.onJobError?.(job.jobId, e.message);
+        .catch((err: unknown) => {
+          // `describeForOperator`, not `err.message`: a rejected null here
+          // throws inside the catch handler, and nothing downstream would
+          // report it.
+          this.callbacks.onJobError?.(job.jobId, describeForOperator(err));
         })
         .finally(() => {
           this.inFlight.delete(job.jobId);
@@ -1224,9 +1678,19 @@ export class AgentRuntime {
     this.jobAbortControllers.add(jobAbort);
     try {
       await this.executeJob(job, jobAbort.signal);
-    } catch (e: any) {
+    } catch (raw: unknown) {
+      // ONE place where a bare filesystem error becomes the host fault, so every
+      // decision below - what the customer is told, whether the job keeps its
+      // payment, whether the next customer is refused before paying - reads the
+      // same verdict however deep the write that failed was.
+      const e: unknown = asHostScratchFailure(raw) ?? raw;
       const log = this.callbacks.onLog ?? console.log;
-      log(`[${job.jobId.slice(0, 8)}] Error: ${e.message}`);
+      // `describeForOperator`, not `e.message`: a rejected null or a thrown
+      // string would make this line throw before the job is marked failed and
+      // before the customer is told anything at all. Computed once - it
+      // flattens and clips, and the same text is handed to `onJobError` below.
+      const operatorMessage = describeForOperator(e);
+      log(`[${job.jobId.slice(0, 8)}] Error: ${operatorMessage}`);
 
       // Status transitions on failure:
       //   - `executed`: never markFailed - delivery recovery will retry.
@@ -1251,9 +1715,27 @@ export class AgentRuntime {
       //     without paying the upstream again. Recovery's retry cap + 24h cutoff
       //     bound the loop.
       //   - everything else: markFailed as before.
+      if (isHostScratchError(e)) {
+        // Remembered HERE, not in the health branch: that one returns early when
+        // the agent has no monitor - a fleet of static-script skills declaring no
+        // pair - and the next customer would then still pay into a host that
+        // cannot run their job. See `scratchSpaceUsable`.
+        this.scratchFailed = true;
+      }
       const currentStatus = this.ledger.getStatus(job.jobId);
       const keepPaidForRecovery =
         (e instanceof AgentUnavailableError ||
+          // The exit-42 contract: the key is out of credits, not the job out of
+          // sense, so the job waits for the operator to top up. Reached when the
+          // gate did NOT flip - an agent with no health monitor, or a skill that
+          // declares no pair - where the customer is told "temporarily
+          // unavailable" and that has to stay true of their money.
+          isScriptBillingExhaustedError(e) ||
+          // The agent's own disk, not the job: a tmpdir that is full or
+          // read-only now may not be in five minutes, and the customer has
+          // already paid. Terminating here would keep their money for a failure
+          // that was never about their request.
+          isHostScratchError(e) ||
           e instanceof SeedFailedError ||
           e instanceof PaymentTimeoutError ||
           e instanceof X402TransientError ||
@@ -1266,13 +1748,11 @@ export class AgentRuntime {
       if (keepPaidForRecovery) {
         log(`[${job.jobId.slice(0, 8)}] Keeping status=paid; recovery will retry (24h cutoff).`);
       }
-      // Operator log keeps the full detail (including raw script stderr from a
-      // ScriptExecutionError); the customer only ever receives an allowlisted,
-      // generic message via `customerSafeMessage`.
-      const operatorMessage =
-        e instanceof ScriptExecutionError
-          ? `${e.message}: ${e.detail}`
-          : (e.message ?? 'Unknown error');
+      // The operator's copy is a flattened, bounded excerpt of the script's own
+      // output - the full stderr is not kept anywhere, on purpose: it is
+      // attacker-influenced text headed for a terminal and a structured log.
+      // The customer only ever receives an allowlisted, generic message via
+      // `customerSafeMessage`.
       this.callbacks.onJobError?.(job.jobId, operatorMessage);
 
       // W8: only forward known-safe messages to the customer; everything else is
@@ -1329,6 +1809,23 @@ export class AgentRuntime {
           .catch(() => {});
         return;
       }
+    }
+
+    // The agent's own disk, checked where its API key is: a customer must not be
+    // asked to pay for a job this host cannot run. Armed only after such a
+    // failure has been seen, and re-probed here, so a host that recovers starts
+    // selling again on its own.
+    if (
+      needsScratchSpace(matched?.mode, job.attachment !== undefined) &&
+      !(await this.scratchSpaceUsable())
+    ) {
+      log(
+        `[${job.jobId.slice(0, 8)}] Refusing job before payment: this agent cannot create scratch space (check the temp directory).`,
+      );
+      await this.transport
+        .sendFeedback(job, { type: 'error', message: AGENT_UNAVAILABLE_MESSAGE })
+        .catch(() => {});
+      return;
     }
 
     // ── x402 pre-payment rules ──
@@ -2562,7 +3059,12 @@ export class AgentRuntime {
           });
           return this.materializeBytesInput(bytes, attachment.mime);
         }
-        const dir = await mkdtemp(join(tmpdir(), 'elisym-job-'));
+        const dir = await mkdtemp(join(tmpdir(), 'elisym-job-')).catch((err: unknown) => {
+          // The agent's own disk again: a raw ENOSPC here would close a PAID job and
+          // keep the money, where the same condition inside a skill keeps the job for
+          // recovery. One error type, one verdict.
+          throw new HostScratchError(err instanceof Error ? err.message : String(err));
+        });
         const filePath = join(dir, 'input');
         try {
           await this.irohTransport.fetchToPath(irohMember.ticket, filePath, {
@@ -2622,13 +3124,21 @@ export class AgentRuntime {
     if (mime.startsWith('text/') && bytes.byteLength <= LIMITS.MAX_REINLINE_TEXT_BYTES) {
       return { inlineText: Buffer.from(bytes).toString('utf8'), cleanup: async () => {} };
     }
-    const dir = await mkdtemp(join(tmpdir(), 'elisym-job-'));
+    const dir = await mkdtemp(join(tmpdir(), 'elisym-job-')).catch((err: unknown) => {
+      // The agent's own disk again: a raw ENOSPC here would close a PAID job and
+      // keep the money, where the same condition inside a skill keeps the job for
+      // recovery. One error type, one verdict.
+      throw new HostScratchError(err instanceof Error ? err.message : String(err));
+    });
     const filePath = join(dir, 'input');
     try {
       await writeFile(filePath, bytes);
     } catch (error) {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
-      throw error;
+      // The directory was made and the BYTES would not fit: same disk, same
+      // verdict. Raw, this closed a paid job and kept the money, while the
+      // comment above promised one error type for one condition.
+      throw asHostScratchFailure(error) ?? error;
     }
     return {
       filePath,
@@ -3172,13 +3682,21 @@ export class AgentRuntime {
       this.limit(async () => {
         try {
           await this.recoverSingleJob(entry, log);
-        } catch (e: any) {
-          log(`[${entry.job_id.slice(0, 8)}] Recovery: failed: ${e.message}`);
+        } catch (err: unknown) {
+          // `describeForOperator`, not `err.message`: a rejected null throws
+          // inside the catch itself, and a message is attacker-influenced text
+          // headed for a terminal and a structured log - unflattened, it forges
+          // lines there.
+          log(`[${entry.job_id.slice(0, 8)}] Recovery: failed: ${describeForOperator(err)}`);
         } finally {
           this.inFlight.delete(entry.job_id);
           this.pending--;
         }
-      });
+        // The `try` above swallows everything from the job itself; this covers
+        // what is left - a `log` callback that throws, or the limiter rejecting -
+        // so a recovery tick cannot take the agent down with an unhandled
+        // rejection while other paid jobs are mid-recovery.
+      }).catch(() => {});
     }
   }
 
@@ -3355,7 +3873,7 @@ export class AgentRuntime {
           try {
             await this.healthMonitor.assertReady(healthPair.provider, healthPair.model);
           } catch (err) {
-            if (err instanceof LlmHealthError) {
+            if (isLlmHealthError(err)) {
               log(
                 `[${entry.job_id.slice(0, 8)}] Recovery: pair ${healthPair.provider}/${healthPair.model} still unhealthy (${err.reason}); waiting for recovery probe.`,
               );
@@ -3419,7 +3937,19 @@ export class AgentRuntime {
             entry.customer_id,
             recoveryAbort.signal,
           );
-        } catch {
+        } catch (raw: unknown) {
+          const err = asHostScratchFailure(raw) ?? raw;
+          if (isHostScratchError(err)) {
+            // This agent's disk, not a blob nobody can fetch. The live path keeps
+            // such a job PAID because the disk may recover; failing it here on
+            // the next tick would undo that and charge the customer for it. Left
+            // alone, so a later tick tries again once the disk answers.
+            this.scratchFailed = true;
+            log(
+              `[${entry.job_id.slice(0, 8)}] Recovery: no scratch space for the input file; leaving the job paid.`,
+            );
+            return;
+          }
           log(`[${entry.job_id.slice(0, 8)}] Recovery: input file unavailable, marking failed`);
           await this.failRecoveredJob(entry, fakeJob, RECOVERY_INPUT_UNAVAILABLE_CUSTOMER_MESSAGE);
           return;
@@ -3438,6 +3968,7 @@ export class AgentRuntime {
           skill,
         );
         const runRecoveryExecution = async (history?: ChatTurn[]): Promise<SkillOutput> => {
+          let budgetExceeded = false;
           let budgetTimer: ReturnType<typeof setTimeout> | undefined;
           try {
             const execPromise = skill.execute(
@@ -3458,6 +3989,11 @@ export class AgentRuntime {
                 execPromise,
                 new Promise<never>((_resolve, reject) => {
                   budgetTimer = setTimeout(() => {
+                    // The flag BEFORE the abort, as on the live path: aborting
+                    // can settle the skill's own promise first, and the catch
+                    // below has to know the cause was the budget whichever
+                    // rejection wins the race.
+                    budgetExceeded = true;
                     recoveryAbort.abort();
                     reject(new ExecutionBudgetExceededError(recoveryBudgetMs));
                   }, recoveryBudgetMs);
@@ -3466,13 +4002,30 @@ export class AgentRuntime {
             }
             return await execPromise;
           } catch (err) {
+            if (isHostScratchError(err)) {
+              // Recovery proves the disk is broken just as well as a live job
+              // does, and it runs on a tick of its own - without this a host
+              // draining a backlog keeps asking NEW customers to pay.
+              this.scratchFailed = true;
+            }
             // Mirror the primary executeJob path: a billing/invalid signal raised
             // during recovery must flip the (provider, model) pair to unhealthy.
             // Otherwise a key that expires while jobs are mid-recovery is never
             // detected - the preflight gate keeps admitting NEW jobs and customers
             // keep paying for a skill that will fail, and this loop's assertReady
-            // gate keeps passing so retries burn for nothing. A budget abort matches
-            // neither billing nor invalid signals, so this is a no-op for it.
+            // gate keeps passing so retries burn for nothing.
+            //
+            // A budget abort is skipped explicitly, as on the live path: for a
+            // SCRIPT skill the classifier has no markers to match and gates the
+            // pair anyway, so one slow recovery job would take the operator's
+            // key offline for every new customer.
+            if (budgetExceeded) {
+              // And turned back into the budget error, also as on the live path: the abort may have
+              // surfaced as the skill's own error, and the caller branches on
+              // the budget type (its retry accounting, and the paid-for-recovery
+              // rule for an x402 skill).
+              throw new ExecutionBudgetExceededError(recoveryBudgetMs);
+            }
             this.markHealthFromExecuteError(skill, err, log, entry.job_id);
             throw err;
           } finally {
@@ -3492,21 +4045,36 @@ export class AgentRuntime {
         // already holds this exchange; replaying it would ask the LLM the same
         // question with its own undelivered answer in the prompt, and the
         // `(jobId, role)`-deduped append skips the already-present lines.
-        const output =
-          recoveryJobSession === null
-            ? await runRecoveryExecution()
-            : await this.runSessionExchange({
-                session: recoveryJobSession,
-                jobId: entry.job_id,
-                userRecord: buildUserRecord(
-                  recoveryInputFile?.inlineText ?? entry.input,
-                  recoveryInputFile?.filePath !== undefined ? 'attachment' : undefined,
-                ),
-                signal: recoveryAbort.signal,
-                log,
-                execute: runRecoveryExecution,
-                excludeOwnTurns: true,
-              });
+        let output: SkillOutput;
+        try {
+          output =
+            recoveryJobSession === null
+              ? await runRecoveryExecution()
+              : await this.runSessionExchange({
+                  session: recoveryJobSession,
+                  jobId: entry.job_id,
+                  userRecord: buildUserRecord(
+                    recoveryInputFile?.inlineText ?? entry.input,
+                    recoveryInputFile?.filePath !== undefined ? 'attachment' : undefined,
+                  ),
+                  signal: recoveryAbort.signal,
+                  log,
+                  execute: runRecoveryExecution,
+                  excludeOwnTurns: true,
+                });
+        } catch (error) {
+          if (!isScriptRefusalError(error)) {
+            throw error;
+          }
+          // A refusal is deterministic: the input that was refused is the input
+          // recovery replays, so retrying only spends the retry budget and ends
+          // in the generic "permanently failed after maximum retries" - the
+          // message this channel exists to replace. Closing the job here needs
+          // no sentinel: this is the function the recovery loop calls.
+          log(`[${entry.job_id.slice(0, 8)}] Recovery: ${describeForOperator(error)}`);
+          await this.failRecoveredJob(entry, fakeJob, customerSafeMessage(error));
+          return;
+        }
 
         // Symmetric with the primary path: seed any spilled payload (file or large
         // text) BEFORE markExecuted, and deliver `deliveredContent` (empty when

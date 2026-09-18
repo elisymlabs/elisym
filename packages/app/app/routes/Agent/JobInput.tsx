@@ -81,7 +81,7 @@ function JobInputInner({
   const { setVisible } = useWalletModal();
   const idCtx = useIdentity();
 
-  const { buy, buying, error, paid } = buyState;
+  const { buy, buying, error, errorFromJob, paid } = buyState;
 
   const [input, setInput] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -379,7 +379,10 @@ function JobInputInner({
           File inputs require a paid capability - this one is free.
         </div>
       )}
-      {error && <BuyErrorNote error={error} paid={paid} />}
+      {error && (
+        // No thread on the Products tab, so nothing is showing this refusal yet.
+        <BuyErrorNote error={error} paid={paid} fromJob={errorFromJob} refusalInThread={false} />
+      )}
     </div>
   );
 }

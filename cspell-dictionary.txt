@@ -24,6 +24,7 @@ confusables
 COption
 crontabs
 crossterm
+CURLE
 cust
 damus
 decompile
@@ -57,6 +58,7 @@ FLASHX
 freetext
 frontmatter
 fsmonitor
+glpat
 helius
 hextet
 hextets
@@ -185,3 +187,4 @@ xchat
 zeroize
 zeroized
 zod
+ZWNJ

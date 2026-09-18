@@ -11,6 +11,9 @@ export {
   UNAVAILABLE_TOLERANCE,
 } from './constants';
 export {
+  isLlmHealthError,
+  isScriptBillingExhaustedError,
+  isScriptExecutionError,
   LlmHealthError,
   ScriptBillingExhaustedError,
   ScriptExecutionError,

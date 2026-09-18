@@ -27,8 +27,21 @@ import { createKeyedQueue, webLocks, type LocksAdapter } from './locks';
 
 export const CHAT_THREAD_KEY_PREFIX = 'chat-thread:';
 
-/** Per-agent entry cap; oldest-by-`ts` trimmed on write, paid `pending` exempt. */
+/**
+ * Per-agent entry cap; oldest-by-`ts` trimmed on write. A paid job that is still
+ * OPEN is exempt, and so are the newest paid failures - see `trimToCap`. A paid
+ * job that completed is trimmed like any other.
+ */
 export const MAX_THREAD_ENTRIES = 500;
+
+/**
+ * How many paid-and-FAILED entries hold their place against the cap.
+ *
+ * Generous, because each is a record of money that bought nothing - and finite,
+ * because `failed` never clears itself. Paid `pending` entries are not counted
+ * here: they resolve on their own, so exempting all of them is already bounded.
+ */
+const MAX_PROTECTED_PAID_FAILURES = 100;
 
 /** Outcome of an on-chain call a job produced. See `ChatThreadEntry.callStatus`. */
 export type CallStatus = 'sent' | 'landed' | 'failed';
@@ -71,9 +84,24 @@ export interface ChatThreadEntry {
   /** Absent = completed. */
   status?: 'pending' | 'failed';
   /**
-   * Solana signature of the payment, when one was sent. A paid entry stays
-   * `pending` indefinitely (never aged, never trimmed): money was sent, the
-   * state must stay visible.
+   * What the agent said when it refused this job, if it did.
+   *
+   * A refusal is distinct from every other failure because it is DETERMINISTIC
+   * - the same request refuses again - and, on a flat-priced skill, already
+   * charged. The thread reads this to show the reason in place of the fixed
+   * "no result" line and to withhold the Retry affordance, which would
+   * otherwise invite the customer to pay a second time for the same answer.
+   *
+   * Stored rather than kept in React state because the reason is the whole
+   * point: a customer who reloads the page must still be able to read what to
+   * change.
+   */
+  refusal?: string;
+  /**
+   * Solana signature of the payment, when one was sent. A paid entry is never
+   * aged out of `pending` and never trimmed while it is one: money was sent,
+   * the state must stay visible. A paid entry that FAILED - a refusal included -
+   * keeps its place too, but only the most recent of them (`trimToCap`).
    */
   txHash?: string;
   /**
@@ -106,7 +134,10 @@ export interface ChatThreadEntry {
  */
 export type HydratedChatEntry = Omit<
   ChatThreadEntry,
-  'status' | 'txHash' | 'callSignature' | 'callStatus' | 'sessionId'
+  // `refusal` too: this type is a COMPLETED job, and both merge paths delete
+  // the field for that reason. Leaving it in the type let a future hydration
+  // source insert a completed entry that still says the agent refused it.
+  'status' | 'txHash' | 'callSignature' | 'callStatus' | 'sessionId' | 'refusal'
 > & {
   sessionId?: string;
   /**
@@ -179,7 +210,20 @@ export interface ChatThreadStore {
     jobEventId: string,
     fields: CompleteEntryFields,
   ): Promise<boolean>;
-  failEntry(agentPubkey: string, jobEventId: string): Promise<boolean>;
+  /**
+   * Flip an entry to `failed`, optionally attaching the agent's refusal.
+   *
+   * With a refusal, resolves true when the entry ENDS UP carrying THAT refusal -
+   * including when another writer stored the same one first - so a caller can
+   * tell "the thread says this" from "it does not". Without one, it answers the
+   * older question: whether this call performed the flip, which is false for an
+   * entry that was already failed or completed.
+   */
+  failEntry(
+    agentPubkey: string,
+    jobEventId: string,
+    options?: { refusal?: string },
+  ): Promise<boolean>;
   mergeHydratedEntry(agentPubkey: string, entry: HydratedChatEntry): Promise<MergeHydratedResult>;
   readThread(agentPubkey: string): Promise<ChatThreadEntry[]>;
   agePendingEntries(
@@ -202,8 +246,25 @@ const idbThreadStorage: ChatThreadStorageAdapter = {
   listKeys: (predicate) => cacheListKeys(predicate),
 };
 
+/**
+ * Money left the wallet and nothing came back for it - in two flavours, because
+ * they are exempted from the trim on different terms.
+ *
+ * A paid `pending` entry is never trimmed at all: the job is still open, money
+ * was sent, and the state must stay visible. A paid `failed` one is a job closed
+ * with no result - a refusal is terminal AND charged, so it is the customer's
+ * only local record of a payment that bought nothing, the very one
+ * `heldPaymentNote` sends them to check against their wallet history - but
+ * `failed` is terminal, so nothing ever clears it and only the most recent of
+ * them hold their place against the cap. A completed paid entry (no `status` at
+ * all) may be trimmed: they got what they paid for.
+ */
 function isPaidPending(entry: ChatThreadEntry): boolean {
-  return entry.status === 'pending' && entry.txHash !== undefined;
+  return entry.txHash !== undefined && entry.status === 'pending';
+}
+
+function isPaidFailed(entry: ChatThreadEntry): boolean {
+  return entry.txHash !== undefined && entry.status === 'failed';
 }
 
 function sessionUuidOf(entry: ChatThreadEntry): string | undefined {
@@ -214,15 +275,40 @@ function sortByTs(entries: ChatThreadEntry[]): ChatThreadEntry[] {
   return [...entries].sort((left, right) => left.ts - right.ts);
 }
 
-/** Drop oldest-by-`ts` entries over the cap; paid `pending` entries are exempt. */
+/**
+ * Drop oldest-by-`ts` entries over the cap. Paid `pending` entries are exempt
+ * outright; the newest paid `failed` ones are exempt up to a bound.
+ *
+ * The bound is only on the terminal half. A `pending` entry resolves - a result
+ * lands, or ageing closes it - so exempting every one of them cannot grow
+ * without end. A `failed` one never clears itself, so an unlimited exemption
+ * would let a heavy user of a flaky agent grow a single IndexedDB record
+ * forever, with every write re-serializing the whole blob.
+ */
 function trimToCap(entries: ChatThreadEntry[]): ChatThreadEntry[] {
   if (entries.length <= MAX_THREAD_ENTRIES) {
     return entries;
   }
+  // `entries` arrives `ts`-ascending, so the newest paid failures are the ones
+  // met first walking from the end - no sort, no filtered copy, just the ids
+  // worth keeping. This runs on the same tick that already re-serializes the
+  // whole thread into IndexedDB.
+  const keptFailures = new Set<string>();
+  for (
+    let index = entries.length - 1;
+    index >= 0 && keptFailures.size < MAX_PROTECTED_PAID_FAILURES;
+    index -= 1
+  ) {
+    const entry = entries[index];
+    if (entry !== undefined && isPaidFailed(entry)) {
+      keptFailures.add(entry.jobEventId);
+    }
+  }
   let excess = entries.length - MAX_THREAD_ENTRIES;
   const kept: ChatThreadEntry[] = [];
   for (const entry of entries) {
-    if (excess > 0 && !isPaidPending(entry)) {
+    const exempt = isPaidPending(entry) || keptFailures.has(entry.jobEventId);
+    if (excess > 0 && !exempt) {
       excess -= 1;
       continue;
     }
@@ -534,6 +620,10 @@ export function createChatThreadStore(
         }
         const completed: ChatThreadEntry = { ...stored };
         delete completed.status;
+        // A late crash-recovery result answers the job, so the refusal that
+        // preceded it is no longer what happened - leaving it behind would let
+        // any future reader show a refusal for a job that succeeded.
+        delete completed.refusal;
         if (fields.result !== undefined) {
           completed.result = fields.result;
         }
@@ -548,19 +638,42 @@ export function createChatThreadStore(
     );
   }
 
-  function failEntry(agentPubkey: string, jobEventId: string): Promise<boolean> {
+  function failEntry(
+    agentPubkey: string,
+    jobEventId: string,
+    options?: { refusal?: string },
+  ): Promise<boolean> {
     return mutateThread(
       chatThreadKey(agentPubkey),
       (entries) => {
         const index = entries.findIndex((entry) => entry.jobEventId === jobEventId);
         const stored = index === -1 ? undefined : entries[index];
-        if (stored === undefined || stored.status !== 'pending') {
-          // Missing, already failed, or completed - a completed entry must
-          // never be demoted back to failed.
+        if (stored === undefined || stored.status === undefined) {
+          // Missing, or completed - a completed entry must never be demoted
+          // back to failed.
           return { entries, changed: false, result: false };
         }
+        const refusal = options?.refusal;
+        if (stored.status === 'failed' && (refusal === undefined || stored.refusal === refusal)) {
+          // Nothing to write - but the answer is about the ENTRY, not about
+          // this call: a caller asking "does the thread now carry this reason?"
+          // must not read "no" because somebody else wrote it first and be
+          // left rendering the same sentence a second time beside it.
+          return {
+            entries,
+            changed: false,
+            result: refusal !== undefined && stored.refusal === refusal,
+          };
+        }
+        // An entry aged out to `failed` before its refusal arrived still needs
+        // the reason: without it the thread offers Retry, which buys the same
+        // refusal again.
         const next = [...entries];
-        next[index] = { ...stored, status: 'failed' };
+        next[index] = {
+          ...stored,
+          status: 'failed',
+          ...(refusal === undefined ? {} : { refusal }),
+        };
         return { entries: next, changed: true, result: true };
       },
       false,
@@ -599,6 +712,9 @@ export function createChatThreadStore(
             merged.resultAttachments = hydrated.resultAttachments;
           }
           delete merged.status;
+          // Same invariant as `completeEntry`: an answered job carries no
+          // refusal, whichever path answered it.
+          delete merged.refusal;
           fired = true;
         }
         const changed = fired || filled;

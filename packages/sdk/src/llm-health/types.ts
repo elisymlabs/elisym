@@ -77,21 +77,76 @@ export class ScriptBillingExhaustedError extends Error {
 
 /**
  * Thrown by the SDK script skills when a tool/script fails (non-zero exit, spawn
- * error, or exit 0 with empty output). `message` is a generic, stable summary
- * that is SAFE to forward to a remote customer. The raw stderr/stdout lives on
- * `detail` for the operator log and health-monitor classification ONLY - it must
- * never be sent across the trust boundary to a customer.
+ * error, or exit 0 with empty output).
+ *
+ * NOTHING on this error is customer-facing. `message` is a fixed summary
+ * (`script failed (exit 1)`, `script produced empty output`) written for a log,
+ * and the runtime masks every script crash with one sentence of its own rather
+ * than forwarding it - an exit code and an internal phrase tell a buyer nothing
+ * and tell an attacker something. `detail` carries the raw stderr/stdout for the
+ * operator log and the health classifier ONLY.
  */
 export class ScriptExecutionError extends Error {
   readonly exitCode: number | null;
   readonly detail: string;
-
-  constructor(exitCode: number | null, detail: string, summary?: string) {
+  /**
+   * The script's stderr alone, when the runner had it to give.
+   *
+   * Kept apart from `detail` (which falls back to stdout) because the runtime
+   * scans this text for billing/auth markers to decide whether to gate an API
+   * key. Stdout is frequently NOT the script's own words - an LLM proxy echoes
+   * a completion the customer steers - so a buyer could otherwise ask for the
+   * word "unauthorized" and take the agent's whole provider offline.
+   */
+  readonly stderr: string | undefined;
+  constructor(exitCode: number | null, detail: string, summary?: string, stderr?: string) {
     super(summary ?? `script failed (exit ${exitCode ?? 'unknown'})`);
     this.name = 'ScriptExecutionError';
     this.exitCode = exitCode;
     this.detail = detail;
+    this.stderr = stderr;
   }
+}
+
+/**
+ * Type guards by name rather than `instanceof`.
+ *
+ * The SDK builds each entry point as its own bundle (`splitting: false`), so
+ * the copy of these classes inside `@elisym/sdk/skills` - the one the script
+ * runners actually throw - is a different class object from the one exported
+ * here. `instanceof` across the two is false however the source reads, which
+ * silently cost the runtime its `detail` (the raw stderr) on every script
+ * failure. Consumers outside this module should use these.
+ */
+export function isLlmHealthError(value: unknown): value is LlmHealthError {
+  return (
+    value instanceof Error &&
+    value.name === 'LlmHealthError' &&
+    typeof (value as LlmHealthError).reason === 'string'
+  );
+}
+
+export function isScriptExecutionError(value: unknown): value is ScriptExecutionError {
+  return (
+    value instanceof Error &&
+    value.name === 'ScriptExecutionError' &&
+    typeof (value as ScriptExecutionError).detail === 'string'
+  );
+}
+
+export function isScriptBillingExhaustedError(
+  value: unknown,
+): value is ScriptBillingExhaustedError {
+  // BOTH streams, because both are read: a guard that vouches for one field
+  // and lets a caller dereference the other throws a TypeError inside the
+  // catch handler that was supposed to close the job - and the customer is
+  // then told nothing at all.
+  return (
+    value instanceof Error &&
+    value.name === 'ScriptBillingExhaustedError' &&
+    typeof (value as ScriptBillingExhaustedError).stderr === 'string' &&
+    typeof (value as ScriptBillingExhaustedError).stdout === 'string'
+  );
 }
 
 /**

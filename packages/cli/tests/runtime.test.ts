@@ -3,11 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ElisymIdentity, NATIVE_SOL } from '@elisym/sdk';
 import type { BlossomBlobTransport } from '@elisym/sdk';
+import { ScriptExecutionError } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
+import {
+  HostScratchError,
+  REFUSAL_CONTRACT_HINT,
+  SCRIPT_EXIT_REFUSED,
+  ScriptRefusalError,
+} from '@elisym/sdk/skills';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { ADDRESS_HISTORY_PROBE_ADDRESS, CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
-import { AgentRuntime, type RuntimeConfig } from '../src/runtime.js';
+import { AgentRuntime, needsScratchSpace, type RuntimeConfig } from '../src/runtime.js';
 import { SkillRegistry } from '../src/skill';
 import type { Skill } from '../src/skill';
 import type { NostrTransport, IncomingJob } from '../src/transport/nostr.js';
@@ -1105,6 +1112,82 @@ describe('AgentRuntime', () => {
       expect(ledger.getStatus('paid-crashed')).toBe('delivered');
       expect((transport as any).deliverResult).toHaveBeenCalled();
     });
+
+    it('tells the customer when the re-executed skill refuses', async () => {
+      // A refusal is deterministic: the input recovery replays is the input
+      // that was refused. Retrying it only spends the retry budget and ends in
+      // "permanently failed after maximum retries" - the generic message this
+      // channel exists to replace.
+      ledger.recordPaid({
+        job_id: 'paid-refused',
+        input: 'close my long 2 SOL',
+        input_type: 'text',
+        tags: ['elisym', 'text-gen'],
+        customer_id: 'cust',
+        net_amount: 9_700_000,
+        raw_event_json: JSON.stringify({
+          id: 'paid-refused',
+          pubkey: 'cust',
+          created_at: Math.floor(Date.now() / 1000),
+          kind: 5100,
+          tags: [
+            ['t', 'elisym'],
+            ['t', 'text-gen'],
+          ],
+          content: 'close my long 2 SOL',
+          sig: 'sig',
+        }),
+        created_at: Math.floor(Date.now() / 1000),
+      });
+
+      const refusingSkill: Skill = {
+        name: 'test-skill',
+        description: 'Refuses',
+        capabilities: ['text-gen'],
+        priceSubunits: 0,
+        asset: NATIVE_SOL,
+        mode: 'dynamic-script',
+        execute: vi
+          .fn()
+          .mockRejectedValue(
+            new ScriptRefusalError(
+              SCRIPT_EXIT_REFUSED,
+              'a size in tokens is refused - write it as "size 300 USD".',
+              'builder.ts:41',
+            ),
+          ),
+      };
+      const registry = makeFakeRegistry(refusingSkill);
+      const { transport } = makeFakeTransport();
+      const onLog = vi.fn();
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog },
+      );
+
+      const runPromise = runtime.run();
+      await tick(100);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      const errorCall = (transport as any).sendFeedback.mock.calls.find(
+        (c: any) => c[1]?.type === 'error',
+      );
+      expect(errorCall?.[1].message).toBe(
+        'The provider refused: a size in tokens is refused - write it as "size 300 USD".',
+      );
+      expect(ledger.getStatus('paid-refused')).toBe('failed');
+      // Closed on purpose, so it must not also be reported as an unhandled
+      // recovery error - and the operator gets the refusal instead.
+      const logs = onLog.mock.calls.map((c: any) => String(c[0])).join('\n');
+      expect(logs).not.toContain('Recovery: failed:');
+      expect(logs).toContain('Recovery: refused: a size in tokens is refused');
+    });
   });
 
   describe('error handling', () => {
@@ -1136,10 +1219,343 @@ describe('AgentRuntime', () => {
       runtime.stop();
       await runPromise.catch(() => {});
 
-      // Error feedback should be sanitized (no API details)
+      // Error feedback should be sanitized (no API details). One sentence for
+      // every terminal failure the runtime will not describe, so a client can
+      // recognise it and say where the money went.
       const feedbackCalls = (transport as any).sendFeedback.mock.calls;
       const errorCall = feedbackCalls.find((c: any) => c[1]?.type === 'error');
-      expect(errorCall[1].message).toBe('Internal processing error');
+      expect(errorCall[1].message).toBe('The agent could not complete this job.');
+    });
+
+    /** A skill that fails the way `err` says, with a health pair to gate on. */
+    const scriptSkillThatThrows = (err: unknown): Skill => ({
+      name: 'builder-skill',
+      description: 'Builds or refuses',
+      capabilities: ['text-gen'],
+      priceSubunits: 0,
+      asset: NATIVE_SOL,
+      mode: 'dynamic-script',
+      llmOverride: { provider: 'anthropic', model: 'claude-haiku-4-5' },
+      execute: vi.fn().mockRejectedValue(err),
+    });
+
+    const monitorStub = () =>
+      ({
+        assertReady: vi.fn().mockResolvedValue(undefined),
+        markUnhealthyFromJob: vi.fn(),
+        snapshot: vi.fn().mockReturnValue([]),
+        refreshUnhealthy: vi.fn().mockResolvedValue([]),
+      }) as any;
+
+    const runOneJob = async (skill: Skill, monitor: any, jobId: string) => {
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: vi.fn() },
+        monitor,
+      );
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob(jobId));
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+      const feedbackCalls = (transport as any).sendFeedback.mock.calls;
+      return feedbackCalls.find((c: any) => c[1]?.type === 'error');
+    };
+
+    it("forwards a script refusal as the provider's words, gate untouched", async () => {
+      const monitor = monitorStub();
+      const errorCall = await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptRefusalError(
+            SCRIPT_EXIT_REFUSED,
+            'a size in tokens is refused rather than converted, so write it as "size 300 USD".',
+            'builder.ts:41 parse failed',
+          ),
+        ),
+        monitor,
+        'refused-job',
+      );
+
+      expect(errorCall[1].message).toBe(
+        'The provider refused: a size in tokens is refused rather than converted, so write it as "size 300 USD".',
+      );
+      // The operator's half of the story never crosses.
+      expect(errorCall[1].message).not.toContain('builder.ts');
+      // A refusal is an answer, not a fault: the capability stays online.
+      expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
+      // And it is terminal: nothing about a refusal improves on a retry.
+      expect(ledger.getStatus('refused-job')).toBe('failed');
+    });
+
+    it('still flips the health gate on an ordinary script failure', async () => {
+      // The contrast that makes the test above mean something: same skill, same
+      // declared pair, a failure instead of a refusal.
+      const monitor = monitorStub();
+      const errorCall = await runOneJob(
+        // stderr passed separately: the health scan reads THAT, never `detail`,
+        // which falls back to stdout - and stdout is text a customer can steer
+        // through an LLM proxy.
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            1,
+            'curl: (43) bad argument',
+            undefined,
+            'curl: (43) bad argument',
+          ),
+        ),
+        monitor,
+        'failed-job',
+      );
+
+      // Flipping the gate also changes what the customer is told: the agent is
+      // now refusing jobs against that pair, so it says so.
+      expect(errorCall[1].message).toBe('Agent temporarily unavailable');
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'invalid',
+        expect.stringContaining('curl'),
+        // Skill-local here because this stderr carries no billing or auth
+        // marker. One that does cascades to the provider's other models - see
+        // "marks pair unhealthy on script exit-1 carrying invalid-key signal".
+        { cascade: false },
+      );
+    });
+
+    it('cascades on insufficient_quota, which the shorter phrase used to shadow', async () => {
+      // An alternation is first-match-wins, so with `insufficient` ahead of it
+      // the longer phrase never matched and its `cascades: true` was dead - an
+      // OpenAI key out of quota gated one pair and left the rest selling.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            1,
+            'Error: insufficient_quota',
+            undefined,
+            'Error: insufficient_quota',
+          ),
+        ),
+        monitor,
+        'quota-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'billing',
+        expect.stringContaining('insufficient_quota'),
+        { cascade: true },
+      );
+    });
+
+    it('does not take a whole provider offline over the word "insufficient"', async () => {
+      // A Solana builder printing "insufficient funds for rent" says nothing
+      // about the operator's API key. Gating THIS pair is cheap and reversible;
+      // cascading refuses every skill on that key until a probe clears it, so
+      // the cascade needs a phrase only the key's provider produces.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            1,
+            'Error: insufficient funds for rent',
+            undefined,
+            'Error: insufficient funds for rent',
+          ),
+        ),
+        monitor,
+        'rent-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'billing',
+        expect.stringContaining('insufficient funds'),
+        { cascade: false },
+      );
+    });
+
+    it('never gates a key on words the customer could have put on stdout', async () => {
+      // For an LLM proxy, stdout is the model's completion. A buyer asking for
+      // the word "unauthorized" must not be able to take the operator's whole
+      // provider offline, so the marker scan reads stderr and nothing else.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(1, 'unauthorized, insufficient credit balance', undefined, ''),
+        ),
+        monitor,
+        'steered-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        // Skill-local, and never 'billing': the words were on stdout.
+        'invalid',
+        // The operator still gets to READ them. `lastReason` is printed on
+        // every gated job, and answering "why is my key gated?" with a blank
+        // line helps nobody; the classification above is the part the customer
+        // must not be able to steer, and it came from the exit code.
+        'unauthorized, insufficient credit balance',
+        { cascade: false },
+      );
+    });
+
+    it('lets a static-script job through the pre-payment disk gate', () => {
+      // The gate exists so nobody pays for a job this host cannot run. A
+      // `static-script` job CAN run on a read-only tmpdir - it loses only its
+      // refusal channel, and reports a 43 as a refusal with no reason given -
+      // so refusing it before payment would take a whole mode off the market
+      // for a lost channel. `dynamic-script` cannot: it raises
+      // `HostScratchError` before the script starts.
+      expect(needsScratchSpace('static-script', false)).toBe(false);
+      expect(needsScratchSpace('dynamic-script', false)).toBe(true);
+      expect(needsScratchSpace('x402', false)).toBe(true);
+      expect(needsScratchSpace('llm', false)).toBe(false);
+      expect(needsScratchSpace('static-file', false)).toBe(false);
+      // An input FILE lands on this disk whatever the mode routes to, and an
+      // unmatched job runs nothing of its own.
+      expect(needsScratchSpace('static-script', true)).toBe(true);
+      expect(needsScratchSpace(undefined, true)).toBe(true);
+      expect(needsScratchSpace(undefined, false)).toBe(false);
+    });
+
+    it('does not gate a key when THIS AGENT could not give the job scratch space', async () => {
+      // A full or read-only temp directory is a local disk problem the runtime
+      // has already diagnosed. Gating would refuse every capability on the
+      // operator's key for it, and the recovery probe - which tests the KEY -
+      // would clear it on the next tick and gate it again on the next job.
+      //
+      // Carried by a CLASS, never by a sentence in `detail`: on an ordinary
+      // failure `detail` is the script's own stderr (and for an LLM proxy it
+      // falls back to a completion the buyer steers), so any phrase the runtime
+      // matched there would be a skill's switch for its own breaker.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(new HostScratchError('ENOSPC: no space left on device')),
+        monitor,
+        'no-scratch-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).not.toHaveBeenCalled();
+    });
+
+    it('gates a key for a script that merely PRINTS the host-failure wording', async () => {
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            1,
+            'the agent could not create scratch space for this job',
+            undefined,
+            'the agent could not create scratch space for this job',
+          ),
+        ),
+        monitor,
+        'liar-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalled();
+    });
+
+    it('keeps the contract hint in the reason an operator reads back', async () => {
+      // `lastReason` is printed on every gated job. The hint is front-loaded onto
+      // `detail` and the excerpt is chosen by recognising it there, so a reword
+      // of the hint must not silently turn this into a tail quote of the
+      // script's progress meter.
+      const monitor = monitorStub();
+      const chatter = 'downloading chunk 399 '.repeat(60);
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            SCRIPT_EXIT_REFUSED,
+            `${REFUSAL_CONTRACT_HINT} ${chatter}`,
+            undefined,
+            chatter,
+          ),
+        ),
+        monitor,
+        'hinted-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'invalid',
+        expect.stringContaining('without writing ELISYM_REFUSAL_FILE'),
+        { cascade: false },
+      );
+    });
+
+    it('gates a key when a script exits 43 without writing a reason', async () => {
+      // Whether the script MEANT to refuse and mistyped the variable, or never
+      // meant to refuse at all (43 is curl's CURLE_BAD_FUNCTION_ARGUMENT), the
+      // customer paid and got a generic failure. Exempting the code from the
+      // breaker would make it the one crash an agent can repeat forever while
+      // still taking payment; what the hint on `detail` buys the operator is
+      // knowing WHICH of the two it was. A refusal - one with a reason - is the
+      // only thing that leaves health alone.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            SCRIPT_EXIT_REFUSED,
+            `${REFUSAL_CONTRACT_HINT} could not resolve host`,
+            undefined,
+            'could not resolve host',
+          ),
+        ),
+        monitor,
+        'slipped-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'invalid',
+        expect.stringContaining('could not resolve host'),
+        // Skill-local: nothing here names the operator's key.
+        { cascade: false },
+      );
+    });
+
+    it('masks a generic script failure rather than quoting its summary', async () => {
+      // The customer-facing string is part of the contract: `classifyJobError`
+      // keys the "what happened to my payment" note off it, so a skill failure
+      // must not start arriving as "script failed (exit 1)".
+      const errorCall = await runOneJob(
+        {
+          name: 'no-pair-skill',
+          description: 'Fails without a declared pair',
+          capabilities: ['text-gen'],
+          priceSubunits: 0,
+          asset: NATIVE_SOL,
+          mode: 'dynamic-script',
+          execute: vi
+            .fn()
+            .mockRejectedValue(
+              new ScriptExecutionError(1, 'boom on stderr', undefined, 'boom on stderr'),
+            ),
+        },
+        monitorStub(),
+        'masked-job',
+      );
+
+      // Not the outage wording: a crash closes the job, and telling a customer
+      // their payment is held for a retry that never comes is worse than
+      // telling them nothing.
+      expect(errorCall[1].message).toBe('The agent could not complete this job.');
+      expect(errorCall[1].message).not.toContain('boom on stderr');
     });
 
     it('passes non-API errors through', async () => {
@@ -3043,7 +3459,7 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
    * Two different strings come out of a failed job, and they must not be
    * confused: `onJobError` gets the OPERATOR message (the raw error, script
    * stderr and all), while the customer gets whatever `customerSafeMessage`
-   * allows through. "Internal processing error" only ever exists on the second
+   * allows through. The generic terminal sentence only ever exists on the second
    * one, so asserting it against the first can never fail.
    */
   async function drivePaidJobToTimeout(
@@ -3084,7 +3500,7 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
     // Reference path ran clean and found nothing; no signature ever asserted.
     // The customer gets the allowlisted payment-timeout message verbatim - a
     // message that stops matching `CUSTOMER_SAFE_MESSAGE_PREFIXES` collapses to
-    // "Internal processing error" and blames the provider for a job the
+    // the generic terminal sentence and blames the provider for a job the
     // customer simply never paid for.
     mockVerifyResult = {
       verified: false,
@@ -3099,7 +3515,7 @@ describe('AgentRuntime paid-mode payment-timeout messaging', () => {
     // Asserted on what the CUSTOMER actually received, which is the only place
     // the masked string can appear.
     expect(customerMessages).toContain('Payment timeout: no payment received before the deadline.');
-    expect(customerMessages).not.toContain('Internal processing error');
+    expect(customerMessages).not.toContain('The agent could not complete this job.');
     // Recoverable on the provider side: the live path never concludes
     // non-payment - recovery does.
     expect(logs.some((line) => /recovery makes the final call/i.test(line))).toBe(true);

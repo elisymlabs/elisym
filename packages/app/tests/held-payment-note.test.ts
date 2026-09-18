@@ -1,3 +1,4 @@
+import { classifyJobError } from '@elisym/sdk';
 import { describe, expect, it } from 'vitest';
 import { heldPaymentNote } from '../app/lib/heldPaymentNote';
 
@@ -53,9 +54,53 @@ describe('what a paying customer is told about their money', () => {
     }
   });
 
-  it('still reassures through an agent outage, whatever the wording', () => {
-    expect(heldPaymentNote('Internal processing error', true)).toMatch(/back online/);
+  it('marks a refusal as its own kind, so the thread can withhold Retry', () => {
+    // The Retry button buys the job again. A refusal is deterministic and, on a
+    // flat-priced skill, already charged, so retrying spends money for the same
+    // sentence - `BuyContext` keys the entry's `refused` flag off this.
+    expect(classifyJobError('The provider refused: say the size in USD.')).toBe('provider-refused');
+    expect(classifyJobError('Internal processing error')).not.toBe('provider-refused');
+  });
+
+  it('says the job is closed and charged when the provider refused it', () => {
+    // A refusal is terminal AND already charged on the flat-priced path, so the
+    // outage note would be false twice over - and these reasons are the ones
+    // most likely to trip the outage markers by accident, being ordinary
+    // English rather than an API's words.
+    for (const reason of [
+      'insufficient detail in the brief - add the target audience.',
+      'your billing address is missing a postal code.',
+      'that file is unauthorized for this capability.',
+    ]) {
+      const note = heldPaymentNote(`The provider refused: ${reason}`, true);
+      expect(note).toMatch(/will not be retried/);
+      expect(note).not.toMatch(/back online/);
+      // The label is not authenticated, so the note reports what the agent
+      // SAYS and points at the wallet rather than asserting where the money is.
+      expect(note).toMatch(/says it declined/);
+    }
+  });
+
+  it('reassures through an agent outage - the one failure that really is held', () => {
+    // The health gate refuses the job BEFORE running it and keeps it paid for
+    // the recovery loop, so "the job will be retried automatically" is true of
+    // this message and of no other.
     expect(heldPaymentNote('Agent temporarily unavailable', true)).toMatch(/back online/);
+  });
+
+  it('tells the buyer of an OLDER agent where their money went', () => {
+    // The sentence agents sent before `PROVIDER_FAILED_MESSAGE` existed, and
+    // will keep sending for as long as they run an older CLI. It is the mask
+    // those releases put on ANY error they had nothing safe to say about, so it
+    // gets the guidance without either promise the newer strings can make: not
+    // the outage's "it will be retried", and not the crash note's "closed" -
+    // one of the failures behind it is an x402 upstream the old agent's
+    // recovery loop can still deliver on.
+    const note = heldPaymentNote('Internal processing error', true);
+    expect(note).toBeDefined();
+    expect(note).not.toMatch(/back online/);
+    expect(note).not.toMatch(/closed/);
+    expect(note).toMatch(/wallet history/);
   });
 
   it('never talks about held money to someone who has not paid', () => {

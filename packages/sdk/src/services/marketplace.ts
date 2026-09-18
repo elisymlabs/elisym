@@ -77,6 +77,9 @@ const VALID_JOB_STATUSES = new Set<string>([
  */
 const MAX_FUTURE_SKEW_SECS = 300;
 
+/** Said for an `error` feedback whose provider wrote nothing in it. */
+const PROVIDER_ERROR_FALLBACK = 'Provider returned an error';
+
 function toJobStatus(raw: string): JobStatus {
   return VALID_JOB_STATUSES.has(raw) ? (raw as JobStatus) : 'unknown';
 }
@@ -494,7 +497,7 @@ export class MarketplaceService {
               // `provPk`) intentionally keep the subscription open - a
               // single provider's rejection should not silence the others.
               if (provPk && statusTag[1] === 'error' && !resolved) {
-                const errorMessage = ev.content?.trim() || 'Provider returned an error';
+                const errorMessage = ev.content?.trim() || PROVIDER_ERROR_FALLBACK;
                 done();
                 try {
                   cb.onError?.(errorMessage);
@@ -910,7 +913,16 @@ export class MarketplaceService {
     await this.pool.publishAll(event);
   }
 
-  /** Submit error feedback to notify customer of a failure. */
+  /**
+   * Submit error feedback to notify customer of a failure.
+   *
+   * The content is CLEARTEXT even when the job request was NIP-44 encrypted,
+   * unlike `submitJobResult`: a feedback event is addressed to nobody in
+   * particular and is read by clients that never held the job's key. Every
+   * caller must therefore treat this as a public statement - which is why the
+   * runtime's customer-safe messages are fixed strings, and why a skill's
+   * refusal reason is documented as public and told not to quote the input.
+   */
   async submitErrorFeedback(
     identity: ElisymIdentity,
     requestEvent: Event,
@@ -940,6 +952,84 @@ export class MarketplaceService {
     );
 
     await this.pool.publishAll(event);
+  }
+
+  /**
+   * The provider's own error feedback for these jobs, newest per job.
+   *
+   * `subscribeToJobUpdates` delivers an error live, but only to a customer who
+   * is listening when it is published: a verdict that arrived while the tab was
+   * closed is reachable only by asking for it. A subscription cannot ask - and
+   * widening its `since` to replay one is worse than useless, because the first
+   * replayed error closes the result subscriptions along with itself.
+   *
+   * SECURITY: author-bound like `queryJobResults`, and for the same reason. Job
+   * event ids are public, so any key can publish a kind-7000 tagging a victim's
+   * job; without the binding a customer would be shown a stranger's sentence
+   * under their provider's name - and, since a refusal is terminal, have their
+   * own paid job closed by it.
+   */
+  async queryJobErrors(requestIds: string[], providerPubkey: string): Promise<Map<string, string>> {
+    if (!/^[0-9a-f]{64}$/.test(providerPubkey)) {
+      throw new Error('Invalid provider pubkey: expected 64 hex characters.');
+    }
+    const errorByRequest = new Map<string, string>();
+    if (requestIds.length === 0) {
+      return errorByRequest;
+    }
+    const wanted = new Set(requestIds);
+    const events = await this.pool.queryBatchedByTag(
+      // `authors`, so the relay does the binding too: job ids are public, and
+      // without it a customer opening this tab downloads - and verifies the signature of
+      // - every kind-7000 anyone ever tagged onto their job.
+      { kinds: [KIND_JOB_FEEDBACK], authors: [providerPubkey] } as Filter,
+      'e',
+      requestIds,
+    );
+    const chosen = new Map<string, { createdAt: number; id: string }>();
+    const nowSecs = Math.floor(Date.now() / 1000);
+    for (const ev of events) {
+      // Every cheap test first, and the signature check last. A provider's
+      // feedback for one job is three or four events - the processing
+      // heartbeat, the payment request - and only the `error` one is wanted, so
+      // verifying before filtering pays for two or three signature checks per
+      // entry on a browser's main thread to throw them away.
+      if (ev.pubkey !== providerPubkey) {
+        continue;
+      }
+      // Same clamp as everywhere else: a post-dated event must not win
+      // newest-wins over the one that actually came last.
+      if (ev.created_at > nowSecs + MAX_FUTURE_SKEW_SECS) {
+        continue;
+      }
+      // The module's own reader, not a second copy of it: this is the one path
+      // that can terminally close a PAID job, so it must resolve a request id
+      // exactly as every other feedback reader here does.
+      const eTag = resolveRequestId(ev);
+      if (eTag === undefined || !wanted.has(eTag)) {
+        continue;
+      }
+      if (ev.tags.find((tag) => tag[0] === 'status')?.[1] !== 'error') {
+        continue;
+      }
+      if (!verifyEvent(ev)) {
+        continue;
+      }
+      // Newest wins, and the event id breaks a tie: feedback timestamps are
+      // whole seconds, so two verdicts published in the same one would
+      // otherwise resolve by the relay's arbitrary array order and a customer
+      // could see a different sentence on each tab open.
+      const prev = chosen.get(eTag);
+      if (
+        prev !== undefined &&
+        (ev.created_at < prev.createdAt || (ev.created_at === prev.createdAt && ev.id <= prev.id))
+      ) {
+        continue;
+      }
+      chosen.set(eTag, { createdAt: ev.created_at, id: ev.id });
+      errorByRequest.set(eTag, ev.content?.trim() || PROVIDER_ERROR_FALLBACK);
+    }
+    return errorByRequest;
   }
 
   /**

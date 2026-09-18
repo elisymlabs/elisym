@@ -390,6 +390,122 @@ describe('MarketplaceService.submitJobResult', () => {
   });
 });
 
+describe('MarketplaceService.queryJobErrors', () => {
+  const reqId = 'request-with-a-verdict';
+
+  function feedback(
+    author: ElisymIdentity,
+    { status = 'error', content = 'refused', createdAt = 1000, jobId = reqId } = {},
+  ): Event {
+    return finalizeEvent(
+      {
+        kind: KIND_JOB_FEEDBACK,
+        created_at: createdAt,
+        tags: [
+          ['e', jobId],
+          ['status', status],
+        ],
+        content,
+      },
+      author.secretKey,
+    );
+  }
+
+  it('returns the provider`s newest error per job', async () => {
+    const provider = ElisymIdentity.generate();
+    const pool = createMockPool();
+    (pool.queryBatchedByTag as any).mockResolvedValue([
+      feedback(provider, { content: 'first verdict', createdAt: 1000 }),
+      feedback(provider, { content: 'later verdict', createdAt: 2000 }),
+    ]);
+
+    const errors = await new MarketplaceService(pool as any).queryJobErrors(
+      [reqId],
+      provider.publicKey,
+    );
+
+    expect(errors.get(reqId)).toBe('later verdict');
+  });
+
+  it('ignores anything that is not this provider`s error', async () => {
+    // A job id is public, so a stranger can tag it - and a refusal is terminal:
+    // accepting one would close a paying customer's job on a forgery. A
+    // non-error feedback (the `processing` heartbeat) is not a verdict either.
+    const provider = ElisymIdentity.generate();
+    const stranger = ElisymIdentity.generate();
+    const pool = createMockPool();
+    (pool.queryBatchedByTag as any).mockResolvedValue([
+      feedback(stranger, { content: 'your job is cancelled, pay me here', createdAt: 3000 }),
+      feedback(provider, { status: 'processing', content: 'working', createdAt: 2000 }),
+      feedback(provider, { content: 'the real verdict', createdAt: 1000 }),
+      feedback(provider, { content: 'for another job', jobId: 'someone-elses-job' }),
+    ]);
+
+    const errors = await new MarketplaceService(pool as any).queryJobErrors(
+      [reqId],
+      provider.publicKey,
+    );
+
+    expect(errors.get(reqId)).toBe('the real verdict');
+    expect(errors.size).toBe(1);
+  });
+
+  it('refuses a post-dated error the way every other newest-wins pick does', async () => {
+    const provider = ElisymIdentity.generate();
+    const pool = createMockPool();
+    const nowSecs = Math.floor(Date.now() / 1000);
+    (pool.queryBatchedByTag as any).mockResolvedValue([
+      feedback(provider, { content: 'the real verdict', createdAt: nowSecs }),
+      feedback(provider, { content: 'from next year', createdAt: nowSecs + 31_000_000 }),
+    ]);
+
+    const errors = await new MarketplaceService(pool as any).queryJobErrors(
+      [reqId],
+      provider.publicKey,
+    );
+
+    expect(errors.get(reqId)).toBe('the real verdict');
+  });
+
+  it('picks the same verdict whatever order the relays return it in', async () => {
+    // Feedback timestamps are whole seconds, so two verdicts published in the
+    // same one are common - and a refusal is terminal, so whichever wins is
+    // what closes the job. It must not depend on array order.
+    const provider = ElisymIdentity.generate();
+    const sameSecond = 4242;
+    const pair = [
+      feedback(provider, { content: 'verdict one', createdAt: sameSecond }),
+      feedback(provider, { content: 'verdict two', createdAt: sameSecond }),
+    ];
+    const read = async (events: Event[]) => {
+      const pool = createMockPool();
+      (pool.queryBatchedByTag as any).mockResolvedValue(events);
+      return (
+        await new MarketplaceService(pool as any).queryJobErrors([reqId], provider.publicKey)
+      ).get(reqId);
+    };
+
+    expect(await read(pair)).toBe(await read([...pair].reverse()));
+  });
+
+  it('asks the relays nothing when there is nothing to ask about', async () => {
+    const provider = ElisymIdentity.generate();
+    const pool = createMockPool();
+
+    const errors = await new MarketplaceService(pool as any).queryJobErrors([], provider.publicKey);
+
+    expect(errors.size).toBe(0);
+    expect(pool.queryBatchedByTag).not.toHaveBeenCalled();
+  });
+
+  it('rejects a provider pubkey that is not one', async () => {
+    const pool = createMockPool();
+    await expect(
+      new MarketplaceService(pool as any).queryJobErrors([reqId], 'not-a-pubkey'),
+    ).rejects.toThrow(/provider pubkey/);
+  });
+});
+
 describe('MarketplaceService.queryJobResults', () => {
   it('keeps newest result per request', async () => {
     const provider = ElisymIdentity.generate();

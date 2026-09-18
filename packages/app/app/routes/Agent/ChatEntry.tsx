@@ -1,8 +1,10 @@
 import { resolveKnownAsset, type CapabilityCard, type OnchainDescriptor } from '@elisym/sdk';
 import type { ReactNode } from 'react';
 import type { ChatThreadEntry } from '~/lib/chatThread';
+import { AGENT_REFUSED_LABEL } from '~/lib/errorText';
 import { hasBlossom } from '~/lib/fileResult';
 import { compactZeros, formatDecimal } from '~/lib/formatPrice';
+import { refusedPaymentNote } from '~/lib/heldPaymentNote';
 import { isCallEnvelope } from '~/lib/onchainCall';
 import { ChatBubble } from './ChatBubble';
 import { FileResultCard } from './FileResultCard';
@@ -188,6 +190,11 @@ export function ChatEntry({
       </ChatBubble>
     );
   } else {
+    // Where the money went, for a refusal that outlived the buy session that
+    // produced it: a reload, or a reason the reconcile attached on a later tab
+    // open. The inline note beside the composer only knows about the session.
+    const refusalMoneyNote =
+      entry.refusal === undefined ? undefined : refusedPaymentNote(entry.txHash !== undefined);
     assistantBubble = (
       <ChatBubble
         side="assistant"
@@ -199,7 +206,23 @@ export function ChatEntry({
           </div>
         }
       >
-        No result was delivered for this message.
+        {entry.refusal === undefined ? (
+          'No result was delivered for this message.'
+        ) : (
+          // Attributed, because the sentence is the AGENT's and the bubble is
+          // the app's: the runtime's label was stripped before storage, and
+          // without this the agent's words read as the app speaking. Wrapped
+          // like every other untrusted bubble so it cannot push the page
+          // sideways, and not clamped - it is bounded at 400 characters
+          // already, and its tail is the half that says what to change.
+          <>
+            <span className="text-text-2">{AGENT_REFUSED_LABEL}</span>
+            <span className="break-words whitespace-pre-wrap">{entry.refusal}</span>
+            {refusalMoneyNote !== undefined && (
+              <div className="mt-8 text-[11px] text-text-2">{refusalMoneyNote}</div>
+            )}
+          </>
+        )}
       </ChatBubble>
     );
   }

@@ -381,15 +381,21 @@ This is one mechanism, two declaration paths: `mode: 'llm'` skills get it throug
 
 The exit code from a script-mode skill controls how the runtime reacts:
 
-| Exit code                | Meaning                                       | Health monitor effect                                                                                 |
-| ------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| 0                        | success                                       | none                                                                                                  |
-| 42                       | upstream LLM provider is out of credits / 402 | runtime calls `markUnhealthyFromJob` on the declared `(provider, model)`; lazy recovery loop kicks in |
-| anything else (non-zero) | generic skill failure                         | none - treated as a transient skill bug, not a key problem                                            |
+| Exit code                                     | Meaning                                                                                              | Health monitor effect                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0                                             | success                                                                                              | none                                                                                                                                                                                                                                                                                                                                                                             |
+| 42                                            | upstream LLM provider is out of credits / 402                                                        | runtime calls `markUnhealthyFromJob` on the declared `(provider, model)`; lazy recovery loop kicks in                                                                                                                                                                                                                                                                            |
+| 43 (or 0) + a reason in `ELISYM_REFUSAL_FILE` | the skill understood the request and refuses it; that file is the reason, and the customer reads it  | none - a refusal is an answer, not a fault                                                                                                                                                                                                                                                                                                                                       |
+| 43 with no reason file                        | the skill meant to refuse and got the contract wrong, OR crashed with a 43 of its own (curl uses it) | same as any other failure, health gate included - the exit code cannot exempt itself; the operator log says which of the two it was. Untouched only when the agent never offered a channel (`ELISYM_REFUSAL_FILE` unset): the script kept the contract and had nowhere to write                                                                                                  |
+| anything else (non-zero)                      | generic skill failure                                                                                | flips the declared `(provider, model)` pair unhealthy when the skill declares one - skill-local unless stderr names the KEY itself (`invalid x-api-key`, `credit balance`, `authentication_error`, `insufficient_quota`), which also cascades to that provider's other models; the wider billing/auth wording gates this pair only; nothing to flip when the skill declares none |
+
+### 42: the health gate
 
 Exit code 42 (`SCRIPT_EXIT_BILLING_EXHAUSTED`) is the contract. It was chosen to avoid POSIX/sysexits.h collisions: 1-2 are generic, 64-78 are sysexits, 126-128 are shell-internal, 130+ are signals. 42 sits cleanly outside all of those. Reserve it strictly for the billing case - using it for anything else degrades the health gate's accuracy.
 
 The constant is exported as `SCRIPT_EXIT_BILLING_EXHAUSTED` from `@elisym/sdk/llm-health` for TypeScript scripts. Shell scripts can hardcode `42` (with a comment pointing here).
+
+**If you do not use 42, write the upstream's body to STDERR.** The runtime's fallback - reading billing and auth phrases out of a failing script's output - scans **stderr only**. Stdout is frequently not the script's own words (an LLM proxy echoes a completion the buyer steers), and a buyer who asked a model for the word `unauthorized` must not be able to gate the operator's key, let alone cascade it across every model on that key. So a proxy that prints the provider's 401/402 body to stdout and exits 1 is treated as a plain crash: this skill's pair is marked unhealthy, nothing cascades, and the operator's other capabilities on the same dead key keep taking jobs until each flips on its own. `echo "$body" >&2` alongside the stdout copy is enough to restore the old behaviour.
 
 A minimal `proxy.sh` example:
 
@@ -414,3 +420,41 @@ fi
 
 echo "$body" | jq -r '.choices[0].message.content'
 ```
+
+### 43: refusing out loud
+
+On any other non-zero exit the customer receives a fixed generic message, because raw subprocess output is not safe to forward. That is right for a crash and wrong for a refusal: a capability that validates its input, checks a policy or parses an instruction has to be able to say **what to change**, or the customer pays, reads "script failed", and sends the same request again.
+
+The refusal travels in its own file, named by `ELISYM_REFUSAL_FILE` - the same shape as `ELISYM_OUTPUT_FILE` and `ELISYM_CHARGE_FILE`, and set for `dynamic-script`, `static-script` and `onchain`:
+
+```sh
+if [ "$unit" != "USD" ]; then
+  # Guard the WRITE, never the decision: with the guard on the `if`, a job the
+  # script meant to refuse would go ahead whenever the variable is unset.
+  [ -n "${ELISYM_REFUSAL_FILE:-}" ] &&
+    printf '%s' 'this venue sizes positions in USD, so write it as "size 300 USD".' \
+      > "$ELISYM_REFUSAL_FILE"
+  exit 43  # SCRIPT_EXIT_REFUSED - the sentence above reaches the buyer
+fi
+```
+
+The variable is set whenever the runtime could provide a scratch file, which is
+always unless the temp directory cannot be written. Two details in that snippet
+are load-bearing: the `${...:-}` form, because the proxy template in the
+previous section runs under `set -eu` where a bare `$ELISYM_REFUSAL_FILE` aborts
+the script instead of refusing; and the placement, because a guard around the
+`if` would let the job proceed - doing the very thing the script decided not to
+do - on an agent whose temp directory is unwritable.
+
+- **the file is what decides, not the exit code.** Nothing a script PRINTS can be a refusal. Stdout is frequently not the script's own words - an LLM proxy echoes a model's completion - and a customer able to steer that completion could otherwise destroy their own paid job and have their own sentence handed back under the runtime's refusal label. Writing a file is something a script does on purpose.
+- **exit 43 is still the right exit code**, and a 43 with no file written is treated as the failure it looks like, health gate included: the buyer gets the generic message and the declared `(provider, model)` pair is marked unhealthy exactly as any other non-zero exit would. The code cannot exempt itself - 43 is also curl's `CURLE_BAD_FUNCTION_ARGUMENT`, so a script that never meant to refuse lands here, and an exempt code would be the one crash an agent could repeat forever while still taking payment. The operator log says the contract was not kept, which is what separates the copy bug from the crash. A file with a REASON in it is also a refusal on **exit 0** - a script whose `exit 43` was swallowed by a pipeline meant what it wrote - but on any OTHER non-zero exit the reason is ignored and the job is the crash its exit code describes: a skill that writes why it would refuse and then falls over has not refused, and treating that as a decision would charge the customer for a crash and leave the health gate untouched.
+- **`ELISYM_REFUSAL_FILE` can be absent.** A host whose temp directory is full or read-only cannot make the file, and a `static-script` job runs anyway rather than lose the capability over it - so guard the write exactly as the snippet above does, on `${ELISYM_REFUSAL_FILE:-}` and never on the bare name, which under `set -u` aborts the script instead of refusing. Exit 43 regardless: with no channel the runtime reads it as a refusal with no reason given, which is still a refusal and still leaves the health gate alone.
+- **a script the runtime killed never refuses.** A builder cut short by the execution timeout after writing its file decided nothing.
+- **the file's contents** are what the customer reads: flattened to one paragraph, stripped of control characters and the format marks that reverse text (zero-width joiners survive - they spell words), capped at 400 characters, and prefixed by the runtime with `The provider refused:`. At most 8 KB of the file is read.
+- **never put a CREDENTIAL in the reason.** Unlike a script's stderr - which the runtime redacts anything key-shaped out of before quoting it anywhere - the reason is passed through as written, because it is the one sentence a buyer is meant to act on and redacting it would gut the advice. So an `echo "key $OPENAI_API_KEY rejected" > "$ELISYM_REFUSAL_FILE"` publishes that key on every relay, permanently, and prints it into the operator log as well.
+- **the reason is PUBLIC - never quote the job input in it.** A result is NIP-44 encrypted to the customer when the job was; a refusal rides the kind-7000 error feedback, whose content is cleartext on every relay, permanently and signed by the agent. Say what to change ("this venue sizes positions in USD"), never what they sent ("9xQe... is not a valid address"). The same applies to anything the input touched: an internal id, a filename, an account.
+- **stderr** keeps its usual guarantee: operator-only, in the log, never sent anywhere.
+- refusing with an empty file still refuses, with a fixed "no reason was given" message, so it cannot be mistaken for a result. But a file holding nothing READABLE - zero bytes, a lone newline - needs the 43 to count: opening the channel early (`[ -n "${ELISYM_REFUSAL_FILE:-}" ] && : > "$ELISYM_REFUSAL_FILE"`, guarded like every other write to it) and then succeeding must not throw away the answer the buyer paid for.
+- the health gate is untouched for a refusal - a 43, or a reason written with exit 0. A 43 without one is not a refusal and gates like anything else; so does a reason written alongside any other non-zero exit. A reason file that turns out to be a symlink or a directory is read as a crash and gates too; one that turns out to be a HARD link is read as a refusal with no reason, because some network mounts report a link count this check cannot trust and a correct skill on one of those must not take itself offline every job. The one exemption is the agent failing to create its scratch directory at all - a local disk problem, not an API key going bad - and what follows differs by mode. `dynamic-script` needs that directory for the job's output and history files, so it fails before the script starts, keeps its payment for the recovery loop, and its agent refuses the next customer before they pay. `static-script` needs nothing but the channel, so it RUNS: `ELISYM_REFUSAL_FILE` is simply unset, and a 43 comes back as a refusal with no reason given - charged like any other refusal, health gate untouched, the hint in the operator log saying the channel was never offered.
+
+**Who pays for a refusal.** On the ordinary paid path the job is charged before the skill runs, so a refusal costs the buyer the full price and returns no result - price a refusing capability accordingly, and say so in its `description`. On the delegated path the pull happens after execution, so a refusal costs nothing.

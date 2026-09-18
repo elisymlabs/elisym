@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import type { Asset } from '../payment/assets';
+import { SCRIPT_REFUSAL_FILE_ENV } from './refusal';
 import type {
   CompletionResult,
   LlmClient,
@@ -145,12 +146,69 @@ const SECRET_ENV_VARS: readonly string[] = [
   'SOLANA_RPC_URL',
 ];
 
-export function scopedToolEnv(): NodeJS.ProcessEnv {
+/**
+ * Vars that name a channel for ONE job, which only the skill running that job
+ * may set.
+ *
+ * Each is a path the runtime creates and reads back. An inherited copy - the
+ * agent started from a shell that exported one, or a script skill spawning
+ * another - would have a child write its result, its charge or its refusal into
+ * a file belonging to somebody else's job, while the runtime tells the operator
+ * the channel was never offered. Stripped here; set explicitly by the skill
+ * that owns them.
+ */
+const JOB_CHANNEL_ENV_VARS: readonly string[] = [
+  'ELISYM_OUTPUT_FILE',
+  'ELISYM_OUTPUT_DIR',
+  'ELISYM_CHARGE_FILE',
+  // From the constant the skills SET it from: a rename that touched only one of
+  // the two would set the channel under the new name and strip the old one,
+  // quietly restoring the inherited-channel hole this list exists to close.
+  SCRIPT_REFUSAL_FILE_ENV,
+  'ELISYM_INPUT_FILE',
+  'ELISYM_HISTORY_FILE',
+  'ELISYM_SESSION_ID',
+];
+
+const STRIPPED_FROM_TOOL_ENV: readonly string[] = [...SECRET_ENV_VARS, ...JOB_CHANNEL_ENV_VARS];
+
+/**
+ * `process.env` with the operator's secrets and any inherited job channel gone,
+ * and this job's own channels written in.
+ *
+ * ONE copy, and one delete pass: this runs per spawn, and a container host's
+ * environment is a few hundred entries to clone. Which is also why the channels
+ * come in here rather than being spread into the result afterwards.
+ */
+export function scopedToolEnv(channels: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const key of SECRET_ENV_VARS) {
+  for (const key of STRIPPED_FROM_TOOL_ENV) {
     delete env[key];
   }
-  return env;
+  return Object.assign(env, channels);
+}
+
+/**
+ * The environment a job's script runs in: one copy of the base, the inherited
+ * channels stripped out of it, this job's own channels written in.
+ *
+ * One copy, because this runs per spawn and the base is the CLI's own spread of
+ * `process.env` - a few hundred keys on a container host. Taking the extras
+ * here rather than spreading the result into an object literal is what keeps it
+ * to one.
+ */
+export function jobScriptEnv(
+  base: NodeJS.ProcessEnv,
+  channels: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  // For a caller-supplied base only; the default path goes through
+  // `scopedToolEnv(channels)`, which does the same in one copy from
+  // `process.env`.
+  const env: NodeJS.ProcessEnv = { ...base };
+  for (const key of JOB_CHANNEL_ENV_VARS) {
+    delete env[key];
+  }
+  return Object.assign(env, channels);
 }
 
 export interface ScriptSkillParams {

@@ -1,13 +1,45 @@
 import { describe, expect, it } from 'vitest';
-import { classifyJobError } from '../src/services/jobErrors';
+import {
+  classifyJobError,
+  PROVIDER_FAILED_MESSAGE,
+  PROVIDER_REFUSED_PREFIX,
+} from '../src/services/jobErrors';
 
 describe('classifyJobError', () => {
+  it('reads a provider refusal as its own kind, whatever words it uses', () => {
+    // These are ordinary English in a refusal and outage markers as substrings.
+    for (const reason of [
+      'insufficient detail in the brief - add the target audience.',
+      'your billing address is missing a postal code.',
+      'that file is unauthorized for this capability.',
+    ]) {
+      expect(classifyJobError(`${PROVIDER_REFUSED_PREFIX}${reason}`)).toBe('provider-refused');
+    }
+  });
+
+  it('matches the label as a prefix, never as a substring', () => {
+    expect(classifyJobError(`some wrapper said "${PROVIDER_REFUSED_PREFIX}nope"`)).not.toBe(
+      'provider-refused',
+    );
+  });
+
   it('classifies the canonical runtime message', () => {
     expect(classifyJobError('Agent temporarily unavailable')).toBe('agent-unavailable');
   });
 
-  it('classifies the API-leaks sanitization mask', () => {
-    expect(classifyJobError('Internal processing error')).toBe('agent-unavailable');
+  it('does NOT read the sanitization mask as an outage', () => {
+    // It is the runtime's mask for a terminal failure it will not describe, so
+    // the job is closed and nothing retries it. Calling it an outage had the app
+    // tell a paying customer their money was held and the result would arrive.
+    expect(classifyJobError('Internal processing error')).toBe('unknown');
+  });
+
+  it('does not read the terminal sentence as an outage', () => {
+    // The distinction that matters: the gate's message keeps the job paid for
+    // the recovery loop, so "held, it will be retried" is true of it. This one
+    // is what the runtime says when a job is CLOSED, and promising a retry for
+    // it keeps someone waiting instead of contacting the provider.
+    expect(classifyJobError(PROVIDER_FAILED_MESSAGE)).not.toBe('agent-unavailable');
   });
 
   it('classifies raw Anthropic auth errors that leak through script skills', () => {

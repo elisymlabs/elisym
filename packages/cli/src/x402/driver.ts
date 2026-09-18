@@ -20,6 +20,8 @@ import {
   calculateProtocolFee,
   formatAssetAmount,
   resolveUsdcAsset,
+  clipToCodeUnits,
+  flattenForComparison,
   signerFromSecretKeyBase58,
 } from '@elisym/sdk';
 import type { Asset, Network } from '@elisym/sdk';
@@ -33,7 +35,6 @@ import {
 import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
 import { ExactSvmScheme } from '@x402/svm';
 import { fetchUsdcBalance } from '../helpers.js';
-import { sanitizeForTerminal } from '../logging.js';
 import type { SkillInput, X402JobDriver, X402SkillJob } from '../skill/index.js';
 import {
   X402_ERROR_BODY_READ_MS,
@@ -353,39 +354,15 @@ function withPaymentIdentifier(
 }
 
 /**
- * Format characters: invisible, and survivors of control-stripping. The class
- * covers what an upstream would reach for to make a line read as something
- * other than what it says - direction overrides and isolates, zero-width
- * joiners, the byte-order mark, the tag block used to smuggle text past a
- * human reader - without this file having to enumerate them.
- */
-const UNICODE_FORMAT_MARKS = /\p{Cf}/gu;
-
-/**
- * Flatten untrusted text into something that cannot forge a line on the
- * operator's terminal: no C0/C1 controls, no format marks, and no newline to
- * turn one line into two. Everything an upstream can influence passes through
- * here before it is logged or quoted - a sanitized excerpt is only as good as
- * the least careful line reaching the same terminal.
- */
-function flattenForOperator(text: string): string {
-  // Marks first, then whitespace: the byte-order mark is both, and collapsing
-  // first would leave it as a space this never strips. What remains of the
-  // whitespace class - the line and paragraph separators among it - then
-  // collapses to a single space rather than welding two words together.
-  return sanitizeForTerminal(text).replace(UNICODE_FORMAT_MARKS, '').replace(/\s+/g, ' ').trim();
-}
-
-/**
  * Exactly the characters `clipForOperator` will print for this text: all of it
- * when it fits, otherwise the excerpt's worth minus a high surrogate the cut
- * separated from its pair - half a character is not something to hand a log
- * file or a terminal.
+ * when it fits, otherwise the excerpt's worth, never ending in half a one.
+ *
+ * Code units rather than characters, because this budget is how much of a LINE
+ * an operator's terminal gets; both counts live in the SDK's `untrusted-text`,
+ * which says why each is the unit it is.
  */
 function printedPrefix(flattened: string): string {
-  return flattened.length <= X402_ERROR_EXCERPT_CHARS
-    ? flattened
-    : flattened.slice(0, X402_ERROR_EXCERPT_CHARS).replace(/[\ud800-\udbff]$/, '');
+  return clipToCodeUnits(flattened, X402_ERROR_EXCERPT_CHARS);
 }
 
 /** Clip an already-flattened quote to one line's worth of terminal. */
@@ -410,7 +387,7 @@ function clipForOperator(flattened: string): string {
  * guard has to sit between that masking and the clip.
  */
 function quoteUpstream(text: string): string {
-  return clipForOperator(flattenForOperator(text));
+  return clipForOperator(flattenForComparison(text));
 }
 
 /**
@@ -422,7 +399,7 @@ function quoteUpstream(text: string): string {
  * that the bridge is down.
  */
 function quoteUpstreamWithInput(text: string, sentInput: string): string {
-  return clipForOperator(maskCustomerInput(flattenForOperator(text), inputForms(sentInput)));
+  return clipForOperator(maskCustomerInput(flattenForComparison(text), inputForms(sentInput)));
 }
 
 /**
@@ -491,7 +468,7 @@ function inputForms(sentInput: string): string[] {
   // for a leading byte-order mark, which the flattening removes from needle
   // and haystack alike.
   return [wireForm(sentInput), jsonEscapedForm(sentInput), ...urlEncodedForms(sentInput)].map(
-    flattenForOperator,
+    flattenForComparison,
   );
 }
 
@@ -563,7 +540,7 @@ export class X402Driver implements X402JobDriver {
     // second lock - but the ones that interpolate a store failure or a skill
     // name have no other, and a future line that forgets to quote would forge
     // a line on the operator's terminal rather than merely read badly.
-    (this.options.log ?? console.log)(`[x402] ${flattenForOperator(message)}`);
+    (this.options.log ?? console.log)(`[x402] ${flattenForComparison(message)}`);
   }
 
   private getSigner(): Promise<KeyPairSigner> {
@@ -823,7 +800,7 @@ export class X402Driver implements X402JobDriver {
         this.options.errorBodyReadMs ?? X402_ERROR_BODY_READ_MS,
       );
       const forms = inputForms(sentInput);
-      const quoted = maskCustomerInput(flattenForOperator(body.text), forms);
+      const quoted = maskCustomerInput(flattenForComparison(body.text), forms);
       if (quoted.length === 0) {
         return '';
       }

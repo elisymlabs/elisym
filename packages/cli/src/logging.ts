@@ -8,7 +8,7 @@
  * Redaction uses the SDK's DEFAULT_REDACT_PATHS so secret keys and
  * user input cannot leak through structured logs even in verbose mode.
  */
-import { DEFAULT_REDACT_PATHS, makeCensor } from '@elisym/sdk';
+import { DEFAULT_REDACT_PATHS, deleteControlCharacters, makeCensor } from '@elisym/sdk';
 import pino, { type Logger } from 'pino';
 
 export interface CreateLoggerOptions {
@@ -28,17 +28,6 @@ export interface CliLogger {
   logWithIndent(line: string): void;
   /** Banner-only write to stdout. Semantically identical to logWithIndent. */
   bannerLog(line: string): void;
-}
-
-/**
- * Strip terminal control characters before writing remote-derived content to the
- * operator's terminal. Nostr tag values and provider error strings are attacker-
- * controlled; raw ANSI escapes (`\x1b`), carriage returns, and other C0/C1 controls
- * could spoof output, hide text, or overwrite earlier lines. Keeps tab and newline.
- */
-export function sanitizeForTerminal(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 }
 
 function resolveLevel(options: CreateLoggerOptions): string {
@@ -83,7 +72,7 @@ export function createLogger(options: CreateLoggerOptions = {}): CliLogger {
   }
 
   function logWithIndent(line: string): void {
-    process.stdout.write(`  ${sanitizeForTerminal(line)}\n`);
+    process.stdout.write(`  ${deleteControlCharacters(line)}\n`);
   }
 
   return {

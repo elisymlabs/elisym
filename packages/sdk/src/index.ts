@@ -66,7 +66,37 @@ export type {
 } from './services/reputation';
 export { MarketplaceService, parseDelegatedPayment } from './services/marketplace';
 export type { DelegatedPaymentRequest } from './services/marketplace';
-export { classifyJobError, JobWaitTimeoutError } from './services/jobErrors';
+// Only what another package actually consumes: the CLI's runtime flattens a
+// script's stderr for the operator log, and its x402 driver quotes an
+// upstream's body. The rest of `untrusted-text` stays module-private rather
+// than becoming a semver commitment on a published package.
+export {
+  clipToCodeUnits,
+  deleteControlCharacters,
+  excerptOwnMessage,
+  excerptUntrusted,
+  excerptUntrustedTail,
+  flattenForComparison,
+  hasVisibleText,
+} from './skills/untrusted-text';
+export {
+  isLlmHealthError,
+  isScriptBillingExhaustedError,
+  isScriptExecutionError,
+} from './llm-health/types';
+export {
+  isScriptRefusalError,
+  refusalFromJobError,
+  SCRIPT_REFUSAL_MAX_CHARS,
+  scriptOutput,
+} from './skills/refusal';
+export {
+  AGENT_REFUSED_LABEL,
+  classifyJobError,
+  JobWaitTimeoutError,
+  PROVIDER_FAILED_MESSAGE,
+  PROVIDER_REFUSED_PREFIX,
+} from './services/jobErrors';
 export type { JobErrorKind } from './services/jobErrors';
 export { MediaService } from './services/media';
 export { BlossomService } from './services/blossom';

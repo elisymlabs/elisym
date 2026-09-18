@@ -4,7 +4,10 @@ import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { runScript, scopedToolEnv } from './scriptSkill';
+import { HostScratchError } from './host-fault';
+import { SCRIPT_REFUSAL_FILE_ENV, scriptOutput, throwIfRefused } from './refusal';
+import { readRefusalFile } from './refusal-file';
+import { jobScriptEnv, runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
   SkillContext,
@@ -108,13 +111,25 @@ export class DynamicScriptSkill implements Skill {
     // `ELISYM_OUTPUT_FILE` (a fresh temp file); if it does, the runtime seeds that
     // file via iroh. A script that ignores these vars keeps the original
     // stdin -> stdout text behavior unchanged.
-    const outDir = await mkdtemp(join(tmpdir(), 'elisym-skill-out-'));
+    // A tmpdir that is full or read-only is the AGENT failing, not the script
+    // and not the operator's API key: `HostScratchError` tells the runtime to
+    // leave the health gate alone rather than refuse every capability on that
+    // key and have the recovery probe clear it again on the next tick.
+    const outDir = await mkdtemp(join(tmpdir(), 'elisym-skill-out-')).catch((err: unknown) => {
+      throw new HostScratchError(err instanceof Error ? err.message : String(err));
+    });
     const outputFile = join(outDir, 'output');
     // A skill returning MULTIPLE files writes them here instead of ELISYM_OUTPUT_FILE.
     // It lives under outDir (so the single `cleanup` of outDir removes both) and is a
     // distinct subpath from `outputFile`, so scanning it never picks up the single file.
     const outputDir = join(outDir, 'files');
-    await mkdir(outputDir, { recursive: true });
+    // Same disk, same verdict - and the directory goes with it: this is ahead
+    // of the `try` whose `finally` removes it, so a throw here would leak one
+    // per failed job on the host that can least afford it.
+    await mkdir(outputDir, { recursive: true }).catch(async (err: unknown) => {
+      await rm(outDir, { recursive: true, force: true }).catch(() => {});
+      throw new HostScratchError(err instanceof Error ? err.message : String(err));
+    });
     // No caller-provided env -> scoped copy of process.env (secret vars
     // stripped), never the raw parent env with the operator's key ring.
     // Metered charge channel. Deliberately a sibling of `outputFile` under
@@ -123,12 +138,24 @@ export class DynamicScriptSkill implements Skill {
     // charge file placed there would be delivered to the buyer as output and
     // would make a text-only skill look like a file skill.
     const chargeFile = join(outDir, 'charge');
-    const env: NodeJS.ProcessEnv = {
-      ...(this.scriptEnv ?? scopedToolEnv()),
+    // Out-of-band refusal channel. A sibling of the output files for the same
+    // reason the charge file is: what a script prints is frequently not its own
+    // words, and a refusal has to be something it did rather than something it
+    // echoed.
+    const refusalFile = join(outDir, 'refusal');
+    // Every channel is set explicitly; the strip inside is what keeps an
+    // INHERITED one (the agent's own shell, a script skill spawning another)
+    // from surviving into a var this job does not set.
+    const channels: NodeJS.ProcessEnv = {
       ELISYM_OUTPUT_FILE: outputFile,
       ELISYM_OUTPUT_DIR: outputDir,
       ELISYM_CHARGE_FILE: chargeFile,
+      [SCRIPT_REFUSAL_FILE_ENV]: refusalFile,
     };
+    const env =
+      this.scriptEnv === undefined
+        ? scopedToolEnv(channels)
+        : jobScriptEnv(this.scriptEnv, channels);
     if (input.filePath !== undefined) {
       env.ELISYM_INPUT_FILE = input.filePath;
     }
@@ -142,7 +169,12 @@ export class DynamicScriptSkill implements Skill {
     }
     if (input.history !== undefined && input.history.length > 0) {
       const historyFile = join(outDir, 'history.json');
-      await writeFile(historyFile, JSON.stringify(input.history), 'utf8');
+      await writeFile(historyFile, JSON.stringify(input.history), 'utf8').catch(
+        async (err: unknown) => {
+          await rm(outDir, { recursive: true, force: true }).catch(() => {});
+          throw new HostScratchError(err instanceof Error ? err.message : String(err));
+        },
+      );
       env.ELISYM_HISTORY_FILE = historyFile;
     }
 
@@ -164,16 +196,27 @@ export class DynamicScriptSkill implements Skill {
           null,
           result.spawnError.message,
           'script could not be started',
+          // EMPTY, not absent: the child never ran, so it said nothing. Absent
+          // would let the health scan fall back to `detail` - which here is the
+          // spawn message - and gate the operator's key on the word "billing" in
+          // a script PATH. The operator still reads the path, off `detail`.
+          '',
         );
       }
       if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {
         throw new ScriptBillingExhaustedError(result.code, result.stdout, result.stderr);
       }
+      // After the billing signal, before everything else: an exhausted key
+      // must gate the agent even if a refusal file from an earlier branch is
+      // lying around. Otherwise a written reason wins, including over the
+      // success path - a script that wrote one and then exited 0 refused,
+      // whatever its exit code claims.
+      throwIfRefused(result, await readRefusalFile(refusalFile));
       if (result.code !== 0) {
-        const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
+        const detail = scriptOutput(result);
         // Generic message reaches the customer; raw stderr/stdout stays on `detail`
         // for the operator log and health-monitor classification only.
-        throw new ScriptExecutionError(result.code, detail);
+        throw new ScriptExecutionError(result.code, detail, undefined, result.stderr);
       }
 
       // Read the metered charge ONCE, before the three return shapes below - a
@@ -237,7 +280,12 @@ export class DynamicScriptSkill implements Skill {
         // paid -> failed path so recovery terminates it. stderr (if any)
         // carries the underlying reason for the operator log.
         const detail = result.stderr.trim() || '(no stderr)';
-        throw new ScriptExecutionError(result.code, detail, 'script produced empty output');
+        throw new ScriptExecutionError(
+          result.code,
+          detail,
+          'script produced empty output',
+          result.stderr,
+        );
       }
       return { data: output, ...(chargeSubunits !== undefined ? { chargeSubunits } : {}) };
     } finally {

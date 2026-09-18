@@ -713,7 +713,7 @@ describe('one settlement transaction settles one job', () => {
     // is the only place a paying customer is told their money is not lost. The
     // same prefix is what keeps the message off the sanitiser's generic mask.
     expect(PAYMENT_TIMEOUT_CUSTOMER_MESSAGE.startsWith('Payment timeout')).toBe(true);
-    expect(messages).not.toContain('Internal processing error');
+    expect(messages).not.toContain('The agent could not complete this job.');
     expect(messages.join(' ')).not.toContain('feedback-first');
     expect(messages.join(' ')).not.toContain(SHARED_SIGNATURE);
     expect(deliveredJobIds(transport)).not.toContain('feedback-second');

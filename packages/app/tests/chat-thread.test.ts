@@ -315,6 +315,52 @@ describe('chatThread store', () => {
       expect(await store.failEntry(AGENT, 'ghost-job')).toBe(false);
     });
 
+    it('attaches a refusal to an entry that already failed', async () => {
+      // An entry aged out to `failed` before its refusal arrived still needs
+      // the reason: without it the thread offers Retry, and Retry buys the same
+      // deterministic refusal again - on a flat-priced skill, for full price.
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+      expect(await store.failEntry(AGENT, 'job-1')).toBe(true);
+      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'say the size in USD.' })).toBe(true);
+      const [entry] = await store.readThread(AGENT);
+      expect(entry?.status).toBe('failed');
+      expect(entry?.refusal).toBe('say the size in USD.');
+    });
+
+    it('does not churn the store when the same refusal arrives twice', async () => {
+      // Two live subscriptions for one job is the normal shape on the Chat tab.
+      // The second write must not touch the store - and must still answer that
+      // the thread carries the reason, since the caller uses that to decide
+      // whether the inline note may stand down. Reading it as "not stored"
+      // paints the same sentence twice, once in the bubble and once in red.
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+      await store.failEntry(AGENT, 'job-1', { refusal: 'say the size in USD.' });
+      const version = store.version();
+      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'say the size in USD.' })).toBe(true);
+      // No bump: the store did not change, so nothing re-renders.
+      expect(store.version()).toBe(version);
+    });
+
+    it('says the thread does NOT carry a refusal it was never given', async () => {
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+      await store.failEntry(AGENT, 'job-1');
+      expect(await store.failEntry(AGENT, 'job-1')).toBe(false);
+      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'a different reason' })).toBe(true);
+    });
+
+    it('never demotes a completed entry, refusal or not', async () => {
+      const { store } = createStore();
+      await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
+      await store.completeEntry(AGENT, 'job-1', { result: 'answer' });
+      expect(await store.failEntry(AGENT, 'job-1', { refusal: 'too late' })).toBe(false);
+      const [entry] = await store.readThread(AGENT);
+      expect(entry?.status).toBeUndefined();
+      expect(entry?.refusal).toBeUndefined();
+    });
+
     it('does not resurrect a purged entry via a late transition', async () => {
       const { store, storage } = createStore();
       await store.appendPendingEntry(AGENT, pendingEntry('job-1'));
@@ -499,6 +545,26 @@ describe('chatThread store', () => {
       expect(thread).toHaveLength(MAX_THREAD_ENTRIES);
       expect(thread.some((entry) => entry.jobEventId === 'job-paid')).toBe(true);
       // The oldest NON-exempt entry was trimmed instead.
+      expect(thread.some((entry) => entry.jobEventId === 'job-0')).toBe(false);
+    });
+
+    it('exempts a paid entry the agent REFUSED', async () => {
+      // A refusal is terminal and, on a flat-priced skill, already charged, so
+      // this entry is the customer's only local record of a payment that bought
+      // nothing - the one the held-payment note sends them to check. Demoting
+      // it to `failed` must not quietly make it trimmable.
+      const { store } = createStore();
+      const base = Date.now() - 1_000_000;
+      await store.appendPendingEntry(
+        AGENT,
+        pendingEntry('job-refused', { ts: base - 10, txHash: 'paid-sig' }),
+      );
+      await store.failEntry(AGENT, 'job-refused', { refusal: 'size this in USD.' });
+      for (let i = 0; i < MAX_THREAD_ENTRIES; i += 1) {
+        await store.mergeHydratedEntry(AGENT, hydratedEntry(`job-${i}`, { ts: base + i }));
+      }
+      const thread = await store.readThread(AGENT);
+      expect(thread.some((entry) => entry.jobEventId === 'job-refused')).toBe(true);
       expect(thread.some((entry) => entry.jobEventId === 'job-0')).toBe(false);
     });
   });

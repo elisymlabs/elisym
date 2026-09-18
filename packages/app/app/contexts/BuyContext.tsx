@@ -3,6 +3,7 @@ import {
   buildAuthMessage,
   buildPaymentInstructions,
   classifyJobError,
+  refusalFromJobError,
   deriveOwnerDelegationAta,
   encodeJobPayload,
   estimatePriorityFeeMicroLamports,
@@ -79,6 +80,7 @@ import {
 } from '~/lib/chatThread';
 import { SDK_CLUSTER, SOLANA_CLUSTER, SOLANA_RPC_URL } from '~/lib/cluster';
 import { DELEGATED_WALLET_UNSUPPORTED_MESSAGE, usesDelegatedRail } from '~/lib/delegatedBuyMode';
+import { boundedErrorText, customerErrorText } from '~/lib/errorText';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
 import { formatCardPrice, settledPriceForEntry } from '~/lib/formatPrice';
 import { cacheSet } from '~/lib/localCache';
@@ -231,6 +233,24 @@ export interface ActiveBuySession {
   phase?: BuyPhase;
   result: string | null;
   error: string | null;
+  /**
+   * Whether `error` came back from the JOB or from this app.
+   *
+   * A job error is a provider's verdict, classified and rendered as one. An
+   * app error is a wallet rejection or an RPC failure, and classifying it would
+   * answer "insufficient SOL" with "Agent unavailable, try again later" beside
+   * a note promising a retry that is not coming.
+   */
+  errorFromJob?: boolean;
+  /**
+   * Whether the refusal reached the thread, where the failed bubble renders it.
+   *
+   * The inline note only stands down for a refusal it knows is shown elsewhere:
+   * the write can return false (the entry was trimmed, or storage refused it),
+   * and a customer whose job was refused must never be left with no reason on
+   * screen at all.
+   */
+  refusalInThread?: boolean;
   /**
    * `true` once the on-chain payment has been confirmed and the
    * payment-completed feedback has been published. Stays `true` even after
@@ -675,6 +695,33 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // timeout is treated as "still processing" (pending) rather than an
         // error. Closure-local so it survives across the async callbacks.
         let paidLocally = false;
+        // Whether the THREAD holds the payment. The failed bubble reads `txHash`
+        // from the entry to decide whether to explain where the money went, so a
+        // write that never landed - or has not landed YET - has to keep the
+        // composer's note on screen; otherwise a refused customer who paid is
+        // shown a reason and no mention of their money anywhere. True until
+        // there is a payment to record, false while one is in flight.
+        let txRecorded = true;
+        // Whether a refusal has been stored for THIS job, so either async write
+        // can re-decide the suppression when it lands. Without that the flag
+        // latches on whichever settled first: a refusal that beat the payment
+        // write left both the note and the bubble printing the same two
+        // paragraphs, and nothing re-checked when the write arrived.
+        let refusalStored = false;
+        const syncRefusalInThread = (paymentInThread: boolean): void => {
+          if (!refusalStored) {
+            // Nothing to stand down. Writing the flag again would allocate a new
+            // session object and re-render every card on the page for no change,
+            // and this runs on the ordinary paid path, where there is no refusal
+            // at all.
+            return;
+          }
+          setSession((prev) =>
+            sessionMatches(prev) && prev.jobId === jobEventId
+              ? { ...prev, refusalInThread: paymentInThread }
+              : prev,
+          );
+        };
         // Set once the payment tx is broadcast (signature obtained) but before
         // confirmation completes. A wait-window timeout in that window is NOT a hard
         // failure - the tx may still land - so the timeout marks it resumable-pending.
@@ -713,7 +760,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Terminal, unpaid exit: the job will never be paid, so the
                 // pending entry gains the Retry affordance now instead of
                 // waiting out the 24h unpaid-aging rule.
-                void failEntry(agentPubkey, jobEventId);
+                void failEntry(agentPubkey, jobEventId).catch(() => {});
                 cleanupRef.current?.();
                 cleanupRef.current = null;
                 return;
@@ -881,7 +928,24 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Same rule for the thread entry: a paid `pending` entry (txHash
                 // present) is exempt from unpaid-aging and trimming - money was
                 // sent, the state must stay visible.
-                void recordEntryTxHash(agentPubkey, jobEventId, signature);
+                // False from the moment the write is ISSUED: a refusal can arrive
+                // before it settles, and reading the optimistic value would stand
+                // the note down for a bubble with no `txHash` to speak from.
+                txRecorded = false;
+                void recordEntryTxHash(agentPubkey, jobEventId, signature)
+                  .then((wrote) => {
+                    // The RESOLVED value, not a rejection: the thread store
+                    // answers a storage failure with `false` and never throws,
+                    // so a `catch` here would be dead code. The bubble reads
+                    // `txHash` to decide whether to say anything about the
+                    // money; a lost write means it cannot, and the composer's
+                    // note must then stay on screen for this job.
+                    txRecorded = wrote;
+                    syncRefusalInThread(wrote);
+                  })
+                  .catch(() => {
+                    txRecorded = false;
+                  });
                 // Strategy form (blockhash + lastValidBlockHeight) so a dropped tx rejects
                 // at blockhash expiry instead of hanging `buying` forever - the deprecated
                 // single-signature form has no expiry. Then inspect the result: a tx can
@@ -974,14 +1038,19 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Terminal payment failure (never broadcast, or reverted with no
                 // funds moved): the thread entry gains the Retry affordance. The
                 // resumable branch above deliberately leaves it paid-`pending`.
-                void failEntry(agentPubkey, jobEventId);
+                void failEntry(agentPubkey, jobEventId).catch(() => {});
                 setSession((prev) =>
-                  sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
+                  sessionMatches(prev)
+                    ? { ...prev, buying: false, error: msg, errorFromJob: false }
+                    : prev,
                 );
                 cleanupRef.current?.();
                 cleanupRef.current = null;
                 toast.dismiss(toastId);
-                toast.error(msg);
+                // The app's own words, not a verdict to classify - but still
+                // bounded, since an RPC or wallet error can arrive as a wall of
+                // JSON.
+                toast.error(boundedErrorText(msg));
               }
             },
 
@@ -1024,7 +1093,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 { stampUnseen: !alreadyOnAgentPage },
               );
               if (delegatedTxHash !== undefined) {
-                void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash);
+                // No `txRecorded` bookkeeping here: this runs on the DELIVERED
+                // path, and a job that delivered a result was not refused - the
+                // subscription closes on the first of the two - so there is no
+                // note to stand down and nothing to keep in step.
+                void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash).catch(() => {});
               }
               // A metered card stamps the CEILING at submit time - the real
               // figure does not exist until the work is done. Correct it now, or
@@ -1127,15 +1200,50 @@ export function BuyProvider({ children }: { children: ReactNode }) {
               // ordinary failed bubble with Retry. If the provider completes
               // the job later anyway (crash-recovery re-execution), hydration
               // flips the failed entry back to completed.
-              void failEntry(agentPubkey, jobEventId);
+              // A refusal is terminal and, on a flat-priced skill, already
+              // charged: the entry must not offer Retry, which would buy the
+              // same answer again.
+              const kind = classifyJobError(errMsg);
+              const refused = kind === 'provider-refused';
+              void failEntry(agentPubkey, jobEventId, {
+                ...(refused ? { refusal: refusalFromJobError(errMsg) } : {}),
+              })
+                .then((stored) => {
+                  if (!refused) {
+                    // Nothing to stand down: the flag was already set false
+                    // synchronously, and writing it again would allocate a new
+                    // session object and re-render every consumer for no change.
+                    return;
+                  }
+                  // Only once the bubble really holds BOTH halves may the note
+                  // stand down - the reason, and the payment the bubble reads to
+                  // explain the money - and only for the job it was written for:
+                  // a slow write resolving after the customer started the next
+                  // job would otherwise silence that job's note.
+                  refusalStored = stored;
+                  syncRefusalInThread(txRecorded);
+                })
+                // A storage failure (private window, quota, an aborted
+                // transaction) must not surface as an unhandled rejection: the
+                // note is already rendering the reason, which is the outcome
+                // this `.then` exists to improve on, not to provide.
+                .catch(() => {});
               setSession((prev) =>
-                sessionMatches(prev) ? { ...prev, buying: false, error: errMsg } : prev,
+                sessionMatches(prev)
+                  ? {
+                      ...prev,
+                      buying: false,
+                      error: errMsg,
+                      errorFromJob: true,
+                      refusalInThread: false,
+                    }
+                  : prev,
               );
               cleanupRef.current = null;
-              const toastMsg =
-                classifyJobError(errMsg) === 'agent-unavailable'
-                  ? 'Agent unavailable. Try again later.'
-                  : errMsg;
+              // The same sentence the inline note is about to render, bounded
+              // the same way: a provider's error feedback reaches here verbatim,
+              // and a toast is no safer a place to paint it than the page is.
+              const toastMsg = customerErrorText(errMsg, kind);
               // Sonner does not always swap a multi-step `toast.loading`
               // chain to an error toast when given the same id (the
               // spinner sticks). Dismiss explicitly, then raise a fresh
@@ -1175,10 +1283,15 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Unpaid timeout is terminal for the thread entry (the design's
                 // aging rule, applied eagerly while the tab is still open). A
                 // paid timeout above stays `pending` - money was sent.
-                void failEntry(agentPubkey, jobEventId);
+                void failEntry(agentPubkey, jobEventId).catch(() => {});
                 setSession((prev) =>
                   sessionMatches(prev)
-                    ? { ...prev, buying: false, error: 'Timed out waiting for the provider' }
+                    ? {
+                        ...prev,
+                        buying: false,
+                        error: 'Timed out waiting for the provider',
+                        errorFromJob: false,
+                      }
                     : prev,
                 );
                 cleanupRef.current = null;
@@ -1213,15 +1326,15 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // (nothing was submitted); after the entry landed it becomes a failed
         // bubble with Retry.
         if (threadEntryJobEventId !== null) {
-          void failEntry(agentPubkey, threadEntryJobEventId);
+          void failEntry(agentPubkey, threadEntryJobEventId).catch(() => {});
         }
         await releaseSessionToken();
         setSession((prev) =>
-          sessionMatches(prev) ? { ...prev, buying: false, error: msg } : prev,
+          sessionMatches(prev) ? { ...prev, buying: false, error: msg, errorFromJob: false } : prev,
         );
         cleanupRef.current = null;
         toast.dismiss(toastId);
-        toast.error(msg);
+        toast.error(boundedErrorText(msg));
       }
     },
     [
@@ -1425,6 +1538,10 @@ export interface ScopedBuyState {
   resultAttachments?: FileAttachment[];
   resultProviderPubkey?: string;
   error: string | null;
+  /** Whether `error` is the JOB's verdict or this app's own failure. */
+  errorFromJob: boolean;
+  /** Whether the agent's refusal is already rendered in the thread's bubble. */
+  refusalInThread: boolean;
   /**
    * Whether on-chain payment was completed for the current session before
    * the terminal state was reached. Used by the error UI to surface a
@@ -1495,6 +1612,8 @@ export function useBuyForCard(args: UseBuyForCardArgs): ScopedBuyState | null {
     resultAttachments: matches ? session?.resultAttachments : undefined,
     resultProviderPubkey: matches ? session?.resultProviderPubkey : undefined,
     error: matches ? (session?.error ?? null) : null,
+    errorFromJob: matches ? (session?.errorFromJob ?? false) : false,
+    refusalInThread: matches ? (session?.refusalInThread ?? false) : false,
     paid: matches ? (session?.paid ?? false) : false,
     pending: matches ? (session?.pending ?? false) : false,
     jobId: matches ? (session?.jobId ?? null) : null,

@@ -1,8 +1,12 @@
-import { dirname } from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { runScript, scopedToolEnv } from './scriptSkill';
+import { SCRIPT_REFUSAL_FILE_ENV, scriptOutput, throwIfRefused } from './refusal';
+import { readRefusalFile } from './refusal-file';
+import { jobScriptEnv, runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
   SkillContext,
@@ -78,29 +82,77 @@ export class StaticScriptSkill implements Skill {
   }
 
   async execute(_input: SkillInput, ctx: SkillContext): Promise<SkillOutput> {
+    // A directory per JOB, and no directory at all when the disk refuses one.
+    //
+    // Per job because a shared directory is enumerable: `ls "$(dirname
+    // "$ELISYM_REFUSAL_FILE")"` from one job's script reaches the channel of
+    // every other job running beside it, and forging a refusal there closes a
+    // different customer's paid job.
+    //
+    // And when the disk refuses one, the job RUNS ANYWAY, without a channel.
+    // This mode is the cron-shaped one: a status skill that curls an endpoint and
+    // prints needs no temp directory at all, and failing every such capability
+    // because /tmp is read-only widens one read-only tmpdir from a single mode into
+    // the whole fleet. What the job loses is the ability to relay a reason - and
+    // `throwIfRefused` is told so, which turns a 43 into a refusal with nothing
+    // said rather than into a crash that would charge the customer for it and
+    // gate the operator's capability.
+    const dir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
+    try {
+      return await this.run(ctx, dir === null ? undefined : join(dir, 'refusal'));
+    } finally {
+      if (dir !== null) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  }
+
+  private async run(ctx: SkillContext, refusalFile: string | undefined): Promise<SkillOutput> {
+    const channels: NodeJS.ProcessEnv =
+      refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile };
     const result = await runScript(this.scriptPath, this.scriptArgs, {
       cwd: dirname(this.scriptPath),
       signal: ctx.signal,
       timeoutMs: this.scriptTimeoutMs,
       // No caller-provided env -> scoped copy of process.env (secret vars
-      // stripped), never the raw parent env with the operator's key ring.
-      env: this.scriptEnv ?? scopedToolEnv(),
+      // stripped), never the raw parent env with the operator's key ring. A
+      // caller-provided one is a spread of `process.env` too, so an INHERITED
+      // channel is stripped either way before this job's own is written in.
+      env:
+        this.scriptEnv === undefined
+          ? scopedToolEnv(channels)
+          : jobScriptEnv(this.scriptEnv, channels),
     });
     if (result.spawnError) {
       throw new ScriptExecutionError(
         null,
         result.spawnError.message,
         'script could not be started',
+        // EMPTY, not absent: the child never ran, so it said nothing. Absent
+        // would let the health scan fall back to `detail` - which here is the
+        // spawn message - and gate the operator's key on the word "billing" in
+        // a script PATH. The operator still reads the path, off `detail`.
+        '',
       );
     }
     if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {
       throw new ScriptBillingExhaustedError(result.code, result.stdout, result.stderr);
     }
+    // After the billing signal, before everything else: an exhausted key
+    // must gate the agent even if a refusal file from an earlier branch is
+    // lying around. Otherwise a written reason wins, including over the
+    // success path - a script that wrote one and then exited 0 refused,
+    // whatever its exit code claims.
+    throwIfRefused(
+      result,
+      refusalFile === undefined ? { state: 'absent' } : await readRefusalFile(refusalFile),
+      refusalFile !== undefined,
+    );
     if (result.code !== 0) {
-      const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
+      const detail = scriptOutput(result);
       // Generic message reaches the customer; raw stderr/stdout stays on `detail`
       // for the operator log and health-monitor classification only.
-      throw new ScriptExecutionError(result.code, detail);
+      throw new ScriptExecutionError(result.code, detail, undefined, result.stderr);
     }
     const output = result.stdout.trim();
     if (output === '') {
@@ -111,7 +163,12 @@ export class StaticScriptSkill implements Skill {
       // paid -> failed path so recovery terminates it. stderr (if any)
       // carries the underlying reason for the operator log.
       const detail = result.stderr.trim() || '(no stderr)';
-      throw new ScriptExecutionError(result.code, detail, 'script produced empty output');
+      throw new ScriptExecutionError(
+        result.code,
+        detail,
+        'script produced empty output',
+        result.stderr,
+      );
     }
     return { data: output };
   }
