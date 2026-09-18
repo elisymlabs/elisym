@@ -55,7 +55,7 @@ const TREASURY_ADDRESS = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
 const PAYMENT_REFERENCE = 'DLZ1JYbYLEe4QowxxuNtGEzeYkJiSqmNHZhQSiAfzHms';
 const PAYMENT_REFERENCE_B = 'JAJY3XFw5RJXQBjWG4VSTFVXaW53FvxDeve1kVbVJZYD';
 const PAYMENT_REFERENCE_C = '7yLk9tVQbMhLmqaMbmVfWmJ4pQWxHXjLmtTsgVbFqPnZ';
-const PAYMENT_REFERENCE_D = 'SysvarRent111111111111111111111111111111111';
+const PAYMENT_REFERENCE_D = 'BqTc4Vy2rXmJ8xLdWnFhZkPsGvUeNyMoRjAiKbHtScXw';
 
 /**
  * A payment request in the shape the real SDK mints one - fee fields and network

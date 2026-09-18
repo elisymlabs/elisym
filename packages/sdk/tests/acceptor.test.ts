@@ -318,7 +318,7 @@ describe('what may become a terminal "nobody paid"', () => {
     listFailures = 3;
     const result = await makeAcceptor(strategyVerifying()).accept(
       { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
-      { ...CONFIG },
+      CONFIG,
     );
     expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
   });
@@ -485,6 +485,31 @@ describe('the store contract', () => {
     expect(() => createFileSettlementStore(path)).toThrow(/not readable JSON/);
   });
 
+  it.each([
+    ['a null settlements map', { version: 1, settlements: null }],
+    ['an array where the map belongs', { version: 1, settlements: [] }],
+    ['a top-level array', []],
+    ['no version at all', { settlements: {} }],
+  ])('refuses %s rather than read it as empty', (_label, contents) => {
+    // `typeof null` and `typeof []` are both `'object'`, which is exactly how
+    // these walked through the first version of this guard.
+    const path = join(dir, `shape-${String(_label).replace(/\W+/g, '-')}.json`);
+    writeFileSync(path, JSON.stringify(contents), 'utf-8');
+
+    expect(() => createFileSettlementStore(path)).toThrow();
+  });
+
+  it.each([[Number.NaN], [undefined], ['30 days' as unknown as number]])(
+    'refuses a retention of %s',
+    (bad) => {
+      expect(() => store.prune(bad as number)).toThrow(/at least/);
+    },
+  );
+
+  it('allows an infinite retention - "never release anything"', () => {
+    expect(store.prune(Number.POSITIVE_INFINITY)).toBe(0);
+  });
+
   it('refuses an index written by a different format version', () => {
     // Same class without the crash: a future layout read by today's rules
     // reports its settlements as unclaimed.
@@ -515,6 +540,37 @@ describe('the store contract', () => {
     expect(seeded.owner(SIG_A)).toBe('job-1');
   });
 
+  it('hands back an empty signature it was seeded with, and the acceptor ignores it', async () => {
+    // `claimedSignature` returns what the forward index attributes RIGHT NOW,
+    // empty string included: filtering here would make this fixture vacuous and
+    // let "an unusable signature counts as the job's own settlement" survive.
+    // The acceptor is what has to reject it.
+    const path = join(dir, 'empty-key.json');
+    writeFileSync(
+      path,
+      JSON.stringify({ version: 1, settlements: { '': { job: 'job-1', at: Date.now() } } }),
+      'utf-8',
+    );
+    const seeded = createFileSettlementStore(path);
+    expect(seeded.claimedSignature('job-1')).toBe('');
+
+    listedPages = [[]];
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(),
+      rpc: makeRpc(),
+      store: seeded,
+    });
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    // Treated as "owns nothing": the window was read whole and was empty, so
+    // the verdict is the terminal one rather than the `inconclusive` a real
+    // settlement would have forced.
+    expect(result).toMatchObject({ accepted: false, reason: 'window-empty' });
+  });
+
   it('refuses a retention short enough to free a still-verifiable settlement', () => {
     expect(() => store.prune(MIN_SETTLEMENT_RETENTION_MS - 1)).toThrow(/at least/);
     expect(store.prune(MIN_SETTLEMENT_RETENTION_MS)).toBe(0);
@@ -523,36 +579,90 @@ describe('the store contract', () => {
 
 describe('the usability predicate against the real verifier', () => {
   /**
-   * The parity the predicate's own docstring promises. It is a MIRROR of the
-   * verifier's preconditions, not an extraction from them, so the two can drift
-   * - and the direction that costs money is one-way: `unusable-request` is
-   * terminal, so anything it calls unpayable had better be something the real
-   * verifier also refuses. The reverse is allowed: the verifier may refuse more.
+   * The parity the predicate's own docstring promises. It MIRRORS the
+   * verifier's preconditions rather than being extracted from them, so the two
+   * can drift - and one direction costs money: `unusable-request` is terminal,
+   * so anything the predicate calls unpayable had better be something the real
+   * verifier also refuses without even asking the chain.
+   *
+   * The discriminator is whether the RPC was TOUCHED, not what came back.
+   * `verifyPayment` reports "I could not reach the chain" as the same
+   * `{verified: false}` it uses for "this is not a payment", so asserting on
+   * that alone is true for every input and proves nothing.
    */
   const realStrategy = new SolanaPaymentStrategy();
-  const rpcThatFindsNothing = {
-    getTransaction: () => ({ send: async () => null }),
-    getSignaturesForAddress: () => ({ send: async () => [] }),
-  } as never;
+  let getTransaction: ReturnType<typeof vi.fn>;
+
+  function spyingRpc() {
+    getTransaction = vi.fn(() => ({
+      send: () => Promise.reject(new Error('reached the chain')),
+    }));
+    return { getTransaction, getSignaturesForAddress: getTransaction } as never;
+  }
 
   it.each([
     ['a missing reference', { reference: undefined }],
-    ['a malformed reference', { reference: 'not-an-address' }],
     ['a missing recipient', { recipient: undefined }],
     ['a zero amount', { amount: 0 }],
     ['a non-integer amount', { amount: 1.5 }],
     ['a negative fee amount', { fee_amount: -1 }],
     ['an unresolvable asset', { asset: { chain: 'solana', token: 'nosuch', decimals: 6 } }],
-  ])('refuses %s in both, never only in the predicate', async (_label, overrides) => {
+  ])('refuses %s in both, and never asks the chain', async (_label, overrides) => {
     const request = makeRequest(overrides as never);
+    const rpc = spyingRpc();
 
     expect(classifyRequestUsability(request, CONFIG)).toBe('unusable-request');
-    const verified = await realStrategy.verifyPayment(rpcThatFindsNothing, request, CONFIG, {
+    const verified = await realStrategy.verifyPayment(rpc, request, CONFIG, {
       txSignature: SIG_A,
       retries: 1,
       intervalMs: 0,
     });
+
     expect(verified.verified).toBe(false);
+    expect(getTransaction).not.toHaveBeenCalled();
+  });
+
+  it('is STRICTER than the verifier about the reference format, and that is the safe way', async () => {
+    // The one place the two deliberately disagree, so it gets a name rather
+    // than a row. `verifyPayment` only tests the reference for truthiness
+    // (`solana.ts`), so a malformed one sends it to the chain to look for a
+    // transaction that cannot exist; the predicate checks the format and calls
+    // it terminal.
+    //
+    // Terminal is right here: an address that is not an address can never
+    // appear in any transaction, so no amount of waiting finds a payment. The
+    // direction is what matters - the predicate refusing MORE than the verifier
+    // costs a job that was unpayable anyway, while refusing less would let a
+    // terminal verdict land on a request the verifier would have taken.
+    const request = makeRequest({ reference: 'not-an-address' } as never);
+    const rpc = spyingRpc();
+
+    expect(classifyRequestUsability(request, CONFIG)).toBe('unusable-request');
+    await realStrategy.verifyPayment(rpc, request, CONFIG, {
+      txSignature: SIG_A,
+      retries: 1,
+      intervalMs: 0,
+    });
+
+    expect(getTransaction).toHaveBeenCalled();
+  });
+
+  it('sends a request it calls payable to the chain', async () => {
+    // The control. Without it every row above would pass against a verifier
+    // that refused everything, and the drift worth catching - the predicate
+    // calling something terminal that the verifier would have accepted - is
+    // exactly what would go unnoticed.
+    const request = makeRequest();
+    const rpc = spyingRpc();
+
+    expect(classifyRequestUsability(request, CONFIG)).toBeUndefined();
+    await realStrategy.verifyPayment(rpc, request, CONFIG, {
+      txSignature: SIG_A,
+      retries: 1,
+      intervalMs: 0,
+    });
+
+    expect(getTransaction).toHaveBeenCalled();
   });
 });
 

@@ -833,12 +833,12 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     });
 
     it('refuses when the balance arrays disagree on length', async () => {
-      // `pre[i]` and `post[i]` are the same account; different lengths mean the
-      // answer cannot be interpreted. Without the guard this particular shape
-      // fails somewhere else entirely - the index map is built over the SHORTER
-      // array, so the reference at index 3 never gets mapped and the refusal
-      // reads "Reference key not found - possible replay", blaming the customer
-      // for a page we could not read.
+      // A SHORT `pre`. Without the guard this direction fails somewhere else
+      // entirely: the index map is built over `preBalances.length`, so the
+      // reference at index 3 never gets mapped and the refusal reads "Reference
+      // key not found - possible replay", blaming the customer for a page we
+      // could not read. The other direction is worse and has its own test
+      // below.
       const rpc = createMockRpc({
         getTransaction: () => ({
           send: () =>
@@ -854,6 +854,33 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
 
       const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
         txSignature: 'lenMismatchSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/disagree on length/);
+    });
+
+    it('refuses a short postBalances, which without the guard is ACCEPTED', async () => {
+      // The direction that costs money, measured: with the guard removed this
+      // exact shape verifies as `true`. `postBalances` is short by one but
+      // still covers the recipient and the treasury, so every index the
+      // verifier actually reads is present and the missing slot is never
+      // noticed - the payment is accepted on a page we could not read.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'shortPostSig' as Signature,
         ...FAST,
       });
       expect(result.verified).toBe(false);

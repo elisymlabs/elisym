@@ -1041,7 +1041,7 @@ export async function cmdStart(
   );
 
   // Tee: banner-style indent line on stdout (existing UX) + structured
-  // stderr pino entry with shared redact paths (defense against future
+  // stderr pino entry with shared redact paths (defence against future
   // slips where a diagnostic string might embed user input).
   const diagLog = (msg: string): void => {
     logWithIndent(msg);
@@ -1179,7 +1179,7 @@ export function buildCapabilityCard(skill: Skill, inputs: CapabilityCardInputs):
     // half alone would advertise pay-per-use on a card that ships no delegation
     // block - the buyer would be told "you pay for what you use" while the only
     // rail they can reach charges the ceiling. The loader already refuses
-    // `metered` without `delegation`, so this is defense in depth.
+    // `metered` without `delegation`, so this is defence in depth.
     // `solanaAddress` is in the gate too: without it the `payment` block below
     // is omitted, and a metered descriptor with no price to clamp against is
     // incoherent by construction - the write-side mirror would then reject the

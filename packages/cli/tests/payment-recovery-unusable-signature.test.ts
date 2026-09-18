@@ -241,10 +241,13 @@ describe('a signature the ledger cannot key a claim on', () => {
       expect(outcome).toBe('corrupt-state');
     });
 
-    it('leaves a job that already owns a settlement alone', async () => {
-      // Gated on the job NOT owning one: a job that does has a signature to
-      // re-verify directly and never lists the reference at all, so the check
-      // would only cost it a terminal failure it does not deserve.
+    it('fails a job that already owns a settlement the same way', async () => {
+      // Measured rather than assumed. The tempting gate here - "this job can
+      // re-verify its own settlement, so leave it alone" - describes a path
+      // that does not exist: the denylist inside `verifyPayment` sits ahead of
+      // both its branches, so the signature path refuses too. With the gate the
+      // entry deferred to the 24h cutoff and died as "the agent did not
+      // recover"; without it, it fails here naming the real problem.
       seedLedger(REAL_SIGNATURE, RECIPIENT);
       listedSignatures = [];
       transactionsBySignature.set(REAL_SIGNATURE, payingTransaction());
@@ -256,7 +259,7 @@ describe('a signature the ledger cannot key a claim on', () => {
         log,
       );
 
-      expect(outcome).not.toBe('corrupt-state');
+      expect(outcome).toBe('corrupt-state');
     });
   });
 });

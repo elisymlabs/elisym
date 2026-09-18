@@ -52,8 +52,9 @@ export interface SettlementStore {
    * third-party store answering `consumed-by-other` to a job's own signature
    * breaks it.
    *
-   * The signature must pass `isUsableSignature`; an unusable one is rejected by
-   * throwing, symmetrically with `jobIdentity`. This is not a duplicate of the
+   * The signature must be a non-empty string; an unusable one is rejected by
+   * throwing, symmetrically with `jobIdentity`. (The predicate this package
+   * uses internally is not exported - implement the shape, not the import.) This is not a duplicate of the
    * step-5 guard but its other half, made observable: a single mutation dropping
    * the usability test inside the acceptor is unobservable there, because three
    * earlier gates keep an unusable signature away from step 5. A provider
@@ -103,10 +104,15 @@ export interface AcceptPaymentInput {
    */
   txSignature?: string;
   /**
-   * Checked wherever the deadline is, and with the same effect: the pass stops
-   * where it stands and reports `inconclusive`, never `window-empty`. An
-   * abandoned look has seen less than the whole window, so it must not be able
-   * to produce the one verdict a provider may act on.
+   * Checked wherever the deadline is, and with the same effect: the pass
+   * reports `inconclusive`, never `window-empty` - an abandoned look has seen
+   * less than the whole window, so it must not produce the one verdict a
+   * provider may act on.
+   *
+   * What it does NOT do is cut a call short. It is read at step boundaries and
+   * once more before the verdict, so an abort during a verification still waits
+   * out that verification's own retries; it is not plumbed into the strategy,
+   * which has no way to take one.
    */
   signal?: AbortSignal;
   /**
@@ -241,6 +247,11 @@ export class ProviderPaymentAcceptor {
    * the expiry itself - this does not check it. Two concurrent calls for one
    * `jobIdentity` are forbidden: "a second signature releases the first" makes
    * that unsafe.
+   *
+   * Throws on a malformed `jobIdentity`, `txSignature` or `feeBps`, and passes
+   * through anything the injected store or strategy throws - the file-backed
+   * store reads its index on every call, so an index it refuses to read surfaces
+   * here rather than as a verdict.
    */
   async accept(
     input: AcceptPaymentInput,
@@ -483,6 +494,15 @@ export class ProviderPaymentAcceptor {
         imperfectPass = true;
         lastError = verified.error ?? lastError;
       }
+    }
+
+    // An abort that arrived while the listing was in flight is only seen here:
+    // the checks above sit at step boundaries, and an empty page means the
+    // candidate loop never runs. Without this a caller who gave up mid-listing
+    // could still be handed `window-empty`, the one verdict a provider may act
+    // on, about a pass nobody was waiting for.
+    if (input.signal?.aborted === true) {
+      deadlineHit = true;
     }
 
     // STEP 6 - the verdict, by priority. Reads the FLAG the deadline check set

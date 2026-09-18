@@ -75,7 +75,20 @@ export class FileSettlementStore implements SettlementStore {
           `second job. Move the file aside to start a fresh index.`,
       );
     }
-    if (parsed === null || typeof parsed !== 'object' || typeof parsed.settlements !== 'object') {
+    // `typeof null` and `typeof []` are both `'object'`, so neither the
+    // container nor the map can be checked by `typeof` alone. The per-record
+    // guard below already spells this out; the top level has to as well, or
+    // `settlements: null` and `settlements: []` read as "nothing is claimed"
+    // about a file that holds real claims.
+    const settlements: unknown = parsed === null ? undefined : parsed.settlements;
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      settlements === null ||
+      typeof settlements !== 'object' ||
+      Array.isArray(settlements)
+    ) {
       throw new Error(
         `Settlement index at ${this.path} is JSON but not a settlement index. Refusing to treat ` +
           `it as empty - move the file aside to start a fresh one.`,
@@ -83,18 +96,30 @@ export class FileSettlementStore implements SettlementStore {
     }
     // A future version may key or shape these differently, and reading it with
     // today's rules would silently report its settlements as unclaimed.
-    if (parsed.version !== undefined && parsed.version !== FORMAT_VERSION) {
+    // No `!== undefined` escape: this store always writes `version`, so a file
+    // without one was written by something else.
+    if (parsed.version !== FORMAT_VERSION) {
       throw new Error(
         `Settlement index at ${this.path} is format version ${String(parsed.version)}, and this ` +
           `build reads version ${FORMAT_VERSION}. Refusing to read it as empty.`,
       );
     }
-    const settlements: Record<string, SettlementRecord> = {};
-    for (const [signature, record] of Object.entries(parsed.settlements ?? {})) {
+    // `Object.create(null)`, not `{}`: a signature literally named `__proto__`
+    // would otherwise replace the prototype instead of becoming a key, and both
+    // the claim scan and `claimedSignature` would look straight past it.
+    const collected: Record<string, SettlementRecord> = Object.create(null);
+    for (const [signature, record] of Object.entries(settlements)) {
       // A hand-edited file can carry anything here. Reading a property off a
       // non-object throws, and this index is what decides whether a settlement
       // was already spent - an unguarded entry is a money bug, not a tidiness
       // one.
+      //
+      // Skipping is deliberately NOT what the file level does, and the asymmetry
+      // is the point: an unreadable FILE is refused, because reading it as empty
+      // frees every settlement at once. One unreadable RECORD frees only itself,
+      // and refusing the whole index over it would strand a provider whose file
+      // is otherwise intact. Both directions are named so neither is mistaken
+      // for an oversight.
       if (record === null || typeof record !== 'object' || Array.isArray(record)) {
         continue;
       }
@@ -102,7 +127,7 @@ export class FileSettlementStore implements SettlementStore {
       if (typeof candidate.job !== 'string' || candidate.job.length === 0) {
         continue;
       }
-      settlements[signature] = {
+      collected[signature] = {
         job: candidate.job,
         // An unreadable timestamp becomes NOW, never 0: `0 < cutoff` is always
         // true, so zero would hand the next `prune` a reason to release a
@@ -111,7 +136,7 @@ export class FileSettlementStore implements SettlementStore {
         at: typeof candidate.at === 'number' ? candidate.at : Date.now(),
       };
     }
-    return { version: FORMAT_VERSION, settlements };
+    return { version: FORMAT_VERSION, settlements: collected };
   }
 
   /**
@@ -175,10 +200,12 @@ export class FileSettlementStore implements SettlementStore {
   }
 
   prune(retentionMs: number): number {
-    // `Infinity` is allowed deliberately - it means "never release anything",
-    // which is the safest retention there is, and `Number.isFinite` alone would
-    // reject exactly that.
-    if (Number.isNaN(retentionMs) || retentionMs < MIN_SETTLEMENT_RETENTION_MS) {
+    // Written as a positive test so everything that is not a number at or above
+    // the floor is rejected - `NaN`, `undefined` and a string all fail it, while
+    // `Infinity` passes deliberately: "never release anything" is the safest
+    // retention there is, and a `Number.isFinite` check would reject exactly
+    // that one.
+    if (!(retentionMs >= MIN_SETTLEMENT_RETENTION_MS)) {
       throw new Error(
         `retentionMs must be at least ${MIN_SETTLEMENT_RETENTION_MS}ms: a signature dropped from ` +
           `this index has to be unverifiable on-chain by then, or it settles a second job`,

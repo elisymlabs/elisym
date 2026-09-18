@@ -994,31 +994,31 @@ export class PaymentRecovery {
 
       // After the config, because the treasury comes from it and a reference
       // equal to the treasury drowns the payment in its history whether or not
-      // the request names it. Gated on the job NOT already owning a settlement:
-      // one that does has a signature to re-verify directly, and the reference
-      // never has to be listed at all.
+      // the request names it.
       //
-      // Honest about what this buys: it finds no money. A degenerate reference
-      // leaves the payment impossible to single out, and the denylist inside `verifyPayment`
-      // would refuse the re-verification anyway. What changes is the shape of
-      // the ending - the job fails NOW as unusable provider state instead of
-      // being deferred for 24 hours and then failing as "the agent did not
-      // recover". The cost is named too: the customer has most likely paid, and
+      // NOT gated on the job already owning a settlement, and the measurement
+      // is why. The obvious gate - "a job that owns one can re-verify it
+      // directly, so leave it alone" - describes a path that does not exist:
+      // the denylist inside `verifyPayment` sits ahead of BOTH its branches, so
+      // the signature path refuses too. Measured, that gate bought a job
+      // nothing but a worse ending - the settlement failed to re-verify, the
+      // reference got listed anyway, and the entry deferred to the 24h cutoff
+      // to die as "the agent did not recover" instead of failing here as what
+      // it is.
+      //
+      // Honest about what this buys either way: it finds no money. The request
+      // is unpayable and stays unpayable. What changes is that the job fails
+      // NOW, as unusable provider state, with a sentence naming the real
+      // problem. The cost is named too: the customer has most likely paid, and
       // `corrupt-state` closes the job.
-      if (!isUsableSignature(entry.payment_signature)) {
-        const degenerate = await degenerateReference(
-          request,
-          this.network,
-          protocolConfig.treasury,
+      const degenerate = await degenerateReference(request, this.network, protocolConfig.treasury);
+      if (degenerate !== undefined) {
+        log(
+          `[${shortId}] Recovery: the payment request's reference (${request.reference}) is an ` +
+            `address the payment itself is computed from, so the transfer cannot be singled out ` +
+            `by listing it. This is provider-side state, not a chain or customer problem.`,
         );
-        if (degenerate !== undefined) {
-          log(
-            `[${shortId}] Recovery: the payment request's reference (${request.reference}) is an ` +
-              `address the payment itself is computed from, so the transfer cannot be singled out ` +
-              `by listing it. This is provider-side state, not a chain or customer problem.`,
-          );
-          return 'corrupt-state';
-        }
+        return 'corrupt-state';
       }
 
       /**

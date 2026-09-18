@@ -735,12 +735,16 @@ type BalanceVerdict = { ok: true } | { ok: false; reason: string };
 function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   // The two arrays are indexed in lockstep - `pre[i]` and `post[i]` are the
   // same account - so a length mismatch means this answer cannot be
-  // interpreted at all. Refused by name rather than read anyway: the index map
-  // is built over `preBalances.length`, so a short `post` would silently give
-  // every mapped account a delta of `0n - pre`. That direction happens to be
-  // fail-closed, but it reports "the recipient was short-changed" about an
-  // answer we simply could not read, and sends the operator after the wrong
-  // thing.
+  // interpreted at all.
+  //
+  // THIS GUARD IS NOT COSMETIC, and the measurement says so. With it removed,
+  // a `postBalances` that is short by one - but still long enough to cover the
+  // recipient and the treasury - verifies as `true`: the payment is ACCEPTED on
+  // a page we could not read. (A short `preBalances` fails the other way: the
+  // map is built over `preBalances.length`, so the reference falls off the end
+  // and the refusal reads "reference not found - possible replay", blaming the
+  // customer for our own unreadable answer.) Both directions are wrong, and one
+  // of them costs money, so this is refused by name rather than read anyway.
   if (input.preBalances.length !== input.postBalances.length) {
     return {
       ok: false,

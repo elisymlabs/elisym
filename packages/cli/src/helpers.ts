@@ -388,14 +388,14 @@ async function neighborPaidState(
     }
   }
 
-  let skills: { priceSubunits: bigint }[];
+  let skills: Skill[];
   try {
-    skills = (await loadSkillsFromDir(skillsDir, {
+    skills = loadSkillsFromDir(skillsDir, {
       network,
       allowFreeSkills: true,
       allowX402Skills: true,
       logger: { warn: () => {} },
-    })) as Skill[];
+    });
   } catch {
     return 'unknown';
   }

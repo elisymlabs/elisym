@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deleteControlCharacters } from '@elisym/sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { findSharedPayoutNeighbors } from '../src/helpers.js';
 
@@ -269,7 +270,8 @@ describe('what a neighbor directory is allowed to be called', () => {
     expect(found).toHaveLength(1);
     expect(found[0]?.dir).not.toContain('\u0001');
     // And the path is still the one the operator has on disk, minus the byte -
-    // not a dereferenced `/private/var/...` they would not recognize.
-    expect(found[0]?.dir).toContain('neighbor');
+    // not a dereferenced `/private/var/...` they would not recognize. Compared
+    // whole: `toContain('neighbor')` would pass on the dereferenced path too.
+    expect(found[0]?.dir).toBe(deleteControlCharacters(join(weirdProjectRoot, 'neighbor')));
   });
 });
