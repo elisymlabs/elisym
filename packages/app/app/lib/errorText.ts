@@ -39,6 +39,15 @@ export { AGENT_REFUSED_LABEL };
 export const UNSTATED_FAILURE = 'The agent sent an error with nothing readable in it.';
 
 /**
+ * The same, for a failure the AGENT never saw.
+ *
+ * Several Solana wallet adapters throw an empty message when someone cancels a
+ * signature, so this is the common case rather than an edge one - and blaming
+ * the agent for it, as the sentence above would, is simply false.
+ */
+export const UNSTATED_LOCAL_FAILURE = 'The request could not be completed.';
+
+/**
  * One line of an error, whoever wrote it.
  *
  * Nothing here interprets the string - it only refuses to paint an unbounded
@@ -48,9 +57,9 @@ export const UNSTATED_FAILURE = 'The agent sent an error with nothing readable i
  * job verdicts, and classifying them would answer "insufficient SOL" with
  * "Agent unavailable".
  */
-export function boundedErrorText(error: string): string {
+export function boundedErrorText(error: string, fallback = UNSTATED_LOCAL_FAILURE): string {
   const excerpt = excerptUntrusted(error, MAX_DISPLAYED_ERROR_CHARS);
-  return hasVisibleText(excerpt) ? excerpt : UNSTATED_FAILURE;
+  return hasVisibleText(excerpt) ? excerpt : fallback;
 }
 
 /**
@@ -72,5 +81,6 @@ export function customerErrorText(error: string, known?: JobErrorKind): string {
   if (kind === 'provider-refused') {
     return `${AGENT_REFUSED_LABEL}${refusalFromJobError(error)}`;
   }
-  return boundedErrorText(error);
+  // A job error with nothing readable in it DID come from the agent.
+  return boundedErrorText(error, UNSTATED_FAILURE);
 }
