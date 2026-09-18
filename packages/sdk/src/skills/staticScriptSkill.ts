@@ -4,8 +4,7 @@ import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
-import { HostScratchError } from './host-fault';
-import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
+import { SCRIPT_REFUSAL_FILE_ENV, scriptOutput, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
 import { jobScriptEnv, runScript, scopedToolEnv } from './scriptSkill';
 import type {
@@ -83,31 +82,34 @@ export class StaticScriptSkill implements Skill {
   }
 
   async execute(_input: SkillInput, ctx: SkillContext): Promise<SkillOutput> {
-    // A directory per JOB, and a `HostScratchError` when the disk refuses one.
+    // A directory per JOB, and no directory at all when the disk refuses one.
     //
     // Per job because a shared directory is enumerable: `ls "$(dirname
     // "$ELISYM_REFUSAL_FILE")"` from one job's script reaches the channel of
     // every other job running beside it, and forging a refusal there closes a
     // different customer's paid job.
     //
-    // And an error rather than running without a channel, which is what this
-    // used to do: a script that refused then had its reason dropped, the
-    // customer was charged for a "crash", and the operator's capability was
-    // gated for a local disk problem. The runtime reads this type instead to
-    // leave the health gate alone, keep a paid job for recovery, and refuse the
-    // next customer before they pay.
-    const dir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch((err: unknown) => {
-      throw new HostScratchError(err instanceof Error ? err.message : String(err));
-    });
+    // And when the disk refuses one, the job RUNS ANYWAY, without a channel.
+    // This mode is the cron-shaped one: a status skill that curls an endpoint and
+    // prints needs no temp directory at all, and failing every such capability
+    // because /tmp is read-only widens one read-only tmpdir from a single mode into
+    // the whole fleet. What the job loses is the ability to relay a reason - and
+    // `throwIfRefused` is told so, which turns a 43 into a refusal with nothing
+    // said rather than into a crash that would charge the customer for it and
+    // gate the operator's capability.
+    const dir = await mkdtemp(join(tmpdir(), 'elisym-static-out-')).catch(() => null);
     try {
-      return await this.run(ctx, join(dir, 'refusal'));
+      return await this.run(ctx, dir === null ? undefined : join(dir, 'refusal'));
     } finally {
-      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      if (dir !== null) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
     }
   }
 
-  private async run(ctx: SkillContext, refusalFile: string): Promise<SkillOutput> {
-    const channels: NodeJS.ProcessEnv = { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile };
+  private async run(ctx: SkillContext, refusalFile: string | undefined): Promise<SkillOutput> {
+    const channels: NodeJS.ProcessEnv =
+      refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile };
     const result = await runScript(this.scriptPath, this.scriptArgs, {
       cwd: dirname(this.scriptPath),
       signal: ctx.signal,
@@ -141,9 +143,13 @@ export class StaticScriptSkill implements Skill {
     // lying around. Otherwise a written reason wins, including over the
     // success path - a script that wrote one and then exited 0 refused,
     // whatever its exit code claims.
-    throwIfRefused(result, await readRefusalFile(refusalFile));
+    throwIfRefused(
+      result,
+      refusalFile === undefined ? { state: 'absent' } : await readRefusalFile(refusalFile),
+      refusalFile !== undefined,
+    );
     if (result.code !== 0) {
-      const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
+      const detail = scriptOutput(result);
       // Generic message reaches the customer; raw stderr/stdout stays on `detail`
       // for the operator log and health-monitor classification only.
       throw new ScriptExecutionError(result.code, detail, undefined, result.stderr);

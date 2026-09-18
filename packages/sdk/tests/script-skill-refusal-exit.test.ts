@@ -478,6 +478,16 @@ describe('refusalMessage', () => {
     );
   });
 
+  it('does not hand back half a label, or an ellipsis, from a run of them', () => {
+    // A script writing nothing but labels: the cut used to land inside one, so
+    // the customer read `The provider re…` - or just `…`, which is a visible
+    // character and so passed the "did anything survive" test.
+    expect(refusalMessage('The provider refused: '.repeat(30))).toBe(SCRIPT_REFUSAL_UNSTATED);
+    expect(refusalMessage(`${'The agent refused: '.repeat(40)}size it in USD.`)).toBe(
+      'size it in USD.',
+    );
+  });
+
   it('falls back when there is nothing to say', () => {
     expect(refusalMessage('   \n\t ')).toBe(SCRIPT_REFUSAL_UNSTATED);
   });

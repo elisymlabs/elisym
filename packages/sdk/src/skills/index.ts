@@ -51,6 +51,7 @@ export type { X402ProxySkillParams } from './x402ProxySkill';
 // reader behind them stays internal.
 export {
   isScriptRefusalError,
+  REFUSAL_CHANNEL_MISSING_HINT,
   REFUSAL_CONTRACT_HINT,
   REFUSAL_UNREADABLE_HINT,
   REFUSAL_WRONG_EXIT_HINT,
@@ -60,6 +61,7 @@ export {
   SCRIPT_REFUSAL_FILE_ENV,
   SCRIPT_REFUSAL_MAX_CHARS,
   SCRIPT_REFUSAL_UNSTATED,
+  scriptOutput,
   ScriptRefusalError,
   startsWithRefusalHint,
 } from './refusal';

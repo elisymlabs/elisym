@@ -97,9 +97,7 @@ export function heldPaymentNote(
   }
   // A refusal is terminal AND already charged on the flat-priced path. Saying
   // nothing would leave someone waiting for a retry that is not coming; the
-  // outage note would promise them exactly that retry. Through the same
-  // function the thread bubble calls, so the two surfaces cannot drift into
-  // telling one customer two things about one job.
+  // outage note would promise them exactly that retry.
   if (kind === 'provider-refused') {
     // Through the same function the thread bubble calls, so a future condition
     // on it - a delegated-rail carve-out, say - cannot reach one surface and

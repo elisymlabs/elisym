@@ -22,8 +22,23 @@ const MAX_UNEXPLAINED_LOOKUPS = 20;
  */
 const ASK_AGAIN_AFTER_MS = 60 * 60 * 1000;
 
-/** When each closed entry was last asked about, for this session only. */
+/**
+ * When each closed entry was last asked about, for this session only.
+ *
+ * Keyed by identity as well as job, so switching Nostr identities does not
+ * inherit the other one's throttle - its refusals would go unasked for an hour.
+ * Pruned on every run: a stamp older than the window can only say "ask again",
+ * which is what a missing stamp already says, so keeping it is pure growth.
+ */
 const lastAskedAt = new Map<string, number>();
+
+function pruneAskStamps(now: number): void {
+  for (const [key, when] of lastAskedAt) {
+    if (now - when > ASK_AGAIN_AFTER_MS) {
+      lastAskedAt.delete(key);
+    }
+  }
+}
 
 /**
  * How far back a closed entry may still be asked about.
@@ -66,6 +81,7 @@ export function useChatReconcile(agentPubkey: string): void {
     }
     ranForRef.current = runKey;
 
+    const askKey = (jobEventId: string): string => `${identity.publicKey}:${jobEventId}`;
     let cancelled = false;
     const subscriptionCleanups: Array<() => void> = [];
 
@@ -87,6 +103,7 @@ export function useChatReconcile(agentPubkey: string): void {
     };
 
     const reconcile = async () => {
+      pruneAskStamps(Date.now());
       const thread = await readThread(agentPubkey);
       const mine = thread.filter((entry) => entry.customerPubkey === identity.publicKey);
       const pendingEntries = mine.filter((entry) => entry.status === 'pending');
@@ -113,7 +130,8 @@ export function useChatReconcile(agentPubkey: string): void {
         // asking on every activation never converges either. See
         // `ASK_AGAIN_AFTER_MS`.
         .filter(
-          (entry) => Date.now() - (lastAskedAt.get(entry.jobEventId) ?? 0) > ASK_AGAIN_AFTER_MS,
+          (entry) =>
+            Date.now() - (lastAskedAt.get(askKey(entry.jobEventId)) ?? 0) > ASK_AGAIN_AFTER_MS,
         )
         .sort((left, right) => right.ts - left.ts)
         .slice(0, MAX_UNEXPLAINED_LOOKUPS);
@@ -208,6 +226,14 @@ export function useChatReconcile(agentPubkey: string): void {
             if (cancelled) {
               return;
             }
+            // Stamped BEFORE the branches below, whatever the answer: an
+            // undecryptable result `continue`s, which used to skip the stamp and
+            // re-fetch that entry on every tab activation forever, crowding out
+            // ones that could still receive a verdict. Only when the error query
+            // itself answered - a failed one proved nothing worth remembering.
+            if (errors !== null) {
+              lastAskedAt.set(askKey(entry.jobEventId), Date.now());
+            }
             // A result outranks a refusal here too. A closed entry can still be
             // completed - `completeEntry` only refuses one that already carries a
             // result - so attaching a terminal refusal without looking would
@@ -229,12 +255,6 @@ export function useChatReconcile(agentPubkey: string): void {
                 decoded.attachments,
               );
               continue;
-            }
-            // Stamped whatever the answer, so a thread of ordinary crashes is not
-            // re-fetched on every tab switch. Only when the relays ANSWERED: a
-            // failed query proved nothing worth remembering.
-            if (errors !== null) {
-              lastAskedAt.set(entry.jobEventId, Date.now());
             }
             const late = errors?.get(entry.jobEventId);
             if (late !== undefined && classifyJobError(late) === 'provider-refused') {

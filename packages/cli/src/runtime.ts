@@ -33,6 +33,7 @@ import {
   PROVIDER_REFUSED_PREFIX,
   readAcceptedTransports,
   resolveDelegationAsset,
+  scriptOutput,
   sendConfirmToTerminal,
   utf8ByteLength,
   verifyDelegationAuthProof,
@@ -301,23 +302,39 @@ function classifyScriptSignal(message: string): {
   let billing = false;
   let cascade = false;
   let signalAt = -1;
-  if (ALL_MARKERS_RE !== null) {
-    for (const match of message.matchAll(ALL_MARKERS_RE)) {
-      // A match this map cannot name still counts as a signal. The regex is
-      // case-INSENSITIVE, and its case folding accepts letters whose lowercase
-      // form is not a key here at all - Turkish I among them. Dropping such a
-      // match would report "no billing/invalid markers" for text that plainly
-      // carries one; the safe flags are the ones that gate this pair only.
-      const marker = MARKER_BY_PHRASE.get(match[0].toLowerCase());
-      looksBillingOrInvalid = true;
-      billing = billing || marker?.billing === true;
-      cascade = cascade || marker?.cascades === true;
-      if (signalAt === -1) {
-        signalAt = match.index;
-      }
+  for (const match of message.matchAll(ALL_MARKERS_RE)) {
+    // A match this map cannot name still counts as a signal. The regex is
+    // case-INSENSITIVE, and its case folding accepts letters whose lowercase
+    // form is not a key here at all - Turkish I among them. Dropping such a
+    // match would report "no billing/invalid markers" for text that plainly
+    // carries one; the safe flags are the ones that gate this pair only.
+    const marker = MARKER_BY_PHRASE.get(match[0].toLowerCase());
+    looksBillingOrInvalid = true;
+    billing = billing || marker?.billing === true;
+    cascade = cascade || marker?.cascades === true;
+    if (signalAt === -1) {
+      signalAt = match.index;
     }
   }
   return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid', cascade, signalAt };
+}
+
+/**
+ * Codes that mean the agent's own storage, not the job.
+ *
+ * Read off OUR filesystem errors, never off text somebody sent us - there is
+ * nothing here an attacker can write. Raw, one of these closes a paid job and
+ * keeps the money; as a `HostScratchError` the job keeps its payment for the
+ * recovery loop and the pre-payment probe is armed for the next customer.
+ */
+const HOST_DISK_CODES = new Set(['ENOSPC', 'EROFS', 'EDQUOT', 'EMFILE', 'ENFILE', 'EIO']);
+
+function asHostScratchFailure(error: unknown): HostScratchError | undefined {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === undefined || !HOST_DISK_CODES.has(code)) {
+    return undefined;
+  }
+  return new HostScratchError(error instanceof Error ? error.message : String(error));
 }
 
 /**
@@ -347,15 +364,12 @@ const SIGNAL_LEAD_UNITS = 80;
  * code units), so an index taken from the copy can point hundreds of characters
  * past the signal in the text it is used to quote.
  *
- * `null` rather than an empty alternation when a list is empty: `new RegExp('')`
- * matches at index 0 of every string, which would turn "did we find a signal"
- * into "always" - and for the cascade list, every script failure into an
- * operator's whole key going offline.
+ * The table it is built from is a non-empty literal, so there is no empty-list
+ * case to guard: an empty alternation would be `new RegExp('')`, which matches at
+ * index 0 of every string and would turn "did we find a signal" into "always".
+ * Keep the table non-empty.
  */
-function markerPattern(phrases: readonly string[], flags = 'i'): RegExp | null {
-  if (phrases.length === 0) {
-    return null;
-  }
+function markerPattern(phrases: readonly string[], flags: string): RegExp {
   // LONGEST first: an alternation is first-match-wins, so with `insufficient`
   // ahead of `insufficient_quota` the shorter phrase always wins and the longer
   // row's flags - including its `cascades: true` - become unreachable.
@@ -387,9 +401,6 @@ const MARKER_BY_PHRASE = new Map(
  * that followed it.
  */
 function signalIndex(text: string): number {
-  if (ALL_MARKERS_RE === null) {
-    return -1;
-  }
   // The same compiled pattern the classifier walks, so the two cannot disagree
   // about what a signal is. `lastIndex` is reset because it carries the `g`
   // flag - shared global state between calls otherwise.
@@ -677,10 +688,11 @@ function describeForOperator(error: unknown): string {
     // same way the health branch does - the same text, though a longer excerpt:
     // a log line is read once beside its job, while the health monitor's reason
     // is re-printed on every gated job and stays deliberately short. What must
-    // not differ is WHICH stream each of them shows about the
-    // operator was shown. The CUSTOMER still gets `AGENT_UNAVAILABLE_MESSAGE`.
-    const said = error.stderr.trim() || error.stdout.trim() || '(no output)';
-    return `script signalled billing exhausted: ${excerptUntrustedTail(said, OPERATOR_EXCERPT_CHARS)}`;
+    // not differ is WHICH stream each of them quotes, which is why both go
+    // through `scriptOutput`: two lines about one job that disagreed on that
+    // would leave the operator guessing where the script actually complained.
+    // The CUSTOMER still gets `AGENT_UNAVAILABLE_MESSAGE`.
+    return `script signalled billing exhausted: ${excerptUntrustedTail(scriptOutput(error), OPERATOR_EXCERPT_CHARS)}`;
   }
   if (isScriptRefusalError(error)) {
     return error.stderr === ''
@@ -1137,7 +1149,17 @@ export class AgentRuntime {
     if (probe === null) {
       return false;
     }
+    // And WRITE a byte. A directory needs an inode; the failures that arm this
+    // gate are writes - a history file, a fetched attachment, a result - and a
+    // volume out of blocks but not out of inodes makes a directory happily. A
+    // probe weaker than what failed disarms the gate on the very next job.
+    const wrote = await writeFile(join(probe, 'probe'), 'x')
+      .then(() => true)
+      .catch(() => false);
     await rm(probe, { recursive: true, force: true }).catch(() => {});
+    if (!wrote) {
+      return false;
+    }
     // Recovered: stop probing until something fails that way again.
     this.scratchFailed = false;
     return true;
@@ -1199,7 +1221,7 @@ export class AgentRuntime {
         provider,
         model,
         'billing',
-        excerptUntrustedTail(err.stderr.trim() || err.stdout.trim() || '(no output)', 200),
+        excerptUntrustedTail(scriptOutput(err), 200),
       );
       return true;
     }
@@ -1633,7 +1655,12 @@ export class AgentRuntime {
     this.jobAbortControllers.add(jobAbort);
     try {
       await this.executeJob(job, jobAbort.signal);
-    } catch (e: any) {
+    } catch (raw: unknown) {
+      // ONE place where a bare filesystem error becomes the host fault, so every
+      // decision below - what the customer is told, whether the job keeps its
+      // payment, whether the next customer is refused before paying - reads the
+      // same verdict however deep the write that failed was.
+      const e: unknown = asHostScratchFailure(raw) ?? raw;
       const log = this.callbacks.onLog ?? console.log;
       // `describeForOperator`, not `e.message`: a rejected null or a thrown
       // string would make this line throw before the job is marked failed and
@@ -1769,13 +1796,14 @@ export class AgentRuntime {
     // one raises `HostScratchError` rather than running without a channel, so
     // without this gate a broken disk would take payment for a job it is about
     // to hold for recovery.
+    // Every mode that touches the disk, named by what it does NOT need rather
+    // than by a list of what does: `llm` and `static-file` write nothing, and
+    // everything else - the script modes, and `x402`, which saves the result it
+    // has just PAID an upstream for - fails on a full volume after the customer
+    // has paid. A list would keep missing the next mode added.
     const needsScratch =
-      matched?.mode === 'dynamic-script' ||
-      matched?.mode === 'static-script' ||
-      matched?.mode === 'onchain' ||
-      // Any mode fetching an input FILE needs a directory of its own for it, so
-      // a broken disk closes those jobs too - after payment, unless this refuses
-      // them before it.
+      (matched !== null && matched.mode !== 'llm' && matched.mode !== 'static-file') ||
+      // And any job fetching an input FILE, whatever its mode.
       job.attachment !== undefined;
     if (needsScratch && !(await this.scratchSpaceUsable())) {
       log(
@@ -3094,7 +3122,10 @@ export class AgentRuntime {
       await writeFile(filePath, bytes);
     } catch (error) {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
-      throw error;
+      // The directory was made and the BYTES would not fit: same disk, same
+      // verdict. Raw, this closed a paid job and kept the money, while the
+      // comment above promised one error type for one condition.
+      throw asHostScratchFailure(error) ?? error;
     }
     return {
       filePath,
@@ -3893,7 +3924,8 @@ export class AgentRuntime {
             entry.customer_id,
             recoveryAbort.signal,
           );
-        } catch (err: unknown) {
+        } catch (raw: unknown) {
+          const err = asHostScratchFailure(raw) ?? raw;
           if (isHostScratchError(err)) {
             // This agent's disk, not a blob nobody can fetch. The live path keeps
             // such a job PAID because the disk may recover; failing it here on

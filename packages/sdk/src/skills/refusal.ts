@@ -70,14 +70,6 @@ export const SCRIPT_REFUSAL_FILE_MAX_BYTES = 8 * 1024;
  */
 export const SCRIPT_REFUSAL_UNSTATED = 'no reason was given.';
 
-/**
- * Headroom for a label the excerpt may carry in before it is stripped.
- *
- * Both labels are shorter than this, so a reason at the cap comes back whole
- * rather than shortened to make room for something that is about to be removed.
- */
-const LABEL_ROOM_CHARS = 64;
-
 /** How much of a refusing script's stderr the error carries for the operator. */
 export const SCRIPT_REFUSAL_STDERR_CHARS = 500;
 
@@ -95,6 +87,16 @@ export const REFUSAL_UNREADABLE_HINT =
   `exit ${SCRIPT_EXIT_REFUSED} with a ${SCRIPT_REFUSAL_FILE_ENV} this agent would not read - a ` +
   'symlink or a directory rather than a regular file, or one it lacks permission for (or it ran ' +
   'out of descriptors) - so the customer was told nothing about their request:';
+
+/**
+ * Told when the agent could not give the script a file to write its reason to.
+ *
+ * Carried on the operator's half of a `ScriptRefusalError`, not on a failure: the
+ * script's 43 was a decision, and the only thing lost is the sentence.
+ */
+export const REFUSAL_CHANNEL_MISSING_HINT =
+  'this agent could not create a scratch file, so ELISYM_REFUSAL_FILE was never set and the ' +
+  'script had nowhere to put its reason (check the temp directory):';
 
 /** Told when a reason was written but the exit code says the script crashed. */
 export const REFUSAL_WRONG_EXIT_HINT =
@@ -149,9 +151,13 @@ export function refusalMessage(reason: string): string {
   // walking it - this function also runs on a wire string in the browser's
   // render path, where a provider can publish hundreds of KB - and it keeps the
   // fallback that finds a sentence sitting behind four thousand newlines, which
-  // a plain front window would cut away. A little over the budget, so that
-  // stripping a label off the front does not leave the reason short.
-  let sentence = excerptOwnMessage(reason, SCRIPT_REFUSAL_MAX_CHARS + LABEL_ROOM_CHARS);
+  // a plain front window would cut away.
+  //
+  // Eight times the budget, not a little over it: a script writing `'The
+  // provider refused: '.repeat(30)` would otherwise have the cut land inside a
+  // label and hand the customer half of one. Room for a run of them; the clip
+  // below is what enforces the real cap.
+  let sentence = excerptOwnMessage(reason, SCRIPT_REFUSAL_MAX_CHARS * 8);
   for (;;) {
     const stripped = withoutLeadingLabel(sentence);
     if (stripped === sentence) {
@@ -173,7 +179,10 @@ export function refusalMessage(reason: string): string {
   // because this sentence is passed through as written, onto a public relay and
   // into the operator log.
   const excerpt = clipToCharacters(sentence, SCRIPT_REFUSAL_MAX_CHARS);
-  return hasVisibleText(excerpt) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
+  // The cut marker does not count as something to read: a reason that clipped
+  // down to nothing else would otherwise be handed over as the provider's
+  // sentence, since `…` is a perfectly visible character.
+  return hasVisibleText(excerpt.replace(/…/gu, '')) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
 }
 
 /**
@@ -274,6 +283,23 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
 }
 
 /**
+ * Which of a failed script's two streams gets quoted, in ONE place.
+ *
+ * stderr first, stdout only as a fallback, and a placeholder when a script died
+ * silently - so an operator reading two lines about one job (a log entry and a
+ * health-gate reason, say) is never shown two different streams and left to
+ * guess which one the script actually complained on. Callers bound the result
+ * to their own budget; a log line read once beside its job can afford more than
+ * a reason re-printed on every gated job.
+ *
+ * Unbounded and unflattened on purpose: this is raw subprocess output, so every
+ * caller must excerpt it before it reaches a log, a relay or a screen.
+ */
+export function scriptOutput(result: { stdout: string; stderr: string }): string {
+  return result.stderr.trim() || result.stdout.trim() || '(no output)';
+}
+
+/**
  * The script's own output, bounded HERE rather than left for the log to clip.
  *
  * An operator log excerpts a long detail from its END, and the hint in front of
@@ -282,8 +308,7 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
  * meter.
  */
 function describeOutput(result: { stdout: string; stderr: string }): string {
-  const output = result.stderr.trim() || result.stdout.trim();
-  return output === '' ? '(no output)' : excerptUntrustedTail(output, SCRIPT_REFUSAL_STDERR_CHARS);
+  return excerptUntrustedTail(scriptOutput(result), SCRIPT_REFUSAL_STDERR_CHARS);
 }
 
 /**
@@ -311,6 +336,7 @@ function describeOutput(result: { stdout: string; stderr: string }): string {
 export function throwIfRefused(
   result: { code: number | null; stdout: string; stderr: string },
   file: RefusalFileRead,
+  channelOffered = true,
 ): void {
   // `hasVisibleText`, not `!== ''`: a file holding one newline, a NUL or a
   // zero-width joiner is as empty as no bytes at all - the same question the
@@ -328,6 +354,18 @@ export function throwIfRefused(
   // to write the sentence.
   if (result.code === SCRIPT_EXIT_REFUSED && file.state === 'read') {
     throw new ScriptRefusalError(result.code, file.reason, result.stderr);
+  }
+  // A 43 the agent had nowhere to record: the script decided, and this runner
+  // could not make it a file to decide into. Still a REFUSAL - terminal, health
+  // untouched, the customer told plainly that no reason was given - because
+  // calling it a crash would charge them for a decision and gate the operator's
+  // capability for a local disk problem. The operator's half carries the hint.
+  if (result.code === SCRIPT_EXIT_REFUSED && !channelOffered) {
+    throw new ScriptRefusalError(
+      result.code,
+      '',
+      `${REFUSAL_CHANNEL_MISSING_HINT} ${describeOutput(result)}`,
+    );
   }
   if (result.code === 0) {
     if (stated) {

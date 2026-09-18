@@ -5,7 +5,7 @@ import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
 import type { Asset } from '../payment/assets';
 import { HostScratchError } from './host-fault';
-import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
+import { SCRIPT_REFUSAL_FILE_ENV, scriptOutput, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
 import { jobScriptEnv, runScript, scopedToolEnv } from './scriptSkill';
 import type {
@@ -213,7 +213,7 @@ export class DynamicScriptSkill implements Skill {
       // whatever its exit code claims.
       throwIfRefused(result, await readRefusalFile(refusalFile));
       if (result.code !== 0) {
-        const detail = result.stderr.trim() || result.stdout.trim() || '(no output)';
+        const detail = scriptOutput(result);
         // Generic message reaches the customer; raw stderr/stdout stays on `detail`
         // for the operator log and health-monitor classification only.
         throw new ScriptExecutionError(result.code, detail, undefined, result.stderr);
