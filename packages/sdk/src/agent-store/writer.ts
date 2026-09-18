@@ -18,7 +18,7 @@ import { renderInitialYaml } from './template';
 const IROH_GITIGNORE_ENTRY = '.iroh/';
 
 /** x402 bridge idempotency cache: upstream payment attempts + bought results. */
-const X402_GITIGNORE_ENTRIES = ['.x402-jobs.json', '.x402-results/'] as const;
+const X402_GITIGNORE_ENTRIES = ['.x402-jobs.json*', '.x402-results/'] as const;
 
 /** DM read cursors: keyed by counterpart pubkeys - maps who the agent talks to. */
 const MESSAGES_GITIGNORE_ENTRY = '.messages-read.json';
@@ -38,10 +38,17 @@ const DELEGATION_NONCES_GITIGNORE_ENTRY = '.delegation-nonces.json*';
 
 const GITIGNORE_CONTENT = [
   '# elisym private state - do not commit.',
-  '.secrets.json',
-  '.media-cache.json',
-  '.jobs.json',
-  '.jobs.json.corrupt.*',
+  // Trailing `*` on the files that are written through a TEMPORARY: the
+  // temporary carries a random suffix (`.tmp.<hex>`), so a crash between the
+  // write and the rename leaves a name no fixed entry can match - and those
+  // files hold exactly what the entry beside them is here to keep out of a
+  // commit: secret keys, a customer's job input, an upstream's paid result.
+  // `.jobs.json*` swallows the `.corrupt.*` sibling that used to need its own
+  // line. Append-only file: these widen existing lines rather than adding new
+  // ones, so an agent created by an older build keeps working.
+  '.secrets.json*',
+  '.media-cache.json*',
+  '.jobs.json*',
   '.customer-history.json',
   '.contacts.json',
   MESSAGES_GITIGNORE_ENTRY,

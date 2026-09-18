@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { chmodSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ElisymIdentity, toDTag } from '@elisym/sdk';
@@ -194,30 +194,82 @@ describe('a temporary file somebody else can guess', () => {
   });
 });
 
-describe('a job ledger that cannot be READ', () => {
-  it('is refused rather than rotated aside and replaced with an empty one', () => {
-    // EACCES, EISDIR, EIO: we did not read the file, so we do not know what it
-    // records - and starting empty frees every settlement in it. Only a file
-    // that was READ and could not be PARSED is rotated and replaced.
-    if (process.getuid?.() === 0) {
-      return; // root ignores the mode bits
-    }
-    const path = join(sandbox, '.jobs.json');
-    writeFileSync(
-      path,
-      JSON.stringify({ 'job-1': { job_id: 'job-1', payment_signature: 'sig-1' } }),
-    );
-    chmodSync(path, 0o000);
+describe('an x402 job index written through a guessable temporary', () => {
+  it('cannot lose the paid-attempt count that stops a second payment', async () => {
+    // The counter this store keeps is what caps how many times the bridge may
+    // pay an upstream for one job. A write that goes into a planted pipe leaves
+    // it at zero, and the next attempt pays again.
+    const agentDir = join(sandbox, 'agent');
+    mkdirSync(agentDir, { recursive: true });
+    const store = new X402JobStore(agentDir);
+    const guessed = join(agentDir, '.x402-jobs.json.tmp');
+    makeFifo(guessed);
+    startDrainer(guessed);
 
-    try {
-      expect(() => new JobLedger(path)).toThrow(/cannot be read/);
-      // And the evidence is still where it was: rotating it aside would move
-      // the only record of which transaction paid for which job.
-      expect(statSync(path).isFile()).toBe(true);
-    } finally {
-      chmodSync(path, 0o600);
-    }
+    await store.claimPaidAttempt('job-1', 2, 2);
+
+    expect(await new X402JobStore(agentDir).paidAttempts('job-1')).toBe(1);
+    expect(statSync(guessed).isFIFO()).toBe(true);
   });
+});
+
+describe('an x402 result path somebody can guess', () => {
+  it('cannot swallow a result the upstream was already paid for', async () => {
+    // The final name is derived from the job id, which is a public Nostr event
+    // id - so this path is guessable, unlike a random temporary. And the write
+    // happens AFTER the upstream has been paid: a hang here strands the job with
+    // the money gone, while a drained pipe is worse still, because the record
+    // then reads as attempt-without-result and the bridge pays again.
+    const agentDir = join(sandbox, 'agent');
+    mkdirSync(agentDir, { recursive: true });
+    const store = new X402JobStore(agentDir);
+    const resultPath = join(agentDir, '.x402-results', 'job-1');
+    mkdirSync(join(agentDir, '.x402-results'), { recursive: true });
+    makeFifo(resultPath);
+    startDrainer(resultPath);
+
+    await store.saveFileResult('job-1', 'image/png', new Uint8Array([1, 2, 3]));
+
+    // The bytes are on disk and the record points at them. `rename` REPLACES
+    // the planted node rather than opening it, which is why the fix works at
+    // all: the only blocking operation here was the write, and it now goes to a
+    // name nobody can guess.
+    expect(await store.getResult('job-1')).toMatchObject({ outputMime: 'image/png' });
+    expect(statSync(resultPath).isFile()).toBe(true);
+    expect(readFileSync(resultPath)).toEqual(Buffer.from([1, 2, 3]));
+  });
+});
+
+describe('a job ledger that cannot be READ', () => {
+  it.each([
+    ['the job ledger', '.jobs.json', (path: string) => new JobLedger(path)],
+    ['the nonce store', '.delegation-nonces.json', (path: string) => new UsedNonceStore(path)],
+  ])(
+    '%s is refused rather than rotated aside and replaced with an empty one',
+    (_label, filename, open) => {
+      // EACCES, EISDIR, EIO: we did not read the file, so we do not know what it
+      // records - and starting empty frees every settlement in it. Only a file
+      // that was READ and could not be PARSED is rotated and replaced.
+      if (process.getuid?.() === 0) {
+        return; // root ignores the mode bits
+      }
+      const path = join(sandbox, filename);
+      writeFileSync(
+        path,
+        JSON.stringify({ 'job-1': { job_id: 'job-1', payment_signature: 'sig-1' } }),
+      );
+      chmodSync(path, 0o000);
+
+      try {
+        expect(() => open(path)).toThrow(/cannot be read/);
+        // And the evidence is still where it was: rotating it aside would move
+        // the only record of which transaction paid for which job.
+        expect(statSync(path).isFile()).toBe(true);
+      } finally {
+        chmodSync(path, 0o600);
+      }
+    },
+  );
 });
 
 describe('the picture an agent advertises', () => {
@@ -276,8 +328,20 @@ describe('the d-tag collision scan of `elisym x402 add`', () => {
       ),
     );
 
-    const scan = scanExistingSkills(skillsDir, toDTag('whois-lookup'), 'https://x.example/a');
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.join(' '));
+    });
+    let scan: ReturnType<typeof scanExistingSkills>;
+    try {
+      scan = scanExistingSkills(skillsDir, toDTag('whois-lookup'), 'https://x.example/a');
+    } finally {
+      warn.mockRestore();
+    }
 
     expect(scan).toEqual({});
+    // And it SAYS it could not look: a skill this scan cannot read is a hole in
+    // the collision answer, not one missing skill.
+    expect(warnings.join('\n')).toContain('name collision');
   });
 });

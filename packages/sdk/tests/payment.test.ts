@@ -458,6 +458,36 @@ describe('buildPaymentInstructions', () => {
     ).rejects.toThrow(/computed from/);
   });
 
+  it('does not throw on a malformed fee address that a zero fee never spends', async () => {
+    // Payable today: with `fee_amount: 0` no fee leg is built, so nothing in
+    // this function used to look at the field at all. The degenerate check now
+    // does, and it must not turn a payable request into a raw encoder error -
+    // an owner it cannot parse simply contributes no account to compare.
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: 'not-an-address',
+        fee_amount: 0,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'usdc',
+          mint: USDC_SOLANA_DEVNET.mint,
+          decimals: USDC_SOLANA_DEVNET.decimals,
+        },
+      } as never,
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+
+    expect(instructions.length).toBeGreaterThan(0);
+  });
+
   it('fee + providerAmount === totalAmount for various amounts', async () => {
     interface TransferIxLike {
       data: Uint8Array;
@@ -586,6 +616,44 @@ describe('SolanaPaymentStrategy.buildTransaction', () => {
       },
     };
   }
+
+  it('hands the config treasury to the instruction builder', async () => {
+    // The wiring the whole client-side check rests on for every MCP payment:
+    // without it a zero-fee request that names no `fee_address` - which is what
+    // a third-party provider on mainnet issues - gets no treasury account to
+    // compare against, and the customer pays for a job the provider's own
+    // verifier will refuse. Measured: deleting the one argument leaves every
+    // other test in this package green.
+    const [treasuryAta] = await findAssociatedTokenPda({
+      owner: TEST_TREASURY,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      payment.buildTransaction(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: treasuryAta as string,
+          fee_amount: 0,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        createMockRpc(),
+        { feeBps: 0, treasury: TEST_TREASURY },
+        { programId: TEST_PROGRAM_ID, network: 'devnet' },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
 
   it('throws on negative provider amount (fee > amount)', async () => {
     const signer = makeSigner(makeAddress());

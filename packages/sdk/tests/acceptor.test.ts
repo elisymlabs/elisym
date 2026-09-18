@@ -398,6 +398,26 @@ describe('a claim the disk refuses', () => {
     expect(result).toMatchObject({ accepted: false, reason: 'not-persisted' });
   });
 
+  it('refuses at STEP 2 as well, where the customer named the signature', async () => {
+    // Same contract one step up: the payment verified, the claim did not reach
+    // disk, and the job must not be delivered. Only the step-4 path had a
+    // fixture, and the two differ by which input named the signature.
+    listedPages = [[]];
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(SIG_A),
+      rpc: makeRpc(),
+      store: unwritableStore(),
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', txSignature: SIG_A },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'not-persisted' });
+    expect(listCalls).toBe(0);
+  });
+
   it('accepts anyway when the job already owned that settlement', async () => {
     // The one exception, and it is not generosity: the signature is already
     // persistent and already this job's, so the claim here only refreshes a
@@ -988,6 +1008,48 @@ describe('the store contract', () => {
     expect(() => createFileSettlementStore(path)).toThrow(/EISDIR|illegal operation/);
   });
 
+  it('cannot have a claim swallowed by a temporary somebody else guessed', () => {
+    // The write half of the blocking-node class, and the CLI's two indexes have
+    // the same pair of fixtures. A predictable temporary is a path another user
+    // can put a FIFO on: `writeFileSync` onto one never returns, and with a
+    // reader draining it, it returns having written nothing - `claim` then says
+    // `claimed` about a record that is not on disk, which is exactly what the
+    // interface promises it never does.
+    //
+    // The DRAINER is what makes this a measurement rather than a hang.
+    const path = join(dir, 'guessable.json');
+    const store = createFileSettlementStore(path);
+    const guessed = join(dir, `.guessable.json.${process.pid}.tmp`);
+    execFileSync('mkfifo', [guessed]);
+    const drainer = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const fs=require('fs');
+         const loop=()=>{ try { fs.readFileSync(${JSON.stringify(guessed)}); } catch {} setImmediate(loop); };
+         loop();`,
+      ],
+      { detached: true, stdio: 'ignore' },
+    );
+    try {
+      expect(store.claim(SIG_A, 'job-1')).toBe('claimed');
+
+      expect(createFileSettlementStore(path).owner(SIG_A)).toBe('job-1');
+      expect(statSync(guessed).isFIFO()).toBe(true);
+    } finally {
+      // `-0` would signal OUR OWN process group, which is the vitest run.
+      if (drainer.pid === undefined) {
+        drainer.kill('SIGKILL');
+      } else {
+        try {
+          process.kill(-drainer.pid);
+        } catch {
+          drainer.kill('SIGKILL');
+        }
+      }
+    }
+  });
+
   it('refuses an index path that is a node which blocks', () => {
     // Same reasoning as the unreadable path above, and the reason it needs its
     // own row: this one does not fail the read at all. `readFileSync` on a FIFO
@@ -1155,6 +1217,13 @@ describe('the store contract', () => {
     // In a directory the STORE creates, not the one `mkdtemp` made: that one is
     // 0o700 whatever this file does, and asserting on it would pass against any
     // `STORE_DIR_MODE` at all.
+    //
+    // What this row pins is the PAIR: `writeFileSync`'s `mode` is a request the
+    // umask filters, so the store chmods after writing, and removing BOTH turns
+    // this red. Removing the chmod ALONE kills nothing and cannot - an ordinary
+    // umask strips no bit from 0o600, the temporary now carries a random suffix
+    // so no stale one can be reused, and `process.umask` is not settable inside
+    // a vitest worker. Measured, not assumed.
     const made = join(dir, 'made-by-the-store');
     const path = join(made, 'modes.json');
     const seeded = createFileSettlementStore(path);
@@ -1162,18 +1231,6 @@ describe('the store contract', () => {
 
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(statSync(made).mode & 0o777).toBe(0o700);
-
-    // And once more over a STALE temporary: a crash between the write and the
-    // rename leaves one behind, and `writeFileSync` applies its `mode` only
-    // when it CREATES the file. Reusing a world-readable leftover is how the
-    // index loses its mode without anything in this file changing, so the
-    // chmod after the write is what holds it - and nothing else measured that.
-    const stale = join(made, `.${'modes.json'}.${process.pid}.tmp`);
-    writeFileSync(stale, '{}', { encoding: 'utf-8', mode: 0o644 });
-    chmodSync(stale, 0o644);
-    seeded.claim(SIG_B, 'job-2');
-
-    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
   it('refuses a retention that is a string, however numeric it looks', () => {
@@ -1302,6 +1359,39 @@ describe('the usability predicate mirrors the verifier, and says so', () => {
 
   it('passes a request the verifier would accept', () => {
     expect(classifyRequestUsability(makeRequest(), CONFIG)).toBeUndefined();
+  });
+
+  it('calls a zero-fee request with no fee address payable, which is the mainnet shape', () => {
+    // `feeBps` is 0 on the deployed mainnet program, and a zero-fee request may
+    // leave `fee_address` out entirely. Reading the gate as `>= 0` instead of
+    // `> 0` makes exactly that request `inconclusive` forever - measured - and
+    // every fixture in this file carries a fee address, so nothing saw it.
+    expect(
+      classifyRequestUsability(
+        makeRequest({ fee_address: undefined, fee_amount: undefined }),
+        CONFIG,
+      ),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['a missing fee address', { fee_address: undefined }],
+    ['a fee address that is not the treasury', { fee_address: makeAddress() }],
+  ])('answers inconclusive - never terminal - for %s under a live fee', (_label, overrides) => {
+    // Both fee-address shapes, and neither is terminal: the rate and the
+    // treasury both live on-chain and rotate without a client release, so a
+    // request incompatible with today's config is polled until its own expiry
+    // rather than killed.
+    //
+    // The first row pins an OUTCOME, not a removable branch: with the
+    // `!fee_address` line taken out the next one answers the same, because
+    // `undefined !== treasury`. Measured, and said in the source too.
+    expect(
+      classifyRequestUsability(makeRequest({ fee_amount: 30_000, ...overrides }), {
+        feeBps: 300,
+        treasury: TREASURY,
+      }),
+    ).toBe('inconclusive');
   });
 
   it('does not throw on a fee rate that is not a number', () => {

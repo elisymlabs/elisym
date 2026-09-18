@@ -964,10 +964,17 @@ export async function buildPaymentInstructions(
     jobEventId?: string;
     programId: Address;
     /**
-     * The treasury from the on-chain config, when the caller has it. Optional
-     * for compatibility, and worth passing: a zero-fee request may omit
-     * `fee_address` altogether, and then this is the only way this function can
-     * know the account whose token history a reference must not point at.
+     * The treasury from the on-chain config, when the caller has it.
+     *
+     * Optional only for compatibility, and what it costs to leave out is
+     * specific: the degenerate-reference check below then cannot see the
+     * treasury's TOKEN ACCOUNT unless the request happens to name the same
+     * address in `fee_address`. A zero-fee request may omit `fee_address`
+     * entirely - and `feeBps` is 0 on the deployed mainnet program - so a
+     * third-party request built that way passes this check and is then refused
+     * by the provider's verifier, after the customer has paid. Pass it.
+     *
+     * `buildTransaction` passes it for you; a direct caller is on their own.
      */
     treasury?: Address;
   },
@@ -1086,7 +1093,17 @@ export async function buildPaymentInstructions(
   // the fee amount therefore left the commonest case unchecked on this side and
   // checked on the other, which is the customer paying for a job that can never
   // be delivered.
-  const feeOwner = paymentRequest.fee_address ? address(paymentRequest.fee_address) : undefined;
+  //
+  // Each owner is checked with `isAddress` first, exactly as the provider's
+  // denylist does and for the same reason: `findAssociatedTokenPda` encodes its
+  // owner and THROWS on a string that is not an address, and a malformed
+  // `fee_address` on a zero-fee request is payable today - the fee leg is not
+  // built at all, so nothing in this function used to look at the field. An
+  // owner we cannot parse simply contributes no account to compare against.
+  const feeOwner =
+    paymentRequest.fee_address && isAddress(paymentRequest.fee_address)
+      ? address(paymentRequest.fee_address)
+      : undefined;
   let feeOwnerAta: Address | undefined;
   if (feeOwner) {
     [feeOwnerAta] = await findAssociatedTokenPda({ owner: feeOwner, tokenProgram, mint });
@@ -1095,7 +1112,11 @@ export async function buildPaymentInstructions(
   // a zero fee `fee_address` is optional, and the provider's denylist reads the
   // treasury from the config rather than from the request.
   let configTreasuryAta: Address | undefined;
-  if (options.treasury !== undefined && options.treasury !== feeOwner) {
+  if (
+    options.treasury !== undefined &&
+    options.treasury !== feeOwner &&
+    isAddress(options.treasury)
+  ) {
     [configTreasuryAta] = await findAssociatedTokenPda({
       owner: options.treasury,
       tokenProgram,

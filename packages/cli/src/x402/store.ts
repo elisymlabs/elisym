@@ -223,8 +223,29 @@ export class X402JobStore {
   /** Binary result: bytes hit disk BEFORE the record flush (crash-safe ordering). */
   async saveFileResult(jobId: string, mime: string, bytes: Uint8Array): Promise<string> {
     const filePath = this.resultFilePath(jobId);
-    await mkdir(this.resultsDir, { recursive: true });
-    await writeFile(filePath, bytes);
+    // Owner-only, like every other directory this repository creates for agent
+    // state. `mkdir` without a mode is 0o777 minus the umask - usually 0o755 -
+    // and what lands here is a result somebody has already been charged for.
+    await mkdir(this.resultsDir, { recursive: true, mode: 0o700 });
+    // Written through a temporary with a RANDOM name, then renamed. The final
+    // name is derived from the job id, which is a public Nostr event id: a
+    // predictable path is one somebody can put a FIFO on, and `writeFile` onto
+    // one never settles. That write happens AFTER the upstream has been paid,
+    // so the customer's money is already gone - and with a reader draining the
+    // pipe it is worse than a hang, because the record then reads as
+    // attempt-without-result and the bridge pays the upstream a second time.
+    const tempPath = `${filePath}.tmp.${randomBytes(6).toString('hex')}`;
+    try {
+      await writeFile(tempPath, bytes, { mode: 0o600 });
+      await rename(tempPath, filePath);
+    } catch (error) {
+      try {
+        await rm(tempPath, { force: true });
+      } catch {
+        /* the caller's error is the one worth reporting */
+      }
+      throw error;
+    }
     await this.runExclusive(async () => {
       const file = await this.load();
       const now = Date.now();

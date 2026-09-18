@@ -27,7 +27,7 @@ function isEnoent(e: unknown): boolean {
 
 /**
  * Read and validate `~/.elisym/config.yaml`. Returns `{}` if missing. Throws
- * on malformed YAML or schema violations — the MCP server treats these as fatal
+ * on malformed YAML or schema violations - the MCP server treats these as fatal
  * at startup rather than silently ignoring bad overrides.
  */
 export async function loadGlobalConfig(path: string): Promise<GlobalConfig> {

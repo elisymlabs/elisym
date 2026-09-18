@@ -2,7 +2,7 @@
  * Job recovery ledger - persistent JSON storage for crash recovery.
  */
 import { randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isBlockingNodeSync } from '@elisym/sdk/agent-store';
 
@@ -223,7 +223,8 @@ export class JobLedger {
       if (typeof e?.code === 'string' && e.code !== 'ENOENT') {
         throw new Error(
           `Refusing to start on a job ledger that cannot be read (${e.code}) at ${this.path}. ` +
-            `An empty ledger would drop the record of which transaction paid for which job.`,
+            `An empty ledger would drop the record of which transaction paid for which job. ` +
+            `Check the file's owner and mode (a ledger written under sudo needs a chown).`,
         );
       }
       // W4: Log warning on malformed ledger and backup corrupt file
@@ -262,6 +263,11 @@ export class JobLedger {
     // there being nothing to plant.
     const tmp = `${this.path}.tmp.${randomBytes(6).toString('hex')}`;
     writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: LEDGER_FILE_MODE });
+    // Cleaned up on any failure below, and that only became worth doing once
+    // the name became random: with one fixed name the next flush reused the
+    // leftover, so the garbage bounded itself. Now every failure between the
+    // write and the rename would leave a unique file holding a full copy of the
+    // ledger - customer inputs included - and nothing ever sweeps them.
     // `writeFileSync`'s `mode` applies only when it CREATES the file, so a stale
     // `.tmp` left behind by a crash - possibly with looser permissions - would be
     // reused as it stands. This chmod is what closes that, and it runs on the
@@ -277,8 +283,17 @@ export class JobLedger {
     // claim exists to prevent.
     //
     // `UsedNonceStore.flush` deliberately keeps the opposite order; see there.
-    chmodSync(tmp, LEDGER_FILE_MODE);
-    renameSync(tmp, this.path);
+    try {
+      chmodSync(tmp, LEDGER_FILE_MODE);
+      renameSync(tmp, this.path);
+    } catch (error) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* best effort: the caller's error is the one worth reporting */
+      }
+      throw error;
+    }
   }
 
   recordPaid(entry: Omit<LedgerEntry, 'status' | 'retry_count'>): void {
@@ -720,7 +735,20 @@ export class UsedNonceStore {
     // the nonce is spent. Make this all-or-nothing like the job ledger and the
     // failure mode inverts - the mark lives only in memory, a restart forgets
     // it, and a delegated pull can be replayed.
-    renameSync(tmp, this.path);
+    // Only the RENAME is wrapped, so the order above is preserved: a chmod that
+    // fails after the data is published must not read as a failed flush. The
+    // cleanup exists because the temporary now carries a random name and would
+    // otherwise be left behind for good.
+    try {
+      renameSync(tmp, this.path);
+    } catch (error) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* best effort */
+      }
+      throw error;
+    }
     chmodSync(this.path, LEDGER_FILE_MODE);
   }
 

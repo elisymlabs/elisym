@@ -598,7 +598,18 @@ export class SessionStore {
         lines.map((line) => JSON.stringify(line)).join('\n') + (lines.length > 0 ? '\n' : '');
       const tempPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
       writeFileSync(tempPath, payload, { mode: FILE_MODE });
-      renameSync(tempPath, path);
+      // Cleaned up if the rename never happens: the name is random, so nothing
+      // ever reuses or sweeps a leftover.
+      try {
+        renameSync(tempPath, path);
+      } catch (error) {
+        try {
+          unlinkSync(tempPath);
+        } catch {
+          /* best effort */
+        }
+        throw error;
+      }
       this.globalBytes = Math.max(0, this.globalBytes - size + Buffer.byteLength(payload));
     }
     return lines;
@@ -678,7 +689,17 @@ export class SessionStore {
     const tempPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
     mkdirSync(join(this.root, customerId), { recursive: true, mode: DIR_MODE });
     writeFileSync(tempPath, payload, { mode: FILE_MODE });
-    renameSync(tempPath, path);
+    // Same cleanup as the torn-file repair above.
+    try {
+      renameSync(tempPath, path);
+    } catch (error) {
+      try {
+        unlinkSync(tempPath);
+      } catch {
+        /* best effort */
+      }
+      throw error;
+    }
     this.globalBytes = Math.max(0, this.globalBytes - oldSize + Buffer.byteLength(payload));
 
     return assembleReplay(rewritten, undefined);

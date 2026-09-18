@@ -81,6 +81,10 @@ export interface SettlementStore {
    * what it RE-READ: writing by its own snapshot erases a claim made after it.
    * Writes nothing at all when it deletes nothing. A retention below
    * {@link MIN_SETTLEMENT_RETENTION_MS} is rejected by throwing.
+   *
+   * Unlike `claim`, a write that fails here THROWS rather than being reported:
+   * a prune that could not persist has released nothing, and the caller is a
+   * scheduled sweep rather than a payment.
    */
   prune(retentionMs: number): number;
 }
@@ -240,6 +244,11 @@ export function classifyRequestUsability(
     if (feeAmount < expectedFee) {
       return 'inconclusive';
     }
+    // PROVABLY REDUNDANT, and kept as a mirror: the next line answers the same
+    // for a missing address, because `undefined !== config.treasury`. It is
+    // written out because this predicate mirrors `verifyPayment`'s preconditions
+    // line by line (`solana.ts`), and a mirror with a line missing is a mirror
+    // somebody has to re-derive. No mutation can kill it - measured.
     if (!request.fee_address) {
       return 'inconclusive';
     }
@@ -478,6 +487,11 @@ export class ProviderPaymentAcceptor {
     }
     if (!deadlineHit) {
       for (let attempt = 0; attempt < listAttempts; attempt++) {
+        // The other half of the pair named above, and NOT KILLED ON ITS OWN
+        // either: with the check before the loop in place, this one only ever
+        // matters from the second attempt onwards, and the verdict is the same
+        // whichever of the two fires. It stops a retried listing from running
+        // on after the caller left; the pass is already inconclusive by then.
         if (pastDeadline()) {
           deadlineHit = true;
           break;

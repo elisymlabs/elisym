@@ -19,6 +19,12 @@ import { stat } from 'node:fs/promises';
  * `stat`, not `lstat`: the check has to follow the link, or a symlink pointing
  * at a FIFO walks straight past it.
  *
+ * ADVISORY, not a lock: between this `stat` and the open that follows, the same
+ * hand that plants a node could swap a regular file for one. It closes the
+ * accident and the node left lying there, which is what actually happens; the
+ * WRITE side of this class is closed properly instead, by writing through a
+ * temporary whose name nobody can guess.
+ *
  * The gate only ever NARROWS. It is entirely inside this try/catch, so any
  * throw - ENOENT for a directory with no yaml, ENOTDIR for a plain file where a
  * directory was expected - means "the gate did not fire", and the read that

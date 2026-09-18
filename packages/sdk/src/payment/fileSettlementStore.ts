@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isBlockingNodeSync } from '../agent-store/node-type';
 import {
@@ -174,8 +174,21 @@ export class FileSettlementStore implements SettlementStore {
       `.${basename(this.path)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
     );
     writeFileSync(tmp, JSON.stringify(file), { encoding: 'utf-8', mode: STORE_FILE_MODE });
-    chmodSync(tmp, STORE_FILE_MODE);
-    renameSync(tmp, this.path);
+    try {
+      chmodSync(tmp, STORE_FILE_MODE);
+      renameSync(tmp, this.path);
+    } catch (error) {
+      // Best effort, and it only became worth doing once the name became
+      // random: with one fixed name the next write reused the leftover, so the
+      // garbage bounded itself. Now every failure between the write and the
+      // rename would leave a unique file holding a full copy of the index.
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* the caller's error is the one worth reporting */
+      }
+      throw error;
+    }
   }
 
   claim(signature: string, jobIdentity: string): SettlementClaim {

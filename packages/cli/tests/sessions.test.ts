@@ -1,6 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { constants } from 'node:fs';
 import {
   appendFileSync,
+  closeSync,
+  openSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -586,16 +589,11 @@ describe('a session file that is a node which blocks', () => {
     mkdirSync(dir, { recursive: true });
     const path = join(dir, `${SID}.jsonl`);
     execFileSync('mkfifo', [path]);
-    const drainer = spawn(
-      process.execPath,
-      [
-        '-e',
-        `const fs=require('fs');
-         const loop=()=>{ try { fs.readFileSync(${JSON.stringify(path)}); } catch {} setImmediate(loop); };
-         loop();`,
-      ],
-      { detached: true, stdio: 'ignore' },
-    );
+    // A reader held open IN THIS PROCESS rather than a spawned drainer: opening
+    // a FIFO non-blocking for reading succeeds at once, so the append below
+    // cannot race a child that has not started yet. A fixture that can hang on
+    // a timing accident is a fixture that measures the clock.
+    const reader = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const logged: string[] = [];
       const store = new SessionStore(agentDir, (line) => {
@@ -617,7 +615,7 @@ describe('a session file that is a node which blocks', () => {
 
       expect(logged.join('\n')).toContain('not a regular file');
     } finally {
-      killGroup(drainer);
+      closeSync(reader);
     }
   });
 });

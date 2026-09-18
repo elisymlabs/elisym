@@ -242,8 +242,10 @@ export async function cmdStart(
               ? `shares this payout address on ${walletNetwork}, and its skills could not be ` +
                 `read to tell whether any of them are paid.`
               : `is paid at the same address on ${walletNetwork}.`) +
-            ` On the flat paid rail one transaction can be counted for jobs of both agents, so ` +
-            `a customer could be served twice for one transfer.`,
+            ` One transaction can then be counted for jobs of both agents, so a customer could ` +
+            `be served twice for one transfer. See ` +
+            `https://docs.elisym.network/protocol/payments for what the rail does and does not ` +
+            `promise.`,
         );
       }
       if (neighbors.length > 0) {
@@ -649,6 +651,14 @@ export async function cmdStart(
     await writeMediaCache(loaded.dir, mediaCache);
   }
 
+  // The job ledger is opened BEFORE anything is published, and that ordering is
+  // the point: it refuses to load a file it cannot read - an empty settlement
+  // index is the whole of "one transaction settles one job" - and a refusal
+  // after the capability cards are on the relays leaves a live paid provider
+  // advertised by an agent that has already exited. Nothing here touches the
+  // network, so the only cost of moving it up is that the failure lands sooner.
+  const ledger = new JobLedger(paths.jobs);
+
   // -- Step 10: Publish kind:0 profile --
   // `nip05` is the website identity claim (managed by `elisym identity link
   // website`); github/x claims ride kind 10011 in Step 10.2 below.
@@ -985,7 +995,6 @@ export async function cmdStart(
 
   // -- Step 14: Build transport + ledger + runtime --
   const transport = new NostrTransport(client, identity, [DEFAULT_KIND_OFFSET]);
-  const ledger = new JobLedger(paths.jobs);
   // iroh blob transport for file results, bound to a persistent fs-store at
   // <agent-dir>/.iroh/ (the node is created lazily on the first transfer).
   const irohTransport = createIrohTransport({ storePath: join(loaded.dir, '.iroh') });
