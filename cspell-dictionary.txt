@@ -58,6 +58,7 @@ FLASHX
 freetext
 frontmatter
 fsmonitor
+glpat
 helius
 hextet
 hextets
@@ -187,4 +188,3 @@ zeroize
 zeroized
 zod
 ZWNJ
-glpat

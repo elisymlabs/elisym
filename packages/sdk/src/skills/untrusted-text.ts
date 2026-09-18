@@ -112,12 +112,17 @@ export function flattenUntrusted(text: string): string {
  * A false positive costs an operator a few characters of a diagnostic; a miss
  * costs them their key in a log they may paste somewhere.
  */
+const TOKEN_SHAPE = '[A-Za-z0-9_\\-./+=]{12,}';
 const CREDENTIAL_SHAPES: ReadonlyArray<RegExp> = [
-  /\b[\w-]*api[_-]?key\b\s*[:=]\s*\S+/gi,
+  // The VALUE has to look like a token, not merely be the next word: a refusal
+  // reading "your request must include an api_key: value for this venue" is a
+  // sentence a customer needs, and replacing its second half with `[redacted]`
+  // would make the channel useless for the case it was built for.
+  new RegExp(`\\b[\\w-]*api[_-]?key\\b\\s*[:=]\\s*${TOKEN_SHAPE}`, 'gi'),
   // The scheme word is part of the header, not of the secret: without it the
   // replacement would stop at "Bearer" and leave the token standing.
-  /\bauthorization\b\s*[:=]\s*(?:bearer|basic|token)?\s*\S+/gi,
-  /\b(?:bearer|basic)\s+[\w./+=-]{8,}/gi,
+  new RegExp(`\\bauthorization\\b\\s*[:=]\\s*(?:bearer|basic|token)?\\s*${TOKEN_SHAPE}`, 'gi'),
+  new RegExp(`\\b(?:bearer|basic)\\s+${TOKEN_SHAPE}`, 'gi'),
   /\b(?:sk|pk|rk|xai|gsk|ghp|gho|glpat)-[A-Za-z0-9_-]{8,}/g,
 ];
 

@@ -3,10 +3,12 @@ import {
   classifyJobError,
   excerptOwnMessage,
   hasVisibleText,
+  PROVIDER_FAILED_MESSAGE,
   refusalFromJobError,
   SCRIPT_REFUSAL_MAX_CHARS,
   type JobErrorKind,
 } from '@elisym/sdk';
+import { LEGACY_INTERNAL_MASK } from './heldPaymentNote';
 
 /**
  * What an unexplained failure may occupy on screen.
@@ -83,6 +85,12 @@ export function customerErrorText(error: string, known?: JobErrorKind): string {
   }
   if (kind === 'provider-refused') {
     return `${AGENT_REFUSED_LABEL}${refusalFromJobError(error)}`;
+  }
+  // The sentence agents sent before the runtime had one of its own. It means the
+  // same thing, and `heldPaymentNote` already answers it the same way, so it
+  // should not be the one error a buyer reads as internal jargon.
+  if (error === LEGACY_INTERNAL_MASK) {
+    return PROVIDER_FAILED_MESSAGE;
   }
   // A job error with nothing readable in it DID come from the agent.
   return boundedErrorText(error, UNSTATED_FAILURE);

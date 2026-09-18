@@ -18,7 +18,14 @@ import { SCRIPT_REFUSAL_FILE_MAX_BYTES } from './refusal';
  * that cannot be raced. `O_NONBLOCK` is for the other shape a script can leave
  * behind: opening a FIFO for reading waits for a writer, and the writer here
  * would be a process that has already exited - the job would hang until its
- * timeout. Both are guarded with `?? 0`, since Windows defines neither.
+ * timeout.
+ *
+ * Both are guarded with `?? 0`, since Windows defines neither - so on Windows
+ * the half of this that cannot be raced is simply absent, and what remains is the `lstat`
+ * check plus an unguessable per-job path. `nlink` is not a dependable link count
+ * there either. The channel is POSIX-hardened; on Windows it is as good as the
+ * path being unguessable, which is what the rest of the job channels already
+ * rely on.
  */
 const READ_ONLY_NO_SYMLINK =
   constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);

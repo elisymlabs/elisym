@@ -153,7 +153,7 @@ A script that calls an upstream LLM can declare `provider` + `model` so the agen
 | `42`          | upstream LLM out of credits (HTTP 402) | flips the `(provider, model)` health gate to unhealthy |
 | `43` + a reason file | understood the request and refuses it  | none; **that file is sent to the customer as the reason** |
 | `43` with no file | meant to refuse and the contract was not kept, or crashed with a 43 of its own | same as any other failure, health gate included; the buyer gets the generic message and the operator log says which it was |
-| anything else | generic skill failure                  | flips the declared `(provider, model)` pair unhealthy, when the skill declares one - and cascades to that provider's other models only when stderr names the key itself (`invalid x-api-key`, `credit balance`, `authentication_error`), not merely on the word "insufficient" |
+| anything else | generic skill failure                  | flips the declared `(provider, model)` pair unhealthy, when the skill declares one - and cascades to that provider's other models only when stderr names the key itself (`invalid x-api-key`, `invalid api key`, `invalid_api_key`, `credit balance`, `insufficient_quota`, `authentication_error`), not merely on the word "insufficient" |
 
 `42` is `SCRIPT_EXIT_BILLING_EXHAUSTED`, exported from `@elisym/sdk/llm-health`. Reserve it strictly for the billing case - misusing it degrades the health gate.
 

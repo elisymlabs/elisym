@@ -124,10 +124,10 @@ export function useChatReconcile(agentPubkey: string): void {
           // undecryptable-result guard below - the only thing stopping a
           // delivered answer from being overwritten by a terminal refusal -
           // compile against a field that no longer exists.
-          jobIds.length === 0
+          askAbout.length === 0
             ? Promise.resolve<JobResults>(new Map())
             : client.marketplace
-                .queryJobResults(identity, jobIds, undefined, agentPubkey)
+                .queryJobResults(identity, askAbout, undefined, agentPubkey)
                 .catch(() => null),
           client.marketplace.queryJobErrors(askAbout, agentPubkey).catch(() => null),
         ]);
@@ -199,12 +199,27 @@ export function useChatReconcile(agentPubkey: string): void {
               }).catch(() => {});
             }
           }
-          // And the closed ones, which need nothing but the reason. Outside the
-          // results loop: a result cannot arrive for an entry that is already
-          // `failed` - `completeEntry` is what would have cleared it.
+          // And the closed ones. A separate loop because they are not waiting
+          // for anything - they are already `failed` - but they are asked the
+          // same two questions in the same order: a result first, then a reason.
           for (const entry of unexplained) {
             if (cancelled) {
               return;
+            }
+            // A result outranks a refusal here too. A closed entry can still be
+            // completed - `completeEntry` only refuses one that already carries a
+            // result - so attaching a terminal refusal without looking would
+            // withdraw Retry from a job whose answer was on the relays all along.
+            const delivered = results?.get(entry.jobEventId);
+            if (delivered && !delivered.decryptionFailed && delivered.content) {
+              const decoded = decodeResult(delivered.content);
+              await completeReconciled(
+                entry.jobEventId,
+                entry.sessionId,
+                resultDisplay(decoded),
+                decoded.attachments,
+              );
+              continue;
             }
             const late = errors?.get(entry.jobEventId);
             if (late !== undefined && classifyJobError(late) === 'provider-refused') {

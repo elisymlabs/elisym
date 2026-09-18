@@ -30,7 +30,7 @@ const OUTAGE_NOTE =
  * matching it is the difference between a paying customer getting guidance and
  * getting internal jargon with none.
  */
-const LEGACY_INTERNAL_MASK = 'Internal processing error';
+export const LEGACY_INTERNAL_MASK = 'Internal processing error';
 
 const CRASHED_NOTE =
   "The job failed on the agent's side and is closed. A flat-priced job is charged before it runs, so if you paid, check the job in your wallet history and contact the provider rather than sending it again.";

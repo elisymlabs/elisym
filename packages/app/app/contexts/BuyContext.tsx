@@ -709,9 +709,16 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // paragraphs, and nothing re-checked when the write arrived.
         let refusalStored = false;
         const syncRefusalInThread = (paymentInThread: boolean): void => {
+          if (!refusalStored) {
+            // Nothing to stand down. Writing the flag again would allocate a new
+            // session object and re-render every card on the page for no change,
+            // and this runs on the ordinary paid path, where there is no refusal
+            // at all.
+            return;
+          }
           setSession((prev) =>
             sessionMatches(prev) && prev.jobId === jobEventId
-              ? { ...prev, refusalInThread: refusalStored && paymentInThread }
+              ? { ...prev, refusalInThread: paymentInThread }
               : prev,
           );
         };

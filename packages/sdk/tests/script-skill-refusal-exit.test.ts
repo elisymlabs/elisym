@@ -514,6 +514,19 @@ describe('excerpting for the operator', () => {
     expect(excerptUntrusted('token sk-proj-ABCDEFGHIJKLMNOP failed', 200)).toContain('[redacted]');
   });
 
+  it('leaves a refusal that merely NAMES a key field alone', async () => {
+    const { refusalMessage } = await import('../src/skills/refusal');
+    // The sentence the channel exists to deliver. Redaction is for a key a
+    // script printed by accident, and a value that is not token-shaped is prose.
+    expect(refusalMessage('your request must include an api_key: value for this venue')).toBe(
+      'your request must include an api_key: value for this venue',
+    );
+    // The accident still goes.
+    expect(refusalMessage('upstream said api_key: sk-ant-api03-DEADBEEFcafe1234 is revoked')).toBe(
+      'upstream said [redacted] is revoked',
+    );
+  });
+
   it('gives back nothing when asked for nothing, from either end', async () => {
     const { excerptUntrusted, excerptUntrustedTail } = await import('../src/skills/untrusted-text');
     // Arithmetic that reaches zero ("what is left of the line") must not come

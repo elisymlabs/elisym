@@ -275,14 +275,18 @@ function classifyScriptSignal(message: string): {
   reason: 'billing' | 'invalid';
 } {
   const lowered = message.toLowerCase();
-  const looksBillingOrInvalid = SCRIPT_BILLING_INVALID_MARKERS.some(({ phrase }) =>
-    lowered.includes(phrase),
-  );
-  // Both questions off the same table: a new provider phrase is one row, not
-  // one row plus a hand-copied `includes` chain that can disagree with it.
-  const billing = SCRIPT_BILLING_INVALID_MARKERS.some(
-    (marker) => marker.billing && lowered.includes(marker.phrase),
-  );
+  // ONE walk of the table, both answers off the same rows: the text is bounded
+  // only by `MAX_SCRIPT_OUTPUT`, so a second pass over a megabyte buys nothing
+  // this loop does not already know.
+  let looksBillingOrInvalid = false;
+  let billing = false;
+  for (const marker of SCRIPT_BILLING_INVALID_MARKERS) {
+    if (!lowered.includes(marker.phrase)) {
+      continue;
+    }
+    looksBillingOrInvalid = true;
+    billing = billing || marker.billing;
+  }
   return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid' };
 }
 
@@ -332,32 +336,49 @@ const HEALTH_REASON_CHARS = 500;
 const SIGNAL_LEAD_UNITS = 80;
 
 /**
- * The first key-level marker in the text, or -1 - see `scriptSignalReason`.
+ * Where a marker sits in the text, or -1.
  *
- * Matched case-insensitively against the ORIGINAL text rather than by index
- * into a lowercased copy: `toLowerCase` is not length-preserving (one `İ`
- * becomes two code units), so an index taken from the copy can point hundreds
- * of characters past the signal in the text it is used to quote.
+ * Matched case-insensitively against the ORIGINAL text rather than by index into
+ * a lowercased copy: `toLowerCase` is not length-preserving (one `İ` becomes two
+ * code units), so an index taken from the copy can point hundreds of characters
+ * past the signal in the text it is used to quote.
+ *
+ * `null` rather than an empty alternation when a list is empty: `new RegExp('')`
+ * matches at index 0 of every string, which would turn "did we find a signal"
+ * into "always" - and for the cascade list, every script failure into an
+ * operator's whole key going offline.
  */
-const KEY_LEVEL_MARKER_RE =
-  SCRIPT_KEY_LEVEL_MARKERS.length === 0
-    ? null
-    : new RegExp(
-        // Escaped: today's markers carry no metacharacters, but a future
-        // `insufficient_quota?` would silently change the match, and a `402 (` would
-        // throw at import time and take the whole CLI down before it serves a job.
-        SCRIPT_KEY_LEVEL_MARKERS.map((marker) =>
-          marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-        ).join('|'),
-        'i',
-      );
+function markerPattern(phrases: readonly string[]): RegExp | null {
+  if (phrases.length === 0) {
+    return null;
+  }
+  // Escaped: today's markers carry no metacharacters, but a future
+  // `insufficient_quota?` would silently change the match, and a `402 (` would
+  // throw at import time and take the whole CLI down before it serves a job.
+  return new RegExp(
+    phrases.map((phrase) => phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+    'i',
+  );
+}
 
+const ANY_MARKER_RE = markerPattern(SCRIPT_BILLING_INVALID_MARKERS.map((marker) => marker.phrase));
+const KEY_LEVEL_MARKER_RE = markerPattern(SCRIPT_KEY_LEVEL_MARKERS);
+
+/** Where the CASCADE decision's evidence is - see `SCRIPT_KEY_LEVEL_MARKERS`. */
 function keyLevelMarkerIndex(text: string): number {
-  // `null` rather than an empty alternation: `new RegExp('')` matches at index 0
-  // of every string, so a list that ever filtered down to nothing would flip the
-  // cascade default from never to ALWAYS - every script failure taking every
-  // model on the operator's key offline.
   return KEY_LEVEL_MARKER_RE?.exec(text)?.index ?? -1;
+}
+
+/**
+ * Where ANY billing or auth signal is, for the operator's quote.
+ *
+ * A different question from the cascade: `HTTP 401 unauthorized` gates this pair
+ * without taking the whole key offline, and it is still the line the operator
+ * needs to see - quoting the tail instead hands them the curl progress meter
+ * that followed it.
+ */
+function signalIndex(text: string): number {
+  return ANY_MARKER_RE?.exec(text)?.index ?? -1;
 }
 
 /**
@@ -378,7 +399,7 @@ function operatorReason(diagnostic: string, budget = HEALTH_REASON_CHARS): strin
   if (startsWithRefusalHint(diagnostic)) {
     return excerptUntrusted(diagnostic, budget);
   }
-  const signalAt = keyLevelMarkerIndex(diagnostic);
+  const signalAt = signalIndex(diagnostic);
   if (signalAt === -1) {
     return excerptUntrustedTail(diagnostic, budget);
   }
@@ -1108,11 +1129,6 @@ export class AgentRuntime {
     const tag = `[${jobId.slice(0, 8)}]`;
 
     if (isHostScratchError(err)) {
-      // Remembered so the NEXT customer is refused before they pay: the health
-      // gate used to do that by accident, and taking the accident away without
-      // putting the check somewhere would have every customer pay into a host
-      // that cannot run their job. See `scratchSpaceUsable`.
-      this.scratchFailedAt = Date.now();
       // This agent's own temp directory, not the operator's API key. Gating the
       // declared pair would refuse every capability on that key for a local disk
       // problem, and the recovery probe - which tests the KEY - would clear it
@@ -1617,6 +1633,13 @@ export class AgentRuntime {
       //     without paying the upstream again. Recovery's retry cap + 24h cutoff
       //     bound the loop.
       //   - everything else: markFailed as before.
+      if (isHostScratchError(e)) {
+        // Remembered HERE, not in the health branch: that one returns early when
+        // the agent has no monitor - a fleet of static-script skills declaring no
+        // pair - and the next customer would then still pay into a host that
+        // cannot run their job. See `scratchSpaceUsable`.
+        this.scratchFailedAt = Date.now();
+      }
       const currentStatus = this.ledger.getStatus(job.jobId);
       const keepPaidForRecovery =
         (e instanceof AgentUnavailableError ||
@@ -1704,6 +1727,20 @@ export class AgentRuntime {
           .catch(() => {});
         return;
       }
+    }
+
+    // The agent's own disk, checked where its API key is: a customer must not be
+    // asked to pay for a job this host cannot run. Armed only after such a
+    // failure has been seen, and re-probed here, so a host that recovers starts
+    // selling again on its own. `llm` mode needs no scratch space.
+    if (matched !== null && matched.mode !== 'llm' && !(await this.scratchSpaceUsable())) {
+      log(
+        `[${job.jobId.slice(0, 8)}] Refusing job before payment: this agent cannot create scratch space (check the temp directory).`,
+      );
+      await this.transport
+        .sendFeedback(job, { type: 'error', message: AGENT_UNAVAILABLE_MESSAGE })
+        .catch(() => {});
+      return;
     }
 
     // ── x402 pre-payment rules ──
