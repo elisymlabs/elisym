@@ -513,18 +513,62 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     };
   }
 
-  function makeTx(opts: { keys: (string | null)[]; pre: number[]; post: number[]; err?: unknown }) {
+  function makeTx(opts: {
+    keys: (string | null)[];
+    pre: number[];
+    post: number[];
+    err?: unknown;
+    /** What a v0 transaction pulled in from an Address Lookup Table. */
+    loaded?: { writable: string[]; readonly: string[] };
+  }) {
     return {
       meta: {
         err: opts.err ?? null,
         preBalances: opts.pre.map((value) => BigInt(value)),
         postBalances: opts.post.map((value) => BigInt(value)),
+        ...(opts.loaded ? { loadedAddresses: opts.loaded } : {}),
       },
       transaction: {
         message: {
           accountKeys: opts.keys,
         },
       },
+    };
+  }
+
+  /**
+   * An SPL transfer as `getTransaction(json)` reports it: the deltas live in
+   * `pre/postTokenBalances` keyed by OWNER, not in the lamport arrays.
+   */
+  function makeTokenTx(opts: {
+    keys: (string | null)[];
+    mint: string;
+    recipientBefore: number;
+    recipientAfter: number;
+    treasuryBefore: number;
+    treasuryAfter: number;
+  }) {
+    const entry = (owner: string, index: number, raw: number) => ({
+      accountIndex: index,
+      mint: opts.mint,
+      owner,
+      uiTokenAmount: { amount: String(raw), decimals: 6, uiAmount: raw / 1e6 },
+    });
+    return {
+      meta: {
+        err: null,
+        preBalances: opts.keys.map(() => 0n),
+        postBalances: opts.keys.map(() => 0n),
+        preTokenBalances: [
+          entry(recipientAddr, 1, opts.recipientBefore),
+          entry(TEST_TREASURY, 3, opts.treasuryBefore),
+        ],
+        postTokenBalances: [
+          entry(recipientAddr, 1, opts.recipientAfter),
+          entry(TEST_TREASURY, 3, opts.treasuryAfter),
+        ],
+      },
+      transaction: { message: { accountKeys: opts.keys } },
     };
   }
 
@@ -711,6 +755,126 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       });
       expect(result.verified).toBe(true);
       expect(calls).toBe(3);
+    });
+  });
+
+  describe('address lookup tables', () => {
+    const payerAddr = makeAddress();
+    const usdcRequest = {
+      asset: {
+        chain: 'solana',
+        token: 'usdc',
+        mint: USDC_SOLANA_DEVNET.mint,
+        decimals: USDC_SOLANA_DEVNET.decimals,
+      },
+    };
+
+    it('verifies a v0 payment whose reference and treasury came from a table', async () => {
+      // `encoding: 'json'` puts only the STATIC keys in `accountKeys` and the
+      // looked-up ones in `meta.loadedAddresses`; the balance arrays cover both,
+      // ordered static keys, then writable loaded, then read-only loaded.
+      // Reading only the static half rejects a routing or swap-then-pay
+      // composer's transaction as "possible replay" after the customer paid.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr],
+                loaded: { writable: [TEST_TREASURY], readonly: [referenceAddr] },
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, feeAmount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'v0LookupSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(true);
+    });
+
+    it('still refuses a transaction the reference is in no half of', async () => {
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr],
+                loaded: { writable: [TEST_TREASURY], readonly: [makeAddress()] },
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, feeAmount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'wrongRefSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/replay/);
+    });
+
+    it('names the real problem when a token account is short by one subunit', async () => {
+      // A delta of exactly -1 used to be the "no account here" sentinel, so the
+      // operator was sent looking for an ATA that exists while the answer they
+      // needed - the recipient was short-changed - never reached them.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 1,
+                recipientAfter: 0,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'shortBySubunitSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received -1 tokens/);
+      expect(result.error).not.toMatch(/not found/);
+    });
+
+    it('still says so when the recipient really has no token account', async () => {
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve({
+              meta: {
+                err: null,
+                preBalances: [0n, 0n, 0n, 0n],
+                postBalances: [0n, 0n, 0n, 0n],
+                preTokenBalances: [],
+                postTokenBalances: [],
+              },
+              transaction: {
+                message: {
+                  accountKeys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                },
+              },
+            }),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'noAtaSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient token account not found/);
     });
   });
 

@@ -552,6 +552,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
 
         const verdict = checkTxDiff({
           accountKeys: tx.transaction.message.accountKeys as readonly string[],
+          loadedAddresses: tx.meta.loadedAddresses as LoadedAddresses | undefined,
           preBalances: tx.meta.preBalances as readonly bigint[],
           postBalances: tx.meta.postBalances as readonly bigint[],
           preTokenBalances: tx.meta.preTokenBalances as readonly TokenBalanceEntry[] | undefined,
@@ -627,6 +628,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
             }
             const verdict = checkTxDiff({
               accountKeys: tx.transaction.message.accountKeys as readonly string[],
+              loadedAddresses: tx.meta.loadedAddresses as LoadedAddresses | undefined,
               preBalances: tx.meta.preBalances as readonly bigint[],
               postBalances: tx.meta.postBalances as readonly bigint[],
               preTokenBalances: tx.meta.preTokenBalances as
@@ -671,8 +673,24 @@ interface TokenBalanceEntry {
   uiTokenAmount: { amount: string };
 }
 
+/**
+ * The addresses a v0 transaction pulled in from an Address Lookup Table.
+ *
+ * Absent on a legacy transaction, and absent from `accountKeys` on a v0 one:
+ * with `encoding: 'json'` the RPC returns only the STATIC keys there and puts
+ * the rest here. The balance arrays cover all of them, ordered static keys
+ * first, then the writable loaded ones, then the read-only loaded ones - which
+ * is the order this pair has to be appended in.
+ */
+interface LoadedAddresses {
+  readonly writable: readonly string[];
+  readonly readonly: readonly string[];
+}
+
 interface TxDiffInput {
   accountKeys: readonly string[];
+  /** Absent for a legacy transaction, and for a v0 one that used no table. */
+  loadedAddresses?: LoadedAddresses;
   preBalances: readonly bigint[];
   postBalances: readonly bigint[];
   preTokenBalances?: readonly TokenBalanceEntry[];
@@ -690,9 +708,20 @@ type BalanceVerdict = { ok: true } | { ok: false; reason: string };
 
 function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   const balanceCount = input.preBalances.length;
+  // The LOOKED-UP addresses count as being in the transaction. Reading only
+  // `accountKeys` means a v0 transaction that put the reference, the recipient
+  // or the treasury in a lookup table - what a routing or swap-then-pay
+  // composer builds - is rejected as "possible replay" though the customer
+  // paid: fail-closed, and wrong. The concatenation order is the one the
+  // balance arrays are indexed by, so the indices below stay aligned.
+  const keys = [
+    ...input.accountKeys,
+    ...(input.loadedAddresses?.writable ?? []),
+    ...(input.loadedAddresses?.readonly ?? []),
+  ];
   const keyToIdx = new Map<string, number>();
-  for (let i = 0; i < Math.min(input.accountKeys.length, balanceCount); i++) {
-    const key = input.accountKeys[i];
+  for (let i = 0; i < Math.min(keys.length, balanceCount); i++) {
+    const key = keys[i];
     if (key) {
       keyToIdx.set(String(key), i);
     }
@@ -748,13 +777,19 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
   const pre = input.preTokenBalances ?? [];
   const post = input.postTokenBalances ?? [];
 
-  const tokenDelta = (ownerAddress: string): bigint => {
+  // `null` for "no account here", never a sentinel AMOUNT: `-1n` is also what a
+  // token account that lost exactly one subunit between pre and post reports,
+  // and reading that as a missing account sends the operator looking for an ATA
+  // that exists while the real answer - the recipient was short-changed - never
+  // reaches them. Both paths refuse the payment either way; only the sentence
+  // the operator gets to act on differs.
+  const tokenDelta = (ownerAddress: string): bigint | null => {
     // Pre-entry may be absent when the ATA is created inside the same tx
     // (first-ever payment to this recipient). Missing => 0.
     const preEntry = pre.find((entry) => entry.owner === ownerAddress && entry.mint === mint);
     const postEntry = post.find((entry) => entry.owner === ownerAddress && entry.mint === mint);
     if (!postEntry) {
-      return -1n;
+      return null;
     }
     const preAmount = preEntry ? BigInt(preEntry.uiTokenAmount.amount) : 0n;
     const postAmount = BigInt(postEntry.uiTokenAmount.amount);
@@ -762,7 +797,7 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
   };
 
   const recipientDelta = tokenDelta(input.recipientAddress);
-  if (recipientDelta === -1n) {
+  if (recipientDelta === null) {
     return { ok: false, reason: 'Recipient token account not found in transaction' };
   }
   if (recipientDelta < BigInt(input.expectedNet)) {
@@ -774,7 +809,7 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
 
   if (input.expectedFee > 0) {
     const treasuryDelta = tokenDelta(input.treasuryAddress);
-    if (treasuryDelta === -1n) {
+    if (treasuryDelta === null) {
       return { ok: false, reason: 'Treasury token account not found in transaction' };
     }
     if (treasuryDelta < BigInt(input.expectedFee)) {
