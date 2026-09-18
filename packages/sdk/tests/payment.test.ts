@@ -5,7 +5,11 @@ import {
   deriveNetworkStatsAddress,
 } from '@elisym/config-client';
 import { getTransferSolInstructionDataDecoder } from '@solana-program/system';
-import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from '@solana-program/token';
+import {
+  TOKEN_PROGRAM_ADDRESS,
+  findAssociatedTokenPda,
+  getTransferCheckedInstructionDataDecoder,
+} from '@solana-program/token';
 import {
   type Address,
   type Blockhash,
@@ -487,6 +491,70 @@ describe('buildPaymentInstructions', () => {
     expect(instructions.length).toBe(3);
   });
 
+  it('pays the fee leg to the fee address, in the fee amount', async () => {
+    // Neither half was measured: a leg paying the RECIPIENT instead of the fee
+    // address, and a leg carrying `providerAmount` instead of `feeAmount`, both
+    // left the whole package green. The first sends the protocol's cut to the
+    // provider, the second sends the customer's whole payment to the treasury.
+    const recipient = makeAddress();
+    const fee = calculateProtocolFee(100_000_000, TEST_FEE_BPS);
+    const [recipientAta] = await findAssociatedTokenPda({
+      owner: recipient,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const [treasuryAta] = await findAssociatedTokenPda({
+      owner: TEST_TREASURY,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient,
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: TEST_TREASURY,
+        fee_amount: fee,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'usdc',
+          mint: USDC_SOLANA_DEVNET.mint,
+          decimals: USDC_SOLANA_DEVNET.decimals,
+        },
+      } as never,
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+
+    const transfers = instructions.filter(
+      (
+        instruction,
+      ): instruction is {
+        programAddress: string;
+        data: Uint8Array;
+        accounts: { address: string }[];
+      } =>
+        typeof instruction === 'object' &&
+        instruction !== null &&
+        (instruction as { programAddress?: string }).programAddress ===
+          (TOKEN_PROGRAM_ADDRESS as string),
+    );
+    const paid = transfers.map((transfer) => ({
+      // `destination` is the second account of `TransferChecked`.
+      to: transfer.accounts[2]?.address,
+      amount: getTransferCheckedInstructionDataDecoder().decode(transfer.data).amount,
+    }));
+
+    expect(paid).toEqual([
+      { to: recipientAta as string, amount: BigInt(100_000_000 - fee) },
+      { to: treasuryAta as string, amount: BigInt(fee) },
+    ]);
+  });
+
   it('refuses a malformed fee address when the fee is POSITIVE', async () => {
     // The half the zero-fee row cannot reach. `providerAmount` subtracts the fee
     // on the mere presence of the field, while the fee leg is built only for an
@@ -546,18 +614,22 @@ describe('buildPaymentInstructions', () => {
       { programId: TEST_PROGRAM_ID },
     );
 
-    // Payable means the RECIPIENT is paid in full, not merely that we got here:
-    // a zero fee builds no fee leg, so nothing may be subtracted.
-    const transfer = instructions.find(
-      (instruction): instruction is { data: Uint8Array; accounts: unknown[] } =>
+    // Payable means the RECIPIENT is paid IN FULL, and that is what gets
+    // decoded: the first version of this row matched instructions by account
+    // count, which is true of the ATA-create as well, so it asserted nothing
+    // about the amount - measured, a mutant paying `amount - 1` on the zero-fee
+    // branch (every mainnet payment) left the whole package green.
+    const transfers = instructions.filter(
+      (instruction): instruction is { programAddress: string; data: Uint8Array } =>
         typeof instruction === 'object' &&
         instruction !== null &&
-        'data' in instruction &&
-        (instruction as { accounts?: unknown[] }).accounts !== undefined &&
-        (instruction as { accounts: unknown[] }).accounts.length > 4,
+        (instruction as { programAddress?: string }).programAddress ===
+          (TOKEN_PROGRAM_ADDRESS as string),
     );
-    expect(transfer).toBeDefined();
-    expect(instructions.length).toBe(3);
+    expect(transfers.length).toBe(1);
+    expect(getTransferCheckedInstructionDataDecoder().decode(transfers[0]?.data).amount).toBe(
+      100_000_000n,
+    );
   });
 
   it('fee + providerAmount === totalAmount for various amounts', async () => {

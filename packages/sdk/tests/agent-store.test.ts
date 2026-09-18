@@ -309,13 +309,38 @@ describe('createAgentDir', () => {
     // no longer covers the temporaries these files are written through, whose
     // suffix is random. What sits in them is the agent's keys and the ledger.
     const lines = gitignore.split('\n');
+    // EVERY file written through a random temporary, not the three that were
+    // noticed first: a fixed entry cannot match `.tmp.<hex>`, and what these
+    // hold is keys, customer inputs, paid results, and who the agent talks to.
     expect(lines).toContain('.secrets.json*');
     expect(lines).toContain('.media-cache.json*');
     expect(lines).toContain('.jobs.json*');
+    expect(lines).toContain('.customer-history.json*');
+    expect(lines).toContain('.contacts.json*');
+    expect(lines).toContain('.messages-read.json*');
+    expect(lines).toContain('.job-sessions.json*');
     // The iroh blob store holds cleartext job payloads - must be ignored.
     expect(gitignore).toContain('.iroh/');
     // The delegation nonce set maps which customer wallets delegated here.
     expect(gitignore).toContain('.delegation-nonces.json*');
+  });
+
+  it('migrates the .gitignore when SECRETS are written, not only at start', async () => {
+    // `writeSecrets` is what `init`, `profile`, `delegate-key`, `x402 add` and
+    // the MCP's `create_agent` all go through, and none of them runs the
+    // start-up migration. Without this, `elisym delegate-key <old-agent>` writes
+    // `.secrets.json.tmp.<hex>` - the agent's keys - into a directory whose
+    // ignore line cannot match it.
+    const root = join(work, '.elisym');
+    const agentDir = join(root, 'alice');
+    mkdirSync(agentDir, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, ['.secrets.json', ''].join('\n'), 'utf-8');
+
+    await writeSecrets(agentDir, { nostr_secret_key: 'a'.repeat(64) });
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('.secrets.json*');
   });
 
   it('migrates an older .gitignore to the widened private-state entries', async () => {
@@ -338,6 +363,8 @@ describe('createAgentDir', () => {
     expect(lines).toContain('.secrets.json*');
     expect(lines).toContain('.media-cache.json*');
     expect(lines).toContain('.jobs.json*');
+    expect(lines).toContain('.customer-history.json*');
+    expect(lines).toContain('.contacts.json*');
     // Append-only: what was there stays, so an older build reading this file
     // still finds the names it wrote.
     expect(lines).toContain('.secrets.json');

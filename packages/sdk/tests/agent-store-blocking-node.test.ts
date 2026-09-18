@@ -22,6 +22,7 @@ import {
   loadPoliciesFromDir,
   readAgentPublic,
   readMediaCache,
+  writeSecrets,
 } from '../src/agent-store';
 import { loadGlobalConfig } from '../src/config/global';
 import { loadSkillsFromDir } from '../src/skills';
@@ -48,6 +49,22 @@ const writers: ReturnType<typeof spawn>[] = [];
 
 function makeFifo(path: string): void {
   execFileSync('mkfifo', [path]);
+}
+
+/** Drains a FIFO forever, so a WRITE to one returns instead of blocking. */
+function startDrainer(path: string): void {
+  writers.push(
+    spawn(
+      process.execPath,
+      [
+        '-e',
+        `const fs=require('fs');
+         const loop=()=>{ try { fs.readFileSync(${JSON.stringify(path)}); } catch {} setImmediate(loop); };
+         loop();`,
+      ],
+      { detached: true, stdio: 'ignore' },
+    ),
+  );
 }
 
 /** Feeds valid yaml, reopening after each reader closes, until killed. */
@@ -287,6 +304,23 @@ describe('the rest of the files an agent directory holds', () => {
     startWriterOnce(piped, 'not really a png, but readable');
 
     await expect(hashFile(piped)).rejects.toThrow(/pipe, socket or device/);
+  });
+
+  it('writes secrets through a temporary nobody can guess', async () => {
+    // `writeFileAtomic` is the writer behind `.secrets.json` and `elisym.yaml`,
+    // and its random suffix is the only thing standing between a planted FIFO
+    // and a write that never returns - or, with the pipe drained, a rename that
+    // puts somebody else's node where the agent's KEYS belong.
+    const dir = join(sandbox, 'secret-agent');
+    mkdirSync(dir, { recursive: true });
+    const guessed = join(dir, '.secrets.json.tmp');
+    makeFifo(guessed);
+    startDrainer(guessed);
+
+    await writeSecrets(dir, { nostr_secret_key: 'a'.repeat(64) });
+
+    expect(statSync(join(dir, '.secrets.json')).isFile()).toBe(true);
+    expect(statSync(guessed).isFIFO()).toBe(true);
   });
 
   it('leaves a .gitignore that blocks exactly as it found it', async () => {

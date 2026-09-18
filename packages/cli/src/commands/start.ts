@@ -895,6 +895,27 @@ export async function cmdStart(
     await ensureGitignoreHasDelegationNoncesEntry(dirname(loaded.dir));
   }
 
+  // Every `.gitignore` migration runs HERE, before a single card is published,
+  // and for the same reason the two indexes above are opened here: appending to
+  // the file is not guarded - a read-only `.elisym` root, a root written under
+  // sudo, a full disk - and a throw after the cards are on the relays leaves a
+  // live paid provider advertised by an agent that has already exited. None of
+  // these touches the network.
+  //
+  // What they cover: the iroh blob store (cleartext job payloads), the private
+  // files written through a random temporary (an agent created by an older
+  // build has the narrow names, which no longer match), the x402 cache, and the
+  // session transcripts.
+  await ensureGitignoreHasIrohEntry(dirname(loaded.dir));
+  await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
+  if (x402Skills.length > 0) {
+    await ensureGitignoreHasX402Entries(dirname(loaded.dir));
+  }
+  const hasContextSkills = registry.all().some((skill) => skill.context === true);
+  if (hasContextSkills) {
+    await ensureGitignoreHasSessionsEntry(dirname(loaded.dir));
+  }
+
   const buildCard = (skill: (typeof allSkills)[0]): CapabilityCard =>
     buildCapabilityCard(skill, { walletNetwork, solanaAddress, delegatePubkey });
 
@@ -1015,29 +1036,6 @@ export async function cmdStart(
   // iroh blob transport for file results, bound to a persistent fs-store at
   // <agent-dir>/.iroh/ (the node is created lazily on the first transfer).
   const irohTransport = createIrohTransport({ storePath: join(loaded.dir, '.iroh') });
-  // Migration: ensure a project-local .gitignore created before `.iroh/` became a
-  // default ignore entry still excludes the (cleartext) blob store.
-  await ensureGitignoreHasIrohEntry(dirname(loaded.dir));
-  // And the three private files that are written through a temporary. An agent
-  // created by an older build has the narrow names - `.secrets.json` rather
-  // than `.secrets.json*` - which no longer match a temporary whose suffix is
-  // random. What sits in those files is the agent's keys and the ledger.
-  await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
-  if (x402Skills.length > 0) {
-    // Same migration for the x402 idempotency cache (customer inputs/results
-    // + upstream payment history) - `x402 add` also ensures this, but a
-    // hand-written x402 skill must not leave the cache committable.
-    await ensureGitignoreHasX402Entries(dirname(loaded.dir));
-  }
-
-  // Conversation-session gitignore migration: session transcripts hold customer
-  // inputs and LLM results in cleartext, same posture as the other stores. The
-  // store itself is constructed below, once the diagnostics logger exists.
-  const hasContextSkills = registry.all().some((skill) => skill.context === true);
-  if (hasContextSkills) {
-    await ensureGitignoreHasSessionsEntry(dirname(loaded.dir));
-  }
-
   const runtimeConfig: RuntimeConfig = {
     paymentTimeoutSecs: DEFAULTS.PAYMENT_EXPIRY_SECS,
     maxConcurrentJobs: MAX_CONCURRENT_JOBS,

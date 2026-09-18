@@ -11,8 +11,8 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { writeFileAtomic } from '@elisym/sdk/agent-store';
+import { dirname, join } from 'node:path';
+import { ensureGitignoreHasPrivateStateEntries, writeFileAtomic } from '@elisym/sdk/agent-store';
 import { z } from 'zod';
 
 export const CUSTOMER_HISTORY_FILENAME = '.customer-history.json';
@@ -114,6 +114,11 @@ async function readRaw(path: string): Promise<CustomerHistory> {
 
 async function writeRaw(path: string, history: CustomerHistory): Promise<void> {
   const body = JSON.stringify(history, null, 2) + '\n';
+  // Before the write, like the other stores beside it: `writeFileAtomic` goes
+  // through a temporary whose suffix is random, and an agent created by an
+  // older build has a `.gitignore` line that cannot match one. Two directories
+  // up from the file is the `.elisym` root.
+  await ensureGitignoreHasPrivateStateEntries(dirname(dirname(path)));
   await writeFileAtomic(path, body, 0o600);
 }
 

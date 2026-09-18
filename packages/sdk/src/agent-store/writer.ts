@@ -21,13 +21,13 @@ const IROH_GITIGNORE_ENTRY = '.iroh/';
 const X402_GITIGNORE_ENTRIES = ['.x402-jobs.json*', '.x402-results/'] as const;
 
 /** DM read cursors: keyed by counterpart pubkeys - maps who the agent talks to. */
-const MESSAGES_GITIGNORE_ENTRY = '.messages-read.json';
+const MESSAGES_GITIGNORE_ENTRY = '.messages-read.json*';
 
 /** Conversation-session transcripts: customer job inputs and LLM results in cleartext. */
 const SESSIONS_GITIGNORE_ENTRY = '.sessions/';
 
 /** Customer-side session bookkeeping: session ids + first-prompt clips per provider. */
-const JOB_SESSIONS_GITIGNORE_ENTRY = '.job-sessions.json';
+const JOB_SESSIONS_GITIGNORE_ENTRY = '.job-sessions.json*';
 
 /**
  * Delegated-payment nonce burn set (plus its `.tmp`/`.corrupt.*` siblings):
@@ -36,11 +36,23 @@ const JOB_SESSIONS_GITIGNORE_ENTRY = '.job-sessions.json';
  */
 const DELEGATION_NONCES_GITIGNORE_ENTRY = '.delegation-nonces.json*';
 
-/** Written through a temporary whose name is random - see the migration below. */
+/**
+ * Every private file written through `writeFileAtomic` or an equivalent, which
+ * means every one whose temporary carries a RANDOM suffix. The rule is the
+ * trailing `*`, and it applies to all of them or to none: a fixed entry cannot
+ * match `.tmp.<hex>`, the next write never reuses that name, and nothing sweeps
+ * it - so a crash between the write and the rename leaves the file's contents
+ * committable for good, inside somebody's repository.
+ *
+ * `.messages-read.json*` and `.job-sessions.json*` carry the same `*` but keep
+ * their own migrations, which their writers call at the write site.
+ */
 const PRIVATE_STATE_GITIGNORE_ENTRIES = [
   '.secrets.json*',
   '.media-cache.json*',
   '.jobs.json*',
+  '.customer-history.json*',
+  '.contacts.json*',
 ] as const;
 
 const GITIGNORE_CONTENT = [
@@ -54,8 +66,6 @@ const GITIGNORE_CONTENT = [
   // line. Append-only file: these widen existing lines rather than adding new
   // ones, so an agent created by an older build keeps working.
   ...PRIVATE_STATE_GITIGNORE_ENTRIES,
-  '.customer-history.json',
-  '.contacts.json',
   MESSAGES_GITIGNORE_ENTRY,
   SESSIONS_GITIGNORE_ENTRY,
   JOB_SESSIONS_GITIGNORE_ENTRY,
@@ -469,6 +479,13 @@ export async function writeSecrets(
   };
   const body = JSON.stringify(finalSecrets, null, 2) + '\n';
   const target = agentPaths(agentDir).secrets;
+  // The choke point every writer of keys goes through - `init`, `profile`,
+  // `delegate-key`, `x402 add`, the MCP's `create_agent` - and therefore the
+  // one place where the widened ignore entries are guaranteed to reach an agent
+  // created by an older build. Before the write, so a failure here cannot leave
+  // `.secrets.json.tmp.<hex>` committable; `ensureGitignoreHasEntries` is a
+  // no-op when the file is absent, so a home-global agent is unaffected.
+  await ensureGitignoreHasPrivateStateEntries(dirname(agentDir));
   await writeFileAtomic(target, body, 0o600);
 }
 
@@ -490,8 +507,8 @@ export async function writeFileAtomic(
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmpPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
-  await writeFile(tmpPath, data, { mode });
   try {
+    await writeFile(tmpPath, data, { mode });
     await rename(tmpPath, path);
   } catch (e) {
     // Best-effort cleanup of temp file on rename failure.

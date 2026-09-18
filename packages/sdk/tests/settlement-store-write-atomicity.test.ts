@@ -9,9 +9,14 @@
  * the next job settles the same transaction.
  *
  * Lives in its own file because it mocks `node:fs`, the same shape as
- * `packages/cli/tests/ledger-flush-atomicity.test.ts`. Without the mock this
- * whole `catch` is unreachable: a failure between the write and the rename does
- * not happen on a healthy filesystem, so nothing else in the suite enters it.
+ * `packages/cli/tests/ledger-flush-atomicity.test.ts`. Without the mock only
+ * the RETHROW is reached, by the locked-directory fixture next door: the
+ * cleanup and the `prune` asymmetry need a failure BETWEEN the write and the
+ * rename, which no healthy filesystem produces.
+ *
+ * And a note for whoever measures reachability next: `process.exit` is not a
+ * usable probe here - it is a no-op in vitest's fork pool, measured. Append to
+ * a marker file instead.
  */
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,6 +27,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 let chmodFailure: Error | null = null;
 /** Every path `chmodSync` was asked to change, in order. */
 let chmodPaths: string[] = [];
+/**
+ * Set to make the WRITE fail after it has created the temporary, as ENOSPC
+ * does. A separate lever from the chmod one because they fail at different
+ * points: this one leaves a partial file where the chmod one leaves a complete
+ * one, and only this one tells whether the write is inside the cleanup.
+ */
+let writeFailure: Error | null = null;
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import('node:fs');
@@ -33,6 +45,17 @@ vi.mock('node:fs', async (importOriginal) => {
         throw chmodFailure;
       }
       return actual.chmodSync(path, mode);
+    },
+    writeFileSync: (path: string, data: string, options?: unknown) => {
+      const result = actual.writeFileSync(
+        path as string,
+        data,
+        options as Parameters<typeof actual.writeFileSync>[2],
+      );
+      if (writeFailure) {
+        throw writeFailure;
+      }
+      return result;
     },
   };
 });
@@ -48,6 +71,7 @@ let path: string;
 
 beforeEach(() => {
   chmodFailure = null;
+  writeFailure = null;
   chmodPaths = [];
   dir = mkdtempSync(join(tmpdir(), 'elisym-settle-write-'));
   path = join(dir, 'settlements.json');
@@ -55,6 +79,7 @@ beforeEach(() => {
 
 afterEach(() => {
   chmodFailure = null;
+  writeFailure = null;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -69,6 +94,8 @@ describe('a write that fails leaves the settlement index untouched', () => {
 
     // The permission step runs on the TEMPORARY, so the rename is the last
     // thing `write` does and cannot be reached once it has failed.
+    // `every` is vacuously true on an empty array, so the count comes first.
+    expect(chmodPaths.length).toBeGreaterThan(0);
     expect(chmodPaths.every((seen) => seen.includes('.tmp'))).toBe(true);
     expect(chmodPaths).not.toContain(path);
     expect(readFileSync(path, 'utf-8')).toBe(before);
@@ -90,6 +117,20 @@ describe('a write that fails leaves the settlement index untouched', () => {
     store.claim(SIG_B, 'job-b');
 
     chmodFailure = new Error('ENOSPC: no space left on device, chmod');
+    expect(store.claim(SIG_A, 'job-a')).toBe('not-persisted');
+
+    expect(readdirSync(dir).filter((name) => name.includes('.tmp'))).toEqual([]);
+  });
+
+  it('takes a HALF-WRITTEN temporary with it, not only a complete one', () => {
+    // The write is inside the cleanup, not only the rename: a disk that fills
+    // up part way through leaves a fragment, and that fragment is a partial
+    // copy of the index. Measured with its own lever, because the chmod one
+    // fails after the file is already whole.
+    const store = createFileSettlementStore(path);
+    store.claim(SIG_B, 'job-b');
+
+    writeFailure = new Error('ENOSPC: no space left on device, write');
     expect(store.claim(SIG_A, 'job-a')).toBe('not-persisted');
 
     expect(readdirSync(dir).filter((name) => name.includes('.tmp'))).toEqual([]);

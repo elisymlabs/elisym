@@ -889,6 +889,26 @@ describe('the store contract', () => {
     expect(store.owner(SIG_A)).toBeUndefined();
   });
 
+  it('refreshes the timestamp when a job re-claims what it already holds', () => {
+    // The JSDoc of the record says `at` is "refreshed on re-claim, drives
+    // retention". Without that, a long-lived job that keeps re-claiming its own
+    // settlement is swept out from under itself once the original claim ages
+    // past the retention - and the transaction it recorded is free again.
+    const path = join(dir, 'refresh.json');
+    const seeded = createFileSettlementStore(path);
+    const old = Date.now() - MIN_SETTLEMENT_RETENTION_MS - 60_000;
+    writeFileSync(
+      path,
+      JSON.stringify({ version: 1, settlements: { [SIG_A]: { job: 'job-1', at: old } } }),
+      'utf-8',
+    );
+
+    expect(seeded.claim(SIG_A, 'job-1')).toBe('claimed');
+
+    expect(seeded.prune(MIN_SETTLEMENT_RETENTION_MS)).toBe(0);
+    expect(seeded.owner(SIG_A)).toBe('job-1');
+  });
+
   it('refuses a signature another job already holds, and does not move it', () => {
     // The second guard of the de-duplication invariant. The acceptor skips such
     // a candidate before it ever reaches here, which is exactly why this half is
@@ -1040,16 +1060,22 @@ describe('the store contract', () => {
     for (const candidate of guessed) {
       execFileSync('mkfifo', [candidate]);
     }
-    const drainer = spawn(
-      process.execPath,
-      [
-        '-e',
-        `const fs=require('fs');
-         const paths=${JSON.stringify(guessed)};
-         const loop=()=>{ for (const p of paths) { try { fs.readFileSync(p); } catch {} } setImmediate(loop); };
-         loop();`,
-      ],
-      { detached: true, stdio: 'ignore' },
+    // ONE drainer per pipe, not one loop over three: `readFileSync` on a FIFO
+    // blocks at OPEN until a writer arrives, so a single child sits on the first
+    // name forever and the other two become traps that HANG the run instead of
+    // failing it. Measured - with the loop, two of these three schemes timed the
+    // suite out instead of naming a test.
+    const drainers = guessed.map((candidate) =>
+      spawn(
+        process.execPath,
+        [
+          '-e',
+          `const fs=require('fs');
+           const loop=()=>{ try { fs.readFileSync(${JSON.stringify(candidate)}); } catch {} setImmediate(loop); };
+           loop();`,
+        ],
+        { detached: true, stdio: 'ignore' },
+      ),
     );
     try {
       expect(store.claim(SIG_A, 'job-1')).toBe('claimed');
@@ -1067,10 +1093,12 @@ describe('the store contract', () => {
         expect(statSync(candidate).isFIFO()).toBe(true);
       }
     } finally {
-      // `-0` would signal OUR OWN process group, which is the vitest run.
-      if (drainer.pid === undefined) {
-        drainer.kill('SIGKILL');
-      } else {
+      for (const drainer of drainers) {
+        // `-0` would signal OUR OWN process group, which is the vitest run.
+        if (drainer.pid === undefined) {
+          drainer.kill('SIGKILL');
+          continue;
+        }
         try {
           process.kill(-drainer.pid);
         } catch {
@@ -1250,9 +1278,11 @@ describe('the store contract', () => {
     //
     // What this row pins is the PAIR: `writeFileSync`'s `mode` is a request the
     // umask filters, so the store chmods after writing, and removing BOTH turns
-    // this red. Removing the chmod ALONE kills nothing and cannot: an ordinary
-    // umask strips no bit from 0o600, and the temporary now carries a random
-    // suffix, so there is never a stale one to reuse. Measured, not assumed.
+    // this red. Removing the chmod ALONE kills nothing in THIS file and cannot:
+    // an ordinary umask strips no bit from 0o600, and the temporary now carries
+    // a random suffix, so there is never a stale one to reuse. It does turn
+    // `settlement-store-write-atomicity.test.ts` red, but only because that
+    // file injects its failure THROUGH `chmodSync`. Measured, not assumed.
     const made = join(dir, 'made-by-the-store');
     const path = join(made, 'modes.json');
     const seeded = createFileSettlementStore(path);

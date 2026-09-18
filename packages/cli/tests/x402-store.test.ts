@@ -152,6 +152,19 @@ describe('X402JobStore', () => {
     await expect(stat(filePath)).rejects.toThrow();
   });
 
+  it('sweeps a temporary stranded by a crash between write and rename', async () => {
+    // The name carries a random suffix, so nothing reuses it and nothing else
+    // removes it - and it holds a result the bridge already paid for. The sweep
+    // that drops the record has to take it too.
+    const filePath = await store.saveFileResult('old-file-job', 'image/png', new Uint8Array([1]));
+    const stranded = `${filePath}.tmp.deadbeef`;
+    await writeFile(stranded, new Uint8Array([1]));
+
+    await store.sweepExpired(Date.now() + X402_CACHE_TTL_MS + 1000);
+
+    await expect(stat(stranded)).rejects.toThrow();
+  });
+
   it('sanitizes hostile job ids in result file paths', async () => {
     const filePath = await store.saveFileResult(
       '../../etc/passwd',

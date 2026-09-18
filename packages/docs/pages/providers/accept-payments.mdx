@@ -82,6 +82,10 @@ One skill carries exactly one `(token, price)` pair. To offer the same service i
 With a paid skill, `start` requires the Solana address - it exits early if a skill has a non-zero price but no address configured. (The quickstart already set one.)
 :::
 
+:::note
+**`start` refuses to run on state it cannot read.** The job ledger, the delegated-pull nonce store and the x402 cache are indexes that decide money - which transaction paid for which job, which pull has been spent, what the bridge already bought. If one of them cannot be READ (a permission error, a directory in the way, a pipe or device where the file belongs), the agent exits with that path named instead of starting with an empty index and settling the same transaction twice. A file that was read and could not be PARSED is different: that one is moved aside as `.corrupt.<timestamp>` and the agent starts. The usual cause of the first is a file written under `sudo` - `chown` it back.
+:::
+
 :::warning
 **Give each paid agent its own address.** De-duplication - one transaction settles one job - is per agent directory, so two agents paid at the same address on the same network can both count one customer's transfer. `start` warns when it finds such a neighbor, but it only looks in `~/.elisym/` and in the one project root above the working directory; two agents in two different project trees are a collision it cannot see. See [Payments](/protocol/payments) for what the rail does and does not promise.
 :::

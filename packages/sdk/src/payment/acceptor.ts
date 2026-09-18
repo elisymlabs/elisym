@@ -54,8 +54,9 @@ export interface SettlementStore {
    *
    * The signature must be a non-empty string; an unusable one is rejected by
    * throwing, symmetrically with `jobIdentity`. (The predicate this package
-   * uses internally is not exported - implement the shape, not the import.) This is not a duplicate of the
-   * step-5 guard but its other half, made observable: a single mutation dropping
+   * uses internally is not exported - implement the shape, not the import.)
+   * This is not a duplicate of the step-5 guard but its other half, made
+   * observable: a single mutation dropping
    * the usability test inside the acceptor is unobservable there, because three
    * earlier gates keep an unusable signature away from step 5. A provider
    * bringing their own store has no other protection at all.

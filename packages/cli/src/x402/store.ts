@@ -24,7 +24,7 @@
  * paths handed out for delivery must NOT be cleaned up by callers.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isBlockingNode } from '@elisym/sdk/agent-store';
 import { X402_CACHE_TTL_MS } from './constants.js';
@@ -254,6 +254,11 @@ export class X402JobStore {
     // state. `mkdir` without a mode is 0o777 minus the umask - usually 0o755 -
     // and what lands here is a result somebody has already been charged for.
     await mkdir(this.resultsDir, { recursive: true, mode: 0o700 });
+    // `mkdir`'s mode applies only to directories it CREATES, so an agent whose
+    // `.x402-results/` predates this is left at whatever it had - 0o755 from
+    // the old call. Tightened explicitly, best effort: the results inside were
+    // paid for.
+    await chmod(this.resultsDir, 0o700).catch(() => {});
     // Written through a temporary with a RANDOM name, then renamed. The final
     // name is derived from the job id, which is a public Nostr event id: a
     // predictable path is one somebody can put a FIFO on, and `writeFile` onto

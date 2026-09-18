@@ -737,10 +737,11 @@ export class UsedNonceStore {
     // the nonce is spent. Make this all-or-nothing like the job ledger and the
     // failure mode inverts - the mark lives only in memory, a restart forgets
     // it, and a delegated pull can be replayed.
-    // Only the RENAME is wrapped, so the order above is preserved: a chmod that
-    // fails after the data is published must not read as a failed flush. The
-    // cleanup exists because the temporary now carries a random name and would
-    // otherwise be left behind for good.
+    // The write and the RENAME are wrapped; the chmod below deliberately is
+    // not, so the order above is preserved - a chmod that fails after the data
+    // is published must not read as a failed flush. The cleanup exists because
+    // the temporary now carries a random name and would otherwise be left
+    // behind for good.
     try {
       writeFileSync(tmp, JSON.stringify(obj), { mode: LEDGER_FILE_MODE });
       renameSync(tmp, this.path);
