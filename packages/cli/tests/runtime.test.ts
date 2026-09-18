@@ -1420,6 +1420,35 @@ describe('AgentRuntime', () => {
       expect(monitor.markUnhealthyFromJob).toHaveBeenCalled();
     });
 
+    it('keeps the contract hint in the reason an operator reads back', async () => {
+      // `lastReason` is printed on every gated job. The hint is front-loaded onto
+      // `detail` and the excerpt is chosen by recognising it there, so a reword
+      // of the hint must not silently turn this into a tail quote of the
+      // script's progress meter.
+      const monitor = monitorStub();
+      const chatter = 'downloading chunk 399 '.repeat(60);
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            SCRIPT_EXIT_REFUSED,
+            `${REFUSAL_CONTRACT_HINT} ${chatter}`,
+            undefined,
+            chatter,
+          ),
+        ),
+        monitor,
+        'hinted-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'invalid',
+        expect.stringContaining('without writing ELISYM_REFUSAL_FILE'),
+        { cascade: false },
+      );
+    });
+
     it('gates a key when a script exits 43 without writing a reason', async () => {
       // Whether the script MEANT to refuse and mistyped the variable, or never
       // meant to refuse at all (43 is curl's CURLE_BAD_FUNCTION_ARGUMENT), the

@@ -146,12 +146,16 @@ export class DynamicScriptSkill implements Skill {
     // Every channel is set explicitly; the strip inside is what keeps an
     // INHERITED one (the agent's own shell, a script skill spawning another)
     // from surviving into a var this job does not set.
-    const env = jobScriptEnv(this.scriptEnv ?? scopedToolEnv(), {
+    const channels: NodeJS.ProcessEnv = {
       ELISYM_OUTPUT_FILE: outputFile,
       ELISYM_OUTPUT_DIR: outputDir,
       ELISYM_CHARGE_FILE: chargeFile,
       [SCRIPT_REFUSAL_FILE_ENV]: refusalFile,
-    });
+    };
+    const env =
+      this.scriptEnv === undefined
+        ? scopedToolEnv(channels)
+        : jobScriptEnv(this.scriptEnv, channels);
     if (input.filePath !== undefined) {
       env.ELISYM_INPUT_FILE = input.filePath;
     }

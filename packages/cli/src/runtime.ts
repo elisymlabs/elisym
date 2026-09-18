@@ -568,7 +568,16 @@ function customerSafeMessage(error: unknown): string {
     // job will be retried automatically, which is false.
     return PROVIDER_FAILED_MESSAGE;
   }
-  if (isScriptBillingExhaustedError(error)) {
+  // The three shapes whose job KEEPS its payment for the recovery loop, and so
+  // the three the outage wording is true of: an exhausted key the operator can
+  // top up, a temp directory that may not be full in five minutes, an upstream
+  // that hiccuped after the customer paid. The app reads this message as "held
+  // and it will be retried", which is exactly what happens to these.
+  if (
+    isScriptBillingExhaustedError(error) ||
+    isHostScratchError(error) ||
+    error instanceof X402TransientError
+  ) {
     return AGENT_UNAVAILABLE_MESSAGE;
   }
   if (
@@ -1554,6 +1563,12 @@ export class AgentRuntime {
       const currentStatus = this.ledger.getStatus(job.jobId);
       const keepPaidForRecovery =
         (e instanceof AgentUnavailableError ||
+          // The exit-42 contract: the key is out of credits, not the job out of
+          // sense, so the job waits for the operator to top up. Reached when the
+          // gate did NOT flip - an agent with no health monitor, or a skill that
+          // declares no pair - where the customer is told "temporarily
+          // unavailable" and that has to stay true of their money.
+          isScriptBillingExhaustedError(e) ||
           // The agent's own disk, not the job: a tmpdir that is full or
           // read-only now may not be in five minutes, and the customer has
           // already paid. Terminating here would keep their money for a failure

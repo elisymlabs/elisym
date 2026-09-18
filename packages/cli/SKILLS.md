@@ -395,6 +395,8 @@ Exit code 42 (`SCRIPT_EXIT_BILLING_EXHAUSTED`) is the contract. It was chosen to
 
 The constant is exported as `SCRIPT_EXIT_BILLING_EXHAUSTED` from `@elisym/sdk/llm-health` for TypeScript scripts. Shell scripts can hardcode `42` (with a comment pointing here).
 
+**If you do not use 42, write the upstream's body to STDERR.** The runtime's fallback - reading billing and auth phrases out of a failing script's output - scans **stderr only**. Stdout is frequently not the script's own words (an LLM proxy echoes a completion the buyer steers), and a buyer who asked a model for the word `unauthorized` must not be able to gate the operator's key, let alone cascade it across every model on that key. So a proxy that prints the provider's 401/402 body to stdout and exits 1 is treated as a plain crash: this skill's pair is marked unhealthy, nothing cascades, and the operator's other capabilities on the same dead key keep taking jobs until each flips on its own. `echo "$body" >&2` alongside the stdout copy is enough to restore the old behaviour.
+
 A minimal `proxy.sh` example:
 
 ```sh

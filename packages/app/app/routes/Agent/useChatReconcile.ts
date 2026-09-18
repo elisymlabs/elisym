@@ -136,7 +136,11 @@ export function useChatReconcile(agentPubkey: string): void {
         // client can tell that from "no result exists": what protects a paid
         // entry closed on a refusal in that case is hydration, which flips a
         // failed entry back to completed if the result turns up later.
-        queryFailed = results === null;
+        // Only the query ageing depends on, and only when there was something to
+        // ask it: an empty pending list is answered with a resolved empty map
+        // that no relay ever saw, and reading that as "a query was made" would
+        // let ageing run on the strength of a round trip that did not happen.
+        queryFailed = pendingEntries.length > 0 && results === null;
         // Nothing is applied to a PENDING entry when the query threw: none can
         // be completed, and a refusal should not close a job whose answer the
         // failed half never fetched. The closed entries below are unaffected -

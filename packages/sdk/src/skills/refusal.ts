@@ -115,17 +115,6 @@ export function startsWithRefusalHint(detail: string): boolean {
 }
 
 /**
- * Whether a written reason says anything a reader would SEE.
- *
- * Not `!== ''`: a file holding one newline, a NUL or a zero-width joiner is as
- * empty as no bytes at all, and this is the same question `refusalMessage` asks
- * of the text it is about to hand a customer.
- */
-export function statesAReason(reason: string): boolean {
-  return hasVisibleText(reason);
-}
-
-/**
  * What the customer is allowed to read of a refusal.
  *
  * The provider chose to write this, so it crosses the trust boundary - but as
@@ -142,12 +131,15 @@ export function refusalMessage(reason: string): string {
   // WHO is speaking, the runtime puts it there, and a doubled `The provider
   // refused: The provider refused: ...` reaches a client that strips one and
   // renders the other as the provider's own words.
-  let sentence = reason;
+  //
+  // After flattening, not before: a leading newline or byte-order mark would
+  // otherwise carry the label past a `startsWith` and straight into the excerpt
+  // the customer reads.
+  let sentence = excerptUntrusted(reason, SCRIPT_REFUSAL_MAX_CHARS);
   while (sentence.startsWith(PROVIDER_REFUSED_PREFIX)) {
-    sentence = sentence.slice(PROVIDER_REFUSED_PREFIX.length);
+    sentence = sentence.slice(PROVIDER_REFUSED_PREFIX.length).trimStart();
   }
-  const excerpt = excerptUntrusted(sentence, SCRIPT_REFUSAL_MAX_CHARS);
-  return statesAReason(excerpt) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
+  return hasVisibleText(sentence) ? sentence : SCRIPT_REFUSAL_UNSTATED;
 }
 
 /**
@@ -250,12 +242,15 @@ export function throwIfRefused(
   file: RefusalFileRead,
   channelOffered = true,
 ): void {
-  const stated = file.state === 'read' && statesAReason(file.reason);
+  // `hasVisibleText`, not `!== ''`: a file holding one newline, a NUL or a
+  // zero-width joiner is as empty as no bytes at all - the same question the
+  // customer-facing message asks of the text it is about to hand over.
+  const stated = file.state === 'read' && hasVisibleText(file.reason);
   if (file.state === 'read' && result.code !== null) {
     // Exit 43 is a refusal with or without a reason - an empty file still means
     // the script decided - and exit 0 with a reason is one too: `exit 43`
     // swallowed by a pipeline comes back as 0, and the script went out of its
-    // way to write the sentence. `statesAReason`, because `echo >` leaves a
+    // way to write the sentence. `hasVisibleText`, because `echo >` leaves a
     // newline behind and a newline is no more a reason than no bytes at all.
     //
     // ANY OTHER non-zero exit is a crash, reason or no reason. A skill that

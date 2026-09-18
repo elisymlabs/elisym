@@ -170,14 +170,22 @@ const JOB_CHANNEL_ENV_VARS: readonly string[] = [
   'ELISYM_SESSION_ID',
 ];
 
-export function scopedToolEnv(): NodeJS.ProcessEnv {
-  // One copy, both strips: this runs per spawn, and a container host's
-  // environment is a few hundred entries to clone.
+const STRIPPED_FROM_TOOL_ENV: readonly string[] = [...SECRET_ENV_VARS, ...JOB_CHANNEL_ENV_VARS];
+
+/**
+ * `process.env` with the operator's secrets and any inherited job channel gone,
+ * and this job's own channels written in.
+ *
+ * ONE copy, and one delete pass: this runs per spawn, and a container host's
+ * environment is a few hundred entries to clone. Which is also why the channels
+ * come in here rather than being spread into the result afterwards.
+ */
+export function scopedToolEnv(channels: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const key of [...SECRET_ENV_VARS, ...JOB_CHANNEL_ENV_VARS]) {
+  for (const key of STRIPPED_FROM_TOOL_ENV) {
     delete env[key];
   }
-  return env;
+  return Object.assign(env, channels);
 }
 
 /**
@@ -193,6 +201,9 @@ export function jobScriptEnv(
   base: NodeJS.ProcessEnv,
   channels: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
+  // For a caller-supplied base only; the default path goes through
+  // `scopedToolEnv(channels)`, which does the same in one copy from
+  // `process.env`.
   const env: NodeJS.ProcessEnv = { ...base };
   for (const key of JOB_CHANNEL_ENV_VARS) {
     delete env[key];

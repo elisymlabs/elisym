@@ -27,8 +27,9 @@ const FORMAT_MARKS = /\p{Cf}/gu;
  * Regexes rather than a per-code-point loop: this runs on text bounded only by
  * `MAX_SCRIPT_OUTPUT`, and neither class can match half of a surrogate pair, so
  * the two forms are equivalent and only one of them walks a megabyte one
- * character at a time. The lint suppression is the same one
- * `packages/cli/src/logging.ts` carries for the identical class.
+ * character at a time. The lint suppression is what the rule asks for on a
+ * deliberate control-character class; this module is the only place in the
+ * repository that spells one out, which is the point of it being here.
  */
 // eslint-disable-next-line no-control-regex
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
@@ -225,19 +226,6 @@ function hasContentAfter(text: string, from: number): boolean {
 }
 
 /**
- * Flatten one end of an over-long text and say whether anything readable was
- * dropped to do it.
- *
- * Slicing BEFORE flattening is the point: the input can be a megabyte and
- * flattening walks every code point. The 8x allowance covers what whitespace
- * collapse can shorten - but it is a fast path, not a guarantee, since
- * whitespace collapses by an unbounded factor: 3200 newlines ahead of the real
- * sentence (or a curl progress meter's 4000 trailing carriage returns behind
- * it) leave the window holding nothing at all. Any SHORT result from a text
- * that outran the window means the window was the limit rather than the
- * content, so pay for the whole thing once.
- */
-/**
  * An offset that is not the middle of a character.
  *
  * The content tests below run a `u`-flagged regex from a raw code-unit offset;
@@ -252,6 +240,19 @@ function onCharacterBoundary(text: string, index: number): number {
   return before >= 0xd800 && before <= 0xdbff ? index - 1 : index;
 }
 
+/**
+ * Flatten one end of an over-long text and say whether anything readable was
+ * dropped to do it.
+ *
+ * Slicing BEFORE flattening is the point: the input can be a megabyte and
+ * flattening walks every code point. The 8x allowance covers what whitespace
+ * collapse can shorten - but it is a fast path, not a guarantee, since
+ * whitespace collapses by an unbounded factor: 3200 newlines ahead of the real
+ * sentence (or a curl progress meter's 4000 trailing carriage returns behind
+ * it) leave the window holding nothing at all. Any SHORT result from a text
+ * that outran the window means the window was the limit rather than the
+ * content, so pay for the whole thing once.
+ */
 function excerptWindow(
   text: string,
   maxChars: number,

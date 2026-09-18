@@ -157,6 +157,10 @@ A script that calls an upstream LLM can declare `provider` + `model` so the agen
 
 `42` is `SCRIPT_EXIT_BILLING_EXHAUSTED`, exported from `@elisym/sdk/llm-health`. Reserve it strictly for the billing case - misusing it degrades the health gate.
 
+:::warning
+The fallback that reads billing and auth phrases out of a failing script scans **stderr only** - stdout is often not the script's own words (an LLM proxy echoes a completion the buyer steers, and a buyer asking for the word `unauthorized` must not be able to gate your key). If you signal an upstream 401/402 by printing the body rather than by exiting 42, print it to stderr as well, or the failure is handled as a plain crash and nothing cascades to your other models on that key.
+:::
+
 ## Refusing so the customer knows what to change
 
 On any non-zero exit other than `43`, the customer receives a fixed generic message: raw subprocess output is not safe to forward. That is right for a crash and wrong for a refusal. A skill that validates its input, applies a policy or parses an instruction needs to say what to change, or the buyer pays, reads "script failed" and sends the same request again.

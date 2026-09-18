@@ -104,6 +104,8 @@ export class StaticScriptSkill implements Skill {
   }
 
   private async run(ctx: SkillContext, refusalFile: string | undefined): Promise<SkillOutput> {
+    const channels: NodeJS.ProcessEnv =
+      refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile };
     const result = await runScript(this.scriptPath, this.scriptArgs, {
       cwd: dirname(this.scriptPath),
       signal: ctx.signal,
@@ -114,10 +116,10 @@ export class StaticScriptSkill implements Skill {
       // channel is stripped either way: with no scratch file of our own, the
       // script must find the variable unset rather than pointing at a stranger's
       // - the runtime is about to tell its operator the channel was not offered.
-      env: jobScriptEnv(
-        this.scriptEnv ?? scopedToolEnv(),
-        refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile },
-      ),
+      env:
+        this.scriptEnv === undefined
+          ? scopedToolEnv(channels)
+          : jobScriptEnv(this.scriptEnv, channels),
     });
     if (result.spawnError) {
       throw new ScriptExecutionError(
