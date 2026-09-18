@@ -202,7 +202,10 @@ export function useChatReconcile(agentPubkey: string): void {
           // And the closed ones. A separate loop because they are not waiting
           // for anything - they are already `failed` - but they are asked the
           // same two questions in the same order: a result first, then a reason.
-          for (const entry of unexplained) {
+          // Skipped whole when the result query threw, exactly like the loop
+          // above: attaching a terminal refusal to a job whose answer was never
+          // fetched withdraws its Retry button for good.
+          for (const entry of results === null ? [] : unexplained) {
             if (cancelled) {
               return;
             }

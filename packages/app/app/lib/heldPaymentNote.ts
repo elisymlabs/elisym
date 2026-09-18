@@ -106,7 +106,10 @@ export function heldPaymentNote(
     // sentence for the thread bubble, which has no session to ask.
     return REFUSED_NOTE;
   }
-  if (error.startsWith(PAYMENT_STILL_SOUGHT_PREFIX)) {
+  // Case-insensitively: agents on an older CLI send the same prefix lowercased,
+  // and a customer whose payment really is still being looked for should not
+  // lose that answer to a capital letter.
+  if (error.toLowerCase().startsWith(PAYMENT_STILL_SOUGHT_PREFIX.toLowerCase())) {
     return STILL_SOUGHT_NOTE;
   }
   // The provider's skill fell over. Terminal like a refusal, and charged like

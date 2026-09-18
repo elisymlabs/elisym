@@ -238,9 +238,20 @@ const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{
 }> = [
   // Three questions, one row each, so an edit cannot land half-applied: does
   // this phrase gate THIS pair at all, does it also take every model on the
-  // operator's key offline (`cascades` - see `SCRIPT_KEY_LEVEL_MARKERS`), and is
-  // it about money rather than credentials (`billing`, which picks the reason
-  // the operator is shown and the recovery probe reads).
+  // operator's key offline (`cascades`), and is it about money rather than
+  // credentials (`billing`, which picks the reason the operator is shown and
+  // the recovery probe reads).
+  //
+  // `cascades` is the expensive one. Gating ONE pair on a false positive costs
+  // the operator a capability until the recovery probe clears it; a cascade
+  // costs them every capability on that key. So it needs a phrase an unrelated
+  // failure does not produce: `insufficient` alone is a Solana builder saying
+  // "insufficient funds for rent" and `billing` alone is a form field, while
+  // nothing prints `invalid x-api-key` or `credit balance` except the provider
+  // whose key it is. The bare status words carry `cascades: false` for the same
+  // reason - `unauthorized` is what any proxy says when it did not like a
+  // request. The LLM path next door demands an HTTP 401/402 before cascading;
+  // this is the script path's version of that bar.
   { phrase: 'credit balance', cascades: true, billing: true },
   { phrase: 'billing', cascades: false, billing: true },
   { phrase: 'insufficient', cascades: false, billing: true },
@@ -273,45 +284,28 @@ const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{
 function classifyScriptSignal(message: string): {
   looksBillingOrInvalid: boolean;
   reason: 'billing' | 'invalid';
+  cascade: boolean;
 } {
-  const lowered = message.toLowerCase();
-  // ONE walk of the table, both answers off the same rows: the text is bounded
-  // only by `MAX_SCRIPT_OUTPUT`, so a second pass over a megabyte buys nothing
-  // this loop does not already know.
+  // ONE pass over the text for all three answers - gate, reason, cascade. The
+  // text is bounded only by `MAX_SCRIPT_OUTPUT`, so a lowercased copy plus a
+  // scan per question was a megabyte copied and walked three times per failed
+  // job. The regex is case-insensitive, so the copy is not needed at all.
   let looksBillingOrInvalid = false;
   let billing = false;
-  for (const marker of SCRIPT_BILLING_INVALID_MARKERS) {
-    if (!lowered.includes(marker.phrase)) {
-      continue;
+  let cascade = false;
+  if (ALL_MARKERS_RE !== null) {
+    for (const match of message.matchAll(ALL_MARKERS_RE)) {
+      const marker = MARKER_BY_PHRASE.get(match[0].toLowerCase());
+      if (marker === undefined) {
+        continue;
+      }
+      looksBillingOrInvalid = true;
+      billing = billing || marker.billing;
+      cascade = cascade || marker.cascades;
     }
-    looksBillingOrInvalid = true;
-    billing = billing || marker.billing;
   }
-  return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid' };
+  return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid', cascade };
 }
-
-/**
- * The subset that names the KEY rather than this request - the only signals
- * allowed to take every model on the operator's API key offline.
- *
- * The list above is deliberately permissive, because gating ONE skill's pair
- * on a false positive costs the operator one capability until the recovery
- * probe clears it. A cascade costs them every capability on that key, so it
- * needs a phrase an unrelated failure does not produce: `insufficient` alone
- * is a Solana builder saying "insufficient funds for rent" and `billing` alone
- * is a form field, while nothing prints `invalid x-api-key` or `credit
- * balance` except the provider whose key it is. The LLM path next door already
- * demands an HTTP 401/402 before cascading; this is the script path's version
- * of the same bar.
- *
- * Which is why the bare status words are BOTH absent: `unauthorized` and
- * `unauthenticated` are what any proxy, gRPC service or unrelated third-party
- * call says when it did not like a request. They still gate this pair through
- * the wider list above.
- */
-const SCRIPT_KEY_LEVEL_MARKERS = SCRIPT_BILLING_INVALID_MARKERS.filter(
-  (marker) => marker.cascades,
-).map((marker) => marker.phrase);
 
 /** How long a scratch-space failure keeps the pre-payment probe armed. */
 const SCRATCH_RECHECK_MS = 5 * 60 * 1000;
@@ -348,7 +342,7 @@ const SIGNAL_LEAD_UNITS = 80;
  * into "always" - and for the cascade list, every script failure into an
  * operator's whole key going offline.
  */
-function markerPattern(phrases: readonly string[]): RegExp | null {
+function markerPattern(phrases: readonly string[], flags = 'i'): RegExp | null {
   if (phrases.length === 0) {
     return null;
   }
@@ -357,17 +351,18 @@ function markerPattern(phrases: readonly string[]): RegExp | null {
   // throw at import time and take the whole CLI down before it serves a job.
   return new RegExp(
     phrases.map((phrase) => phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
-    'i',
+    flags,
   );
 }
 
 const ANY_MARKER_RE = markerPattern(SCRIPT_BILLING_INVALID_MARKERS.map((marker) => marker.phrase));
-const KEY_LEVEL_MARKER_RE = markerPattern(SCRIPT_KEY_LEVEL_MARKERS);
-
-/** Where the CASCADE decision's evidence is - see `SCRIPT_KEY_LEVEL_MARKERS`. */
-function keyLevelMarkerIndex(text: string): number {
-  return KEY_LEVEL_MARKER_RE?.exec(text)?.index ?? -1;
-}
+const ALL_MARKERS_RE = markerPattern(
+  SCRIPT_BILLING_INVALID_MARKERS.map((marker) => marker.phrase),
+  'gi',
+);
+const MARKER_BY_PHRASE = new Map(
+  SCRIPT_BILLING_INVALID_MARKERS.map((marker) => [marker.phrase, marker]),
+);
 
 /**
  * Where ANY billing or auth signal is, for the operator's quote.
@@ -1297,10 +1292,10 @@ export class AgentRuntime {
         );
         return false;
       }
-      const { looksBillingOrInvalid, reason } = classifyScriptSignal(message);
+      const { looksBillingOrInvalid, reason, cascade } = classifyScriptSignal(message);
       // The gate and the cascade are separate questions, and the second one is
-      // much more expensive to get wrong - see `SCRIPT_KEY_LEVEL_MARKERS`.
-      const cascade = keyLevelMarkerIndex(message) !== -1;
+      // much more expensive to get wrong - see `SCRIPT_KEY_LEVEL_MARKERS`. Both
+      // answered off the same scan above.
       const cascadeNote = cascade ? this.cascadeSuffix(provider, model) : ' (no cascade)';
       const signalNote = looksBillingOrInvalid
         ? `${reason} signal in ${scanned}`
@@ -1733,7 +1728,14 @@ export class AgentRuntime {
     // asked to pay for a job this host cannot run. Armed only after such a
     // failure has been seen, and re-probed here, so a host that recovers starts
     // selling again on its own. `llm` mode needs no scratch space.
-    if (matched !== null && matched.mode !== 'llm' && !(await this.scratchSpaceUsable())) {
+    // Only the modes that NEED scratch space. A `static-script` skill runs
+    // without a channel - the refusal file is the one thing it loses - so
+    // refusing its jobs over a full temp directory would take a working
+    // capability offline for a problem it does not have.
+    if (
+      (matched?.mode === 'dynamic-script' || matched?.mode === 'onchain') &&
+      !(await this.scratchSpaceUsable())
+    ) {
       log(
         `[${job.jobId.slice(0, 8)}] Refusing job before payment: this agent cannot create scratch space (check the temp directory).`,
       );
@@ -3892,6 +3894,12 @@ export class AgentRuntime {
             }
             return await execPromise;
           } catch (err) {
+            if (isHostScratchError(err)) {
+              // Recovery proves the disk is broken just as well as a live job
+              // does, and it runs on a tick of its own - without this a host
+              // draining a backlog keeps asking NEW customers to pay.
+              this.scratchFailedAt = Date.now();
+            }
             // Mirror the primary executeJob path: a billing/invalid signal raised
             // during recovery must flip the (provider, model) pair to unhealthy.
             // Otherwise a key that expires while jobs are mid-recovery is never

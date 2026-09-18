@@ -26,7 +26,7 @@ import { ScriptExecutionError } from '../llm-health/types';
 import { AGENT_REFUSED_LABEL, PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
 import type { RefusalFileRead } from './refusal-file';
 import {
-  excerptUntrusted,
+  excerptOwnMessage,
   excerptUntrustedTail,
   flattenUntrusted,
   hasVisibleText,
@@ -153,7 +153,15 @@ export function refusalMessage(reason: string): string {
     }
     sentence = stripped;
   }
-  const excerpt = excerptUntrusted(sentence, SCRIPT_REFUSAL_MAX_CHARS);
+  // `excerptOwnMessage`: bounded and flattened, but NOT credential-redacted.
+  // Redaction is for text this runtime SCRAPED - a script's stderr, an
+  // upstream's body - where a key appears because someone printed it by
+  // accident. This sentence was written on purpose, for this customer, and a
+  // refusal reading "set Authorization: Bearer YOUR_VENUE_TOKEN first" is the
+  // whole point of the channel; gutting it to "[redacted]" would leave the
+  // buyer with nothing to act on. A provider who types their own key here has
+  // published it on a public relay either way - which the docs say plainly.
+  const excerpt = excerptOwnMessage(sentence, SCRIPT_REFUSAL_MAX_CHARS);
   return hasVisibleText(excerpt) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
 }
 

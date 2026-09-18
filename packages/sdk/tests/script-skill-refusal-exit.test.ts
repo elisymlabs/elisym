@@ -514,16 +514,23 @@ describe('excerpting for the operator', () => {
     expect(excerptUntrusted('token sk-proj-ABCDEFGHIJKLMNOP failed', 200)).toContain('[redacted]');
   });
 
-  it('leaves a refusal that merely NAMES a key field alone', async () => {
+  it('hands the customer the refusal as the provider wrote it', async () => {
     const { refusalMessage } = await import('../src/skills/refusal');
-    // The sentence the channel exists to deliver. Redaction is for a key a
-    // script printed by accident, and a value that is not token-shaped is prose.
+    // Redaction is for text this runtime SCRAPED. This sentence was written on
+    // purpose, for this customer, and telling them which credential to set is
+    // the whole point of the channel - `[redacted]` would leave them nothing.
+    expect(refusalMessage('set Authorization: Bearer YOUR_VENUE_TOKEN before retrying')).toBe(
+      'set Authorization: Bearer YOUR_VENUE_TOKEN before retrying',
+    );
     expect(refusalMessage('your request must include an api_key: value for this venue')).toBe(
       'your request must include an api_key: value for this venue',
     );
-    // The accident still goes.
-    expect(refusalMessage('upstream said api_key: sk-ant-api03-DEADBEEFcafe1234 is revoked')).toBe(
-      'upstream said [redacted] is revoked',
+  });
+
+  it('still redacts a key out of what it SCRAPED from a script', async () => {
+    const { excerptUntrusted } = await import('../src/skills/untrusted-text');
+    expect(excerptUntrusted('upstream said api_key: sk-ant-api03-DEADBEEFcafe1234', 200)).toBe(
+      'upstream said [redacted]',
     );
   });
 
