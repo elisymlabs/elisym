@@ -6,7 +6,7 @@ import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health
 import type { Asset } from '../payment/assets';
 import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
-import { runScript, scopedToolEnv, withoutInheritedJobChannels } from './scriptSkill';
+import { jobScriptEnv, runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
   SkillContext,
@@ -114,21 +114,21 @@ export class StaticScriptSkill implements Skill {
       // channel is stripped either way: with no scratch file of our own, the
       // script must find the variable unset rather than pointing at a stranger's
       // - the runtime is about to tell its operator the channel was not offered.
-      env: {
-        ...(this.scriptEnv === undefined
-          ? scopedToolEnv()
-          : withoutInheritedJobChannels(this.scriptEnv)),
-        ...(refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile }),
-      },
+      env: jobScriptEnv(
+        this.scriptEnv ?? scopedToolEnv(),
+        refusalFile === undefined ? {} : { [SCRIPT_REFUSAL_FILE_ENV]: refusalFile },
+      ),
     });
     if (result.spawnError) {
       throw new ScriptExecutionError(
         null,
         result.spawnError.message,
         'script could not be started',
-        // No stderr argument: the child never ran, so there is no stderr. Passing
-        // the spawn message as one has the runtime tell an operator to grep a
-        // stream that never existed - and scan a command PATH for billing words.
+        // EMPTY, not absent: the child never ran, so it said nothing. Absent
+        // would let the health scan fall back to `detail` - which here is the
+        // spawn message - and gate the operator's key on the word "billing" in
+        // a script PATH. The operator still reads the path, off `detail`.
+        '',
       );
     }
     if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {

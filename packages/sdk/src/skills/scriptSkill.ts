@@ -180,13 +180,24 @@ export function scopedToolEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-/** The channel strip alone, for an env a CALLER assembled out of `process.env`. */
-export function withoutInheritedJobChannels(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const scoped: NodeJS.ProcessEnv = { ...env };
+/**
+ * The environment a job's script runs in: one copy of the base, the inherited
+ * channels stripped out of it, this job's own channels written in.
+ *
+ * One copy, because this runs per spawn and the base is the CLI's own spread of
+ * `process.env` - a few hundred keys on a container host. Taking the extras
+ * here rather than spreading the result into an object literal is what keeps it
+ * to one.
+ */
+export function jobScriptEnv(
+  base: NodeJS.ProcessEnv,
+  channels: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
   for (const key of JOB_CHANNEL_ENV_VARS) {
-    delete scoped[key];
+    delete env[key];
   }
-  return scoped;
+  return Object.assign(env, channels);
 }
 
 export interface ScriptSkillParams {

@@ -228,21 +228,29 @@ const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient', 'insu
 // for the word "unauthorized" could otherwise gate the operator's key and
 // cascade it across every model on it. A proxy that wants its 402 detected
 // should write the upstream's body to stderr as well.
-const SCRIPT_BILLING_INVALID_MARKERS = [
-  'credit balance',
-  'billing',
-  'insufficient',
-  'insufficient_quota',
-  'x-api-key',
-  'invalid api key',
-  'invalid_api_key',
-  'authentication_error',
-  'unauthorized',
-  'unauthenticated',
+const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{ phrase: string; cascades: boolean }> = [
+  // `cascades` is the second question, asked of the same table so one edit
+  // cannot land half-applied: a phrase that gates THIS pair, and whether it also
+  // takes every model on the operator's key offline. See
+  // `SCRIPT_KEY_LEVEL_MARKERS` for what earns the second.
+  { phrase: 'credit balance', cascades: true },
+  { phrase: 'billing', cascades: false },
+  { phrase: 'insufficient', cascades: false },
+  { phrase: 'insufficient_quota', cascades: true },
+  { phrase: 'x-api-key', cascades: true },
+  { phrase: 'invalid api key', cascades: true },
+  { phrase: 'invalid_api_key', cascades: true },
+  { phrase: 'authentication_error', cascades: true },
+  { phrase: 'unauthorized', cascades: false },
+  { phrase: 'unauthenticated', cascades: false },
 ];
 
-function scriptMessageLooksLikeBillingOrInvalid(lowered: string): boolean {
-  return SCRIPT_BILLING_INVALID_MARKERS.some((marker) => lowered.includes(marker));
+function scriptMessageLooksLikeBillingOrInvalid(message: string): boolean {
+  // Lowered HERE, not by the caller: a precondition that lives in a parameter
+  // name is one a future caller reads as a description, and a raw `Invalid
+  // x-api-key` would then match nothing and be classified a generic exit.
+  const lowered = message.toLowerCase();
+  return SCRIPT_BILLING_INVALID_MARKERS.some(({ phrase }) => lowered.includes(phrase));
 }
 
 /**
@@ -264,14 +272,9 @@ function scriptMessageLooksLikeBillingOrInvalid(lowered: string): boolean {
  * call says when it did not like a request. They still gate this pair through
  * the wider list above.
  */
-const SCRIPT_KEY_LEVEL_MARKERS = [
-  'credit balance',
-  'insufficient_quota',
-  'x-api-key',
-  'invalid api key',
-  'invalid_api_key',
-  'authentication_error',
-];
+const SCRIPT_KEY_LEVEL_MARKERS = SCRIPT_BILLING_INVALID_MARKERS.filter(
+  (marker) => marker.cascades,
+).map((marker) => marker.phrase);
 
 /**
  * How much of a gated pair's reason an operator is shown, and its lead-in.
@@ -281,7 +284,16 @@ const SCRIPT_KEY_LEVEL_MARKERS = [
  * output behind it.
  */
 const HEALTH_REASON_CHARS = 500;
-const SIGNAL_LEAD_CHARS = 80;
+/**
+ * The lead-in, in UTF-16 CODE UNITS - the unit the marker index comes back in.
+ *
+ * Deliberately not characters: this is index arithmetic on the raw text, and
+ * mixing the two would be a slice at an offset that means nothing in the string
+ * it cuts. On astral-heavy text it buys fewer characters than 80, which is fine
+ * for a lead-in whose job is to keep the word in front of the phrase; what
+ * follows is budgeted in characters by the excerpt.
+ */
+const SIGNAL_LEAD_UNITS = 80;
 
 /**
  * The first key-level marker in the text, or -1 - see `scriptSignalReason`.
@@ -328,7 +340,7 @@ function operatorReason(diagnostic: string, budget = HEALTH_REASON_CHARS): strin
   // A little BEFORE the marker, because the marker is rarely the sentence: the
   // phrase that matched `x-api-key` reads "invalid x-api-key", and starting
   // exactly at the match throws away the word that says what is wrong with it.
-  const from = Math.max(0, signalAt - SIGNAL_LEAD_CHARS);
+  const from = Math.max(0, signalAt - SIGNAL_LEAD_UNITS);
   if (from === 0) {
     return excerptUntrusted(diagnostic, budget);
   }
@@ -1179,7 +1191,7 @@ export class AgentRuntime {
       // Lowered once and shared: `message` is raw stderr, bounded only by
       // `MAX_SCRIPT_OUTPUT`.
       const lower = message.toLowerCase();
-      const looksBillingOrInvalid = scriptMessageLooksLikeBillingOrInvalid(lower);
+      const looksBillingOrInvalid = scriptMessageLooksLikeBillingOrInvalid(message);
       const reason: 'billing' | 'invalid' =
         looksBillingOrInvalid &&
         (lower.includes('credit balance') ||

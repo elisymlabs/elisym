@@ -7,7 +7,7 @@ import type { Asset } from '../payment/assets';
 import { HostScratchError } from './host-fault';
 import { SCRIPT_REFUSAL_FILE_ENV, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
-import { runScript, scopedToolEnv, withoutInheritedJobChannels } from './scriptSkill';
+import { jobScriptEnv, runScript, scopedToolEnv } from './scriptSkill';
 import type {
   Skill,
   SkillContext,
@@ -143,18 +143,15 @@ export class DynamicScriptSkill implements Skill {
     // words, and a refusal has to be something it did rather than something it
     // echoed.
     const refusalFile = join(outDir, 'refusal');
-    const env: NodeJS.ProcessEnv = {
-      // Every channel below is set explicitly; the strip is what keeps an
-      // INHERITED one (the agent's own shell, a script skill spawning another)
-      // from surviving into a var this job does not set.
-      ...(this.scriptEnv === undefined
-        ? scopedToolEnv()
-        : withoutInheritedJobChannels(this.scriptEnv)),
+    // Every channel is set explicitly; the strip inside is what keeps an
+    // INHERITED one (the agent's own shell, a script skill spawning another)
+    // from surviving into a var this job does not set.
+    const env = jobScriptEnv(this.scriptEnv ?? scopedToolEnv(), {
       ELISYM_OUTPUT_FILE: outputFile,
       ELISYM_OUTPUT_DIR: outputDir,
       ELISYM_CHARGE_FILE: chargeFile,
       [SCRIPT_REFUSAL_FILE_ENV]: refusalFile,
-    };
+    });
     if (input.filePath !== undefined) {
       env.ELISYM_INPUT_FILE = input.filePath;
     }
@@ -195,9 +192,11 @@ export class DynamicScriptSkill implements Skill {
           null,
           result.spawnError.message,
           'script could not be started',
-          // No stderr argument: the child never ran, so there is no stderr. Passing
-          // the spawn message as one has the runtime tell an operator to grep a
-          // stream that never existed - and scan a command PATH for billing words.
+          // EMPTY, not absent: the child never ran, so it said nothing. Absent
+          // would let the health scan fall back to `detail` - which here is the
+          // spawn message - and gate the operator's key on the word "billing" in
+          // a script PATH. The operator still reads the path, off `detail`.
+          '',
         );
       }
       if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {

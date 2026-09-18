@@ -24,9 +24,21 @@ export const MAX_DISPLAYED_ERROR_CHARS = SCRIPT_REFUSAL_MAX_CHARS;
  * label is the app's, so it has to be unmistakably ours.
  */
 export const AGENT_REFUSED_LABEL = 'The agent refused: ';
+// "Agent", not "provider": the wire label the runtime attaches says provider,
+// and the provider-facing docs use that word for the operator selling the
+// capability - but a buyer in this app has only ever seen the word agent, on
+// the page they are standing on. The wire label is stripped before display, so
+// no customer meets both.
 
-/** Said when the error carries nothing a reader could act on. */
-export const UNSTATED_FAILURE = 'The job could not be completed.';
+/**
+ * Said when the error carries nothing a reader could act on.
+ *
+ * Deliberately NOT a near-copy of the runtime's own crash sentence ("The agent
+ * could not complete this job."), which carries different advice about the
+ * money: two sentences a glance cannot tell apart would hand the same reader
+ * opposite guidance about a paid job.
+ */
+export const UNSTATED_FAILURE = 'The agent sent an error with nothing readable in it.';
 
 /**
  * One line of an error, whoever wrote it.

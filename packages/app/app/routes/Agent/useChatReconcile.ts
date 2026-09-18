@@ -92,6 +92,13 @@ export function useChatReconcile(agentPubkey: string): void {
           (entry) =>
             entry.status === 'failed' &&
             entry.refusal === undefined &&
+            // PAID ones only. A refusal is worth chasing after the fact because
+            // pressing Retry on one spends money a second time for an answer
+            // that cannot change; on a free job it costs nothing. It also keeps
+            // the relays out of it for the failures no provider ever saw - a
+            // send that never left the browser, a payment that reverted - which
+            // can have no verdict to find, today or in a week.
+            entry.txHash !== undefined &&
             Date.now() - entry.ts < UNEXPLAINED_LOOKUP_MAX_AGE_MS,
         )
         // Newest first, and only a handful. Asked again on every activation on

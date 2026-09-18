@@ -6,7 +6,13 @@
  * therefore worth forging: an ordinary `ScriptExecutionError` carries the
  * SCRIPT's own stderr in `detail` - and for an LLM proxy, stdout is a
  * completion the buyer steers - so any prefix a skill could print would be a
- * switch for its own circuit breaker. Only code inside this SDK constructs one.
+ * switch for its own circuit breaker.
+ *
+ * The boundary this defends is the SUBPROCESS, which can write text but cannot
+ * construct a JavaScript error. In-process code - a hand-written `Skill`, a
+ * plugin the operator installed - can shape one of these by name, as it can
+ * anything else in this process; it is the operator's own code and already
+ * trusted with far more.
  */
 export class HostScratchError extends Error {
   /** What the filesystem said, for the operator log. Never sent to a customer. */
