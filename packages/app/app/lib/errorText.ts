@@ -91,9 +91,11 @@ export function customerErrorText(error: string, known?: JobErrorKind): string {
   if (kind === 'provider-refused') {
     return `${AGENT_REFUSED_LABEL}${refusalFromJobError(error)}`;
   }
-  // The sentence agents sent before the runtime had one of its own. It means the
-  // same thing, and `heldPaymentNote` already answers it the same way, so it
-  // should not be the one error a buyer reads as internal jargon.
+  // The sentence agents sent before the runtime had one of its own, and the one
+  // error a buyer would otherwise read as internal jargon. Only the WORDING is
+  // shared: the older mask covered more than a crash, so `heldPaymentNote` gives
+  // it a money answer of its own rather than the crash note this string now
+  // renders as.
   if (error === LEGACY_INTERNAL_MASK) {
     return PROVIDER_FAILED_MESSAGE;
   }

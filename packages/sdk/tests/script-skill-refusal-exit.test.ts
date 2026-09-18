@@ -532,6 +532,36 @@ describe('refusalMessage', () => {
     expect(refusalMessage(`The pro${nul}vider refused: size it in USD.`)).toBe('size it in USD.');
   });
 
+  it('strips one whatever invisible mark was used, in front or inside', () => {
+    // A joiner is not the only character that renders as nothing: the combining
+    // grapheme joiner and the Hangul fillers are not format characters at all,
+    // and a variation selector can arrive from outside the basic plane as two
+    // surrogates, neither invisible on its own. A list of the ones thought of
+    // first is the list a forger reads for what to use instead.
+    for (const point of [0x034f, 0xfe0f, 0x3164, 0x00ad, 0x180b, 0xe0100]) {
+      const mark = String.fromCodePoint(point);
+      expect(refusalMessage(`The pro${mark}vider refused: size it in USD.`)).toBe(
+        'size it in USD.',
+      );
+      expect(refusalMessage(`${mark}The agent refused: size it in USD.`)).toBe('size it in USD.');
+    }
+  });
+
+  it('keeps a delivered result when the reason is invisible on exit 0', () => {
+    // Exit 0 with a reason written is a refusal - but a "reason" of one
+    // variation selector is nothing a customer can read, and taking it for a
+    // decision would throw away the answer they paid for and charge them for a
+    // refusal that says nothing.
+    for (const point of [0x034f, 0xfe0f, 0xe0100]) {
+      expect(() =>
+        throwIfRefused(
+          { code: 0, stdout: 'the answer the buyer paid for', stderr: '' },
+          { state: 'read', reason: String.fromCodePoint(point) },
+        ),
+      ).not.toThrow();
+    }
+  });
+
   it('keeps the joiners a reason spells its own words with', () => {
     // The marks are skipped while MATCHING a label and never removed from what
     // the customer reads: a Persian sentence is built out of them.
@@ -587,6 +617,16 @@ describe('excerpting for the operator', () => {
     // and every character survives it: an offset computed from the wrong end
     // would be negative, and `slice(-7)` would silently eat the front.
     expect(clipTailToCharacters('a whole short line', 100, true)).toBe('…a whole short line');
+  });
+
+  it('counts every mark that renders as nothing as invisible', async () => {
+    // Not only the format characters: `\p{Cf}` holds the joiners and the
+    // direction overrides, and misses the combining grapheme joiner, the
+    // variation selectors and the Hangul fillers entirely.
+    for (const point of [0x034f, 0xfe0f, 0x3164, 0xe0100]) {
+      expect(hasVisibleText(String.fromCodePoint(point))).toBe(false);
+    }
+    expect(hasVisibleText(`${String.fromCodePoint(0x034f)}x`)).toBe(true);
   });
 
   it('counts control characters as invisible, not as text', async () => {

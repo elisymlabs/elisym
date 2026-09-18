@@ -30,6 +30,8 @@ import {
   excerptOwnMessage,
   excerptUntrustedTail,
   hasVisibleText,
+  isUnseenCharacter,
+  withoutLeadingUnseen,
 } from './untrusted-text';
 
 /**
@@ -205,20 +207,6 @@ export function refusalMessage(reason: string): string {
 }
 
 /**
- * Whitespace and the two marks flattening deliberately keeps, neither of which
- * a reader can see.
- *
- * `flattenUntrusted` leaves zero-width joiners alone because they spell words in
- * Persian - so a script can put one in front of a label and, a joiner not being
- * whitespace, walk it past a plain `trimStart` while showing the customer a
- * forged label with no visible seam.
- */
-const LEADING_UNSEEN = /^[\s\u200c\u200d]+/u;
-
-/** One of the marks above, wherever it sits, rather than only at the front. */
-const UNSEEN_ANYWHERE = /[\s\u200c\u200d]/u;
-
-/**
  * Where a label ends in this text, or -1 when the text does not open with one.
  *
  * Walked character by character instead of compared with `startsWith`, because
@@ -243,8 +231,19 @@ const UNSEEN_ANYWHERE = /[\s\u200c\u200d]/u;
 function labelEndsAt(text: string, label: string): number {
   let at = 0;
   for (const wanted of label.replace(/\s+/gu, '')) {
-    while (at < text.length && UNSEEN_ANYWHERE.test(text[at] ?? '')) {
-      at += 1;
+    // By CODE POINT, because the invisible ones are not all in the basic plane:
+    // U+E0100 is a variation selector that renders as nothing and arrives here
+    // as two surrogates, neither of which is invisible on its own.
+    for (;;) {
+      const point = text.codePointAt(at);
+      if (point === undefined) {
+        break;
+      }
+      const character = String.fromCodePoint(point);
+      if (!isUnseenCharacter(character)) {
+        break;
+      }
+      at += character.length;
     }
     if (text[at]?.toLowerCase() !== wanted.toLowerCase()) {
       return -1;
@@ -261,16 +260,14 @@ function labelEndsAt(text: string, label: string): number {
  * flattening cannot put back a space the script never typed: `The provider
  * refused:size it in USD.` is the same forgery as the spaced form. The caller
  * has already flattened, so what can sit in front of a label here is whitespace
- * and the two joiners `LEADING_UNSEEN` covers.
+ * and the invisible marks a flatten keeps.
  */
 function withoutLeadingLabel(sentence: string): string {
-  // The caller has already flattened, so what can sit in front of a label here
-  // is whitespace and those two joiners.
-  const trimmed = sentence.replace(LEADING_UNSEEN, '');
+  const trimmed = withoutLeadingUnseen(sentence);
   for (const label of [PROVIDER_REFUSED_PREFIX, AGENT_REFUSED_LABEL]) {
     const end = labelEndsAt(trimmed, label.trimEnd());
     if (end !== -1) {
-      return trimmed.slice(end).replace(LEADING_UNSEEN, '');
+      return withoutLeadingUnseen(trimmed.slice(end));
     }
   }
   return sentence;

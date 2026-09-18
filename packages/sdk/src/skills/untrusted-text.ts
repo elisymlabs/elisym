@@ -319,15 +319,55 @@ function excerptWindow(
 }
 
 /**
+ * Everything a reader cannot see, as one class.
+ *
+ * `\p{Cf}` is only half of it. The Unicode DEFAULT-IGNORABLE set holds the rest:
+ * the combining grapheme joiner, the variation selectors (including the astral
+ * block at U+E0100), the Hangul fillers, the Mongolian selectors. None of them
+ * is a format character, all of them render as nothing, and all of them survive
+ * a flatten - so a hand-written list of the invisible ones is the list that
+ * keeps being incomplete. This property is the one Unicode maintains for exactly
+ * this question.
+ *
+ * Whitespace belongs here too: every caller of this is asking "is anything
+ * there", not "is anything printable there".
+ */
+const UNSEEN_CLASS = '\\s\\p{Cf}\\p{Default_Ignorable_Code_Point}';
+const UNSEEN_ANYWHERE = new RegExp(`[${UNSEEN_CLASS}]`, 'gu');
+const UNSEEN_LEADING = new RegExp(`^[${UNSEEN_CLASS}]+`, 'u');
+const ONE_UNSEEN = new RegExp(`^[${UNSEEN_CLASS}]$`, 'u');
+
+/**
  * Whether the text holds anything a reader would SEE.
  *
- * Controls AND format marks, not just marks: a "sentence" of NULs, of bells, or
- * of zero-width joiners is a non-empty string nobody can read, and a caller
- * asking this question is deciding whether to print it or say nothing instead.
- * Takes raw text, so it cannot be got wrong by asking before flattening.
+ * Controls AND every invisible mark, not just format ones: a "sentence" of NULs,
+ * of bells, of zero-width joiners or of variation selectors is a non-empty
+ * string nobody can read, and a caller asking this question is deciding whether
+ * to print it or say nothing instead. Takes raw text, so it cannot be got wrong
+ * by asking before flattening.
  */
 export function hasVisibleText(text: string): boolean {
-  return withoutAnyFormatMarks(withoutControlCharacters(text)).trim() !== '';
+  return withoutControlCharacters(text).replace(UNSEEN_ANYWHERE, '') !== '';
+}
+
+/**
+ * That same class, for a caller walking text one character at a time.
+ *
+ * The label strip in `refusal.ts` compares a forged label against the real one
+ * and has to step over anything invisible WHEREVER it sits; asking here keeps
+ * the answer in one place rather than in a second copy of the class that would
+ * be the one left behind the next time it widens.
+ *
+ * A whole code point, so an astral variation selector is one question and not
+ * two surrogate halves that each answer no.
+ */
+export function isUnseenCharacter(character: string): boolean {
+  return ONE_UNSEEN.test(character);
+}
+
+/** The run of invisible characters a text opens with, gone. */
+export function withoutLeadingUnseen(text: string): string {
+  return text.replace(UNSEEN_LEADING, '');
 }
 
 /**
