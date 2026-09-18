@@ -25,7 +25,12 @@
 import { ScriptExecutionError } from '../llm-health/types';
 import { AGENT_REFUSED_LABEL, PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
 import type { RefusalFileRead } from './refusal-file';
-import { excerptOwnMessage, excerptUntrustedTail, hasVisibleText } from './untrusted-text';
+import {
+  clipToCharacters,
+  excerptUntrustedTail,
+  flattenUntrusted,
+  hasVisibleText,
+} from './untrusted-text';
 
 /**
  * The exit code that says "what I wrote in the refusal file is why".
@@ -121,12 +126,18 @@ export function refusalMessage(reason: string): string {
   // runtime and the client put it there, and a doubled one reaches a reader as
   // the provider's own words wearing the app's voice.
   //
-  // Stripped before the excerpt, so the customer's 400 characters are spent on
-  // the reason rather than on a label; ONE loop over both labels, because `The
-  // agent refused: The provider refused: ...` interleaves them and a pass per
-  // label leaves whichever came second; and off the RAW text, because flattening
-  // here as well would walk an 8 KB file twice - the excerpt flattens anyway.
-  let sentence = reason;
+  // FLATTENED FIRST, then stripped, then clipped - one pass each. `trimStart`
+  // alone is not something to strip against: a NUL or an escape byte ahead of a
+  // label is not whitespace, so `\u0001The provider refused: ...` walks past the
+  // test and a later flatten turns it back into a clean forged label. Control
+  // characters and deceptive marks must be gone BEFORE the label is looked for,
+  // which is why the clip below must not flatten again.
+  //
+  // One loop over both labels, because `The agent refused: The provider refused:
+  // ...` interleaves them and a pass per label leaves whichever came second; and
+  // stripped before the clip, so the customer's 400 characters are spent on the
+  // reason rather than on a label.
+  let sentence = flattenUntrusted(reason);
   for (;;) {
     const stripped = withoutLeadingLabel(sentence);
     if (stripped === sentence) {
@@ -134,15 +145,20 @@ export function refusalMessage(reason: string): string {
     }
     sentence = stripped;
   }
-  // `excerptOwnMessage`: bounded and flattened, but NOT credential-redacted.
-  // Redaction is for text this runtime SCRAPED - a script's stderr, an
-  // upstream's body - where a key appears because someone printed it by
-  // accident. This sentence was written on purpose, for this customer, and a
-  // refusal reading "set Authorization: Bearer YOUR_VENUE_TOKEN first" is the
-  // whole point of the channel; gutting it to "[redacted]" would leave the
-  // buyer with nothing to act on. A provider who types their own key here has
-  // published it on a public relay either way - which the docs say plainly.
-  const excerpt = excerptOwnMessage(sentence, SCRIPT_REFUSAL_MAX_CHARS);
+  // `clipToCharacters`, not an excerpt: the text is already flat, and flattening
+  // it a second time is exactly what would bring back a label stripped above.
+  // Bounded by character so a cut cannot leave half of one.
+  //
+  // No credential pass either, deliberately. Redaction is for text this runtime
+  // SCRAPED - a script's stderr, an upstream's body - where a key appears
+  // because someone printed it by accident. This sentence was written on
+  // purpose, for this customer, and a refusal reading "set Authorization: Bearer
+  // YOUR_VENUE_TOKEN first" is the whole point of the channel; gutting it to
+  // "[redacted]" would leave the buyer with nothing to act on. The provider docs
+  // carry the other half of that trade: never put a credential in a reason,
+  // because this sentence is passed through as written, onto a public relay and
+  // into the operator log.
+  const excerpt = clipToCharacters(sentence, SCRIPT_REFUSAL_MAX_CHARS);
   return hasVisibleText(excerpt) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
 }
 
@@ -153,10 +169,21 @@ export function refusalMessage(reason: string): string {
  * flattening cannot put back a space the script never typed: `The provider
  * refused:size it in USD.` is the same forgery as the spaced form.
  */
+/**
+ * Whitespace and the two marks flattening deliberately keeps, neither of which
+ * a reader can see.
+ *
+ * `flattenUntrusted` leaves zero-width joiners alone because they spell words in
+ * Persian - so a script can put one in front of a label and, a joiner not being
+ * whitespace, walk it past a plain `trimStart` while showing the customer a
+ * forged label with no visible seam.
+ */
+const LEADING_UNSEEN = /^[\s\u200c\u200d]+/u;
+
 function withoutLeadingLabel(sentence: string): string {
-  // `trimStart` rather than a flatten pass upstream: a leading newline or
-  // byte-order mark is all that stands between a forged label and this test.
-  const trimmed = sentence.trimStart();
+  // The caller has already flattened, so what can sit in front of a label here
+  // is whitespace and those two joiners.
+  const trimmed = sentence.replace(LEADING_UNSEEN, '');
   const lowered = trimmed.toLowerCase();
   for (const label of [PROVIDER_REFUSED_PREFIX, AGENT_REFUSED_LABEL]) {
     // Case-INSENSITIVELY: a skill author copying the label out of prose rather
@@ -164,7 +191,7 @@ function withoutLeadingLabel(sentence: string): string {
     // test leaves it standing for the runtime to prefix a second one in front of.
     const anchor = label.trimEnd().toLowerCase();
     if (lowered.startsWith(anchor)) {
-      return trimmed.slice(anchor.length).trimStart();
+      return trimmed.slice(anchor.length).replace(LEADING_UNSEEN, '');
     }
   }
   return sentence;

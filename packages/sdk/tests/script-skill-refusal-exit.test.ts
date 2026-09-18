@@ -318,6 +318,24 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error.stderr).not.toContain('nsec');
   });
 
+  it('takes a label off that a control byte was hiding behind', async () => {
+    // A NUL or an escape is not whitespace, so trimming is not something to
+    // strip against: the label walks past the test and a later flatten turns it
+    // back into a clean forged one, in the app's own voice.
+    const nul = String.fromCharCode(0);
+    const joiner = String.fromCodePoint(0x200d);
+    expect(refusalMessage(`${nul}The provider refused: size it in USD.`)).toBe('size it in USD.');
+    // A zero-width joiner survives flattening on purpose - it spells words in
+    // Persian - so it is the one invisible character a forger could still hide
+    // in front of a label.
+    expect(refusalMessage(`${joiner}the agent refused: size it in USD.`)).toBe('size it in USD.');
+    // Anything VISIBLE in front means the label is not leading, and the sentence
+    // keeps it: there is no clean forgery to undo.
+    expect(refusalMessage('[0m the provider refused: size it in USD.')).toBe(
+      '[0m the provider refused: size it in USD.',
+    );
+  });
+
   it('takes both labels off, in any order and with or without the space', async () => {
     // Interleaved: a pass per label strips one and leaves the other, which is
     // the doubled label the customer then reads under the app's own.
