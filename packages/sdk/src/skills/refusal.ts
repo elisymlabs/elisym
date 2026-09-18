@@ -215,6 +215,45 @@ export function refusalMessage(reason: string): string {
  */
 const LEADING_UNSEEN = /^[\s\u200c\u200d]+/u;
 
+/** One of the marks above, wherever it sits, rather than only at the front. */
+const UNSEEN_ANYWHERE = /[\s\u200c\u200d]/u;
+
+/**
+ * Where a label ends in this text, or -1 when the text does not open with one.
+ *
+ * Walked character by character instead of compared with `startsWith`, because
+ * what a reader cannot see is invisible INSIDE a label too, not only in front of
+ * one. A zero-width joiner dropped in the middle of `provider` renders exactly
+ * like the label the runtime writes, and so does the space a NUL flattens into;
+ * a prefix test on the raw
+ * text passes both straight through, and the customer reads the app's own label
+ * twice - the second copy being the provider's words wearing the app's voice,
+ * which is the thing this whole strip exists to stop.
+ *
+ * Skipped only while matching, never removed from what is emitted: a reason
+ * written in Persian spells its words with these joiners, and the sentence the
+ * customer reads keeps every one of them.
+ *
+ * Case-INSENSITIVELY, because a skill author copying the label out of prose
+ * rather than out of the constant writes `the provider refused:`. A character
+ * whose lowercase form is longer than itself (`İ`) simply fails to match, which
+ * leaves the text alone rather than cutting it at an offset measured on a
+ * different string.
+ */
+function labelEndsAt(text: string, label: string): number {
+  let at = 0;
+  for (const wanted of label.replace(/\s+/gu, '')) {
+    while (at < text.length && UNSEEN_ANYWHERE.test(text[at] ?? '')) {
+      at += 1;
+    }
+    if (text[at]?.toLowerCase() !== wanted.toLowerCase()) {
+      return -1;
+    }
+    at += 1;
+  }
+  return at;
+}
+
 /**
  * One label off the front, if one is there.
  *
@@ -228,14 +267,10 @@ function withoutLeadingLabel(sentence: string): string {
   // The caller has already flattened, so what can sit in front of a label here
   // is whitespace and those two joiners.
   const trimmed = sentence.replace(LEADING_UNSEEN, '');
-  const lowered = trimmed.toLowerCase();
   for (const label of [PROVIDER_REFUSED_PREFIX, AGENT_REFUSED_LABEL]) {
-    // Case-INSENSITIVELY: a skill author copying the label out of prose rather
-    // than out of the constant writes `the provider refused:`, and an exact-case
-    // test leaves it standing for the runtime to prefix a second one in front of.
-    const anchor = label.trimEnd().toLowerCase();
-    if (lowered.startsWith(anchor)) {
-      return trimmed.slice(anchor.length).replace(LEADING_UNSEEN, '');
+    const end = labelEndsAt(trimmed, label.trimEnd());
+    if (end !== -1) {
+      return trimmed.slice(end).replace(LEADING_UNSEEN, '');
     }
   }
   return sentence;

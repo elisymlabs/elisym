@@ -25,15 +25,28 @@ const OUTAGE_NOTE =
  * What agents said before `PROVIDER_FAILED_MESSAGE` existed.
  *
  * The app deploys on its own schedule and talks to whatever CLI a provider is
- * running, so this sentence keeps arriving for years. It means exactly what the
- * new one means - the job is closed, charged, and nothing will retry it - and
- * matching it is the difference between a paying customer getting guidance and
- * getting internal jargon with none.
+ * running, so this sentence keeps arriving for years, and matching it is the
+ * difference between a paying customer getting guidance and getting internal
+ * jargon with none.
+ *
+ * It is NOT the same statement as the new one, though. On those releases this
+ * was the last-resort mask for any error with nothing customer-safe to say, and
+ * one of them - an x402 upstream failing transiently after the buyer paid - is a
+ * job the old agent keeps and its recovery loop can still deliver. The string
+ * cannot tell that apart from a crash, so it gets a note of its own that
+ * promises neither a closed job nor a retry.
  */
 export const LEGACY_INTERNAL_MASK = 'Internal processing error';
 
 const CRASHED_NOTE =
   "The job failed on the agent's side and is closed. A flat-priced job is charged before it runs, so if you paid, check the job in your wallet history and contact the provider rather than sending it again.";
+
+/**
+ * The same failure as `CRASHED_NOTE`, minus the one thing this string cannot
+ * promise on an older agent: that nothing is still running.
+ */
+const LEGACY_FAILED_NOTE =
+  "The job failed on the agent's side. A flat-priced job is charged before it runs, so if you paid, check the job in your wallet history and ask the provider before sending it again - an agent on an older release may still deliver a late result for it.";
 
 const REFUSED_NOTE =
   'The agent says it declined this job, so it is closed and will not be retried. A flat-priced job is charged before it runs, so if you paid, check the job in your wallet history rather than sending it again.';
@@ -114,8 +127,12 @@ export function heldPaymentNote(
   // The provider's skill fell over. Terminal like a refusal, and charged like
   // one, but not a decision - so it gets its own sentence rather than the
   // refusal's "the agent says it declined this job".
-  if (error === PROVIDER_FAILED_MESSAGE || error === LEGACY_INTERNAL_MASK) {
+  if (error === PROVIDER_FAILED_MESSAGE) {
     return CRASHED_NOTE;
+  }
+  // The same failure from an agent too old to say which kind it was.
+  if (error === LEGACY_INTERNAL_MASK) {
+    return LEGACY_FAILED_NOTE;
   }
   return undefined;
 }

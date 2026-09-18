@@ -517,6 +517,28 @@ describe('refusalMessage', () => {
     );
   });
 
+  it('strips a label with an invisible mark inside it', () => {
+    // Flattening keeps zero-width joiners because they spell Persian words, so
+    // one placed INSIDE the label renders exactly like the real thing while
+    // walking past a prefix test - and the customer reads the app's own label
+    // twice, the second copy being the provider's sentence in the app's voice.
+    // A NUL does the same job by flattening to a space.
+    const joiner = String.fromCharCode(0x200d);
+    const nul = String.fromCharCode(0);
+    expect(refusalMessage(`The pro${joiner}vider refused: size it in USD.`)).toBe(
+      'size it in USD.',
+    );
+    expect(refusalMessage(`The agent ref${joiner}used: size it in USD.`)).toBe('size it in USD.');
+    expect(refusalMessage(`The pro${nul}vider refused: size it in USD.`)).toBe('size it in USD.');
+  });
+
+  it('keeps the joiners a reason spells its own words with', () => {
+    // The marks are skipped while MATCHING a label and never removed from what
+    // the customer reads: a Persian sentence is built out of them.
+    const nonJoiner = String.fromCharCode(0x200c);
+    expect(refusalMessage(`cannot${nonJoiner} do that`)).toBe(`cannot${nonJoiner} do that`);
+  });
+
   it('strips a run of labels as long as the whole channel', () => {
     // The window the labels are stripped inside has to cover everything a
     // script can WRITE, not a fixed multiple of the 400-character cap: at 8x

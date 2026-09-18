@@ -90,12 +90,16 @@ describe('what a paying customer is told about their money', () => {
 
   it('tells the buyer of an OLDER agent where their money went', () => {
     // The sentence agents sent before `PROVIDER_FAILED_MESSAGE` existed, and
-    // will keep sending for as long as they run an older CLI. It means the same
-    // thing - closed, charged, nothing will re-run it - so it gets the same
-    // guidance, and never the outage promise of a retry.
+    // will keep sending for as long as they run an older CLI. It is the mask
+    // those releases put on ANY error they had nothing safe to say about, so it
+    // gets the guidance without either promise the newer strings can make: not
+    // the outage's "it will be retried", and not the crash note's "closed" -
+    // one of the failures behind it is an x402 upstream the old agent's
+    // recovery loop can still deliver on.
     const note = heldPaymentNote('Internal processing error', true);
     expect(note).toBeDefined();
     expect(note).not.toMatch(/back online/);
+    expect(note).not.toMatch(/closed/);
     expect(note).toMatch(/wallet history/);
   });
 
