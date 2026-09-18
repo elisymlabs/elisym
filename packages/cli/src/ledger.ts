@@ -269,11 +269,12 @@ export class JobLedger {
     // leftover, so the garbage bounded itself. Now every failure between the
     // write and the rename would leave a unique file holding a full copy of the
     // ledger - customer inputs included - and nothing ever sweeps them.
-    // `writeFileSync`'s `mode` applies only when it CREATES the file, so a stale
-    // `.tmp` left behind by a crash - possibly with looser permissions - would be
-    // reused as it stands. This chmod is what closes that, and it runs on the
-    // TEMP file so that `renameSync` stays the LAST statement and the whole
-    // method is all-or-nothing.
+    // The chmod is NOT about a stale temporary any more - the name is random,
+    // so there is never one to reuse. What it still does is undo the umask:
+    // `writeFileSync`'s `mode` is a request, and a umask of 0o200 would leave
+    // the ledger read-only to its own owner. It runs on the TEMP file so that
+    // `renameSync` stays the LAST statement and the whole method is
+    // all-or-nothing.
     //
     // That ordering is not tidiness. `claimPaymentSignature` rolls itself back
     // when this throws, on the understanding that a failed flush wrote nothing.

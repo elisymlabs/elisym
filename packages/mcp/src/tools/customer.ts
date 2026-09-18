@@ -1336,7 +1336,7 @@ async function prepareTextInput(
     };
   }
   try {
-    const seeded = await ensureIrohTransport(agent).seedBytes(Buffer.from(text, 'utf8'));
+    const seeded = await (await ensureIrohTransport(agent)).seedBytes(Buffer.from(text, 'utf8'));
     return {
       input: '',
       attachment: {
@@ -1417,7 +1417,7 @@ async function seedFileAttachment(
   file: PreparedFileInput,
 ): Promise<{ attachment: FileAttachment } | { error: string }> {
   try {
-    const seeded = await ensureIrohTransport(agent).seedPath(file.absPath);
+    const seeded = await (await ensureIrohTransport(agent)).seedPath(file.absPath);
     return {
       attachment: {
         name: file.name,
@@ -2550,7 +2550,8 @@ export const customerTools: ToolDefinition[] = [
       }
 
       try {
-        await ensureIrohTransport(agent).fetchToPath(irohTransport.ticket, outputPath, {
+        const transport = await ensureIrohTransport(agent);
+        await transport.fetchToPath(irohTransport.ticket, outputPath, {
           maxBytes: LIMITS.MAX_FILE_SIZE,
           timeoutMs: Math.min(input.timeout_secs, MAX_TIMEOUT_SECS) * 1000,
         });

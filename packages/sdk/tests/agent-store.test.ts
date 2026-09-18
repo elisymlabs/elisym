@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -341,6 +341,31 @@ describe('createAgentDir', () => {
 
     const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
     expect(lines).toContain('.secrets.json*');
+  });
+
+  it('still writes the keys when the .gitignore cannot be appended to', async () => {
+    // The asymmetry with `elisym start` is deliberate and this is what holds
+    // it: there a refusal protects an index that decides money, here it would
+    // stop an agent being created at all over a hygiene step. Measured - the
+    // warn path is new, and turning it back into a throw left the package
+    // green.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const root = join(work, '.elisym');
+    const agentDir = join(root, 'alice');
+    mkdirSync(agentDir, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, '.secrets.json\n', 'utf-8');
+    chmodSync(gitignorePath, 0o444);
+
+    try {
+      await writeSecrets(agentDir, { nostr_secret_key: 'a'.repeat(64) });
+
+      expect(existsSync(join(agentDir, '.secrets.json'))).toBe(true);
+    } finally {
+      chmodSync(gitignorePath, 0o644);
+    }
   });
 
   it('migrates an older .gitignore to the widened private-state entries', async () => {

@@ -483,10 +483,12 @@ export async function writeSecrets(
   const target = agentPaths(agentDir).secrets;
   // The choke point every writer of keys goes through - `init`, `profile`,
   // `delegate-key`, `x402 add`, the MCP's `create_agent` - and therefore the
-  // one place where the widened ignore entries are guaranteed to reach an agent
-  // created by an older build. Before the write, so a failure here cannot leave
-  // `.secrets.json.tmp.<hex>` committable; a no-op when the file is absent, so
-  // a home-global agent is unaffected.
+  // one place where the widened ignore entries can reach an agent created by an
+  // older build at all. Before the write, so that when it SUCCEEDS the
+  // widened entries are in place before `.secrets.json.tmp.<hex>` can exist at
+  // all; a no-op when the file is absent, so a home-global agent is
+  // unaffected. When it FAILS the keys are written anyway and the warning below
+  // is the only thing between that temporary and a commit.
   //
   // WARNED, not fatal, and the asymmetry with `elisym start` is deliberate:
   // there a refusal protects an index that decides money, here it would stop an

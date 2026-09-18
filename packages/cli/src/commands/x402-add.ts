@@ -97,6 +97,10 @@ function parseMarginBps(raw: string | undefined): number {
 export async function parseImportedSecret(input: string): Promise<string> {
   const trimmed = input.trim();
   if (existsSync(trimmed)) {
+    // NOT gated by node type, like `init --config` and for the same reason: an
+    // operator typed this path into a foreground command they can stop. The
+    // gated readers are the ones a third party can aim, in a process serving
+    // paid jobs.
     const content = await readFile(trimmed, 'utf-8');
     let parsed: unknown;
     try {

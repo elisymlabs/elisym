@@ -900,7 +900,9 @@ export async function cmdStart(
     await ensureGitignoreHasDelegationNoncesEntry(dirname(loaded.dir));
   }
 
-  // Every `.gitignore` migration runs HERE, before a single card is published,
+  // NOT KILLED BY ANY TEST - `cmdStart` has no harness - so this ordering is
+  // kept on diff review. Every `.gitignore` migration runs HERE, before a card
+  // is published,
   // and for the same reason the two indexes above are opened here: appending to
   // the file is not guarded - a read-only `.elisym` root, a root written under
   // sudo, a full disk - and a throw after the cards are on the relays leaves a

@@ -148,6 +148,31 @@ describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
     expect(result?.code).toBe('degenerate_reference');
   });
 
+  it('rejects it at feeBps=0 as well, the config mainnet actually runs', () => {
+    // The row above measures the gate only while a fee applies. On the deployed
+    // mainnet program the fee is 0, so the request takes the `expectedFee === 0`
+    // early return a few lines below - and a gate that drifted under that
+    // return would leave every other row in this file green while the
+    // commonest config in production lost the check entirely. Measured.
+    const result = payment.validatePaymentRequest(
+      JSON.stringify({ ...validRequest, fee_amount: 0, reference: recipientAddr }),
+      { feeBps: 0, treasury: TEST_TREASURY },
+      'devnet',
+      recipientAddr,
+    );
+    expect(result?.code).toBe('degenerate_reference');
+
+    // And it stays BELOW `recipient_mismatch`, which is the one refusal that
+    // outranks it: a redirected recipient makes the reference question moot.
+    const mismatched = payment.validatePaymentRequest(
+      JSON.stringify({ ...validRequest, fee_amount: 0, reference: recipientAddr }),
+      { feeBps: 0, treasury: TEST_TREASURY },
+      'devnet',
+      otherAddr,
+    );
+    expect(mismatched?.code).toBe('recipient_mismatch');
+  });
+
   it('rejects invalid JSON', () => {
     const result = payment.validatePaymentRequest('not json', CONFIG, 'devnet');
     expect(result?.code).toBe('invalid_json');
@@ -1490,6 +1515,70 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.verified).toBe(false);
       expect(result.error).toMatch(/Recipient received -1 tokens/);
       expect(result.error).not.toMatch(/not found/);
+    });
+
+    it('refuses an SPL transfer that is short of the net by one subunit', async () => {
+      // The row above cannot measure the comparison itself: a delta of -1 is
+      // below zero as well as below the net, so weakening the check to
+      // `recipientDelta < 0n` keeps that row red for the wrong reason. This
+      // delta is SHORT and POSITIVE, which is the shape an underpayment
+      // actually has, and it is the only row in the package that separates the
+      // two - measured: with the comparison weakened, everything else stayed
+      // green.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount - 1,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splShortNetSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received \d+ tokens, expected >=/);
+    });
+
+    it('refuses an SPL transfer whose fee leg is short by one subunit', async () => {
+      // The native twin of this check has a row of its own; the SPL one had
+      // none, and the whole `expectedFee > 0` block could be deleted with the
+      // package still green - measured. The provider is paid in full here, so
+      // nothing but the treasury comparison can refuse it: this is the protocol
+      // fee being skimmed by a customer who builds their own transaction.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount - 1,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splShortFeeSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury received \d+ tokens, expected >=/);
     });
 
     it('takes an SPL transfer whose LAMPORT arrays disagree, reading none of them', async () => {

@@ -35,6 +35,9 @@ let chmodPaths: string[] = [];
  * one, and only this one tells whether the write is inside the cleanup.
  */
 let writeFailure: Error | null = null;
+/** Bytes the failing write actually put down, and the bytes it was asked for. */
+let partialBytes = 0;
+let fullBytes = 0;
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import('node:fs');
@@ -52,10 +55,14 @@ vi.mock('node:fs', async (importOriginal) => {
         // A full disk leaves what it managed to put down, so the lever does the
         // same: half the bytes, then the error. Writing the WHOLE file and then
         // throwing would make the word FRAGMENT below untrue - measured, the
-        // cleanup was deleting a complete, parseable index.
+        // cleanup was deleting a complete, parseable index. The two counters
+        // are what keeps that from happening again silently.
+        const partial = data.slice(0, Math.floor(data.length / 2));
+        fullBytes = data.length;
+        partialBytes = partial.length;
         actual.writeFileSync(
           path as string,
-          data.slice(0, Math.floor(data.length / 2)),
+          partial,
           options as Parameters<typeof actual.writeFileSync>[2],
         );
         throw writeFailure;
@@ -81,6 +88,8 @@ let path: string;
 beforeEach(() => {
   chmodFailure = null;
   writeFailure = null;
+  partialBytes = 0;
+  fullBytes = 0;
   chmodPaths = [];
   dir = mkdtempSync(join(tmpdir(), 'elisym-settle-write-'));
   path = join(dir, 'settlements.json');
@@ -142,6 +151,10 @@ describe('a write that fails leaves the settlement index untouched', () => {
     writeFailure = new Error('ENOSPC: no space left on device, write');
     expect(store.claim(SIG_A, 'job-a')).toBe('not-persisted');
 
+    // The lever really did leave a FRAGMENT, not a whole file the cleanup then
+    // tidied away: without these two the word above goes quietly untrue again.
+    expect(partialBytes).toBeGreaterThan(0);
+    expect(partialBytes).toBeLessThan(fullBytes);
     expect(readdirSync(dir).filter((name) => name.includes('.tmp'))).toEqual([]);
   });
 

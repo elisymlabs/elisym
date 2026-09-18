@@ -19,8 +19,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ensureIrohTransport } from '../src/iroh.js';
 import { readContacts, upsertContact } from '../src/storage/contacts.js';
 import { appendCustomerJob, readCustomerHistory } from '../src/storage/customer-history.js';
+import { listJobSessions } from '../src/storage/job-sessions.js';
 import { readReadCursors } from '../src/storage/read-cursors.js';
 
 let sandbox: string;
@@ -99,6 +101,34 @@ describe('a customer-side store whose file is a node that blocks', () => {
     expect((await readContacts(agentDir)).contacts).toEqual([]);
   });
 
+  it('reads an empty job-session list rather than waiting on one', async () => {
+    // The fourth of the four gates, and the one shaped differently: it sits
+    // after the in-memory branch, so it needs its own row rather than riding on
+    // a neighbour's. The payload is valid against the strict schema (a v4
+    // session id, a 64-hex pubkey) - one that is not collapses to empty on both
+    // sides and measures nothing.
+    fifoWith(
+      join(agentDir, '.job-sessions.json'),
+      JSON.stringify({
+        version: 1,
+        sessions: [
+          {
+            sessionId: '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c',
+            providerPubkey: 'a'.repeat(64),
+            capability: 'text-gen',
+            createdAt: 1,
+            lastUsedAt: 2,
+            turnCount: 1,
+            firstPrompt: 'hello',
+            jobIds: ['e'.repeat(64)],
+          },
+        ],
+      }),
+    );
+
+    expect(await listJobSessions({ agentDir, identityPubkey: 'b'.repeat(64) }, 10)).toEqual([]);
+  });
+
   it('reads empty DM cursors rather than waiting on them', async () => {
     fifoWith(
       join(agentDir, '.messages-read.json'),
@@ -106,6 +136,22 @@ describe('a customer-side store whose file is a node that blocks', () => {
     );
 
     expect(await readReadCursors(agentDir)).toEqual({});
+  });
+});
+
+describe('the blob store a file transfer opens', () => {
+  it('is added to an older .gitignore before the transport is created', async () => {
+    // `.iroh/` holds job inputs and bought results in the CLEAR. `elisym start`
+    // is the only other place this migration runs, and an agent used purely as
+    // a customer through MCP never starts. The assertion is on the `.gitignore`
+    // and not on the transport, so this does not need the native addon: the
+    // migration runs before `createIrohTransport`.
+    const root = join(sandbox, '.elisym');
+    writeFileSync(join(root, '.gitignore'), '.secrets.json\n', 'utf-8');
+
+    await ensureIrohTransport({ agentDir } as never).catch(() => undefined);
+
+    expect(readFileSync(join(root, '.gitignore'), 'utf-8').split('\n')).toContain('.iroh/');
   });
 });
 

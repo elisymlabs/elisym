@@ -10,18 +10,25 @@
 import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { ensureGitignoreHasIrohEntry } from '@elisym/sdk/agent-store';
 import { createIrohTransport, type IrohBlobTransport } from '@elisym/sdk/node';
 import type { AgentInstance } from './context';
 
 /** Get (creating on first use) the agent's iroh transport. */
-export function ensureIrohTransport(agent: AgentInstance): IrohBlobTransport {
+export async function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlobTransport> {
   if (agent.irohTransport) {
     return agent.irohTransport;
   }
   let storePath: string;
   if (agent.agentDir !== undefined) {
     storePath = join(agent.agentDir, '.iroh');
+    // The same argument as the four stores beside this one: nothing else in an
+    // MCP process runs this migration, and an agent used only as a customer
+    // never runs `elisym start`, which is the only other caller. What the store
+    // holds is job inputs and bought results in the CLEAR, so a project-local
+    // agent inside somebody's repository would commit them.
+    await ensureGitignoreHasIrohEntry(dirname(agent.agentDir));
   } else {
     // Ephemeral agent: a tmpdir store, removed on shutdown.
     storePath = mkdtempSync(join(tmpdir(), 'elisym-iroh-'));

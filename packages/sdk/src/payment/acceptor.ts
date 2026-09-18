@@ -508,6 +508,11 @@ export class ProviderPaymentAcceptor {
             .send()) as readonly { signature: string; err: unknown }[];
           // `windowFull` is counted on the RAW page, before failed transactions
           // are dropped.
+          //
+          // The filter itself is NOT KILLED BY ANY TEST: `SolanaPaymentStrategy`
+          // refuses a transaction whose `meta.err` is set anyway, so dropping
+          // it here only saves RPC round-trips and `imperfectPass` marks. It
+          // stays because a third-party strategy owes no such check.
           windowFull = page.length >= DEFAULTS.VERIFY_SIGNATURE_LIMIT;
           candidates = page.filter((entry) => !entry.err).map((entry) => entry.signature);
           listed = true;

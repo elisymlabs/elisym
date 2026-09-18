@@ -1224,8 +1224,9 @@ describe('the store contract', () => {
     expect(seeded.claimedSignature('job-1')).toBe('');
 
     listedPages = [[]];
+    const strategy = strategyVerifying();
     const acceptor = new ProviderPaymentAcceptor({
-      strategy: strategyVerifying(),
+      strategy,
       rpc: makeRpc(),
       store: seeded,
     });
@@ -1238,6 +1239,14 @@ describe('the store contract', () => {
     // the verdict is the terminal one rather than the `inconclusive` a real
     // settlement would have forced.
     expect(result).toMatchObject({ accepted: false, reason: 'window-empty' });
+    // And STEP 1 never handed the blank to `verifyPayment`. The verdict alone
+    // cannot see that: a strategy asked about `''` answers `{verified: false}`,
+    // which marks nothing and lands on the same `window-empty`. What the blank
+    // would actually do there is take the falsy dispatch down the REFERENCE
+    // path and come back with whatever transaction is newest on that reference
+    // - a stranger's, if one is there. Measured: without this line, reading the
+    // gate as `!== undefined` passes the whole file.
+    expect(strategy.verifyPayment).not.toHaveBeenCalled();
   });
 
   it.each([['__proto__'], ['toString'], ['constructor']])(

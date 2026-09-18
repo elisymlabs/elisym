@@ -253,6 +253,10 @@ export class FileSettlementStore implements SettlementStore {
     const cutoff = Date.now() - retentionMs;
     let deleted = 0;
     for (const [signature, record] of Object.entries(file.settlements)) {
+      // `<`, not `<=`, and NOT KILLED BY ANY TEST: the two differ only for a
+      // record whose timestamp equals the cutoff to the millisecond, which
+      // needs a frozen clock to reach. Same class as the `>=` in the acceptor's
+      // deadline, named there for the same reason.
       if (record.at < cutoff) {
         delete file.settlements[signature];
         deleted += 1;

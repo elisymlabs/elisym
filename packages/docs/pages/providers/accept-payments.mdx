@@ -83,9 +83,9 @@ With a paid skill, `start` requires the Solana address - it exits early if a ski
 :::
 
 :::note
-**`start` refuses to run on state it cannot read.** Two indexes decide money and are opened before the agent advertises anything: the job ledger (which transaction paid for which job) and, when the agent has a delegate key, the delegated-pull nonce store (which pull has been spent). If either cannot be READ - a permission error, a directory in the way, a pipe or device where the file belongs - the agent exits with that path named, rather than starting with an empty index and settling the same transaction twice. A file that was read and could not be PARSED is different: that one is moved aside as `.corrupt.<timestamp>` and the agent starts. The usual cause of the first is a file written under `sudo` - `chown` it back.
+**`start` refuses to run on state it cannot read.** Two indexes decide money, and each is opened before the thing it protects goes out: the job ledger (which transaction paid for which job), opened before anything at all reaches a relay, and - when a skill declares delegation and the agent's delegate key decodes - the delegated-pull nonce store (which pull has been spent), opened before any capability card goes out. If either cannot be READ - a permission error, a directory in the way, a pipe or device where the file belongs - the agent exits with that path named, rather than starting with an empty index and settling the same transaction twice. A file that was read and could not be PARSED is different: that one is moved aside as `.corrupt.<timestamp>` and the agent starts. The usual cause of the first is a file written under `sudo` - `chown` it back.
 
-The x402 bridge cache is **not** part of that gate: `start` never reads it. It fails closed at the point a bridged job needs it, so the job errors instead of paying the upstream a second time, and a file that cannot be read or parsed has to be moved aside by hand.
+The x402 bridge cache is **not** part of that gate: `start` does not gate on it. The one read it does at startup is a fire-and-forget retention sweep inside the bridge driver, whose failure is ignored. The cache fails closed at the point a bridged job needs it, so the job errors instead of paying the upstream a second time, and a file that cannot be read or parsed has to be moved aside by hand.
 :::
 
 :::warning
