@@ -13,13 +13,20 @@
  *
  * Lives in its own file because it mocks `node:fs`.
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 /** Set to make `chmodSync` fail, as a full disk or a hostile mode change would. */
 let chmodFailure: Error | null = null;
+/**
+ * Set to make the WRITE fail after it has put down part of the file, as ENOSPC
+ * does. A separate lever from the chmod one: this is the only way to reach a
+ * FRAGMENT, and the fragment is a partial copy of the ledger - customer inputs
+ * in the clear - under a name nothing ever reuses or sweeps.
+ */
+let writeFailure: Error | null = null;
 /** Every path `chmodSync` was asked to change, in order. */
 let chmodPaths: string[] = [];
 
@@ -33,6 +40,21 @@ vi.mock('node:fs', async (importOriginal) => {
         throw chmodFailure;
       }
       return actual.chmodSync(path, mode);
+    },
+    writeFileSync: (path: string, data: string, options?: unknown) => {
+      if (writeFailure) {
+        actual.writeFileSync(
+          path as string,
+          data.slice(0, Math.floor(data.length / 2)),
+          options as Parameters<typeof actual.writeFileSync>[2],
+        );
+        throw writeFailure;
+      }
+      return actual.writeFileSync(
+        path as string,
+        data,
+        options as Parameters<typeof actual.writeFileSync>[2],
+      );
     },
   };
 });
@@ -55,6 +77,7 @@ function makeEntry(jobId: string) {
 
 beforeEach(() => {
   chmodFailure = null;
+  writeFailure = null;
   chmodPaths = [];
   tmpDir = mkdtempSync(join(tmpdir(), 'elisym-flush-test-'));
   ledgerPath = join(tmpDir, '.jobs.json');
@@ -120,5 +143,22 @@ describe('a flush that fails leaves the ledger file untouched', () => {
     const owners = Object.values(onDisk).filter((entry) => entry.payment_signature === 'sigShared');
     expect(owners).toHaveLength(1);
     expect(onDisk['job-a']?.payment_signature).toBeUndefined();
+  });
+});
+
+describe('a flush that fails part way through the write', () => {
+  it('leaves no fragment behind', () => {
+    // The temporary carries a random suffix, so nothing reuses it and nothing
+    // sweeps it: a write that stops half way would strand a partial copy of the
+    // ledger for good. The cleanup has to take it, and only a lever on the
+    // WRITE can prove that - the chmod lever fails once the file is whole.
+    const ledger = new JobLedger(ledgerPath);
+    ledger.recordPaid(makeEntry('job-a'));
+
+    writeFailure = new Error('ENOSPC: no space left on device, write');
+    expect(() => ledger.recordPaid(makeEntry('job-b'))).toThrow(/ENOSPC/);
+    writeFailure = null;
+
+    expect(readdirSync(tmpDir).filter((name) => name.includes('.tmp'))).toEqual([]);
   });
 });

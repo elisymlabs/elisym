@@ -9,10 +9,11 @@
  * the next job settles the same transaction.
  *
  * Lives in its own file because it mocks `node:fs`, the same shape as
- * `packages/cli/tests/ledger-flush-atomicity.test.ts`. Without the mock only
- * the RETHROW is reached, by the locked-directory fixture next door: the
- * cleanup and the `prune` asymmetry need a failure BETWEEN the write and the
- * rename, which no healthy filesystem produces.
+ * `packages/cli/tests/ledger-flush-atomicity.test.ts`. Without the mock the
+ * locked-directory fixture next door reaches the rethrow and enters the cleanup
+ * - but the cleanup has nothing to remove there, so only its EFFECT needs the
+ * mock, as does the `prune` asymmetry: both want a failure BETWEEN the write
+ * and the rename, which no healthy filesystem produces.
  *
  * And a note for whoever measures reachability next: `process.exit` is not a
  * usable probe here - it is a no-op in vitest's fork pool, measured. Append to
@@ -47,15 +48,23 @@ vi.mock('node:fs', async (importOriginal) => {
       return actual.chmodSync(path, mode);
     },
     writeFileSync: (path: string, data: string, options?: unknown) => {
-      const result = actual.writeFileSync(
+      if (writeFailure) {
+        // A full disk leaves what it managed to put down, so the lever does the
+        // same: half the bytes, then the error. Writing the WHOLE file and then
+        // throwing would make the word FRAGMENT below untrue - measured, the
+        // cleanup was deleting a complete, parseable index.
+        actual.writeFileSync(
+          path as string,
+          data.slice(0, Math.floor(data.length / 2)),
+          options as Parameters<typeof actual.writeFileSync>[2],
+        );
+        throw writeFailure;
+      }
+      return actual.writeFileSync(
         path as string,
         data,
         options as Parameters<typeof actual.writeFileSync>[2],
       );
-      if (writeFailure) {
-        throw writeFailure;
-      }
-      return result;
     },
   };
 });

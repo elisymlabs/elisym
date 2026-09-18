@@ -189,11 +189,13 @@ export async function ensureGitignoreHasDelegationNoncesEntry(elisymRoot: string
 }
 
 /**
- * The three private files that are written through a TEMPORARY, plus their
- * siblings: `.secrets.json.tmp.<hex>` (the agent's nostr and solana keys),
+ * The private files written through a TEMPORARY, plus their siblings:
+ * `.secrets.json.tmp.<hex>` (the agent's nostr and solana keys),
  * `.media-cache.json.tmp.<hex>`, `.jobs.json.tmp.<hex>` (a full copy of the
  * ledger - customer inputs in the clear and every payment's settlement
- * signature), and `.jobs.json.corrupt.<ts>`.
+ * signature), `.jobs.json.corrupt.<ts>`, and the customer-side pair
+ * `.customer-history.json.tmp.<hex>` (paid results, amounts, signatures) and
+ * `.contacts.json.tmp.<hex>`.
  *
  * A migration rather than only a line in the template, and that is the whole
  * point: `GITIGNORE_CONTENT` is written ONCE, when the agent directory is
@@ -483,9 +485,23 @@ export async function writeSecrets(
   // `delegate-key`, `x402 add`, the MCP's `create_agent` - and therefore the
   // one place where the widened ignore entries are guaranteed to reach an agent
   // created by an older build. Before the write, so a failure here cannot leave
-  // `.secrets.json.tmp.<hex>` committable; `ensureGitignoreHasEntries` is a
-  // no-op when the file is absent, so a home-global agent is unaffected.
-  await ensureGitignoreHasPrivateStateEntries(dirname(agentDir));
+  // `.secrets.json.tmp.<hex>` committable; a no-op when the file is absent, so
+  // a home-global agent is unaffected.
+  //
+  // WARNED, not fatal, and the asymmetry with `elisym start` is deliberate:
+  // there a refusal protects an index that decides money, here it would stop an
+  // agent being created at all over a `.gitignore` that cannot be appended to -
+  // a read-only root, a root owned by somebody else. The keys are the point of
+  // the call; the hygiene is not worth losing them over.
+  try {
+    await ensureGitignoreHasPrivateStateEntries(dirname(agentDir));
+  } catch (error) {
+    console.warn(
+      `  ! Could not update the .gitignore in ${dirname(agentDir)} ` +
+        `(${error instanceof Error ? error.message : String(error)}). ` +
+        `Check that it ignores .secrets.json* before committing.`,
+    );
+  }
   await writeFileAtomic(target, body, 0o600);
 }
 

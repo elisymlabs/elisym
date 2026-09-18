@@ -544,7 +544,8 @@ describe('buildPaymentInstructions', () => {
           (TOKEN_PROGRAM_ADDRESS as string),
     );
     const paid = transfers.map((transfer) => ({
-      // `destination` is the second account of `TransferChecked`.
+      // `TransferChecked` is `source, mint, destination, authority`, so the
+      // destination is index 2 - the THIRD account, not the second.
       to: transfer.accounts[2]?.address,
       amount: getTransferCheckedInstructionDataDecoder().decode(transfer.data).amount,
     }));
@@ -552,6 +553,58 @@ describe('buildPaymentInstructions', () => {
     expect(paid).toEqual([
       { to: recipientAta as string, amount: BigInt(100_000_000 - fee) },
       { to: treasuryAta as string, amount: BigInt(fee) },
+    ]);
+  });
+
+  it('pays the NATIVE legs to the recipient and the fee address, in the right amounts', async () => {
+    // The mirror of the SPL row above, on the path a request with no `asset`
+    // field takes - which is every SOL payment, the default asset. Measured:
+    // a provider leg paying the FEE ADDRESS and a fee leg paying the RECIPIENT
+    // both left the whole package green. The row that counts instructions does
+    // not look at destinations, and `fee + providerAmount === totalAmount`
+    // balances either way.
+    const recipient = makeAddress();
+    const fee = calculateProtocolFee(100_000_000, TEST_FEE_BPS);
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient,
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: TEST_TREASURY,
+        fee_amount: fee,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+
+    const transfers = instructions.filter(
+      (
+        instruction,
+      ): instruction is {
+        programAddress: string;
+        data: Uint8Array;
+        accounts: { address: string }[];
+      } =>
+        typeof instruction === 'object' &&
+        instruction !== null &&
+        (instruction as { programAddress?: string }).programAddress ===
+          '11111111111111111111111111111111',
+    );
+    const paid = transfers.map((transfer) => ({
+      // `TransferSol` is `source, destination`, so the destination is index 1 -
+      // a different shape from `TransferChecked` above, which is why this is
+      // written out rather than copied.
+      to: transfer.accounts[1]?.address,
+      amount: getTransferSolInstructionDataDecoder().decode(transfer.data).amount,
+    }));
+
+    expect(paid).toEqual([
+      { to: recipient as string, amount: BigInt(100_000_000 - fee) },
+      { to: TEST_TREASURY as string, amount: BigInt(fee) },
     ]);
   });
 

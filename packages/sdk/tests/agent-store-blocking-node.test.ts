@@ -198,6 +198,19 @@ describe('an agent directory whose yaml is a node that blocks', () => {
     ).rejects.toThrow(/pipe, socket or device/);
   });
 
+  it('follows a symlink in the SYNCHRONOUS form too, not only the async one', () => {
+    // `statSync`, not `lstatSync`: the async half has a fixture for this
+    // (`readAgentPublic` through a symlinked FIFO) and the sync half did not,
+    // though the same sentence in the module docstring covers both - and the
+    // sync readers are the ones that stop the whole process.
+    const target = join(sandbox, 'fifo-target');
+    makeFifo(target);
+    const link = join(sandbox, 'link-to-fifo');
+    symlinkSync(target, link);
+
+    expect(isBlockingNodeSync(link)).toBe(true);
+  });
+
   it('answers false for what it cannot stat at all, so it only ever NARROWS', async () => {
     // The invariant the module's own docstring rests on: every throw inside it
     // means "the gate did not fire", and the read that follows fails exactly as

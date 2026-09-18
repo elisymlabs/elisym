@@ -625,6 +625,10 @@ describe('what may become a terminal "nobody paid"', () => {
   });
 
   it('never says it when the budget ran out while the listing was in flight', async () => {
+    // Budgets are 200ms against a 400ms listing, not 20 against 40: the check
+    // before the listing has to be FALSE when the pass starts, and on a loaded
+    // machine the few milliseconds between `accept` and that call are not a
+    // safe margin - measured at 2-5ms, which a tight budget turns into a flake.
     // The gap every step-boundary check misses: an empty page means the
     // candidate loop never runs, so nothing after the listing looks at the
     // clock again. A pass that blew its deadline must not be able to report
@@ -634,7 +638,7 @@ describe('what may become a terminal "nobody paid"', () => {
       getSignaturesForAddress: vi.fn(() => ({
         send: async () => {
           listCalls += 1;
-          await new Promise((resolve) => setTimeout(resolve, 60));
+          await new Promise((resolve) => setTimeout(resolve, 400));
           return [];
         },
       })),
@@ -647,7 +651,7 @@ describe('what may become a terminal "nobody paid"', () => {
     });
 
     const result = await acceptor.accept(
-      { paymentRequest: makeRequest(), jobIdentity: 'job-1', budget: { deadlineMs: 20 } },
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', budget: { deadlineMs: 200 } },
       CONFIG,
     );
 
@@ -742,6 +746,34 @@ describe('a request that cannot be paid at all', () => {
     );
     expect(result).toEqual({ accepted: true, txSignature: SIG_A });
     expect(listCalls).toBe(0);
+  });
+
+  it('does not treat an EMPTY claimed signature as a settlement worth carving out', async () => {
+    // The carve-out asks whether the job owns a settlement, and it asks with
+    // `isUsableSignature`: a hand-edited index carries an empty string, which
+    // owns nothing. Read as ownership, a request that cannot be paid at all
+    // stops being terminal and the entry is polled to the cutoff instead of
+    // failing now with the real reason. The fixture that seeds an empty
+    // signature elsewhere covers steps 1 and 6, never this read.
+    const path = join(dir, 'empty-carve-out.json');
+    writeFileSync(
+      path,
+      JSON.stringify({ version: 1, settlements: { '': { job: 'job-1', at: Date.now() } } }),
+      'utf-8',
+    );
+    const seeded = createFileSettlementStore(path);
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(),
+      rpc: makeRpc(),
+      store: seeded,
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest({ amount: 0 }), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'unusable-request' });
   });
 
   it('is inconclusive, not accepted, when the carved-out job has a degenerate reference', async () => {

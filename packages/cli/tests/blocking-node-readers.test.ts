@@ -229,6 +229,24 @@ describe('the directory an x402 result lands in', () => {
     expect(statSync(join(agentDir, '.x402-results')).mode & 0o777).toBe(0o700);
     expect(statSync(join(agentDir, '.x402-results', 'job-1')).mode & 0o777).toBe(0o600);
   });
+
+  it('tightens a directory an older build left world-readable', () => {
+    // `mkdir`'s mode applies only to directories it CREATES, so this is the
+    // case the explicit chmod exists for - and the row above cannot see it,
+    // because the two together pass whichever one is removed.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const agentDir = join(sandbox, 'agent-existing-dir');
+    const resultsDir = join(agentDir, '.x402-results');
+    mkdirSync(resultsDir, { recursive: true, mode: 0o755 });
+    chmodSync(resultsDir, 0o755);
+    const store = new X402JobStore(agentDir);
+
+    return store.saveFileResult('job-1', 'image/png', new Uint8Array([1, 2, 3])).then(() => {
+      expect(statSync(resultsDir).mode & 0o777).toBe(0o700);
+    });
+  });
 });
 
 describe('an x402 result path somebody can guess', () => {

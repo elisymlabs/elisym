@@ -20,7 +20,11 @@
 
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { ensureGitignoreHasJobSessionsEntry, writeFileAtomic } from '@elisym/sdk/agent-store';
+import {
+  isBlockingNode,
+  ensureGitignoreHasJobSessionsEntry,
+  writeFileAtomic,
+} from '@elisym/sdk/agent-store';
 import { z } from 'zod';
 import { sanitizeField } from '../sanitize.js';
 
@@ -114,6 +118,14 @@ async function readSessions(handle: SessionStoreHandle): Promise<JobSessions> {
     return existing
       ? (JSON.parse(JSON.stringify(existing)) as JobSessions)
       : { ...EMPTY, sessions: [] };
+  }
+  // A blocking node here does not fail the read - it never settles, and this
+  // read runs INSIDE the per-path write lock, so one of them jams every later
+  // write to this file for the life of the process (measured). Same answer the
+  // `catch` below gives: this is client-side bookkeeping, not an index that
+  // decides money, and the atomic writer renames its own file over the node.
+  if (await isBlockingNode(pathFor(handle.agentDir))) {
+    return { ...EMPTY, sessions: [] };
   }
   let raw: string;
   try {

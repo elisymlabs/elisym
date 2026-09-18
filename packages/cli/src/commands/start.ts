@@ -649,6 +649,11 @@ export async function cmdStart(
   }
 
   if (mediaCacheDirty) {
+    // The widened ignore entries have to be in place BEFORE this: the cache is
+    // written through a temporary whose suffix is random, and an agent created
+    // by an older build carries the narrow `.media-cache.json` line, which
+    // cannot match one. `writeSecrets` does the same for the keys.
+    await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
     await writeMediaCache(loaded.dir, mediaCache);
   }
 

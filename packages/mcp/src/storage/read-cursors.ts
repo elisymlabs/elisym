@@ -11,7 +11,11 @@
 
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { ensureGitignoreHasMessagesEntry, writeFileAtomic } from '@elisym/sdk/agent-store';
+import {
+  isBlockingNode,
+  ensureGitignoreHasMessagesEntry,
+  writeFileAtomic,
+} from '@elisym/sdk/agent-store';
 import { z } from 'zod';
 
 export const READ_CURSORS_FILENAME = '.messages-read.json';
@@ -45,6 +49,14 @@ function pathFor(agentDir: string): string {
 }
 
 async function readRaw(path: string): Promise<ReadCursors> {
+  // A blocking node here does not fail the read - it never settles, and this
+  // read runs INSIDE the per-path write lock, so one of them jams every later
+  // write to this file for the life of the process (measured). Same answer the
+  // `catch` below gives: this is client-side bookkeeping, not an index that
+  // decides money, and the atomic writer renames its own file over the node.
+  if (await isBlockingNode(path)) {
+    return { version: 1, cursors: {} };
+  }
   let raw: string;
   try {
     raw = await readFile(path, 'utf-8');
