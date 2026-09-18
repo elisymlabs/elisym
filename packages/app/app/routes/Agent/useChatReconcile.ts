@@ -1,9 +1,4 @@
-import {
-  classifyJobError,
-  refusalFromJobError,
-  type FileAttachment,
-  type MarketplaceService,
-} from '@elisym/sdk';
+import { classifyJobError, refusalFromJobError, type FileAttachment } from '@elisym/sdk';
 import { useEffect, useRef } from 'react';
 import { JOB_WAIT_TIMEOUT_MS } from '~/contexts/BuyContext';
 import { useElisymClient } from '~/hooks/useElisymClient';
@@ -25,8 +20,6 @@ const MAX_UNEXPLAINED_LOOKUPS = 20;
  * is a week. The lookup cap above is what bounds the cost.
  */
 const UNEXPLAINED_LOOKUP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-
-type JobResults = Awaited<ReturnType<MarketplaceService['queryJobResults']>>;
 
 /**
  * Tab-open reconcile (stage 2): when the Chat tab opens, run a one-shot
@@ -112,23 +105,14 @@ export function useChatReconcile(agentPubkey: string): void {
 
       let queryFailed = false;
       if (pendingEntries.length > 0 || unexplained.length > 0) {
-        const jobIds = pendingEntries.map((entry) => entry.jobEventId);
-        const askAbout = [...jobIds, ...unexplained.map((entry) => entry.jobEventId)];
+        const askAbout = [...pendingEntries, ...unexplained].map((entry) => entry.jobEventId);
         // The refusal query runs alongside, never instead: a provider that
         // errored and then delivered anyway (crash-recovery re-execution) has a
         // result, and a result outranks the error that preceded it.
         const [results, errors] = await Promise.all([
-          // Results only for the OPEN ones; a closed entry is not waiting for
-          // one. The refusal query covers both. The empty case is typed, not
-          // a bare `new Map()`: widening this to `Map<any, any>` would make the
-          // undecryptable-result guard below - the only thing stopping a
-          // delivered answer from being overwritten by a terminal refusal -
-          // compile against a field that no longer exists.
-          askAbout.length === 0
-            ? Promise.resolve<JobResults>(new Map())
-            : client.marketplace
-                .queryJobResults(identity, askAbout, undefined, agentPubkey)
-                .catch(() => null),
+          client.marketplace
+            .queryJobResults(identity, askAbout, undefined, agentPubkey)
+            .catch(() => null),
           client.marketplace.queryJobErrors(askAbout, agentPubkey).catch(() => null),
         ]);
         // A query that THREW - the transport itself failing, not relays that
@@ -140,7 +124,7 @@ export function useChatReconcile(agentPubkey: string): void {
         // ask it: an empty pending list is answered with a resolved empty map
         // that no relay ever saw, and reading that as "a query was made" would
         // let ageing run on the strength of a round trip that did not happen.
-        queryFailed = pendingEntries.length > 0 && results === null;
+        queryFailed = results === null;
         // Nothing is applied to a PENDING entry when the query threw: none can
         // be completed, and a refusal should not close a job whose answer the
         // failed half never fetched. The closed entries below are unaffected -
@@ -214,7 +198,14 @@ export function useChatReconcile(agentPubkey: string): void {
             // result - so attaching a terminal refusal without looking would
             // withdraw Retry from a job whose answer was on the relays all along.
             const delivered = results?.get(entry.jobEventId);
-            if (delivered && !delivered.decryptionFailed && delivered.content) {
+            if (delivered !== undefined && (delivered.decryptionFailed || !delivered.content)) {
+              // An undecryptable answer is still an answer the provider
+              // delivered, exactly as the loop above reads one: closing the job
+              // as refused would withhold Retry from a paid job whose result is
+              // sitting on the relays.
+              continue;
+            }
+            if (delivered !== undefined) {
               const decoded = decodeResult(delivered.content);
               await completeReconciled(
                 entry.jobEventId,

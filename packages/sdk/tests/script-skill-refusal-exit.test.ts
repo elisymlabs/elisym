@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ScriptExecutionError } from '../src/llm-health';
 import type { SkillOnchainResolved } from '../src/onchain/types';
 import { NATIVE_SOL } from '../src/payment/assets';
+import { isHostScratchError } from '../src/skills/host-fault';
 import { OnchainCallSkill } from '../src/skills/onchainCallSkill';
 import {
   isScriptRefusalError,
@@ -18,6 +19,12 @@ import {
 } from '../src/skills/refusal';
 import { StaticScriptSkill } from '../src/skills/staticScriptSkill';
 import type { SkillOutput } from '../src/skills/types';
+import {
+  clipTailToCharacters,
+  excerptUntrusted,
+  excerptUntrustedTail,
+  hasVisibleText,
+} from '../src/skills/untrusted-text';
 import {
   dynamicSkill,
   MINIMAL_CTX,
@@ -308,7 +315,6 @@ describe('script skills surface a refusal the customer can read', () => {
   });
 
   it('takes both labels off, in any order and with or without the space', async () => {
-    const { refusalMessage } = await import('../src/skills/refusal');
     // Interleaved: a pass per label strips one and leaves the other, which is
     // the doubled label the customer then reads under the app's own.
     expect(refusalMessage('The agent refused: The provider refused: size it in USD.')).toBe(
@@ -340,7 +346,6 @@ describe('script skills surface a refusal the customer can read', () => {
     // ran and decided, so re-running it means the same refusal on every tick for
     // 24 hours with the customer's money held for an answer that cannot change -
     // whichever of the three channel problems produced the exit.
-    const { isHostScratchError } = await import('../src/skills/host-fault');
     fixture = setupScript(`#!/bin/sh\necho "no channel here" >&2\nexit ${SCRIPT_EXIT_REFUSED}\n`);
     const error = await dynamicSkill(fixture.scriptPath)
       .execute(MINIMAL_INPUT, MINIMAL_CTX)
@@ -458,7 +463,6 @@ describe('refusalMessage', () => {
 
 describe('excerpting for the operator', () => {
   it('keeps the END of a long stderr, where the diagnostic lands', async () => {
-    const { excerptUntrustedTail } = await import('../src/skills/untrusted-text');
     const meter = '#'.repeat(5000);
     const excerpt = excerptUntrustedTail(`${meter} insufficient credit balance`, 200);
     expect(excerpt.endsWith('insufficient credit balance')).toBe(true);
@@ -467,18 +471,15 @@ describe('excerpting for the operator', () => {
   });
 
   it('leaves a short text alone, with no ellipsis to imply a cut', async () => {
-    const { excerptUntrustedTail } = await import('../src/skills/untrusted-text');
     expect(excerptUntrustedTail('out of credits', 200)).toBe('out of credits');
   });
 
   it('does not call padding a truncation', async () => {
-    const { excerptUntrusted } = await import('../src/skills/untrusted-text');
     const nul = String.fromCharCode(0).repeat(4000);
     expect(excerptUntrusted(`complete reason.${nul}`, 400)).toBe('complete reason.');
   });
 
   it('finds a diagnostic the trailing window could not hold', async () => {
-    const { excerptUntrustedTail } = await import('../src/skills/untrusted-text');
     // A curl progress meter's carriage returns, all of them AFTER the line
     // worth keeping: the window holds nothing, so the excerpt has to pay for
     // the whole text once rather than return an ellipsis.
@@ -487,7 +488,6 @@ describe('excerpting for the operator', () => {
   });
 
   it('keeps a whole short line when clipping the tail of one', async () => {
-    const { clipTailToCharacters } = await import('../src/skills/untrusted-text');
     // The budget is larger than the text, so the ellipsis is the caller's cut
     // and every character survives it: an offset computed from the wrong end
     // would be negative, and `slice(-7)` would silently eat the front.
@@ -495,14 +495,12 @@ describe('excerpting for the operator', () => {
   });
 
   it('counts control characters as invisible, not as text', async () => {
-    const { hasVisibleText } = await import('../src/skills/untrusted-text');
     expect(hasVisibleText(`${String.fromCharCode(7)}${String.fromCharCode(0)}`)).toBe(false);
     expect(hasVisibleText(String.fromCodePoint(0x200d))).toBe(false);
     expect(hasVisibleText(' hello ')).toBe(true);
   });
 
   it('keeps the operator`s own API key out of a quote of their script', async () => {
-    const { excerptUntrustedTail, excerptUntrusted } = await import('../src/skills/untrusted-text');
     // A proxy run with `curl -v` prints the request header. The quote of that
     // failure is stored as the health monitor's reason and re-printed on every
     // job the gate refuses afterwards, so a key in it is a key in the log
@@ -515,7 +513,6 @@ describe('excerpting for the operator', () => {
   });
 
   it('hands the customer the refusal as the provider wrote it', async () => {
-    const { refusalMessage } = await import('../src/skills/refusal');
     // Redaction is for text this runtime SCRAPED. This sentence was written on
     // purpose, for this customer, and telling them which credential to set is
     // the whole point of the channel - `[redacted]` would leave them nothing.
@@ -528,14 +525,12 @@ describe('excerpting for the operator', () => {
   });
 
   it('still redacts a key out of what it SCRAPED from a script', async () => {
-    const { excerptUntrusted } = await import('../src/skills/untrusted-text');
     expect(excerptUntrusted('upstream said api_key: sk-ant-api03-DEADBEEFcafe1234', 200)).toBe(
       'upstream said [redacted]',
     );
   });
 
   it('gives back nothing when asked for nothing, from either end', async () => {
-    const { excerptUntrusted, excerptUntrustedTail } = await import('../src/skills/untrusted-text');
     // Arithmetic that reaches zero ("what is left of the line") must not come
     // back with the whole input, and a lone ellipsis is not an excerpt either.
     expect(excerptUntrusted('a sentence', 0)).toBe('');

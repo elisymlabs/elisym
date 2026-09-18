@@ -173,9 +173,13 @@ export function refusalMessage(reason: string): string {
  * refused:size it in USD.` is the same forgery as the spaced form.
  */
 function withoutLeadingLabel(sentence: string): string {
+  const lowered = sentence.toLowerCase();
   for (const label of [PROVIDER_REFUSED_PREFIX, AGENT_REFUSED_LABEL]) {
-    const anchor = label.trimEnd();
-    if (sentence.startsWith(anchor)) {
+    // Case-INSENSITIVELY: a skill author copying the label out of prose rather
+    // than out of the constant writes `the provider refused:`, and an exact-case
+    // test leaves it standing for the runtime to prefix a second one in front of.
+    const anchor = label.trimEnd().toLowerCase();
+    if (lowered.startsWith(anchor)) {
       return sentence.slice(anchor.length).trimStart();
     }
   }

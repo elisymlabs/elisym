@@ -1329,6 +1329,33 @@ describe('AgentRuntime', () => {
       );
     });
 
+    it('cascades on insufficient_quota, which the shorter phrase used to shadow', async () => {
+      // An alternation is first-match-wins, so with `insufficient` ahead of it
+      // the longer phrase never matched and its `cascades: true` was dead - an
+      // OpenAI key out of quota gated one pair and left the rest selling.
+      const monitor = monitorStub();
+      await runOneJob(
+        scriptSkillThatThrows(
+          new ScriptExecutionError(
+            1,
+            'Error: insufficient_quota',
+            undefined,
+            'Error: insufficient_quota',
+          ),
+        ),
+        monitor,
+        'quota-job',
+      );
+
+      expect(monitor.markUnhealthyFromJob).toHaveBeenCalledWith(
+        'anthropic',
+        'claude-haiku-4-5',
+        'billing',
+        expect.stringContaining('insufficient_quota'),
+        { cascade: true },
+      );
+    });
+
     it('does not take a whole provider offline over the word "insufficient"', async () => {
       // A Solana builder printing "insufficient funds for rent" says nothing
       // about the operator's API key. Gating THIS pair is cheap and reversible;

@@ -1093,15 +1093,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 { stampUnseen: !alreadyOnAgentPage },
               );
               if (delegatedTxHash !== undefined) {
-                txRecorded = false;
-                void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash)
-                  .then((wrote) => {
-                    txRecorded = wrote;
-                    syncRefusalInThread(wrote);
-                  })
-                  .catch(() => {
-                    txRecorded = false;
-                  });
+                // No `txRecorded` bookkeeping here: this runs on the DELIVERED
+                // path, and a job that delivered a result was not refused - the
+                // subscription closes on the first of the two - so there is no
+                // note to stand down and nothing to keep in step.
+                void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash).catch(() => {});
               }
               // A metered card stamps the CEILING at submit time - the real
               // figure does not exist until the work is done. Correct it now, or

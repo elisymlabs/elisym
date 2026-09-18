@@ -61,6 +61,7 @@ import {
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
 import {
+  HostScratchError,
   isHostScratchError,
   isScriptRefusalError,
   startsWithRefusalHint,
@@ -199,16 +200,6 @@ function resolveJobAsset(tags: string[], skills: SkillRegistry): Asset {
 }
 
 /**
- * Markers that indicate an LLM provider's HTTP response body is about
- * billing / quota exhaustion rather than something benign. Mirrors the
- * marker sets in `cli/src/llm/providers/{anthropic,openai,openai-compatible}.ts`
- * (kept as a permissive superset so any provider's billing language is
- * detected when classifying mid-job errors). Refactoring to a single
- * shared module is out of scope here - just keep this list in sync.
- */
-const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient', 'insufficient_quota'];
-
-/**
  * Markers that indicate a script-skill failure (non-zero exit, non-42)
  * actually carried a billing / invalid-key signal in its stderr/stdout.
  * Reserved for the case where the script author did not honor the
@@ -281,10 +272,25 @@ const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{
  * `MAX_SCRIPT_OUTPUT`, so a second copy of a megabyte for the same scan is a
  * megabyte too many.
  */
+/**
+ * Markers that indicate an LLM provider's HTTP response body is about billing or
+ * quota exhaustion rather than something benign.
+ *
+ * DERIVED from the table above rather than typed a second time: the two lists
+ * held the same phrases and had to be edited in lockstep, which is exactly how
+ * one of them goes stale. Still a permissive superset for the LLM path, which
+ * only asks "is this body about money".
+ */
+const BILLING_BODY_MARKERS = SCRIPT_BILLING_INVALID_MARKERS.filter((marker) => marker.billing).map(
+  (marker) => marker.phrase,
+);
+
 function classifyScriptSignal(message: string): {
   looksBillingOrInvalid: boolean;
   reason: 'billing' | 'invalid';
   cascade: boolean;
+  /** Where the first signal sits, so the operator's quote need not scan again. */
+  signalAt: number;
 } {
   // ONE pass over the text for all three answers - gate, reason, cascade. The
   // text is bounded only by `MAX_SCRIPT_OUTPUT`, so a lowercased copy plus a
@@ -293,6 +299,7 @@ function classifyScriptSignal(message: string): {
   let looksBillingOrInvalid = false;
   let billing = false;
   let cascade = false;
+  let signalAt = -1;
   if (ALL_MARKERS_RE !== null) {
     for (const match of message.matchAll(ALL_MARKERS_RE)) {
       const marker = MARKER_BY_PHRASE.get(match[0].toLowerCase());
@@ -302,9 +309,12 @@ function classifyScriptSignal(message: string): {
       looksBillingOrInvalid = true;
       billing = billing || marker.billing;
       cascade = cascade || marker.cascades;
+      if (signalAt === -1) {
+        signalAt = match.index;
+      }
     }
   }
-  return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid', cascade };
+  return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid', cascade, signalAt };
 }
 
 /** How long a scratch-space failure keeps the pre-payment probe armed. */
@@ -346,11 +356,16 @@ function markerPattern(phrases: readonly string[], flags = 'i'): RegExp | null {
   if (phrases.length === 0) {
     return null;
   }
+  // LONGEST first: an alternation is first-match-wins, so with `insufficient`
+  // ahead of `insufficient_quota` the shorter phrase always wins and the longer
+  // row's flags - including its `cascades: true` - become unreachable.
+  //
   // Escaped: today's markers carry no metacharacters, but a future
   // `insufficient_quota?` would silently change the match, and a `402 (` would
   // throw at import time and take the whole CLI down before it serves a job.
+  const longestFirst = [...phrases].sort((left, right) => right.length - left.length);
   return new RegExp(
-    phrases.map((phrase) => phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+    longestFirst.map((phrase) => phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
     flags,
   );
 }
@@ -390,11 +405,13 @@ function signalIndex(text: string): number {
  * different string - the raw stderr the cascade decision is made on - would
  * slice this one at an offset that means nothing in it.
  */
-function operatorReason(diagnostic: string, budget = HEALTH_REASON_CHARS): string {
+function operatorReason(diagnostic: string, known?: number, budget = HEALTH_REASON_CHARS): string {
   if (startsWithRefusalHint(diagnostic)) {
     return excerptUntrusted(diagnostic, budget);
   }
-  const signalAt = signalIndex(diagnostic);
+  // `known` is the index the classifier already found, passed when the text being
+  // quoted IS the text it scanned: a megabyte of stderr should be walked once.
+  const signalAt = known ?? signalIndex(diagnostic);
   if (signalAt === -1) {
     return excerptUntrustedTail(diagnostic, budget);
   }
@@ -1105,6 +1122,10 @@ export class AgentRuntime {
     }
     const probe = await mkdtemp(join(tmpdir(), 'elisym-probe-')).catch(() => null);
     if (probe === null) {
+      // Re-stamped: the probe has just proved the disk is STILL broken. Without
+      // this the window expires on the ORIGINAL failure and lets one paying
+      // customer through every five minutes, each one re-arming it by failing.
+      this.scratchFailedAt = Date.now();
       return false;
     }
     await rm(probe, { recursive: true, force: true }).catch(() => {});
@@ -1292,7 +1313,7 @@ export class AgentRuntime {
         );
         return false;
       }
-      const { looksBillingOrInvalid, reason, cascade } = classifyScriptSignal(message);
+      const { looksBillingOrInvalid, reason, cascade, signalAt } = classifyScriptSignal(message);
       // The gate and the cascade are separate questions, and the second one is
       // much more expensive to get wrong - see `SCRIPT_KEY_LEVEL_MARKERS`. Both
       // answered off the same scan above.
@@ -1303,9 +1324,14 @@ export class AgentRuntime {
       log(
         `${tag} Script failure (${signalNote}). Marking ${provider}/${model} unhealthy${cascadeNote}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, operatorReason(diagnostic), {
-        cascade,
-      });
+      this.healthMonitor.markUnhealthyFromJob(
+        provider,
+        model,
+        reason,
+        // The index only when the quote is of the same string the scan read.
+        operatorReason(diagnostic, diagnostic === message ? signalAt : undefined),
+        { cascade },
+      );
       return true;
     }
 
@@ -1732,10 +1758,14 @@ export class AgentRuntime {
     // without a channel - the refusal file is the one thing it loses - so
     // refusing its jobs over a full temp directory would take a working
     // capability offline for a problem it does not have.
-    if (
-      (matched?.mode === 'dynamic-script' || matched?.mode === 'onchain') &&
-      !(await this.scratchSpaceUsable())
-    ) {
+    const needsScratch =
+      matched?.mode === 'dynamic-script' ||
+      matched?.mode === 'onchain' ||
+      // Any mode fetching an input FILE needs a directory of its own for it, so
+      // a broken disk closes those jobs too - after payment, unless this refuses
+      // them before it.
+      job.attachment !== undefined;
+    if (needsScratch && !(await this.scratchSpaceUsable())) {
       log(
         `[${job.jobId.slice(0, 8)}] Refusing job before payment: this agent cannot create scratch space (check the temp directory).`,
       );
@@ -2976,7 +3006,12 @@ export class AgentRuntime {
           });
           return this.materializeBytesInput(bytes, attachment.mime);
         }
-        const dir = await mkdtemp(join(tmpdir(), 'elisym-job-'));
+        const dir = await mkdtemp(join(tmpdir(), 'elisym-job-')).catch((err: unknown) => {
+          // The agent's own disk again: a raw ENOSPC here would close a PAID job and
+          // keep the money, where the same condition inside a skill keeps the job for
+          // recovery. One error type, one verdict.
+          throw new HostScratchError(err instanceof Error ? err.message : String(err));
+        });
         const filePath = join(dir, 'input');
         try {
           await this.irohTransport.fetchToPath(irohMember.ticket, filePath, {
@@ -3036,7 +3071,12 @@ export class AgentRuntime {
     if (mime.startsWith('text/') && bytes.byteLength <= LIMITS.MAX_REINLINE_TEXT_BYTES) {
       return { inlineText: Buffer.from(bytes).toString('utf8'), cleanup: async () => {} };
     }
-    const dir = await mkdtemp(join(tmpdir(), 'elisym-job-'));
+    const dir = await mkdtemp(join(tmpdir(), 'elisym-job-')).catch((err: unknown) => {
+      // The agent's own disk again: a raw ENOSPC here would close a PAID job and
+      // keep the money, where the same condition inside a skill keeps the job for
+      // recovery. One error type, one verdict.
+      throw new HostScratchError(err instanceof Error ? err.message : String(err));
+    });
     const filePath = join(dir, 'input');
     try {
       await writeFile(filePath, bytes);
