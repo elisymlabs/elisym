@@ -403,6 +403,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     const paymentInstructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
       jobEventId: options.jobEventId,
       programId: options.programId,
+      treasury,
     });
 
     const priorityFeeMicroLamports =
@@ -959,7 +960,17 @@ function refuseDegenerateReferenceAgainst(
 export async function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
   payerSigner: Signer,
-  options: { jobEventId?: string; programId: Address },
+  options: {
+    jobEventId?: string;
+    programId: Address;
+    /**
+     * The treasury from the on-chain config, when the caller has it. Optional
+     * for compatibility, and worth passing: a zero-fee request may omit
+     * `fee_address` altogether, and then this is the only way this function can
+     * know the account whose token history a reference must not point at.
+     */
+    treasury?: Address;
+  },
 ): Promise<readonly unknown[]> {
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);
@@ -1068,20 +1079,37 @@ export async function buildPaymentInstructions(
     ),
   );
 
-  let treasuryAta: Address | undefined;
-  if (paymentRequest.fee_address && feeAmount > 0) {
-    const treasuryOwner = address(paymentRequest.fee_address);
-    [treasuryAta] = await findAssociatedTokenPda({
-      owner: treasuryOwner,
+  // Derived whenever there is an owner to derive one FOR, not only when a fee
+  // leg gets built. `feeBps` is 0 on the deployed mainnet program, so every
+  // mainnet SPL payment takes the zero-fee branch - while the provider's
+  // denylist derives these accounts unconditionally. Gating the derivation on
+  // the fee amount therefore left the commonest case unchecked on this side and
+  // checked on the other, which is the customer paying for a job that can never
+  // be delivered.
+  const feeOwner = paymentRequest.fee_address ? address(paymentRequest.fee_address) : undefined;
+  let feeOwnerAta: Address | undefined;
+  if (feeOwner) {
+    [feeOwnerAta] = await findAssociatedTokenPda({ owner: feeOwner, tokenProgram, mint });
+  }
+  // And the treasury the CONFIG names, which a request may omit entirely: with
+  // a zero fee `fee_address` is optional, and the provider's denylist reads the
+  // treasury from the config rather than from the request.
+  let configTreasuryAta: Address | undefined;
+  if (options.treasury !== undefined && options.treasury !== feeOwner) {
+    [configTreasuryAta] = await findAssociatedTokenPda({
+      owner: options.treasury,
       tokenProgram,
       mint,
     });
+  }
+
+  if (feeOwner && feeOwnerAta && feeAmount > 0) {
     instructions.push(
       getCreateAssociatedTokenIdempotentInstruction(
         {
           payer: payerSigner,
-          ata: treasuryAta,
-          owner: treasuryOwner,
+          ata: feeOwnerAta,
+          owner: feeOwner,
           mint,
           tokenProgram,
         },
@@ -1094,7 +1122,7 @@ export async function buildPaymentInstructions(
   // not in the set: a reference equal to it is the CUSTOMER's account, which
   // the verifier's denylist does not carry either - it lists what the payment
   // is computed from on the receiving side.
-  refuseDegenerateReferenceAgainst(reference, [recipientAta, treasuryAta]);
+  refuseDegenerateReferenceAgainst(reference, [recipientAta, feeOwnerAta, configTreasuryAta]);
 
   const providerTransferIx = getTransferCheckedInstruction(
     {
@@ -1117,13 +1145,13 @@ export async function buildPaymentInstructions(
   };
   instructions.push(providerTransferIxWithMarkers);
 
-  if (treasuryAta && paymentRequest.fee_address && feeAmount > 0) {
+  if (feeOwnerAta && paymentRequest.fee_address && feeAmount > 0) {
     instructions.push(
       getTransferCheckedInstruction(
         {
           source: payerAta,
           mint,
-          destination: treasuryAta,
+          destination: feeOwnerAta,
           authority: payerSigner,
           amount: BigInt(feeAmount),
           decimals: asset.decimals,

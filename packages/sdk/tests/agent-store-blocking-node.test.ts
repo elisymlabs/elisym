@@ -1,5 +1,13 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +16,7 @@ import {
   ensureGitignoreHasIrohEntry,
   hashFile,
   isBlockingNode,
+  isBlockingNodeSync,
   listAgents,
   loadAgent,
   loadPoliciesFromDir,
@@ -16,6 +25,7 @@ import {
 } from '../src/agent-store';
 import { loadGlobalConfig } from '../src/config/global';
 import { loadSkillsFromDir } from '../src/skills';
+import { StaticFileSkill } from '../src/skills/staticFileSkill';
 
 /**
  * A neighbor's `elisym.yaml` is a path nobody validates, and a FIFO left there
@@ -171,6 +181,15 @@ describe('an agent directory whose yaml is a node that blocks', () => {
     ).rejects.toThrow(/pipe, socket or device/);
   });
 
+  it('answers false for what it cannot stat at all, so it only ever NARROWS', async () => {
+    // The invariant the module's own docstring rests on: every throw inside it
+    // means "the gate did not fire", and the read that follows fails exactly as
+    // it does today. Inverted, a missing file would read as a blocking node and
+    // every first run of every agent would refuse to start.
+    expect(await isBlockingNode(join(sandbox, 'nothing-here'))).toBe(false);
+    expect(isBlockingNodeSync(join(sandbox, 'nothing-here'))).toBe(false);
+  });
+
   it('is not only about pipes: a socket is refused the same way', async () => {
     // The gate names four node types and only the FIFO ones are reachable from
     // a fixture - a character or block device needs root. A unix socket does
@@ -319,5 +338,34 @@ describe('the rest of the files an agent directory holds', () => {
     );
 
     expect(await readMediaCache(dir)).toEqual({});
+  });
+});
+
+describe('a static-file skill whose output_file blocks', () => {
+  it('refuses to execute rather than hand a paying customer a hung read', async () => {
+    // `StaticFileSkill` is exported and the loader suite already executes this
+    // mode - an earlier round marked the gate "never through an execution",
+    // which was wrong, and a false "not covered" note tells the next reader not
+    // to look.
+    // `realpathSync` on the sandbox: on macOS `tmpdir()` lives behind a symlink,
+    // and the skill's own escape check resolves both sides - without this the
+    // fixture dies on "escapes the skill directory" and never reaches the gate.
+    const skillDir = join(realpathSync(sandbox), 'skills', 'report');
+    mkdirSync(skillDir, { recursive: true });
+    const outputFilePath = join(skillDir, 'out.txt');
+    makeFifo(outputFilePath);
+    startWriterOnce(outputFilePath, 'the paid result');
+
+    const skill = new StaticFileSkill({
+      name: 'report',
+      description: 'd',
+      capabilities: ['c'],
+      priceSubunits: 0n,
+      asset: { kind: 'native', symbol: 'SOL', decimals: 9 } as never,
+      outputFilePath,
+      skillDir,
+    });
+
+    await expect(skill.execute({} as never, {} as never)).rejects.toThrow(/pipe, socket or device/);
   });
 });

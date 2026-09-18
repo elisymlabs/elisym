@@ -520,6 +520,19 @@ describe('SessionStore - admitted counter and mutex', () => {
   });
 });
 
+/** `-0` would signal OUR OWN process group, which is the vitest run. */
+function killGroup(child: ReturnType<typeof spawn>): void {
+  if (child.pid === undefined) {
+    child.kill('SIGKILL');
+    return;
+  }
+  try {
+    process.kill(-child.pid);
+  } catch {
+    child.kill('SIGKILL');
+  }
+}
+
 describe('a session file that is a node which blocks', () => {
   it('is read as no session at all, rather than hanging the job', async () => {
     // This read happens while a PAID job is being served, and it is
@@ -556,16 +569,55 @@ describe('a session file that is a node which blocks', () => {
         release();
       }
     } finally {
-      // `-0` would signal OUR OWN process group, which is the vitest run.
-      if (writer.pid === undefined) {
-        writer.kill('SIGKILL');
-      } else {
-        try {
-          process.kill(-writer.pid);
-        } catch {
-          writer.kill('SIGKILL');
-        }
+      killGroup(writer);
+    }
+  });
+
+  it('is not APPENDED to either, which is the half that runs after the work', async () => {
+    // `appendExchange` runs once the model has already been paid for and the
+    // answer produced. `appendFileSync` onto a FIFO never returns, so without
+    // its own gate the budget is burned, nothing is delivered, and the session
+    // mutex is never released.
+    //
+    // A DRAINER rather than a writer here: it keeps the pipe readable, so the
+    // ungated build completes its append and this fixture goes red on the
+    // missing log line instead of hanging the suite.
+    const dir = join(agentDir, SESSIONS_DIR_NAME, CUSTOMER);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${SID}.jsonl`);
+    execFileSync('mkfifo', [path]);
+    const drainer = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const fs=require('fs');
+         const loop=()=>{ try { fs.readFileSync(${JSON.stringify(path)}); } catch {} setImmediate(loop); };
+         loop();`,
+      ],
+      { detached: true, stdio: 'ignore' },
+    );
+    try {
+      const logged: string[] = [];
+      const store = new SessionStore(agentDir, (line) => {
+        logged.push(line);
+      });
+      store.init();
+      const release = await store.acquire(CUSTOMER, SID);
+      try {
+        store.appendExchange(CUSTOMER, SID, {
+          jobId: 'job-1',
+          capability: 'chat',
+          userContent: 'hello',
+          assistantContent: 'hi',
+          skipRoles: new Set(),
+        });
+      } finally {
+        release();
       }
+
+      expect(logged.join('\n')).toContain('not a regular file');
+    } finally {
+      killGroup(drainer);
     }
   });
 });

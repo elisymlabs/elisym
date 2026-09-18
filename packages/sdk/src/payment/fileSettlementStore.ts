@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isBlockingNodeSync } from '../agent-store/node-type';
@@ -162,9 +163,16 @@ export class FileSettlementStore implements SettlementStore {
    * than by replacing it - see the constructor.
    */
   private write(file: StoreFile): void {
-    // Named after the target file, not just the pid: two stores in one process
-    // writing sibling indexes would otherwise share one temporary path.
-    const tmp = join(dirname(this.path), `.${basename(this.path)}.${process.pid}.tmp`);
+    // Named after the target file AND randomly: two stores in one process
+    // writing sibling indexes would otherwise share one temporary path, and a
+    // predictable one can be replaced by a FIFO from outside - `writeFileSync`
+    // onto one never returns, taking the event loop with it. The read side is
+    // gated by node type; the write side is protected by there being nothing to
+    // plant.
+    const tmp = join(
+      dirname(this.path),
+      `.${basename(this.path)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
+    );
     writeFileSync(tmp, JSON.stringify(file), { encoding: 'utf-8', mode: STORE_FILE_MODE });
     chmodSync(tmp, STORE_FILE_MODE);
     renameSync(tmp, this.path);

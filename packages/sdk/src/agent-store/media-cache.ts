@@ -46,7 +46,14 @@ export async function writeMediaCache(agentDir: string, cache: MediaCache): Prom
   await writeFileAtomic(path, body, 0o600);
 }
 
-/** Compute sha256 hex of a file's contents. */
+/**
+ * Compute sha256 hex of a file's contents.
+ *
+ * THROWS on a path that is a pipe, socket or device, as well as on the ordinary
+ * read errors: a blocking node never settles the read, so refusing is the only
+ * answer that returns. `lookupCachedUrl` turns that into "not cached", which is
+ * what an unreadable file already gets.
+ */
 export async function hashFile(filePath: string): Promise<string> {
   // The path comes from `elisym.yaml` (a picture, a banner), which nobody
   // validates as a node type. `lookupCachedUrl` turns this throw into "not

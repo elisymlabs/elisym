@@ -119,7 +119,9 @@ export interface PaymentStrategy {
    * Consequence for implementers of a provider: record the settlement signature
    * (`VerifyResult.txSignature`) of every payment you accept and refuse one
    * that another job already consumed - the strategy holds no state and cannot
-   * do it for you. Treating a consumed signature as proof that the customer did
+   * do it for you. `ProviderPaymentAcceptor` is that duty done, against a
+   * `SettlementStore` you supply; writing it yourself is still a supported
+   * choice, and this paragraph is what it has to implement. Treating a consumed signature as proof that the customer did
    * not pay is equally wrong: it means only that this particular transaction is
    * not attributable to this request, so keep the request open to a transfer of
    * its own rather than concluding non-payment.

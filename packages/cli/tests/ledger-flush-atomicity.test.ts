@@ -82,8 +82,12 @@ describe('a flush that fails leaves the ledger file untouched', () => {
     expect(ledger.paymentSignatureOwner('sigShared')).toBeUndefined();
 
     // The permission step runs on the TEMP file, so the rename is the last thing
-    // `flush` does and cannot be reached once it has failed.
-    expect(chmodPaths.every((path) => path.endsWith('.tmp'))).toBe(true);
+    // `flush` does and cannot be reached once it has failed. The temp name
+    // carries a random suffix - a predictable one is a path somebody else can
+    // put a FIFO on, and a synchronous write to one never returns - so this
+    // asserts the SHAPE and, above all, that the live file was never chmod'd.
+    expect(chmodPaths.every((path) => path.includes('.tmp.'))).toBe(true);
+    expect(chmodPaths).not.toContain(ledgerPath);
 
     // A restart sees the same: no owner, no orphaned claim.
     const reloaded = new JobLedger(ledgerPath);

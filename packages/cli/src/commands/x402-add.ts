@@ -231,9 +231,14 @@ export function scanExistingSkills(
       if (!statSync(join(skillsDir, entry)).isDirectory()) {
         continue;
       }
-      // NOT KILLED BY ANY TEST - the enclosing command has no harness. Same
-      // gate as the two skill loaders, which do have one.
+      // Said out loud, unlike the other gates: this scan exists to catch a
+      // d-tag collision, so a skill it could not read is a hole in the ANSWER
+      // rather than one missing skill.
       if (isBlockingNodeSync(skillMdPath)) {
+        console.warn(
+          `  ! Could not check ${skillMdPath} for a name collision: it is a pipe, socket or ` +
+            `device, not a file`,
+        );
         continue;
       }
       const { frontmatter } = parseSkillMd(readFileSync(skillMdPath, 'utf-8'));

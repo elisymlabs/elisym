@@ -23,6 +23,7 @@
  * crash-only case. Files are owned by this store's TTL sweep - result file
  * paths handed out for delivery must NOT be cleaned up by callers.
  */
+import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isBlockingNode } from '@elisym/sdk/agent-store';
@@ -121,7 +122,9 @@ export class X402JobStore {
   }
 
   private async save(file: X402JobsFile): Promise<void> {
-    const tempPath = `${this.jobsPath}.tmp`;
+    // Random suffix: a predictable temporary is a path somebody else can put a
+    // FIFO on, and a write to one never returns.
+    const tempPath = `${this.jobsPath}.tmp.${randomBytes(6).toString('hex')}`;
     await writeFile(tempPath, JSON.stringify(file, null, 2), 'utf-8');
     await rename(tempPath, this.jobsPath);
   }

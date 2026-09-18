@@ -165,7 +165,9 @@ export type AcceptPaymentResult =
        * Diagnostics, not contract: the last candidate's reason for
        * `inconclusive`, the disk's complaint for `not-persisted`. Absent for
        * `window-empty`, `degenerate_reference` and `unusable-request`. Do not
-       * build logic on it.
+       * build logic on it - and do not relay it to the CUSTOMER: it can say
+       * that a settlement is already bound to another job, which is a fact
+       * about a stranger's payment that they have no business learning.
        */
       error?: string;
     };

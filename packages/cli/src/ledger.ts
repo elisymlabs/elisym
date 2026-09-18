@@ -1,6 +1,7 @@
 /**
  * Job recovery ledger - persistent JSON storage for crash recovery.
  */
+import { randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isBlockingNodeSync } from '@elisym/sdk/agent-store';
@@ -210,6 +211,21 @@ export class JobLedger {
         );
       }
     } catch (e: any) {
+      // An I/O error is not a corrupt FILE. EACCES, EISDIR, EIO mean we could
+      // not read the ledger at all, and starting empty there frees every
+      // settlement it records - the same reasoning as the node-type gate above,
+      // and the same answer the SDK's settlement store gives. Rotating it aside
+      // would be worse still: the evidence moves out of the way too.
+      //
+      // The discriminator is the `code` field: `readFileSync` failures carry
+      // one, `JSON.parse` failures do not. Only a file we READ and could not
+      // PARSE is rotated and replaced, which is what the recovery below is for.
+      if (typeof e?.code === 'string' && e.code !== 'ENOENT') {
+        throw new Error(
+          `Refusing to start on a job ledger that cannot be read (${e.code}) at ${this.path}. ` +
+            `An empty ledger would drop the record of which transaction paid for which job.`,
+        );
+      }
       // W4: Log warning on malformed ledger and backup corrupt file
       if (e?.code !== 'ENOENT') {
         console.warn(`  ! Ledger load warning: ${e?.message ?? 'unknown error'}`);
@@ -238,7 +254,13 @@ export class JobLedger {
     const dir = dirname(this.path);
     mkdirSync(dir, { recursive: true, mode: LEDGER_DIR_MODE });
     const obj = Object.fromEntries(this.entries);
-    const tmp = this.path + '.tmp';
+    // The temporary carries a RANDOM suffix, exactly as `writeFileAtomic` in
+    // the SDK does, and that is a safety property rather than a nicety:
+    // `writeFileSync` onto a FIFO never returns - it takes the whole event loop
+    // with it - so a predictable temporary name is a way to hang this process
+    // from outside. Reading is gated by node type; writing is protected by
+    // there being nothing to plant.
+    const tmp = `${this.path}.tmp.${randomBytes(6).toString('hex')}`;
     writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: LEDGER_FILE_MODE });
     // `writeFileSync`'s `mode` applies only when it CREATES the file, so a stale
     // `.tmp` left behind by a crash - possibly with looser permissions - would be
@@ -662,6 +684,14 @@ export class UsedNonceStore {
         }
       }
     } catch (e: any) {
+      // Same split as the job ledger: a file we could not READ is refused, a
+      // file we read and could not PARSE is rotated aside and replaced.
+      if (typeof e?.code === 'string' && e.code !== 'ENOENT') {
+        throw new Error(
+          `Refusing to start on a nonce store that cannot be read (${e.code}) at ${this.path}. ` +
+            `An empty store would let a delegated pull be replayed.`,
+        );
+      }
       if (e?.code !== 'ENOENT') {
         console.warn(`  ! Nonce store load warning: ${e?.message ?? 'unknown error'}`);
         try {
@@ -679,7 +709,8 @@ export class UsedNonceStore {
     const dir = dirname(this.path);
     mkdirSync(dir, { recursive: true, mode: LEDGER_DIR_MODE });
     const obj = Object.fromEntries(this.entries);
-    const tmp = this.path + '.tmp';
+    // Random suffix for the same reason as `JobLedger.flush`.
+    const tmp = `${this.path}.tmp.${randomBytes(6).toString('hex')}`;
     writeFileSync(tmp, JSON.stringify(obj), { mode: LEDGER_FILE_MODE });
     // The REVERSE of `JobLedger.flush`, and deliberately so. This store's only
     // writers (`markUsed`, `prune`) swallow a flush failure and KEEP the

@@ -2,6 +2,7 @@ import {
   NATIVE_ASSET_SENTINEL,
   deriveAssetStatsAddress,
   deriveEventAuthorityAddress,
+  deriveNetworkStatsAddress,
 } from '@elisym/config-client';
 import { getTransferSolInstructionDataDecoder } from '@solana-program/system';
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from '@solana-program/token';
@@ -356,6 +357,103 @@ describe('buildPaymentInstructions', () => {
         } as never,
         signer as never,
         { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
+
+  it.each([
+    ['the network stats PDA', async () => await deriveNetworkStatsAddress(TEST_PROGRAM_ID)],
+    [
+      'the asset stats PDA',
+      async () => await deriveAssetStatsAddress(TEST_PROGRAM_ID, NATIVE_ASSET_SENTINEL),
+    ],
+  ])('refuses a reference equal to %s as well', async (_label, derive) => {
+    // The set is three addresses wide and one fixture used to hold it up.
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: (await derive()) as string,
+          fee_address: TEST_TREASURY,
+          fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
+
+  it("refuses the fee address's token account on a ZERO-fee request", async () => {
+    // The commonest shape there is: the deployed mainnet program charges
+    // `feeBps: 0`, so every mainnet SPL payment takes the zero-fee branch.
+    // Deriving this account only when a fee leg gets built left exactly that
+    // case unchecked here and checked by the provider - measured, before this
+    // fixture existed: `validatePaymentRequest` answered `null`, the
+    // transaction BUILT, and `verifyPayment` answered `degenerate_reference`.
+    const [treasuryAta] = await findAssociatedTokenPda({
+      owner: TEST_TREASURY,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: treasuryAta as string,
+          fee_address: TEST_TREASURY,
+          fee_amount: 0,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
+
+  it("refuses the config treasury's token account when the request names no fee address", async () => {
+    // A zero-fee request may leave `fee_address` out entirely, and the provider
+    // reads the treasury from the CONFIG rather than from the request. Passing
+    // it is how this side gets to know the same account.
+    const [treasuryAta] = await findAssociatedTokenPda({
+      owner: TEST_TREASURY,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: treasuryAta as string,
+          fee_amount: 0,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID, treasury: TEST_TREASURY },
       ),
     ).rejects.toThrow(/computed from/);
   });

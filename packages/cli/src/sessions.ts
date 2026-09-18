@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 /**
  * SessionStore - provider-side conversation sessions for NIP-90 jobs.
  *
@@ -456,6 +457,15 @@ export class SessionStore {
     }
     const payload = lines.map((line) => JSON.stringify(line)).join('\n') + '\n';
     const path = this.sessionPath(customerId, sessionId);
+    // The one write in this file with no temporary to randomize, so it is gated
+    // like the read is - and it matters MORE than the read: this runs after the
+    // paid work is done, so a blocking node here burns the model budget, never
+    // delivers, and never releases the mutex. Skipped rather than thrown, the
+    // same answer `readSessionLines` gives: context is not worth a lost result.
+    if (isBlockingNodeSync(path)) {
+      this.log(`[sessions] session file is not a regular file; not recording this exchange`);
+      return;
+    }
     try {
       appendFileSync(path, payload, { mode: FILE_MODE });
     } catch (error: unknown) {
@@ -586,7 +596,7 @@ export class SessionStore {
     if (torn) {
       const payload =
         lines.map((line) => JSON.stringify(line)).join('\n') + (lines.length > 0 ? '\n' : '');
-      const tempPath = `${path}.tmp`;
+      const tempPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
       writeFileSync(tempPath, payload, { mode: FILE_MODE });
       renameSync(tempPath, path);
       this.globalBytes = Math.max(0, this.globalBytes - size + Buffer.byteLength(payload));
@@ -665,7 +675,7 @@ export class SessionStore {
 
     const path = this.sessionPath(customerId, sessionId);
     const oldSize = existsSync(path) ? statSync(path).size : 0;
-    const tempPath = `${path}.tmp`;
+    const tempPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
     mkdirSync(join(this.root, customerId), { recursive: true, mode: DIR_MODE });
     writeFileSync(tempPath, payload, { mode: FILE_MODE });
     renameSync(tempPath, path);

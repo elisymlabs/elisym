@@ -237,12 +237,13 @@ export async function cmdStart(
       );
       for (const neighbor of neighbors) {
         console.log(
-          `  ! WARNING: agent "${neighbor.name}" (${neighbor.dir}) is paid at the same ` +
-            `address on ${walletNetwork}. On the flat paid rail one transaction can be counted ` +
-            `for jobs of both agents, so a customer could be served twice for one transfer.` +
+          `  ! WARNING: agent "${neighbor.name}" (${neighbor.dir}) ` +
             (neighbor.paid === 'unknown'
-              ? ' Could not determine whether that agent has paid skills.'
-              : ''),
+              ? `shares this payout address on ${walletNetwork}, and its skills could not be ` +
+                `read to tell whether any of them are paid.`
+              : `is paid at the same address on ${walletNetwork}.`) +
+            ` On the flat paid rail one transaction can be counted for jobs of both agents, so ` +
+            `a customer could be served twice for one transfer.`,
         );
       }
       if (neighbors.length > 0) {
@@ -1413,16 +1414,16 @@ export async function uploadOrReuse(
     if (cached) {
       return cached;
     }
-    console.log(`  Uploading ${basename(realPath)}...`);
-    // NOT KILLED BY ANY TEST: no fixture drives `cmdStart`, and this branch
-    // sits inside it. Kept on diff review, and written to match the gate every
-    // other reader of an agent's files now uses.
+    // The path comes out of `elisym.yaml`, which nobody validates as a node
+    // type. Checked BEFORE the "Uploading" line, so the operator is not told a
+    // file is going up and then that it is not.
     if (isBlockingNodeSync(realPath)) {
       console.warn(
         `  ! Skipping ${basename(realPath)}: it is a pipe, socket or device, not a file`,
       );
       return undefined;
     }
+    console.log(`  Uploading ${basename(realPath)}...`);
     const data = readFileSync(realPath);
     const sha256 = createHash('sha256').update(data).digest('hex');
     const blob = new Blob([data], { type: mimeFromPath(absPath) });

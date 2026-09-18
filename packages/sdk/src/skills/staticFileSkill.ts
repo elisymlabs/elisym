@@ -75,14 +75,13 @@ export class StaticFileSkill implements Skill {
     if (safePath === null) {
       throw new Error('static-file "output_file" escapes the skill directory');
     }
-    // Measure UTF-8 bytes, not JS string length: relays reject by byte size,
-    // and a non-ASCII file is 1.5-4x its char count in UTF-8.
-    // NOT KILLED BY ANY TEST: the suite exercises this mode through the
-    // loader's validation, never through an execution. The gate matches the one
-    // every other reader of a file inside a skill directory uses.
+    // The gate every other reader of a file inside a skill directory uses. This
+    // one runs while a paying customer waits for the result.
     if (await isBlockingNode(safePath)) {
       throw new Error('static-file "output_file" is a pipe, socket or device, not a file');
     }
+    // Measure UTF-8 bytes, not JS string length: relays reject by byte size,
+    // and a non-ASCII file is 1.5-4x its char count in UTF-8.
     const buffer = await readFile(safePath);
     if (buffer.length > MAX_STATIC_FILE_SIZE) {
       throw new Error(
