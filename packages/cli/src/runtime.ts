@@ -273,8 +273,14 @@ const SCRIPT_KEY_LEVEL_MARKERS = [
   'authentication_error',
 ];
 
-/** How much of a gated pair's reason an operator is shown, and its lead-in. */
-const HEALTH_REASON_CHARS = 200;
+/**
+ * How much of a gated pair's reason an operator is shown, and its lead-in.
+ *
+ * Roomy on purpose: the refusal hints run to 236 characters, and a budget under
+ * that would cut the diagnosis in half and leave no room for the script's own
+ * output behind it.
+ */
+const HEALTH_REASON_CHARS = 500;
 const SIGNAL_LEAD_CHARS = 80;
 
 /**
@@ -298,34 +304,38 @@ function keyLevelMarkerIndex(text: string): number {
 }
 
 /**
- * The operator's `lastReason`, read back on every job the gate refuses.
+ * What an operator is told a failure was, in one bounded line.
  *
- * From the SIGNAL when there is one, and from the END otherwise. The scan reads
- * the whole of a stderr bounded only by `MAX_SCRIPT_OUTPUT`, so a proxy that
- * printed `invalid x-api-key` and then four kilobytes of retry chatter would
- * otherwise have the chatter quoted as the reason its operator's whole provider
- * is offline. The text a decision was made on and the text given as its reason
- * should be the same text.
+ * Three cases, in this order. A hint the SDK front-loaded onto the text is the
+ * whole diagnosis, so it is quoted from the FRONT. Otherwise a billing or auth
+ * signal is quoted from where it sits, because a proxy that printed `invalid
+ * x-api-key` and then four kilobytes of retry chatter would otherwise have the
+ * chatter given as the reason its operator's whole provider went offline.
+ * Failing both, the END, where a script's diagnostic lands.
+ *
+ * The index is computed HERE, against the text being quoted: taking it from a
+ * different string - the raw stderr the cascade decision is made on - would
+ * slice this one at an offset that means nothing in it.
  */
-function scriptSignalReason(diagnostic: string, signalAt: number): string {
+function operatorReason(diagnostic: string, budget = HEALTH_REASON_CHARS): string {
+  if (startsWithRefusalHint(diagnostic)) {
+    return excerptUntrusted(diagnostic, budget);
+  }
+  const signalAt = keyLevelMarkerIndex(diagnostic);
   if (signalAt === -1) {
-    // From the FRONT when the SDK put a hint there: that line is the whole
-    // diagnosis (the contract was not kept, the reason file was not readable),
-    // and a tail excerpt of a chatty script would clip exactly it.
-    return startsWithRefusalHint(diagnostic)
-      ? excerptUntrusted(diagnostic, HEALTH_REASON_CHARS)
-      : excerptUntrustedTail(diagnostic, HEALTH_REASON_CHARS);
+    return excerptUntrustedTail(diagnostic, budget);
   }
   // A little BEFORE the marker, because the marker is rarely the sentence: the
   // phrase that matched `x-api-key` reads "invalid x-api-key", and starting
   // exactly at the match throws away the word that says what is wrong with it.
   const from = Math.max(0, signalAt - SIGNAL_LEAD_CHARS);
   if (from === 0) {
-    return excerptUntrusted(diagnostic, HEALTH_REASON_CHARS);
+    return excerptUntrusted(diagnostic, budget);
   }
   // The leading ellipsis comes OUT of the budget rather than on top of it: two
-  // ellipses around 200 characters would be 201, and would read as two cuts.
-  return `…${excerptUntrusted(diagnostic.slice(from), HEALTH_REASON_CHARS - 1)}`;
+  // ellipses around one budget would be one character over, and would read as
+  // two cuts.
+  return `…${excerptUntrusted(diagnostic.slice(from), budget - 1)}`;
 }
 
 /**
@@ -1157,8 +1167,12 @@ export class AgentRuntime {
       const provider = skill.llmOverride?.provider;
       const model = skill.llmOverride?.model;
       if (!provider || !model) {
+        // The same three-case quote as a gated pair gets: this is the branch a
+        // `static-script` skill takes (most declare no pair), so quoting the
+        // tail here would drop the hint for exactly the skills most likely to
+        // break the refusal contract.
         log(
-          `${tag} Script "${skill.name}" failed ("${excerptUntrustedTail(diagnostic, 120)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+          `${tag} Script "${skill.name}" failed ("${operatorReason(diagnostic, 200)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
         );
         return false;
       }
@@ -1175,8 +1189,7 @@ export class AgentRuntime {
           : 'invalid';
       // The gate and the cascade are separate questions, and the second one is
       // much more expensive to get wrong - see `SCRIPT_KEY_LEVEL_MARKERS`.
-      const signalAt = keyLevelMarkerIndex(message);
-      const cascade = signalAt !== -1;
+      const cascade = keyLevelMarkerIndex(message) !== -1;
       const cascadeNote = cascade ? this.cascadeSuffix(provider, model) : ' (no cascade)';
       const signalNote = looksBillingOrInvalid
         ? `${reason} signal in ${scanned}`
@@ -1184,15 +1197,9 @@ export class AgentRuntime {
       log(
         `${tag} Script failure (${signalNote}). Marking ${provider}/${model} unhealthy${cascadeNote}; future jobs against this pair will be refused until recovery probe succeeds.`,
       );
-      this.healthMonitor.markUnhealthyFromJob(
-        provider,
-        model,
-        reason,
-        scriptSignalReason(diagnostic, signalAt),
-        {
-          cascade,
-        },
-      );
+      this.healthMonitor.markUnhealthyFromJob(provider, model, reason, operatorReason(diagnostic), {
+        cascade,
+      });
       return true;
     }
 

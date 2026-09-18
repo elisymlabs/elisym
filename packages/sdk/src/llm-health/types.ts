@@ -77,10 +77,14 @@ export class ScriptBillingExhaustedError extends Error {
 
 /**
  * Thrown by the SDK script skills when a tool/script fails (non-zero exit, spawn
- * error, or exit 0 with empty output). `message` is a generic, stable summary
- * that is SAFE to forward to a remote customer. The raw stderr/stdout lives on
- * `detail` for the operator log and health-monitor classification ONLY - it must
- * never be sent across the trust boundary to a customer.
+ * error, or exit 0 with empty output).
+ *
+ * NOTHING on this error is customer-facing. `message` is a fixed summary
+ * (`script failed (exit 1)`, `script produced empty output`) written for a log,
+ * and the runtime masks every script crash with one sentence of its own rather
+ * than forwarding it - an exit code and an internal phrase tell a buyer nothing
+ * and tell an attacker something. `detail` carries the raw stderr/stdout for the
+ * operator log and the health classifier ONLY.
  */
 export class ScriptExecutionError extends Error {
   readonly exitCode: number | null;

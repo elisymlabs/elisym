@@ -12,6 +12,11 @@ import { recordCompletion, UNPAID_PENDING_MAX_AGE_MS } from '~/lib/chatSession';
 import { agePendingEntries, completeEntry, failEntry, readThread } from '~/lib/chatThread';
 import { decodeResult, resultDisplay } from '~/lib/fileResult';
 
+/** How many already-closed entries one reconcile asks the relays about. */
+const MAX_UNEXPLAINED_LOOKUPS = 20;
+
+type JobResults = Awaited<ReturnType<MarketplaceService['queryJobResults']>>;
+
 /**
  * Tab-open reconcile (stage 2): when the Chat tab opens, run a one-shot
  * `queryJobResults` for the current identity's still-`pending` entries -
@@ -25,11 +30,6 @@ import { decodeResult, resultDisplay } from '~/lib/fileResult';
  * Wallet-independent by design: everything runs off the Nostr identity, so
  * free-skill chats recover too. Runs once per Chat tab activation.
  */
-/** How many already-closed entries one reconcile asks the relays about. */
-const MAX_UNEXPLAINED_LOOKUPS = 20;
-
-type JobResults = Awaited<ReturnType<MarketplaceService['queryJobResults']>>;
-
 export function useChatReconcile(agentPubkey: string): void {
   const { client } = useElisymClient();
   const idCtx = useIdentity();

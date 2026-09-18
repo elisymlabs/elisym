@@ -86,9 +86,11 @@ export function heldPaymentNote(
   }
   // A refusal is terminal AND already charged on the flat-priced path. Saying
   // nothing would leave someone waiting for a retry that is not coming; the
-  // outage note would promise them exactly that retry.
+  // outage note would promise them exactly that retry. Through the same
+  // function the thread bubble calls, so the two surfaces cannot drift into
+  // telling one customer two things about one job.
   if (kind === 'provider-refused') {
-    return REFUSED_NOTE;
+    return refusedPaymentNote(paid);
   }
   if (error.startsWith(PAYMENT_STILL_SOUGHT_PREFIX)) {
     return STILL_SOUGHT_NOTE;

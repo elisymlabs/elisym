@@ -695,6 +695,12 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // timeout is treated as "still processing" (pending) rather than an
         // error. Closure-local so it survives across the async callbacks.
         let paidLocally = false;
+        // Whether the THREAD holds the payment. The failed bubble reads `txHash`
+        // from the entry to decide whether to explain where the money went, so a
+        // write that never landed has to keep the composer's note on screen -
+        // otherwise a refused customer who paid is shown a reason and no mention of
+        // their money anywhere.
+        let txRecorded = true;
         // Set once the payment tx is broadcast (signature obtained) but before
         // confirmation completes. A wait-window timeout in that window is NOT a hard
         // failure - the tx may still land - so the timeout marks it resumable-pending.
@@ -901,7 +907,12 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Same rule for the thread entry: a paid `pending` entry (txHash
                 // present) is exempt from unpaid-aging and trimming - money was
                 // sent, the state must stay visible.
-                void recordEntryTxHash(agentPubkey, jobEventId, signature);
+                void recordEntryTxHash(agentPubkey, jobEventId, signature).catch(() => {
+                  // The bubble reads `txHash` to decide whether to say anything
+                  // about the money. A lost write means it cannot, so the
+                  // composer's note must not stand down for this job.
+                  txRecorded = false;
+                });
                 // Strategy form (blockhash + lastValidBlockHeight) so a dropped tx rejects
                 // at blockhash expiry instead of hanging `buying` forever - the deprecated
                 // single-signature form has no expiry. Then inspect the result: a tx can
@@ -1049,7 +1060,9 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 { stampUnseen: !alreadyOnAgentPage },
               );
               if (delegatedTxHash !== undefined) {
-                void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash);
+                void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash).catch(() => {
+                  txRecorded = false;
+                });
               }
               // A metered card stamps the CEILING at submit time - the real
               // figure does not exist until the work is done. Correct it now, or
@@ -1167,7 +1180,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   // the next job would otherwise silence that job's note.
                   setSession((prev) =>
                     sessionMatches(prev) && prev.jobId === jobEventId
-                      ? { ...prev, refusalInThread: refused && stored }
+                      ? { ...prev, refusalInThread: refused && stored && txRecorded }
                       : prev,
                   );
                 })

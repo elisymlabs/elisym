@@ -237,14 +237,29 @@ function hasContentAfter(text: string, from: number): boolean {
  * that outran the window means the window was the limit rather than the
  * content, so pay for the whole thing once.
  */
+/**
+ * An offset that is not the middle of a character.
+ *
+ * The content tests below run a `u`-flagged regex from a raw code-unit offset;
+ * landing on the low half of a pair makes the orphan match as surviving text,
+ * and the excerpt then announces a truncation that dropped nothing.
+ */
+function onCharacterBoundary(text: string, index: number): number {
+  if (index <= 0 || index >= text.length) {
+    return index;
+  }
+  const before = text.charCodeAt(index - 1);
+  return before >= 0xd800 && before <= 0xdbff ? index - 1 : index;
+}
+
 function excerptWindow(
   text: string,
   maxChars: number,
   keepEnd: boolean,
 ): { flattened: string; cut: boolean } {
-  const window = maxChars * 8;
+  const window = onCharacterBoundary(text, maxChars * 8);
   const outranWindow = text.length > window;
-  const from = keepEnd ? Math.max(0, text.length - window) : 0;
+  const from = keepEnd ? onCharacterBoundary(text, Math.max(0, text.length - window)) : 0;
   const sliced = keepEnd ? text.slice(from) : text.slice(0, window);
   const windowed = flattenUntrusted(trimDanglingSurrogates(sliced));
   const flattened =
