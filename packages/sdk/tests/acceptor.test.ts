@@ -347,6 +347,66 @@ describe('what may become a terminal "nobody paid"', () => {
     expect(listCalls).toBe(0);
   });
 
+  it('never says it when the budget ran out while the listing was in flight', async () => {
+    // The gap every step-boundary check misses: an empty page means the
+    // candidate loop never runs, so nothing after the listing looks at the
+    // clock again. A pass that blew its deadline must not be able to report
+    // the one verdict a provider may act on.
+    listedPages = [[]];
+    const slowRpc = {
+      getSignaturesForAddress: vi.fn(() => ({
+        send: async () => {
+          listCalls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          return [];
+        },
+      })),
+      getTransaction: vi.fn(() => ({ send: async () => null })),
+    } as never;
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(),
+      rpc: slowRpc,
+      store,
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', budget: { deadlineMs: 20 } },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(listCalls).toBe(1);
+  });
+
+  it('never says it when the caller aborted while the listing was in flight', async () => {
+    // Same gap, reached the other way. The existing abort test passes an
+    // already-aborted signal, which is caught at step 1 and never reaches here.
+    const controller = new AbortController();
+    const abortingRpc = {
+      getSignaturesForAddress: vi.fn(() => ({
+        send: async () => {
+          listCalls += 1;
+          controller.abort();
+          return [];
+        },
+      })),
+      getTransaction: vi.fn(() => ({ send: async () => null })),
+    } as never;
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(),
+      rpc: abortingRpc,
+      store,
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', signal: controller.signal },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(listCalls).toBe(1);
+  });
+
   it('never says it when the deadline had already passed', async () => {
     listedPages = [[]];
     const result = await makeAcceptor(strategyVerifying()).accept(
@@ -496,7 +556,7 @@ describe('the store contract', () => {
     const path = join(dir, `shape-${String(_label).replace(/\W+/g, '-')}.json`);
     writeFileSync(path, JSON.stringify(contents), 'utf-8');
 
-    expect(() => createFileSettlementStore(path)).toThrow();
+    expect(() => createFileSettlementStore(path)).toThrow(/not a settlement index|format version/);
   });
 
   it.each([[Number.NaN], [undefined], ['30 days' as unknown as number]])(
@@ -569,6 +629,34 @@ describe('the store contract', () => {
     // the verdict is the terminal one rather than the `inconclusive` a real
     // settlement would have forced.
     expect(result).toMatchObject({ accepted: false, reason: 'window-empty' });
+  });
+
+  it.each([['__proto__'], ['toString'], ['constructor']])(
+    "does not mistake %s for somebody else's claim on a fresh index",
+    (inherited) => {
+      // A plain object literal answers these from `Object.prototype`, so the
+      // store would report a signature nobody ever claimed as already bound.
+      // The read path was fixed first; this is the path a first run takes.
+      const fresh = createFileSettlementStore(join(dir, `proto-${inherited}.json`));
+
+      expect(fresh.owner(inherited)).toBeUndefined();
+      expect(fresh.claim(inherited, 'job-1')).toBe('claimed');
+    },
+  );
+
+  it('refuses a retention that is a string, however numeric it looks', () => {
+    // A relational test coerces, so `'2592000000' >= MIN` is true. Only the
+    // `typeof` half keeps a string out.
+    expect(() => store.prune('2592000000' as unknown as number)).toThrow(/at least/);
+  });
+
+  it('releases nothing at all on an infinite retention', () => {
+    // Seeded, because on an empty index `toBe(0)` is true however the cutoff is
+    // computed - a sign error would pass unnoticed.
+    store.claim(SIG_A, 'job-1');
+
+    expect(store.prune(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(store.owner(SIG_A)).toBe('job-1');
   });
 
   it('refuses a retention short enough to free a still-verifiable settlement', () => {

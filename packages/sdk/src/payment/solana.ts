@@ -737,14 +737,20 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   // same account - so a length mismatch means this answer cannot be
   // interpreted at all.
   //
-  // THIS GUARD IS NOT COSMETIC, and the measurement says so. With it removed,
-  // a `postBalances` that is short by one - but still long enough to cover the
-  // recipient and the treasury - verifies as `true`: the payment is ACCEPTED on
-  // a page we could not read. (A short `preBalances` fails the other way: the
-  // map is built over `preBalances.length`, so the reference falls off the end
-  // and the refusal reads "reference not found - possible replay", blaming the
-  // customer for our own unreadable answer.) Both directions are wrong, and one
-  // of them costs money, so this is refused by name rather than read anyway.
+  // THIS GUARD IS NOT COSMETIC, and it is not one-sided either. Both
+  // directions were measured with it removed, and both ACCEPT a payment when
+  // the slots that went missing are not ones the verifier happens to read:
+  //
+  //   pre=4 post=3, recipient and treasury still covered -> verified: true
+  //   pre=4 post=5, reference inside the short prefix    -> verified: true
+  //
+  // `keyToIdx` is built over `min(keys.length, preBalances.length)`, so every
+  // name inside that prefix pairs with a correct slot and nothing notices the
+  // ones past it. Whether a given mismatch instead surfaces as a refusal - the
+  // misdirected "reference not found - possible replay", which blames the
+  // customer for our own unreadable answer - depends only on where the
+  // reference happens to sit among the keys. That is not a safety property to
+  // lean on, so the pairing is refused by name rather than read anyway.
   if (input.preBalances.length !== input.postBalances.length) {
     return {
       ok: false,

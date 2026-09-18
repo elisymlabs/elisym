@@ -24,7 +24,11 @@ interface StoreFile {
 }
 
 function emptyFile(): StoreFile {
-  return { version: FORMAT_VERSION, settlements: {} };
+  // `Object.create(null)` here too, not only on the read path: this is what a
+  // first run gets, and with a plain literal a signature named `__proto__` or
+  // `toString` resolves to an inherited member and reads back as somebody
+  // else's claim on an index that holds nothing at all.
+  return { version: FORMAT_VERSION, settlements: Object.create(null) };
 }
 
 /**
@@ -200,12 +204,13 @@ export class FileSettlementStore implements SettlementStore {
   }
 
   prune(retentionMs: number): number {
-    // Written as a positive test so everything that is not a number at or above
-    // the floor is rejected - `NaN`, `undefined` and a string all fail it, while
-    // `Infinity` passes deliberately: "never release anything" is the safest
-    // retention there is, and a `Number.isFinite` check would reject exactly
-    // that one.
-    if (!(retentionMs >= MIN_SETTLEMENT_RETENTION_MS)) {
+    // The `typeof` half is not redundant: a relational test COERCES, so
+    // `'2592000000' >= MIN` is true and a string would otherwise be accepted as
+    // a retention. The positive form of the second half is what rejects `NaN`
+    // and `undefined` while letting `Infinity` through deliberately - "never
+    // release anything" is the safest retention there is, and `Number.isFinite`
+    // would reject exactly that one.
+    if (typeof retentionMs !== 'number' || !(retentionMs >= MIN_SETTLEMENT_RETENTION_MS)) {
       throw new Error(
         `retentionMs must be at least ${MIN_SETTLEMENT_RETENTION_MS}ms: a signature dropped from ` +
           `this index has to be unverifiable on-chain by then, or it settles a second job`,

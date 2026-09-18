@@ -996,29 +996,39 @@ export class PaymentRecovery {
       // equal to the treasury drowns the payment in its history whether or not
       // the request names it.
       //
-      // NOT gated on the job already owning a settlement, and the measurement
-      // is why. The obvious gate - "a job that owns one can re-verify it
-      // directly, so leave it alone" - describes a path that does not exist:
-      // the denylist inside `verifyPayment` sits ahead of BOTH its branches, so
-      // the signature path refuses too. Measured, that gate bought a job
-      // nothing but a worse ending - the settlement failed to re-verify, the
-      // reference got listed anyway, and the entry deferred to the 24h cutoff
-      // to die as "the agent did not recover" instead of failing here as what
-      // it is.
+      // Gated on the job NOT already owning a settlement, and the reason is not
+      // the one it looks like. It is NOT "such a job can re-verify its own
+      // signature" - it cannot: the denylist inside `verifyPayment` sits ahead
+      // of both its branches, so that path refuses too, and the entry defers to
+      // the 24h cutoff. The reason is that this list GROWS IN MINOR RELEASES
+      // (see `VerifyRefusalCode`), so a job paid and settled under an older
+      // build can be re-read as degenerate by a newer one. A deferral is
+      // recoverable - an operator who reads the log and rolls the SDK back
+      // inside the window gets the settlement re-verified under the list it was
+      // accepted with, and the job delivers. A terminal verdict is not
+      // recoverable by anything.
       //
-      // Honest about what this buys either way: it finds no money. The request
-      // is unpayable and stays unpayable. What changes is that the job fails
-      // NOW, as unusable provider state, with a sentence naming the real
-      // problem. The cost is named too: the customer has most likely paid, and
-      // `corrupt-state` closes the job.
-      const degenerate = await degenerateReference(request, this.network, protocolConfig.treasury);
-      if (degenerate !== undefined) {
-        log(
-          `[${shortId}] Recovery: the payment request's reference (${request.reference}) is an ` +
-            `address the payment itself is computed from, so the transfer cannot be singled out ` +
-            `by listing it. This is provider-side state, not a chain or customer problem.`,
+      // `ProviderPaymentAcceptor` carves the same exception out for the same
+      // reason; the two rails must not answer this differently.
+      //
+      // Honest about what the check buys where it does apply: it finds no
+      // money. The request is unpayable either way. What changes is that a job
+      // with nothing to fall back on fails NOW, naming the real problem,
+      // instead of spending a day to die as "the agent did not recover".
+      if (!isUsableSignature(entry.payment_signature)) {
+        const degenerate = await degenerateReference(
+          request,
+          this.network,
+          protocolConfig.treasury,
         );
-        return 'corrupt-state';
+        if (degenerate !== undefined) {
+          log(
+            `[${shortId}] Recovery: the payment request's reference (${request.reference}) is an ` +
+              `address the payment itself is computed from, so the transfer cannot be singled ` +
+              `out by listing it. This is provider-side state, not a chain or customer problem.`,
+          );
+          return 'corrupt-state';
+        }
       }
 
       /**

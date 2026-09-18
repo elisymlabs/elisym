@@ -15,8 +15,10 @@ export type LedgerStatus = 'paid' | 'executed' | 'delivered' | 'failed';
 /**
  * A signature this ledger can actually key a de-duplication claim on.
  *
- * The form is written once and imported everywhere rather than spelled out at
- * each gate, because the gates have to agree: two of them differing by an
+ * Written once PER PACKAGE and imported everywhere rather than spelled out at
+ * each gate, because the gates have to agree. (`@elisym/sdk` keeps its own copy
+ * for its acceptor; it is not exported, so this is a deliberate second one, and
+ * the two have to stay identical by hand.) They have to agree because: two of them differing by an
  * `=== undefined` instead of this would let an empty string through one and
  * not the other, and an empty string is the value that both a hand-edited
  * ledger and a proxy rewriting an RPC page produce. A claim keyed on one owns

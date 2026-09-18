@@ -241,13 +241,15 @@ describe('a signature the ledger cannot key a claim on', () => {
       expect(outcome).toBe('corrupt-state');
     });
 
-    it('fails a job that already owns a settlement the same way', async () => {
-      // Measured rather than assumed. The tempting gate here - "this job can
-      // re-verify its own settlement, so leave it alone" - describes a path
-      // that does not exist: the denylist inside `verifyPayment` sits ahead of
-      // both its branches, so the signature path refuses too. With the gate the
-      // entry deferred to the 24h cutoff and died as "the agent did not
-      // recover"; without it, it fails here naming the real problem.
+    it('defers a job that already owns a settlement, rather than killing it', async () => {
+      // The carve-out, and its reason is easy to get wrong. It is NOT that such
+      // a job can re-verify its own signature - measured, it cannot: the
+      // denylist inside `verifyPayment` refuses the signature path too, and the
+      // outcome here is `deferred`, never `verified`. The reason is that the
+      // denylist GROWS between releases, so a job settled under an older build
+      // can be re-read as degenerate by a newer one - and a deferral is
+      // recoverable by rolling the SDK back inside the window, where a terminal
+      // verdict is recoverable by nothing.
       seedLedger(REAL_SIGNATURE, RECIPIENT);
       listedSignatures = [];
       transactionsBySignature.set(REAL_SIGNATURE, payingTransaction());
@@ -259,7 +261,9 @@ describe('a signature the ledger cannot key a claim on', () => {
         log,
       );
 
-      expect(outcome).toBe('corrupt-state');
+      expect(outcome).toBe('deferred');
+      // Still owns what it owned: nothing was released on the way through.
+      expect(entryUnderTest().payment_signature).toBe(REAL_SIGNATURE);
     });
   });
 });

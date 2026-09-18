@@ -96,7 +96,7 @@ export interface AcceptPaymentInput {
    */
   jobIdentity: string;
   /**
-   * If given, must pass `isUsableSignature`; an unusable one is rejected by
+   * If given, must be a non-empty string; an unusable one is rejected by
    * throwing. `verifyPayment` dispatches on `if (options?.txSignature)`, and
    * both `''` and `null` are falsy there - the call would take the REFERENCE
    * path and come back with somebody else's signature, which step 5 may not
@@ -107,7 +107,8 @@ export interface AcceptPaymentInput {
    * Checked wherever the deadline is, and with the same effect: the pass
    * reports `inconclusive`, never `window-empty` - an abandoned look has seen
    * less than the whole window, so it must not produce the one verdict a
-   * provider may act on.
+   * provider may act on. The two are the same test, so neither can drift ahead
+   * of the other.
    *
    * What it does NOT do is cut a call short. It is read at step boundaries and
    * once more before the verdict, so an abort during a verification still waits
@@ -323,12 +324,23 @@ export class ProviderPaymentAcceptor {
     }
 
     // The carve-out: a job that already owns a settlement is NOT closed by a
-    // step-0 verdict. "Terminal only if it could not have been paid under any
-    // configuration" holds within ONE version of this SDK, and both lists grow;
-    // growing one must never destroy money on a job whose settlement is already
-    // claimed and was once verified. The lookup happens only when there IS a
-    // verdict - otherwise the ordinary path pays for a file read it does not
-    // need.
+    // step-0 verdict.
+    //
+    // The reason is NOT that such a job can re-verify its own signature. It
+    // cannot, and measuring it says so: `verifyPayment` runs the same
+    // degenerate-reference check ahead of both its branches, so step 1 refuses
+    // too and the call ends `inconclusive`. The reason is that BOTH lists here
+    // grow in minor releases, so a job paid and settled under an older build
+    // can be re-read as unpayable by a newer one. `inconclusive` is
+    // recoverable - the provider keeps asking, and an operator who rolls back
+    // gets the settlement verified under the list it was accepted with. A
+    // terminal verdict is recoverable by nothing.
+    //
+    // `@elisym/cli` carves the same exception out of its own recovery pass, for
+    // this same reason; the two rails must not answer this differently.
+    //
+    // The lookup happens only when there IS a verdict - otherwise the ordinary
+    // path pays for a file read it does not need.
     let ownSignature: string | undefined;
     let ownSignatureRead = false;
     if (stepZero !== undefined) {
@@ -496,12 +508,17 @@ export class ProviderPaymentAcceptor {
       }
     }
 
-    // An abort that arrived while the listing was in flight is only seen here:
-    // the checks above sit at step boundaries, and an empty page means the
-    // candidate loop never runs. Without this a caller who gave up mid-listing
-    // could still be handed `window-empty`, the one verdict a provider may act
-    // on, about a pass nobody was waiting for.
-    if (input.signal?.aborted === true) {
+    // A budget that ran out while the listing was in flight is only seen here:
+    // every check above sits at a step boundary, and an empty page means the
+    // candidate loop never runs. Without this, a pass that blew its deadline
+    // four times over - or one the caller gave up on - could still be handed
+    // `window-empty`, the one verdict a provider may act on, about a look
+    // nobody was waiting for.
+    //
+    // `pastDeadline()` rather than the signal alone: the clock has exactly the
+    // same gap, and it is the likelier one to hit. A short `deadlineMs` against
+    // a slow RPC is ordinary; an abort arriving in that same window is not.
+    if (pastDeadline()) {
       deadlineHit = true;
     }
 
