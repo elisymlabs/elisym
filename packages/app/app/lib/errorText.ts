@@ -1,7 +1,7 @@
 import {
   AGENT_REFUSED_LABEL,
   classifyJobError,
-  excerptUntrusted,
+  excerptOwnMessage,
   hasVisibleText,
   refusalFromJobError,
   SCRIPT_REFUSAL_MAX_CHARS,
@@ -58,7 +58,10 @@ export const UNSTATED_LOCAL_FAILURE = 'The request could not be completed.';
  * "Agent unavailable".
  */
 export function boundedErrorText(error: string, fallback = UNSTATED_LOCAL_FAILURE): string {
-  const excerpt = excerptUntrusted(error, MAX_DISPLAYED_ERROR_CHARS);
+  // `excerptOwnMessage`: no credential redaction. A wallet or RPC sentence
+  // mentioning a token or an authorization header is the app's own words to the
+  // person who caused it, and redacting it would eat the informative half.
+  const excerpt = excerptOwnMessage(error, MAX_DISPLAYED_ERROR_CHARS);
   return hasVisibleText(excerpt) ? excerpt : fallback;
 }
 

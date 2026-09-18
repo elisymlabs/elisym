@@ -702,6 +702,19 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         // shown a reason and no mention of their money anywhere. True until
         // there is a payment to record, false while one is in flight.
         let txRecorded = true;
+        // Whether a refusal has been stored for THIS job, so either async write
+        // can re-decide the suppression when it lands. Without that the flag
+        // latches on whichever settled first: a refusal that beat the payment
+        // write left both the note and the bubble printing the same two
+        // paragraphs, and nothing re-checked when the write arrived.
+        let refusalStored = false;
+        const syncRefusalInThread = (paymentInThread: boolean): void => {
+          setSession((prev) =>
+            sessionMatches(prev) && prev.jobId === jobEventId
+              ? { ...prev, refusalInThread: refusalStored && paymentInThread }
+              : prev,
+          );
+        };
         // Set once the payment tx is broadcast (signature obtained) but before
         // confirmation completes. A wait-window timeout in that window is NOT a hard
         // failure - the tx may still land - so the timeout marks it resumable-pending.
@@ -921,6 +934,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                     // money; a lost write means it cannot, and the composer's
                     // note must then stay on screen for this job.
                     txRecorded = wrote;
+                    syncRefusalInThread(wrote);
                   })
                   .catch(() => {
                     txRecorded = false;
@@ -1076,6 +1090,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash)
                   .then((wrote) => {
                     txRecorded = wrote;
+                    syncRefusalInThread(wrote);
                   })
                   .catch(() => {
                     txRecorded = false;
@@ -1197,15 +1212,13 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                     // session object and re-render every consumer for no change.
                     return;
                   }
-                  // Only once the bubble really holds it may the note stand
-                  // down - and only for the job it was written for: a slow
-                  // IndexedDB write resolving after the customer has started
-                  // the next job would otherwise silence that job's note.
-                  setSession((prev) =>
-                    sessionMatches(prev) && prev.jobId === jobEventId
-                      ? { ...prev, refusalInThread: stored && txRecorded }
-                      : prev,
-                  );
+                  // Only once the bubble really holds BOTH halves may the note
+                  // stand down - the reason, and the payment the bubble reads to
+                  // explain the money - and only for the job it was written for:
+                  // a slow write resolving after the customer started the next
+                  // job would otherwise silence that job's note.
+                  refusalStored = stored;
+                  syncRefusalInThread(txRecorded);
                 })
                 // A storage failure (private window, quota, an aborted
                 // transaction) must not surface as an unhandled rejection: the

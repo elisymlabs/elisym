@@ -307,6 +307,20 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error.detail).not.toContain('nsec');
   });
 
+  it('takes both labels off, in any order and with or without the space', async () => {
+    const { refusalMessage } = await import('../src/skills/refusal');
+    // Interleaved: a pass per label strips one and leaves the other, which is
+    // the doubled label the customer then reads under the app's own.
+    expect(refusalMessage('The agent refused: The provider refused: size it in USD.')).toBe(
+      'size it in USD.',
+    );
+    // Flattening cannot put back a space the script never typed.
+    expect(refusalMessage('The provider refused:size it in USD.')).toBe('size it in USD.');
+    // And the budget is spent on the reason, not on the label.
+    const long = 'x'.repeat(SCRIPT_REFUSAL_MAX_CHARS);
+    expect(refusalMessage(`The provider refused: ${long}`)).toBe(long);
+  });
+
   it('takes the runtime`s own label off a script that wrote it', async () => {
     // The label says who is speaking and the runtime is what puts it there. A
     // doubled one reaches a client that strips a single copy and renders the

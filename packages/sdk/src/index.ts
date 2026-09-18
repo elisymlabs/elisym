@@ -73,6 +73,7 @@ export type { DelegatedPaymentRequest } from './services/marketplace';
 export {
   clipToCodeUnits,
   deleteControlCharacters,
+  excerptOwnMessage,
   excerptUntrusted,
   excerptUntrustedTail,
   flattenForComparison,

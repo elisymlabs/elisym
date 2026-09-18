@@ -288,16 +288,16 @@ function excerptWindow(
   text: string,
   maxChars: number,
   keepEnd: boolean,
+  redact = true,
 ): { flattened: string; cut: boolean } {
+  const scrub = (flat: string): string => (redact ? withoutCredentials(flat) : flat);
   const window = onCharacterBoundary(text, maxChars * 8);
   const outranWindow = text.length > window;
   const from = keepEnd ? onCharacterBoundary(text, Math.max(0, text.length - window)) : 0;
   const sliced = keepEnd ? text.slice(from) : text.slice(0, window);
-  const windowed = withoutCredentials(flattenUntrusted(trimDanglingSurrogates(sliced)));
+  const windowed = scrub(flattenUntrusted(trimDanglingSurrogates(sliced)));
   const flattened =
-    [...windowed].length < maxChars && outranWindow
-      ? withoutCredentials(flattenUntrusted(text))
-      : windowed;
+    [...windowed].length < maxChars && outranWindow ? scrub(flattenUntrusted(text)) : windowed;
   // Only text that was actually dropped counts as a cut: a refusal padded with
   // trailing newlines is complete, and claiming otherwise both lies to the
   // reader and eats one of its characters to make room for the ellipsis. The
@@ -330,6 +330,20 @@ export function hasVisibleText(text: string): boolean {
  */
 export function excerptUntrusted(text: string, maxChars: number): string {
   const { flattened, cut } = excerptWindow(text, maxChars, false);
+  return clipToCharacters(flattened, maxChars, cut);
+}
+
+/**
+ * The same bound and the same flattening, for text THIS process wrote.
+ *
+ * Without the credential pass: that exists for what an upstream or a script
+ * printed into an operator's log, and applied to a first-person message it
+ * mangles the useful half - an RPC saying `authorization = denied by user`
+ * comes back as `[redacted] by user`. A message we wrote carries no secret we
+ * are hiding from ourselves.
+ */
+export function excerptOwnMessage(text: string, maxChars: number): string {
+  const { flattened, cut } = excerptWindow(text, maxChars, false, false);
   return clipToCharacters(flattened, maxChars, cut);
 }
 

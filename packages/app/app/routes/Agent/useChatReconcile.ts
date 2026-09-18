@@ -192,9 +192,11 @@ export function useChatReconcile(agentPubkey: string): void {
             // unread.
             const message = errors?.get(entry.jobEventId);
             if (message !== undefined && classifyJobError(message) === 'provider-refused') {
+              // Per entry: one storage failure is not a failed relay query, and
+              // conflating them would suppress ageing for the whole thread.
               await failEntry(agentPubkey, entry.jobEventId, {
                 refusal: refusalFromJobError(message),
-              });
+              }).catch(() => {});
             }
           }
           // And the closed ones, which need nothing but the reason. Outside the
@@ -208,12 +210,13 @@ export function useChatReconcile(agentPubkey: string): void {
             if (late !== undefined && classifyJobError(late) === 'provider-refused') {
               await failEntry(agentPubkey, entry.jobEventId, {
                 refusal: refusalFromJobError(late),
-              });
+              }).catch(() => {});
             }
           }
         } catch {
-          // Nothing was proven about the entries this loop never reached, so
-          // ageing must not run either.
+          // Only something the loop itself could not survive - a thread read, a
+          // decode. The per-entry writes catch their own failures, because a
+          // blocked IndexedDB says nothing about what the relays answered.
           queryFailed = true;
         }
       }

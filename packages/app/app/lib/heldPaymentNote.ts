@@ -21,6 +21,17 @@ const PAYMENT_STILL_SOUGHT_PREFIX = 'Payment timeout';
 const OUTAGE_NOTE =
   'Your payment is held. Once the agent is back online, the job will be retried automatically and the result delivered.';
 
+/**
+ * What agents said before `PROVIDER_FAILED_MESSAGE` existed.
+ *
+ * The app deploys on its own schedule and talks to whatever CLI a provider is
+ * running, so this sentence keeps arriving for years. It means exactly what the
+ * new one means - the job is closed, charged, and nothing will retry it - and
+ * matching it is the difference between a paying customer getting guidance and
+ * getting internal jargon with none.
+ */
+const LEGACY_INTERNAL_MASK = 'Internal processing error';
+
 const CRASHED_NOTE =
   "The job failed on the agent's side and is closed. A flat-priced job is charged before it runs, so if you paid, check the job in your wallet history and contact the provider rather than sending it again.";
 
@@ -101,7 +112,7 @@ export function heldPaymentNote(
   // The provider's skill fell over. Terminal like a refusal, and charged like
   // one, but not a decision - so it gets its own sentence rather than the
   // refusal's "the agent says it declined this job".
-  if (error === PROVIDER_FAILED_MESSAGE) {
+  if (error === PROVIDER_FAILED_MESSAGE || error === LEGACY_INTERNAL_MASK) {
     return CRASHED_NOTE;
   }
   return undefined;

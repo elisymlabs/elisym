@@ -28,7 +28,6 @@ import {
   isLlmHealthError,
   isScriptBillingExhaustedError,
   isScriptExecutionError,
-  isScriptRefusalError,
   parseDelegatedPayment,
   PROVIDER_FAILED_MESSAGE,
   PROVIDER_REFUSED_PREFIX,
@@ -61,7 +60,11 @@ import {
   type LlmHealthMonitor,
 } from '@elisym/sdk/llm-health';
 import type { IrohBlobTransport } from '@elisym/sdk/node';
-import { isHostScratchError, startsWithRefusalHint } from '@elisym/sdk/skills';
+import {
+  isHostScratchError,
+  isScriptRefusalError,
+  startsWithRefusalHint,
+} from '@elisym/sdk/skills';
 import type { ChatTurn } from '@elisym/sdk/skills';
 import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -228,28 +231,33 @@ const BILLING_BODY_MARKERS = ['credit balance', 'billing', 'insufficient', 'insu
 // for the word "unauthorized" could otherwise gate the operator's key and
 // cascade it across every model on it. A proxy that wants its 402 detected
 // should write the upstream's body to stderr as well.
-const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{ phrase: string; cascades: boolean }> = [
-  // `cascades` is the second question, asked of the same table so one edit
-  // cannot land half-applied: a phrase that gates THIS pair, and whether it also
-  // takes every model on the operator's key offline. See
-  // `SCRIPT_KEY_LEVEL_MARKERS` for what earns the second.
-  { phrase: 'credit balance', cascades: true },
-  { phrase: 'billing', cascades: false },
-  { phrase: 'insufficient', cascades: false },
-  { phrase: 'insufficient_quota', cascades: true },
+const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{
+  phrase: string;
+  cascades: boolean;
+  billing: boolean;
+}> = [
+  // Three questions, one row each, so an edit cannot land half-applied: does
+  // this phrase gate THIS pair at all, does it also take every model on the
+  // operator's key offline (`cascades` - see `SCRIPT_KEY_LEVEL_MARKERS`), and is
+  // it about money rather than credentials (`billing`, which picks the reason
+  // the operator is shown and the recovery probe reads).
+  { phrase: 'credit balance', cascades: true, billing: true },
+  { phrase: 'billing', cascades: false, billing: true },
+  { phrase: 'insufficient', cascades: false, billing: true },
+  { phrase: 'insufficient_quota', cascades: true, billing: true },
   // Gates this pair, never cascades: `x-api-key` is the name of a REQUEST
   // HEADER, which `curl -v` and any client that prints its own headers emit on a
   // perfectly ordinary failure. Taking every model on the key offline for that
   // is the expensive direction; `invalid x-api-key` below is the provider
   // actually rejecting it.
-  { phrase: 'x-api-key', cascades: false },
+  { phrase: 'x-api-key', cascades: false, billing: false },
   // The provider REJECTING the key, which no request header says.
-  { phrase: 'invalid x-api-key', cascades: true },
-  { phrase: 'invalid api key', cascades: true },
-  { phrase: 'invalid_api_key', cascades: true },
-  { phrase: 'authentication_error', cascades: true },
-  { phrase: 'unauthorized', cascades: false },
-  { phrase: 'unauthenticated', cascades: false },
+  { phrase: 'invalid x-api-key', cascades: true, billing: false },
+  { phrase: 'invalid api key', cascades: true, billing: false },
+  { phrase: 'invalid_api_key', cascades: true, billing: false },
+  { phrase: 'authentication_error', cascades: true, billing: false },
+  { phrase: 'unauthorized', cascades: false, billing: false },
+  { phrase: 'unauthenticated', cascades: false, billing: false },
 ];
 
 /**
@@ -270,11 +278,11 @@ function classifyScriptSignal(message: string): {
   const looksBillingOrInvalid = SCRIPT_BILLING_INVALID_MARKERS.some(({ phrase }) =>
     lowered.includes(phrase),
   );
-  const billing =
-    looksBillingOrInvalid &&
-    (lowered.includes('credit balance') ||
-      lowered.includes('billing') ||
-      lowered.includes('insufficient'));
+  // Both questions off the same table: a new provider phrase is one row, not
+  // one row plus a hand-copied `includes` chain that can disagree with it.
+  const billing = SCRIPT_BILLING_INVALID_MARKERS.some(
+    (marker) => marker.billing && lowered.includes(marker.phrase),
+  );
   return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid' };
 }
 
@@ -300,6 +308,9 @@ function classifyScriptSignal(message: string): {
 const SCRIPT_KEY_LEVEL_MARKERS = SCRIPT_BILLING_INVALID_MARKERS.filter(
   (marker) => marker.cascades,
 ).map((marker) => marker.phrase);
+
+/** How long a scratch-space failure keeps the pre-payment probe armed. */
+const SCRATCH_RECHECK_MS = 5 * 60 * 1000;
 
 /**
  * How much of a gated pair's reason an operator is shown, and its lead-in.
@@ -378,10 +389,13 @@ function operatorReason(diagnostic: string, budget = HEALTH_REASON_CHARS): strin
   if (from === 0) {
     return excerptUntrusted(diagnostic, budget);
   }
+  // A bounded window, not the rest of the text: stderr is capped only by
+  // `MAX_SCRIPT_OUTPUT`, so slicing to the end would copy a megabyte per failed
+  // job to quote 500 characters of it. The 8x allowance is the excerpt's own.
   // The leading ellipsis comes OUT of the budget rather than on top of it: two
   // ellipses around one budget would be one character over, and would read as
   // two cuts.
-  return `…${excerptUntrusted(diagnostic.slice(from), budget - 1)}`;
+  return `…${excerptUntrusted(diagnostic.slice(from, from + budget * 8), budget - 1)}`;
 }
 
 /**
@@ -1057,6 +1071,31 @@ export class AgentRuntime {
     return ` (cascading to ${siblings} other model(s) for ${provider} sharing the same API key)`;
   }
 
+  /**
+   * Whether this agent can still make itself a scratch directory.
+   *
+   * A `HostScratchError` says the last job could not run because the temp
+   * directory refused it. That is not the operator's API key, so it must not
+   * gate the health pair - but SOMETHING has to stop the next customer paying
+   * into an agent that will fail them the same way, which is what the health
+   * gate used to do by accident. Probed before payment, and only after such a
+   * failure has been seen: a working host pays nothing for this.
+   */
+  private scratchFailedAt = 0;
+
+  private async scratchSpaceUsable(): Promise<boolean> {
+    if (Date.now() - this.scratchFailedAt > SCRATCH_RECHECK_MS) {
+      return true;
+    }
+    const probe = await mkdtemp(join(tmpdir(), 'elisym-probe-')).catch(() => null);
+    if (probe === null) {
+      return false;
+    }
+    await rm(probe, { recursive: true, force: true }).catch(() => {});
+    this.scratchFailedAt = 0;
+    return true;
+  }
+
   private markHealthFromExecuteError(
     skill: import('./skill').Skill,
     err: unknown,
@@ -1069,6 +1108,11 @@ export class AgentRuntime {
     const tag = `[${jobId.slice(0, 8)}]`;
 
     if (isHostScratchError(err)) {
+      // Remembered so the NEXT customer is refused before they pay: the health
+      // gate used to do that by accident, and taking the accident away without
+      // putting the check somewhere would have every customer pay into a host
+      // that cannot run their job. See `scratchSpaceUsable`.
+      this.scratchFailedAt = Date.now();
       // This agent's own temp directory, not the operator's API key. Gating the
       // declared pair would refuse every capability on that key for a local disk
       // problem, and the recovery probe - which tests the KEY - would clear it

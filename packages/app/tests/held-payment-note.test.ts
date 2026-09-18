@@ -88,12 +88,15 @@ describe('what a paying customer is told about their money', () => {
     expect(heldPaymentNote('Agent temporarily unavailable', true)).toMatch(/back online/);
   });
 
-  it('does not promise a retry for the mask on a job that is already closed', () => {
-    // `Internal processing error` is what the runtime says when it will not
-    // describe a terminal failure. The job is failed and nothing will re-run it;
-    // promising otherwise is what keeps someone waiting instead of contacting
-    // the provider while the transaction is fresh.
-    expect(heldPaymentNote('Internal processing error', true)).toBeUndefined();
+  it('tells the buyer of an OLDER agent where their money went', () => {
+    // The sentence agents sent before `PROVIDER_FAILED_MESSAGE` existed, and
+    // will keep sending for as long as they run an older CLI. It means the same
+    // thing - closed, charged, nothing will re-run it - so it gets the same
+    // guidance, and never the outage promise of a retry.
+    const note = heldPaymentNote('Internal processing error', true);
+    expect(note).toBeDefined();
+    expect(note).not.toMatch(/back online/);
+    expect(note).toMatch(/wallet history/);
   });
 
   it('never talks about held money to someone who has not paid', () => {

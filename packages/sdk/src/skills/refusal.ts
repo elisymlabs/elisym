@@ -25,7 +25,12 @@
 import { ScriptExecutionError } from '../llm-health/types';
 import { AGENT_REFUSED_LABEL, PROVIDER_REFUSED_PREFIX } from '../services/jobErrors';
 import type { RefusalFileRead } from './refusal-file';
-import { excerptUntrusted, excerptUntrustedTail, hasVisibleText } from './untrusted-text';
+import {
+  excerptUntrusted,
+  excerptUntrustedTail,
+  flattenUntrusted,
+  hasVisibleText,
+} from './untrusted-text';
 
 /**
  * The exit code that says "what I wrote in the refusal file is why".
@@ -135,13 +140,38 @@ export function refusalMessage(reason: string): string {
   // After flattening, not before: a leading newline or byte-order mark would
   // otherwise carry the label past a `startsWith` and straight into the excerpt
   // the customer reads.
-  let sentence = excerptUntrusted(reason, SCRIPT_REFUSAL_MAX_CHARS);
+  // Flattened first, so a leading newline cannot carry a label past the test;
+  // stripped before the excerpt, so the customer's 400 characters are spent on
+  // the reason rather than on a label; and ONE loop over both labels, because
+  // `The agent refused: The provider refused: ...` interleaves them and a pass
+  // per label leaves whichever came second.
+  let sentence = flattenUntrusted(reason);
+  for (;;) {
+    const stripped = withoutLeadingLabel(sentence);
+    if (stripped === sentence) {
+      break;
+    }
+    sentence = stripped;
+  }
+  const excerpt = excerptUntrusted(sentence, SCRIPT_REFUSAL_MAX_CHARS);
+  return hasVisibleText(excerpt) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
+}
+
+/**
+ * One label off the front, if one is there.
+ *
+ * Matched up to the colon and then past whatever separator follows, because
+ * flattening cannot put back a space the script never typed: `The provider
+ * refused:size it in USD.` is the same forgery as the spaced form.
+ */
+function withoutLeadingLabel(sentence: string): string {
   for (const label of [PROVIDER_REFUSED_PREFIX, AGENT_REFUSED_LABEL]) {
-    while (sentence.startsWith(label)) {
-      sentence = sentence.slice(label.length).trimStart();
+    const anchor = label.trimEnd();
+    if (sentence.startsWith(anchor)) {
+      return sentence.slice(anchor.length).trimStart();
     }
   }
-  return hasVisibleText(sentence) ? sentence : SCRIPT_REFUSAL_UNSTATED;
+  return sentence;
 }
 
 /**
@@ -248,46 +278,49 @@ export function throwIfRefused(
   // zero-width joiner is as empty as no bytes at all - the same question the
   // customer-facing message asks of the text it is about to hand over.
   const stated = file.state === 'read' && hasVisibleText(file.reason);
-  if (file.state === 'read' && result.code !== null) {
-    // Exit 43 is a refusal with or without a reason - an empty file still means
-    // the script decided - and exit 0 with a reason is one too: `exit 43`
-    // swallowed by a pipeline comes back as 0, and the script went out of its
-    // way to write the sentence. `hasVisibleText`, because `echo >` leaves a
-    // newline behind and a newline is no more a reason than no bytes at all.
-    //
-    // ANY OTHER non-zero exit is a crash, reason or no reason. A skill that
-    // validates its input early, writes why, and then falls over further down
-    // has not refused: reporting that to the customer as a decision would
-    // charge them for a crash, and - since a refusal deliberately leaves health
-    // alone - would let a chronically broken skill keep selling, which is the
-    // same hole exit 43 was refused for.
-    if (result.code === SCRIPT_EXIT_REFUSED || (stated && result.code === 0)) {
+  // A process the runtime KILLED decided nothing: a builder cut short by the
+  // execution timeout after writing its file is not a refusal, whatever the file
+  // says.
+  if (result.code === null) {
+    return;
+  }
+  // Exit 43 is a refusal with or without a reason - an empty file still means
+  // the script decided - and exit 0 with a reason is one too: `exit 43`
+  // swallowed by a pipeline comes back as 0, and the script went out of its way
+  // to write the sentence.
+  if (result.code === SCRIPT_EXIT_REFUSED && file.state === 'read') {
+    throw new ScriptRefusalError(result.code, file.reason, result.stderr);
+  }
+  if (result.code === 0) {
+    if (stated) {
       throw new ScriptRefusalError(result.code, file.reason, result.stderr);
     }
+    return;
   }
-  if (
-    result.code === SCRIPT_EXIT_REFUSED ||
-    (stated && result.code !== null && result.code !== 0)
-  ) {
-    // Which hint depends on whose fault it was: a script that never wrote the
-    // file, a file the agent could not read, or a runtime that never named one.
-    // Blaming the script for the last two sends an operator hunting a typo in
-    // code that is correct.
-    const output = describeOutput(result);
-    // Not a `HostScratchError`, even though the missing channel is the agent's
-    // own doing: the script RAN and decided, and this job is now as finished as
-    // it will ever be. A host fault keeps a paid job alive for the recovery
-    // loop, which would re-run a script that refuses deterministically, on
-    // every tick, for 24 hours - the customer's money held the whole time for
-    // an answer that cannot change.
-    let hint = REFUSAL_CONTRACT_HINT;
-    if (stated) {
-      hint = REFUSAL_WRONG_EXIT_HINT;
-    } else if (!channelOffered) {
-      hint = REFUSAL_CHANNEL_MISSING_HINT;
-    } else if (file.state === 'unreadable') {
-      hint = REFUSAL_UNREADABLE_HINT;
-    }
-    throw new ScriptExecutionError(result.code, `${hint} ${output}`, undefined, result.stderr);
+  // Every other non-zero exit is the crash its code describes, reason or no
+  // reason: a skill that validates its input early, writes why, and then falls
+  // over further down has not refused. Reporting that as a decision would charge
+  // the customer for a crash and - since a refusal deliberately leaves health
+  // alone - let a chronically broken skill keep selling.
+  if (result.code !== SCRIPT_EXIT_REFUSED && !stated) {
+    return;
   }
+  // Which hint depends on whose fault it was: a script that wrote a reason and
+  // then crashed, one that never wrote the file, a file the agent would not
+  // read, or a runtime that never named one. Blaming the script for the last two
+  // sends an operator hunting a typo in code that is correct.
+  let hint = REFUSAL_CONTRACT_HINT;
+  if (stated) {
+    hint = REFUSAL_WRONG_EXIT_HINT;
+  } else if (!channelOffered) {
+    hint = REFUSAL_CHANNEL_MISSING_HINT;
+  } else if (file.state === 'unreadable') {
+    hint = REFUSAL_UNREADABLE_HINT;
+  }
+  throw new ScriptExecutionError(
+    result.code,
+    `${hint} ${describeOutput(result)}`,
+    undefined,
+    result.stderr,
+  );
 }
