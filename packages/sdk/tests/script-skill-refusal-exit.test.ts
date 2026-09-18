@@ -10,6 +10,7 @@ import {
   refusalMessage,
   SCRIPT_EXIT_REFUSED,
   SCRIPT_REFUSAL_FILE_ENV,
+  SCRIPT_REFUSAL_FILE_MAX_BYTES,
   SCRIPT_REFUSAL_MAX_CHARS,
   SCRIPT_REFUSAL_UNSTATED,
   ScriptRefusalError,
@@ -514,6 +515,18 @@ describe('refusalMessage', () => {
     expect(refusalMessage(`${'The agent refused: '.repeat(40)}size it in USD.`)).toBe(
       'size it in USD.',
     );
+  });
+
+  it('strips a run of labels as long as the whole channel', () => {
+    // The window the labels are stripped inside has to cover everything a
+    // script can WRITE, not a fixed multiple of the 400-character cap: at 8x
+    // this run outran it, the cut landed mid-label, and the customer read
+    // `The provi…` while the reason the provider wrote was thrown away.
+    const run = 'The provider refused: '.repeat(200);
+    expect(run.length).toBeGreaterThan(SCRIPT_REFUSAL_MAX_CHARS * 8);
+    expect(run.length).toBeLessThanOrEqual(SCRIPT_REFUSAL_FILE_MAX_BYTES);
+    expect(refusalMessage(`${run}fund the account first.`)).toBe('fund the account first.');
+    expect(refusalMessage(run)).toBe(SCRIPT_REFUSAL_UNSTATED);
   });
 
   it('falls back when there is nothing to say', () => {

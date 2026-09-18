@@ -119,6 +119,24 @@ export function startsWithRefusalHint(detail: string): boolean {
 }
 
 /**
+ * How much of a reason is walked before the labels come off and the 400-character
+ * clip lands.
+ *
+ * Exactly what the channel itself allows. `readRefusalFile` stops at
+ * `SCRIPT_REFUSAL_FILE_MAX_BYTES`, and UTF-8 never decodes to more characters
+ * than it has bytes, so no reason a SCRIPT can write is cut before its labels
+ * are looked for - which is what keeps a cut from landing inside a label and
+ * handing the customer half of one.
+ *
+ * The same function also runs in the browser on a wire string, where a provider
+ * can publish hundreds of KB; that path is bounded by this window rather than
+ * covered by it, and a run of labels longer than the whole channel survives as a
+ * truncated fragment carrying the ellipsis, which no reader can mistake for the
+ * app's own label.
+ */
+const REFUSAL_STRIP_WINDOW_CHARS = SCRIPT_REFUSAL_FILE_MAX_BYTES;
+
+/**
  * What the customer is allowed to read of a refusal.
  *
  * The provider chose to write this, so it crosses the trust boundary - but as
@@ -153,11 +171,12 @@ export function refusalMessage(reason: string): string {
   // fallback that finds a sentence sitting behind four thousand newlines, which
   // a plain front window would cut away.
   //
-  // Eight times the budget, not a little over it: a script writing `'The
-  // provider refused: '.repeat(30)` would otherwise have the cut land inside a
-  // label and hand the customer half of one. Room for a run of them; the clip
-  // below is what enforces the real cap.
-  let sentence = excerptOwnMessage(reason, SCRIPT_REFUSAL_MAX_CHARS * 8);
+  // Wide enough to hold everything the CHANNEL can carry, not a little over the
+  // 400: a script writing `'The provider refused: '.repeat(200)` and then its
+  // real sentence would otherwise have the window cut inside the run of labels,
+  // leaving half of one to strip against and throwing away the reason the
+  // provider did write. The clip below is what enforces the real cap.
+  let sentence = excerptOwnMessage(reason, REFUSAL_STRIP_WINDOW_CHARS);
   for (;;) {
     const stripped = withoutLeadingLabel(sentence);
     if (stripped === sentence) {
