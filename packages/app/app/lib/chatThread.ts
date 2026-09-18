@@ -41,7 +41,7 @@ export const MAX_THREAD_ENTRIES = 500;
  * because `failed` never clears itself. Paid `pending` entries are not counted
  * here: they resolve on their own, so exempting all of them is already bounded.
  */
-export const MAX_PROTECTED_PAID_FAILURES = 100;
+const MAX_PROTECTED_PAID_FAILURES = 100;
 
 /** Outcome of an on-chain call a job produced. See `ChatThreadEntry.callStatus`. */
 export type CallStatus = 'sent' | 'landed' | 'failed';

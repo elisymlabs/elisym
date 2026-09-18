@@ -1172,7 +1172,7 @@ export class AgentRuntime {
         // tail here would drop the hint for exactly the skills most likely to
         // break the refusal contract.
         log(
-          `${tag} Script "${skill.name}" failed ("${operatorReason(diagnostic, 200)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
+          `${tag} Script "${skill.name}" failed ("${operatorReason(diagnostic)}") but did not declare provider/model in SKILL.md - cannot gate future jobs.`,
         );
         return false;
       }

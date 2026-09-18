@@ -907,12 +907,19 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Same rule for the thread entry: a paid `pending` entry (txHash
                 // present) is exempt from unpaid-aging and trimming - money was
                 // sent, the state must stay visible.
-                void recordEntryTxHash(agentPubkey, jobEventId, signature).catch(() => {
-                  // The bubble reads `txHash` to decide whether to say anything
-                  // about the money. A lost write means it cannot, so the
-                  // composer's note must not stand down for this job.
-                  txRecorded = false;
-                });
+                void recordEntryTxHash(agentPubkey, jobEventId, signature)
+                  .then((wrote) => {
+                    // The RESOLVED value, not a rejection: the thread store
+                    // answers a storage failure with `false` and never throws,
+                    // so a `catch` here would be dead code. The bubble reads
+                    // `txHash` to decide whether to say anything about the
+                    // money; a lost write means it cannot, and the composer's
+                    // note must then stay on screen for this job.
+                    txRecorded = wrote;
+                  })
+                  .catch(() => {
+                    txRecorded = false;
+                  });
                 // Strategy form (blockhash + lastValidBlockHeight) so a dropped tx rejects
                 // at blockhash expiry instead of hanging `buying` forever - the deprecated
                 // single-signature form has no expiry. Then inspect the result: a tx can
@@ -1060,9 +1067,13 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 { stampUnseen: !alreadyOnAgentPage },
               );
               if (delegatedTxHash !== undefined) {
-                void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash).catch(() => {
-                  txRecorded = false;
-                });
+                void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash)
+                  .then((wrote) => {
+                    txRecorded = wrote;
+                  })
+                  .catch(() => {
+                    txRecorded = false;
+                  });
               }
               // A metered card stamps the CEILING at submit time - the real
               // figure does not exist until the work is done. Correct it now, or

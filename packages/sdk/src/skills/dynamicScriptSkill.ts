@@ -195,7 +195,9 @@ export class DynamicScriptSkill implements Skill {
           null,
           result.spawnError.message,
           'script could not be started',
-          result.spawnError.message,
+          // No stderr argument: the child never ran, so there is no stderr. Passing
+          // the spawn message as one has the runtime tell an operator to grep a
+          // stream that never existed - and scan a command PATH for billing words.
         );
       }
       if (result.code === SCRIPT_EXIT_BILLING_EXHAUSTED) {

@@ -90,7 +90,10 @@ export function heldPaymentNote(
   // function the thread bubble calls, so the two surfaces cannot drift into
   // telling one customer two things about one job.
   if (kind === 'provider-refused') {
-    return refusedPaymentNote(paid);
+    // `paid` is already true here - the early return above saw to that - so the
+    // note itself, not another test of it. `refusedPaymentNote` is the same
+    // sentence for the thread bubble, which has no session to ask.
+    return REFUSED_NOTE;
   }
   if (error.startsWith(PAYMENT_STILL_SOUGHT_PREFIX)) {
     return STILL_SOUGHT_NOTE;

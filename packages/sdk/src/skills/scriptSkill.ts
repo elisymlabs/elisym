@@ -171,17 +171,16 @@ const JOB_CHANNEL_ENV_VARS: readonly string[] = [
 ];
 
 export function scopedToolEnv(): NodeJS.ProcessEnv {
-  return withoutInheritedJobChannels(stripSecrets({ ...process.env }));
-}
-
-function stripSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  for (const key of SECRET_ENV_VARS) {
+  // One copy, both strips: this runs per spawn, and a container host's
+  // environment is a few hundred entries to clone.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of [...SECRET_ENV_VARS, ...JOB_CHANNEL_ENV_VARS]) {
     delete env[key];
   }
   return env;
 }
 
-/** The same strip, for an env a CALLER assembled out of `process.env`. */
+/** The channel strip alone, for an env a CALLER assembled out of `process.env`. */
 export function withoutInheritedJobChannels(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const scoped: NodeJS.ProcessEnv = { ...env };
   for (const key of JOB_CHANNEL_ENV_VARS) {

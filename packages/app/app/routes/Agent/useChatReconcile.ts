@@ -15,6 +15,17 @@ import { decodeResult, resultDisplay } from '~/lib/fileResult';
 /** How many already-closed entries one reconcile asks the relays about. */
 const MAX_UNEXPLAINED_LOOKUPS = 20;
 
+/**
+ * How far back a closed entry may still be asked about.
+ *
+ * Not the unpaid-ageing window: that one measures whether a job nobody paid for
+ * has gone stale, and a PAID entry is exempt from it entirely. This measures how
+ * long a customer might still come back to a job and press Retry - a Friday
+ * evening job refused by the provider's recovery loop is read on Monday - so it
+ * is a week. The lookup cap above is what bounds the cost.
+ */
+const UNEXPLAINED_LOOKUP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 type JobResults = Awaited<ReturnType<MarketplaceService['queryJobResults']>>;
 
 /**
@@ -81,7 +92,7 @@ export function useChatReconcile(agentPubkey: string): void {
           (entry) =>
             entry.status === 'failed' &&
             entry.refusal === undefined &&
-            Date.now() - entry.ts < UNPAID_PENDING_MAX_AGE_MS,
+            Date.now() - entry.ts < UNEXPLAINED_LOOKUP_MAX_AGE_MS,
         )
         // Newest first, and only a handful. Asked again on every activation on
         // purpose: the refusal these are waiting for is published LATER than the
@@ -113,12 +124,16 @@ export function useChatReconcile(agentPubkey: string): void {
                 .catch(() => null),
           client.marketplace.queryJobErrors(askAbout, agentPubkey).catch(() => null),
         ]);
-        // transient relay error - the next tab open / hydration retries
+        // A query that THREW - the transport itself failing, not relays that
+        // answered with nothing. An unreachable relay resolves empty, and no
+        // client can tell that from "no result exists": what protects a paid
+        // entry closed on a refusal in that case is hydration, which flips a
+        // failed entry back to completed if the result turns up later.
         queryFailed = results === null;
-        // And nothing is applied to a PENDING entry when it failed: none can be
-        // completed, and a refusal must not close a job whose answer the failed
-        // half never fetched. The closed entries below are unaffected - no
-        // result can arrive for one, since completing an entry clears its
+        // Nothing is applied to a PENDING entry when the query threw: none can
+        // be completed, and a refusal should not close a job whose answer the
+        // failed half never fetched. The closed entries below are unaffected -
+        // no result can arrive for one, since completing an entry clears its
         // status.
         //
         // One entry's IndexedDB write failing (quota, a blocked private window,
@@ -192,10 +207,12 @@ export function useChatReconcile(agentPubkey: string): void {
         }
       }
 
-      // Aging requires the "found no result" precondition: a failed query
-      // proved nothing, so a >24h entry whose result sits on an unreachable
-      // relay must not flip to failed. Scoped to this identity - other
-      // identities' jobs were never queried here.
+      // Ageing requires that a query was actually made: one that threw proved
+      // nothing at all. (A relay that answers empty is indistinguishable from
+      // one with nothing to give, so this is a floor, not a guarantee - the
+      // 24-hour age is the real protection, and a paid entry is exempt from
+      // ageing outright.) Scoped to this identity - other identities' jobs were
+      // never queried here.
       if (!queryFailed) {
         await agePendingEntries(agentPubkey, UNPAID_PENDING_MAX_AGE_MS, identity.publicKey);
       }

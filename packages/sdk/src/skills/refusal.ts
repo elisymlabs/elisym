@@ -199,6 +199,19 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
 }
 
 /**
+ * The script's own output, bounded HERE rather than left for the log to clip.
+ *
+ * An operator log excerpts a long detail from its END, and the hint in front of
+ * this - the line saying the contract was broken, or that this host could not
+ * make a scratch file - would otherwise be erased by a chatty script's progress
+ * meter.
+ */
+function describeOutput(result: { stdout: string; stderr: string }): string {
+  const output = result.stderr.trim() || result.stdout.trim();
+  return output === '' ? '(no output)' : excerptUntrustedTail(output, SCRIPT_REFUSAL_STDERR_CHARS);
+}
+
+/**
  * The refusal contract, for any script runner, in one place.
  *
  * A refusal is exit 43, or exit 0 with a reason written (a pipeline that
@@ -220,19 +233,6 @@ export function isScriptRefusalError(value: unknown): value is ScriptRefusalErro
  * script created it on purpose, so with exit 43 that is a refusal with
  * `SCRIPT_REFUSAL_UNSTATED` for a reason, and health is left alone.
  */
-/**
- * The script's own output, bounded HERE rather than left for the log to clip.
- *
- * An operator log excerpts a long detail from its END, and the hint in front of
- * this - the line saying the contract was broken, or that this host could not
- * make a scratch file - would otherwise be erased by a chatty script's progress
- * meter.
- */
-function describeOutput(result: { stdout: string; stderr: string }): string {
-  const output = result.stderr.trim() || result.stdout.trim();
-  return output === '' ? '(no output)' : excerptUntrustedTail(output, SCRIPT_REFUSAL_STDERR_CHARS);
-}
-
 export function throwIfRefused(
   result: { code: number | null; stdout: string; stderr: string },
   file: RefusalFileRead,
