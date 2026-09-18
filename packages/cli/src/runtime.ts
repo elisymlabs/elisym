@@ -245,12 +245,30 @@ const SCRIPT_BILLING_INVALID_MARKERS: ReadonlyArray<{ phrase: string; cascades: 
   { phrase: 'unauthenticated', cascades: false },
 ];
 
-function scriptMessageLooksLikeBillingOrInvalid(message: string): boolean {
-  // Lowered HERE, not by the caller: a precondition that lives in a parameter
-  // name is one a future caller reads as a description, and a raw `Invalid
-  // x-api-key` would then match nothing and be classified a generic exit.
+/**
+ * Everything the health gate wants to know about a script's own words, from one
+ * pass over them.
+ *
+ * Lowered HERE, once: a precondition that lives in a parameter name is one a
+ * future caller reads as a description (a raw `Invalid x-api-key` would match
+ * nothing and be classified a generic exit), and the text is bounded only by
+ * `MAX_SCRIPT_OUTPUT`, so a second copy of a megabyte for the same scan is a
+ * megabyte too many.
+ */
+function classifyScriptSignal(message: string): {
+  looksBillingOrInvalid: boolean;
+  reason: 'billing' | 'invalid';
+} {
   const lowered = message.toLowerCase();
-  return SCRIPT_BILLING_INVALID_MARKERS.some(({ phrase }) => lowered.includes(phrase));
+  const looksBillingOrInvalid = SCRIPT_BILLING_INVALID_MARKERS.some(({ phrase }) =>
+    lowered.includes(phrase),
+  );
+  const billing =
+    looksBillingOrInvalid &&
+    (lowered.includes('credit balance') ||
+      lowered.includes('billing') ||
+      lowered.includes('insufficient'));
+  return { looksBillingOrInvalid, reason: billing ? 'billing' : 'invalid' };
 }
 
 /**
@@ -303,16 +321,25 @@ const SIGNAL_LEAD_UNITS = 80;
  * becomes two code units), so an index taken from the copy can point hundreds
  * of characters past the signal in the text it is used to quote.
  */
-const KEY_LEVEL_MARKER_RE = new RegExp(
-  // Escaped: today's markers carry no metacharacters, but a future
-  // `insufficient_quota?` would silently change the match, and a `402 (` would
-  // throw at import time and take the whole CLI down before it serves a job.
-  SCRIPT_KEY_LEVEL_MARKERS.map((marker) => marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
-  'i',
-);
+const KEY_LEVEL_MARKER_RE =
+  SCRIPT_KEY_LEVEL_MARKERS.length === 0
+    ? null
+    : new RegExp(
+        // Escaped: today's markers carry no metacharacters, but a future
+        // `insufficient_quota?` would silently change the match, and a `402 (` would
+        // throw at import time and take the whole CLI down before it serves a job.
+        SCRIPT_KEY_LEVEL_MARKERS.map((marker) =>
+          marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        ).join('|'),
+        'i',
+      );
 
 function keyLevelMarkerIndex(text: string): number {
-  return KEY_LEVEL_MARKER_RE.exec(text)?.index ?? -1;
+  // `null` rather than an empty alternation: `new RegExp('')` matches at index 0
+  // of every string, so a list that ever filtered down to nothing would flip the
+  // cascade default from never to ALWAYS - every script failure taking every
+  // model on the operator's key offline.
+  return KEY_LEVEL_MARKER_RE?.exec(text)?.index ?? -1;
 }
 
 /**
@@ -1188,17 +1215,7 @@ export class AgentRuntime {
         );
         return false;
       }
-      // Lowered once and shared: `message` is raw stderr, bounded only by
-      // `MAX_SCRIPT_OUTPUT`.
-      const lower = message.toLowerCase();
-      const looksBillingOrInvalid = scriptMessageLooksLikeBillingOrInvalid(message);
-      const reason: 'billing' | 'invalid' =
-        looksBillingOrInvalid &&
-        (lower.includes('credit balance') ||
-          lower.includes('billing') ||
-          lower.includes('insufficient'))
-          ? 'billing'
-          : 'invalid';
+      const { looksBillingOrInvalid, reason } = classifyScriptSignal(message);
       // The gate and the cascade are separate questions, and the second one is
       // much more expensive to get wrong - see `SCRIPT_KEY_LEVEL_MARKERS`.
       const cascade = keyLevelMarkerIndex(message) !== -1;
@@ -1399,10 +1416,11 @@ export class AgentRuntime {
       }
 
       this.limit(() => this.processJob(job))
-        .catch((e: unknown) => {
-          // `describeForOperator`, not `e.message`: a rejected null here throws
-          // inside the catch handler, and nothing downstream would report it.
-          this.callbacks.onJobError?.(job.jobId, describeForOperator(e));
+        .catch((err: unknown) => {
+          // `describeForOperator`, not `err.message`: a rejected null here
+          // throws inside the catch handler, and nothing downstream would
+          // report it.
+          this.callbacks.onJobError?.(job.jobId, describeForOperator(err));
         })
         .finally(() => {
           this.inFlight.delete(job.jobId);

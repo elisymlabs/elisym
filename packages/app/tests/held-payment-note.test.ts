@@ -81,9 +81,19 @@ describe('what a paying customer is told about their money', () => {
     }
   });
 
-  it('still reassures through an agent outage, whatever the wording', () => {
-    expect(heldPaymentNote('Internal processing error', true)).toMatch(/back online/);
+  it('reassures through an agent outage - the one failure that really is held', () => {
+    // The health gate refuses the job BEFORE running it and keeps it paid for
+    // the recovery loop, so "the job will be retried automatically" is true of
+    // this message and of no other.
     expect(heldPaymentNote('Agent temporarily unavailable', true)).toMatch(/back online/);
+  });
+
+  it('does not promise a retry for the mask on a job that is already closed', () => {
+    // `Internal processing error` is what the runtime says when it will not
+    // describe a terminal failure. The job is failed and nothing will re-run it;
+    // promising otherwise is what keeps someone waiting instead of contacting
+    // the provider while the transaction is fresh.
+    expect(heldPaymentNote('Internal processing error', true)).toBeUndefined();
   });
 
   it('never talks about held money to someone who has not paid', () => {

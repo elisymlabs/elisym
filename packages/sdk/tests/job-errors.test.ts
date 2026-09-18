@@ -23,8 +23,16 @@ describe('classifyJobError', () => {
     expect(classifyJobError('Agent temporarily unavailable')).toBe('agent-unavailable');
   });
 
-  it('classifies the API-leaks sanitization mask', () => {
-    expect(classifyJobError('Internal processing error')).toBe('agent-unavailable');
+  it('does NOT read the sanitization mask as an outage', () => {
+    // It is the runtime's mask for a terminal failure it will not describe, so
+    // the job is closed and nothing retries it. Calling it an outage had the app
+    // tell a paying customer their money was held and the result would arrive.
+    expect(classifyJobError('Internal processing error')).toBe('unknown');
+  });
+
+  it('still reads the health gate`s own message as an outage', () => {
+    // That one really does keep the job paid for the recovery loop.
+    expect(classifyJobError('Agent temporarily unavailable')).toBe('agent-unavailable');
   });
 
   it('classifies raw Anthropic auth errors that leak through script skills', () => {

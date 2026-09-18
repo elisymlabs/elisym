@@ -56,9 +56,17 @@ export const PROVIDER_REFUSED_PREFIX = 'The provider refused: ';
  */
 export const PROVIDER_FAILED_MESSAGE = 'The agent could not complete this job.';
 
+/**
+ * NOT in this list: `Internal processing error`, the runtime's mask for a
+ * terminal failure it will not describe. It reads like an outage and is not
+ * one - the job is closed and nothing will retry it - so classifying it as
+ * `agent-unavailable` had the app promise a paying customer that their payment
+ * was held and the result would arrive automatically. `Agent temporarily
+ * unavailable` stays: that one IS the health gate, and the job it refuses
+ * really does keep its payment for the recovery loop.
+ */
 const AGENT_UNAVAILABLE_MARKERS = [
   'agent temporarily unavailable',
-  'internal processing error',
   'invalid x-api-key',
   'invalid api key',
   'invalid_api_key',

@@ -697,9 +697,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         let paidLocally = false;
         // Whether the THREAD holds the payment. The failed bubble reads `txHash`
         // from the entry to decide whether to explain where the money went, so a
-        // write that never landed has to keep the composer's note on screen -
-        // otherwise a refused customer who paid is shown a reason and no mention of
-        // their money anywhere.
+        // write that never landed - or has not landed YET - has to keep the
+        // composer's note on screen; otherwise a refused customer who paid is
+        // shown a reason and no mention of their money anywhere. True until
+        // there is a payment to record, false while one is in flight.
         let txRecorded = true;
         // Set once the payment tx is broadcast (signature obtained) but before
         // confirmation completes. A wait-window timeout in that window is NOT a hard
@@ -907,6 +908,10 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 // Same rule for the thread entry: a paid `pending` entry (txHash
                 // present) is exempt from unpaid-aging and trimming - money was
                 // sent, the state must stay visible.
+                // False from the moment the write is ISSUED: a refusal can arrive
+                // before it settles, and reading the optimistic value would stand
+                // the note down for a bubble with no `txHash` to speak from.
+                txRecorded = false;
                 void recordEntryTxHash(agentPubkey, jobEventId, signature)
                   .then((wrote) => {
                     // The RESOLVED value, not a rejection: the thread store
@@ -1067,6 +1072,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                 { stampUnseen: !alreadyOnAgentPage },
               );
               if (delegatedTxHash !== undefined) {
+                txRecorded = false;
                 void recordEntryTxHash(agentPubkey, jobEventId, delegatedTxHash)
                   .then((wrote) => {
                     txRecorded = wrote;

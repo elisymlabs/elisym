@@ -1009,7 +1009,7 @@ export class MarketplaceService {
       if (eTag === undefined || !wanted.has(eTag)) {
         continue;
       }
-      if (ev.tags.find((t) => t[0] === 'status')?.[1] !== 'error') {
+      if (ev.tags.find((tag) => tag[0] === 'status')?.[1] !== 'error') {
         continue;
       }
       if (!verifyEvent(ev)) {

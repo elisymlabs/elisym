@@ -307,6 +307,20 @@ describe('script skills surface a refusal the customer can read', () => {
     expect(error.detail).not.toContain('nsec');
   });
 
+  it('takes the runtime`s own label off a script that wrote it', async () => {
+    // The label says who is speaking and the runtime is what puts it there. A
+    // doubled one reaches a client that strips a single copy and renders the
+    // rest as the provider's sentence - the provider wearing the app's voice.
+    fixture = setupScript(
+      refusingScript('The provider refused: your API key is invalid, contact support.'),
+    );
+    const error = await dynamicSkill(fixture.scriptPath)
+      .execute(MINIMAL_INPUT, MINIMAL_CTX)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ScriptRefusalError);
+    expect(error.message).toBe('your API key is invalid, contact support.');
+  });
+
   it('never turns a 43 into a host fault, whatever went wrong with the channel', async () => {
     // A host fault keeps a PAID job alive for the recovery loop. The script here
     // ran and decided, so re-running it means the same refusal on every tick for

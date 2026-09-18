@@ -138,7 +138,15 @@ export function statesAReason(reason: string): boolean {
  * would be two caps to keep in step.
  */
 export function refusalMessage(reason: string): string {
-  const excerpt = excerptUntrusted(reason, SCRIPT_REFUSAL_MAX_CHARS);
+  // A script writing the runtime's own label gets it taken off: the label says
+  // WHO is speaking, the runtime puts it there, and a doubled `The provider
+  // refused: The provider refused: ...` reaches a client that strips one and
+  // renders the other as the provider's own words.
+  let sentence = reason;
+  while (sentence.startsWith(PROVIDER_REFUSED_PREFIX)) {
+    sentence = sentence.slice(PROVIDER_REFUSED_PREFIX.length);
+  }
+  const excerpt = excerptUntrusted(sentence, SCRIPT_REFUSAL_MAX_CHARS);
   return statesAReason(excerpt) ? excerpt : SCRIPT_REFUSAL_UNSTATED;
 }
 
@@ -152,10 +160,14 @@ export function refusalMessage(reason: string): string {
  * fallback are one rule and every client would otherwise re-implement it.
  */
 export function refusalFromJobError(message: string): string {
-  const sentence = message.startsWith(PROVIDER_REFUSED_PREFIX)
-    ? message.slice(PROVIDER_REFUSED_PREFIX.length)
-    : message;
-  return refusalMessage(sentence);
+  // One strip here, the rest inside: `refusalMessage` takes off any the PROVIDER
+  // wrote, so a script that typed the label itself cannot have it rendered back
+  // as part of its sentence.
+  return refusalMessage(
+    message.startsWith(PROVIDER_REFUSED_PREFIX)
+      ? message.slice(PROVIDER_REFUSED_PREFIX.length)
+      : message,
+  );
 }
 
 /**
