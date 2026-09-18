@@ -43,6 +43,21 @@ export function refusedPaymentNote(paid: boolean): string | undefined {
   return paid ? REFUSED_NOTE : undefined;
 }
 
+const CLIENT_FAILED_NOTE =
+  'Your payment was sent. This step failed in your browser, not at the agent, so the job may still be running - check job history before buying it again.';
+
+/**
+ * What to say when the payment landed and THIS SIDE then failed.
+ *
+ * None of the notes above can be true here: they read a provider's verdict, and
+ * there is no verdict - a wallet, an RPC or a local step threw after the money
+ * moved. Saying nothing is the one answer that is certainly wrong, because the
+ * customer is looking at a failure with their payment already gone.
+ */
+export function clientFailureNote(paid: boolean): string | undefined {
+  return paid ? CLIENT_FAILED_NOTE : undefined;
+}
+
 /**
  * What to tell a customer who has already sent a payment about the money, given
  * the failure they just hit - or `undefined` when there is nothing TRUE to say.

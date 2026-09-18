@@ -1134,7 +1134,13 @@ export class AgentRuntime {
         // by something that predates the field, and losing the diagnostic
         // silently is worse than the stdout-steering risk it guards.
         message = err.stderr ?? err.detail;
-        diagnostic = message.trim() === '' ? err.detail : message;
+        // `detail` whenever the SDK front-loaded a hint onto it. That line -
+        // the contract was not kept, the agent could not read the file, it
+        // never offered one - is the whole diagnosis, and it is not in stderr
+        // at all: without this the operator asking why their key is gated reads
+        // the script's progress meter instead.
+        diagnostic =
+          startsWithRefusalHint(err.detail) || message.trim() === '' ? err.detail : message;
         // The FIELD, not the class: an error built without one falls back to
         // `detail`, which falls back to stdout, and telling an operator to grep
         // a stderr that never held those words is the confusion this avoids.

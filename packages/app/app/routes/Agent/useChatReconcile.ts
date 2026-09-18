@@ -30,17 +30,6 @@ const MAX_UNEXPLAINED_LOOKUPS = 20;
 
 type JobResults = Awaited<ReturnType<MarketplaceService['queryJobResults']>>;
 
-/**
- * Closed entries this session has already asked about, so a tab switch does not
- * re-download and re-verify the same events.
- *
- * Most failures - an outage, a timeout, ageing - never produce a refusal, so
- * without this each one is queried again on every activation for a day. In
- * memory rather than in the thread: a reload asking once more is cheap, and it
- * keeps a transient fact out of the customer's durable record.
- */
-const askedAbout = new Set<string>();
-
 export function useChatReconcile(agentPubkey: string): void {
   const { client } = useElisymClient();
   const idCtx = useIdentity();
@@ -94,12 +83,12 @@ export function useChatReconcile(agentPubkey: string): void {
             entry.refusal === undefined &&
             Date.now() - entry.ts < UNPAID_PENDING_MAX_AGE_MS,
         )
-        // Newest first, and only a handful: most of these failed for reasons
-        // that will never produce a refusal (an outage, a timeout, ageing), and
-        // nothing records that they were already asked about - so an unbounded
-        // list would re-download and re-verify the same events on every tab
-        // switch for a day.
-        .filter((entry) => !askedAbout.has(entry.jobEventId))
+        // Newest first, and only a handful. Asked again on every activation on
+        // purpose: the refusal these are waiting for is published LATER than the
+        // failure - the provider's recovery loop decides minutes after the wait
+        // window closed - so remembering "already asked, nothing there" is
+        // exactly how the late verdict would be missed. The cap is what bounds
+        // the cost instead.
         .sort((left, right) => right.ts - left.ts)
         .slice(0, MAX_UNEXPLAINED_LOOKUPS);
 
@@ -188,12 +177,6 @@ export function useChatReconcile(agentPubkey: string): void {
           for (const entry of unexplained) {
             if (cancelled) {
               return;
-            }
-            // Asked, whatever the answer: a second ask can only return the same
-            // nothing. A relay failure is the exception - `errors` is null then,
-            // and the entry stays in the list for the next activation.
-            if (errors !== null) {
-              askedAbout.add(entry.jobEventId);
             }
             const late = errors?.get(entry.jobEventId);
             if (late !== undefined && classifyJobError(late) === 'provider-refused') {

@@ -27,7 +27,11 @@ import { createKeyedQueue, webLocks, type LocksAdapter } from './locks';
 
 export const CHAT_THREAD_KEY_PREFIX = 'chat-thread:';
 
-/** Per-agent entry cap; oldest-by-`ts` trimmed on write, paid jobs exempt. */
+/**
+ * Per-agent entry cap; oldest-by-`ts` trimmed on write. A paid job that is still
+ * OPEN is exempt, and so are the newest paid failures - see `trimToCap`. A paid
+ * job that completed is trimmed like any other.
+ */
 export const MAX_THREAD_ENTRIES = 500;
 
 /**
@@ -283,13 +287,21 @@ function trimToCap(entries: ChatThreadEntry[]): ChatThreadEntry[] {
   if (entries.length <= MAX_THREAD_ENTRIES) {
     return entries;
   }
-  const keptFailures = new Set(
-    entries
-      .filter(isPaidFailed)
-      .sort((left, right) => right.ts - left.ts)
-      .slice(0, MAX_PROTECTED_PAID_FAILURES)
-      .map((entry) => entry.jobEventId),
-  );
+  // `entries` arrives `ts`-ascending, so the newest paid failures are the ones
+  // met first walking from the end - no sort, no filtered copy, just the ids
+  // worth keeping. This runs on the same tick that already re-serializes the
+  // whole thread into IndexedDB.
+  const keptFailures = new Set<string>();
+  for (
+    let index = entries.length - 1;
+    index >= 0 && keptFailures.size < MAX_PROTECTED_PAID_FAILURES;
+    index -= 1
+  ) {
+    const entry = entries[index];
+    if (entry !== undefined && isPaidFailed(entry)) {
+      keptFailures.add(entry.jobEventId);
+    }
+  }
   let excess = entries.length - MAX_THREAD_ENTRIES;
   const kept: ChatThreadEntry[] = [];
   for (const entry of entries) {

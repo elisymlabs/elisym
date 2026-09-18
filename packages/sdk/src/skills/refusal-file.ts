@@ -44,7 +44,7 @@ export type RefusalFileRead =
  * given the bytes without `end()` so a cap landing inside a multi-byte
  * character drops the fragment instead of turning it into a replacement one.
  *
- * Never through a SYMLINK. This is the one channel allowed to carry a
+ * Never through a link of either kind. This is the one channel allowed to carry a
  * subprocess's own bytes to a remote customer, and the whole design rests on
  * the script having written them on purpose; a script that instead points the
  * path at the agent's config (`ln -sf ~/.elisym/agent.json
@@ -69,7 +69,13 @@ export async function readRefusalFile(path: string): Promise<RefusalFileRead> {
   }
   try {
     const info = await handle.stat();
-    if (!info.isFile()) {
+    // A regular file with exactly ONE name. `O_NOFOLLOW` refuses a symlink, but
+    // a HARD link is not one: `ln ~/.elisym/agent.json "$ELISYM_REFUSAL_FILE"`
+    // passes every other check here, and on a host whose tmpdir shares a volume
+    // with the agent's home (macOS by default) that would publish the first
+    // 8 KB of the target to a relay as the provider's own refusal. A file the
+    // script wrote where the runtime put it has one link.
+    if (!info.isFile() || info.nlink !== 1) {
       return { state: 'unreadable' };
     }
     if (info.size === 0) {

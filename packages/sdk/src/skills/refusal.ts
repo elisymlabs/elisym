@@ -103,10 +103,16 @@ export const REFUSAL_CHANNEL_MISSING_HINT =
  * buys it is having its own output quoted from the front.
  */
 export function startsWithRefusalHint(detail: string): boolean {
-  return [REFUSAL_CONTRACT_HINT, REFUSAL_UNREADABLE_HINT, REFUSAL_WRONG_EXIT_HINT].some((hint) =>
-    detail.startsWith(hint),
-  );
+  return REFUSAL_HINTS.some((hint) => detail.startsWith(hint));
 }
+
+/** All four arms, so none of them can be left out of a reader by accident. */
+const REFUSAL_HINTS = [
+  REFUSAL_CONTRACT_HINT,
+  REFUSAL_CHANNEL_MISSING_HINT,
+  REFUSAL_UNREADABLE_HINT,
+  REFUSAL_WRONG_EXIT_HINT,
+];
 
 /**
  * Whether a written reason says anything a reader would SEE.

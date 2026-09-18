@@ -1,6 +1,6 @@
 import { classifyJobError } from '@elisym/sdk';
 import { boundedErrorText, customerErrorText } from '../../lib/errorText';
-import { heldPaymentNote } from '../../lib/heldPaymentNote';
+import { clientFailureNote, heldPaymentNote } from '../../lib/heldPaymentNote';
 
 interface Props {
   error: string;
@@ -28,11 +28,12 @@ export function BuyErrorNote({ error, paid, fromJob, refusalInThread = false }: 
   // words, but a job error can be a stranger's, and neither surface may paint
   // control characters or thousands of unbroken characters into the page.
   if (!fromJob) {
-    // `'unknown'`, not a classification: this text is the app's own, so none of
-    // the provider verdicts can apply to it - but the money question is still
-    // asked rather than dropped, since `paid` can be true here the moment a
-    // post-payment step fails on this side.
-    return <Note body={boundedErrorText(error)} held={heldPaymentNote(error, paid, 'unknown')} />;
+    // Not classified at all: this text is the app's own, so no provider verdict
+    // applies to it - and `heldPaymentNote` would have nothing true to say,
+    // since every sentence it knows is one the RUNTIME writes. The money
+    // question still gets an answer, because `paid` can be true here the moment
+    // a step fails on this side after the payment landed.
+    return <Note body={boundedErrorText(error)} held={clientFailureNote(paid)} />;
   }
   // Classified ONCE, for both decisions below.
   const kind = classifyJobError(error);
@@ -45,16 +46,11 @@ export function BuyErrorNote({ error, paid, fromJob, refusalInThread = false }: 
   return <Note body={customerErrorText(error, kind)} held={heldPaymentNote(error, paid, kind)} />;
 }
 
-function Note({ body, held }: { body?: string; held?: string }) {
-  if (body === undefined && held === undefined) {
-    return null;
-  }
+function Note({ body, held }: { body: string; held?: string }) {
   return (
     <div className="px-20 pb-12 text-xs break-words text-red-500">
-      {body !== undefined && <div>{body}</div>}
-      {held !== undefined && (
-        <div className={body === undefined ? 'text-text-2' : 'mt-4 text-text-2'}>{held}</div>
-      )}
+      <div>{body}</div>
+      {held !== undefined && <div className="mt-4 text-text-2">{held}</div>}
     </div>
   );
 }
