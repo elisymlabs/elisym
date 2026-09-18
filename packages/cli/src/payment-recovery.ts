@@ -18,7 +18,7 @@
  * health monitor; the runtime keeps the routing and the ledger keeps the
  * durable state.
  */
-import { DEFAULTS, calculateProtocolFee } from '@elisym/sdk';
+import { DEFAULTS, calculateProtocolFee, degenerateReference } from '@elisym/sdk';
 import type {
   Network,
   PaymentRequestData,
@@ -991,6 +991,35 @@ export class PaymentRecovery {
     try {
       const rpc = createSolanaRpc(getRpcUrl(this.network));
       const protocolConfig = await this.fetchProtocolConfig();
+
+      // After the config, because the treasury comes from it and a reference
+      // equal to the treasury drowns the payment in its history whether or not
+      // the request names it. Gated on the job NOT already owning a settlement:
+      // one that does has a signature to re-verify directly, and the reference
+      // never has to be listed at all.
+      //
+      // Honest about what this buys: it finds no money. A degenerate reference
+      // leaves the payment impossible to single out, and the denylist inside `verifyPayment`
+      // would refuse the re-verification anyway. What changes is the shape of
+      // the ending - the job fails NOW as unusable provider state instead of
+      // being deferred for 24 hours and then failing as "the agent did not
+      // recover". The cost is named too: the customer has most likely paid, and
+      // `corrupt-state` closes the job.
+      if (!isUsableSignature(entry.payment_signature)) {
+        const degenerate = await degenerateReference(
+          request,
+          this.network,
+          protocolConfig.treasury,
+        );
+        if (degenerate !== undefined) {
+          log(
+            `[${shortId}] Recovery: the payment request's reference (${request.reference}) is an ` +
+              `address the payment itself is computed from, so the transfer cannot be singled out ` +
+              `by listing it. This is provider-side state, not a chain or customer problem.`,
+          );
+          return 'corrupt-state';
+        }
+      }
 
       /**
        * `retries` is the per-verification budget: `REFERENCE_SCAN_VERIFY_RETRIES`

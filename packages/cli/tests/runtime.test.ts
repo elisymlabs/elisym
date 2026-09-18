@@ -45,8 +45,15 @@ const DEFINITIVE_NO_PAYMENT = 'No matching transaction found for reference key';
  */
 const PROVIDER_ADDRESS = 'So11111111111111111111111111111111111111112';
 const TREASURY_ADDRESS = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
-const PAYMENT_REFERENCE = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
-const PAYMENT_REFERENCE_B = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+/**
+ * A plain random address, and it has to stay one: the verifier refuses a
+ * reference that is itself an address the payment is computed from - a program
+ * id among them - because listing such an address cannot single out this
+ * transfer. An earlier fixture used the memo program's address here simply
+ * because it was valid base58.
+ */
+const PAYMENT_REFERENCE = 'DLZ1JYbYLEe4QowxxuNtGEzeYkJiSqmNHZhQSiAfzHms';
+const PAYMENT_REFERENCE_B = 'JAJY3XFw5RJXQBjWG4VSTFVXaW53FvxDeve1kVbVJZYD';
 const PAYMENT_REFERENCE_C = 'ComputeBudget111111111111111111111111111111';
 const PAYMENT_REFERENCE_D = 'SysvarRent111111111111111111111111111111111';
 

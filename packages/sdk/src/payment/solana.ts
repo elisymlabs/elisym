@@ -51,6 +51,7 @@ import {
   resolveAssetFromPaymentRequest,
   splAssetsForNetwork,
 } from './assets';
+import { degenerateReference, degenerateReferenceSync } from './degenerate-reference';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
 import { parsePaymentRequest } from './schema';
@@ -263,6 +264,22 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
 
     const expectedFee = calculateProtocolFee(data.amount, config.feeBps);
     const treasury = config.treasury;
+
+    // Ahead of the fee codes on purpose, and the trade is worth naming: those
+    // are about diverting part of the customer's payment, and this preempts
+    // them. A degenerate reference harms both sides and costs the customer the
+    // WHOLE payment - the transfer can no longer be picked out - so it is first.
+    // `recipient_mismatch` still goes ahead of both.
+    if (degenerateReferenceSync(data, network, treasury) !== undefined) {
+      return {
+        code: 'degenerate_reference',
+        message:
+          `Reference key ${data.reference} is an address this payment is computed from. ` +
+          `Verification lists the reference's history to find the transfer, so a payment to ` +
+          `this request cannot be found again once other traffic pushes it out of the ` +
+          `window. Ask the provider for a payment request with a fresh reference.`,
+      };
+    }
 
     // feeBps=0 is a legal on-chain state (set_fee_bps only enforces <= MAX_FEE_BPS).
     // createPaymentRequest still populates fee_address=treasury and fee_amount=0 in
@@ -489,6 +506,23 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       };
     }
     const mint = asset.mint;
+
+    // After the asset resolves (the check compares the mint and its token
+    // program, so it throws without one) and before either path runs: both list
+    // the reference's history, which is exactly what a degenerate reference
+    // makes useless.
+    if (
+      (await degenerateReference(paymentRequest, paymentRequest.network ?? 'devnet', treasury)) !==
+      undefined
+    ) {
+      return {
+        verified: false,
+        code: 'degenerate_reference',
+        error:
+          `Reference key ${paymentRequest.reference} is an address this payment is computed ` +
+          `from, so listing it cannot single out this transfer.`,
+      };
+    }
 
     if (options?.txSignature) {
       return this._verifyBySignature(

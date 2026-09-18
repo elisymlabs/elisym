@@ -479,6 +479,15 @@ export interface PaymentRequestData {
  * a transaction targeted this request and moved at least the expected amounts,
  * NOT that it is exclusive to this request. See `PaymentStrategy.verifyPayment`.
  */
+/**
+ * Why a verification refused, where the caller can act on the answer.
+ *
+ * THIS LIST GROWS IN MINOR RELEASES. Do not write an exhaustive `switch` with
+ * a `never` branch over it - match the members you handle and let the rest fall
+ * through to whatever you do with `error`.
+ */
+export type VerifyRefusalCode = 'degenerate_reference';
+
 export interface VerifyResult {
   verified: boolean;
   /**
@@ -486,6 +495,11 @@ export interface VerifyResult {
    * de-duplicates on. Present on every success; absent on failure.
    */
   txSignature?: string;
+  /**
+   * Set only for refusals a caller can do something about. Absent does not mean
+   * "verified": read `verified`, and treat `error` as the human-readable half.
+   */
+  code?: VerifyRefusalCode;
   error?: string;
 }
 
@@ -495,6 +509,13 @@ export interface VerifyOptions {
   txSignature?: string;
 }
 
+/**
+ * Why a payment request was refused.
+ *
+ * THIS LIST GROWS IN MINOR RELEASES. Do not write an exhaustive `switch` with
+ * a `never` branch over it - match the members you handle and show `message`
+ * for the rest, which is what every caller in this repository does.
+ */
 export type PaymentValidationCode =
   | 'invalid_json'
   | 'invalid_amount'
@@ -511,7 +532,8 @@ export type PaymentValidationCode =
   | 'missing_fee'
   | 'invalid_fee_params'
   | 'invalid_asset'
-  | 'asset_mismatch';
+  | 'asset_mismatch'
+  | 'degenerate_reference';
 
 export interface PaymentValidationError {
   code: PaymentValidationCode;

@@ -125,6 +125,19 @@ describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
     expect(result).toBeNull();
   });
 
+  it('rejects a reference that is an address the payment is computed from', () => {
+    // Preempts the fee codes deliberately: those are about diverting PART of
+    // the payment, this costs the customer all of it, because the transfer
+    // becomes unfindable once other traffic pushes it out of the listing.
+    const result = payment.validatePaymentRequest(
+      JSON.stringify({ ...validRequest, reference: recipientAddr }),
+      CONFIG,
+      'devnet',
+      recipientAddr,
+    );
+    expect(result?.code).toBe('degenerate_reference');
+  });
+
   it('rejects invalid JSON', () => {
     const result = payment.validatePaymentRequest('not json', CONFIG, 'devnet');
     expect(result?.code).toBe('invalid_json');
@@ -794,6 +807,27 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         ...FAST,
       });
       expect(result.verified).toBe(true);
+    });
+
+    it('refuses a reference equal to the recipient, before it ever lists it', async () => {
+      // No RPC answer is configured on purpose: the refusal has to come before
+      // either path runs, because both of them list the reference's history and
+      // that is exactly what a degenerate reference makes useless.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () => Promise.reject(new Error('the verifier must not get this far')),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ reference: recipientAddr }),
+        CONFIG,
+        { txSignature: 'degenerateSig' as Signature, ...FAST },
+      );
+
+      expect(result.verified).toBe(false);
+      expect(result.code).toBe('degenerate_reference');
     });
 
     it('refuses when the balance arrays disagree on length', async () => {

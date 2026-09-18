@@ -60,11 +60,11 @@ const REAL_SIGNATURE = '5'.repeat(88);
  * before the strategy ever dispatches on the signature, and both versions would
  * then agree for a reason that has nothing to do with the gate under test.
  */
-function paymentRequestJson(): string {
+function paymentRequestJson(reference: string = REFERENCE): string {
   return JSON.stringify({
     recipient: RECIPIENT,
     amount: PRICE,
-    reference: REFERENCE,
+    reference,
     fee_address: TREASURY,
     fee_amount: 0,
     created_at: Math.floor(Date.now() / 1000),
@@ -109,7 +109,7 @@ const JOB_ID = 'job-under-test';
  * object it answers `unknown-job`, and every version defers for that reason
  * instead of the one under test.
  */
-function seedLedger(paymentSignature?: unknown): void {
+function seedLedger(paymentSignature?: unknown, reference: string = REFERENCE): void {
   const entry: Record<string, unknown> = {
     job_id: JOB_ID,
     status: 'paid',
@@ -117,7 +117,7 @@ function seedLedger(paymentSignature?: unknown): void {
     input_type: 'text',
     tags: [],
     customer_id: 'customer-1',
-    payment_request: paymentRequestJson(),
+    payment_request: paymentRequestJson(reference),
     created_at: Date.now(),
     retry_count: 0,
   };
@@ -218,6 +218,45 @@ describe('a signature the ledger cannot key a claim on', () => {
       );
 
       expect(outcome).toBe('deferred');
+    });
+  });
+
+  describe('a reference the payment is computed from', () => {
+    it('fails the job now instead of deferring it for a day', async () => {
+      // Listing this reference lists the provider's own wallet, so the
+      // customer's transfer is not findable and no amount of waiting helps.
+      // Honest about what this buys: not money - the denylist inside
+      // `verifyPayment` would refuse the re-verification anyway - but the shape
+      // of the ending. Without it the job is deferred to the 24h cutoff and
+      // then fails as "the agent did not recover".
+      seedLedger(undefined, RECIPIENT);
+
+      const outcome = await recovery.reVerifyPayment(
+        entryUnderTest(),
+        paymentRequestJson(RECIPIENT),
+        PRICE,
+        log,
+      );
+
+      expect(outcome).toBe('corrupt-state');
+    });
+
+    it('leaves a job that already owns a settlement alone', async () => {
+      // Gated on the job NOT owning one: a job that does has a signature to
+      // re-verify directly and never lists the reference at all, so the check
+      // would only cost it a terminal failure it does not deserve.
+      seedLedger(REAL_SIGNATURE, RECIPIENT);
+      listedSignatures = [];
+      transactionsBySignature.set(REAL_SIGNATURE, payingTransaction());
+
+      const outcome = await recovery.reVerifyPayment(
+        entryUnderTest(),
+        paymentRequestJson(RECIPIENT),
+        PRICE,
+        log,
+      );
+
+      expect(outcome).not.toBe('corrupt-state');
     });
   });
 });

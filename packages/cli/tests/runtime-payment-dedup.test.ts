@@ -87,7 +87,14 @@ const REF_SCAN_CANDIDATE = 'refScanCandidateSignature';
  * `@solana/kit` exactly as it would be in production, so a fixture that uses one
  * is not exercising the shipped code at all.
  */
-const PAYMENT_REFERENCE = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+/**
+ * A plain random address, and it has to stay one: the verifier refuses a
+ * reference that is itself an address the payment is computed from - a program
+ * id among them - because listing such an address cannot single out this
+ * transfer. An earlier fixture used the memo program's address here simply
+ * because it was valid base58.
+ */
+const PAYMENT_REFERENCE = 'DLZ1JYbYLEe4QowxxuNtGEzeYkJiSqmNHZhQSiAfzHms';
 const PROVIDER_ADDRESS = 'So11111111111111111111111111111111111111112';
 const TREASURY_ADDRESS = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
 /** Matches the `getProtocolConfig` mock below; 3% of `PRICE_SUBUNITS`. */

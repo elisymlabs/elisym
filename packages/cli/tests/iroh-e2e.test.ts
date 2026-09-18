@@ -42,7 +42,7 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
       createPaymentRequest: vi.fn().mockReturnValue({
         recipient: 'So11111111111111111111111111111111111111112',
         amount: 100_000,
-        reference: 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+        reference: 'DLZ1JYbYLEe4QowxxuNtGEzeYkJiSqmNHZhQSiAfzHms',
         fee_address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
         fee_amount: 3_000,
         created_at: Math.floor(Date.now() / 1000),
