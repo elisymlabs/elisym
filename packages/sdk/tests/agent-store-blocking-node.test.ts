@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ensureGitignoreHasIrohEntry,
+  hashFile,
   isBlockingNode,
   listAgents,
   loadAgent,
@@ -13,6 +14,7 @@ import {
   readAgentPublic,
   readMediaCache,
 } from '../src/agent-store';
+import { loadGlobalConfig } from '../src/config/global';
 import { loadSkillsFromDir } from '../src/skills';
 
 /**
@@ -240,6 +242,32 @@ describe('the rest of the files an agent directory holds', () => {
     const loaded = loadPoliciesFromDir(dir);
 
     expect(loaded.map((policy) => policy.type)).toEqual(['tos']);
+  });
+
+  it('refuses the global config rather than reading defaults off a node', async () => {
+    // `~/.elisym/config.yaml` sits in the same root, is read at MCP startup, and
+    // its own `catch` treats only ENOENT as an absence - which a blocking node
+    // never reaches, because the read never settles.
+    const root = join(sandbox, 'global-config');
+    mkdirSync(root, { recursive: true });
+    const piped = join(root, 'config.yaml');
+    makeFifo(piped);
+    startWriterOnce(piped, 'relays:\n  - wss://relay.example.invalid\n');
+
+    await expect(loadGlobalConfig(piped)).rejects.toThrow(/pipe, socket or device/);
+  });
+
+  it("refuses to hash a picture that blocks, which is how it reaches the agent's yaml", async () => {
+    // The path comes out of `elisym.yaml` - a picture or a banner - and nobody
+    // validates its node type. `lookupCachedUrl` turns this into "not cached",
+    // which is what an unreadable file already gets.
+    const dir = join(sandbox, 'media');
+    mkdirSync(dir, { recursive: true });
+    const piped = join(dir, 'banner.png');
+    makeFifo(piped);
+    startWriterOnce(piped, 'not really a png, but readable');
+
+    await expect(hashFile(piped)).rejects.toThrow(/pipe, socket or device/);
   });
 
   it('leaves a .gitignore that blocks exactly as it found it', async () => {

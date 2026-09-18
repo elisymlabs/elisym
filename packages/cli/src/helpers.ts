@@ -12,6 +12,7 @@ import {
   resolveUsdcAsset,
 } from '@elisym/sdk';
 import {
+  isBlockingNodeSync,
   AgentNameSchema,
   type AgentSource,
   type ListedAgent,
@@ -363,18 +364,16 @@ async function neighborPaidState(
     }
     const skillMd = join(entryPath, 'SKILL.md');
     try {
-      const stats = statSync(skillMd);
-      // A blocking node here would hang the synchronous read below and take the
-      // event loop with it, so the loader is not called for this neighbor at
-      // all - the whole neighbor goes `'unknown'`, whatever else is in
-      // `skills/`. Not "not a regular file": a directory answers EISDIR at once
-      // and is a signal of its own.
-      if (
-        stats.isFIFO() ||
-        stats.isSocket() ||
-        stats.isCharacterDevice() ||
-        stats.isBlockDevice()
-      ) {
+      // The SHARED predicate, not a fourth hand-written copy: these gates have
+      // to agree, and one of them drifting is how a node type stops being
+      // blocking in one reader and not in another. A blocking node here would
+      // hang the synchronous read below and take the event loop with it, so the
+      // loader is not called for this neighbor at all - the whole neighbor goes
+      // `'unknown'`, whatever else is in `skills/`.
+      //
+      // It swallows its own `stat` error, which is why the read below still
+      // runs: ENOENT has to reach the `catch` to stay out of the denominator.
+      if (isBlockingNodeSync(skillMd)) {
         return 'unknown';
       }
       readFileSync(skillMd, 'utf-8');

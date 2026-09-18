@@ -25,6 +25,7 @@
  */
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isBlockingNode } from '@elisym/sdk/agent-store';
 import { X402_CACHE_TTL_MS } from './constants.js';
 
 export const X402_JOBS_FILE = '.x402-jobs.json';
@@ -87,6 +88,14 @@ export class X402JobStore {
   }
 
   private async load(): Promise<X402JobsFile> {
+    // Ahead of the read for the reason the `catch` gives: this store gates
+    // re-payment, so anything that is not a plain absence has to fail closed -
+    // and a blocking node would never reach that `catch` at all.
+    if (await isBlockingNode(this.jobsPath)) {
+      throw new Error(
+        `Refusing to read ${this.jobsPath}: it is a pipe, socket or device, not a file`,
+      );
+    }
     let raw: string;
     try {
       raw = await readFile(this.jobsPath, 'utf-8');

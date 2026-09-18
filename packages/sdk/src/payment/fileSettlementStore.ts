@@ -1,5 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { isBlockingNodeSync } from '../agent-store/node-type';
 import {
   MIN_SETTLEMENT_RETENTION_MS,
   type SettlementClaim,
@@ -56,6 +57,15 @@ export class FileSettlementStore implements SettlementStore {
   }
 
   private read(): StoreFile {
+    // Ahead of the read, not inside its `catch`: a FIFO here does not fail,
+    // it takes the whole event loop with it. And refused rather than treated as
+    // absent, for the reason the ENOENT branch below spells out.
+    if (isBlockingNodeSync(this.path)) {
+      throw new Error(
+        `Settlement index at ${this.path} is a pipe, socket or device, not a file. Refusing to ` +
+          `read it: an index that cannot be read is not an empty one.`,
+      );
+    }
     let raw: string;
     try {
       raw = readFileSync(this.path, 'utf-8');

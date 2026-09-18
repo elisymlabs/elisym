@@ -32,6 +32,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { SESSION_ID_REGEX } from '@elisym/sdk';
+import { isBlockingNodeSync } from '@elisym/sdk/agent-store';
 import type { ChatTurn } from '@elisym/sdk/skills';
 
 /** Directory name under the agent dir. Gitignored (cleartext customer content). */
@@ -546,6 +547,12 @@ export class SessionStore {
     let raw: string;
     let size: number;
     try {
+      // A FIFO reports size 0 and passes every check below, then blocks the
+      // read forever - in the middle of a paid job, since this runs while one
+      // is being served.
+      if (isBlockingNodeSync(path)) {
+        return null;
+      }
       size = statSync(path).size;
       raw = readFileSync(path, 'utf-8');
     } catch {

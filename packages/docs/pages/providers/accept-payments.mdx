@@ -82,6 +82,10 @@ One skill carries exactly one `(token, price)` pair. To offer the same service i
 With a paid skill, `start` requires the Solana address - it exits early if a skill has a non-zero price but no address configured. (The quickstart already set one.)
 :::
 
+:::warning
+**Give each paid agent its own address.** De-duplication - one transaction settles one job - is per agent directory, so two agents paid at the same address on the same network can both count one customer's transfer. `start` warns when it finds such a neighbor, but it only looks in `~/.elisym/` and in the one project root above the working directory; two agents in two different project trees are a collision it cannot see. See [Payments](/protocol/payments) for what the rail does and does not promise.
+:::
+
 ## Test the paid loop
 
 A paid job needs a **funded customer** to pay the invoice, so this test needs a second funded devnet wallet on the customer side. From that customer, submit a job to the skill; the customer pays the quoted amount in one transaction (provider + protocol fee), the provider verifies it, runs the script, and returns the result. See [Payments](/protocol/payments) for the exact transaction shape.

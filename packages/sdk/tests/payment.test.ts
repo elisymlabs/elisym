@@ -1,5 +1,10 @@
-import { NATIVE_ASSET_SENTINEL, deriveAssetStatsAddress } from '@elisym/config-client';
+import {
+  NATIVE_ASSET_SENTINEL,
+  deriveAssetStatsAddress,
+  deriveEventAuthorityAddress,
+} from '@elisym/config-client';
 import { getTransferSolInstructionDataDecoder } from '@solana-program/system';
+import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from '@solana-program/token';
 import {
   type Address,
   type Blockhash,
@@ -292,6 +297,67 @@ describe('buildPaymentInstructions', () => {
       { programId: TEST_PROGRAM_ID },
     );
     expect(instructions.length).toBe(2);
+  });
+
+  it('refuses a reference equal to an address it derives for the payment itself', async () => {
+    // The customer's last look, and the half `validatePaymentRequest` cannot
+    // take: it is synchronous, so it never sees the DERIVED addresses. Measured
+    // before this check existed - `validatePaymentRequest` answered `null` here
+    // while the provider's `verifyPayment` answers `degenerate_reference`, so
+    // the customer paid for a job that could never be delivered.
+    const signer = makeSigner(makeAddress());
+    const eventAuthority = await deriveEventAuthorityAddress(TEST_PROGRAM_ID);
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: eventAuthority as string,
+          fee_address: TEST_TREASURY,
+          fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
+
+  it("refuses a reference equal to the recipient's own token account", async () => {
+    // The SPL half of the same gap, and the one a hand-crafted request would
+    // actually use: the recipient's ATA is where the money lands, so listing it
+    // is listing the provider's whole balance history.
+    const recipient = makeAddress();
+    const [recipientAta] = await findAssociatedTokenPda({
+      owner: recipient,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient,
+          amount: 100_000_000,
+          reference: recipientAta as string,
+          fee_address: TEST_TREASURY,
+          fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/computed from/);
   });
 
   it('fee + providerAmount === totalAmount for various amounts', async () => {
@@ -970,6 +1036,68 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       });
       expect(result.verified).toBe(false);
       expect(result.error).toMatch(/replay/);
+    });
+
+    it('refuses an SPL transfer the reference is in no half of', async () => {
+      // The reference check runs BEFORE the SPL dispatch, and the whole case for
+      // the length guard being native-only rests on that order: on this path the
+      // worst a truncated prefix can do is lose the reference and refuse. Move
+      // the check below the dispatch and the suite stays green while any past
+      // USDC transfer of the right size pays for a new job - measured.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splNoReferenceSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/replay/);
+    });
+
+    it('does not let one token pay a request denominated in another', async () => {
+      // The token deltas are matched by owner AND mint. Matched by owner alone,
+      // an LSM transfer satisfies a USDC request - both are six decimals, so the
+      // amounts line up exactly - and the provider is paid in the cheaper of the
+      // two. Measured: the whole suite stays green with the mint dropped from
+      // the match.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: LSM_SOLANA_MAINNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'wrongMintSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/token account not found/);
     });
 
     it('names the real problem when a token account is short by one subunit', async () => {

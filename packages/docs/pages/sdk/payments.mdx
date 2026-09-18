@@ -59,7 +59,14 @@ These APIs are network-explicit: request creation stamps the provider's `network
 
 `verifyPayment` answers "a transaction satisfying this request exists". That is not "this transaction is mine to keep": one transfer can carry several jobs' references, so the same payment can satisfy several requests. Binding a settlement to exactly one job is the caller's duty, and `ProviderPaymentAcceptor` is that duty done for you.
 
-```ts
+```ts twoslash
+import type { PaymentRequestData, PaymentStrategy, ProtocolConfigInput } from '@elisym/sdk';
+declare const rpc: Parameters<PaymentStrategy['verifyPayment']>[0];
+declare const paymentRequest: PaymentRequestData;
+declare const protocolConfig: ProtocolConfigInput;
+declare const job: { id: string };
+declare const customerSuppliedSignature: string;
+// ---cut---
 import { ProviderPaymentAcceptor, SolanaPaymentStrategy } from '@elisym/sdk';
 import { createFileSettlementStore } from '@elisym/sdk/node';
 

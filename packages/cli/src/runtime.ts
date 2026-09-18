@@ -53,6 +53,7 @@ import type {
   TransportKind,
   VerifyResult,
 } from '@elisym/sdk';
+import { isBlockingNode } from '@elisym/sdk/agent-store';
 import {
   createFreeLlmLimiterSet,
   FREE_LLM_GLOBAL_KEY,
@@ -2930,6 +2931,13 @@ export class AgentRuntime {
       return undefined;
     }
     try {
+      // A FIFO reports size 0, so the cap above lets it through, and the read
+      // then never settles - one libuv worker per job, gone for good.
+      // NOT KILLED BY ANY TEST: this path needs a Blossom transport and an
+      // identity, and nothing in the suite builds one.
+      if (await isBlockingNode(filePath)) {
+        return undefined;
+      }
       const bytes = await readFile(filePath);
       return await this.seedBlossomMember(bytes, recipientPubkey);
     } catch {

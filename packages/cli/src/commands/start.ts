@@ -32,6 +32,7 @@ import {
   type Network,
 } from '@elisym/sdk';
 import {
+  isBlockingNodeSync,
   agentPaths,
   ensureGitignoreHasDelegationNoncesEntry,
   ensureGitignoreHasIrohEntry,
@@ -254,7 +255,9 @@ export async function cmdStart(
       // never ran as a clean bill of health.
       console.log(
         `  ! Could not check whether another agent is paid at this address ` +
-          `(${error instanceof Error ? error.message : String(error)}). Starting anyway.`,
+          `(${deleteControlCharacters(
+            error instanceof Error ? error.message : String(error),
+          )}). Starting anyway.`,
       );
       console.log();
     }
@@ -1411,6 +1414,15 @@ export async function uploadOrReuse(
       return cached;
     }
     console.log(`  Uploading ${basename(realPath)}...`);
+    // NOT KILLED BY ANY TEST: no fixture drives `cmdStart`, and this branch
+    // sits inside it. Kept on diff review, and written to match the gate every
+    // other reader of an agent's files now uses.
+    if (isBlockingNodeSync(realPath)) {
+      console.warn(
+        `  ! Skipping ${basename(realPath)}: it is a pipe, socket or device, not a file`,
+      );
+      return undefined;
+    }
     const data = readFileSync(realPath);
     const sha256 = createHash('sha256').update(data).digest('hex');
     const blob = new Blob([data], { type: mimeFromPath(absPath) });

@@ -3,6 +3,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { isBlockingNodeSync } from '@elisym/sdk/agent-store';
 
 // Ledger files hold customer-confidential job content (inputs, results). Lock
 // the directory and files down to owner-only, matching the rest of the agent
@@ -154,6 +155,20 @@ export class JobLedger {
   }
 
   private load(): void {
+    // BEFORE the try, and it throws rather than starting empty. Two reasons,
+    // both measured: a FIFO here does not fail the read, it takes the event
+    // loop with it - and the agent has already published its capability cards
+    // by the time this runs, so it would sit in discovery as a live paid
+    // provider that never answers. Starting with an EMPTY ledger instead would
+    // be worse still: this index is what keeps one transaction from paying two
+    // jobs. Outside the try because the `catch` below renames what it cannot
+    // parse to `.corrupt.<ts>`, and somebody else's node is not ours to move.
+    if (isBlockingNodeSync(this.path)) {
+      throw new Error(
+        `Refusing to read the job ledger at ${this.path}: it is a pipe, socket or device, not a ` +
+          `file. An empty ledger would drop the record of which transaction paid for which job.`,
+      );
+    }
     try {
       const raw = readFileSync(this.path, 'utf-8');
       const data = JSON.parse(raw) as Record<string, unknown>;
@@ -630,6 +645,14 @@ export class UsedNonceStore {
   }
 
   private load(): void {
+    // Same gate as the job ledger, and the same reasoning: this index is what
+    // makes a delegated pull single-use, so an empty one is not a safe default.
+    if (isBlockingNodeSync(this.path)) {
+      throw new Error(
+        `Refusing to read the nonce store at ${this.path}: it is a pipe, socket or device, not a ` +
+          `file. An empty store would let a delegated pull be replayed.`,
+      );
+    }
     try {
       const raw = readFileSync(this.path, 'utf-8');
       const data = JSON.parse(raw) as Record<string, number>;

@@ -1,3 +1,4 @@
+import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -257,6 +258,94 @@ describe('a caller that has already given up', () => {
   });
 });
 
+describe('a caller that leaves DURING the pass', () => {
+  it('gives up at step 2, not only at step 1', async () => {
+    // `deadlineHit` is sticky, so a signal that was already aborted when
+    // `accept` was called is caught by step 1 and every later check is
+    // indistinguishable. The ordinary case is the other one: step 1 spends its
+    // own retry budget - five verifications two seconds apart by default - and
+    // the abort lands inside it.
+    store.claim(SIG_A, 'job-1');
+    const controller = new AbortController();
+    const strategy = {
+      chain: 'solana',
+      verifyPayment: vi.fn(async () => {
+        controller.abort();
+        return { verified: false, error: 'not yet indexed' };
+      }),
+    } as unknown as PaymentStrategy;
+
+    const result = await makeAcceptor(strategy).accept(
+      {
+        paymentRequest: makeRequest(),
+        jobIdentity: 'job-1',
+        txSignature: SIG_B,
+        signal: controller.signal,
+      },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    // Step 1 ran and step 2 did not: one call, not two.
+    expect(strategy.verifyPayment).toHaveBeenCalledTimes(1);
+    expect(listCalls).toBe(0);
+  });
+
+  it('does not list a window for a pass abandoned during step 2', async () => {
+    // The check before the listing, which the row above cannot reach: there
+    // step 1 is what aborts, here step 2 is.
+    const controller = new AbortController();
+    const strategy = {
+      chain: 'solana',
+      verifyPayment: vi.fn(async () => {
+        controller.abort();
+        return { verified: false, error: 'not yet indexed' };
+      }),
+    } as unknown as PaymentStrategy;
+    listedPages = [[{ signature: SIG_A, err: null }]];
+
+    const result = await makeAcceptor(strategy).accept(
+      {
+        paymentRequest: makeRequest(),
+        jobIdentity: 'job-1',
+        txSignature: SIG_B,
+        signal: controller.signal,
+      },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(listCalls).toBe(0);
+  });
+
+  it('stops walking candidates the moment the caller leaves', async () => {
+    // The check inside the walk. Two candidates, and the abort lands while the
+    // first is being verified: the second must not be asked about.
+    const controller = new AbortController();
+    const strategy = {
+      chain: 'solana',
+      verifyPayment: vi.fn(async () => {
+        controller.abort();
+        return { verified: false, error: 'not yet indexed' };
+      }),
+    } as unknown as PaymentStrategy;
+    listedPages = [
+      [
+        { signature: SIG_A, err: null },
+        { signature: SIG_B, err: null },
+      ],
+    ];
+
+    const result = await makeAcceptor(strategy).accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', signal: controller.signal },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(strategy.verifyPayment).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('the signature the customer sent', () => {
   it('is accepted and bound, without listing anything', async () => {
     const result = await makeAcceptor(strategyVerifying(SIG_A)).accept(
@@ -392,16 +481,33 @@ describe('a candidate that verified but lost the race for the claim', () => {
 
     expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
     expect(result).not.toMatchObject({ reason: 'window-empty' });
+    // And the pass says WHY. This is the most informative sentence the walk can
+    // produce, and it used to be dropped on the floor - the operator got
+    // whatever earlier candidate happened to fail, or nothing.
+    expect(result).toMatchObject({
+      error: expect.stringContaining('already bound to another job'),
+    });
   });
 });
 
 describe('what may become a terminal "nobody paid"', () => {
   it('says window-empty only for a window it read whole and found empty', async () => {
+    // The first listing attempt FAILS and the second comes back short and
+    // empty, which is both legal and the only shape where this matters: the
+    // pass has read a whole window, so the verdict stands, and `lastError`
+    // holds the first attempt's complaint. Without that the fixture cannot see
+    // the leak at all - `toEqual` ignores a key whose value is `undefined`, so
+    // a verdict built as `{reason, error: lastError}` passes it whenever
+    // nothing ever set `lastError`. Measured: with a clean listing the leaking
+    // shape is green.
+    listFailures = 1;
     listedPages = [[]];
     const result = await makeAcceptor(strategyVerifying()).accept(
       { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
       CONFIG,
     );
+
+    expect(listCalls).toBe(2);
     // `toEqual`, not `toMatchObject`: the docstring promises no `error` on this
     // verdict, and a partial match is true of a shape carrying one.
     expect(result).toEqual({ accepted: false, reason: 'window-empty' });
@@ -434,15 +540,25 @@ describe('what may become a terminal "nobody paid"', () => {
   it.each([[''], [null]])(
     'never says it when the node reported an unusable signature (%s)',
     async (unusable) => {
+      // Two things at once, and the second is the one no fixture measured: the
+      // pass is marked, AND the blank is never handed to `verifyPayment`. Its
+      // falsy dispatch reads `''` as "no signature given" and takes the
+      // REFERENCE path, which comes back with whatever transaction is newest on
+      // that reference - a stranger's, if one is there. Checked as
+      // `isUsableSignature` rather than `=== undefined` for exactly that, and
+      // the verdict alone cannot tell the two apart.
+      //
       // Unlike a failed transaction, this one was never LOOKED AT - it is an
       // untrusted answer, not a fact about the chain. A proxy blanking a page
       // would otherwise manufacture the one verdict a provider may act on.
       listedPages = [[{ signature: unusable as unknown as string, err: null }]];
-      const result = await makeAcceptor(strategyVerifying()).accept(
+      const strategy = strategyVerifying();
+      const result = await makeAcceptor(strategy).accept(
         { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
         CONFIG,
       );
       expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+      expect(strategy.verifyPayment).not.toHaveBeenCalled();
     },
   );
 
@@ -839,6 +955,14 @@ describe('the store contract', () => {
     },
   );
 
+  it('keeps a settlement for thirty days, which is what the reasoning rests on', () => {
+    // Every other retention fixture is self-referential (`MIN`, `MIN - 1`), so
+    // the constant could be a second and the file would stay green. The number
+    // is the claim: a signature dropped from the index has to be unverifiable
+    // on-chain by then, and a public RPC keeps two to three days.
+    expect(MIN_SETTLEMENT_RETENTION_MS).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+
   it('allows an infinite retention - "never release anything"', () => {
     expect(store.prune(Number.POSITIVE_INFINITY)).toBe(0);
   });
@@ -864,23 +988,67 @@ describe('the store contract', () => {
     expect(() => createFileSettlementStore(path)).toThrow(/EISDIR|illegal operation/);
   });
 
+  it('refuses an index path that is a node which blocks', () => {
+    // Same reasoning as the unreadable path above, and the reason it needs its
+    // own row: this one does not fail the read at all. `readFileSync` on a FIFO
+    // takes the whole event loop with it, so neither the ENOENT branch nor the
+    // constructor's refusal would ever run.
+    //
+    // The WRITER is what makes this a measurement: it feeds a perfectly valid
+    // index, so without the gate the constructor SUCCEEDS and this row goes red
+    // on its assertion. Without a writer the ungated build hangs the whole run
+    // instead - measured, and a hung run has killed nothing.
+    const path = join(dir, 'piped.json');
+    execFileSync('mkfifo', [path]);
+    const writer = spawn(
+      process.execPath,
+      [
+        '-e',
+        `require('fs').writeFileSync(${JSON.stringify(path)}, ${JSON.stringify(
+          JSON.stringify({ version: 1, settlements: {} }),
+        )});`,
+      ],
+      { detached: true, stdio: 'ignore' },
+    );
+    try {
+      expect(() => createFileSettlementStore(path)).toThrow(/pipe, socket or device/);
+    } finally {
+      // `-0` would signal OUR OWN process group, which is the vitest run.
+      if (writer.pid === undefined) {
+        writer.kill('SIGKILL');
+      } else {
+        try {
+          process.kill(-writer.pid);
+        } catch {
+          writer.kill('SIGKILL');
+        }
+      }
+    }
+  });
+
   it('starts clean when the file is merely absent', () => {
     // ENOENT is the one absence, and it must stay distinguishable from a file
     // that could not be read.
     expect(() => createFileSettlementStore(join(dir, 'fresh.json'))).not.toThrow();
   });
 
-  it('keeps a settlement whose timestamp is unreadable', () => {
+  it.each([
+    ['null', null],
+    ['a numeric string', '0'],
+    ['a boolean', true],
+  ])('keeps a settlement whose timestamp is %s', (_label, at) => {
     // `0` would be older than any cutoff, so the next prune would release a
     // binding settlement. Holding one too long costs nothing.
-    // `null` rather than an absent field, and the difference is the whole
-    // fixture: `undefined < cutoff` is false, so a missing `at` survives a
-    // prune however the value is read, and the row was green with the type
-    // check removed. `null < cutoff` coerces to `0 < cutoff` and is TRUE.
-    const path = join(dir, 'no-timestamp.json');
+    //
+    // An ABSENT field is deliberately not one of these rows: `undefined <
+    // cutoff` is false, so a missing `at` survives however the value is read,
+    // and a fixture built on it is green with the type check removed. Each of
+    // these three coerces to something SMALLER than the cutoff instead - and
+    // the numeric string is why `?? Date.now()` is not enough either.
+    const path = join(dir, `no-timestamp-${String(_label).replace(/\W+/g, '-')}.json`);
     writeFileSync(
       path,
-      JSON.stringify({ version: 1, settlements: { [SIG_A]: { job: 'job-1', at: null } } }),
+      JSON.stringify({ version: 1, settlements: { [SIG_A]: { job: 'job-1', at } } }),
       'utf-8',
     );
     const seeded = createFileSettlementStore(path);

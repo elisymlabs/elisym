@@ -253,7 +253,13 @@ describe("a neighbor's SKILL.md that is not a regular file", () => {
     // perfectly valid PAID skill and answers `true` where the fixed code
     // answers `unknown` - the two differ by a verdict.
     const own = makeAgent(projectRoot, 'starter');
-    const neighbor = makeAgent(homeRoot, 'piped', { paid: false });
+    // A PAID ordinary skill beside the FIFO, and that is what makes the fixture
+    // measure anything. With a free one the verdict is `unknown` either way:
+    // without this gate the SDK loader's own gate drops the piped skill, the
+    // count comes up short, and `skills.length < denominator` answers `unknown`
+    // for a different reason. Paid, the short-circuit above the denominator
+    // fires first and the mutant answers `true` - measured, both directions.
+    const neighbor = makeAgent(homeRoot, 'piped');
     const skillDir = join(neighbor, 'skills', 'fifo-skill');
     mkdirSync(skillDir, { recursive: true });
     const skillMd = join(skillDir, 'SKILL.md');

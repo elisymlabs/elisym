@@ -16,7 +16,7 @@
       "name": "@elisym/app",
       "version": "0.17.1",
       "dependencies": {
-        "@elisym/sdk": "~0.35.0",
+        "@elisym/sdk": "~0.38.0",
         "@solana-program/memo": "~0.11.0",
         "@solana-program/token": "~0.14.0",
         "@solana/kit": "~6.8.0",
@@ -61,7 +61,7 @@
         "elisym": "./dist/index.js",
       },
       "dependencies": {
-        "@elisym/sdk": "~0.35.0",
+        "@elisym/sdk": "~0.38.0",
         "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",
         "@solana-program/token": "~0.14.0",
@@ -125,7 +125,7 @@
         "elisym-mcp": "./dist/index.js",
       },
       "dependencies": {
-        "@elisym/sdk": "~0.35.0",
+        "@elisym/sdk": "~0.38.0",
         "@modelcontextprotocol/sdk": "~1.28.0",
         "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",

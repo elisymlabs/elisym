@@ -153,6 +153,23 @@ describe('a reference the payment is computed from', () => {
       expect(await degenerateReference(request, 'devnet', TREASURY)).toBe('degenerate_reference');
     });
 
+    it("refuses a reference equal to the asset's own stats PDA", async () => {
+      // Per MINT, not the native sentinel: `increment_stats_v2` creates this
+      // account inside every payment in that asset, so for an SPL request it is
+      // as degenerate a reference as the recipient's token account - and the
+      // whole derived half above runs on native requests, where the sentinel
+      // hides the difference.
+      const request = makeRequest({
+        reference: (await deriveAssetStatsAddress(
+          getProtocolProgramId('devnet'),
+          address(USDC_SOLANA_DEVNET.mint as string),
+        )) as string,
+        asset: usdcAsset,
+      } as never);
+
+      expect(await degenerateReference(request, 'devnet', TREASURY)).toBe('degenerate_reference');
+    });
+
     it("refuses a reference equal to the recipient's Token-2022 account", async () => {
       // The whole derived half above runs under the CLASSIC token program, so
       // the `?? TOKEN_PROGRAM_ADDRESS` fallback in `tokenProgramOf` was covered

@@ -1,3 +1,4 @@
+import { execFileSync, spawn } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
@@ -515,6 +516,56 @@ describe('SessionStore - admitted counter and mutex', () => {
       expect(fresh.open(CUSTOMER, SID).stateless).toBe(false);
     } finally {
       release();
+    }
+  });
+});
+
+describe('a session file that is a node which blocks', () => {
+  it('is read as no session at all, rather than hanging the job', async () => {
+    // This read happens while a PAID job is being served, and it is
+    // synchronous: a FIFO here stops the agent mid-job, with the customer
+    // already charged. `statSync(path).size` is 0 for one, so every size check
+    // above it passes.
+    //
+    // The writer feeds a valid line, so the ungated build comes back with a
+    // KNOWN session carrying that message - the two differ by an answer, not by
+    // a hang.
+    const dir = join(agentDir, SESSIONS_DIR_NAME, CUSTOMER);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${SID}.jsonl`);
+    execFileSync('mkfifo', [path]);
+    const writer = spawn(
+      process.execPath,
+      [
+        '-e',
+        `require('fs').writeFileSync(${JSON.stringify(path)}, ${JSON.stringify(
+          `${JSON.stringify({ role: 'user', content: 'hello', at: Date.now() })}\n`,
+        )});`,
+      ],
+      { detached: true, stdio: 'ignore' },
+    );
+    try {
+      const store = makeStore();
+      const release = await store.acquire(CUSTOMER, SID);
+      try {
+        const opened = store.open(CUSTOMER, SID);
+
+        expect(opened.known).toBe(false);
+        expect(opened.messages).toEqual([]);
+      } finally {
+        release();
+      }
+    } finally {
+      // `-0` would signal OUR OWN process group, which is the vitest run.
+      if (writer.pid === undefined) {
+        writer.kill('SIGKILL');
+      } else {
+        try {
+          process.kill(-writer.pid);
+        } catch {
+          writer.kill('SIGKILL');
+        }
+      }
     }
   });
 });

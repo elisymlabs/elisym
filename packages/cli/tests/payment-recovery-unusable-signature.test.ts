@@ -401,6 +401,30 @@ describe('a signature the ledger cannot key a claim on', () => {
       expect(outcome).toBe('corrupt-state');
     });
 
+    it.each([
+      ['empty string', ''],
+      ['null', null],
+    ])(
+      'fails a job whose claimed settlement is a %s, like one with none at all',
+      async (_label, unusable) => {
+        // The carve-out asks whether the job OWNS a settlement, and it asks with
+        // `isUsableSignature` rather than `!== undefined`: a hand-edited ledger
+        // carries these, and they own nothing. Read as ownership, the job is
+        // deferred to the 24-hour cutoff with a log naming a settlement that is
+        // not there, instead of failing now with the real reason.
+        seedLedger(unusable, RECIPIENT);
+
+        const outcome = await recovery.reVerifyPayment(
+          entryUnderTest(),
+          paymentRequestJson(RECIPIENT),
+          PRICE,
+          log,
+        );
+
+        expect(outcome).toBe('corrupt-state');
+      },
+    );
+
     it('defers a job that already owns a settlement, rather than killing it', async () => {
       // The carve-out, and its reason is easy to get wrong. It is NOT that such
       // a job can re-verify its own signature - measured, it cannot: the

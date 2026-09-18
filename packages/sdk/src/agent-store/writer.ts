@@ -77,6 +77,10 @@ async function ensureGitignoreHasEntries(
   // created. Leaving the file alone is what the `catch` below already does for
   // every other reason it cannot be read.
   if (await isBlockingNode(gitignorePath)) {
+    // Said out loud rather than returned in silence: the entries this would have
+    // added keep private files out of a commit, and an operator who never hears
+    // about it has no reason to look.
+    console.warn(`  ! Leaving ${gitignorePath} alone: it is a pipe, socket or device, not a file`);
     return;
   }
   let current: string;

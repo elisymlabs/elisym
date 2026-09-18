@@ -22,6 +22,7 @@ import {
 } from '@elisym/sdk';
 import type { Network } from '@elisym/sdk';
 import {
+  isBlockingNodeSync,
   ensureGitignoreHasX402Entries,
   listAgents,
   loadAgent,
@@ -228,6 +229,11 @@ export function scanExistingSkills(
     const skillMdPath = join(skillsDir, entry, 'SKILL.md');
     try {
       if (!statSync(join(skillsDir, entry)).isDirectory()) {
+        continue;
+      }
+      // NOT KILLED BY ANY TEST - the enclosing command has no harness. Same
+      // gate as the two skill loaders, which do have one.
+      if (isBlockingNodeSync(skillMdPath)) {
         continue;
       }
       const { frontmatter } = parseSkillMd(readFileSync(skillMdPath, 'utf-8'));

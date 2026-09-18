@@ -923,6 +923,39 @@ function waitMs(ms: number): Promise<void> {
  * Caller is responsible for validating `paymentRequest` upstream;
  * `buildTransaction` already does that before invoking this helper.
  */
+/**
+ * The customer's LAST look at the reference, and the half `validatePaymentRequest`
+ * cannot take.
+ *
+ * That function is synchronous - the `PaymentStrategy` interface is - so it runs
+ * only `degenerateReferenceSync` and never sees the DERIVED addresses: the stats
+ * PDAs, the event authority, or a token account belonging to the recipient or
+ * the treasury. The provider's verifier runs the full check and refuses such a
+ * payment. Measured: `validatePaymentRequest` answers `null` for a reference
+ * equal to the recipient's ATA while `verifyPayment` answers
+ * `degenerate_reference` - so without this the customer pays, the transfer
+ * cannot be singled out of that account's history, and the job is never
+ * delivered. The money is gone and it went to the provider, which is what makes
+ * a hand-crafted request worth someone's while.
+ *
+ * Here rather than in the schema because these addresses only exist once the
+ * program id, the asset and the fee address are known - which is exactly what
+ * this function already derives, one line above each check.
+ */
+function refuseDegenerateReferenceAgainst(
+  reference: Address,
+  derived: readonly (Address | undefined)[],
+): void {
+  if (!derived.some((candidate) => candidate !== undefined && candidate === reference)) {
+    return;
+  }
+  throw new Error(
+    `Reference key ${reference} is an address this payment is computed from, so the transfer ` +
+      `could not be singled out of that account's history afterwards. Ask the provider for a ` +
+      `payment request with a fresh reference.`,
+  );
+}
+
 export async function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
   payerSigner: Signer,
@@ -955,6 +988,8 @@ export async function buildPaymentInstructions(
     },
     { programAddress: programId },
   );
+
+  refuseDegenerateReferenceAgainst(reference, [statsPda, assetStatsPda, eventAuthority]);
 
   if (providerAmount <= 0) {
     throw new Error(
@@ -1054,6 +1089,12 @@ export async function buildPaymentInstructions(
       ),
     );
   }
+
+  // The token halves, checked where they become known. The payer's own ATA is
+  // not in the set: a reference equal to it is the CUSTOMER's account, which
+  // the verifier's denylist does not carry either - it lists what the payment
+  // is computed from on the receiving side.
+  refuseDegenerateReferenceAgainst(reference, [recipientAta, treasuryAta]);
 
   const providerTransferIx = getTransferCheckedInstruction(
     {

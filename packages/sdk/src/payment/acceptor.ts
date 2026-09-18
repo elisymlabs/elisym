@@ -367,8 +367,11 @@ export class ProviderPaymentAcceptor {
     // and an operator who rolls back gets the settlement verified under the
     // list it was accepted with. A terminal verdict is recoverable by nothing.
     //
-    // `@elisym/cli` carves the same exception out of its own recovery pass, for
-    // this same reason; the two rails must not answer this differently.
+    // `@elisym/cli` carves the same exception out of its own recovery pass for
+    // the degenerate-reference half, for this same reason; the two rails must
+    // not answer THAT differently. Its other terminal verdict - persisted state
+    // it cannot parse at all - has no carve-out and needs none: that list does
+    // not grow between releases, while both of these do.
     //
     // Read HERE rather than at step 1 when there is a verdict, because that is
     // where the answer is needed first; step 1 reuses it through
@@ -463,6 +466,11 @@ export class ProviderPaymentAcceptor {
     let windowFull = false;
     let candidates: string[] = [];
     let listed = false;
+    // NOT KILLED BY ANY TEST, and provably so: the first iteration of the loop
+    // below re-reads the same predicate, so removing this line changes nothing
+    // observable. It is kept because every step boundary in this function reads
+    // the clock the same way, and a reader who finds one missing has to work
+    // out whether it was an oversight.
     if (pastDeadline()) {
       deadlineHit = true;
     }
