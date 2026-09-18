@@ -202,6 +202,27 @@ jobs:
         run: node scripts/sync-server-version.mjs
         working-directory: packages/mcp
 
+      # The registry validates the version against npm, and npm serves a
+      # just-published version to its own API a little later than it accepts it.
+      # Without this wait the release fails on a 404 for a package that IS
+      # published - which is a re-run of one job, but only if someone is
+      # watching. `npm view` exits non-zero for a version that is not there yet.
+      - name: Wait for npm to serve the published version
+        working-directory: packages/mcp
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          for attempt in $(seq 1 30); do
+            if npm view "@elisym/mcp@${VERSION}" version > /dev/null 2>&1; then
+              echo "npm is serving @elisym/mcp@${VERSION} (attempt ${attempt})."
+              exit 0
+            fi
+            echo "Attempt ${attempt}: npm does not serve ${VERSION} yet; waiting 10s."
+            sleep 10
+          done
+          echo "npm never served @elisym/mcp@${VERSION}; not registering a version the registry cannot verify."
+          exit 1
+
       - name: Authenticate with MCP Registry (OIDC)
         run: mcp-publisher login github-oidc
         working-directory: packages/mcp
