@@ -44,12 +44,18 @@ export function mergeAccountKeys(
   // a string here is spread character by character INSIDE the prefix every
   // index is read against, so every loaded address after it lands on somebody
   // else's balance slot. There is nothing to fall back to, so the answer is no
-  // keys at all. On the money path that is a refusal, and it arrives at the
-  // reference check rather than at the recipient - the reference is looked up
-  // first. The other two readers do not refuse and are not meant to:
-  // `verifyJobPaymentQuick` falls through to the token-balance branch, which
-  // reads no keys at all, and `aggregateNetworkStats` loses only its
-  // bookkeeping-PDA skip, which costs a statistic and not a payment.
+  // keys at all, and what each of the three readers then does differs.
+  //
+  // On the money path it is a refusal, and it arrives at the REFERENCE check
+  // rather than at the recipient - the reference is looked up first.
+  // `verifyJobPaymentQuick` refuses a NATIVE payment the same way, because its
+  // lamport branch is the only one that reads keys: with none, the recipient is
+  // not found and the answer is `recipient_mismatch`, which the row named
+  // `refuses when the STATIC half is malformed, which shifts the most` pins.
+  // Only a TOKEN payment survives there, because that branch pairs by owner and
+  // mint and opens no key list at all - and what it costs is a ranking hint,
+  // not a settlement. `aggregateNetworkStats` alone refuses nothing: it loses
+  // its bookkeeping-PDA skip, which costs a statistic and not a payment.
   if (!Array.isArray(accountKeys)) {
     return [];
   }

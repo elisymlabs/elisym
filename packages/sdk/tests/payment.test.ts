@@ -1700,7 +1700,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       // else. The malformed half spreads into two slots instead of three, so
       // with the guard removed the recipient is read off slot 2, which belongs
       // to nobody in this layout, and the shortfall disappears. Measured: the
-      // mutant answers `verified: true` on a transaction that never paid.
+      // mutant answers `verified: true` on a transaction that paid a fee.
       const rpc = createMockRpc({
         getTransaction: () => ({
           send: () =>

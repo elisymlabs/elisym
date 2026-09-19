@@ -78,10 +78,14 @@ describe('an error carrying key material', () => {
   it('redacts BEFORE the length cut, not after', () => {
     // The ordering the comment beside the cut argues for, and it is worth a row
     // because reversing it looks harmless - the key still gets scrubbed, just
-    // one step later. What breaks is that cutting first SPLITS the key, and a
-    // 20-character fragment no longer matches a rule that wants 64, so the
+    // one step later. What breaks is that cutting first SPLITS the key, and the
+    // 19 characters left of it no longer match a rule that wants 64, so the
     // fragment survives every later pass and lands in the transcript.
-    const filler = 'x'.repeat(280);
+    //
+    // The filler alternates in a character the base58 rule cannot take, so it
+    // is inert: a run of 280 `x` is itself long-enough base58, gets redacted,
+    // and the message never reaches the length cut this row is about.
+    const filler = 'x0'.repeat(140);
     const text = shown(new Error(`${filler} ${HEX_KEY}`));
 
     expect(text).toContain('[REDACTED]');

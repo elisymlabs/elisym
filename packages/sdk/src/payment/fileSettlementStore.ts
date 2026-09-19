@@ -301,6 +301,10 @@ export class FileSettlementStore implements SettlementStore {
     // alternative is a job holding two settlements, and then nothing can say
     // which one paid for the delivery.
     for (const [previous, record] of Object.entries(file.settlements)) {
+      // `previous !== signature` is PROVABLY REDUNDANT: the line below re-adds
+      // the same key immediately, so deleting it first is a no-op. NOT KILLED
+      // BY ANY TEST and it cannot be - kept because a loop that can delete the
+      // key it is about to write reads like a bug even when it is not.
       if (record.job === jobIdentity && previous !== signature) {
         delete file.settlements[previous];
       }

@@ -942,8 +942,8 @@ export async function cmdStart(
   //
   // They run here for the same reason the two indexes above are opened here:
   // appending to the file is not guarded - a read-only `.elisym` root, a root
-  // written under
-  // sudo, a full disk - and a throw after the cards are on the relays leaves a
+  // written under sudo, a full disk - and a throw after the cards are on the
+  // relays leaves a
   // live paid provider advertised by an agent that has already exited. None of
   // these touches the network.
   //

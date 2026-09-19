@@ -641,6 +641,9 @@ export class SessionStore {
         break;
       }
       const cost = line.content.length;
+      // `start < lines.length` is the FLOOR the docstring names - it is false
+      // on the first pass, so the most recent turn is taken whatever it costs.
+      // Not the branch below the loop, which says so itself.
       if (cost > budget && start < lines.length) {
         break;
       }
@@ -657,11 +660,18 @@ export class SessionStore {
       // budget" floor it long claimed to be - no turn is ever kept by it.
       //
       // What it does instead is step back onto that trailing non-turn line, so
-      // the text handed to the summarizer stops one line short of it. The
-      // writers never produce that shape - appends add turns, and a rewrite
-      // emits `[summary, ...turns]` - so reaching it takes a hand-edited
-      // transcript. Kept as a bound on `start` rather than deleted, and NOT
-      // KILLED BY ANY TEST either way.
+      // the text handed to the summarizer stops one line short of it.
+      //
+      // Reachable without anyone hand-editing anything: `rewriteWithSummary`
+      // emits `[summary, ...tail]`, and `tail` is EMPTY whenever the read that
+      // feeds it came back `null` - an unreadable file, a blocking node, a
+      // transcript just quarantined for size or corruption. The file is then
+      // one summary line, and the next compaction lands here. Measured through
+      // the public store: compacting a session whose file was made unreadable
+      // leaves exactly that shape on disk.
+      //
+      // Kept as a bound on `start` rather than deleted, and NOT KILLED BY ANY
+      // TEST either way - both `lines.length` and `0` leave the suite green.
       start = lines.length - 1;
     }
     return start;

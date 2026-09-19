@@ -218,6 +218,11 @@ export function classifyRequestUsability(
   if (!isAddress(request.reference) || !isAddress(request.recipient)) {
     return 'unusable-request';
   }
+  // The `<= 0` half is PROVABLY REDUNDANT as this function stands and kept as a
+  // mirror: a zero amount reaches the net check below, which answers the same
+  // `unusable-request`. No mutation can kill it - measured, `< 0` is green. It
+  // stays because this predicate mirrors `verifyPayment`'s preconditions line
+  // by line, and a mirror with a line missing is one somebody has to re-derive.
   if (!Number.isInteger(request.amount) || request.amount <= 0) {
     return 'unusable-request';
   }
@@ -496,6 +501,10 @@ export class ProviderPaymentAcceptor {
       // to a build whose list was narrower. They cannot act on a verdict they
       // are never shown. Still diagnostics, not contract: `reason` stays
       // `inconclusive`, which is what a caller branches on.
+      // The sentence, and whatever the pass has already learned appended to it.
+      // The append is diagnostics on diagnostics - NOT KILLED BY ANY TEST, and
+      // nothing that reads `reason` can see it - so it is the one part of this
+      // verdict left unmeasured on purpose.
       const carveOutSentence =
         `the request is ${carveOutReason} for this config, but this job already owns a ` +
         `settlement`;

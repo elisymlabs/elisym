@@ -163,6 +163,22 @@ describe('a write that fails leaves the settlement index untouched', () => {
     expect(renameTargets).toContain(path);
   });
 
+  it('gives every write a temporary name of its own', () => {
+    // The randomness itself, which the rows below rest on and none of them
+    // measured: they plant fragments under names a reader chose, so a build
+    // that went back to ONE fixed temporary keeps them all green. A fixed name
+    // is what the two-process case cannot survive - a second `elisym start`
+    // writing the same temporary between this one's write and its rename hands
+    // the rename somebody else's bytes.
+    const store = createFileSettlementStore(path);
+    store.claim(SIG_A, 'job-a');
+    store.claim(SIG_B, 'job-b');
+
+    const temporaries = writtenPaths.filter((seen) => seen.includes('.tmp'));
+    expect(temporaries.length).toBe(2);
+    expect(new Set(temporaries).size).toBe(2);
+  });
+
   it('leaves no temporary behind, because a random name is never reused', () => {
     // With one fixed name the next write reused the leftover and the garbage
     // bounded itself. A random one does not, so every failure between the write

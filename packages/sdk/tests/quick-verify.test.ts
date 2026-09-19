@@ -198,6 +198,121 @@ describe('verifyJobPaymentQuick', () => {
     expect(result.reason).toBe('recipient_mismatch');
   });
 
+  it('answers rather than throwing when the slot that is unreadable is the POST one', async () => {
+    // The mirror of the row below, and it was the unmeasured half: the guard
+    // reads `pre !== null && post !== null`, and a fixture with a readable
+    // `pre` is the only thing that can reach the second conjunct. Without it
+    // the subtraction mixes `null` with a BigInt, which throws outside the
+    // `try` and rejects the caller's promise.
+    const recipient = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: {
+            err: null,
+            preBalances: [10_000_000n, 0n],
+            postBalances: ['nonsense', 0n],
+          },
+          transaction: { message: { accountKeys: [recipient, makeAddress()] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-bad-post', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('reads an unreadable slot as unreadable, not as zero', async () => {
+    // The OTHER failure `BigInt` has, and the dangerous one: it does not throw
+    // on everything that is not a number. `BigInt([])` is `0n`. So a baseline
+    // that came back as an empty array is not caught by the `try` at all - it
+    // becomes a readable zero, the whole post balance reads as a credit, and
+    // this function claims a payment that never happened.
+    //
+    // The `typeof` line is the only thing between those two outcomes, and
+    // nothing measured it: removing it left the file green.
+    const recipient = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: {
+            err: null,
+            preBalances: [[], 0n],
+            postBalances: [5_000_000n, 0n],
+          },
+          transaction: { message: { accountKeys: [recipient, makeAddress()] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-array-slot', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('does not let an unreadable POST amount outrank a negative baseline', async () => {
+    // The skip on an unreadable post amount looks answer-neutral, and for a
+    // baseline of zero or more it is: `null > 0n` is false, so falling through
+    // lands in the same refusal. A NEGATIVE baseline is where it stops being
+    // neutral - `null` coerces to 0 in that comparison, `0 > -5` is true, and
+    // the fall-through returns a credit for a row whose post amount could not
+    // be read at all.
+    const recipient = makeAddress();
+    const mint = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: {
+            err: null,
+            preBalances: [10_000_000n, 0n],
+            postBalances: [10_000_000n, 0n],
+            preTokenBalances: [
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '-5' } },
+            ],
+            postTokenBalances: [{ accountIndex: 1, mint, owner: recipient }],
+          },
+          transaction: { message: { accountKeys: [recipient, makeAddress()] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-null-vs-negative', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('reads an unreadable TOKEN baseline as unreadable, not as zero', async () => {
+    // The token twin. `BigInt(true)` is `1n`, so a baseline of `true` read
+    // without the `typeof` line makes any larger post balance a credit - and
+    // the token arm is the one that answers `true` for a payment, so this is
+    // the arm where inventing a baseline invents a settlement.
+    const recipient = makeAddress();
+    const mint = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: {
+            err: null,
+            preBalances: [10_000_000n, 0n],
+            postBalances: [10_000_000n, 0n],
+            preTokenBalances: [
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: true } },
+            ],
+            postTokenBalances: [
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '2000000' } },
+            ],
+          },
+          transaction: { message: { accountKeys: [recipient, makeAddress()] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-bool-baseline', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
   it('answers rather than throwing when a LAMPORT slot is not a number', async () => {
     // The native arm of the same helper. The row named `a table supplies more
     // keys than balance slots`, further down, covers a slot that is not there;
@@ -482,6 +597,12 @@ describe('verifyJobPaymentQuick', () => {
     // The merge falls back to the static keys alone, so the recipient is not
     // found and the payment is refused. That is the intended trade: a refusal a
     // retry can fix, never a credit read off the wrong account.
+    //
+    // For the shift to be worth measuring the recipient has to sit behind the
+    // malformed half, which puts them in the READ-ONLY one - so this page
+    // credits a read-only account, and a node would reject that transaction
+    // rather than report it. The liar here is a proxy or shim, not the node,
+    // which is the threat model this file already carries.
     const rpc = createMockRpc(() => ({
       send: () =>
         Promise.resolve(

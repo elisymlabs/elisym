@@ -17,7 +17,9 @@ import { mergeAccountKeys } from './account-keys';
  * the recipient and one agent's verdict is served to the next, drop the network
  * and one cluster's is served to the other, and a row holds each.
  *
- * Four guards change no answer and are left stated rather than measured: the
+ * Four guards change no answer and are left stated rather than measured (the
+ * skip on an unreadable post amount is NOT among them - it looks neutral and
+ * stops being so against a negative baseline, which is why it has a row): the
  * `typeof getTransaction` half of the rpc check (the `catch` below reports
  * `rpc_error` anyway, and the `!rpc` half beside it does change the answer, so
  * it has a row),
@@ -138,18 +140,26 @@ interface TokenBalanceEntry {
 /**
  * A balance as the RPC reports it, or `null` when what came back is not one.
  *
- * `BigInt` throws - on `undefined`, on a string that is not an integer, on a
- * fractional number - and both arms below run OUTSIDE the `try` that wraps the
- * RPC call. A proxy answering with a shape the spec allows and the happy path
- * does not therefore turns a ranking hint into a rejected promise: the same
- * class as the `answers rather than throwing` rows in
- * `tests/quick-verify.test.ts`. The balance reads got theirs last:
- * `a token row carries no amount at all` and `a LAMPORT slot is not a number`.
+ * Two different failures, and the two halves below own one each.
  *
- * `null` rather than `0n`, because the two are not the same answer: a baseline
- * that could not be read, taken for zero, makes any positive balance look like
- * a credit, and not claiming a payment that did not happen is this function's
- * only job.
+ * `BigInt` THROWS on `undefined`, on a string that is not an integer, and on a
+ * fractional number - and both arms that call this run OUTSIDE the `try` that
+ * wraps the RPC call, so a proxy answering with a shape the spec allows and the
+ * happy path does not would turn a ranking hint into a rejected promise. That
+ * is what the `try` here is for: `a token row carries no amount at all` and
+ * `a LAMPORT slot is not a number`.
+ *
+ * `BigInt` also ACCEPTS things that are not balances, silently: `true` is `1n`,
+ * `[]` is `0n`, `[7]` is `7n`. A `catch` never sees those, so the `typeof` line
+ * is the only thing standing between an array in a balance slot and a number
+ * this function then does arithmetic on. That is the half that can invent a
+ * credit, and `reads an unreadable slot as unreadable, not as zero` and its
+ * token twin are the rows that hold it.
+ *
+ * `null` rather than `0n` for both, because the two are not the same answer: a
+ * baseline that could not be read, taken for zero, makes any positive balance
+ * look like a credit, and not claiming a payment that did not happen is this
+ * function's only job.
  */
 function readBalance(raw: unknown): bigint | null {
   if (typeof raw !== 'bigint' && typeof raw !== 'string' && typeof raw !== 'number') {

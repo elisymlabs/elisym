@@ -98,9 +98,10 @@ describe('X402JobStore', () => {
   });
 
   it('holds a legacy record to the SIGNATURE ceiling, not just the attempt one', async () => {
-    // The row above pins the fallback in the two readers that report counts.
-    // The reader that decides whether another signed payment goes out had
-    // none, and that is the one holding the money: read as zero signatures,
+    // The row above pins the fallback in the two places that carry a count
+    // forward - the reader that reports it and the refund that preserves it.
+    // The one that decides whether another signed payment goes out had none,
+    // and that is the one holding the money: read as zero signatures,
     // this record is handed a fresh budget and the bridge signs a second
     // payment for a job the upstream may already have settled.
     await writeFile(

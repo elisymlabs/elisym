@@ -345,9 +345,13 @@ describe('an x402 paid-attempt index that cannot be READ', () => {
     chmodSync(indexPath, 0o000);
 
     try {
-      await expect(new X402JobStore(sandbox).claimPaidAttempt('job-1', 2, 2)).rejects.toThrow();
-      // And the file is still there: a store that rotated it aside would have
-      // destroyed the only record of what was already paid for.
+      await expect(new X402JobStore(sandbox).claimPaidAttempt('job-1', 2, 2)).rejects.toThrow(
+        /EACCES|permission denied/i,
+      );
+      // And the file is still there. A MIRROR of the ledger rows above rather
+      // than a kill of its own: this store has no rotation path at all, so
+      // nothing can move the file aside - the assertion is here because a
+      // store that grew one should redden this row on the way in.
       expect(statSync(indexPath).isFile()).toBe(true);
     } finally {
       try {

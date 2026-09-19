@@ -148,6 +148,30 @@ describe('one settlement settles one job', () => {
     expect(store.owner(SIG_A)).toBe('job-1');
   });
 
+  it('keeps walking past an UNUSABLE entry to the one that is ours', async () => {
+    // The same argument one branch up. The row below covers a candidate the
+    // index says belongs to somebody else; this covers one the node should
+    // never have listed at all - an empty signature. Both mark the pass
+    // imperfect and both continue, and without a second candidate behind the
+    // skipped one `continue` and `break` are indistinguishable, so each branch
+    // needs its own row: measured, turning THIS one into `break` left every
+    // other fixture green while the customer's paid transfer, one row lower in
+    // the same window, is never looked at.
+    listedPages = [
+      [
+        { signature: '', err: null },
+        { signature: SIG_A, err: null },
+      ],
+    ];
+
+    const result = await makeAcceptor(strategyVerifying(SIG_A)).accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    expect(result).toEqual({ accepted: true, txSignature: SIG_A });
+  });
+
   it("keeps walking past another job's candidate to the one that is ours", async () => {
     // No other fixture reaches this branch with a SECOND candidate behind the
     // skipped one, so `continue` and `break` are indistinguishable to all of
@@ -696,6 +720,13 @@ describe('what may become a terminal "nobody paid"', () => {
       CONFIG,
     );
     expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    // The RPC's own complaint, not just the verdict. Two reasons. The operator
+    // needs it - `inconclusive` alone does not say the chain was unreachable -
+    // and it is the only thing measuring that step 3 records `lastError` at
+    // all. Without that assertion, deleting the record and leaking `lastError`
+    // into `window-empty` cancel out, and the row below that guards the
+    // terminal verdict goes green against a build that no longer guards it.
+    expect(result).toMatchObject({ error: expect.stringContaining('rpc listing unavailable') });
   });
 
   it('never says it when no listing attempt was made at all', async () => {
@@ -834,6 +865,28 @@ describe('a request that cannot be paid at all', () => {
       CONFIG,
     );
     expect(result).toMatchObject({ accepted: false, reason: 'unusable-request' });
+    expect(listCalls).toBe(0);
+  });
+
+  it('carves out a job that owns a settlement from the INCONCLUSIVE verdict too', async () => {
+    // The third step-0 branch, and the one with no row: the two below cover the
+    // terminal verdicts, where the carve-out is obviously load-bearing. This
+    // one is a fee rate the request does not match, which is not terminal - so
+    // it looks like the carve-out changes nothing, and returning the verdict
+    // straight away passes every other fixture in this file.
+    //
+    // What it costs is step 1. A job that already owns a settlement has one
+    // that was verified once; skipping the step means a provider whose
+    // on-chain fee moved after the customer paid never re-confirms it and
+    // never delivers the work it was paid for.
+    store.claim(SIG_A, 'job-1');
+
+    const result = await makeAcceptor(strategyVerifying(SIG_A)).accept(
+      { paymentRequest: makeRequest({ fee_amount: 0 }), jobIdentity: 'job-1' },
+      { feeBps: 300, treasury: TREASURY },
+    );
+
+    expect(result).toEqual({ accepted: true, txSignature: SIG_A });
     expect(listCalls).toBe(0);
   });
 

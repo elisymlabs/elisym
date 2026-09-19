@@ -13,7 +13,7 @@
  * `createIrohTransport` needs the native addon and a writable store, and what
  * is being measured here is HOW MANY TIMES it is called.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -100,6 +100,14 @@ describe('two file transfers that start at the same moment', () => {
 
     const starting = ensureIrohTransport(agent);
     await shutdownIrohTransport(agent);
+    // BEFORE the creation is awaited, and that placement is the whole row: the
+    // deferred handler further down closes a node that lands late, and it
+    // produces the same counts a moment later. Asserted after `await starting`,
+    // this row goes green with the WAIT removed - and on the process-exit path
+    // there is no later moment, because `teardownRegistry` returns straight
+    // into `process.exit`. Measured: the wait and the deferred handler only
+    // redden together when the assertion sits below.
+    expect(shutdowns).toBe(1);
 
     await starting;
     expect(created).toBe(1);
@@ -286,6 +294,31 @@ describe('two file transfers that start at the same moment', () => {
     // NOT asserted: that the registry is emptied. `scrubAgent` deletes the one
     // agent it retires because the process lives on; this path runs into
     // `process.exit`, so it releases resources and leaves the map alone.
+  });
+
+  it('takes an EPHEMERAL store with it', async () => {
+    // The only guard in this file with neither a row nor a note, and three
+    // separate comments claim what it does - including the one beside the
+    // server's teardown, which names the cost: a tmpdir holding job inputs and
+    // bought results in the clear, left behind by the very teardown that exists
+    // to remove it.
+    //
+    // An agent with no `agentDir` is the shape that gets one: every other row
+    // here builds a project-local agent, whose store lives under `.iroh` and is
+    // meant to survive.
+    const agent = {} as { irohStoreDir?: string };
+
+    await ensureIrohTransport(agent as never);
+    const storeDir = agent.irohStoreDir ?? '';
+    expect(storeDir).not.toBe('');
+    expect(existsSync(storeDir)).toBe(true);
+
+    await shutdownIrohTransport(agent as never);
+
+    expect(existsSync(storeDir)).toBe(false);
+    // And the agent no longer points at it, so a second teardown is not an
+    // `rm` against a path something else may have reused by then.
+    expect(agent.irohStoreDir).toBeUndefined();
   });
 
   it('let a later transfer build a new node after shutdown', async () => {
