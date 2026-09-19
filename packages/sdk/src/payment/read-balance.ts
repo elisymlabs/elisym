@@ -10,6 +10,7 @@
  * the same page with the baseline's amount blanked to `''` verified. A second
  * copy of a rule is a rule that gets fixed once.
  */
+import { isAddress } from '@solana/kit';
 
 /**
  * A balance as the RPC reports it, or `null` when what came back is not one.
@@ -27,16 +28,23 @@
  *
  * `null` rather than `0n`, because the two are not the same answer: a baseline
  * taken for zero makes whatever the recipient already held look like a payment.
+ *
+ * And never NEGATIVE, in any of the three spellings. A balance is a u64, so a
+ * negative one is not a small balance - it is not a balance - and it is the one
+ * unreadable value that does worse than read as zero: the delta is `post - pre`,
+ * so a baseline of `-5000000` ADDS five million to whatever arrived. Measured on
+ * both rails: a transfer of 100 subunits against a price of 1.8M verified.
  */
 export function readBalance(raw: unknown): bigint | null {
   if (typeof raw !== 'bigint' && typeof raw !== 'string' && typeof raw !== 'number') {
     return null;
   }
-  if (typeof raw === 'string' && !/^-?\d+$/.test(raw)) {
+  if (typeof raw === 'string' && !/^\d+$/.test(raw)) {
     return null;
   }
   try {
-    return BigInt(raw);
+    const value = BigInt(raw);
+    return value < 0n ? null : value;
   } catch {
     return null;
   }
@@ -57,12 +65,19 @@ export interface ReadableTokenRow {
  * no baseline", and an absent baseline is a legitimate ZERO: it is what a
  * first-ever payment looks like, when the token account is created inside the
  * same transaction. The callers refuse the page instead.
+ *
+ * Both have to be ADDRESSES, not merely strings: a mint padded with a space is
+ * a string, matches nothing, and lands in the same "no baseline" reading. What
+ * this cannot catch is a well-formed address that is simply the wrong one - a
+ * page that lies coherently is beyond any shape check, here or anywhere else
+ * in the verifier.
  */
 export function isReadableTokenRow<Row>(row: Row): row is Row & ReadableTokenRow {
+  if (row === null || typeof row !== 'object') {
+    return false;
+  }
+  const { owner, mint } = row as Partial<ReadableTokenRow>;
   return (
-    row !== null &&
-    typeof row === 'object' &&
-    typeof (row as Partial<ReadableTokenRow>).owner === 'string' &&
-    typeof (row as Partial<ReadableTokenRow>).mint === 'string'
+    typeof owner === 'string' && typeof mint === 'string' && isAddress(owner) && isAddress(mint)
   );
 }

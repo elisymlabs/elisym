@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   openSync,
   existsSync,
@@ -657,6 +658,53 @@ describe('a session file that is a node which blocks', () => {
       expect(logged.join('\n')).toContain('not a regular file');
     } finally {
       closeSync(reader);
+    }
+  });
+});
+
+describe('a transcript that cannot be appended to', () => {
+  it('does not throw into a job whose work is already done', async () => {
+    // The blocking-node gate above applies one rule to ONE cause of a failed
+    // append - "context is not worth a lost result" - and the write below it
+    // re-threw every other cause. `appendExchange` runs after the skill has
+    // executed, so the throw reached the runtime as a failed job: the work
+    // done, the model budget spent, the result discarded, recovery closed.
+    // Measured through the runtime on a transcript made read-only between two
+    // jobs, and on a paid skill that is the customer's money.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const logged: string[] = [];
+    const store = new SessionStore(agentDir, (line) => {
+      logged.push(line);
+    });
+    store.init();
+    const exchange = {
+      jobId: 'job-1',
+      capability: 'chat',
+      userContent: 'hello',
+      assistantContent: 'hi',
+      skipRoles: new Set<'user' | 'assistant'>(),
+    };
+    const release = await store.acquire(CUSTOMER, SID);
+    try {
+      store.appendExchange(CUSTOMER, SID, exchange);
+      const path = join(agentDir, SESSIONS_DIR_NAME, CUSTOMER, `${SID}.jsonl`);
+      const before = readFileSync(path, 'utf-8');
+      chmodSync(path, 0o444);
+      try {
+        expect(() =>
+          store.appendExchange(CUSTOMER, SID, { ...exchange, jobId: 'job-2' }),
+        ).not.toThrow();
+
+        expect(logged.join('\n')).toContain('could not record this exchange');
+        // And nothing half-landed: the transcript is what it was.
+        expect(readFileSync(path, 'utf-8')).toBe(before);
+      } finally {
+        chmodSync(path, 0o600);
+      }
+    } finally {
+      release();
     }
   });
 });

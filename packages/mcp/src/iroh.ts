@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { ensureGitignoreHasIrohEntry } from '@elisym/sdk/agent-store';
 import { createIrohTransport, type IrohBlobTransport } from '@elisym/sdk/node';
 import type { AgentInstance } from './context';
+import { migrateGitignoreBestEffort } from './storage/gitignore-migration.js';
 
 /**
  * Get (creating on first use) the agent's iroh transport.
@@ -63,7 +64,14 @@ async function createTransport(agent: AgentInstance): Promise<IrohBlobTransport>
     // never runs `elisym start`, which is the only other caller. What the store
     // holds is job inputs and bought results in the CLEAR, so a project-local
     // agent inside somebody's repository would commit them.
-    await ensureGitignoreHasIrohEntry(dirname(agent.agentDir));
+    //
+    // Best effort, like the four stores: this was the FIFTH place the MCP runs
+    // a migration and the one left throwing when the other four stopped. On a
+    // read-only `.gitignore` it failed `fetch_job_file` for a result the
+    // customer had already paid for, in a directory that worked before this
+    // branch added the call.
+    const elisymRoot = dirname(agent.agentDir);
+    await migrateGitignoreBestEffort('iroh', () => ensureGitignoreHasIrohEntry(elisymRoot));
   } else {
     // Ephemeral agent: a tmpdir store, removed on shutdown.
     storePath = mkdtempSync(join(tmpdir(), 'elisym-iroh-'));

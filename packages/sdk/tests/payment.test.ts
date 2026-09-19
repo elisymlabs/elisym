@@ -2230,6 +2230,23 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         /token balance row is unreadable/,
       ],
       [
+        'a NEGATIVE baseline amount',
+        (page: TokenPage) => {
+          (page.meta.preTokenBalances[0] as { uiTokenAmount: unknown }).uiTokenAmount = {
+            amount: '-5000000',
+          };
+        },
+        /Recipient token amount is unreadable/,
+      ],
+      [
+        'a baseline row whose mint is padded with a space',
+        (page: TokenPage) => {
+          const row = page.meta.preTokenBalances[0] as { mint: string };
+          row.mint = ` ${row.mint}`;
+        },
+        /token balance row is unreadable/,
+      ],
+      [
         'a baseline LIST that is not a list',
         (page: TokenPage) => {
           (page.meta as { preTokenBalances: unknown }).preTokenBalances = { length: 2 };
@@ -2267,6 +2284,11 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       ['an empty string', ''],
       ['an array', []],
       ['a boolean', true],
+      // Worse than zero: the delta is `post - pre`, so a negative baseline ADDS
+      // itself to whatever arrived. A balance is a u64 in every spelling.
+      ['a negative bigint', -5_000_000n],
+      ['a negative number', -5_000_000],
+      ['a negative string', '-5000000'],
     ])('does not read a LAMPORT baseline of %s as zero', async (_label, slot) => {
       // The native twin. `pre` and `post` agree on length, so the length guard
       // says nothing, and the recipient's baseline is THERE - it is just not a

@@ -466,16 +466,30 @@ export class SessionStore {
       this.log(`[sessions] session file is not a regular file; not recording this exchange`);
       return;
     }
+    // The same rule for a write that simply FAILS, which the gate above applied
+    // to one cause of failure and this `try` used to re-throw for every other: a
+    // transcript checked out read-only, a full disk, a read-only mount. It ran
+    // the runtime into `markFailed` AFTER the skill had executed - measured on a
+    // session file made 0o444 between two jobs: the work done, the model budget
+    // spent, the result thrown away, and recovery closed off. On a paid skill
+    // that is the customer's money. What is lost by not throwing is one exchange
+    // of context, and the next turn is answered without it.
     try {
-      appendFileSync(path, payload, { mode: FILE_MODE });
-    } catch (error: unknown) {
-      // The hourly sweep may have rmdir'd an emptied customer dir between this
-      // job's open and its append; recreate and retry once.
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw error;
+      try {
+        appendFileSync(path, payload, { mode: FILE_MODE });
+      } catch (error: unknown) {
+        // The hourly sweep may have rmdir'd an emptied customer dir between this
+        // job's open and its append; recreate and retry once.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+        mkdirSync(join(this.root, customerId), { recursive: true, mode: DIR_MODE });
+        appendFileSync(path, payload, { mode: FILE_MODE });
       }
-      mkdirSync(join(this.root, customerId), { recursive: true, mode: DIR_MODE });
-      appendFileSync(path, payload, { mode: FILE_MODE });
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.log(`[sessions] could not record this exchange (${reason}); delivering without it`);
+      return;
     }
     this.globalBytes += Buffer.byteLength(payload);
   }

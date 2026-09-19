@@ -18,12 +18,11 @@ import { isReadableTokenRow, readBalance } from './read-balance';
  * the recipient and one agent's verdict is served to the next, drop the network
  * and one cluster's is served to the other, and a row holds each.
  *
- * Six guards change no answer and are left stated rather than measured (the
- * skip on an unreadable post amount is NOT among them - it looks neutral and
- * stops being so against a negative baseline, which is why it has a row). Two
- * are the `typeof` disjuncts in the token-row checks: a primitive has no
- * `.owner` to read, so the `=== null` half beside each is what keeps the read
- * from throwing and the `typeof` half does nothing alone. The other four: the
+ * Five guards change no answer and are left stated rather than measured. One
+ * is the skip on an unreadable POST amount: `null > n` is false for every `n`
+ * a baseline can be, now that `readBalance` refuses a negative one - the only
+ * value it ever mattered against - and the compiler keeps the line regardless,
+ * for the narrowing. The other four: the
  * `typeof getTransaction` half of the rpc check (the `catch` below reports
  * `rpc_error` anyway, and the `!rpc` half beside it does change the answer, so
  * it has a row),

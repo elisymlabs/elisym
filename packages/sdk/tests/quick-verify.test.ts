@@ -371,13 +371,12 @@ describe('verifyJobPaymentQuick', () => {
     expect(result.reason).toBe('recipient_mismatch');
   });
 
-  it('does not let an unreadable POST amount outrank a negative baseline', async () => {
-    // The skip on an unreadable post amount looks answer-neutral, and for a
-    // baseline of zero or more it is: `null > 0n` is false, so falling through
-    // lands in the same refusal. A NEGATIVE baseline is where it stops being
-    // neutral - `null` coerces to 0 in that comparison, `0 > -5` is true, and
-    // the fall-through returns a credit for a row whose post amount could not
-    // be read at all.
+  it('does not read a NEGATIVE token baseline as a balance', async () => {
+    // A balance is a u64. A negative one is the single unreadable value that
+    // does worse than read as zero: the credit test is `post > pre`, and against
+    // `-5000000` every post balance wins. Here the recipient held five million
+    // and holds a hundred more - the honest reading is no credit worth the
+    // name, and the negative one used to be a payment.
     const recipient = makeAddress();
     const mint = makeAddress();
     const rpc = createMockRpc(() => ({
@@ -388,15 +387,17 @@ describe('verifyJobPaymentQuick', () => {
             preBalances: [10_000_000n, 0n],
             postBalances: [10_000_000n, 0n],
             preTokenBalances: [
-              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '-5' } },
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '-5000000' } },
             ],
-            postTokenBalances: [{ accountIndex: 1, mint, owner: recipient }],
+            postTokenBalances: [
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '100' } },
+            ],
           },
           transaction: { message: { accountKeys: [recipient, makeAddress()] } },
         }),
     }));
 
-    const result = await verifyJobPaymentQuick(rpc, 'sig-null-vs-negative', recipient, 'mainnet');
+    const result = await verifyJobPaymentQuick(rpc, 'sig-negative-baseline', recipient, 'mainnet');
 
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('recipient_mismatch');

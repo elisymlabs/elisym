@@ -13,7 +13,15 @@
  * `createIrohTransport` needs the native addon and a writable store, and what
  * is being measured here is HOW MANY TIMES it is called.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -294,6 +302,31 @@ describe('two file transfers that start at the same moment', () => {
     // NOT asserted: that the registry is emptied. `scrubAgent` deletes the one
     // agent it retires because the process lives on; this path runs into
     // `process.exit`, so it releases resources and leaves the map alone.
+  });
+
+  it('still opens when the .gitignore it wants to widen is read-only', async () => {
+    // The fifth place the MCP runs a `.gitignore` migration, and the one left
+    // throwing after the four stores stopped. This branch ADDED the call, so a
+    // project-local agent whose `.gitignore` is checked out read-only worked
+    // before it and then failed `fetch_job_file` on a result the customer had
+    // already paid for: `EACCES ... .gitignore. The provider may be offline`.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const gitignorePath = join(sandbox, '.elisym', '.gitignore');
+    chmodSync(gitignorePath, 0o444);
+    const agent = { agentDir } as never;
+
+    try {
+      await expect(ensureIrohTransport(agent)).resolves.toBeDefined();
+      expect(created).toBe(1);
+      // And it really could not be widened - otherwise this row passes against
+      // a build that never met the failure it is about.
+      expect(readFileSync(gitignorePath, 'utf-8')).not.toContain('.iroh/');
+    } finally {
+      chmodSync(gitignorePath, 0o644);
+      await shutdownIrohTransport(agent);
+    }
   });
 
   it('takes an EPHEMERAL store with it', async () => {
