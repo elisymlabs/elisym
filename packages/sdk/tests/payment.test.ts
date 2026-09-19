@@ -634,12 +634,15 @@ describe('buildPaymentInstructions', () => {
   });
 
   it('refuses a malformed fee address when the fee is POSITIVE', async () => {
-    // The half the zero-fee row cannot reach. `providerAmount` subtracts the fee
-    // on the mere presence of the field, while the fee leg is built only for an
-    // address that parses - so this used to produce a transaction paying the
-    // recipient `amount - fee` and nobody the fee. The customer signs an
-    // underpayment and the provider's own verifier refuses it: the whole job's
-    // money, for a job that can never be accepted.
+    // The half the zero-fee row cannot reach, and it guards a hole this branch
+    // could have opened rather than one it found: before the zero-fee
+    // derivation went in, a malformed address threw out of `address()` and
+    // nothing was signed. With the `isAddress(...) ? ... : undefined` form that
+    // keeps a zero-fee request buildable, the same input would instead SKIP the
+    // fee leg while `providerAmount` still subtracts the fee - a transaction
+    // paying the recipient `amount - fee` and nobody the fee, which the
+    // provider's own verifier then refuses. The whole job's money, for a job
+    // that can never be accepted.
     const signer = makeSigner(makeAddress());
 
     await expect(

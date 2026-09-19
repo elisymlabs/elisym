@@ -6,6 +6,12 @@ import { mergeAccountKeys } from './account-keys';
 /**
  * Lightweight payment verifier, exported for discovery ranking.
  *
+ * Deliberately WITHOUT the length guard its neighbor in `solana.ts` carries:
+ * that one refuses a transaction whose balance arrays disagree, because there a
+ * misread slot accepts a payment. Here the answer is a ranking hint the file
+ * itself calls "not proof", and the undefined-slot check below is what keeps a
+ * disagreement from throwing. Stated because the asymmetry is deliberate.
+ *
  * Nothing in this monorepo calls it today - it is public surface for callers
  * building their own ranking, and that is worth saying out loud, because a
  * reader who assumes a caller assumes a test harness too. Its guards are

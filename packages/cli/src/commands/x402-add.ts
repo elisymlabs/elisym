@@ -289,7 +289,8 @@ function describeUnacceptableAccepts(probe: X402ProbeResult, agentNetwork: Netwo
 }
 
 /**
- * Write the generated `SKILL.md`, refusing a path that is not a regular file.
+ * Create the skill directory owner-only and write the generated `SKILL.md`,
+ * refusing a path that is not a regular file.
  *
  * The last write of this class, and the window is the interactive prompt that
  * runs between the existence check and this call: a neighbor with write access
@@ -299,13 +300,20 @@ function describeUnacceptableAccepts(probe: X402ProbeResult, agentNetwork: Netwo
  * upstream and an interactive prompt to reach this line.
  */
 export async function writeSkillMdRefusingBlockingNode(
-  skillMdPath: string,
+  targetDir: string,
   content: string,
-): Promise<void> {
+): Promise<string> {
+  await mkdir(targetDir, { recursive: true, mode: 0o700 });
+  // `mode` applies only to a directory this call CREATES, so an agent whose
+  // `skills/<name>/` an older build left at 0o755 keeps it. The x402 result
+  // store learned this the same way and tightens explicitly; so does this.
+  await chmod(targetDir, 0o700).catch(() => undefined);
+  const skillMdPath = join(targetDir, 'SKILL.md');
   if (isBlockingNodeSync(skillMdPath)) {
     throw new Error(`Refusing to write ${skillMdPath}: it is a pipe, socket or device, not a file`);
   }
   await writeFile(skillMdPath, content, 'utf-8');
+  return skillMdPath;
 }
 
 export async function cmdX402Add(
@@ -685,13 +693,7 @@ export async function cmdX402Add(
     allowX402Skills: true,
   });
 
-  await mkdir(targetDir, { recursive: true, mode: 0o700 });
-  // `mode` applies only to a directory this call CREATES, so an agent whose
-  // `skills/<name>/` an older build left at 0o755 keeps it. The x402 result
-  // store learned this the same way and tightens explicitly; so does this.
-  await chmod(targetDir, 0o700).catch(() => undefined);
-  const skillMdPath = join(targetDir, 'SKILL.md');
-  await writeSkillMdRefusingBlockingNode(skillMdPath, content);
+  await writeSkillMdRefusingBlockingNode(targetDir, content);
   await ensureGitignoreHasX402Entries(dirname(loaded.dir));
 
   console.log(`\n  Wrote ${join(targetDir, 'SKILL.md')}`);

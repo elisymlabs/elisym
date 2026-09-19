@@ -32,7 +32,8 @@ vi.mock('@elisym/sdk/node', () => ({
   },
 }));
 
-const { ensureIrohTransport, shutdownIrohTransport } = await import('../src/iroh.js');
+const { ensureIrohTransport, markAgentsScrubbed, shutdownIrohTransport } =
+  await import('../src/iroh.js');
 const { scrubAgent } = await import('../src/tools/agent.js');
 
 let sandbox: string;
@@ -116,7 +117,10 @@ describe('two file transfers that start at the same moment', () => {
     // would open a second node on the same store.
     const agent = { agentDir, scrubbed: true } as never;
 
-    expect(() => ensureIrohTransport(agent)).toThrow(/stopped/);
+    // A REJECTED promise, not a synchronous throw: callers written as
+    // `ensureIrohTransport(a).catch(...)` exist, and a sync throw walks past
+    // them.
+    await expect(ensureIrohTransport(agent)).rejects.toThrow(/stopped/);
     expect(created).toBe(0);
   });
 
@@ -135,11 +139,30 @@ describe('two file transfers that start at the same moment', () => {
     const registry = new Map<string, unknown>([['alice', agent]]);
 
     const scrubbing = scrubAgent({ registry } as never, agent as never);
-    expect(() => ensureIrohTransport(agent as never)).toThrow(/stopped/);
+    const refused = expect(ensureIrohTransport(agent as never)).rejects.toThrow(/stopped/);
 
+    await refused;
     await scrubbing;
     expect(created).toBe(0);
     expect(registry.has('alice')).toBe(false);
+  });
+
+  it('are refused for EVERY agent the server is shutting down, not one at a time', async () => {
+    // The server's teardown awaits per agent, so a flag set inside that loop
+    // leaves each later agent open for the whole of the previous one's
+    // shutdown - and for an ephemeral agent the cost is worse than a held lock:
+    // `shutdownIrohTransport` has already forgotten the tmpdir path, so a store
+    // opened afterwards keeps job inputs and bought results in the clear in
+    // `/tmp` with nothing left to remove it.
+    const first = { name: 'alice', agentDir } as { name: string; scrubbed?: boolean };
+    const second = { name: 'bob', agentDir } as { name: string; scrubbed?: boolean };
+
+    markAgentsScrubbed([first, second] as never[]);
+
+    expect(first.scrubbed).toBe(true);
+    expect(second.scrubbed).toBe(true);
+    await expect(ensureIrohTransport(second as never)).rejects.toThrow(/stopped/);
+    expect(created).toBe(0);
   });
 
   it('let a later transfer build a new node after shutdown', async () => {

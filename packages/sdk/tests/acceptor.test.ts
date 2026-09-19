@@ -1610,6 +1610,56 @@ describe('an index the store cannot read', () => {
       acceptor.accept({ paymentRequest: makeRequest(), jobIdentity: 'job-1' }, CONFIG),
     ).rejects.toThrow(/not a settlement index/);
   });
+
+  it('surfaces from the CARVE-OUT read too, where the verdict it replaces is TERMINAL', async () => {
+    // The same promise, a different door, and the worse of the two. The row
+    // above sends a payable request, so step 0 answers `undefined` and the
+    // store is first asked at step 1 - where a swallowed error costs an
+    // `inconclusive`. Here step 0 REFUSES, and the carve-out asks the store
+    // whether this job already owns a settlement precisely so that a terminal
+    // verdict cannot land on a job that has been paid. Swallow the error there
+    // and the answer is `unusable-request` - terminal, recoverable by nothing -
+    // about an index nobody read.
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(),
+      rpc: makeRpc(),
+      store: unreadableStore(),
+    });
+
+    await expect(
+      acceptor.accept({ paymentRequest: makeRequest({ amount: 0 }), jobIdentity: 'job-1' }, CONFIG),
+    ).rejects.toThrow(/not a settlement index/);
+    // And it got there without listing anything: the refusal is about our own
+    // state, not about what the chain shows.
+    expect(listCalls).toBe(0);
+  });
+
+  it('surfaces from the WINDOW WALK read as well, the third of the three', async () => {
+    // The last door: a store that answers the first two reads and then fails on
+    // the candidate lookup - which is what a permission change or a half-
+    // written file between calls actually looks like, since the file store
+    // re-reads on every one. `claim` would throw again a line later on THIS
+    // store, but `SettlementStore` is public and owes only the contract, so the
+    // promise has to hold at each read rather than by luck of the next one.
+    const failingOwner: SettlementStore = {
+      claim: () => 'claimed',
+      owner: () => {
+        throw new Error('Settlement index at /x is JSON but not a settlement index');
+      },
+      claimedSignature: () => undefined,
+      prune: () => 0,
+    };
+    listedPages = [[{ signature: SIG_A, err: null }]];
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(SIG_A),
+      rpc: makeRpc(),
+      store: failingOwner,
+    });
+
+    await expect(
+      acceptor.accept({ paymentRequest: makeRequest(), jobIdentity: 'job-1' }, CONFIG),
+    ).rejects.toThrow(/not a settlement index/);
+  });
 });
 
 describe('what the acceptor actually hands the verifier', () => {

@@ -29,7 +29,7 @@ import type { AgentInstance } from './context';
  * promise is therefore recorded BEFORE the first await, which is the whole
  * trick: everything async happens inside it.
  */
-export function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlobTransport> {
+export async function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlobTransport> {
   // A scrubbed agent is gone from the registry, so nothing would ever shut this
   // down again: `server.ts`'s teardown walks the registry. The single-flight
   // below closes the window where a teardown OVERTAKES a creation; this closes
@@ -40,8 +40,13 @@ export function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlobTrans
     throw new Error(`Agent ${agent.name} has been stopped; not opening a file transport for it`);
   }
   if (agent.irohTransport) {
-    return Promise.resolve(agent.irohTransport);
+    return agent.irohTransport;
   }
+  // `async` on the signature, and the assignment below still happens before any
+  // await inside `createTransport` - the single-flight survives. What `async`
+  // buys is that the refusal above arrives as a REJECTED PROMISE rather than a
+  // synchronous throw, so a caller written as `ensureIrohTransport(a).catch(…)`
+  // still catches it.
   agent.irohTransportPending ??= createTransport(agent).finally(() => {
     agent.irohTransportPending = undefined;
   });
@@ -65,6 +70,22 @@ async function createTransport(agent: AgentInstance): Promise<IrohBlobTransport>
   }
   agent.irohTransport = createIrohTransport({ storePath });
   return agent.irohTransport;
+}
+
+/**
+ * Mark every agent as torn down, in one pass, before any of them is shut down.
+ *
+ * The server's own shutdown loop awaits per agent, so marking inside it would
+ * leave each later agent unguarded for the whole of the previous one's
+ * teardown - and `scrubAgent` covers only the one agent a `switch_agent` or
+ * `stop_agent` is retiring. Lives here, beside the flag's meaning, so the two
+ * teardown paths cannot drift; the call in `server.ts` is one line and is not
+ * separately driven by a test.
+ */
+export function markAgentsScrubbed(agents: Iterable<AgentInstance>): void {
+  for (const agent of agents) {
+    agent.scrubbed = true;
+  }
 }
 
 /** Shut down the agent's iroh node (release the fs-lock) and clean an ephemeral store. */

@@ -14,7 +14,7 @@ import { address, createSolanaRpc } from '@solana/kit';
 import { ZodError } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AgentContext, rpcUrlFor } from './context.js';
-import { shutdownIrohTransport } from './iroh.js';
+import { markAgentsScrubbed, shutdownIrohTransport } from './iroh.js';
 import { logger } from './logger.js';
 import { buildEffectiveLimits } from './session-limits.js';
 import { agentTools } from './tools/agent.js';
@@ -291,6 +291,14 @@ export async function startServer(ctx: AgentContext): Promise<void> {
     }
     shuttingDown = true;
     logger.info({ event: 'shutdown', reason }, 'shutting down');
+    // EVERY agent first, in its own pass: the loop below awaits per agent, so
+    // marking inside it would leave each later agent unguarded for the whole of
+    // the previous one's teardown. A tool handler that captured its agent
+    // before the signal arrived is still running, and a transport it opens now
+    // holds the fs-store lock past `process.exit` - or, for an ephemeral agent,
+    // strands a tmpdir of job inputs and bought results in the clear, because
+    // `shutdownIrohTransport` has already forgotten the path.
+    markAgentsScrubbed(ctx.registry.values());
     for (const agent of ctx.registry.values()) {
       // Release the iroh fs-store lock (and remove an ephemeral tmpdir store)
       // before exit so a restart is not wedged by a stale lock.

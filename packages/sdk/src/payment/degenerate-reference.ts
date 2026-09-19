@@ -34,8 +34,9 @@ import { TOKEN_2022_PROGRAM_ADDRESS_STR, resolveAssetFromPaymentRequest } from '
  * The CLASS cannot be closed. A reference equal to the system program, to the
  * asset mint or to the payer is degenerate for the same reason, and the honest
  * invariant - "an address that appears only in transactions for this request" -
- * is not expressible as a list; the payer is not even known when the request is
- * checked. This is a denylist of the addresses a payment for THIS request is
+ * is not expressible as a list; the payer is not known to the SYNCHRONOUS half
+ * at all (the builder half does see it, and leaves the payer's own token
+ * account out on purpose - said there). This is a denylist of the addresses a payment for THIS request is
  * computed from, and it is hardening: every request the SDK builds carries a
  * randomly generated reference, so a false refusal here is unreachable.
  */
@@ -159,6 +160,10 @@ function cacheKey(
   // IS in the key - it rotates on-chain, and a set cached against the old one
   // would survive the rotation and miss the new one.
   return JSON.stringify([
+    // NOT KILLED BY ANY TEST, and no test could while devnet and mainnet share
+    // a program id: the derived set depends on the network only THROUGH that
+    // id, which is already in the key. Kept so the key stays correct the day
+    // they diverge.
     network ?? null,
     programId ?? null,
     asset.mint ?? null,

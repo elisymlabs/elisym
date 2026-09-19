@@ -997,15 +997,20 @@ export async function buildPaymentInstructions(
   const protocolTag = address(ELISYM_PROTOCOL_TAG);
   const programId = options.programId;
   const feeAmount = paymentRequest.fee_amount ?? 0;
-  // A POSITIVE fee needs a destination that exists. Without this the two halves
-  // disagree: `providerAmount` below subtracts the fee on the mere presence of
-  // the field, while the fee leg is built only for an address that parses - so
-  // a malformed `fee_address` used to produce a transaction paying the
-  // recipient `amount - fee` and nobody the fee. The customer signs an
-  // underpayment, the provider's verifier answers `Recipient received N,
-  // expected >= amount`, and the job can never be accepted. A zero fee stays
-  // payable: no leg is built either way, which is what the request shape a
-  // third-party provider issues on mainnet looks like.
+  // A POSITIVE fee needs a destination that exists, and the honest history is
+  // worth writing down: before this branch a malformed `fee_address` THREW out
+  // of `address()` further down, so nothing was signed. What this branch added
+  // - deriving the fee owner's ATA through `isAddress(...) ? ... : undefined`
+  // so a zero-fee request stays buildable - is what would otherwise turn that
+  // throw into a silent skip, and a silent skip is the dangerous one:
+  // `providerAmount` below subtracts the fee on the mere PRESENCE of the field
+  // while the fee leg is built only for an address that parses, so the customer
+  // would sign a transaction paying the recipient `amount - fee` and nobody the
+  // fee. The provider's verifier then answers `Recipient received N, expected
+  // >= amount` and the job can never be accepted. Refusing here keeps the old
+  // outcome and gives it a sentence an operator can act on. A zero fee stays
+  // payable: no leg is built either way, which is the request shape a
+  // third-party provider issues on mainnet.
   if (paymentRequest.fee_address && feeAmount > 0 && !isAddress(paymentRequest.fee_address)) {
     throw new Error(
       `Invalid fee address: ${paymentRequest.fee_address}. A positive fee has no valid destination.`,

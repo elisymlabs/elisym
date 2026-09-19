@@ -842,6 +842,12 @@ describe('one settlement transaction settles one job', () => {
     expect(deliveredJobIds(transport)).toEqual([]);
     const entry = ledger.allEntries().find((candidate) => candidate.job_id === 'blank-settlement');
     expect(entry?.payment_signature).toBeUndefined();
+    // The RUNTIME's own guard said so, not the ledger's: both refuse an
+    // unusable signature, and without this line removing either one alone left
+    // the package green while the other covered for it. The sentence is also
+    // the honest one - with only the ledger's guard the operator reads "job has
+    // no ledger entry" about a job whose entry is right there.
+    expect(logged(/verified without a settlement signature/)).toBe(true);
     // A budget of its own, because `waitFor` here is allowed 10 s and vitest's
     // default is 5: with the guard broken this row waited on a prompt that
     // never came and died on the harness timeout BEFORE any of the four

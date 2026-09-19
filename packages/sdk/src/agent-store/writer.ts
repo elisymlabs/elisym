@@ -481,10 +481,13 @@ export async function writeSecrets(
   };
   const body = JSON.stringify(finalSecrets, null, 2) + '\n';
   const target = agentPaths(agentDir).secrets;
-  // The choke point every writer of keys goes through - `init`, `profile`,
-  // `delegate-key`, `x402 add`, the MCP's `create_agent` - and therefore the
-  // one place where the widened ignore entries can reach an agent created by an
-  // older build at all. Before the write, so that when it SUCCEEDS the
+  // The choke point every writer of KEYS goes through - `init`, `profile`,
+  // `delegate-key`, `x402 add`, the MCP's `create_agent` - which is why the
+  // migration runs here and not only at start-up: an agent used purely through
+  // the MCP never runs `elisym start`. (It is not the only caller - `start`
+  // runs it too, and so do the customer-history and contacts stores - but it is
+  // the only one on the path that writes the keys themselves.) Before the
+  // write, so that when it SUCCEEDS the
   // widened entries are in place before `.secrets.json.tmp.<hex>` can exist at
   // all; a no-op when the file is absent, so a home-global agent is
   // unaffected. When it FAILS the keys are written anyway and the warning below
@@ -529,7 +532,11 @@ export async function writeFileAtomic(
     await writeFile(tmpPath, data, { mode });
     await rename(tmpPath, path);
   } catch (e) {
-    // Best-effort cleanup of temp file on rename failure.
+    // Best-effort cleanup, and the `try` above deliberately covers the WRITE as
+    // well as the rename: a disk that fills up part way through leaves a
+    // fragment of whatever was being written - for `.secrets.json` that is half
+    // the agent's keys - under a random name nothing reuses or sweeps.
+    // `write-file-atomic-cleanup.test.ts` pins both halves.
     try {
       const { unlink } = await import('node:fs/promises');
       await unlink(tmpPath);

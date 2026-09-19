@@ -134,8 +134,10 @@ export interface AgentInstance {
    */
   irohTransportPending?: Promise<IrohBlobTransport>;
   /**
-   * Set once the agent has been torn down (`scrubAgent`, or the server's own
-   * shutdown). A tool handler captures its `AgentInstance` before it starts
+   * Set once the agent has been torn down - by `scrubAgent` for the one agent a
+   * `switch_agent` or `stop_agent` retires, and by `markAgentsScrubbed` for all
+   * of them at server shutdown. Both mark BEFORE the first await of their
+   * teardown; that ordering is the guard, not the flag itself. A tool handler captures its `AgentInstance` before it starts
    * awaiting, so a scrub that completes in between hands the handler an object
    * that is no longer in the registry - and a transport opened on it afterwards
    * holds the fs-store lock with nothing left to shut it down. Checked by

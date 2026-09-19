@@ -419,10 +419,28 @@ describe('the d-tag collision scan of `elisym x402 add`', () => {
     makeFifo(skillMdPath);
     startDrainer(skillMdPath);
 
-    await expect(writeSkillMdRefusingBlockingNode(skillMdPath, 'body')).rejects.toThrow(
+    await expect(writeSkillMdRefusingBlockingNode(targetDir, 'body')).rejects.toThrow(
       /pipe, socket or device/,
     );
     // Still the node it was: refusing means not having written anything.
     expect(statSync(skillMdPath).isFIFO()).toBe(true);
+  });
+
+  it('tightens a skill directory an older build left world-readable', () => {
+    // The twin of the x402 result store's row, and it had none: `mkdir`'s mode
+    // applies only to a directory this call creates, so re-running `x402 add`
+    // over a skill folder an older build made at 0o755 would leave it there.
+    // What lands in it is a bridge skill carrying the upstream's URL and the
+    // shape of what this agent resells.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const targetDir = join(sandbox, 'skills', 'pre-existing');
+    mkdirSync(targetDir, { recursive: true, mode: 0o755 });
+    chmodSync(targetDir, 0o755);
+
+    return writeSkillMdRefusingBlockingNode(targetDir, 'body').then(() => {
+      expect(statSync(targetDir).mode & 0o777).toBe(0o700);
+    });
   });
 });
