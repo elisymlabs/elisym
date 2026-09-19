@@ -83,15 +83,30 @@ export function pendingWriteLockCount(): number {
 
 function withLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const previous = writeLocks.get(path) ?? Promise.resolve();
+  // What keeps one failed write from jamming every later write to this path is
+  // the ABSORPTION below, not this line: the promise put in the map settles
+  // rejected-free, so the next caller always chains onto something that runs.
+  // The rejection handler here is kept as the second belt - NOT KILLED BY ANY
+  // TEST, and it cannot be while the stored promise is absorbed - because the
+  // two must not be reasoned about separately: remove the absorption and this
+  // is suddenly the only thing holding the queue open.
   const next = previous.then(fn, fn);
   // The map stores `wrapped`, so the cleanup must compare against `wrapped` too -
   // comparing against `next` (the inner promise) never matched the stored value,
   // so entries were never deleted and the map grew without bound.
-  const wrapped = next.finally(() => {
-    if (writeLocks.get(path) === wrapped) {
-      writeLocks.delete(path);
-    }
-  });
+  //
+  // And the stored promise absorbs the rejection. `finally` re-throws, so
+  // without the `catch` every failed write left an unhandled rejection even
+  // though the caller handled its own - noise in a server that only logs it,
+  // and a process exit anywhere that does not. `X402JobStore.runExclusive`
+  // stores an absorbed promise for the same reason.
+  const wrapped: Promise<unknown> = next
+    .finally(() => {
+      if (writeLocks.get(path) === wrapped) {
+        writeLocks.delete(path);
+      }
+    })
+    .catch(() => undefined);
   writeLocks.set(path, wrapped);
   return next;
 }

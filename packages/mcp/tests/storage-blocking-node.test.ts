@@ -211,14 +211,9 @@ describe('the .gitignore an older agent directory carries', () => {
     // - which cannot match one. The write site is where the migration has to
     // run, because nothing else in an MCP process does it.
     //
-    // This row measures THAT the migration runs, not that it runs FIRST. The
-    // ordering matters - a write that dies between its temporary and the
-    // rename leaves the temporary behind, and only an entry already in place
-    // covers it - but forcing that failure here detaches a rejection inside
-    // the store's own lock queue, and a suite with unhandled rejections is a
-    // suite that can report a false pass. The SDK's `writeSecrets` twin, whose
-    // write is not behind a queue, measures the ordering directly
-    // (`agent-store.test.ts`); here it is kept on diff review.
+    // This row measures THAT the migration runs; the row in
+    // `storage-write-order.test.ts` measures that it runs FIRST, by watching
+    // the calls rather than by forcing a failure.
     const root = join(sandbox, '.elisym');
     writeFileSync(join(root, '.gitignore'), '.secrets.json\n', 'utf-8');
 

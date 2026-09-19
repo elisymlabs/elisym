@@ -88,7 +88,7 @@ const result = await acceptor.accept(
 
 `jobIdentity` has to be unique per job and stable across restarts. Deriving it from something stable but SHARED - the customer's pubkey, the request's reference, a skill name - closes several jobs with one signature and defeats the whole thing.
 
-On success you get `{ accepted: true, txSignature }`, the settlement now bound to this job and to no other. A refusal carries a `reason`.
+On success you get `{ accepted: true, txSignature }`, the settlement now bound to this job and to no other. A refusal carries a `reason` - and, sometimes, an `error`. The `error` is diagnostics, never contract, and it is not for the customer: it can name another job's settlement and the signature that settled it, which is a fact about a stranger's payment. Log it; do not relay it.
 
 `accept` bounds itself: one pass gives up after `budget.deadlineMs`, **30 seconds by default**, and answers `inconclusive`. The deadline is read at step boundaries and never handed to the strategy, so a verification already in flight still runs its own retries out - it is a floor, not a wall. `budget` also carries `retriesPerCandidate` (3), `retriesForOwnSettlement` (5), `intervalMs` (2000) and `listAttempts` (3), and every one of them takes `0` meaningfully. Pass an `AbortSignal` as `signal` to abandon a pass early; it reports `inconclusive`, never `window-empty`, because it has seen less than the whole window.
 

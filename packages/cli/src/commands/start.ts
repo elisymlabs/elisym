@@ -911,10 +911,11 @@ export async function cmdStart(
       : undefined;
 
   // NOT KILLED BY ANY TEST - `cmdStart` has no harness - so this ordering is
-  // kept on diff review. Every `.gitignore` migration except the two whose
-  // stores can create a `.corrupt.<ts>` in their constructor runs HERE, before a card
-  // is published,
-  // and for the same reason the two indexes above are opened here: appending to
+  // kept on diff review. Every `.gitignore` migration runs HERE, before a card
+  // is published - and three of them additionally run EARLIER: the two whose
+  // stores can create a `.corrupt.<ts>` inside their constructor, and the one
+  // ahead of the media cache. Running twice is a no-op; running late is not.
+  // They run here for the same reason the two indexes above are opened here: appending to
   // the file is not guarded - a read-only `.elisym` root, a root written under
   // sudo, a full disk - and a throw after the cards are on the relays leaves a
   // live paid provider advertised by an agent that has already exited. None of

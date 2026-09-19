@@ -238,6 +238,47 @@ describe('verifyJobPaymentQuick', () => {
     expect(result.reason).toBe('recipient_mismatch');
   });
 
+  it('answers rather than throwing when the recipient is missing entirely', async () => {
+    // `isAddress` reads `.length`, so it THROWS on `undefined` rather than
+    // answering false - and this function wraps nothing, so the caller's
+    // promise rejects instead of being told the input was bad. The empty
+    // string, which the neighbouring row uses, takes the other path and leaves
+    // this half unmeasured. Reachable because the file says so itself: nothing
+    // here calls it, it is public surface for callers building their own
+    // ranking, and those need not be typed.
+    const rpc = createMockRpc(() => ({ send: () => Promise.resolve(null) }));
+
+    const result = await verifyJobPaymentQuick(
+      rpc,
+      'sig-no-recipient',
+      undefined as unknown as Address,
+      'devnet',
+    );
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('invalid_input');
+  });
+
+  it('answers rather than throwing when the RPC returns a tx with no meta', async () => {
+    // `meta` is `<object|null>` in the Solana JSON-RPC spec, and this branch's
+    // threat model includes a proxy that answers with shapes the spec allows
+    // and the happy path does not. The closest existing row carries
+    // `meta: { err: null }`, so the missing-meta half was never taken.
+    const recipient = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: null,
+          transaction: { message: { accountKeys: [recipient] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-no-meta', recipient, 'devnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('tx_failed');
+  });
+
   it('never serves one recipient a verdict cached for another', async () => {
     // A positive verdict lives forever, and the signature it is keyed on is
     // public. Drop the recipient from the key and any agent asking about that

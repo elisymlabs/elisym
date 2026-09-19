@@ -313,10 +313,15 @@ describe('a write that fails leaves the settlement index untouched', () => {
     // One unreadable entry must not end the scan: the fragments are
     // independent, and stopping at the first would leave every later one -
     // each a full copy of the index - in place for good.
-    const unreadable = join(dir, '.settlements.json.1111.aaaaaaaaaaaa.tmp');
-    const sweepable = join(dir, '.settlements.json.2222.bbbbbbbbbbbb.tmp');
+    // One sweepable fragment on EITHER side of the unreadable one: `readdir`
+    // returns entries in whatever order the filesystem likes - lexicographic on
+    // APFS, hash order on ext4 - so a single follower would only prove the
+    // point on the half of the machines where it happens to come last.
+    const before = join(dir, '.settlements.json.0000.aaaaaaaaaaaa.tmp');
+    const unreadable = join(dir, '.settlements.json.1111.bbbbbbbbbbbb.tmp');
+    const after = join(dir, '.settlements.json.2222.cccccccccccc.tmp');
     const stale = Date.now() - 2 * 60 * 60 * 1000;
-    for (const name of [unreadable, sweepable]) {
+    for (const name of [before, unreadable, after]) {
       writeFileSync(name, '{}', 'utf-8');
       utimesSync(name, stale / 1000, stale / 1000);
     }
@@ -324,8 +329,42 @@ describe('a write that fails leaves the settlement index untouched', () => {
 
     createFileSettlementStore(path);
 
-    expect(readdirSync(dir)).toContain('.settlements.json.1111.aaaaaaaaaaaa.tmp');
-    expect(readdirSync(dir)).not.toContain('.settlements.json.2222.bbbbbbbbbbbb.tmp');
+    expect(readdirSync(dir)).toContain('.settlements.json.1111.bbbbbbbbbbbb.tmp');
+    expect(readdirSync(dir)).not.toContain('.settlements.json.0000.aaaaaaaaaaaa.tmp');
+    expect(readdirSync(dir)).not.toContain('.settlements.json.2222.cccccccccccc.tmp');
+  });
+
+  it('starts on a path whose own name is a regular expression', () => {
+    // The basename goes into a RegExp and the path is the SDK consumer's to
+    // choose - `settlements (1).json` is simply what a duplicate gets called.
+    // Unescaped, those parens become a GROUP: this store stops matching its own
+    // fragments and starts matching a neighbor's, and an unbalanced one makes
+    // `new RegExp` throw out of the constructor, with a message that says
+    // nothing about the path.
+    const metaPath = join(dir, 'settlements (1).json');
+    const own = join(dir, '.settlements (1).json.4242.deadbeefcafe.tmp');
+    writeFileSync(own, '{}', 'utf-8');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(own, stale / 1000, stale / 1000);
+
+    expect(() => createFileSettlementStore(metaPath)).not.toThrow();
+
+    expect(readdirSync(dir)).not.toContain('.settlements (1).json.4242.deadbeefcafe.tmp');
+  });
+
+  it('keeps the sweep within (30 minutes, 2 hours] of age', () => {
+    // The hour itself, pinned from below as well as above: the upper bound is
+    // held by the two rows that expect a two-hour-old fragment to go, and
+    // without this one the constant could shrink to a second and start taking
+    // temporaries a live writer is still renaming.
+    const recent = join(dir, '.settlements.json.4242.abcabcabcabc.tmp');
+    writeFileSync(recent, '{}', 'utf-8');
+    const halfAnHour = Date.now() - 30 * 60 * 1000;
+    utimesSync(recent, halfAnHour / 1000, halfAnHour / 1000);
+
+    createFileSettlementStore(path);
+
+    expect(readdirSync(dir)).toContain('.settlements.json.4242.abcabcabcabc.tmp');
   });
 
   it('leaves a file that merely EXTENDS the temporary shape alone', () => {

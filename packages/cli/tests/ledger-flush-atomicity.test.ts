@@ -183,6 +183,30 @@ describe('a flush that fails part way through the write', () => {
   });
 });
 
+describe('the nonce store, whose flush is deliberately NOT all-or-nothing', () => {
+  it('keeps a mark whose chmod failed, rather than losing it with the write', () => {
+    // The job ledger's flush is all-or-nothing: a chmod that fails must read as
+    // a failed flush, because `claimPaymentSignature` rolls itself back on one.
+    // This store inverts that on purpose - the comment beside it says so - and
+    // the reason is the opposite failure: a delegated-pull nonce that is marked
+    // in memory but not on disk is replayable after a restart. So the data is
+    // published FIRST and the chmod runs after the rename, where its failure
+    // cannot un-publish anything.
+    const noncePath = join(tmpDir, '.delegation-nonces.json');
+    const store = new UsedNonceStore(noncePath);
+
+    chmodFailure = new Error('EPERM: operation not permitted, chmod');
+    store.markUsed('nonce-a', Math.floor(Date.now() / 1000) + 3600);
+    chmodFailure = null;
+
+    // On disk despite the chmod: a fresh store reads it back.
+    expect(new UsedNonceStore(noncePath).has('nonce-a')).toBe(true);
+    // And the chmod ran on the PUBLISHED file, not on a temporary - which is
+    // what puts it after the rename.
+    expect(chmodPaths).toContain(noncePath);
+  });
+});
+
 describe('a fragment a crash left beside an index', () => {
   it.each([
     ['the job ledger', '.jobs.json', (path: string) => new JobLedger(path)],

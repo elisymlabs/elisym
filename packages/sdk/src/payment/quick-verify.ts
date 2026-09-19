@@ -12,10 +12,16 @@ import { mergeAccountKeys } from './account-keys';
  * itself calls "not proof", and the undefined-slot check below is what keeps a
  * disagreement from throwing. Stated because the asymmetry is deliberate.
  *
+ * Its guards are measured directly, in `tests/quick-verify.test.ts` - every
+ * one whose removal changes an ANSWER. Four do not and are left stated instead:
+ * the `typeof getTransaction` half (the `catch` below reports `rpc_error`
+ * anyway), the forever-lifetime of a positive cache entry (measured only
+ * inside the negative TTL, so weakening it costs RPC calls and not a verdict),
+ * and the two redundant cache-key components named beside the key.
+ *
  * Nothing in this monorepo calls it today - it is public surface for callers
  * building their own ranking, and that is worth saying out loud, because a
- * reader who assumes a caller assumes a test harness too. Its guards are
- * measured directly, in `tests/quick-verify.test.ts`.
+ * reader who assumes a caller assumes a test harness too.
  *
  * Unlike `SolanaPaymentStrategy.verifyPayment`, this is a single-shot check
  * with no retries: discovery cannot afford the 30-second confirmation budget

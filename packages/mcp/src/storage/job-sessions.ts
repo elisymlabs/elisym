@@ -84,12 +84,26 @@ const writeLocks = new Map<string, Promise<unknown>>();
 
 function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const previous = writeLocks.get(key) ?? Promise.resolve();
+  // What keeps one failed write from jamming every later write to this path is
+  // the ABSORPTION below, not this line: the promise put in the map settles
+  // rejected-free, so the next caller always chains onto something that runs.
+  // The rejection handler here is kept as the second belt - NOT KILLED BY ANY
+  // TEST, and it cannot be while the stored promise is absorbed - because the
+  // two must not be reasoned about separately: remove the absorption and this
+  // is suddenly the only thing holding the queue open.
   const next = previous.then(fn, fn);
-  const wrapped = next.finally(() => {
-    if (writeLocks.get(key) === wrapped) {
-      writeLocks.delete(key);
-    }
-  });
+  // The stored promise absorbs the rejection. `finally` re-throws, so without
+  // the `catch` every failed write left an unhandled rejection even though the
+  // caller handled its own - noise in a server that only logs it, and a process
+  // exit anywhere that does not. `X402JobStore.runExclusive` stores an absorbed
+  // promise for the same reason.
+  const wrapped: Promise<unknown> = next
+    .finally(() => {
+      if (writeLocks.get(key) === wrapped) {
+        writeLocks.delete(key);
+      }
+    })
+    .catch(() => undefined);
   writeLocks.set(key, wrapped);
   return next;
 }

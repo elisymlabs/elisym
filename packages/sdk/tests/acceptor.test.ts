@@ -385,6 +385,11 @@ describe('the signature the customer sent', () => {
     );
 
     expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    // And the strategy's own words survive to the caller: this is the only
+    // sentence saying WHY, and each step carries it separately.
+    expect(result).toMatchObject({
+      error: expect.stringContaining('not a payment for this request'),
+    });
   });
 });
 
@@ -638,6 +643,12 @@ describe('what may become a terminal "nobody paid"', () => {
       CONFIG,
     );
     expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    // And it carries the candidate's own words. Diagnostics rather than
+    // contract, but the walk keeps them on purpose - dropped, the operator gets
+    // whatever earlier candidate happened to fail, or nothing at all.
+    expect(result).toMatchObject({
+      error: expect.stringContaining('not a payment for this request'),
+    });
   });
 
   it('never says it when the window came back full', async () => {
@@ -808,6 +819,11 @@ describe("the job's own settlement", () => {
       CONFIG,
     );
     expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    // And the strategy's own words survive to the caller: this is the only
+    // sentence saying WHY, and each step carries it separately.
+    expect(result).toMatchObject({
+      error: expect.stringContaining('not a payment for this request'),
+    });
   });
 });
 
