@@ -431,6 +431,10 @@ export class ProviderPaymentAcceptor {
           // refusal does not get to undo proven ownership.
           return { accepted: true, txSignature: ownSignature };
         }
+        // NOT KILLED BY ANY TEST, and it cannot be: reaching this line means
+        // `ownSignature` is usable, and step 6 answers `inconclusive` on that
+        // alone, before this flag is ever read. Kept as a mirror of the other
+        // two "the pass saw something it could not settle" sites.
         imperfectPass = true;
       } else {
         // Deliberately does NOT mark the pass imperfect - that is what keeps

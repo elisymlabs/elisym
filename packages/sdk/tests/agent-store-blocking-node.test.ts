@@ -221,17 +221,26 @@ describe('an agent directory whose yaml is a node that blocks', () => {
   });
 
   it('is not only about pipes: a socket is refused the same way', async () => {
-    // The gate names four node types and only the FIFO ones are reachable from
-    // a fixture - a character or block device needs root. A unix socket does
-    // not, so at least the second disjunct is measured rather than asserted in
-    // a comment. The path is kept SHORT deliberately: the sun_path limit is
-    // about a hundred characters, and a temp directory eats most of it.
+    // The gate names four node types. A unix socket needs no privileges, so the
+    // second disjunct is measured rather than asserted in a comment. The path
+    // is kept SHORT deliberately: the sun_path limit is about a hundred
+    // characters, and a temp directory eats most of it.
     const path = join(sandbox, 's');
     const server = createServer();
     sockets.push(server);
     await new Promise<void>((resolve) => server.listen(path, resolve));
 
     expect(await isBlockingNode(path)).toBe(true);
+  });
+
+  it('is not only about pipes: a character device is refused the same way', async () => {
+    // The third disjunct, and it needed no root after all - `/dev/zero` is on
+    // every machine this runs on. Only the BLOCK-device one is still asserted
+    // in a comment rather than measured, because creating one does need root.
+    // Both entry points, because the sync half is the one every reader on a
+    // paid path takes.
+    expect(await isBlockingNode('/dev/zero')).toBe(true);
+    expect(isBlockingNodeSync('/dev/zero')).toBe(true);
   });
 
   it.each([['elisym.yaml'], ['.secrets.json']])(

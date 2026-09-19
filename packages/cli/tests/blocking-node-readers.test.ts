@@ -9,13 +9,15 @@ import type { MediaCache } from '@elisym/sdk/agent-store';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { vi } from 'vitest';
 import { uploadOrReuse } from '../src/commands/start.js';
-import { scanExistingSkills } from '../src/commands/x402-add.js';
+import { scanExistingSkills, writeSkillMdRefusingBlockingNode } from '../src/commands/x402-add.js';
 import { JobLedger, UsedNonceStore } from '../src/ledger.js';
 import { X402JobStore } from '../src/x402/store.js';
 
 /**
- * Every file an agent directory holds, on the paths `elisym start` actually
- * takes - not just the two the first version of this gate covered.
+ * The files an agent directory holds on the paths `elisym start` actually
+ * takes - not just the two the first version of this gate covered. The session
+ * transcripts are the one member of the class that lives elsewhere: their gates
+ * and their temporary are measured in `sessions.test.ts`, beside the store.
  *
  * The failure is not an error: a FIFO where one of these belongs makes the read
  * never return, and the synchronous ones stop the process outright. The two
@@ -387,5 +389,29 @@ describe('the d-tag collision scan of `elisym x402 add`', () => {
     // And it SAYS it could not look: a skill this scan cannot read is a hole in
     // the collision answer, not one missing skill.
     expect(warnings.join('\n')).toContain('name collision');
+  });
+
+  it('refuses to WRITE the generated SKILL.md onto a node that blocks', async () => {
+    // The write half of the same command, and the window is the interactive
+    // prompt that sits between the existence check and the write: a neighbor
+    // with access to `skills/` can drop a FIFO in it, and `writeFile` onto one
+    // never returns - the command hangs after the operator has answered every
+    // question. Refused rather than skipped, unlike the scan above: there is no
+    // degraded answer to give, and writing the skill is the point of the call.
+    const targetDir = join(sandbox, 'skills', 'bridged');
+    mkdirSync(targetDir, { recursive: true });
+    const skillMdPath = join(targetDir, 'SKILL.md');
+    // A DRAINER, not a writer: without a reader the ungated build's `writeFile`
+    // never returns and this row would go red on the clock, which measures
+    // nothing. Drained, the ungated write SUCCEEDS and the row goes red on the
+    // rejection that did not happen.
+    makeFifo(skillMdPath);
+    startDrainer(skillMdPath);
+
+    await expect(writeSkillMdRefusingBlockingNode(skillMdPath, 'body')).rejects.toThrow(
+      /pipe, socket or device/,
+    );
+    // Still the node it was: refusing means not having written anything.
+    expect(statSync(skillMdPath).isFIFO()).toBe(true);
   });
 });

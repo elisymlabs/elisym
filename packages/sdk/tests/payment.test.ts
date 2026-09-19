@@ -1016,13 +1016,22 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     treasuryAfter: number;
     /** Drops this many entries off `postBalances`, which this path never reads. */
     dropPostLamports?: number;
+    /**
+     * Rows placed AHEAD of the real ones in `preTokenBalances`. A real
+     * transaction carries the token accounts of everyone it touched, so the
+     * baseline is found by owner AND mint; these are the rows a half of that
+     * match would settle on instead.
+     */
+    decoyPre?: { owner: string; mint: string; amount: number }[];
   }) {
-    const entry = (owner: string, index: number, raw: number) => ({
+    const entryIn = (owner: string, mint: string, index: number, raw: number) => ({
       accountIndex: index,
-      mint: opts.mint,
+      mint,
       owner,
       uiTokenAmount: { amount: String(raw), decimals: 6, uiAmount: raw / 1e6 },
     });
+    const entry = (owner: string, index: number, raw: number) =>
+      entryIn(owner, opts.mint, index, raw);
     return {
       meta: {
         err: null,
@@ -1031,6 +1040,9 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           .map(() => 0n)
           .slice(0, opts.keys.length - (opts.dropPostLamports ?? 0)),
         preTokenBalances: [
+          ...(opts.decoyPre ?? []).map((decoy, offset) =>
+            entryIn(decoy.owner, decoy.mint, opts.keys.length + offset, decoy.amount),
+          ),
           entry(recipientAddr, 1, opts.recipientBefore),
           entry(TEST_TREASURY, 3, opts.treasuryBefore),
         ],
@@ -1156,6 +1168,58 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       });
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Recipient received');
+    });
+
+    it('refuses a native transfer the recipient merely already HELD', async () => {
+      // The row above starts the recipient at zero, as every other row here
+      // does, so it measures only the POST half of the delta. Read the baseline
+      // as zero instead of as what was there and a transaction that moved
+      // nothing at all verifies: the balance was already on the account, and
+      // any wallet holding more than the price can pay for a job with a
+      // transaction that merely mentions the reference.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [0, netAmount, 0, 0],
+                post: [0, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'nativePreHeldSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received 0, expected >=/);
+    });
+
+    it('refuses a native transfer whose fee the treasury merely already HELD', async () => {
+      // The same hole on the fee leg: the provider is paid in full, so only the
+      // treasury baseline can refuse it.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [0, 0, 0, feeAmount],
+                post: [0, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'nativeTreasuryPreHeldSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury received 0, expected >=/);
     });
 
     it('rejects insufficient fee', async () => {
@@ -1581,6 +1645,75 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).toMatch(/Treasury received \d+ tokens, expected >=/);
     });
 
+    it('refuses an SPL transfer the recipient merely already HELD', async () => {
+      // Every other row in this file leaves the recipient at zero before the
+      // transfer, so the whole PRE half of the delta went unmeasured: read the
+      // baseline as zero and a transaction that moved NOTHING verifies as a
+      // payment, because the money was already sitting there. The decoy rows
+      // are what makes the match itself measurable - a stranger's account in
+      // the same mint and the recipient's account in another one, both empty,
+      // are exactly the rows half of `owner === ... && mint === ...` settles on.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: netAmount,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+                decoyPre: [
+                  { owner: makeAddress(), mint: USDC_SOLANA_DEVNET.mint as string, amount: 0 },
+                  { owner: recipientAddr, mint: LSM_SOLANA_MAINNET.mint as string, amount: 0 },
+                ],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splPreHeldSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received 0 tokens, expected >=/);
+    });
+
+    it('refuses an SPL transfer whose fee the treasury merely already HELD', async () => {
+      // The same hole on the fee leg. The provider is paid in full here, so
+      // nothing but the treasury baseline can refuse it.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: feeAmount,
+                treasuryAfter: feeAmount,
+                decoyPre: [
+                  { owner: makeAddress(), mint: USDC_SOLANA_DEVNET.mint as string, amount: 0 },
+                  { owner: TEST_TREASURY, mint: LSM_SOLANA_MAINNET.mint as string, amount: 0 },
+                ],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splTreasuryPreHeldSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury received 0 tokens, expected >=/);
+    });
+
     it('takes an SPL transfer whose LAMPORT arrays disagree, reading none of them', async () => {
       // The length guard is native-only, and this fixture is why. This path
       // pairs accounts by owner and mint out of `pre/postTokenBalances`; it
@@ -1677,7 +1810,25 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).toContain('No matching transaction found');
     });
 
-    it('skips errored signatures', async () => {
+    it('skips errored signatures without fetching them', async () => {
+      // The verdict is NOT what this measures, and the old version of this row
+      // pretended otherwise: it answered `null` from `getTransaction`, so the
+      // entry was dropped by the missing-meta guard and the filter the row is
+      // named after never ran. Drop the filter and the verdict is still the
+      // same - a failed transaction carries `meta.err` and is refused one line
+      // later. What the filter actually buys is the round trip, so that is what
+      // is asserted: an errored signature is never fetched at all.
+      const fetched = vi.fn(() => ({
+        send: () =>
+          Promise.resolve(
+            makeTx({
+              keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+              pre: [200_000_000, 0, 0, 0],
+              post: [200_000_000 - amount, netAmount, 0, feeAmount],
+              err: { InstructionError: 'x' },
+            }),
+          ),
+      }));
       const rpc = createMockRpc({
         getSignaturesForAddress: () => ({
           send: () =>
@@ -1688,33 +1839,104 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
               },
             ]),
         }),
-        getTransaction: () => ({ send: () => Promise.resolve(null) }),
+        getTransaction: fetched,
       });
 
       const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
       expect(result.verified).toBe(false);
+      expect(fetched).not.toHaveBeenCalled();
+    });
+
+    it('refuses a transaction found under the reference that UNDERPAYS', async () => {
+      // The signature path measures this gate with fourteen rows; this path -
+      // the one a provider runs by default, with no `txSignature` in hand -
+      // measured it with none, so `if (verdict.ok)` could be deleted outright
+      // and every transaction carrying the reference would settle the job.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () => Promise.resolve([{ signature: 'refShortSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount - 1, 0, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
+      expect(result.verified).toBe(false);
+      expect(result.error).toContain('No matching transaction found');
+    });
+
+    it('refuses a FAILED transaction found under the reference', async () => {
+      // The listing's own `err` field is not the only place a failure shows up:
+      // a node that reports a signature as fine and the transaction as failed
+      // gets past the filter, and this is the guard that catches it. Its twin
+      // on the signature path has a row; this one had none, and a failed
+      // transfer moves no money at all.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () => Promise.resolve([{ signature: 'refFailedSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, 0, feeAmount],
+                err: { InstructionError: 'x' },
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
+      expect(result.verified).toBe(false);
+      expect(result.error).toContain('No matching transaction found');
     });
   });
 
   describe('input validation', () => {
+    // Every row here passes `FAST` even where the refusal is meant to come
+    // before any RPC call: a guard that stops guarding falls through to the
+    // reference path, and on the default 15 x 2000 ms budget the assertion
+    // arrives half a minute later, past the test timeout, as a hang rather
+    // than as the sentence that says what broke.
     it('rejects invalid rpc', async () => {
       const result = await payment.verifyPayment(
         null as unknown as Rpc<SolanaRpcApi>,
         makePR(),
         CONFIG,
+        FAST,
       );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid rpc');
     });
 
     it('rejects zero amount', async () => {
-      const result = await payment.verifyPayment(createMockRpc(), makePR({ amount: 0 }), CONFIG);
+      const result = await payment.verifyPayment(
+        createMockRpc(),
+        makePR({ amount: 0 }),
+        CONFIG,
+        FAST,
+      );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid payment amount');
     });
 
     it('rejects negative amount', async () => {
-      const result = await payment.verifyPayment(createMockRpc(), makePR({ amount: -1 }), CONFIG);
+      const result = await payment.verifyPayment(
+        createMockRpc(),
+        makePR({ amount: -1 }),
+        CONFIG,
+        FAST,
+      );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid payment amount');
     });
@@ -1724,6 +1946,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         createMockRpc(),
         makePR({ fee_amount: 1 }),
         CONFIG,
+        FAST,
       );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Protocol fee');
@@ -1734,6 +1957,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         createMockRpc(),
         makePR({ fee_address: makeAddress() }),
         CONFIG,
+        FAST,
       );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid fee address');
@@ -1744,6 +1968,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         createMockRpc(),
         makePR({ fee_amount: amount + 1 }),
         CONFIG,
+        FAST,
       );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('exceeds or equals');

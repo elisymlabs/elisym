@@ -319,6 +319,12 @@ describe('createAgentDir', () => {
     expect(lines).toContain('.contacts.json*');
     expect(lines).toContain('.messages-read.json*');
     expect(lines).toContain('.job-sessions.json*');
+    // The x402 bridge cache: which upstream calls were paid for, and the
+    // results bought with them. Exact lines here for the same reason as above -
+    // `.x402-jobs.json` is a SUBSTRING of the widened entry, so the only other
+    // assertion on it in the monorepo passes just as happily on the narrow one.
+    expect(lines).toContain('.x402-jobs.json*');
+    expect(lines).toContain('.x402-results/');
     // The iroh blob store holds cleartext job payloads - must be ignored.
     expect(gitignore).toContain('.iroh/');
     // The delegation nonce set maps which customer wallets delegated here.
@@ -340,6 +346,45 @@ describe('createAgentDir', () => {
     await writeSecrets(agentDir, { nostr_secret_key: 'a'.repeat(64) });
 
     const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('.secrets.json*');
+  });
+
+  it('widens the .gitignore BEFORE the keys are written, not after', async () => {
+    // The ordering is the whole point of the block, and the row above measures
+    // it only on the happy path, where before and after look the same. A write
+    // that dies between the temporary and the rename leaves
+    // `.secrets.json.tmp.<hex>` on disk - the agent's keys in the clear - and
+    // only an entry that is ALREADY there keeps it out of the next commit.
+    // Measured by putting a non-empty directory where the file belongs, which
+    // is what makes the rename fail.
+    const root = join(work, '.elisym');
+    const agentDir = join(root, 'alice');
+    mkdirSync(agentDir, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, ['.secrets.json', ''].join('\n'), 'utf-8');
+    mkdirSync(join(agentDir, '.secrets.json'));
+    writeFileSync(join(agentDir, '.secrets.json', 'occupied'), 'x', 'utf-8');
+
+    await expect(writeSecrets(agentDir, { nostr_secret_key: 'a'.repeat(64) })).rejects.toThrow();
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('.secrets.json*');
+  });
+
+  it('appends to a .gitignore whose last line has no newline', async () => {
+    // `writeSecrets` now runs this migration on every agent creation, so the
+    // separator is on a hot path. Without it the new entry is glued to the last
+    // line: `.secrets.json.secrets.json*` ignores neither of them.
+    const root = join(work, '.elisym');
+    const agentDir = join(root, 'alice');
+    mkdirSync(agentDir, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, 'node_modules', 'utf-8');
+
+    await writeSecrets(agentDir, { nostr_secret_key: 'a'.repeat(64) });
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('node_modules');
     expect(lines).toContain('.secrets.json*');
   });
 

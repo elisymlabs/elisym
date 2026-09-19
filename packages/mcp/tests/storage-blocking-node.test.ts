@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureIrohTransport } from '../src/iroh.js';
 import { readContacts, upsertContact } from '../src/storage/contacts.js';
 import { appendCustomerJob, readCustomerHistory } from '../src/storage/customer-history.js';
-import { listJobSessions } from '../src/storage/job-sessions.js';
+import { listJobSessions, recordSessionSubmit } from '../src/storage/job-sessions.js';
 import { readReadCursors } from '../src/storage/read-cursors.js';
 
 let sandbox: string;
@@ -177,6 +177,22 @@ describe('the .gitignore an older agent directory carries', () => {
         await upsertContact(dir, { pubkey: 'a'.repeat(64), npub: 'npub1bob' });
       },
       '.contacts.json*',
+    ],
+    [
+      'the job-session list',
+      async (dir: string) => {
+        await recordSessionSubmit(
+          { agentDir: dir, identityPubkey: 'b'.repeat(64) },
+          {
+            sessionId: '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c',
+            providerPubkey: 'a'.repeat(64),
+            capability: 'text-gen',
+            firstPrompt: 'hello',
+            jobEventId: 'e'.repeat(64),
+          },
+        );
+      },
+      '.job-sessions.json*',
     ],
   ])('is widened before %s is written', async (_label, write, entry) => {
     // These files are written through a temporary whose suffix is random, and

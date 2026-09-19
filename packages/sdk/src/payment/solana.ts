@@ -643,6 +643,11 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
             limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
           })
           .send();
+        // NOT KILLED BY ANY VERDICT: drop this filter and a failed transaction
+        // is still refused one screen below, by `tx.meta.err`. What it buys is
+        // the round trip - one `getTransaction` per errored signature, against
+        // a reference anyone can attach a failing transaction to - so that is
+        // what the test asserts, rather than an outcome that does not move.
         const validSigs = signatures.filter((entry) => !entry.err);
 
         if (validSigs.length > 0) {

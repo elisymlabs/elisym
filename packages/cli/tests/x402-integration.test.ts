@@ -438,10 +438,15 @@ describe('x402 add full cycle (temp agent, live fixture)', () => {
     expect(yamlText).toContain('chain: solana');
     expect(yamlText).toContain('network: devnet');
 
-    // Gitignore migration appended the cache entries.
+    // Gitignore migration appended the cache entries. Exact LINES, not
+    // substrings: `.x402-jobs.json` is a substring of the widened
+    // `.x402-jobs.json*`, so a substring assertion passes just as happily on
+    // the bare entry - which cannot match the `.tmp.<hex>` the cache is
+    // actually written through, and that temporary holds bought results.
     const gitignore = await readFile(join(projectDir, '.elisym', '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('.x402-jobs.json');
-    expect(gitignore).toContain('.x402-results/');
+    const gitignoreLines = gitignore.split('\n');
+    expect(gitignoreLines).toContain('.x402-jobs.json*');
+    expect(gitignoreLines).toContain('.x402-results/');
 
     // The generated SKILL.md loads through the CLI loader as an x402 skill.
     const skillMd = await readFile(

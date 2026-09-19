@@ -288,6 +288,26 @@ function describeUnacceptableAccepts(probe: X402ProbeResult, agentNetwork: Netwo
   return `no exact-scheme ${agentNetwork}-USDC requirement found (service accepts: ${networks.join(', ') || 'nothing parseable'})`;
 }
 
+/**
+ * Write the generated `SKILL.md`, refusing a path that is not a regular file.
+ *
+ * The last write of this class, and the window is the interactive prompt that
+ * runs between the existence check and this call: a neighbor with write access
+ * to `skills/` can put a FIFO here, and `writeFile` onto one never settles -
+ * the command hangs with nothing to show for it. Lifted out of `cmdX402Add`
+ * so the guard can be driven on its own; the command itself needs a live
+ * upstream and an interactive prompt to reach this line.
+ */
+export async function writeSkillMdRefusingBlockingNode(
+  skillMdPath: string,
+  content: string,
+): Promise<void> {
+  if (isBlockingNodeSync(skillMdPath)) {
+    throw new Error(`Refusing to write ${skillMdPath}: it is a pipe, socket or device, not a file`);
+  }
+  await writeFile(skillMdPath, content, 'utf-8');
+}
+
 export async function cmdX402Add(
   url: string,
   agentName: string | undefined,
@@ -667,14 +687,7 @@ export async function cmdX402Add(
 
   await mkdir(targetDir, { recursive: true, mode: 0o700 });
   const skillMdPath = join(targetDir, 'SKILL.md');
-  // The last write of this class, and the window is the interactive prompt
-  // between the existence check above and this line: a neighbor with write
-  // access to `skills/` can put a FIFO here, and `writeFile` onto one never
-  // settles - the command hangs with nothing to show for it.
-  if (isBlockingNodeSync(skillMdPath)) {
-    throw new Error(`Refusing to write ${skillMdPath}: it is a pipe, socket or device, not a file`);
-  }
-  await writeFile(skillMdPath, content, 'utf-8');
+  await writeSkillMdRefusingBlockingNode(skillMdPath, content);
   await ensureGitignoreHasX402Entries(dirname(loaded.dir));
 
   console.log(`\n  Wrote ${join(targetDir, 'SKILL.md')}`);

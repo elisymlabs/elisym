@@ -622,3 +622,83 @@ describe('a session file that is a node which blocks', () => {
     }
   });
 });
+
+describe('a session temporary somebody else can guess', () => {
+  it('cannot swallow the repair of a torn transcript', async () => {
+    // The ledger, the nonce store and the two x402 stores all got a random
+    // suffix; this one writes DURING a paid job, and its path is derivable
+    // from the customer's own pubkey and the session id the customer chose,
+    // so it is the most guessable of the set. The torn-line repair is the
+    // rewrite that runs first: the FIFO planted at the old fixed name is
+    // drained, so a build that still used it would write into the pipe and
+    // then rename the pipe over the transcript, rather than hang.
+    const dir = join(agentDir, SESSIONS_DIR_NAME, CUSTOMER);
+    mkdirSync(dir, { recursive: true });
+    const path = sessionPath(CUSTOMER, SID);
+    const ts = Math.floor(Date.now() / 1000);
+    // A COMPLETE exchange, because a trailing user turn with no answer is
+    // dropped from the replay and the fixture would then assert nothing.
+    const intact = [
+      JSON.stringify({ type: 'turn', role: 'user', content: 'hello', jobId: 'job-1', ts }),
+      JSON.stringify({ type: 'turn', role: 'assistant', content: 'hi', jobId: 'job-1', ts }),
+    ].join('\n');
+    // A last line cut mid-write, with no trailing newline: exactly what a crash
+    // during `appendFileSync` leaves, and what the repair exists to remove.
+    writeFileSync(path, `${intact}\n{"type":"turn","role":"assi`, 'utf-8');
+
+    const guessed = `${path}.tmp`;
+    execFileSync('mkfifo', [guessed]);
+    const drainer = spawn(
+      process.execPath,
+      ['-e', `require('fs').createReadStream(${JSON.stringify(guessed)}).resume();`],
+      { detached: true, stdio: 'ignore' },
+    );
+    try {
+      const store = makeStore();
+      const release = await store.acquire(CUSTOMER, SID);
+      try {
+        const opened = store.open(CUSTOMER, SID);
+        expect(opened.messages.map((message) => message.content)).toEqual(['hello', 'hi']);
+      } finally {
+        release();
+      }
+
+      // The transcript is still a FILE. With the old fixed name the rewrite
+      // went into the pipe and the rename put the pipe here, so the next job
+      // for this customer reads a node that never answers.
+      expect(statSync(path).isFile()).toBe(true);
+      expect(readFileSync(path, 'utf-8')).toBe(`${intact}\n`);
+      expect(statSync(guessed).isFIFO()).toBe(true);
+    } finally {
+      killGroup(drainer);
+    }
+  });
+
+  it('cannot swallow the rewrite that compaction performs', async () => {
+    // The second write of this shape, and the repair above does not cover it:
+    // narrowing only ONE of the two back to a fixed name leaves the other
+    // green. Compaction runs mid-conversation on a live paid session, and what
+    // it rewrites is the whole transcript.
+    const store = makeStore({ compactionTriggerChars: 200, compactionKeepChars: 80 });
+    await record(store, 'j1', 'x'.repeat(100), 'y'.repeat(100));
+    await record(store, 'j2', 'q recent', 'a recent');
+
+    const path = sessionPath(CUSTOMER, SID);
+    const guessed = `${path}.tmp`;
+    execFileSync('mkfifo', [guessed]);
+    const drainer = spawn(
+      process.execPath,
+      ['-e', `require('fs').createReadStream(${JSON.stringify(guessed)}).resume();`],
+      { detached: true, stdio: 'ignore' },
+    );
+    try {
+      store.compact(CUSTOMER, SID, 'the summary');
+
+      expect(statSync(path).isFile()).toBe(true);
+      expect(store.open(CUSTOMER, SID).messages[0]?.content).toContain('the summary');
+      expect(statSync(guessed).isFIFO()).toBe(true);
+    } finally {
+      killGroup(drainer);
+    }
+  });
+});

@@ -879,6 +879,11 @@ describe('inputs the acceptor refuses to start on', () => {
     // is skipped whole (`NaN > 0` is merely false), and a payment is accepted
     // with no fee check at all. `SolanaPaymentStrategy` catches it again; the
     // interface does not require that of anyone else.
+    //
+    // Only `NaN` and `-1` discriminate: `1.5 > 0` holds, so that row would be
+    // refused by `calculateProtocolFee` even with this check gone, and its
+    // message matches the same pattern. It is here as the third shape of "not a
+    // non-negative integer", not as a measurement of this line.
     await expect(
       makeAcceptor(strategyVerifying()).accept(
         { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
@@ -1287,8 +1292,9 @@ describe('the store contract', () => {
     ['an empty job identity', { job: '', at: Date.now() }],
     // `null` is the row that carries the object guard: reading `.job` off it
     // THROWS, so without that guard the whole index refuses to load over one
-    // hand-edited entry. A bare string simply has no `job` and is dropped by
-    // the next guard either way.
+    // hand-edited entry. A bare string is dropped by that SAME guard (`typeof
+    // 'nonsense' !== 'object'`) - measured, it stays green with the job guard
+    // removed too, so it is covered twice and discriminates neither.
     ['a null record', null],
     ['a record that is a bare string', 'nonsense'],
   ])('drops %s instead of admitting it to the index', (_label, record) => {
@@ -1516,5 +1522,170 @@ describe('the usability predicate mirrors the verifier, and says so', () => {
     expect(() =>
       classifyRequestUsability(makeRequest(), { feeBps: Number.NaN, treasury: TREASURY }),
     ).not.toThrow();
+  });
+});
+
+describe('what the acceptor actually hands the verifier', () => {
+  /** Records every call the acceptor makes, and never verifies anything. */
+  function recordingStrategy(seen: { request: unknown; config: unknown; options: unknown }[]) {
+    return {
+      chain: 'solana',
+      verifyPayment: vi.fn(
+        async (
+          _rpc: unknown,
+          request: unknown,
+          config: unknown,
+          options?: unknown,
+        ): Promise<VerifyResult> => {
+          seen.push({ request, config, options });
+          return { verified: false, error: 'not a payment for this request' };
+        },
+      ),
+    } as unknown as PaymentStrategy;
+  }
+
+  it('hands it the request, the live config and the budget it was given', async () => {
+    // The most consequential line in `accept`, and nothing looked at it: every
+    // other fixture drives the mock by `options.txSignature` alone. Hand the
+    // verifier a request with the amount rewritten, or a config with the fee
+    // rate zeroed, and it verifies a payment nobody made at the price nobody
+    // agreed to - with the whole suite green.
+    const seen: { request: unknown; config: unknown; options: unknown }[] = [];
+    // A non-zero rate on purpose: with `feeBps: 0` a config that has been
+    // blanked on the way in is indistinguishable from the real one.
+    const liveFee: ProtocolConfigInput = { feeBps: 300, treasury: TREASURY };
+    const request = makeRequest({ fee_amount: 30_000 });
+    listedPages = [[{ signature: SIG_A, err: null }]];
+
+    await makeAcceptor(recordingStrategy(seen)).accept(
+      {
+        paymentRequest: request,
+        jobIdentity: 'job-1',
+        budget: { retriesPerCandidate: 2, intervalMs: 0 },
+      },
+      liveFee,
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.request).toEqual(request);
+    expect(seen[0]?.config).toEqual(liveFee);
+    expect(seen[0]?.options).toMatchObject({ txSignature: SIG_A, retries: 2, intervalMs: 0 });
+  });
+
+  it('spends the own-settlement budget only on step 1, and asks the three steps in order', async () => {
+    // Two named fields of the public input, defaulting to 5 and 3, and swapping
+    // them left every fixture green: nothing told them apart. Step 1 asks about
+    // evidence the job already owns and is worth waiting on; steps 2 and 3 ask
+    // about a signature a counterparty chose and about a stranger's transaction
+    // out of a public listing.
+    //
+    // All three signatures differ, so this also pins the SUBJECT of each step -
+    // the order the source argues for in words, measured here for the first
+    // time.
+    const SIG_C = 'C'.repeat(88);
+    store.claim(SIG_A, 'job-1');
+    const seen: { request: unknown; config: unknown; options: unknown }[] = [];
+    listedPages = [[{ signature: SIG_C, err: null }]];
+
+    await makeAcceptor(recordingStrategy(seen)).accept(
+      {
+        paymentRequest: makeRequest(),
+        jobIdentity: 'job-1',
+        txSignature: SIG_B,
+        budget: { retriesForOwnSettlement: 7, retriesPerCandidate: 2, intervalMs: 0 },
+      },
+      CONFIG,
+    );
+
+    expect(
+      seen.map((call) => call.options as { txSignature?: string; retries?: number }),
+    ).toMatchObject([
+      { txSignature: SIG_A, retries: 7 },
+      { txSignature: SIG_B, retries: 2 },
+      { txSignature: SIG_C, retries: 2 },
+    ]);
+  });
+
+  it("asks step 1 about the job's OWN settlement, never the signature the customer sent", async () => {
+    // The order the source argues for in words - own evidence first, the most
+    // counterparty-controlled input last - and no fixture reached step 1 with a
+    // customer-supplied signature in hand, so "verify what we already own" and
+    // "verify what they told us" were the same measurement.
+    store.claim(SIG_A, 'job-1');
+    const asked: (string | undefined)[] = [];
+    const recording = {
+      chain: 'solana',
+      verifyPayment: vi.fn(
+        async (
+          _rpc: unknown,
+          _request: unknown,
+          _config: unknown,
+          options?: { txSignature?: string },
+        ): Promise<VerifyResult> => {
+          asked.push(options?.txSignature);
+          return { verified: true, txSignature: options?.txSignature };
+        },
+      ),
+    } as unknown as PaymentStrategy;
+
+    const result = await makeAcceptor(recording).accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', txSignature: SIG_B },
+      CONFIG,
+    );
+
+    expect(asked).toEqual([SIG_A]);
+    expect(result).toEqual({ accepted: true, txSignature: SIG_A });
+    // And the customer's signature is not claimed along the way.
+    expect(store.owner(SIG_B)).toBeUndefined();
+  });
+
+  it('re-claims its own settlement THROUGH the store, refreshing the retention clock', async () => {
+    // The store fixture for this refresh calls `claim` directly, so nothing
+    // obliged production to reach it: drop the re-claim as "we already own it"
+    // and the suite stays green while `at` stops moving. A job long enough to
+    // outlive the retention window then has its signature swept out from under
+    // it by the next prune, and that transaction is free to pay for a second
+    // job.
+    const path = join(dir, 'refresh-through-accept.json');
+    const stale = Date.now() - MIN_SETTLEMENT_RETENTION_MS - 60_000;
+    writeFileSync(
+      path,
+      JSON.stringify({ version: 1, settlements: { [SIG_A]: { job: 'job-1', at: stale } } }),
+      'utf-8',
+    );
+    const seeded = createFileSettlementStore(path);
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(SIG_A),
+      rpc: makeRpc(),
+      store: seeded,
+    });
+
+    expect(
+      await acceptor.accept({ paymentRequest: makeRequest(), jobIdentity: 'job-1' }, CONFIG),
+    ).toEqual({ accepted: true, txSignature: SIG_A });
+
+    // Nothing to sweep: the claim above moved the timestamp forward.
+    expect(seeded.prune(MIN_SETTLEMENT_RETENTION_MS)).toBe(0);
+    expect(seeded.owner(SIG_A)).toBe('job-1');
+  });
+
+  it('refuses a reference equal to the protocol treasury, which only the CONFIG names', async () => {
+    // `fee_address` is omitted on purpose: with it present the same address
+    // reaches the denylist from the REQUEST, and routing the recipient in place
+    // of the config treasury stays invisible. Omitted is also the shape mainnet
+    // actually sends, since the fee rate there is zero.
+    const result = await makeAcceptor(strategyVerifying()).accept(
+      {
+        paymentRequest: makeRequest({
+          reference: TREASURY as string,
+          fee_address: undefined,
+          fee_amount: undefined,
+        }),
+        jobIdentity: 'job-1',
+      },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'degenerate_reference' });
   });
 });

@@ -53,7 +53,11 @@ export function isBlockingNodeSync(path: string): boolean {
   }
 }
 
-/** Only the socket case is covered by a test; the device cases need root. */
+/**
+ * The FIFO, socket and character-device cases each have a fixture; only the
+ * BLOCK-device one does not, because creating one needs root - and `/dev/zero`,
+ * which every machine has, covers the character half for free.
+ */
 function blocks(stats: {
   isFIFO(): boolean;
   isSocket(): boolean;

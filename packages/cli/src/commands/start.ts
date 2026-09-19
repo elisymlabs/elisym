@@ -661,8 +661,9 @@ export async function cmdStart(
   // the point: it refuses to load a file it cannot read - an empty settlement
   // index is the whole of "one transaction settles one job" - and a refusal
   // after the capability cards are on the relays leaves a live paid provider
-  // advertised by an agent that has already exited. Nothing here touches the
-  // network, so the only cost of moving it up is that the failure lands sooner.
+  // advertised by an agent that has already exited. CONSTRUCTING the ledger
+  // touches no network - the steps above it do, the media cache uploads blobs -
+  // so the only cost of moving it up is that the failure lands sooner.
   const ledger = new JobLedger(paths.jobs);
 
   // -- Step 10: Publish kind:0 profile --
