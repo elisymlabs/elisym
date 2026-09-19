@@ -14,7 +14,7 @@
  * failure BETWEEN the write and the rename is what the cleanup exists for, and
  * no healthy filesystem produces one on demand.
  */
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -103,5 +103,23 @@ describe('an x402 write that fails part way through', () => {
     expect(partialBytes).toBeGreaterThan(0);
     expect(partialBytes).toBeLessThan(fullBytes);
     expect(fragmentsIn(join(agentDir, '.x402-results'))).toEqual([]);
+  });
+
+  it('sweeps an index fragment a crash left behind, which nothing else visits', async () => {
+    // The cleanup above only runs when the write THROWS. A process killed
+    // outright leaves the fragment, and it is tied to no record, so the
+    // per-record sweep could never reach it - its directory is the agent root,
+    // not the results folder.
+    const store = new X402JobStore(agentDir);
+    await store.claimPaidAttempt('job-1', 2, 2);
+    const stranded = join(agentDir, '.x402-jobs.json.tmp.deadbeefcafe');
+    writeFileSync(stranded, '{"job-1":{"attempts":1}}', 'utf-8');
+
+    await store.sweepExpired();
+
+    expect(fragmentsIn(agentDir)).toEqual([]);
+    // And the real index is untouched: the sweep matches the temporary's
+    // prefix, not the file it is a temporary OF.
+    expect(await new X402JobStore(agentDir).paidAttempts('job-1')).toBe(1);
   });
 });

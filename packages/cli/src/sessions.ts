@@ -853,7 +853,14 @@ export class SessionStore {
         continue;
       }
       for (const name of names) {
-        if (!name.includes('.corrupt.')) {
+        // `.tmp.<hex>` as well as `.corrupt.<ts>`: the two rewrites in this
+        // file take their own fragment with them when they THROW, but a
+        // process killed outright leaves one - and since the suffix became
+        // random nothing reuses it, the name does not end in `.jsonl` so no
+        // listing counts it, and this was the only sweep that could have. What
+        // it holds is the customer's prompts and the model's answers in the
+        // clear.
+        if (!name.includes('.corrupt.') && !name.includes('.tmp.')) {
           continue;
         }
         const path = join(dir, name);

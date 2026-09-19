@@ -1660,6 +1660,54 @@ describe('an index the store cannot read', () => {
       acceptor.accept({ paymentRequest: makeRequest(), jobIdentity: 'job-1' }, CONFIG),
     ).rejects.toThrow(/not a settlement index/);
   });
+
+  it('surfaces from the CLAIM read, the fourth of the four', async () => {
+    // The write path reads too - `claim` re-reads the index before it decides -
+    // so it is a reader of this promise like the other three, and the worst of
+    // them. Swallow it as `not-persisted` and step 1 converts that into
+    // `accepted: true`, because a job that already owns its settlement is not
+    // undone by a disk refusal. The provider then delivers the work on the word
+    // of a store it could not talk to.
+    const throwingClaim: SettlementStore = {
+      claim: () => {
+        throw new Error('Settlement index at /x is JSON but not a settlement index');
+      },
+      owner: () => undefined,
+      claimedSignature: () => SIG_A,
+      prune: () => 0,
+    };
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(SIG_A),
+      rpc: makeRpc(),
+      store: throwingClaim,
+    });
+
+    await expect(
+      acceptor.accept({ paymentRequest: makeRequest(), jobIdentity: 'job-1' }, CONFIG),
+    ).rejects.toThrow(/not a settlement index/);
+    expect(listCalls).toBe(0);
+  });
+
+  it('surfaces a STRATEGY that throws as well, which the same sentence promises', async () => {
+    // The docstring says "anything the injected store or strategy throws", and
+    // only the store half was measured. No money rides on this one - a
+    // swallowed strategy error lands on `inconclusive` either way - but half a
+    // promise measured is the shape this branch keeps finding.
+    const throwingStrategy = {
+      chain: 'solana',
+      verifyPayment: () => {
+        throw new Error('rpc transport closed under us');
+      },
+    } as unknown as PaymentStrategy;
+    listedPages = [[{ signature: SIG_A, err: null }]];
+
+    await expect(
+      makeAcceptor(throwingStrategy).accept(
+        { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
+        CONFIG,
+      ),
+    ).rejects.toThrow(/transport closed/);
+  });
 });
 
 describe('what the acceptor actually hands the verifier', () => {

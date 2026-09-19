@@ -25,7 +25,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { isBlockingNode } from '@elisym/sdk/agent-store';
 import { X402_CACHE_TTL_MS } from './constants.js';
 
@@ -315,8 +315,35 @@ export class X402JobStore {
     return { data: '', outputMime: result.mime, filePath };
   }
 
+  /**
+   * Remove fragments of the INDEX left by a crash between write and rename.
+   *
+   * Keyed by record id like the result sweep cannot be: the index has no job to
+   * expire with, so nothing would ever visit its fragments - the suffix is
+   * random, the name is not `.x402-jobs.json`, and `sweepStrandedTemporaries`
+   * walks the results directory only. What a fragment holds is which upstream
+   * calls this bridge has already paid for.
+   */
+  private async sweepStrandedIndexTemporaries(): Promise<void> {
+    const dir = dirname(this.jobsPath);
+    const prefix = `${basename(this.jobsPath)}.tmp.`;
+    try {
+      const entries = await readdir(dir);
+      await Promise.all(
+        entries
+          .filter((entry) => entry.startsWith(prefix))
+          .map((entry) => rm(join(dir, entry), { force: true })),
+      );
+    } catch {
+      /* the directory may not exist yet; nothing to sweep */
+    }
+  }
+
   /** Drop records (and their result files) older than the cache TTL. */
   async sweepExpired(now = Date.now()): Promise<void> {
+    // Outside the queue's transaction and unconditional: an index fragment is
+    // not tied to any record, so it must be swept even when nothing expired.
+    await this.sweepStrandedIndexTemporaries();
     await this.runExclusive(async () => {
       const file = await this.load();
       let changed = false;

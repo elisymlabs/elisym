@@ -362,6 +362,26 @@ describe('SessionStore - TTL, caps, and eviction', () => {
     expect(existsSync(join(agentDir, SESSIONS_DIR_NAME, CUSTOMER))).toBe(false);
   });
 
+  it('gc sweeps a rewrite fragment too, which nothing else can see', async () => {
+    // The two rewrites take their own fragment with them when they THROW; a
+    // process killed outright leaves one. Since the suffix became random
+    // nothing reuses it, and the name does not end in `.jsonl`, so no listing
+    // counts it - this sweep was the only thing that could reach it, and it
+    // matched `.corrupt.` alone. What it holds is the customer's prompts and
+    // the model's answers in the clear.
+    const store = makeStore({ ttlMs: 60_000 });
+    await record(store, 'j1', 'q', 'a');
+    const fragment = `${sessionPath(CUSTOMER, SID)}.tmp.deadbeefcafe`;
+    writeFileSync(fragment, '{"type":"turn"');
+    backdate(fragment, 120_000);
+
+    store.gc();
+
+    expect(existsSync(fragment)).toBe(false);
+    // The live transcript is untouched: it is inside the TTL.
+    expect(existsSync(sessionPath(CUSTOMER, SID))).toBe(true);
+  });
+
   it('gc never deletes a session whose mutex is held or with admitted jobs', async () => {
     const store = makeStore({ ttlMs: 60_000 });
     await record(store, 'j1', 'q', 'a');

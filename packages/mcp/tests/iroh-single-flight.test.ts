@@ -32,9 +32,9 @@ vi.mock('@elisym/sdk/node', () => ({
   },
 }));
 
-const { ensureIrohTransport, markAgentsScrubbed, shutdownIrohTransport } =
-  await import('../src/iroh.js');
+const { ensureIrohTransport, shutdownIrohTransport } = await import('../src/iroh.js');
 const { scrubAgent } = await import('../src/tools/agent.js');
+const { teardownRegistry } = await import('../src/server.js');
 
 let sandbox: string;
 let agentDir: string;
@@ -148,20 +148,47 @@ describe('two file transfers that start at the same moment', () => {
   });
 
   it('are refused for EVERY agent the server is shutting down, not one at a time', async () => {
-    // The server's teardown awaits per agent, so a flag set inside that loop
-    // leaves each later agent open for the whole of the previous one's
-    // shutdown - and for an ephemeral agent the cost is worse than a held lock:
-    // `shutdownIrohTransport` has already forgotten the tmpdir path, so a store
-    // opened afterwards keeps job inputs and bought results in the clear in
-    // `/tmp` with nothing left to remove it.
-    const first = { name: 'alice', agentDir } as { name: string; scrubbed?: boolean };
-    const second = { name: 'bob', agentDir } as { name: string; scrubbed?: boolean };
+    // Driven through the REAL teardown, not through the helper it calls: a
+    // fixture on the helper alone measures the helper, so deleting its one call
+    // from the server would be silent - which is how this door was left open
+    // once already.
+    //
+    // The first agent's teardown is held mid-flight and the second is asked
+    // WHILE it is held. Mark inside the loop instead of ahead of it and the
+    // second is still unmarked at that moment, so a transport opens for an
+    // agent the server is in the middle of dropping - and for an ephemeral one
+    // that is worse than a held lock, because `shutdownIrohTransport` has
+    // already forgotten the tmpdir holding job inputs and bought results in the
+    // clear.
+    let releaseFirst: () => void = () => undefined;
+    const held = new Promise<never>((_resolve, reject) => {
+      releaseFirst = () => reject(new Error('first agent torn down'));
+    });
+    held.catch(() => undefined);
+    const first = {
+      name: 'alice',
+      agentDir,
+      irohTransportPending: held,
+      client: { close: () => undefined },
+      identity: { scrub: () => undefined },
+    };
+    const second = {
+      name: 'bob',
+      agentDir,
+      client: { close: () => undefined },
+      identity: { scrub: () => undefined },
+    } as { name: string; scrubbed?: boolean };
+    const registry = new Map<string, unknown>([
+      ['alice', first],
+      ['bob', second],
+    ]);
 
-    markAgentsScrubbed([first, second] as never[]);
+    const tearing = teardownRegistry({ registry } as never);
+    const refused = expect(ensureIrohTransport(second as never)).rejects.toThrow(/stopped/);
 
-    expect(first.scrubbed).toBe(true);
-    expect(second.scrubbed).toBe(true);
-    await expect(ensureIrohTransport(second as never)).rejects.toThrow(/stopped/);
+    releaseFirst();
+    await refused;
+    await tearing;
     expect(created).toBe(0);
   });
 

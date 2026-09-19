@@ -125,8 +125,9 @@ export async function buildAgentInstance(
  * fs-lock and network listener, removes an ephemeral tmpdir store), close its
  * relay client, zero its Solana secret key bytes, scrub the Nostr identity,
  * and drop it from the registry. The agent will be reloaded from disk if
- * switched back to later. Shared by `switch_agent` and `stop_agent`; mirrors
- * the per-agent teardown in `server.ts::shutdown`.
+ * switched back to later. Shared by `switch_agent`, `stop_agent` and
+ * `create_agent` with `activate: true`, which retires the agent it replaces;
+ * mirrors the per-agent teardown in `server.ts::teardownRegistry`.
  */
 export async function scrubAgent(ctx: AgentContext, agent: AgentInstance): Promise<void> {
   // BEFORE the first await, and that ordering is the point: a tool handler that

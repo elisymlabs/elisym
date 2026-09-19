@@ -23,7 +23,7 @@ import { ensureIrohTransport } from '../src/iroh.js';
 import { readContacts, upsertContact } from '../src/storage/contacts.js';
 import { appendCustomerJob, readCustomerHistory } from '../src/storage/customer-history.js';
 import { listJobSessions, recordSessionSubmit } from '../src/storage/job-sessions.js';
-import { readReadCursors } from '../src/storage/read-cursors.js';
+import { advanceReadCursor, readReadCursors } from '../src/storage/read-cursors.js';
 
 let sandbox: string;
 let agentDir: string;
@@ -177,6 +177,13 @@ describe('the .gitignore an older agent directory carries', () => {
         await upsertContact(dir, { pubkey: 'a'.repeat(64), npub: 'npub1bob' });
       },
       '.contacts.json*',
+    ],
+    [
+      'the DM read cursors',
+      async (dir: string) => {
+        await advanceReadCursor(dir, 'b'.repeat(64), 42);
+      },
+      '.messages-read.json*',
     ],
     [
       'the job-session list',

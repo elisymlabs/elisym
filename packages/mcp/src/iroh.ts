@@ -45,8 +45,9 @@ export async function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlo
   // `async` on the signature, and the assignment below still happens before any
   // await inside `createTransport` - the single-flight survives. What `async`
   // buys is that the refusal above arrives as a REJECTED PROMISE rather than a
-  // synchronous throw, so a caller written as `ensureIrohTransport(a).catch(…)`
-  // still catches it.
+  // synchronous throw. Every caller in this package awaits inside a `try`, so
+  // nothing is broken either way; the point is that the two forms must not
+  // disagree, because `.catch()` on this call is a shape a caller may write.
   agent.irohTransportPending ??= createTransport(agent).finally(() => {
     agent.irohTransportPending = undefined;
   });
