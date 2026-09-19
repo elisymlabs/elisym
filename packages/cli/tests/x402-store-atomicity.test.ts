@@ -14,7 +14,7 @@
  * failure BETWEEN the write and the rename is what the cleanup exists for, and
  * no healthy filesystem produces one on demand.
  */
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -131,6 +131,10 @@ describe('an x402 write that fails part way through', () => {
     await store.claimPaidAttempt('job-1', 2, 2);
     const stranded = join(agentDir, '.x402-jobs.json.tmp.deadbeefcafe');
     writeFileSync(stranded, '{"job-1":{"attempts":1}}', 'utf-8');
+    // Aged past the guard that keeps a second process's LIVE temporary safe:
+    // what this row is about is the leftover of a process that died.
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(stranded, stale / 1000, stale / 1000);
 
     await store.sweepExpired();
 
@@ -175,6 +179,21 @@ describe('an x402 write that fails part way through', () => {
     expect(await new X402JobStore(agentDir).paidAttempts('job-2')).toBe(1);
   });
 
+  it('leaves a temporary alone while it is still fresh enough to be a live write', async () => {
+    // The age guard, which the ledger's sweep has and these did not: the driver
+    // runs `sweepExpired` from its constructor, so a second `elisym start` on
+    // the same agent directory sweeps while the first is between its write and
+    // its rename. The queue serializes writers inside ONE process only.
+    const store = new X402JobStore(agentDir);
+    await store.claimPaidAttempt('job-1', 2, 2);
+    const fresh = join(agentDir, '.x402-jobs.json.tmp.feedfacebeef');
+    writeFileSync(fresh, '{}', 'utf-8');
+
+    await store.sweepExpired();
+
+    expect(readdirSync(agentDir)).toContain('.x402-jobs.json.tmp.feedfacebeef');
+  });
+
   it('sweeps the BARE name an older build left, not only the random one', async () => {
     // The upgrade case: before this branch the temporary had one fixed name and
     // the next write reused it, so a fragment bounded itself. A random suffix
@@ -183,7 +202,10 @@ describe('an x402 write that fails part way through', () => {
     // good.
     const store = new X402JobStore(agentDir);
     await store.claimPaidAttempt('job-1', 2, 2);
-    writeFileSync(join(agentDir, '.x402-jobs.json.tmp'), '{"job-1":{"attempts":1}}', 'utf-8');
+    const legacy = join(agentDir, '.x402-jobs.json.tmp');
+    writeFileSync(legacy, '{"job-1":{"attempts":1}}', 'utf-8');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(legacy, stale / 1000, stale / 1000);
 
     await store.sweepExpired();
 

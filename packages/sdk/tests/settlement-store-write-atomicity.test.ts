@@ -216,18 +216,95 @@ describe('a write that fails leaves the settlement index untouched', () => {
     expect(readdirSync(dir)).toContain('.settlements.json.4242.feedfacebeef.tmp');
   });
 
+  it('sweeps a fragment spelled the way THIS writer spells one', () => {
+    // The row above writes the name by hand, so the sweep and the writer can
+    // drift apart with the file green - measured: respell the temporary in
+    // `write` and nothing reddens, while the sweep stops matching anything this
+    // class actually produces. This row takes the spelling from production.
+    const store = createFileSettlementStore(path);
+    expect(store.claim(SIG_B, 'job-b')).toBe('claimed');
+
+    chmodFailure = new Error('EPERM: operation not permitted, chmod');
+    expect(store.claim(SIG_A, 'job-a')).toBe('not-persisted');
+    chmodFailure = null;
+
+    // The cleanup removed it; a process killed outright would not have. Put the
+    // SAME path back and age it.
+    const producedTemp = String(writtenPaths.at(-1));
+    expect(producedTemp).not.toBe(path);
+    writeFileSync(producedTemp, readFileSync(path, 'utf-8'), 'utf-8');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(producedTemp, stale / 1000, stale / 1000);
+
+    createFileSettlementStore(path);
+
+    expect(readdirSync(dir)).toEqual(['settlements.json']);
+  });
+
+  it('refuses an unreadable index before deleting anything beside it', () => {
+    // The order the constructor's comment claims, and it is not cosmetic: the
+    // fragment IS the recovery material for an operator whose store just
+    // refused to start - a full copy of which transaction paid for which job.
+    // Sweep first and the first failed start destroys it.
+    const stranded = join(dir, '.settlements.json.4242.deadbeefcafe.tmp');
+    writeFileSync(
+      stranded,
+      JSON.stringify({ version: 1, settlements: { [SIG_A]: { job: 'job-a', at: Date.now() } } }),
+      'utf-8',
+    );
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(stranded, stale / 1000, stale / 1000);
+    writeFileSync(path, '{"version":1,"settlements":{"AAA":{"job":', 'utf-8');
+
+    expect(() => createFileSettlementStore(path)).toThrow();
+    expect(readdirSync(dir)).toContain('.settlements.json.4242.deadbeefcafe.tmp');
+  });
+
+  it('leaves a file that is not a temporary at all alone', () => {
+    // The `.tmp` half of the match. Without it the sweep takes anything stale
+    // sharing the prefix - an operator's `.settlements.json.bak`, an editor's
+    // swap file - and the documented path for this index is a working
+    // directory, not a private state folder.
+    const backup = join(dir, '.settlements.json.bak');
+    writeFileSync(backup, '{}', 'utf-8');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(backup, stale / 1000, stale / 1000);
+
+    createFileSettlementStore(path);
+
+    expect(readdirSync(dir)).toContain('.settlements.json.bak');
+  });
+
+  it('leaves a file that merely CONTAINS the temporary shape alone', () => {
+    // The match is anchored at both ends. Unanchored, a backup tool's
+    // `saved-.settlements.json.4242.deadbeefcafe.tmp` looks like ours and gets
+    // deleted - a file this store never wrote and knows nothing about.
+    const lookalike = join(dir, 'saved-.settlements.json.4242.deadbeefcafe.tmp');
+    writeFileSync(lookalike, '{}', 'utf-8');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(lookalike, stale / 1000, stale / 1000);
+
+    createFileSettlementStore(path);
+
+    expect(readdirSync(dir)).toContain('saved-.settlements.json.4242.deadbeefcafe.tmp');
+  });
+
   it("leaves a SIBLING index's fragment alone, which is why the name is in the prefix", () => {
     // The temporary is named after its target precisely so two stores sharing a
     // directory cannot collide - and a sweep that matched `.tmp` alone would
-    // undo that by eating the neighbour's, which may be mid-rename.
-    const sibling = join(dir, '.other-settlements.json.4242.deadbeefcafe.tmp');
+    // undo that by eating the neighbor's, which may be mid-rename.
+    //
+    // The neighbour's name CONTAINS this store's basename on purpose: a match
+    // written with `includes` instead of `startsWith` would take it, and a
+    // fixture whose sibling shares no substring cannot tell the two apart.
+    const sibling = join(dir, '.settlements.json.backup.4242.deadbeefcafe.tmp');
     writeFileSync(sibling, '{}', 'utf-8');
     const stale = Date.now() - 2 * 60 * 60 * 1000;
     utimesSync(sibling, stale / 1000, stale / 1000);
 
     createFileSettlementStore(path);
 
-    expect(readdirSync(dir)).toContain('.other-settlements.json.4242.deadbeefcafe.tmp');
+    expect(readdirSync(dir)).toContain('.settlements.json.backup.4242.deadbeefcafe.tmp');
   });
 
   it('throws out of prune, rather than reporting a sweep that did not land', () => {

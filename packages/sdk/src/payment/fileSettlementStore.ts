@@ -94,7 +94,12 @@ export class FileSettlementStore implements SettlementStore {
    * worse.
    */
   private sweepStrandedTemporaries(): void {
-    const prefix = `.${basename(this.path)}.`;
+    // The EXACT shape `write` produces, not a prefix: a store named
+    // `settlements.json.backup` in the same directory writes
+    // `.settlements.json.backup.<pid>.<hex>.tmp`, which a prefix match on
+    // `.settlements.json.` would take - and it may be mid-rename. Measured.
+    const escapedName = basename(this.path).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const temporary = new RegExp(`^\\.${escapedName}\\.\\d+\\.[0-9a-f]+\\.tmp$`);
     const cutoff = Date.now() - STRANDED_TEMP_MIN_AGE_MS;
     let names: string[];
     try {
@@ -103,7 +108,7 @@ export class FileSettlementStore implements SettlementStore {
       return; // the directory may not exist yet; nothing to sweep
     }
     for (const name of names) {
-      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) {
+      if (!temporary.test(name)) {
         continue;
       }
       const candidate = join(dirname(this.path), name);

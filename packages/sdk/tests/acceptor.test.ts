@@ -905,6 +905,14 @@ describe('a request that cannot be paid at all', () => {
     expect(
       (rpc as unknown as { getTransaction: ReturnType<typeof vi.fn> }).getTransaction,
     ).not.toHaveBeenCalled();
+    // And it names WHICH step-0 verdict carved the job out. Both carve-outs
+    // answer a bare `inconclusive` otherwise, which is indistinguishable from
+    // an RPC that was merely slow - and the argument for carving them out is
+    // that an operator can roll back to a build whose list was narrower. They
+    // cannot act on a verdict they are never shown.
+    expect(result).toMatchObject({
+      error: expect.stringContaining('degenerate_reference'),
+    });
   });
 
   it('is terminal for an asset nothing can resolve, and does not throw on it', async () => {

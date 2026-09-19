@@ -345,11 +345,11 @@ describe('createAgentDir', () => {
   });
 
   it('creates a HOME agent directory nobody else can enter', async () => {
-    // `writeSecrets` says home-global agents rely on directory permissions
-    // INSTEAD of a `.gitignore` - there is no repository around them to ignore
-    // anything. The whole `.gitignore` half of that sentence is measured a
-    // dozen ways in this file and the permission half was measured nowhere, so
-    // the mode could widen to 0o755 with the package green.
+    // `ensureGitignoreHasEntries` says home-global agents rely on directory
+    // permissions INSTEAD of a `.gitignore` - there is no repository around
+    // them to ignore anything. The whole `.gitignore` half of that sentence is
+    // measured a dozen ways in this file and the permission half was measured
+    // nowhere, so the mode could widen to 0o755 with the package green.
     if (process.getuid?.() === 0) {
       return; // root ignores the mode bits
     }
@@ -752,6 +752,9 @@ describe('listAgents', () => {
     const agents = await listAgents(work);
 
     expect(agents.map((agent) => agent.name)).toEqual(['Bob']);
+    // And with no display name attached: `''` means "read it, got nothing",
+    // which the caller shows as the folder name.
+    expect(agents[0]?.displayName).toBeUndefined();
   });
 
   it('lists home and project agents, project shadows home', async () => {

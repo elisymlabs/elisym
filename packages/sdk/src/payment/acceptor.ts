@@ -403,6 +403,10 @@ export class ProviderPaymentAcceptor {
       }
     }
     const carvedOut = stepZero !== undefined;
+    // Captured here, where the union is still narrowable: step 0 only ever
+    // returns a refusal, but the type says `AcceptPaymentResult`.
+    const carveOutReason =
+      stepZero === undefined || stepZero.accepted ? undefined : stepZero.reason;
 
     // STEP 1 - the job's own evidence, before anything a counterparty controls.
     // The deadline check sits here UNCONDITIONALLY and raises the flag even
@@ -457,7 +461,21 @@ export class ProviderPaymentAcceptor {
     if (carvedOut) {
       // No listing on a request our own predicate rejects: by a degenerate
       // reference it is useless, by an unusable request it is meaningless.
-      return { accepted: false, reason: 'inconclusive', error: lastError };
+      //
+      // The step-0 verdict rides along in `error`, because without it the two
+      // carve-outs collapse into an identical bare `inconclusive` - and the
+      // whole argument for carving them out is that an operator can roll back
+      // to a build whose list was narrower. They cannot act on a verdict they
+      // are never shown. Still diagnostics, not contract: `reason` stays
+      // `inconclusive`, which is what a caller branches on.
+      const carveOutSentence =
+        `the request is ${carveOutReason} for this config, but this job already owns a ` +
+        `settlement`;
+      return {
+        accepted: false,
+        reason: 'inconclusive',
+        error: lastError === undefined ? carveOutSentence : `${carveOutSentence}; ${lastError}`,
+      };
     }
 
     // STEP 2 - the signature the customer sent. The most counterparty-controlled

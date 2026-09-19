@@ -29,6 +29,13 @@ import { basename, dirname, join } from 'node:path';
 import { isBlockingNode } from '@elisym/sdk/agent-store';
 import { X402_CACHE_TTL_MS } from './constants.js';
 
+/**
+ * How stale a temporary must be before a sweep removes it. Long enough that a
+ * live writer's file is never in question, short enough that a fragment left
+ * by a dead process is not permanent.
+ */
+const STRANDED_TEMP_MIN_AGE_MS = 60 * 60 * 1000;
+
 export const X402_JOBS_FILE = '.x402-jobs.json';
 export const X402_RESULTS_DIR = '.x402-results';
 
@@ -153,11 +160,32 @@ export class X402JobStore {
       await Promise.all(
         entries
           .filter((entry) => entry.startsWith(prefix))
-          .map((entry) => rm(join(this.resultsDir, entry), { force: true })),
+          .map((entry) => this.removeIfStale(join(this.resultsDir, entry))),
       );
     } catch {
       /* the directory may not exist yet; nothing to sweep */
     }
+  }
+
+  /**
+   * Remove a temporary only once it is too old to be a live writer's.
+   *
+   * The queue serializes writers inside ONE process, and there is meant to be
+   * one store per agent directory - but `sweepExpired` runs from the driver's
+   * constructor, so a second `elisym start` on the same directory sweeps while
+   * the first is mid-write. Same argument as the ledger's guard: two agents on
+   * one directory is unsupported, and a sweep is no place to make it worse.
+   */
+  private async removeIfStale(path: string): Promise<void> {
+    try {
+      const info = await stat(path);
+      if (Date.now() - info.mtimeMs < STRANDED_TEMP_MIN_AGE_MS) {
+        return;
+      }
+    } catch {
+      return; // raced deletion - nothing to do
+    }
+    await rm(path, { force: true }).catch(() => undefined);
   }
 
   /**
@@ -337,7 +365,7 @@ export class X402JobStore {
       await Promise.all(
         entries
           .filter((entry) => entry === legacyName || entry.startsWith(prefix))
-          .map((entry) => rm(join(dir, entry), { force: true })),
+          .map((entry) => this.removeIfStale(join(dir, entry))),
       );
     } catch {
       /* the directory may not exist yet; nothing to sweep */

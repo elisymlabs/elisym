@@ -241,11 +241,17 @@ describe('two file transfers that start at the same moment', () => {
     await shutdownIrohTransport(agent, 20);
     expect(shutdowns).toBe(0);
 
-    land({
+    // Assigned BEFORE the promise resolves, the way `createTransport` does it -
+    // otherwise the assertion below passes against any implementation, because
+    // the field was never set in the first place. Measured: written the easy
+    // way, this row stayed green with the clearing removed.
+    const lateTransport = {
       shutdown: async () => {
         shutdowns += 1;
       },
-    });
+    };
+    (agent as { irohTransport?: unknown }).irohTransport = lateTransport;
+    land(lateTransport);
     await late;
     // One turn for the deferred handler attached to that promise.
     await Promise.resolve();

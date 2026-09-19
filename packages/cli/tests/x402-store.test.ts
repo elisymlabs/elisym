@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -159,6 +159,10 @@ describe('X402JobStore', () => {
     const filePath = await store.saveFileResult('old-file-job', 'image/png', new Uint8Array([1]));
     const stranded = `${filePath}.tmp.deadbeef`;
     await writeFile(stranded, new Uint8Array([1]));
+    // Aged past the guard that protects a live writer's temporary: this row is
+    // about what a process that DIED left, not about a write in flight.
+    const stale = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(stranded, stale, stale);
 
     await store.sweepExpired(Date.now() + X402_CACHE_TTL_MS + 1000);
 

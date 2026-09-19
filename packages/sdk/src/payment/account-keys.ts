@@ -22,9 +22,13 @@ export interface LoadedAddresses {
  *
  * Both halves are checked with `Array.isArray` rather than `?? []`. A proxy
  * that answers with a string or a number for one of them would otherwise be
- * spread element-by-element, which does not merely add junk keys: it LENGTHENS
- * the merged list and shifts every read-only address onto another account's
- * balance slot. A malformed container is therefore not partially trusted -
+ * spread element-by-element. For the WRITABLE half that does not merely add
+ * junk keys: it lengthens the merged list ahead of the read-only one and
+ * shifts every read-only address onto another account's balance slot. For the
+ * read-only half nothing follows it, so the cost is the real addresses that
+ * half was carrying - a refusal rather than a misread, which is why the two
+ * guards are worth the same line but not the same sentence. A malformed
+ * container is therefore not partially trusted -
  * the merge falls back to the static keys alone, which is what this code did
  * before lookup tables were read at all, and which refuses rather than
  * misreads.

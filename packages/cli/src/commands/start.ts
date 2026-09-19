@@ -664,6 +664,13 @@ export async function cmdStart(
   // advertised by an agent that has already exited. CONSTRUCTING the ledger
   // touches no network - the steps above it do, the media cache uploads blobs -
   // so the only cost of moving it up is that the failure lands sooner.
+  //
+  // The widened ignore entries go in FIRST, though, because the constructor can
+  // create the thing they cover: a ledger that parses is rotated to
+  // `.jobs.json.corrupt.<ts>`, and on an older agent the narrow line does not
+  // match that name. The migration below at Step 11 is too late for a run that
+  // exits right after this.
+  await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
   const ledger = new JobLedger(paths.jobs);
 
   // -- Step 10: Publish kind:0 profile --
@@ -890,16 +897,18 @@ export async function cmdStart(
   // a delegated pull be replayed - and a refusal after the cards are published
   // leaves a live paid provider advertised by an agent that has already exited.
   // Only wired when the agent can actually settle delegated jobs.
+  if (delegateSigner !== undefined) {
+    // BEFORE the constructor, like the ledger's: the nonce set is keyed by
+    // customer owner addresses and must never be committable from a
+    // project-local agent dir - and the constructor itself can produce
+    // `.delegation-nonces.json.corrupt.<ts>`, which an older agent's narrow
+    // line does not match.
+    await ensureGitignoreHasDelegationNoncesEntry(dirname(loaded.dir));
+  }
   const nonceStore =
     delegateSigner !== undefined
       ? new UsedNonceStore(join(loaded.dir, '.delegation-nonces.json'))
       : undefined;
-  if (nonceStore !== undefined) {
-    // Same gitignore migration as the other private stores: the nonce set is
-    // keyed by customer owner addresses and must never be committable from a
-    // project-local agent dir.
-    await ensureGitignoreHasDelegationNoncesEntry(dirname(loaded.dir));
-  }
 
   // NOT KILLED BY ANY TEST - `cmdStart` has no harness - so this ordering is
   // kept on diff review. Every `.gitignore` migration runs HERE, before a card

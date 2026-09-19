@@ -960,6 +960,9 @@ function refuseDegenerateReferenceAgainst(
   reference: Address,
   derived: readonly (Address | undefined)[],
 ): void {
+  // `candidate !== undefined` is redundant and stays for shape: `reference` is
+  // an `Address`, so `undefined === reference` is never true. NOT KILLED BY ANY
+  // TEST, and no test could be written for it.
   if (!derived.some((candidate) => candidate !== undefined && candidate === reference)) {
     return;
   }
