@@ -149,9 +149,10 @@ describe('two file transfers that start at the same moment', () => {
 
   it('are refused for EVERY agent the server is shutting down, not one at a time', async () => {
     // Driven through the REAL teardown, not through the helper it calls: a
-    // fixture on the helper alone measures the helper, so deleting its one call
-    // from the server would be silent - which is how this door was left open
-    // once already.
+    // fixture on the helper alone measures the helper, so deleting the MARKING
+    // call from the teardown would be silent - which is how this door was left
+    // open once already. (The teardown's other call, the shutdown itself, is
+    // held by the row further down; this one holds only the marking.)
     //
     // The first agent's teardown is held mid-flight and the second is asked
     // WHILE it is held. Mark inside the loop instead of ahead of it and the
@@ -223,6 +224,61 @@ describe('two file transfers that start at the same moment', () => {
     // And the ephemeral store is gone: giving up on the pending node must not
     // skip the cleanup this teardown exists for.
     expect(existsSync(join(sandbox, 'ephemeral-store'))).toBe(false);
+  });
+
+  it('closes a node that turns up AFTER the teardown gave up waiting', async () => {
+    // Giving up on the wait is not giving up on the node: whatever finally
+    // opens is holding the fs-store lock, and on the `switch_agent` path the
+    // process lives on - so an unclosed one wedges `<agentDir>/.iroh` for the
+    // rest of the server's life, and switching back opens a second node on a
+    // locked store.
+    let land: (transport: unknown) => void = () => undefined;
+    const late = new Promise((resolve) => {
+      land = resolve;
+    });
+    const agent = { name: 'alice', agentDir, irohTransportPending: late } as never;
+
+    await shutdownIrohTransport(agent, 20);
+    expect(shutdowns).toBe(0);
+
+    land({
+      shutdown: async () => {
+        shutdowns += 1;
+      },
+    });
+    await late;
+    // One turn for the deferred handler attached to that promise.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(shutdowns).toBe(1);
+    expect((agent as { irohTransport?: unknown }).irohTransport).toBeUndefined();
+  });
+
+  it('shuts each agent down, not only marks it, when the server tears the registry down', async () => {
+    // The loop's own call, which the fixture above does not reach: deleting
+    // `await shutdownIrohTransport(agent)` from `teardownRegistry` left every
+    // row here green, while the comment beside them claimed the opposite.
+    const agent = {
+      name: 'alice',
+      agentDir,
+      irohTransport: {
+        shutdown: async () => {
+          shutdowns += 1;
+        },
+      },
+      client: { close: () => undefined },
+      identity: { scrub: () => undefined },
+    };
+    const registry = new Map<string, unknown>([['alice', agent]]);
+
+    await teardownRegistry({ registry } as never);
+
+    expect(shutdowns).toBe(1);
+    expect((agent as { irohTransport?: unknown }).irohTransport).toBeUndefined();
+    // NOT asserted: that the registry is emptied. `scrubAgent` deletes the one
+    // agent it retires because the process lives on; this path runs into
+    // `process.exit`, so it releases resources and leaves the map alone.
   });
 
   it('let a later transfer build a new node after shutdown', async () => {

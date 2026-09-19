@@ -78,7 +78,7 @@ describe('a write that fails part way through', () => {
     // untrue the next time somebody edits the mock.
     expect(partialBytes).toBeGreaterThan(0);
     expect(partialBytes).toBeLessThan(fullBytes);
-    expect(readdirSync(dir).filter((name) => name.includes('.tmp.'))).toEqual([]);
+    expect(readdirSync(dir)).toEqual([]);
   });
 
   it('writes nothing at the target path either', async () => {

@@ -326,12 +326,17 @@ export class X402JobStore {
    */
   private async sweepStrandedIndexTemporaries(): Promise<void> {
     const dir = dirname(this.jobsPath);
-    const prefix = `${basename(this.jobsPath)}.tmp.`;
+    // The bare `.tmp` as well: builds before this one wrote through one fixed
+    // name, where a fragment bounded itself because the next write reused it.
+    // A random suffix removes that accident, so an older build's leftover would
+    // sit here for good if this sweep matched only the new shape.
+    const legacyName = `${basename(this.jobsPath)}.tmp`;
+    const prefix = `${legacyName}.`;
     try {
       const entries = await readdir(dir);
       await Promise.all(
         entries
-          .filter((entry) => entry.startsWith(prefix))
+          .filter((entry) => entry === legacyName || entry.startsWith(prefix))
           .map((entry) => rm(join(dir, entry), { force: true })),
       );
     } catch {

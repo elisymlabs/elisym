@@ -1445,6 +1445,57 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(listing).not.toHaveBeenCalled();
     });
 
+    it("refuses a reference equal to the recipient's TOKEN account, which only the DERIVED half knows", async () => {
+      // Both rows above use the recipient's own address - a STATIC denylist
+      // entry, which the synchronous predicate carries too. Swap the full
+      // `degenerateReference` for `degenerateReferenceSync` here and the whole
+      // package stays green: nothing measured the derived half on this rail,
+      // though the builder's docstring rests on exactly that difference.
+      const [recipientAta] = await findAssociatedTokenPda({
+        owner: recipientAddr,
+        mint: address(USDC_SOLANA_DEVNET.mint as string),
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () => Promise.reject(new Error('the verifier must not get this far')),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ ...usdcRequest, reference: recipientAta }),
+        CONFIG,
+        { txSignature: 'degenerateAtaSig' as Signature, ...FAST },
+      );
+
+      expect(result.verified).toBe(false);
+      expect(result.code).toBe('degenerate_reference');
+    });
+
+    it('refuses a reference equal to the CONFIG treasury on a zero-fee request', async () => {
+      // The treasury argument, unpinned on this rail. It cannot be seen at a
+      // non-zero fee, because the fee block above forces `fee_address` to equal
+      // the treasury and the request carries it - so the static half catches it
+      // anyway. At feeBps 0, the config is the only place the treasury is
+      // named, and that is the configuration mainnet runs.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () => Promise.reject(new Error('the verifier must not get this far')),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ reference: TEST_TREASURY, fee_address: undefined, fee_amount: 0 }),
+        { feeBps: 0, treasury: TEST_TREASURY },
+        { txSignature: 'treasuryRefSig' as Signature, ...FAST },
+      );
+
+      expect(result.verified).toBe(false);
+      expect(result.code).toBe('degenerate_reference');
+    });
+
     it('refuses rather than MISREADS when the loaded half is malformed', async () => {
       // `mergeAccountKeys` guards each half with `Array.isArray` and falls back
       // to the static keys alone. Inline the raw concatenation instead - which

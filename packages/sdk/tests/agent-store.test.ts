@@ -735,6 +735,25 @@ describe('listAgents', () => {
     expect(agents.map((agent) => agent.name)).toEqual(['Bob']);
   });
 
+  it('still lists an agent whose yaml parses but fails the schema', async () => {
+    // The third path to an empty name, and the only one that does not go
+    // through a throw: the YAML is valid, its shape is not. `=== null` is what
+    // separates "could not read the file" from "read it and it gave nothing" -
+    // return null here and the agent drops out of `elisym list` and the MCP's
+    // `list_agents` without a word, exactly when its config needs fixing.
+    const created = await createAgentDir({
+      target: 'project',
+      name: 'Bob',
+      cwd: work,
+      projectRoot: work,
+    });
+    writeFileSync(join(created.dir, 'elisym.yaml'), 'display_name: 42\n');
+
+    const agents = await listAgents(work);
+
+    expect(agents.map((agent) => agent.name)).toEqual(['Bob']);
+  });
+
   it('lists home and project agents, project shadows home', async () => {
     const home1 = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
     writeFileSync(join(home1.dir, 'elisym.yaml'), 'display_name: "Home Bob"\n');

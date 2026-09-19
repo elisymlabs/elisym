@@ -162,9 +162,20 @@ const MAX_DOUBLE_SETTLE_WARNINGS = 20;
  */
 const STRANDED_TEMP_MIN_AGE_MS = 60 * 60 * 1000;
 
-/** Remove `<path>.tmp.<hex>` fragments a crash left beside `path`. */
+/**
+ * Remove `<path>.tmp.<hex>` fragments a crash left beside `path`.
+ *
+ * The bare `<path>.tmp` too, and that one is the UPGRADE case rather than a
+ * crash: builds before this one wrote through a single fixed name, so a
+ * fragment there bounded itself - the next flush reused it. Moving to a random
+ * suffix removes that accident, which turns any fragment an older build left
+ * into a permanent one unless this sweep takes it. For the job ledger that
+ * fragment is a full copy of every job's input, result and settlement
+ * signature in the clear.
+ */
 function sweepStrandedTemporaries(path: string): void {
-  const prefix = `${basename(path)}.tmp.`;
+  const legacyName = `${basename(path)}.tmp`;
+  const prefix = `${legacyName}.`;
   const cutoff = Date.now() - STRANDED_TEMP_MIN_AGE_MS;
   let names: string[];
   try {
@@ -173,7 +184,7 @@ function sweepStrandedTemporaries(path: string): void {
     return; // the directory may not exist yet; nothing to sweep
   }
   for (const name of names) {
-    if (!name.startsWith(prefix)) {
+    if (name !== legacyName && !name.startsWith(prefix)) {
       continue;
     }
     const candidate = join(dirname(path), name);

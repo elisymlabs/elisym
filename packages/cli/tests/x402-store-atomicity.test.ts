@@ -21,6 +21,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /** Set to make a write to a `.tmp.` path fail once it has left a fragment. */
 let tempWriteFailure: Error | null = null;
+/** Set to hold a write to a `.tmp.` path open until it is released. */
+let heldTempWrite: Promise<void> | null = null;
+/** How many times the sweep has been allowed to look at the directory. */
+let directoryReads = 0;
 /** Bytes the failing write put down, and the bytes it was asked for. */
 let partialBytes = 0;
 let fullBytes = 0;
@@ -30,7 +34,18 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return {
     ...actual,
     default: actual,
+    readdir: async (path: string) => {
+      directoryReads += 1;
+      return actual.readdir(path);
+    },
     writeFile: async (path: string, data: string | Uint8Array, options?: unknown) => {
+      if (heldTempWrite && String(path).includes('.tmp.')) {
+        // The temporary exists, and the rename has not happened yet - the
+        // window a sweep must not run in.
+        await actual.writeFile(path, data, options as Parameters<typeof actual.writeFile>[2]);
+        await heldTempWrite;
+        return undefined;
+      }
       // Only the temporaries: the store seeds real files through this same
       // function, and a lever that fails those measures nothing.
       if (tempWriteFailure && String(path).includes('.tmp.')) {
@@ -52,6 +67,8 @@ let agentDir: string;
 
 beforeEach(() => {
   tempWriteFailure = null;
+  heldTempWrite = null;
+  directoryReads = 0;
   partialBytes = 0;
   fullBytes = 0;
   agentDir = mkdtempSync(join(tmpdir(), 'elisym-x402-atomic-'));
@@ -120,6 +137,57 @@ describe('an x402 write that fails part way through', () => {
     expect(fragmentsIn(agentDir)).toEqual([]);
     // And the real index is untouched: the sweep matches the temporary's
     // prefix, not the file it is a temporary OF.
+    expect(await new X402JobStore(agentDir).paidAttempts('job-1')).toBe(1);
+  });
+
+  it('does not even LOOK at the directory while a writer holds the queue', async () => {
+    // The sweep is unconditional - an index fragment belongs to no record - so
+    // its PLACEMENT is the only thing keeping it from deleting the temporary a
+    // concurrent `save` is about to rename, which would fail that rename with
+    // ENOENT on a write that was perfectly healthy.
+    //
+    // Asserted as ORDER rather than as an outcome: whether a sweep outside the
+    // queue wins the race depends on the clock, and a fixture that depends on
+    // the clock measures the clock. Inside the queue it cannot run at all until
+    // the writer is done - that is checkable exactly.
+    const store = new X402JobStore(agentDir);
+    await store.claimPaidAttempt('job-1', 2, 2);
+
+    let release: () => void = () => undefined;
+    heldTempWrite = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const saving = store.claimPaidAttempt('job-2', 2, 2);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    directoryReads = 0;
+
+    const sweeping = store.sweepExpired();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(directoryReads).toBe(0);
+
+    release();
+    heldTempWrite = null;
+    await saving;
+    await sweeping;
+
+    expect(directoryReads).toBeGreaterThan(0);
+    expect(await new X402JobStore(agentDir).paidAttempts('job-2')).toBe(1);
+  });
+
+  it('sweeps the BARE name an older build left, not only the random one', async () => {
+    // The upgrade case: before this branch the temporary had one fixed name and
+    // the next write reused it, so a fragment bounded itself. A random suffix
+    // removes that accident - and a sweep matching only the new shape would
+    // leave an older build's copy of the paid-attempt index sitting here for
+    // good.
+    const store = new X402JobStore(agentDir);
+    await store.claimPaidAttempt('job-1', 2, 2);
+    writeFileSync(join(agentDir, '.x402-jobs.json.tmp'), '{"job-1":{"attempts":1}}', 'utf-8');
+
+    await store.sweepExpired();
+
+    expect(readdirSync(agentDir).filter((name) => name.includes('.tmp'))).toEqual([]);
     expect(await new X402JobStore(agentDir).paidAttempts('job-1')).toBe(1);
   });
 });

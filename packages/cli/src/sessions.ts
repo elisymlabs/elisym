@@ -860,7 +860,12 @@ export class SessionStore {
         // listing counts it, and this was the only sweep that could have. What
         // it holds is the customer's prompts and the model's answers in the
         // clear.
-        if (!name.includes('.corrupt.') && !name.includes('.tmp.')) {
+        // `.tmp` without the dot too: builds before this one wrote through a
+        // single fixed name, where the next rewrite reused the leftover. The
+        // random suffix removed that accident, so an older build's fragment -
+        // a customer's prompts and the model's answers in the clear - would
+        // otherwise stay for good.
+        if (!name.includes('.corrupt.') && !name.includes('.tmp')) {
           continue;
         }
         const path = join(dir, name);

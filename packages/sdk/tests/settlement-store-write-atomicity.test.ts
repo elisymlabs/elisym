@@ -19,7 +19,7 @@
  * usable probe here - it is a no-op in vitest's fork pool, measured. Append to
  * a marker file instead.
  */
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -165,7 +165,7 @@ describe('a write that fails leaves the settlement index untouched', () => {
     chmodFailure = new Error('ENOSPC: no space left on device, chmod');
     expect(store.claim(SIG_A, 'job-a')).toBe('not-persisted');
 
-    expect(readdirSync(dir).filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(readdirSync(dir)).toEqual(['settlements.json']);
   });
 
   it('takes a HALF-WRITTEN temporary with it, not only a complete one', () => {
@@ -183,7 +183,51 @@ describe('a write that fails leaves the settlement index untouched', () => {
     // tidied away: without these two the word above goes quietly untrue again.
     expect(partialBytes).toBeGreaterThan(0);
     expect(partialBytes).toBeLessThan(fullBytes);
-    expect(readdirSync(dir).filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(readdirSync(dir)).toEqual(['settlements.json']);
+  });
+
+  it('sweeps a fragment a dead process left, which nothing else would', () => {
+    // The fifth member of the "cleanup takes the fragment" class, and the one
+    // with no `.gitignore` of ours behind it: the path is the SDK consumer's to
+    // choose, and the documented example puts it in a working directory. The
+    // `try` in `write` covers a throw; a process killed outright leaves this,
+    // and the random suffix means nothing ever reused or removed it.
+    const stranded = join(dir, `.${'settlements.json'}.4242.deadbeefcafe.tmp`);
+    writeFileSync(stranded, JSON.stringify({ version: 1, settlements: {} }), 'utf-8');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(stranded, stale / 1000, stale / 1000);
+    writeFileSync(path, JSON.stringify({ version: 1, settlements: {} }), 'utf-8');
+    utimesSync(path, stale / 1000, stale / 1000);
+
+    createFileSettlementStore(path);
+
+    expect(readdirSync(dir)).toEqual(['settlements.json']);
+  });
+
+  it("leaves a fragment alone while it is still fresh enough to be somebody else's", () => {
+    // Two writers on one index is unsupported, but the sweep must not be what
+    // makes that worse: a temporary written a moment ago may belong to a live
+    // writer between its write and its rename.
+    const fresh = join(dir, '.settlements.json.4242.feedfacebeef.tmp');
+    writeFileSync(fresh, '{}', 'utf-8');
+
+    createFileSettlementStore(path);
+
+    expect(readdirSync(dir)).toContain('.settlements.json.4242.feedfacebeef.tmp');
+  });
+
+  it("leaves a SIBLING index's fragment alone, which is why the name is in the prefix", () => {
+    // The temporary is named after its target precisely so two stores sharing a
+    // directory cannot collide - and a sweep that matched `.tmp` alone would
+    // undo that by eating the neighbour's, which may be mid-rename.
+    const sibling = join(dir, '.other-settlements.json.4242.deadbeefcafe.tmp');
+    writeFileSync(sibling, '{}', 'utf-8');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(sibling, stale / 1000, stale / 1000);
+
+    createFileSettlementStore(path);
+
+    expect(readdirSync(dir)).toContain('.other-settlements.json.4242.deadbeefcafe.tmp');
   });
 
   it('throws out of prune, rather than reporting a sweep that did not land', () => {

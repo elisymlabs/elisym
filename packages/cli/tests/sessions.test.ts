@@ -382,6 +382,24 @@ describe('SessionStore - TTL, caps, and eviction', () => {
     expect(existsSync(sessionPath(CUSTOMER, SID))).toBe(true);
   });
 
+  it('gc sweeps the BARE .tmp an older build left, not only the random one', async () => {
+    // The upgrade case. Before this branch the rewrite temporary had one fixed
+    // name, so a fragment was overwritten by the next rewrite and bounded
+    // itself; with a random suffix nothing reuses it. A sweep matching only
+    // `.tmp.` would leave an older build's fragment - the customer's prompts
+    // and the model's answers in the clear - for good.
+    const store = makeStore({ ttlMs: 60_000 });
+    await record(store, 'j1', 'q', 'a');
+    const legacy = `${sessionPath(CUSTOMER, SID)}.tmp`;
+    writeFileSync(legacy, '{"type":"turn"');
+    backdate(legacy, 120_000);
+
+    store.gc();
+
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(sessionPath(CUSTOMER, SID))).toBe(true);
+  });
+
   it('gc never deletes a session whose mutex is held or with admitted jobs', async () => {
     const store = makeStore({ ttlMs: 60_000 });
     await record(store, 'j1', 'q', 'a');

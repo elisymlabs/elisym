@@ -1,5 +1,14 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isBlockingNodeSync } from '../agent-store/node-type';
 import {
@@ -8,6 +17,13 @@ import {
   type SettlementStore,
   isUsableSignature,
 } from './acceptor';
+
+/**
+ * How stale a temporary must be before the sweep removes it. Long enough that
+ * a live writer's file is never in question, short enough that a fragment is
+ * not a permanent copy of the index.
+ */
+const STRANDED_TEMP_MIN_AGE_MS = 60 * 60 * 1000;
 
 /** Owner-only: the file names which job a transfer paid for. */
 const STORE_FILE_MODE = 0o600;
@@ -55,6 +71,50 @@ export class FileSettlementStore implements SettlementStore {
     // A file that is merely ABSENT is a different case and does not throw -
     // `read` answers with an empty index for ENOENT alone.
     this.read();
+    // AFTER the read, so a refusal to read the index is reported before
+    // anything beside it is deleted.
+    this.sweepStrandedTemporaries();
+  }
+
+  /**
+   * Remove `.<name>.<pid>.<hex>.tmp` fragments a dead process left beside the
+   * index.
+   *
+   * The `try` in `write` covers a failure that THROWS; a process killed
+   * outright between the write and the rename leaves the fragment, and the
+   * suffix is random, so nothing reuses it and - until this - nothing removed
+   * it. What it holds is a full copy of the index: which transaction paid for
+   * which job. The path is the SDK consumer's to choose, and the documented
+   * example puts it in a repository working directory, so there is no
+   * `.gitignore` of ours standing behind it either.
+   *
+   * The age guard is what keeps a second process's LIVE temporary safe. Two
+   * writers on one index is already unsupported - there is no cross-process
+   * lock, as the class docstring says - but a sweep is no place to make that
+   * worse.
+   */
+  private sweepStrandedTemporaries(): void {
+    const prefix = `.${basename(this.path)}.`;
+    const cutoff = Date.now() - STRANDED_TEMP_MIN_AGE_MS;
+    let names: string[];
+    try {
+      names = readdirSync(dirname(this.path));
+    } catch {
+      return; // the directory may not exist yet; nothing to sweep
+    }
+    for (const name of names) {
+      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) {
+        continue;
+      }
+      const candidate = join(dirname(this.path), name);
+      try {
+        if (statSync(candidate).mtimeMs < cutoff) {
+          unlinkSync(candidate);
+        }
+      } catch {
+        /* raced deletion, or somebody else's node - leave it */
+      }
+    }
   }
 
   private read(): StoreFile {

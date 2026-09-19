@@ -433,6 +433,12 @@ describe('a claim the disk refuses', () => {
 
     expect(result).toMatchObject({ accepted: false, reason: 'not-persisted' });
     expect(listCalls).toBe(0);
+    // The sentence the docstring promises for this reason. The store answers a
+    // verdict rather than an error, so this fixed phrase is all the operator
+    // gets - and nothing held it in place.
+    expect(result).toMatchObject({
+      error: expect.stringContaining('could not be written to disk'),
+    });
   });
 
   it('marks the pass at STEP 2 when the claim is lost, not only at step 4', async () => {
@@ -465,6 +471,12 @@ describe('a claim the disk refuses', () => {
     // The window WAS read, and read empty: without the mark this pass is
     // exactly the shape a provider may close a paid job on.
     expect(listCalls).toBe(1);
+    // And it says WHY, like steps 1 and 4 do: `consumed-by-other` carries the
+    // one sentence an operator can act on, and step 2 was carrying it with
+    // nothing to hold it there.
+    expect(result).toMatchObject({
+      error: expect.stringContaining('already bound to another job'),
+    });
   });
 
   it('does NOT accept when that same settlement was taken by another job', async () => {

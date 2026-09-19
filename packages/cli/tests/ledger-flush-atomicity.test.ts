@@ -194,16 +194,50 @@ describe('a fragment a crash left beside an index', () => {
     // clear for good. For the ledger that is a full copy of every job's input,
     // result and settlement signature.
     const path = join(tmpDir, filename);
+    // A real index beside it, backdated too: the sweep must take the fragment
+    // and leave this. Narrow the prefix to the bare basename - the obvious way
+    // to write it - and the index itself matches, so a store nobody wrote to
+    // for an hour is deleted along with every settlement it records.
+    writeFileSync(path, '{}', 'utf-8');
     const stranded = `${path}.tmp.deadbeefcafe`;
     writeFileSync(stranded, '{"job-1":{"job_id":"job-1","input":"secret"}}', 'utf-8');
     // Older than the age guard, which is what keeps a second process's LIVE
     // temporary out of the sweep's way.
     const stale = Date.now() - 2 * 60 * 60 * 1000;
     utimesSync(stranded, stale / 1000, stale / 1000);
+    utimesSync(path, stale / 1000, stale / 1000);
 
     open(path);
 
-    expect(readdirSync(tmpDir).filter((name) => name.includes('.tmp.'))).toEqual([]);
+    expect(readdirSync(tmpDir).filter((name) => name.includes('.tmp'))).toEqual([]);
+    // The real index is untouched: the sweep matches the temporary's prefix,
+    // not the file it is a temporary OF. Without this, narrowing the prefix to
+    // the bare basename eats `.jobs.json` itself whenever nothing has written
+    // to it for an hour - and with it the whole settlement index.
+    expect(readdirSync(tmpDir)).toContain(filename);
+  });
+
+  it.each([
+    ['the job ledger', '.jobs.json', (path: string) => new JobLedger(path)],
+    ['the nonce store', '.delegation-nonces.json', (path: string) => new UsedNonceStore(path)],
+  ])('is swept for %s even when an OLDER build left the bare name', (_label, filename, open) => {
+    // The upgrade case, and the one that turns a self-limiting leak into a
+    // permanent one: before this branch the temporary had a single fixed name,
+    // so a fragment was reused by the next flush and bounded itself. With a
+    // random suffix nothing reuses it - so a sweep that matches only the new
+    // shape leaves an older build's fragment beside the index for good.
+    const path = join(tmpDir, filename);
+    writeFileSync(path, '{}', 'utf-8');
+    const legacy = `${path}.tmp`;
+    writeFileSync(legacy, '{"job-1":{"job_id":"job-1","input":"secret"}}', 'utf-8');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(legacy, stale / 1000, stale / 1000);
+    utimesSync(path, stale / 1000, stale / 1000);
+
+    open(path);
+
+    expect(readdirSync(tmpDir).filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(readdirSync(tmpDir)).toContain(filename);
   });
 
   it("is left alone while it is still fresh enough to be somebody else's", () => {

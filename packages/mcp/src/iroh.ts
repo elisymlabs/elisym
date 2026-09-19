@@ -93,12 +93,17 @@ export function markAgentsScrubbed(agents: Iterable<AgentInstance>): void {
 /**
  * How long a teardown waits for a creation that is still in flight.
  *
- * BOUNDED, and that is the whole point of the constant existing: opening
- * `Iroh.persistent` blocks on the store's own lock, and a lock left by a
- * previous crash is exactly the case this teardown exists to clear - so the
- * creation it is waiting for may never return. Waiting forever turned
- * `switch_agent`, `stop_agent` and SIGINT into hangs, with the second SIGINT
- * swallowed by the shutting-down flag and only SIGKILL left. Measured.
+ * BOUNDED, because this teardown must finish even when the creation it is
+ * waiting on does not. Waiting forever turned `switch_agent`, `stop_agent` and
+ * SIGINT into hangs, with the second SIGINT swallowed by the shutting-down flag
+ * and only SIGKILL left - measured with a creation that never settles.
+ *
+ * What could hold it is not settled either way, and the honest version is: the
+ * transport is built lazily, so `Iroh.persistent` opens later in `getNode`
+ * rather than inside this promise, and the one await in `createTransport` is
+ * the `.gitignore` migration, itself gated against a blocking node. So the
+ * bound guards a shape the code does not obviously reach today - and costs one
+ * timer to keep a server that only SIGKILL can stop impossible tomorrow.
  */
 const PENDING_TEARDOWN_WAIT_MS = 5_000;
 
@@ -136,7 +141,16 @@ export async function shutdownIrohTransport(
       // Deferred, NOT returned early: the cleanup below still has to run, or an
       // ephemeral agent's tmpdir - job inputs and bought results in the clear -
       // is left behind by the very teardown that exists to remove it.
-      void observed.then((transport) => transport?.shutdown()).catch(() => undefined);
+      //
+      // And the field is cleared with it: `createTransport` assigns
+      // `agent.irohTransport` when it finally lands, so without this the agent
+      // is left holding a transport that has already been shut down.
+      void observed
+        .then((transport) => {
+          agent.irohTransport = undefined;
+          return transport?.shutdown();
+        })
+        .catch(() => undefined);
     }
   }
   if (agent.irohTransport) {
