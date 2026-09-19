@@ -82,9 +82,12 @@ export async function verifyJobPaymentQuick(
     return { receivedFunds: false, txSignature, reason: 'invalid_input' };
   }
 
-  // Network rides in the cache key: signatures and recipient addresses are
-  // cluster-agnostic strings, so without it one cluster's cached verdict
-  // (positive entries live forever) would serve the other.
+  // Both the recipient AND the network ride in the key, and for the same
+  // reason: a positive verdict is cached forever, and it is a verdict about a
+  // (transaction, recipient, cluster) triple rather than about a transaction.
+  // Drop the recipient and one agent's `receivedFunds: true` is served to the
+  // next agent that asks about the same public signature; drop the network and
+  // one cluster's answer serves the other.
   const cacheKey = `${txSignature}:${expectedRecipient}:${network}`;
   const cached = verifyCache.get(cacheKey);
   if (cached) {

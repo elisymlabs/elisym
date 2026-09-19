@@ -238,6 +238,92 @@ describe('verifyJobPaymentQuick', () => {
     expect(result.reason).toBe('recipient_mismatch');
   });
 
+  it('never serves one recipient a verdict cached for another', async () => {
+    // A positive verdict lives forever, and the signature it is keyed on is
+    // public. Drop the recipient from the key and any agent asking about that
+    // signature is told it was paid - the same hole the network component
+    // beside it exists to close, through the other input.
+    const paid = makeAddress();
+    const other = makeAddress();
+    const payer = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer, paid, other],
+            pre: [200_000_000, 0, 0],
+            post: [199_000_000, 1_000_000, 0],
+          }),
+        ),
+    }));
+
+    expect((await verifyJobPaymentQuick(rpc, 'shared-sig', paid, 'mainnet')).receivedFunds).toBe(
+      true,
+    );
+    expect((await verifyJobPaymentQuick(rpc, 'shared-sig', other, 'mainnet')).receivedFunds).toBe(
+      false,
+    );
+  });
+
+  it("does not take a stranger's row as the recipient's token baseline", async () => {
+    // The owner half of the baseline lookup. Matched by mint alone, a
+    // transaction carrying several accounts in the same mint - the ordinary
+    // shape, since payer, recipient and treasury all hold one - hands back
+    // whichever row comes first. An empty stranger's row then reads as a zero
+    // baseline, and a balance that never moved reports as funds received.
+    const recipient = makeAddress();
+    const stranger = makeAddress();
+    const payer = makeAddress();
+    const mint = makeAddress() as string;
+    const row = (owner: string, index: number, amount: number) => ({
+      accountIndex: index,
+      mint,
+      owner,
+      uiTokenAmount: { amount: String(amount), decimals: 6, uiAmount: amount / 1e6 },
+    });
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer, recipient, stranger],
+            pre: [0, 0, 0],
+            post: [0, 0, 0],
+            preTokenBalances: [
+              row(stranger as string, 2, 0),
+              row(recipient as string, 1, 5_000_000),
+            ],
+            postTokenBalances: [
+              row(recipient as string, 1, 5_000_000),
+              row(stranger as string, 2, 0),
+            ],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'stranger-baseline', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+  });
+
+  it('answers rather than throwing when the meta carries no balance arrays', async () => {
+    // The twin of the undefined-slot guard one line below, and it was measured
+    // while this one was not: a `meta` without the arrays at all makes
+    // `BigInt(undefined)` throw, and this function wraps nothing - the caller's
+    // promise rejects instead of being told no payment was seen.
+    const recipient = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: { err: null },
+          transaction: { message: { accountKeys: [recipient] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'no-balances', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+  });
+
   it('refuses rather than misreads when the loaded half is malformed', async () => {
     const recipient = makeAddress();
     const payer = makeAddress();

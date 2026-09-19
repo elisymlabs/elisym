@@ -21,11 +21,13 @@
  */
 import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /** Set to make `chmodSync` fail, as a full disk or a hostile mode change would. */
 let chmodFailure: Error | null = null;
+/** Set to make `statSync` throw for a path containing this fragment. */
+let statFailureFor: string | null = null;
 /** Every path `chmodSync` was asked to change, in order. */
 let chmodPaths: string[] = [];
 /** Every path written, and every path renamed ONTO, in order. */
@@ -46,6 +48,12 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import('node:fs');
   return {
     ...actual,
+    statSync: (path: string, options?: unknown) => {
+      if (statFailureFor !== null && String(path).includes(statFailureFor)) {
+        throw new Error('EACCES: permission denied, stat');
+      }
+      return actual.statSync(path, options as Parameters<typeof actual.statSync>[1]);
+    },
     chmodSync: (path: string, mode: number) => {
       chmodPaths.push(String(path));
       if (chmodFailure) {
@@ -99,6 +107,7 @@ beforeEach(() => {
   partialBytes = 0;
   fullBytes = 0;
   chmodPaths = [];
+  statFailureFor = null;
   writtenPaths = [];
   renameTargets = [];
   dir = mkdtempSync(join(tmpdir(), 'elisym-settle-write-'));
@@ -230,8 +239,17 @@ describe('a write that fails leaves the settlement index untouched', () => {
 
     // The cleanup removed it; a process killed outright would not have. Put the
     // SAME path back and age it.
+    // The length check is not decoration: `String(undefined)` is the literal
+    // 'undefined', and the row would then write a file by that name into the
+    // package's working directory and still pass.
+    expect(writtenPaths.length).toBeGreaterThan(0);
     const producedTemp = String(writtenPaths.at(-1));
     expect(producedTemp).not.toBe(path);
+    // The DIRECTORY too, not only the name. A writer that moved its temporary
+    // one level up would leave this row green while the sweep watches a folder
+    // the fragment is no longer in - and in production the rename then crosses
+    // a mount point, so every claim answers `not-persisted`.
+    expect(dirname(producedTemp)).toBe(dir);
     writeFileSync(producedTemp, readFileSync(path, 'utf-8'), 'utf-8');
     const stale = Date.now() - 2 * 60 * 60 * 1000;
     utimesSync(producedTemp, stale / 1000, stale / 1000);
@@ -261,18 +279,20 @@ describe('a write that fails leaves the settlement index untouched', () => {
   });
 
   it('leaves a file that is not a temporary at all alone', () => {
-    // The `.tmp` half of the match. Without it the sweep takes anything stale
-    // sharing the prefix - an operator's `.settlements.json.bak`, an editor's
-    // swap file - and the documented path for this index is a working
-    // directory, not a private state folder.
-    const backup = join(dir, '.settlements.json.bak');
+    // The `.tmp` half of the match, and the name has to reach it: a plain
+    // `.settlements.json.bak` is turned away by the pid-and-hex part long
+    // before the suffix is consulted, so it would measure the wrong half. This
+    // one is shaped exactly like a temporary except for the ending - an
+    // operator's copy of one, or an editor's - and the documented path for this
+    // index is a working directory, not a private state folder.
+    const backup = join(dir, '.settlements.json.4242.deadbeefcafe.bak');
     writeFileSync(backup, '{}', 'utf-8');
     const stale = Date.now() - 2 * 60 * 60 * 1000;
     utimesSync(backup, stale / 1000, stale / 1000);
 
     createFileSettlementStore(path);
 
-    expect(readdirSync(dir)).toContain('.settlements.json.bak');
+    expect(readdirSync(dir)).toContain('.settlements.json.4242.deadbeefcafe.bak');
   });
 
   it('leaves a file that merely CONTAINS the temporary shape alone', () => {
@@ -287,6 +307,39 @@ describe('a write that fails leaves the settlement index untouched', () => {
     createFileSettlementStore(path);
 
     expect(readdirSync(dir)).toContain('saved-.settlements.json.4242.deadbeefcafe.tmp');
+  });
+
+  it('keeps sweeping after one fragment it cannot even stat', () => {
+    // One unreadable entry must not end the scan: the fragments are
+    // independent, and stopping at the first would leave every later one -
+    // each a full copy of the index - in place for good.
+    const unreadable = join(dir, '.settlements.json.1111.aaaaaaaaaaaa.tmp');
+    const sweepable = join(dir, '.settlements.json.2222.bbbbbbbbbbbb.tmp');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    for (const name of [unreadable, sweepable]) {
+      writeFileSync(name, '{}', 'utf-8');
+      utimesSync(name, stale / 1000, stale / 1000);
+    }
+    statFailureFor = '1111';
+
+    createFileSettlementStore(path);
+
+    expect(readdirSync(dir)).toContain('.settlements.json.1111.aaaaaaaaaaaa.tmp');
+    expect(readdirSync(dir)).not.toContain('.settlements.json.2222.bbbbbbbbbbbb.tmp');
+  });
+
+  it('leaves a file that merely EXTENDS the temporary shape alone', () => {
+    // The trailing anchor. Without it `.tmp.bak`, `.tmp~` and `.tmp 2` all
+    // match - files this store never wrote, each holding a full copy of the
+    // index somebody kept on purpose.
+    const suffixed = join(dir, '.settlements.json.4242.deadbeefcafe.tmp.bak');
+    writeFileSync(suffixed, '{}', 'utf-8');
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(suffixed, stale / 1000, stale / 1000);
+
+    createFileSettlementStore(path);
+
+    expect(readdirSync(dir)).toContain('.settlements.json.4242.deadbeefcafe.tmp.bak');
   });
 
   it("leaves a SIBLING index's fragment alone, which is why the name is in the prefix", () => {

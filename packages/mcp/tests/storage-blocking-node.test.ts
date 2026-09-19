@@ -140,12 +140,16 @@ describe('a customer-side store whose file is a node that blocks', () => {
 });
 
 describe('the blob store a file transfer opens', () => {
-  it('is added to an older .gitignore before the transport is created', async () => {
+  it('is added to an older .gitignore when a transport is asked for', async () => {
     // `.iroh/` holds job inputs and bought results in the CLEAR. `elisym start`
     // is the only other place this migration runs, and an agent used purely as
     // a customer through MCP never starts. The assertion is on the `.gitignore`
-    // and not on the transport, so this does not need the native addon: the
-    // migration runs before `createIrohTransport`.
+    // and not on the transport, so this does not need the native addon.
+    //
+    // THAT it runs, not that it runs first: `createIrohTransport` is lazy and
+    // touches no disk until the node is opened, so moving the migration after
+    // it changes nothing observable. The name said otherwise until it was
+    // measured.
     const root = join(sandbox, '.elisym');
     writeFileSync(join(root, '.gitignore'), '.secrets.json\n', 'utf-8');
 
@@ -201,11 +205,20 @@ describe('the .gitignore an older agent directory carries', () => {
       },
       '.job-sessions.json*',
     ],
-  ])('is widened before %s is written', async (_label, write, entry) => {
+  ])('is widened when %s is written', async (_label, write, entry) => {
     // These files are written through a temporary whose suffix is random, and
     // an agent created by an older build has the bare name in its `.gitignore`
     // - which cannot match one. The write site is where the migration has to
     // run, because nothing else in an MCP process does it.
+    //
+    // This row measures THAT the migration runs, not that it runs FIRST. The
+    // ordering matters - a write that dies between its temporary and the
+    // rename leaves the temporary behind, and only an entry already in place
+    // covers it - but forcing that failure here detaches a rejection inside
+    // the store's own lock queue, and a suite with unhandled rejections is a
+    // suite that can report a false pass. The SDK's `writeSecrets` twin, whose
+    // write is not behind a queue, measures the ordering directly
+    // (`agent-store.test.ts`); here it is kept on diff review.
     const root = join(sandbox, '.elisym');
     writeFileSync(join(root, '.gitignore'), '.secrets.json\n', 'utf-8');
 

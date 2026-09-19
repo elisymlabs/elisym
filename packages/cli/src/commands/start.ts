@@ -666,9 +666,9 @@ export async function cmdStart(
   // so the only cost of moving it up is that the failure lands sooner.
   //
   // The widened ignore entries go in FIRST, though, because the constructor can
-  // create the thing they cover: a ledger that parses is rotated to
-  // `.jobs.json.corrupt.<ts>`, and on an older agent the narrow line does not
-  // match that name. The migration below at Step 11 is too late for a run that
+  // create the thing they cover: a ledger that was READ and could not be
+  // PARSED is rotated to `.jobs.json.corrupt.<ts>` in there, and on an older
+  // agent the narrow line does not match that name. The migration below at Step 11 is too late for a run that
   // exits right after this.
   await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
   const ledger = new JobLedger(paths.jobs);
@@ -911,7 +911,8 @@ export async function cmdStart(
       : undefined;
 
   // NOT KILLED BY ANY TEST - `cmdStart` has no harness - so this ordering is
-  // kept on diff review. Every `.gitignore` migration runs HERE, before a card
+  // kept on diff review. Every `.gitignore` migration except the two whose
+  // stores can create a `.corrupt.<ts>` in their constructor runs HERE, before a card
   // is published,
   // and for the same reason the two indexes above are opened here: appending to
   // the file is not guarded - a read-only `.elisym` root, a root written under

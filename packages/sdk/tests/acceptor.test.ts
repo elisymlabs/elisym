@@ -915,6 +915,25 @@ describe('a request that cannot be paid at all', () => {
     });
   });
 
+  it('names the OTHER step-0 verdict when that is what carved the job out', async () => {
+    // The row above pins one branch. Hardcode that verdict into the sentence
+    // and it stays green while this branch tells the operator the wrong thing -
+    // which is worse than telling them nothing, and nothing was the complaint
+    // that put the verdict in the sentence to begin with.
+    store.claim(SIG_A, 'job-1');
+
+    const result = await makeAcceptor(strategyVerifying()).accept(
+      { paymentRequest: makeRequest({ amount: 0 }), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      reason: 'inconclusive',
+      error: expect.stringContaining('unusable-request'),
+    });
+  });
+
   it('is terminal for an asset nothing can resolve, and does not throw on it', async () => {
     // Step 0 runs the usability predicate FIRST and the reference check second,
     // and that order is load-bearing rather than tidy: the reference check
@@ -1824,6 +1843,26 @@ describe('what the acceptor actually hands the verifier', () => {
     expect(seen[0]?.request).toEqual(sentRequest);
     expect(seen[0]?.config).toEqual(sentConfig);
     expect(seen[0]?.options).toMatchObject({ txSignature: SIG_A, retries: 2, intervalMs: 50 });
+  });
+
+  it('honours a ZERO in every budget knob, which `??` allows and `||` does not', async () => {
+    // The input's docstring says each knob takes 0 meaningfully - no waiting,
+    // no retrying, one listing attempt. Written with `||` instead of `??` every
+    // one of them silently becomes its default, so a caller asking for a single
+    // immediate look gets the full 30-second budget instead.
+    const seen: { rpc: unknown; request: unknown; config: unknown; options: unknown }[] = [];
+    listedPages = [[{ signature: SIG_A, err: null }]];
+
+    await makeAcceptor(recordingStrategy(seen)).accept(
+      {
+        paymentRequest: makeRequest(),
+        jobIdentity: 'job-1',
+        budget: { retriesPerCandidate: 0, retriesForOwnSettlement: 0, intervalMs: 0 },
+      },
+      CONFIG,
+    );
+
+    expect(seen[0]?.options).toMatchObject({ retries: 0, intervalMs: 0 });
   });
 
   it('spends the own-settlement budget only on step 1, and asks the three steps in order', async () => {
