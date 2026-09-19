@@ -13,7 +13,7 @@
  *
  * Lives in its own file because it mocks `node:fs`.
  */
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -180,5 +180,42 @@ describe('a flush that fails part way through the write', () => {
     writeFailure = null;
 
     expect(readdirSync(tmpDir).filter((name) => name.includes('.tmp'))).toEqual([]);
+  });
+});
+
+describe('a fragment a crash left beside an index', () => {
+  it.each([
+    ['the job ledger', '.jobs.json', (path: string) => new JobLedger(path)],
+    ['the nonce store', '.delegation-nonces.json', (path: string) => new UsedNonceStore(path)],
+  ])('is swept when %s is next opened', (_label, filename, open) => {
+    // The cleanup in `flush` only runs when the write THROWS. A process killed
+    // outright leaves the fragment, the suffix is random so nothing reuses it,
+    // and nothing else in the agent looks for one - it would sit there in the
+    // clear for good. For the ledger that is a full copy of every job's input,
+    // result and settlement signature.
+    const path = join(tmpDir, filename);
+    const stranded = `${path}.tmp.deadbeefcafe`;
+    writeFileSync(stranded, '{"job-1":{"job_id":"job-1","input":"secret"}}', 'utf-8');
+    // Older than the age guard, which is what keeps a second process's LIVE
+    // temporary out of the sweep's way.
+    const stale = Date.now() - 2 * 60 * 60 * 1000;
+    utimesSync(stranded, stale / 1000, stale / 1000);
+
+    open(path);
+
+    expect(readdirSync(tmpDir).filter((name) => name.includes('.tmp.'))).toEqual([]);
+  });
+
+  it("is left alone while it is still fresh enough to be somebody else's", () => {
+    // Two agents on one directory is unsupported, but a sweep must not be the
+    // thing that makes it worse: a temporary written a moment ago may belong to
+    // a live writer between its write and its rename.
+    const path = join(tmpDir, '.jobs.json');
+    const fresh = `${path}.tmp.feedfacebeef`;
+    writeFileSync(fresh, '{}', 'utf-8');
+
+    new JobLedger(path);
+
+    expect(readdirSync(tmpDir)).toContain('.jobs.json.tmp.feedfacebeef');
   });
 });

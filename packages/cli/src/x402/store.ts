@@ -341,10 +341,14 @@ export class X402JobStore {
 
   /** Drop records (and their result files) older than the cache TTL. */
   async sweepExpired(now = Date.now()): Promise<void> {
-    // Outside the queue's transaction and unconditional: an index fragment is
-    // not tied to any record, so it must be swept even when nothing expired.
-    await this.sweepStrandedIndexTemporaries();
     await this.runExclusive(async () => {
+      // INSIDE the queue, though it is tied to no record: `save` writes its
+      // temporary and renames it in two steps, and a sweep running between
+      // them would delete the file the rename is about to move - turning a
+      // healthy write into ENOENT. Unconditional within the transaction,
+      // because an index fragment belongs to no record and would otherwise
+      // never be visited at all.
+      await this.sweepStrandedIndexTemporaries();
       const file = await this.load();
       let changed = false;
       for (const [jobId, record] of Object.entries(file)) {

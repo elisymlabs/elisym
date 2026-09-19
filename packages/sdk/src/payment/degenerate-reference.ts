@@ -34,9 +34,9 @@ import { TOKEN_2022_PROGRAM_ADDRESS_STR, resolveAssetFromPaymentRequest } from '
  * The CLASS cannot be closed. A reference equal to the system program, to the
  * asset mint or to the payer is degenerate for the same reason, and the honest
  * invariant - "an address that appears only in transactions for this request" -
- * is not expressible as a list; the payer is not known to the SYNCHRONOUS half
- * at all (the builder half does see it, and leaves the payer's own token
- * account out on purpose - said there). This is a denylist of the addresses a payment for THIS request is
+ * is not expressible as a list; the payer is not known to the synchronous half
+ * at all. `buildPaymentInstructions` does see it, and leaves the payer's own
+ * token account out of its denylist on purpose - said there. This is a denylist of the addresses a payment for THIS request is
  * computed from, and it is hardening: every request the SDK builds carries a
  * randomly generated reference, so a false refusal here is unreachable.
  */
@@ -154,11 +154,14 @@ function cacheKey(
 ): string {
   // `network` is in the key because `constants.ts` requires every
   // program-id-keyed cache to carry a network discriminator - devnet and
-  // mainnet share one program id today. `fee_amount` is NOT: the set of
-  // derived addresses does not depend on it, and keying on it would miss a
-  // reference equal to the treasury's ATA on a zero-fee request. The treasury
-  // IS in the key - it rotates on-chain, and a set cached against the old one
-  // would survive the rotation and miss the new one.
+  // mainnet share one program id today. `fee_amount` is NOT, and the reason is
+  // simply that the derived set does not depend on it: adding it would only
+  // split the cache. (The hazard it sounds like - a reference equal to the
+  // treasury's ATA on a ZERO-fee request - belongs to the derivation itself,
+  // which is why that is gated where it is derived and not here. Said in
+  // `solana.ts` beside the derivation.) The treasury IS in the key - it rotates
+  // on-chain, and a set cached against the old one would survive the rotation
+  // and miss the new one.
   return JSON.stringify([
     // NOT KILLED BY ANY TEST, and no test could while devnet and mainnet share
     // a program id: the derived set depends on the network only THROUGH that

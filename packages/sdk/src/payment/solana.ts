@@ -1007,8 +1007,11 @@ export async function buildPaymentInstructions(
   // while the fee leg is built only for an address that parses, so the customer
   // would sign a transaction paying the recipient `amount - fee` and nobody the
   // fee. The provider's verifier then answers `Recipient received N, expected
-  // >= amount` and the job can never be accepted. Refusing here keeps the old
-  // outcome and gives it a sentence an operator can act on. A zero fee stays
+  // >= amount` and the job can never be accepted. That silent skip is the SPL
+  // branch's alone - on the native branch `address()` is still reached and
+  // still throws - which is why the row that measures this builds a USDC
+  // request. Refusing here keeps the old outcome on both and gives it a
+  // sentence an operator can act on. A zero fee stays
   // payable: no leg is built either way, which is the request shape a
   // third-party provider issues on mainnet.
   if (paymentRequest.fee_address && feeAmount > 0 && !isAddress(paymentRequest.fee_address)) {

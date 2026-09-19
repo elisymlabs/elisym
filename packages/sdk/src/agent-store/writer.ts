@@ -63,8 +63,9 @@ const GITIGNORE_CONTENT = [
   // files hold exactly what the entry beside them is here to keep out of a
   // commit: secret keys, a customer's job input, an upstream's paid result.
   // `.jobs.json*` swallows the `.corrupt.*` sibling that used to need its own
-  // line. Append-only file: these widen existing lines rather than adding new
-  // ones, so an agent created by an older build keeps working.
+  // line. This is the template a NEW root gets; an older root is migrated by
+  // appending the widened entries beside its narrow ones, never by rewriting
+  // the file, so whatever the operator put there survives.
   ...PRIVATE_STATE_GITIGNORE_ENTRIES,
   MESSAGES_GITIGNORE_ENTRY,
   SESSIONS_GITIGNORE_ENTRY,

@@ -1388,6 +1388,47 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(listing).not.toHaveBeenCalled();
     });
 
+    it('refuses rather than MISREADS when the loaded half is malformed', async () => {
+      // `mergeAccountKeys` guards each half with `Array.isArray` and falls back
+      // to the static keys alone. Inline the raw concatenation instead - which
+      // is what any refactor folding the helper back in would write - and a
+      // proxy answering with a STRING for one half spreads it character by
+      // character: two junk keys that shift every loaded address two slots, so
+      // the delta of some other account is read as this payment.
+      //
+      // The price is an ACCEPT, not a refusal: measured, the mutant answers
+      // `verified: true`. Of the three readers of that helper only the two that
+      // decide nothing about money were pinned - `quick-verify`, which nothing
+      // in this repo calls, and the analytics accumulator.
+      //
+      // The recipient must sit BEHIND the malformed half: a fixture that keeps
+      // it among the static keys is green in both worlds.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr],
+                loaded: {
+                  writable: 'ab' as unknown as string[],
+                  readonly: [recipientAddr, TEST_TREASURY, referenceAddr],
+                },
+                pre: [200_000_000, 0, 0, 0, 0, 0],
+                post: [200_000_000 - amount, 0, 0, netAmount, feeAmount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'badLoadedSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Reference key not found/);
+    });
+
     it('refuses when the balance arrays disagree on length', async () => {
       // A SHORT `pre` with the reference PAST the prefix. Without the guard the
       // map is built over `preBalances.length`, the reference at index 3 never

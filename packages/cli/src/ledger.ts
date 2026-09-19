@@ -2,8 +2,17 @@
  * Job recovery ledger - persistent JSON storage for crash recovery.
  */
 import { randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync, unlinkSync } from 'node:fs';
-import { dirname } from 'node:path';
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { isBlockingNodeSync } from '@elisym/sdk/agent-store';
 
 // Ledger files hold customer-confidential job content (inputs, results). Lock
@@ -136,6 +145,48 @@ export type PaymentSignatureClaim =
  */
 const MAX_DOUBLE_SETTLE_WARNINGS = 20;
 
+/**
+ * How stale a `<name>.tmp.<hex>` fragment must be before a sweep removes it.
+ *
+ * A fragment is only ever left by a process that DIED between the write and
+ * the rename - a failure that merely throws takes its own with it. An hour is
+ * far longer than either flush takes and far shorter than "forever", which is
+ * how long these lived before: the suffix is random, so nothing reuses one, and
+ * nothing else looks for them. What a job-ledger fragment holds is a full copy
+ * of the ledger - customer inputs, results, the settlement signature - in the
+ * clear.
+ *
+ * The age guard is what keeps a second process's live temporary safe. Running
+ * two agents on one directory is already unsupported (see the flush comment),
+ * but a sweep is no place to make that worse.
+ */
+const STRANDED_TEMP_MIN_AGE_MS = 60 * 60 * 1000;
+
+/** Remove `<path>.tmp.<hex>` fragments a crash left beside `path`. */
+function sweepStrandedTemporaries(path: string): void {
+  const prefix = `${basename(path)}.tmp.`;
+  const cutoff = Date.now() - STRANDED_TEMP_MIN_AGE_MS;
+  let names: string[];
+  try {
+    names = readdirSync(dirname(path));
+  } catch {
+    return; // the directory may not exist yet; nothing to sweep
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) {
+      continue;
+    }
+    const candidate = join(dirname(path), name);
+    try {
+      if (statSync(candidate).mtimeMs < cutoff) {
+        unlinkSync(candidate);
+      }
+    } catch {
+      /* raced deletion, or somebody else's node - leave it */
+    }
+  }
+}
+
 export class JobLedger {
   private entries = new Map<string, LedgerEntry>();
   /**
@@ -154,6 +205,9 @@ export class JobLedger {
   constructor(ledgerPath: string) {
     this.path = ledgerPath;
     this.load();
+    // AFTER the load, so a refusal to read the index is reported before
+    // anything is deleted beside it.
+    sweepStrandedTemporaries(this.path);
   }
 
   private load(): void {
@@ -692,6 +746,7 @@ export class UsedNonceStore {
     this.path = noncePath;
     this.maxEntries = maxEntries;
     this.load();
+    sweepStrandedTemporaries(this.path);
   }
 
   private load(): void {

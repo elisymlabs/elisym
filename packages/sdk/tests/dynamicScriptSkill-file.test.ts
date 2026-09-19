@@ -191,18 +191,22 @@ describe('DynamicScriptSkill metered charge channel', () => {
     expect(out.data).toBe('text');
   });
 
-  it('treats a missing, empty or unparseable charge as no report', async () => {
-    for (const body of [
-      'printf "text"\n', // never written
-      ': > "$ELISYM_CHARGE_FILE"\nprintf "text"\n', // zero bytes
-      'printf "not-a-number" > "$ELISYM_CHARGE_FILE"\nprintf "text"\n',
-      'printf -- "-5" > "$ELISYM_CHARGE_FILE"\nprintf "text"\n', // negative
-      'printf "1.5" > "$ELISYM_CHARGE_FILE"\nprintf "text"\n', // decimal
-    ]) {
-      const { scriptPath } = setupScript(`#!/usr/bin/env bash\nset -euo pipefail\n${body}`);
-      const out = await makeSkill(scriptPath).execute({ ...baseInput, data: 'q' }, CTX as never);
-      expect(out.chargeSubunits).toBeUndefined();
-    }
+  // One row per shape, not one loop over five: as a single `it` this spent five
+  // sequential `bash` spawns against ONE 5-second budget, and under a machine
+  // running several suites at once it was the first thing in the package to
+  // time out. Measured - it is the only test here needing five spawns, and it
+  // was the only one that fell over. Split, each spawn gets its own budget and
+  // a failure names the shape that failed instead of the loop.
+  it.each([
+    ['never written', 'printf "text"\n'],
+    ['zero bytes', ': > "$ELISYM_CHARGE_FILE"\nprintf "text"\n'],
+    ['not a number', 'printf "not-a-number" > "$ELISYM_CHARGE_FILE"\nprintf "text"\n'],
+    ['negative', 'printf -- "-5" > "$ELISYM_CHARGE_FILE"\nprintf "text"\n'],
+    ['a decimal', 'printf "1.5" > "$ELISYM_CHARGE_FILE"\nprintf "text"\n'],
+  ])('treats a charge that is %s as no report', async (_label, body) => {
+    const { scriptPath } = setupScript(`#!/usr/bin/env bash\nset -euo pipefail\n${body}`);
+    const out = await makeSkill(scriptPath).execute({ ...baseInput, data: 'q' }, CTX as never);
+    expect(out.chargeSubunits).toBeUndefined();
   });
 
   it('refuses to read an oversized charge file even if it would trim to digits', async () => {

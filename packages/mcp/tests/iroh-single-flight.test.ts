@@ -13,7 +13,7 @@
  * `createIrohTransport` needs the native addon and a writable store, and what
  * is being measured here is HOW MANY TIMES it is called.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -190,6 +190,39 @@ describe('two file transfers that start at the same moment', () => {
     await refused;
     await tearing;
     expect(created).toBe(0);
+  });
+
+  it('do not hold a teardown hostage when the node never finishes opening', async () => {
+    // `Iroh.persistent` blocks on the store's own lock, and a lock left by a
+    // previous crash is exactly what this teardown exists to clear - so the
+    // creation being waited on may never return. Unbounded, that wait turned
+    // `switch_agent`, `stop_agent` and SIGINT into hangs: the shutdown loop is
+    // serial, so every later agent kept its key bytes in memory, and a second
+    // SIGINT is swallowed by the shutting-down flag. Measured before the bound
+    // went in.
+    const neverSettles = new Promise<never>(() => undefined);
+    const agent = {
+      name: 'alice',
+      agentDir,
+      irohTransportPending: neverSettles,
+      irohStoreDir: join(sandbox, 'ephemeral-store'),
+    } as never;
+    mkdirSync(join(sandbox, 'ephemeral-store'), { recursive: true });
+
+    // Raced HERE rather than left to the harness clock: unbounded, this call
+    // never returns, and a row that dies on the test timeout reports a hang
+    // instead of the sentence that says what broke.
+    const outcome = await Promise.race([
+      shutdownIrohTransport(agent, 20).then(() => 'returned'),
+      new Promise<string>((resolve) => {
+        setTimeout(() => resolve('hung'), 500).unref?.();
+      }),
+    ]);
+
+    expect(outcome).toBe('returned');
+    // And the ephemeral store is gone: giving up on the pending node must not
+    // skip the cleanup this teardown exists for.
+    expect(existsSync(join(sandbox, 'ephemeral-store'))).toBe(false);
   });
 
   it('let a later transfer build a new node after shutdown', async () => {

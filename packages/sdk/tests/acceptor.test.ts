@@ -467,6 +467,41 @@ describe('a claim the disk refuses', () => {
     expect(listCalls).toBe(1);
   });
 
+  it('does NOT accept when that same settlement was taken by another job', async () => {
+    // The complement of the row below, and it decides money. Step 1 accepts a
+    // refused claim ONLY because the disk refused: the record is already on
+    // disk and already this job's. `consumed-by-other` says the opposite - the
+    // index attributes that signature to somebody else right now - and the
+    // store's own docstring calls that reachable without a cross-process lock,
+    // by a third-party store, or by a hand-edited index. Widen the guard to
+    // "settle failed, accept anyway" and the provider delivers against a
+    // transaction another job holds.
+    const taken: SettlementStore = {
+      claim: () => 'consumed-by-other',
+      owner: () => undefined,
+      claimedSignature: () => SIG_A,
+      prune: () => 0,
+    };
+    listedPages = [[]];
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(SIG_A),
+      rpc: makeRpc(),
+      store: taken,
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1' },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    // And it says WHY: step 4 carried this sentence and step 1 dropped it, so
+    // the operator got nothing at all for the one refusal they can act on.
+    expect(result).toMatchObject({
+      error: expect.stringContaining('already bound to another job'),
+    });
+  });
+
   it('accepts anyway when the job already owned that settlement', async () => {
     // The one exception, and it is not generosity: the signature is already
     // persistent and already this job's, so the claim here only refreshes a
@@ -1634,7 +1669,7 @@ describe('an index the store cannot read', () => {
     expect(listCalls).toBe(0);
   });
 
-  it('surfaces from the WINDOW WALK read as well, the third of the three', async () => {
+  it('surfaces from the WINDOW WALK read as well, the third of the four', async () => {
     // The last door: a store that answers the first two reads and then fails on
     // the candidate lookup - which is what a permission change or a half-
     // written file between calls actually looks like, since the file store

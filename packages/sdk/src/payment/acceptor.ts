@@ -168,7 +168,9 @@ export type AcceptPaymentResult =
         | 'unusable-request';
       /**
        * Diagnostics, not contract: the last candidate's reason for
-       * `inconclusive`, the disk's complaint for `not-persisted`. Absent for
+       * `inconclusive`, and a fixed sentence for `not-persisted` - the store's
+       * own errno is swallowed by `claim`, which answers a verdict rather than
+       * an error, so the disk's complaint reaches nobody. Absent for
        * `window-empty`, `degenerate_reference` and `unusable-request`. Do not
        * build logic on it - and do not relay it to the CUSTOMER: it can say
        * that a settlement is already bound to another job, which is a fact
@@ -426,11 +428,20 @@ export class ProviderPaymentAcceptor {
           return settled;
         }
         if (settled.reason === 'not-persisted') {
-          // Step 1 only: the signature is already persistent and already owned
-          // by this job, so the claim here refreshes a timestamp. A disk
-          // refusal does not get to undo proven ownership.
+          // Step 1 ONLY, and only for this one reason: the signature is already
+          // persistent and already owned by this job, so the claim here merely
+          // refreshes a timestamp and a disk refusal does not undo proven
+          // ownership. Widen it to "settle failed, accept anyway" and
+          // `consumed-by-other` - the index saying this signature belongs to a
+          // DIFFERENT job right now - would be accepted too, which is the
+          // double delivery this whole rail exists to prevent.
           return { accepted: true, txSignature: ownSignature };
         }
+        // Carried like step 4 carries it: `consumed-by-other` arrives here with
+        // the only sentence that says WHY, and dropping it leaves the operator
+        // with whatever earlier candidate happened to fail - at step 1, with
+        // nothing at all.
+        lastError = settled.error ?? lastError;
         // NOT KILLED BY ANY TEST, and it cannot be: reaching this line means
         // `ownSignature` is usable, and step 6 answers `inconclusive` on that
         // alone, before this flag is ever read. Kept as a mirror of the other
@@ -470,6 +481,7 @@ export class ProviderPaymentAcceptor {
         if (settled.reason === 'not-persisted') {
           return settled;
         }
+        lastError = settled.error ?? lastError;
         imperfectPass = true;
       } else {
         // Marks the pass imperfect: the signature may simply not be indexed

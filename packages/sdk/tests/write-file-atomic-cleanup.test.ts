@@ -14,7 +14,7 @@
  * the rename is what the cleanup is for, and no healthy filesystem produces
  * one on demand.
  */
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -100,17 +100,19 @@ describe('a write that fails part way through', () => {
   });
 
   it('leaves no temporary behind when the RENAME is what fails', async () => {
-    // The other half, and the mock is not needed for it: a non-empty directory
-    // where the file belongs makes `rename` fail on its own. Without this row
-    // the comment in `writeFileAtomic` claiming both halves are pinned was
-    // true of the write only - moving the rename out of the `try` left every
-    // agent-store suite green.
+    // The other half, and the mock is not needed for it: a DIRECTORY where the
+    // file belongs makes `rename` fail on its own, whether or not it has
+    // anything in it. Without this row the comment in `writeFileAtomic`
+    // claiming both halves are pinned was true of the write only - moving the
+    // rename out of the `try` left every agent-store suite green.
     const target = join(dir, '.secrets.json');
     mkdirSync(target);
-    writeFileSync(join(target, 'occupied'), 'x', 'utf-8');
 
-    await expect(writeFileAtomic(target, 'body', 0o600)).rejects.toThrow();
+    await expect(writeFileAtomic(target, 'body', 0o600)).rejects.toThrow(/EISDIR|ENOTDIR|EPERM/);
 
-    expect(readdirSync(dir).filter((name) => name.includes('.tmp.'))).toEqual([]);
+    // The whole listing, not a filter on the temporary's spelling: an assertion
+    // that only looks for `.tmp.` goes quietly green the day the suffix
+    // changes, and what a stranded fragment holds here is the agent's keys.
+    expect(readdirSync(dir)).toEqual(['.secrets.json']);
   });
 });

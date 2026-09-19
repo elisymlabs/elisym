@@ -45,7 +45,7 @@ export async function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlo
   // `async` on the signature, and the assignment below still happens before any
   // await inside `createTransport` - the single-flight survives. What `async`
   // buys is that the refusal above arrives as a REJECTED PROMISE rather than a
-  // synchronous throw. Every caller in this package awaits inside a `try`, so
+  // synchronous throw. Every PRODUCTION caller awaits inside a `try`, so
   // nothing is broken either way; the point is that the two forms must not
   // disagree, because `.catch()` on this call is a shape a caller may write.
   agent.irohTransportPending ??= createTransport(agent).finally(() => {
@@ -80,8 +80,9 @@ async function createTransport(agent: AgentInstance): Promise<IrohBlobTransport>
  * leave each later agent unguarded for the whole of the previous one's
  * teardown - and `scrubAgent` covers only the one agent a `switch_agent` or
  * `stop_agent` is retiring. Lives here, beside the flag's meaning, so the two
- * teardown paths cannot drift; the call in `server.ts` is one line and is not
- * separately driven by a test.
+ * teardown paths cannot drift. Driven through `teardownRegistry`, which a
+ * fixture calls directly, so both the missing call and a mark moved inside the
+ * loop redden.
  */
 export function markAgentsScrubbed(agents: Iterable<AgentInstance>): void {
   for (const agent of agents) {
@@ -89,13 +90,54 @@ export function markAgentsScrubbed(agents: Iterable<AgentInstance>): void {
   }
 }
 
+/**
+ * How long a teardown waits for a creation that is still in flight.
+ *
+ * BOUNDED, and that is the whole point of the constant existing: opening
+ * `Iroh.persistent` blocks on the store's own lock, and a lock left by a
+ * previous crash is exactly the case this teardown exists to clear - so the
+ * creation it is waiting for may never return. Waiting forever turned
+ * `switch_agent`, `stop_agent` and SIGINT into hangs, with the second SIGINT
+ * swallowed by the shutting-down flag and only SIGKILL left. Measured.
+ */
+const PENDING_TEARDOWN_WAIT_MS = 5_000;
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    // `unref` so a teardown that finished early is not held open by this timer.
+    setTimeout(resolve, ms).unref?.();
+  });
+}
+
 /** Shut down the agent's iroh node (release the fs-lock) and clean an ephemeral store. */
-export async function shutdownIrohTransport(agent: AgentInstance): Promise<void> {
+export async function shutdownIrohTransport(
+  agent: AgentInstance,
+  pendingWaitMs = PENDING_TEARDOWN_WAIT_MS,
+): Promise<void> {
   // The PENDING one too: a shutdown that races a first file transfer would
   // otherwise leave a node holding the store lock with nothing referencing it.
+  // Bounded, per the constant above, and if the node turns up after we stopped
+  // waiting it is closed then - late is better than never for a store lock.
   const pending = agent.irohTransportPending;
   if (pending) {
-    await pending.catch(() => undefined);
+    let settled = false;
+    const observed = pending.then(
+      (transport) => {
+        settled = true;
+        return transport;
+      },
+      () => {
+        settled = true;
+        return undefined;
+      },
+    );
+    await Promise.race([observed, waitMs(pendingWaitMs)]);
+    if (!settled) {
+      // Deferred, NOT returned early: the cleanup below still has to run, or an
+      // ephemeral agent's tmpdir - job inputs and bought results in the clear -
+      // is left behind by the very teardown that exists to remove it.
+      void observed.then((transport) => transport?.shutdown()).catch(() => undefined);
+    }
   }
   if (agent.irohTransport) {
     await agent.irohTransport.shutdown().catch(() => {});
