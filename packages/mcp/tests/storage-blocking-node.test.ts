@@ -15,7 +15,7 @@
  * going red, and a hung run has measured nothing.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -159,53 +159,66 @@ describe('the blob store a file transfer opens', () => {
   });
 });
 
-describe('the .gitignore an older agent directory carries', () => {
-  it.each([
-    [
-      'the customer history',
-      async (dir: string) => {
-        await appendCustomerJob(dir, {
-          jobEventId: 'e'.repeat(64),
-          capability: 'text-gen',
+/** One honest write per store, the entry it needs ignored, and a way to see the write landed. */
+const STORE_WRITES: [
+  string,
+  (dir: string) => Promise<void>,
+  string,
+  (dir: string) => Promise<number>,
+][] = [
+  [
+    'the customer history',
+    async (dir: string) => {
+      await appendCustomerJob(dir, {
+        jobEventId: 'e'.repeat(64),
+        capability: 'text-gen',
+        providerPubkey: 'a'.repeat(64),
+        status: 'completed',
+        submittedAt: 1,
+        completedAt: 2,
+      });
+    },
+    '.customer-history.json*',
+    async (dir: string) => (await readCustomerHistory(dir)).jobs.length,
+  ],
+  [
+    'the contact list',
+    async (dir: string) => {
+      await upsertContact(dir, { pubkey: 'a'.repeat(64), npub: 'npub1bob' });
+    },
+    '.contacts.json*',
+    async (dir: string) => (await readContacts(dir)).contacts.length,
+  ],
+  [
+    'the DM read cursors',
+    async (dir: string) => {
+      await advanceReadCursor(dir, 'b'.repeat(64), 42);
+    },
+    '.messages-read.json*',
+    async (dir: string) => Object.keys(await readReadCursors(dir)).length,
+  ],
+  [
+    'the job-session list',
+    async (dir: string) => {
+      await recordSessionSubmit(
+        { agentDir: dir, identityPubkey: 'b'.repeat(64) },
+        {
+          sessionId: '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c',
           providerPubkey: 'a'.repeat(64),
-          status: 'completed',
-          submittedAt: 1,
-          completedAt: 2,
-        });
-      },
-      '.customer-history.json*',
-    ],
-    [
-      'the contact list',
-      async (dir: string) => {
-        await upsertContact(dir, { pubkey: 'a'.repeat(64), npub: 'npub1bob' });
-      },
-      '.contacts.json*',
-    ],
-    [
-      'the DM read cursors',
-      async (dir: string) => {
-        await advanceReadCursor(dir, 'b'.repeat(64), 42);
-      },
-      '.messages-read.json*',
-    ],
-    [
-      'the job-session list',
-      async (dir: string) => {
-        await recordSessionSubmit(
-          { agentDir: dir, identityPubkey: 'b'.repeat(64) },
-          {
-            sessionId: '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c',
-            providerPubkey: 'a'.repeat(64),
-            capability: 'text-gen',
-            firstPrompt: 'hello',
-            jobEventId: 'e'.repeat(64),
-          },
-        );
-      },
-      '.job-sessions.json*',
-    ],
-  ])('is widened when %s is written', async (_label, write, entry) => {
+          capability: 'text-gen',
+          firstPrompt: 'hello',
+          jobEventId: 'e'.repeat(64),
+        },
+      );
+    },
+    '.job-sessions.json*',
+    async (dir: string) =>
+      (await listJobSessions({ agentDir: dir, identityPubkey: 'b'.repeat(64) }, 10)).length,
+  ],
+];
+
+describe('the .gitignore an older agent directory carries', () => {
+  it.each(STORE_WRITES)('is widened when %s is written', async (_label, write, entry) => {
     // These files are written through a temporary whose suffix is random, and
     // an agent created by an older build has the bare name in its `.gitignore`
     // - which cannot match one. The write site is where the migration has to
@@ -221,4 +234,37 @@ describe('the .gitignore an older agent directory carries', () => {
 
     expect(readFileSync(join(root, '.gitignore'), 'utf-8').split('\n')).toContain(entry);
   });
+
+  it.each(STORE_WRITES)(
+    'does not stop %s being written when it cannot be widened',
+    async (_label, write, entry, count) => {
+      // A `.gitignore` the process cannot write, in a directory it can - a file
+      // checked out read-only, or written under sudo. Before this branch two of
+      // these stores ran no migration at all, so that directory simply worked.
+      //
+      // It matters most for the customer history, which is updated BETWEEN a
+      // payment that has already been sent and the confirmation that tells the
+      // provider about it: thrown there, the money is on-chain and the provider
+      // is left to find it by scanning. So the migration warns and the write
+      // goes ahead, the same choice `writeSecrets` makes for the keys.
+      if (process.getuid?.() === 0) {
+        return; // root ignores the mode bits
+      }
+      const root = join(sandbox, '.elisym');
+      const gitignorePath = join(root, '.gitignore');
+      writeFileSync(gitignorePath, '.secrets.json\n', 'utf-8');
+      chmodSync(gitignorePath, 0o444);
+
+      try {
+        await write(agentDir);
+
+        expect(await count(agentDir)).toBe(1);
+        // And it really could not be widened - otherwise this row passes against
+        // a build that never hit the failure it is about.
+        expect(readFileSync(gitignorePath, 'utf-8').split('\n')).not.toContain(entry);
+      } finally {
+        chmodSync(gitignorePath, 0o644);
+      }
+    },
+  );
 });

@@ -17,6 +17,7 @@ import {
   writeFileAtomic,
 } from '@elisym/sdk/agent-store';
 import { z } from 'zod';
+import { migrateGitignoreBestEffort } from './gitignore-migration.js';
 
 export const READ_CURSORS_FILENAME = '.messages-read.json';
 
@@ -131,7 +132,9 @@ export async function advanceReadCursor(
       return;
     }
     data.cursors[counterpartPubkey] = candidate;
-    await ensureGitignoreHasMessagesEntry(dirname(agentDir));
+    await migrateGitignoreBestEffort('read-cursors', () =>
+      ensureGitignoreHasMessagesEntry(dirname(agentDir)),
+    );
     await writeFileAtomic(path, JSON.stringify(data, null, 2) + '\n', 0o600);
   });
 }

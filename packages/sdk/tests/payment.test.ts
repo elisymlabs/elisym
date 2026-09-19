@@ -2176,6 +2176,145 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).toMatch(/Treasury token account not found/);
     });
 
+    /** A page that moved NOTHING: the recipient held the net before and holds it after. */
+    function alreadyHeldPage() {
+      return makeTokenTx({
+        keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+        mint: USDC_SOLANA_DEVNET.mint as string,
+        recipientBefore: netAmount,
+        recipientAfter: netAmount,
+        treasuryBefore: 0,
+        treasuryAfter: feeAmount,
+      });
+    }
+    type TokenPage = ReturnType<typeof alreadyHeldPage>;
+
+    it.each([
+      [
+        'an EMPTY string for the baseline amount',
+        (page: TokenPage) => {
+          (page.meta.preTokenBalances[0] as { uiTokenAmount: unknown }).uiTokenAmount = {
+            amount: '',
+          };
+        },
+        /Recipient token amount is unreadable/,
+      ],
+      [
+        'a baseline amount that is an array',
+        (page: TokenPage) => {
+          (page.meta.preTokenBalances[0] as { uiTokenAmount: unknown }).uiTokenAmount = {
+            amount: [],
+          };
+        },
+        /Recipient token amount is unreadable/,
+      ],
+      [
+        'a baseline row with no amount object at all',
+        (page: TokenPage) => {
+          delete (page.meta.preTokenBalances[0] as { uiTokenAmount?: unknown }).uiTokenAmount;
+        },
+        /Recipient token amount is unreadable/,
+      ],
+      [
+        'a baseline row with no OWNER',
+        (page: TokenPage) => {
+          delete (page.meta.preTokenBalances[0] as { owner?: unknown }).owner;
+        },
+        /token balance row is unreadable/,
+      ],
+      [
+        'a baseline row that is not an object',
+        (page: TokenPage) => {
+          (page.meta.preTokenBalances as unknown[])[0] = 'x';
+        },
+        /token balance row is unreadable/,
+      ],
+      [
+        'a baseline LIST that is not a list',
+        (page: TokenPage) => {
+          (page.meta as { preTokenBalances: unknown }).preTokenBalances = { length: 2 };
+        },
+        /Token balance lists are not lists/,
+      ],
+    ])('does not read %s as a baseline of ZERO', async (_label, doctor, expected) => {
+      // The same page as the row below, which an honest node gets refused:
+      // nothing moved, the recipient simply already held the money. Each of
+      // these makes the baseline UNREADABLE rather than absent, and the
+      // verifier used to take both for zero - `BigInt('')` is `0n` without a
+      // throw, and a row that cannot be matched by owner is simply never
+      // found - so the whole post balance verified as this payment.
+      //
+      // Measured on a real mainnet transfer before it was measured here: 0.45
+      // USDC against a price of 1.8, refused from an honest node and VERIFIED
+      // with the baseline blanked. The ranking hint in `quick-verify` already
+      // had this rule; the function that decides the money did not.
+      const page = alreadyHeldPage();
+      doctor(page);
+      const rpc = createMockRpc({
+        getTransaction: () => ({ send: () => Promise.resolve(page) }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'unreadableBaselineSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(expected);
+    });
+
+    it.each([
+      ['an empty string', ''],
+      ['an array', []],
+      ['a boolean', true],
+    ])('does not read a LAMPORT baseline of %s as zero', async (_label, slot) => {
+      // The native twin. `pre` and `post` agree on length, so the length guard
+      // says nothing, and the recipient's baseline is THERE - it is just not a
+      // number. A bare `BigInt` takes all three without throwing, the baseline
+      // reads as zero or one, and the 97 the recipient already held is read as
+      // what this transaction paid.
+      const page = makeTx({
+        keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+        pre: [200_000_000, netAmount, 0, 0],
+        post: [200_000_000, netAmount, feeAmount, 0],
+      });
+      (page.meta.preBalances as unknown[])[1] = slot;
+      const rpc = createMockRpc({
+        getTransaction: () => ({ send: () => Promise.resolve(page) }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'unreadableLamportSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient balance slot is unreadable/);
+    });
+
+    it('does not index an array-LIKE as if it were the balance array', async () => {
+      // `{ length: 4 }` agrees with itself on length, so it walks past the
+      // length guard, and every slot in it reads `undefined` - which used to
+      // count as a balance of zero on both sides.
+      const page = makeTx({
+        keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+        pre: [200_000_000, 0, 0, 0],
+        post: [200_000_000 - amount, netAmount, feeAmount, 0],
+      });
+      (page.meta as { preBalances: unknown }).preBalances = { length: 4 };
+      const rpc = createMockRpc({
+        getTransaction: () => ({ send: () => Promise.resolve(page) }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'arrayLikeSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Balance arrays are not arrays/);
+    });
+
     it('refuses an SPL transfer the recipient merely already HELD', async () => {
       // Every other row in this file leaves the recipient at zero before the
       // transfer, so the whole PRE half of the delta went unmeasured: read the

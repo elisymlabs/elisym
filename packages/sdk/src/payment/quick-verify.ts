@@ -2,6 +2,7 @@ import { type Address, type Rpc, type Signature, type SolanaRpcApi, isAddress } 
 import type { Network } from '../types';
 import type { LoadedAddresses } from './account-keys';
 import { mergeAccountKeys } from './account-keys';
+import { isReadableTokenRow, readBalance } from './read-balance';
 
 /**
  * Lightweight payment verifier, exported for discovery ranking.
@@ -140,50 +141,6 @@ interface TokenBalanceEntry {
   uiTokenAmount: { amount: string };
 }
 
-/**
- * A balance as the RPC reports it, or `null` when what came back is not one.
- *
- * Two different failures, and the two halves below own one each.
- *
- * `BigInt` THROWS on `undefined`, on a string that is not an integer, and on a
- * fractional number - and both arms that call this run OUTSIDE the `try` that
- * wraps the RPC call, so a proxy answering with a shape the spec allows and the
- * happy path does not would turn a ranking hint into a rejected promise. That
- * is what the `try` here is for: `a token row carries no amount at all` and
- * `a LAMPORT slot is not a number`.
- *
- * `BigInt` also ACCEPTS things that are not balances, silently: `true` is `1n`,
- * `[]` is `0n`, `[7]` is `7n`. A `catch` never sees those, so the `typeof` line
- * is the only thing standing between an array in a balance slot and a number
- * this function then does arithmetic on. That is the half that can invent a
- * credit, and `reads an unreadable slot as unreadable, not as zero` and its
- * token twin are the rows that hold it.
- *
- * `null` rather than `0n` for both, because the two are not the same answer: a
- * baseline that could not be read, taken for zero, makes any positive balance
- * look like a credit, and not claiming a payment that did not happen is this
- * function's only job.
- */
-function readBalance(raw: unknown): bigint | null {
-  if (typeof raw !== 'bigint' && typeof raw !== 'string' && typeof raw !== 'number') {
-    return null;
-  }
-  // And a string has to LOOK like an integer. `BigInt('')` is `0n`, and so is
-  // `BigInt('   ')`; `BigInt('0x10')` is `16n` and `BigInt(' 5 ')` is `5n`.
-  // None of those throw, so the `catch` never sees them, and every one turns a
-  // baseline nobody could read into a readable number. The token side makes it
-  // likelier than it looks: `uiTokenAmount.amount` is a STRING in the JSON-RPC
-  // spec, so an empty one is the natural way for a proxy to say nothing.
-  if (typeof raw === 'string' && !/^-?\d+$/.test(raw)) {
-    return null;
-  }
-  try {
-    return BigInt(raw);
-  } catch {
-    return null;
-  }
-}
-
 async function doVerifyOnce(
   rpc: Rpc<SolanaRpcApi>,
   txSignature: Signature,
@@ -263,12 +220,18 @@ async function doVerifyOnce(
   // created in this transaction, so zero is its real baseline, while
   // unreadable means we do not know, and reading it as zero makes whatever the
   // recipient already held look like a credit.
+  //
+  // The same goes one level down. A pre ROW that cannot be matched - `null`, a
+  // string, an object with no `owner` - is not "somebody else's row": it may be
+  // the recipient's, and skipping it reads their baseline as absent.
   const preRows = Array.isArray(preTokenBalances) ? preTokenBalances : undefined;
   const preRowsUnreadable =
-    preTokenBalances !== undefined && preTokenBalances !== null && preRows === undefined;
+    preTokenBalances !== undefined &&
+    preTokenBalances !== null &&
+    (preRows === undefined || !preRows.every(isReadableTokenRow));
   if (Array.isArray(postTokenBalances) && !preRowsUnreadable) {
     for (const post of postTokenBalances) {
-      if (post === null || typeof post !== 'object' || post.owner !== recipientStr) {
+      if (!isReadableTokenRow(post) || post.owner !== recipientStr) {
         continue;
       }
       const postAmount = readBalance(post.uiTokenAmount?.amount);
@@ -276,11 +239,7 @@ async function doVerifyOnce(
         continue;
       }
       const pre = preRows?.find(
-        (entry) =>
-          entry !== null &&
-          typeof entry === 'object' &&
-          entry.owner === recipientStr &&
-          entry.mint === post.mint,
+        (entry) => entry.owner === recipientStr && entry.mint === post.mint,
       );
       // A MISSING baseline is a zero baseline - the recipient's token account
       // was created inside this very transaction, which is what a first-ever

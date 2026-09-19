@@ -17,6 +17,7 @@ import {
   writeFileAtomic,
 } from '@elisym/sdk/agent-store';
 import { z } from 'zod';
+import { migrateGitignoreBestEffort } from './gitignore-migration.js';
 
 export const CONTACTS_FILENAME = '.contacts.json';
 
@@ -110,7 +111,9 @@ async function writeRaw(path: string, contacts: Contacts): Promise<void> {
   // through a temporary whose suffix is random, and an agent created by an
   // older build has a `.gitignore` line that cannot match one. Two directories
   // up from the file is the `.elisym` root.
-  await ensureGitignoreHasPrivateStateEntries(dirname(dirname(path)));
+  await migrateGitignoreBestEffort('contacts', () =>
+    ensureGitignoreHasPrivateStateEntries(dirname(dirname(path))),
+  );
   await writeFileAtomic(path, body, 0o600);
 }
 

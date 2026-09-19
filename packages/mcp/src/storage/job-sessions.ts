@@ -27,6 +27,7 @@ import {
 } from '@elisym/sdk/agent-store';
 import { z } from 'zod';
 import { sanitizeField } from '../sanitize.js';
+import { migrateGitignoreBestEffort } from './gitignore-migration.js';
 
 export const JOB_SESSIONS_FILENAME = '.job-sessions.json';
 export const MAX_SESSION_ENTRIES = 200;
@@ -165,7 +166,10 @@ async function writeSessions(handle: SessionStoreHandle, sessions: JobSessions):
   }
   // Gitignore migration before the first write, same as the read-cursors store:
   // the file maps who the agent converses with and holds first-prompt clips.
-  await ensureGitignoreHasJobSessionsEntry(dirname(handle.agentDir));
+  const elisymRoot = dirname(handle.agentDir);
+  await migrateGitignoreBestEffort('job-sessions', () =>
+    ensureGitignoreHasJobSessionsEntry(elisymRoot),
+  );
   const body = JSON.stringify(sessions, null, 2) + '\n';
   await writeFileAtomic(pathFor(handle.agentDir), body, 0o600);
 }

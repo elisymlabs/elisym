@@ -18,6 +18,7 @@ import {
   writeFileAtomic,
 } from '@elisym/sdk/agent-store';
 import { z } from 'zod';
+import { migrateGitignoreBestEffort } from './gitignore-migration.js';
 
 export const CUSTOMER_HISTORY_FILENAME = '.customer-history.json';
 export const MAX_HISTORY_ENTRIES = 500;
@@ -149,7 +150,9 @@ async function writeRaw(path: string, history: CustomerHistory): Promise<void> {
   // through a temporary whose suffix is random, and an agent created by an
   // older build has a `.gitignore` line that cannot match one. Two directories
   // up from the file is the `.elisym` root.
-  await ensureGitignoreHasPrivateStateEntries(dirname(dirname(path)));
+  await migrateGitignoreBestEffort('customer-history', () =>
+    ensureGitignoreHasPrivateStateEntries(dirname(dirname(path))),
+  );
   await writeFileAtomic(path, body, 0o600);
 }
 

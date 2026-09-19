@@ -54,6 +54,7 @@ import {
 import { degenerateReference, degenerateReferenceSync } from './degenerate-reference';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
+import { isReadableTokenRow, readBalance } from './read-balance';
 import { parsePaymentRequest } from './schema';
 import type {
   BuildTransactionOptions,
@@ -770,6 +771,13 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   // refuse a USDC or LSM transfer the token balances prove, over an
   // inconsistency in arrays it never opens, and cost a paying customer their
   // delivery.
+  // The containers first, because everything below indexes into them. An
+  // array-like that is not an array - `{ length: 4 }`, a typed array - agrees
+  // with itself on length, walks straight past the guard below, and hands back
+  // `undefined` for every slot.
+  if (!input.mint && (!Array.isArray(input.preBalances) || !Array.isArray(input.postBalances))) {
+    return { ok: false, reason: 'Balance arrays are not arrays - cannot read a balance slot' };
+  }
   if (!input.mint && input.preBalances.length !== input.postBalances.length) {
     return {
       ok: false,
@@ -825,6 +833,9 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
     input.postBalances[recipientIdx],
     input.preBalances[recipientIdx],
   );
+  if (recipientDelta === null) {
+    return { ok: false, reason: 'Recipient balance slot is unreadable' };
+  }
   if (recipientDelta < BigInt(input.expectedNet)) {
     return {
       ok: false,
@@ -841,6 +852,9 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
       input.postBalances[treasuryIdx],
       input.preBalances[treasuryIdx],
     );
+    if (treasuryDelta === null) {
+      return { ok: false, reason: 'Treasury balance slot is unreadable' };
+    }
     if (treasuryDelta < BigInt(input.expectedFee)) {
       return {
         ok: false,
@@ -856,8 +870,29 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
   if (!mint) {
     return { ok: false, reason: 'Expected mint for SPL verification, got none' };
   }
-  const pre = input.preTokenBalances ?? [];
-  const post = input.postTokenBalances ?? [];
+  // ABSENT containers are empty ones - a native-only page carries none, and a
+  // first-ever payment has no pre row because the token account is created
+  // inside this transaction. A container or a row that is PRESENT and cannot
+  // be read is a different thing, and the difference is money: matched by
+  // owner and mint, an unreadable pre row is simply never found, the baseline
+  // reads as absent, absent reads as zero, and whatever the recipient already
+  // held verifies as this payment. Measured on a real mainnet transfer of 0.45
+  // USDC against a price of 1.8 - refused from an honest node, verified with
+  // the baseline row's `owner` removed. `quick-verify` had this rule and this
+  // function did not.
+  const preRaw: unknown = input.preTokenBalances ?? [];
+  const postRaw: unknown = input.postTokenBalances ?? [];
+  if (!Array.isArray(preRaw) || !Array.isArray(postRaw)) {
+    return { ok: false, reason: 'Token balance lists are not lists - cannot read a baseline' };
+  }
+  if (!preRaw.every(isReadableTokenRow) || !postRaw.every(isReadableTokenRow)) {
+    return {
+      ok: false,
+      reason: 'A token balance row is unreadable - cannot tell whose balance it is',
+    };
+  }
+  const pre: readonly TokenBalanceEntry[] = preRaw;
+  const post: readonly TokenBalanceEntry[] = postRaw;
 
   // `null` for "no account here", never a sentinel AMOUNT: `-1n` is also what a
   // token account that lost exactly one subunit between pre and post reports,
@@ -865,7 +900,11 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
   // that exists while the real answer - the recipient was short-changed - never
   // reaches them. Both paths refuse the payment either way; only the sentence
   // the operator gets to act on differs.
-  const tokenDelta = (ownerAddress: string): bigint | null => {
+  //
+  // A THIRD answer beside those two, for the same reason: `'unreadable'` when
+  // the row is there and its amount is not a number. `BigInt` takes `''` for
+  // `0n` without complaint, so a blanked baseline used to read as zero here.
+  const tokenDelta = (ownerAddress: string): bigint | null | 'unreadable' => {
     // Pre-entry may be absent when the ATA is created inside the same tx
     // (first-ever payment to this recipient). Missing => 0.
     const preEntry = pre.find((entry) => entry.owner === ownerAddress && entry.mint === mint);
@@ -873,12 +912,18 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
     if (!postEntry) {
       return null;
     }
-    const preAmount = preEntry ? BigInt(preEntry.uiTokenAmount.amount) : 0n;
-    const postAmount = BigInt(postEntry.uiTokenAmount.amount);
+    const preAmount = preEntry ? readBalance(preEntry.uiTokenAmount?.amount) : 0n;
+    const postAmount = readBalance(postEntry.uiTokenAmount?.amount);
+    if (preAmount === null || postAmount === null) {
+      return 'unreadable';
+    }
     return postAmount - preAmount;
   };
 
   const recipientDelta = tokenDelta(input.recipientAddress);
+  if (recipientDelta === 'unreadable') {
+    return { ok: false, reason: 'Recipient token amount is unreadable' };
+  }
   if (recipientDelta === null) {
     return { ok: false, reason: 'Recipient token account not found in transaction' };
   }
@@ -891,6 +936,9 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
 
   if (input.expectedFee > 0) {
     const treasuryDelta = tokenDelta(input.treasuryAddress);
+    if (treasuryDelta === 'unreadable') {
+      return { ok: false, reason: 'Treasury token amount is unreadable' };
+    }
     if (treasuryDelta === null) {
       return { ok: false, reason: 'Treasury token account not found in transaction' };
     }
@@ -904,9 +952,20 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
   return { ok: true };
 }
 
-function bigIntDelta(post: bigint | undefined, pre: bigint | undefined): bigint {
-  const postValue = post === undefined ? 0n : BigInt(post);
-  const preValue = pre === undefined ? 0n : BigInt(pre);
+/**
+ * The change in one lamport slot, or `null` when either side cannot be read.
+ *
+ * An absent slot used to count as `0n` on both sides, and a present one went
+ * through a bare `BigInt` - which takes `''`, `true` and `[]` for numbers
+ * without throwing. Either way a slot nobody could read became a baseline of
+ * zero, and the whole post balance became the payment.
+ */
+function bigIntDelta(post: unknown, pre: unknown): bigint | null {
+  const postValue = readBalance(post);
+  const preValue = readBalance(pre);
+  if (postValue === null || preValue === null) {
+    return null;
+  }
   return postValue - preValue;
 }
 

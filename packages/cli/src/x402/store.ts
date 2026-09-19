@@ -36,6 +36,16 @@ import { X402_CACHE_TTL_MS } from './constants.js';
 const INDEX_FILE_MODE = 0o600;
 
 /**
+ * What an operator is told to do about a record this store refuses. The refusal
+ * is deliberate and has no way back on its own - there is no rotation here, on
+ * purpose, because rotating resets the spend ceiling - so the sentence has to
+ * carry the repair: every bridged job fails until a person acts on it.
+ */
+const REPAIR_HINT =
+  'every bridged job is refused until that entry is corrected or removed by hand; ' +
+  'removing it forgets what was already paid for that job';
+
+/**
  * How stale a temporary must be before a sweep removes it. Long enough that a
  * live writer's file is never in question, short enough that a fragment left
  * by a dead process is not permanent.
@@ -165,7 +175,9 @@ export class X402JobStore {
       typeof value === 'number' && Number.isInteger(value) && value >= 0;
     for (const [jobId, record] of Object.entries(parsed)) {
       if (record === null || typeof record !== 'object' || Array.isArray(record)) {
-        throw new Error(`x402 store ${this.jobsPath} holds a non-record at ${jobId}`);
+        throw new Error(
+          `x402 store ${this.jobsPath} holds a non-record at ${jobId} - ${REPAIR_HINT}`,
+        );
       }
       const slot = record as Partial<X402JobRecord>;
       if (
@@ -174,7 +186,9 @@ export class X402JobStore {
         !isCount(slot.updated_at) ||
         (slot.signatures !== undefined && !isCount(slot.signatures))
       ) {
-        throw new Error(`x402 store ${this.jobsPath} holds an unusable record at ${jobId}`);
+        throw new Error(
+          `x402 store ${this.jobsPath} holds an unusable record at ${jobId} - ${REPAIR_HINT}`,
+        );
       }
     }
     return parsed as X402JobsFile;
@@ -455,6 +469,14 @@ export class X402JobStore {
       // because an index fragment belongs to no record and would otherwise
       // never be visited at all.
       await this.sweepStrandedIndexTemporaries();
+      // An index an older build left world-readable is tightened HERE rather
+      // than waiting for the next write. `save` lands 0o600 through its
+      // temporary, but a bridge with no new job never saves, and the file holds
+      // answers customers have already paid for - measured on a real agent
+      // directory, which still carried 0o644. This runs from the driver's
+      // constructor, so it happens on the first start of the new build. Best
+      // effort: a missing file is the ordinary cold start.
+      await chmod(this.jobsPath, INDEX_FILE_MODE).catch(() => undefined);
       const file = await this.load();
       let changed = false;
       for (const [jobId, record] of Object.entries(file)) {

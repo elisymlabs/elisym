@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { chmodSync, statSync } from 'node:fs';
 import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -146,6 +146,32 @@ describe('X402JobStore', () => {
     } finally {
       process.umask(previousUmask);
     }
+  });
+
+  it('tightens an index an older build left world-readable, without waiting for a write', async () => {
+    // `save` lands 0o600 through its temporary, but a bridge with no new job
+    // never saves - and this file holds answers customers already paid for.
+    // Found on a real agent directory, still 0o644 months after it was written.
+    // The sweep is what the driver runs from its constructor, so this is what
+    // the first start of a new build does to it.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const indexPath = join(dir, X402_JOBS_FILE);
+    await writeFile(
+      indexPath,
+      JSON.stringify({
+        'job-old': { attempts: 1, created_at: Date.now(), updated_at: Date.now() },
+      }),
+      { mode: 0o644 },
+    );
+    chmodSync(indexPath, 0o644);
+
+    await store.sweepExpired();
+
+    expect(statSync(indexPath).mode & 0o777).toBe(0o600);
+    // And it was only the mode: the record is still there to cap the spend.
+    expect(await store.paidAttempts('job-old')).toBe(1);
   });
 
   it.each([
