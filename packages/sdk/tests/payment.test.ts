@@ -1325,6 +1325,34 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.verified).toBe(true);
     });
 
+    it('refuses a reference spelled the way a NULL account key stringifies', async () => {
+      // `verifyPayment` checks the reference for PRESENCE, never for format, so
+      // the four letters `null` reach the key map unscreened - and a sparse
+      // transaction carries a null key, as the row above shows. Drop the
+      // truthiness guard in `checkTxDiff` and that key registers as 'null', the
+      // presence check that is the whole anti-replay on this rail passes, and
+      // this transaction - which carries no reference at all - settles the job.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, null, recipientAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, 0, netAmount, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR({ reference: 'null' }), CONFIG, {
+        txSignature: 'nullRefSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Reference key not found/);
+    });
+
     it('retries on pending transaction', async () => {
       let calls = 0;
       const rpc = createMockRpc({
@@ -1543,8 +1571,9 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       // two to skip - a string spread element-by-element lands INSIDE the
       // prefix every balance index is read against, so every looked-up address
       // slides onto somebody else's slot. Measured with the guard removed: this
-      // shape answers `verified: true`, reading the treasury's delta as the
-      // recipient's.
+      // shape answers `verified: true` - the two characters take indices 0 and
+      // 1, so every looked-up address sits two slots below the one it owns, and
+      // the deltas this page carries are read off those wrong slots.
       const rpc = createMockRpc({
         getTransaction: () => ({
           send: () =>

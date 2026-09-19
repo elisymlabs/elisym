@@ -18,7 +18,9 @@ import { mergeAccountKeys } from './account-keys';
  * and one cluster's is served to the other, and a row holds each.
  *
  * Four guards change no answer and are left stated rather than measured: the
- * `typeof getTransaction` half (the `catch` below reports `rpc_error` anyway),
+ * `typeof getTransaction` half of the rpc check (the `catch` below reports
+ * `rpc_error` anyway, and the `!rpc` half beside it does change the answer, so
+ * it has a row),
  * the forever-lifetime of a positive cache entry (measured only inside the
  * negative TTL, so weakening it costs RPC calls and not a verdict),
  * `recipientIdx !== -1` (the undefined-slot check below catches the same input),
@@ -133,6 +135,32 @@ interface TokenBalanceEntry {
   uiTokenAmount: { amount: string };
 }
 
+/**
+ * A balance as the RPC reports it, or `null` when what came back is not one.
+ *
+ * `BigInt` throws - on `undefined`, on a string that is not an integer, on a
+ * fractional number - and both arms below run OUTSIDE the `try` that wraps the
+ * RPC call. A proxy answering with a shape the spec allows and the happy path
+ * does not therefore turns a ranking hint into a rejected promise: the same
+ * class as the four `answers rather than throwing` rows this file already
+ * holds, which the balance reads had no pair for.
+ *
+ * `null` rather than `0n`, because the two are not the same answer: a baseline
+ * that could not be read, taken for zero, makes any positive balance look like
+ * a credit, and not claiming a payment that did not happen is this function's
+ * only job.
+ */
+function readBalance(raw: unknown): bigint | null {
+  if (typeof raw !== 'bigint' && typeof raw !== 'string' && typeof raw !== 'number') {
+    return null;
+  }
+  try {
+    return BigInt(raw);
+  } catch {
+    return null;
+  }
+}
+
 async function doVerifyOnce(
   rpc: Rpc<SolanaRpcApi>,
   txSignature: Signature,
@@ -179,10 +207,10 @@ async function doVerifyOnce(
     const preBalances = tx.meta.preBalances as readonly bigint[] | undefined;
     const postBalances = tx.meta.postBalances as readonly bigint[] | undefined;
     if (preBalances && postBalances) {
-      const pre = preBalances[recipientIdx];
-      const post = postBalances[recipientIdx];
-      if (pre !== undefined && post !== undefined) {
-        const delta = BigInt(post) - BigInt(pre);
+      const pre = readBalance(preBalances[recipientIdx]);
+      const post = readBalance(postBalances[recipientIdx]);
+      if (pre !== null && post !== null) {
+        const delta = post - pre;
         if (delta > 0n) {
           return { receivedFunds: true, txSignature: sigStr };
         }
@@ -197,11 +225,21 @@ async function doVerifyOnce(
       if (post.owner !== recipientStr) {
         continue;
       }
+      const postAmount = readBalance(post.uiTokenAmount?.amount);
+      if (postAmount === null) {
+        continue;
+      }
       const pre = preTokenBalances?.find(
         (entry) => entry.owner === recipientStr && entry.mint === post.mint,
       );
-      const preAmount = pre ? BigInt(pre.uiTokenAmount.amount) : 0n;
-      const postAmount = BigInt(post.uiTokenAmount.amount);
+      // A MISSING baseline is a zero baseline - the recipient's token account
+      // was created inside this very transaction, which is what a first-ever
+      // payment looks like. An UNREADABLE one is not the same thing, and the
+      // distinction is the whole reason `readBalance` answers `null`.
+      const preAmount = pre === undefined ? 0n : readBalance(pre.uiTokenAmount?.amount);
+      if (preAmount === null) {
+        continue;
+      }
       if (postAmount > preAmount) {
         return { receivedFunds: true, txSignature: sigStr };
       }

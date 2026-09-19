@@ -1500,7 +1500,7 @@ export function loadSkillsFromDir(skillsDir: string, options: LoadSkillsOptions)
       // any other unreadable skill. `readFileSync` on a FIFO does not fail - it
       // takes the event loop with it, and the agent never finishes starting.
       if (isBlockingNodeSync(skillMdPath)) {
-        throw new Error(`it is a pipe, socket or device, not a file`);
+        throw new Error('it is a pipe, socket or device, not a file');
       }
       const content = readFileSync(skillMdPath, 'utf-8');
       const { frontmatter, systemPrompt } = parseSkillMd(content);

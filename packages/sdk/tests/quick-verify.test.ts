@@ -135,6 +135,91 @@ describe('verifyJobPaymentQuick', () => {
     expect(result.reason).toBe('recipient_mismatch');
   });
 
+  it('answers rather than throwing when a token row carries no amount at all', async () => {
+    // `BigInt(undefined)` throws, and this arm runs outside the `try` that
+    // wraps the RPC call, so the caller's promise rejects. Same class as the
+    // `no meta` and `no balance arrays` rows above, and the same reachability:
+    // `uiTokenAmount` is an OBJECT in the JSON-RPC spec, so a proxy is free to
+    // answer with one the happy path never sees.
+    const recipient = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [makeAddress(), recipient],
+            pre: [10_000_000, 0],
+            post: [10_000_000, 0],
+            postTokenBalances: [{ accountIndex: 1, mint: makeAddress(), owner: recipient }],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-token-no-amount', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('does not read an UNREADABLE baseline as a zero one', async () => {
+    // The money half of the same helper, and the reason it answers `null`
+    // rather than `0n`: the recipient's balance after is perfectly readable, so
+    // taking the baseline for zero turns whatever they already held into a
+    // credit this transaction never made. `0n` is right for a baseline that is
+    // MISSING - the token account was created here - and wrong for one that
+    // came back as something other than a number.
+    const recipient = makeAddress();
+    const mint = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [makeAddress(), recipient],
+            pre: [10_000_000, 0],
+            post: [10_000_000, 0],
+            preTokenBalances: [
+              {
+                accountIndex: 1,
+                mint,
+                owner: recipient,
+                uiTokenAmount: { amount: 'not a number' },
+              },
+            ],
+            postTokenBalances: [
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '2000000' } },
+            ],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-token-bad-pre', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('answers rather than throwing when a LAMPORT slot is not a number', async () => {
+    // The native arm of the same helper. The undefined-slot row above covers a
+    // slot that is not there; this covers one that is there and unreadable,
+    // which `BigInt` treats very differently.
+    const recipient = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: {
+            err: null,
+            preBalances: ['nonsense', 0n],
+            postBalances: [10_000_000n, 0n],
+          },
+          transaction: { message: { accountKeys: [recipient, makeAddress()] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-bad-lamports', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
   it("does not read SOMEONE ELSE's token credit as the recipient being paid", async () => {
     // The other half of the same two lines: round 14 measured HOW MUCH and left
     // WHOSE unmeasured, which is the shape the verifier's fee leg had. A real
@@ -257,6 +342,24 @@ describe('verifyJobPaymentQuick', () => {
 
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('invalid_input');
+  });
+
+  it('answers rather than throwing when the rpc itself is missing', async () => {
+    // The `typeof getTransaction` half of the same guard changes no answer -
+    // the `catch` below reports `rpc_error` either way - but this half does:
+    // without it the property read happens OUTSIDE the `try`, so a caller who
+    // passed nothing gets a rejected promise instead of a verdict. Same
+    // reachability argument as the row above: nothing in this monorepo calls
+    // this function, so every caller is someone else's, and untyped.
+    const result = await verifyJobPaymentQuick(
+      null as never,
+      'sig-no-rpc',
+      makeAddress(),
+      'devnet',
+    );
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('rpc_error');
   });
 
   it('answers rather than throwing when the RPC returns a tx with no meta', async () => {

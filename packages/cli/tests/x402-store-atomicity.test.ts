@@ -146,9 +146,13 @@ describe('an x402 write that fails part way through', () => {
 
   it('does not even LOOK at the directory while a writer holds the queue', async () => {
     // The sweep is unconditional - an index fragment belongs to no record - so
-    // its PLACEMENT is the only thing keeping it from deleting the temporary a
-    // concurrent `save` is about to rename, which would fail that rename with
-    // ENOENT on a write that was perfectly healthy.
+    // something has to keep it from deleting the temporary a concurrent `save`
+    // is about to rename, which would fail that rename with ENOENT on a write
+    // that was perfectly healthy. Two things do, and the age guard is the
+    // heavier of them: it holds across PROCESSES, where the queue cannot reach.
+    // What this placement adds is the case an age guard cannot see - a system
+    // clock that jumped forward past the hour between the write and the sweep,
+    // which makes a live temporary read as stale.
     //
     // Asserted as ORDER rather than as an outcome: whether a sweep outside the
     // queue wins the race depends on the clock, and a fixture that depends on

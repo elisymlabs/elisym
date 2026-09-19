@@ -40,7 +40,7 @@ function withLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   // The rejection handler here is therefore UNREACHABLE as the code stands and
   // is kept as the reserve that takes over the moment somebody removes the
   // absorption. Both are measured on `customer-history`, whose rows this is a
-  // copy of; the serialization itself is measured here too, in
+  // copy of; the serialization itself is measured on THIS store, by
   // `storage-concurrency.test.ts`.
   const next = previous.then(fn, fn);
   // The stored promise absorbs the rejection. `finally` re-throws, so without

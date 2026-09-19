@@ -228,6 +228,17 @@ export function classifyRequestUsability(
   ) {
     return 'unusable-request';
   }
+  // The net the verifier requires, and the one mirror that moves: `verifyPayment`
+  // runs this AFTER its fee gate, and here it runs before. It can, because
+  // nothing in it depends on the config - both numbers come out of the request -
+  // so there is no fee rate under which this request becomes payable, and
+  // terminal is the honest verdict rather than a stricter one. Left where the
+  // verifier has it, the config gate above would answer `inconclusive` first
+  // whenever the fee address disagreed, and the provider would poll a request
+  // that can never settle until its own expiry.
+  if (request.amount - (request.fee_amount ?? 0) <= 0) {
+    return 'unusable-request';
+  }
   try {
     resolveAssetFromPaymentRequest(request);
   } catch {

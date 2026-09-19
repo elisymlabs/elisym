@@ -569,6 +569,12 @@ export async function cmdStart(
         );
         return config.feeBps;
       }
+      // BEFORE the constructor, like the ledger's and the nonce store's: the
+      // driver sweeps expired records from its constructor, and a sweep that
+      // finds one writes `.x402-jobs.json` and its random temporary right
+      // there. This was the one migration on this path that still ran after
+      // the file it covers could already exist.
+      await ensureGitignoreHasX402Entries(dirname(loaded.dir));
       skillCtx.x402Driver = new X402Driver({
         agentDir: loaded.dir,
         paymentsAddress: solanaAddress,
@@ -911,13 +917,15 @@ export async function cmdStart(
       : undefined;
 
   // NOT KILLED BY ANY TEST - `cmdStart` has no harness - so this ordering is
-  // kept on diff review. FOUR migrations run HERE, before a card is published.
-  // A fifth - the delegated-pull nonce entry - runs ONLY earlier, beside the
-  // store whose constructor can create the `.corrupt.<ts>` it covers, and is
-  // deliberately not repeated here. The private-state entries run here AND
-  // twice earlier: ahead of the job ledger, for the same `.corrupt.<ts>`
-  // reason, and ahead of the media cache. Running twice is a no-op; running
-  // late is not.
+  // kept on diff review. THREE migrations run HERE, before a card is
+  // published. TWO more run ONLY earlier, each beside the constructor that can
+  // create the file it covers, and neither is repeated here: the delegated-pull
+  // nonce entry, whose store can produce a `.corrupt.<ts>` an older agent's
+  // narrow line does not match, and the x402 cache entry, whose driver sweeps
+  // from its constructor and writes the index the moment that sweep finds
+  // something. The private-state entries run here AND twice earlier: ahead of
+  // the job ledger, for the same `.corrupt.<ts>` reason, and ahead of the media
+  // cache. Running twice is a no-op; running late is not.
   //
   // They run here for the same reason the two indexes above are opened here: appending to
   // the file is not guarded - a read-only `.elisym` root, a root written under
@@ -927,13 +935,10 @@ export async function cmdStart(
   //
   // What they cover: the iroh blob store (cleartext job payloads), the private
   // files written through a random temporary (an agent created by an older
-  // build has the narrow names, which no longer match), the x402 cache, and the
-  // session transcripts.
+  // build has the narrow names, which no longer match), and the session
+  // transcripts.
   await ensureGitignoreHasIrohEntry(dirname(loaded.dir));
   await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
-  if (x402Skills.length > 0) {
-    await ensureGitignoreHasX402Entries(dirname(loaded.dir));
-  }
   const hasContextSkills = registry.all().some((skill) => skill.context === true);
   if (hasContextSkills) {
     await ensureGitignoreHasSessionsEntry(dirname(loaded.dir));

@@ -488,10 +488,9 @@ export async function writeSecrets(
   // the MCP never runs `elisym start`. (It is not the only caller - `start`
   // runs it too, and so do the customer-history and contacts stores - but it is
   // the only one on the path that writes the keys themselves.) Before the
-  // write, so that when it SUCCEEDS the
-  // widened entries are in place before `.secrets.json.tmp.<hex>` can exist at
-  // all; a no-op when the file is absent, so a home-global agent is
-  // unaffected. When it FAILS the keys are written anyway and the warning below
+  // write, so that when it SUCCEEDS the widened entries are in place before
+  // `.secrets.json.tmp.<hex>` can exist at all; a no-op when the file is
+  // absent, so a home-global agent is unaffected. When it FAILS the keys are written anyway and the warning below
   // is the only thing between that temporary and a commit.
   //
   // WARNED, not fatal, and the asymmetry with `elisym start` is deliberate:

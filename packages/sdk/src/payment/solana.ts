@@ -789,9 +789,21 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   const keyToIdx = new Map<string, number>();
   for (let i = 0; i < Math.min(keys.length, balanceCount); i++) {
     const key = keys[i];
-    // NOT KILLED BY ANY TEST, and no test could: dropping the guard
-    // maps a null key to the string 'null', and every address compared against
-    // this map has already passed `isAddress`, so nothing can collide with it.
+    // The guard is load-bearing, and the reason is the one this file used to
+    // get wrong: the addresses compared against this map have NOT all passed
+    // `isAddress`. `verifyPayment` checks the request's `reference` and
+    // `recipient` for PRESENCE only, a few dozen lines up - the format checks
+    // live on the config treasury and, on the reference rail, on the reference;
+    // the signature rail has none. `classifyRequestUsability` in `acceptor.ts`
+    // says the same thing in the other direction.
+    //
+    // So a request whose reference is the four letters `null` reaches here
+    // unscreened. Without the guard a null account key registers under exactly
+    // that name, the presence check below - which is the whole of the
+    // anti-replay on this rail - passes, and a stranger's transfer to the same
+    // recipient for the same amount settles the job. Measured: the row named
+    // `refuses a reference spelled the way a NULL account key stringifies`
+    // answers `verified: true` with the guard dropped.
     if (key) {
       keyToIdx.set(String(key), i);
     }
@@ -903,41 +915,6 @@ function waitMs(ms: number): Promise<void> {
 }
 
 /**
- * Build the transfer instructions for a payment request.
- *
- * For native SOL (no `paymentRequest.asset` or asset=NATIVE_SOL), emits System
- * program `TransferSol` instructions with the payment reference attached as a
- * read-only, non-signer account so providers can detect the payment via
- * `getSignaturesForAddress(reference)`.
- *
- * For SPL assets (USDC, LSM on Solana), emits:
- *   1. `CreateAssociatedTokenIdempotent` for the recipient ATA (funded by payer);
- *   2. `CreateAssociatedTokenIdempotent` for the treasury ATA if a protocol fee applies;
- *   3. `TransferChecked` from payer ATA to recipient ATA, with `reference` as an
- *      extra read-only account (canonical Solana Pay pattern);
- *   4. `TransferChecked` from payer ATA to treasury ATA if a fee applies.
- *
- * Every provider transfer instruction also carries `ELISYM_PROTOCOL_TAG` as a
- * read-only marker account so off-chain indexers can enumerate every elisym
- * transaction with a single `getSignaturesForAddress(ELISYM_PROTOCOL_TAG)`
- * call, regardless of fee size.
- *
- * If `options.jobEventId` is provided, an SPL Memo instruction with payload
- * `elisym:v1:<jobEventId>` is prepended so explorers display the originating
- * Nostr job id and indexers can join on-chain payments back to off-chain
- * job context.
- *
- * Async because SPL ATAs are PDAs and `findAssociatedTokenPda` is async.
- *
- * Caller is responsible for validating `paymentRequest` upstream - and that
- * means the caller of `buildTransaction`, not `buildTransaction` itself, which
- * checks only the config, the lamport amounts, the reference's shape, the
- * expiry and `fee_address === treasury`. The STATIC denylist (a reference equal
- * to the recipient, the treasury, the mint, the protocol tag, the system
- * program) is `validatePaymentRequest`'s, and nothing below calls it. Both
- * first-party callers do, before building.
- */
-/**
  * The customer's LAST look at the reference, and the half `validatePaymentRequest`
  * cannot take.
  *
@@ -973,6 +950,41 @@ function refuseDegenerateReferenceAgainst(
   );
 }
 
+/**
+ * Build the transfer instructions for a payment request.
+ *
+ * For native SOL (no `paymentRequest.asset` or asset=NATIVE_SOL), emits System
+ * program `TransferSol` instructions with the payment reference attached as a
+ * read-only, non-signer account so providers can detect the payment via
+ * `getSignaturesForAddress(reference)`.
+ *
+ * For SPL assets (USDC, LSM on Solana), emits:
+ *   1. `CreateAssociatedTokenIdempotent` for the recipient ATA (funded by payer);
+ *   2. `CreateAssociatedTokenIdempotent` for the treasury ATA if a protocol fee applies;
+ *   3. `TransferChecked` from payer ATA to recipient ATA, with `reference` as an
+ *      extra read-only account (canonical Solana Pay pattern);
+ *   4. `TransferChecked` from payer ATA to treasury ATA if a fee applies.
+ *
+ * Every provider transfer instruction also carries `ELISYM_PROTOCOL_TAG` as a
+ * read-only marker account so off-chain indexers can enumerate every elisym
+ * transaction with a single `getSignaturesForAddress(ELISYM_PROTOCOL_TAG)`
+ * call, regardless of fee size.
+ *
+ * If `options.jobEventId` is provided, an SPL Memo instruction with payload
+ * `elisym:v1:<jobEventId>` is prepended so explorers display the originating
+ * Nostr job id and indexers can join on-chain payments back to off-chain
+ * job context.
+ *
+ * Async because SPL ATAs are PDAs and `findAssociatedTokenPda` is async.
+ *
+ * Caller is responsible for validating `paymentRequest` upstream - and that
+ * means the caller of `buildTransaction`, not `buildTransaction` itself, which
+ * checks only the config, the lamport amounts, the reference's shape, the
+ * expiry and `fee_address === treasury`. The STATIC denylist (a reference equal
+ * to the recipient, the treasury, the mint, the protocol tag, the system
+ * program) is `validatePaymentRequest`'s, and nothing below calls it. Both
+ * first-party callers do, before building.
+ */
 export async function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
   payerSigner: Signer,

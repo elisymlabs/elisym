@@ -1529,6 +1529,7 @@ describe('the usability predicate against the real verifier', () => {
     ['a non-integer amount', { amount: 1.5 }],
     ['a negative fee amount', { fee_amount: -1 }],
     ['an unresolvable asset', { asset: { chain: 'solana', token: 'nosuch', decimals: 6 } }],
+    ['a fee that eats the whole amount', { fee_amount: 1_000_000 }],
   ])('refuses %s in both, and never asks the chain', async (_label, overrides) => {
     const request = makeRequest(overrides as never);
     const rpc = spyingRpc();
