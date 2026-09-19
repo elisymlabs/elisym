@@ -184,13 +184,21 @@ describe('one settlement settles one job', () => {
     const rpc = makeRpc();
     listedPages = [[]];
     const acceptor = new ProviderPaymentAcceptor({ strategy: strategyVerifying(), rpc, store });
+    // The REFERENCE, spelled out rather than `expect.anything()`. `makeRequest`
+    // mints a fresh reference per call while the recipient and the treasury are
+    // module constants, so this one argument tells all three apart - and the
+    // difference is the whole point of a reference: list the provider's own
+    // wallet instead and the customer's transfer drowns in a busy history, goes
+    // over the edge of the window, and the pass reads as an empty window. That
+    // is `window-empty`, the one verdict a provider may close a paid job on.
+    const request = makeRequest();
 
-    await acceptor.accept({ paymentRequest: makeRequest(), jobIdentity: 'job-1' }, CONFIG);
+    await acceptor.accept({ paymentRequest: request, jobIdentity: 'job-1' }, CONFIG);
 
     expect(
       (rpc as unknown as { getSignaturesForAddress: ReturnType<typeof vi.fn> })
         .getSignaturesForAddress,
-    ).toHaveBeenCalledWith(expect.anything(), {
+    ).toHaveBeenCalledWith(request.reference, {
       limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
       commitment: 'confirmed',
     });
@@ -425,6 +433,38 @@ describe('a claim the disk refuses', () => {
 
     expect(result).toMatchObject({ accepted: false, reason: 'not-persisted' });
     expect(listCalls).toBe(0);
+  });
+
+  it('marks the pass at STEP 2 when the claim is lost, not only at step 4', async () => {
+    // The same asymmetry one step up, and the other half of it: here the claim
+    // is not refused by the disk but LOST to another job, and the mark is all
+    // that keeps the verdict off `window-empty`. Step 4 has its own fixture for
+    // this and argued for it - a public store interface is implemented by
+    // people who are not us - while step 2, where the signature came from the
+    // CUSTOMER, had none.
+    const losing: SettlementStore = {
+      claim: () => 'consumed-by-other',
+      owner: () => undefined,
+      claimedSignature: () => undefined,
+      prune: () => 0,
+    };
+    listedPages = [[]];
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(SIG_A),
+      rpc: makeRpc(),
+      store: losing,
+    });
+
+    const result = await acceptor.accept(
+      { paymentRequest: makeRequest(), jobIdentity: 'job-1', txSignature: SIG_A },
+      CONFIG,
+    );
+
+    expect(result).toMatchObject({ accepted: false, reason: 'inconclusive' });
+    expect(result).not.toMatchObject({ reason: 'window-empty' });
+    // The window WAS read, and read empty: without the mark this pass is
+    // exactly the shape a provider may close a paid job on.
+    expect(listCalls).toBe(1);
   });
 
   it('accepts anyway when the job already owned that settlement', async () => {
@@ -1527,49 +1567,58 @@ describe('the usability predicate mirrors the verifier, and says so', () => {
 
 describe('what the acceptor actually hands the verifier', () => {
   /** Records every call the acceptor makes, and never verifies anything. */
-  function recordingStrategy(seen: { request: unknown; config: unknown; options: unknown }[]) {
+  function recordingStrategy(
+    seen: { rpc: unknown; request: unknown; config: unknown; options: unknown }[],
+  ) {
     return {
       chain: 'solana',
       verifyPayment: vi.fn(
         async (
-          _rpc: unknown,
+          rpc: unknown,
           request: unknown,
           config: unknown,
           options?: unknown,
         ): Promise<VerifyResult> => {
-          seen.push({ request, config, options });
+          seen.push({ rpc, request, config, options });
           return { verified: false, error: 'not a payment for this request' };
         },
       ),
     } as unknown as PaymentStrategy;
   }
 
-  it('hands it the request, the live config and the budget it was given', async () => {
+  it('hands it the connection, the request, the live config and the budget', async () => {
     // The most consequential line in `accept`, and nothing looked at it: every
     // other fixture drives the mock by `options.txSignature` alone. Hand the
     // verifier a request with the amount rewritten, or a config with the fee
     // rate zeroed, and it verifies a payment nobody made at the price nobody
     // agreed to - with the whole suite green.
-    const seen: { request: unknown; config: unknown; options: unknown }[] = [];
+    //
+    // All FOUR arguments, the connection included: a strategy handed some other
+    // rpc verifies nothing this provider was paid on, and the first version of
+    // this fixture measured three of the four.
+    const seen: { rpc: unknown; request: unknown; config: unknown; options: unknown }[] = [];
     // A non-zero rate on purpose: with `feeBps: 0` a config that has been
-    // blanked on the way in is indistinguishable from the real one.
+    // blanked on the way in is indistinguishable from the real one. Same for
+    // the interval - a fixture that passes 0 cannot tell a collapse to 0 apart.
     const liveFee: ProtocolConfigInput = { feeBps: 300, treasury: TREASURY };
     const request = makeRequest({ fee_amount: 30_000 });
+    const rpc = makeRpc();
     listedPages = [[{ signature: SIG_A, err: null }]];
 
-    await makeAcceptor(recordingStrategy(seen)).accept(
+    await new ProviderPaymentAcceptor({ strategy: recordingStrategy(seen), rpc, store }).accept(
       {
         paymentRequest: request,
         jobIdentity: 'job-1',
-        budget: { retriesPerCandidate: 2, intervalMs: 0 },
+        budget: { retriesPerCandidate: 2, intervalMs: 50 },
       },
       liveFee,
     );
 
     expect(seen).toHaveLength(1);
+    expect(seen[0]?.rpc).toBe(rpc);
     expect(seen[0]?.request).toEqual(request);
     expect(seen[0]?.config).toEqual(liveFee);
-    expect(seen[0]?.options).toMatchObject({ txSignature: SIG_A, retries: 2, intervalMs: 0 });
+    expect(seen[0]?.options).toMatchObject({ txSignature: SIG_A, retries: 2, intervalMs: 50 });
   });
 
   it('spends the own-settlement budget only on step 1, and asks the three steps in order', async () => {
@@ -1584,7 +1633,7 @@ describe('what the acceptor actually hands the verifier', () => {
     // time.
     const SIG_C = 'C'.repeat(88);
     store.claim(SIG_A, 'job-1');
-    const seen: { request: unknown; config: unknown; options: unknown }[] = [];
+    const seen: { rpc: unknown; request: unknown; config: unknown; options: unknown }[] = [];
     listedPages = [[{ signature: SIG_C, err: null }]];
 
     await makeAcceptor(recordingStrategy(seen)).accept(

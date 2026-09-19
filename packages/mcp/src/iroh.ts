@@ -15,11 +15,31 @@ import { ensureGitignoreHasIrohEntry } from '@elisym/sdk/agent-store';
 import { createIrohTransport, type IrohBlobTransport } from '@elisym/sdk/node';
 import type { AgentInstance } from './context';
 
-/** Get (creating on first use) the agent's iroh transport. */
-export async function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlobTransport> {
+/**
+ * Get (creating on first use) the agent's iroh transport.
+ *
+ * SINGLE-FLIGHT, and not as an optimization: this function awaits (the
+ * `.gitignore` migration below), and MCP tool calls are not serialized against
+ * each other. Two file transfers a moment apart would otherwise both see an
+ * empty `agent.irohTransport`, both pass the await, and both call
+ * `createIrohTransport` - two `Iroh.persistent` nodes on ONE fs-store. The
+ * first takes the store lock; the second waits on it for the life of the
+ * process, and whichever loses the assignment race is unreachable from
+ * `shutdownIrohTransport`, so the lock is never released either. The pending
+ * promise is therefore recorded BEFORE the first await, which is the whole
+ * trick: everything async happens inside it.
+ */
+export function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlobTransport> {
   if (agent.irohTransport) {
-    return agent.irohTransport;
+    return Promise.resolve(agent.irohTransport);
   }
+  agent.irohTransportPending ??= createTransport(agent).finally(() => {
+    agent.irohTransportPending = undefined;
+  });
+  return agent.irohTransportPending;
+}
+
+async function createTransport(agent: AgentInstance): Promise<IrohBlobTransport> {
   let storePath: string;
   if (agent.agentDir !== undefined) {
     storePath = join(agent.agentDir, '.iroh');
@@ -40,6 +60,12 @@ export async function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlo
 
 /** Shut down the agent's iroh node (release the fs-lock) and clean an ephemeral store. */
 export async function shutdownIrohTransport(agent: AgentInstance): Promise<void> {
+  // The PENDING one too: a shutdown that races a first file transfer would
+  // otherwise leave a node holding the store lock with nothing referencing it.
+  const pending = agent.irohTransportPending;
+  if (pending) {
+    await pending.catch(() => undefined);
+  }
   if (agent.irohTransport) {
     await agent.irohTransport.shutdown().catch(() => {});
     agent.irohTransport = undefined;

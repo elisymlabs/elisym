@@ -1581,6 +1581,35 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).not.toMatch(/not found/);
     });
 
+    it('refuses a transaction with MORE account keys than balance slots', async () => {
+      // The length guard above compares `pre` with `post`; these two AGREE, so
+      // it says nothing. The third leg - keys against balances - is held by the
+      // `Math.min` clamp alone, and nothing measured it: without the clamp the
+      // reference is "found" at an index the balance arrays do not reach, both
+      // money slots read fine, and a transaction the node described
+      // inconsistently verifies as a payment.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+                pre: [200_000_000, 0, 0],
+                post: [200_000_000 - amount, netAmount, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'keysPastBalancesSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/possible replay/);
+    });
+
     it('refuses an SPL transfer that is short of the net by one subunit', async () => {
       // The row above cannot measure the comparison itself: a delta of -1 is
       // below zero as well as below the net, so weakening the check to
@@ -1873,6 +1902,97 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).toContain('No matching transaction found');
     });
 
+    it('refuses one found under the reference that pays the TREASURY nothing', async () => {
+      // The rail a provider runs by default, and its fee leg was a vacuum: the
+      // fee amount could be passed as 0 and the treasury as the recipient, both
+      // with the package green. `runtime.ts` takes this path on its own before
+      // the signature one, so under either mutant the provider delivers work
+      // for a transaction that paid the protocol nothing.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () => Promise.resolve([{ signature: 'refNoFeeSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - netAmount, netAmount, 0, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
+      expect(result.verified).toBe(false);
+      expect(result.error).toContain('No matching transaction found');
+    });
+
+    it('refuses one where the fee went to the RECIPIENT instead of the treasury', async () => {
+      // The other half: the customer paid the full amount, all of it to the
+      // provider. Reading the fee leg against the recipient's own slot makes
+      // that pass, because the recipient received more than the fee.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () =>
+            Promise.resolve([{ signature: 'refFeeToProviderSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, amount, 0, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
+      expect(result.verified).toBe(false);
+    });
+
+    it('verifies an SPL payment on the reference rail too', async () => {
+      // The only row that holds the mint on this rail. Dropped, an SPL request
+      // is verified as if it were native - the lamport arrays are all zeroes
+      // here, so it refuses rather than misreads, but nothing said so.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () => Promise.resolve([{ signature: 'refSplSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        }),
+        CONFIG,
+        FAST,
+      );
+      expect(result.verified).toBe(true);
+    });
+
     it('refuses a FAILED transaction found under the reference', async () => {
       // The listing's own `err` field is not the only place a failure shows up:
       // a node that reports a signature as fine and the transaction as failed
@@ -1905,9 +2025,11 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
   describe('input validation', () => {
     // Every row here passes `FAST` even where the refusal is meant to come
     // before any RPC call: a guard that stops guarding falls through to the
-    // reference path, and on the default 15 x 2000 ms budget the assertion
-    // arrives half a minute later, past the test timeout, as a hang rather
-    // than as the sentence that says what broke.
+    // reference path, and on the default budget the assertion arrives some
+    // half a minute later, past the test timeout, as a hang rather than as the
+    // sentence that says what broke. (The two default budgets are tuning, not
+    // guards - `VERIFY_BY_REF_*` and `VERIFY_*` both come to about 30 seconds
+    // and swapping them changes nothing measurable.)
     it('rejects invalid rpc', async () => {
       const result = await payment.verifyPayment(
         null as unknown as Rpc<SolanaRpcApi>,

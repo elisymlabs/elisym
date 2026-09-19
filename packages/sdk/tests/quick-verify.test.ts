@@ -76,6 +76,65 @@ describe('verifyJobPaymentQuick', () => {
     expect(result.receivedFunds).toBe(true);
   });
 
+  it('does not read a balance the recipient merely already HELD as a payment', async () => {
+    // The PRE half of the delta, unmeasured here exactly as it was in the
+    // verifier: every other row starts the recipient at zero, so reading the
+    // baseline as zero looks identical. Under that reading any transaction
+    // that so much as MENTIONS a provider's address reports "received funds",
+    // and this answer feeds discovery ranking.
+    const recipient = makeAddress();
+    const payer = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer, recipient],
+            pre: [10_000_000, 5_000_000],
+            post: [10_000_000, 5_000_000],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-pre-held', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('does not read a TOKEN balance the recipient already held as a payment', async () => {
+    // The same hole on the SPL half, where the baseline is a lookup rather than
+    // an index: a missing pre-entry legitimately means zero, so the mutation
+    // that always reads zero is invisible without a row that HAS one.
+    const recipient = makeAddress();
+    const payer = makeAddress();
+    const mint = makeAddress();
+    const tokenEntry = (amount: number) => [
+      {
+        accountIndex: 1,
+        mint,
+        owner: recipient,
+        uiTokenAmount: { amount: String(amount), decimals: 6, uiAmount: amount / 1e6 },
+      },
+    ];
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer, recipient],
+            pre: [10_000_000, 0],
+            post: [10_000_000, 0],
+            preTokenBalances: tokenEntry(2_000_000),
+            postTokenBalances: tokenEntry(2_000_000),
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-token-pre-held', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
   it('refuses rather than misreads when the loaded half is malformed', async () => {
     const recipient = makeAddress();
     const payer = makeAddress();

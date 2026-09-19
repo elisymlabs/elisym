@@ -125,6 +125,15 @@ export interface AgentInstance {
    */
   irohTransport?: IrohBlobTransport;
   /**
+   * The in-flight creation, held so that concurrent callers join it instead of
+   * each opening their own node. `ensureIrohTransport` awaits inside, and MCP
+   * tool calls are not serialized against each other, so without this two
+   * `submit_and_pay_job` calls a moment apart open two `Iroh.persistent` nodes
+   * on the SAME fs-store: one takes the lock, the other is stuck on it for the
+   * life of the process, and only one of the two is reachable for shutdown.
+   */
+  irohTransportPending?: Promise<IrohBlobTransport>;
+  /**
    * Set only for an ephemeral agent (no `agentDir`): the `os.tmpdir()` store path,
    * removed on shutdown. Identity-backed agents store at `<agentDir>/.iroh/`.
    */

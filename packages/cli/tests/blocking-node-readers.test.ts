@@ -234,8 +234,11 @@ describe('the directory an x402 result lands in', () => {
 
   it('tightens a directory an older build left world-readable', () => {
     // `mkdir`'s mode applies only to directories it CREATES, so this is the
-    // case the explicit chmod exists for - and the row above cannot see it,
-    // because the two together pass whichever one is removed.
+    // case the explicit chmod exists for, and the row above cannot see it. The
+    // asymmetry is worth stating plainly: the CHMOD is what both rows measure,
+    // and `mkdir`'s own `mode` is belt to its braces - removing that mode
+    // alone reddens nothing, because the chmod a line later tightens the
+    // directory either way.
     if (process.getuid?.() === 0) {
       return; // root ignores the mode bits
     }

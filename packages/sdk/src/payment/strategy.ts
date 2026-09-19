@@ -121,10 +121,11 @@ export interface PaymentStrategy {
    * that another job already consumed - the strategy holds no state and cannot
    * do it for you. `ProviderPaymentAcceptor` is that duty done, against a
    * `SettlementStore` you supply; writing it yourself is still supported, and
-   * this paragraph is what such an implementation has to satisfy. Treating a consumed signature as proof that the customer did
-   * not pay is equally wrong: it means only that this particular transaction is
-   * not attributable to this request, so keep the request open to a transfer of
-   * its own rather than concluding non-payment.
+   * this paragraph is what such an implementation has to satisfy. Treating a
+   * consumed signature as proof that the customer did not pay is equally wrong:
+   * it means only that this particular transaction is not attributable to this
+   * request, so keep the request open to a transfer of its own rather than
+   * concluding non-payment.
    */
   verifyPayment(
     rpc: Rpc<SolanaRpcApi>,
