@@ -518,6 +518,45 @@ describe('createAgentDir', () => {
     expect(lines).toContain('.secrets.json');
   });
 
+  it('writes NOTHING when every entry is already there', async () => {
+    // The migration runs on every `writeSecrets`, and `writeSecrets` is on the
+    // path of `init`, `profile`, `delegate-key`, `x402 add` and the MCP's
+    // `create_agent`. Without the early return each of those appends a bare
+    // newline to the user's `.gitignore`, so the file grows by a line every
+    // time an agent is touched - measured, nothing caught it.
+    const root = join(work, '.elisym');
+    mkdirSync(root, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    // Seeded, because the migration is a no-op when there is no file to widen.
+    writeFileSync(gitignorePath, '.secrets.json\n', 'utf-8');
+    await ensureGitignoreHasPrivateStateEntries(root);
+    const afterFirst = await readFile(gitignorePath, 'utf-8');
+
+    await ensureGitignoreHasPrivateStateEntries(root);
+    await ensureGitignoreHasPrivateStateEntries(root);
+
+    expect(await readFile(gitignorePath, 'utf-8')).toBe(afterFirst);
+  });
+
+  it('matches an entry a CRLF file already carries', async () => {
+    // The `.trim()` when the existing lines are read, which nothing measured.
+    // A `.gitignore` written on Windows ends its lines `\r\n`, so every entry
+    // reads as `.secrets.json*\r` and matches nothing - and then the whole list
+    // is appended again on every single write.
+    const root = join(work, '.elisym');
+    mkdirSync(root, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, '.secrets.json\n', 'utf-8');
+    await ensureGitignoreHasPrivateStateEntries(root);
+    const unix = await readFile(gitignorePath, 'utf-8');
+    writeFileSync(gitignorePath, unix.replaceAll('\n', '\r\n'), 'utf-8');
+    const before = await readFile(gitignorePath, 'utf-8');
+
+    await ensureGitignoreHasPrivateStateEntries(root);
+
+    expect(await readFile(gitignorePath, 'utf-8')).toBe(before);
+  });
+
   it('reuses existing .elisym dir when creating additional agent', async () => {
     await createAgentDir({ target: 'project', name: 'Bob', cwd: work, projectRoot: work });
     const second = await createAgentDir({

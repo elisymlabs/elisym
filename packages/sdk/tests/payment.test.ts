@@ -1476,6 +1476,67 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       post: [200_000_000 - amount, 0, 0, netAmount, feeAmount, 0, 0],
     };
 
+    it('verifies a ZERO-FEE payment whose transaction never names the treasury', async () => {
+      // The configuration the program is deployed under on mainnet right now -
+      // `feeBps: 0` - and nothing in the package verified a payment in it.
+      // With no fee there is no fee leg, so `buildPaymentInstructions` never
+      // puts the treasury among the accounts, and the only thing keeping the
+      // verifier from looking for it is the `expectedFee > 0` gate. Measured:
+      // forcing that gate open left the whole package green, and would refuse
+      // every real mainnet payment with `Treasury not found in transaction`.
+      const zeroFeeConfig = { feeBps: 0, treasury: TEST_TREASURY };
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr],
+                pre: [200_000_000, 0, 0],
+                post: [200_000_000 - amount, amount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR({ fee_amount: 0 }), zeroFeeConfig, {
+        txSignature: 'zeroFeeSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(true);
+    });
+
+    it('verifies a ZERO-FEE SPL payment whose transaction has no treasury ATA', async () => {
+      // The token twin of the row above, and the same gate: with no fee leg the
+      // treasury has no token account in the transaction, and `tokenDelta`
+      // would answer `null`.
+      const zeroFeeConfig = { feeBps: 0, treasury: TEST_TREASURY };
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: amount,
+                treasuryBefore: 0,
+                treasuryAfter: 0,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ ...usdcRequest, fee_amount: 0 }),
+        zeroFeeConfig,
+        { txSignature: 'zeroFeeSplSig' as Signature, ...FAST },
+      );
+
+      expect(result.verified).toBe(true);
+    });
+
     it('verifies a v0 payment whose reference and treasury came from a table', async () => {
       // `encoding: 'json'` puts only the STATIC keys in `accountKeys` and the
       // looked-up ones in `meta.loadedAddresses`; the balance arrays cover both,
@@ -1789,7 +1850,9 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       // only the first was: no fixture in the package had a `post` stopping
       // short of the recipient or the treasury. Measured now - with the
       // guard removed these refuse for the WRONG reason, `Recipient received
-      // -97000000` and `Treasury received 0`.
+      // 0` and `Treasury received 0`. The production comment lists a NEGATIVE
+      // delta among the shapes too, and that one needs a non-zero `pre` at the
+      // missing slot, which this page does not have.
       const rpc = createMockRpc({
         getTransaction: () => ({
           send: () =>

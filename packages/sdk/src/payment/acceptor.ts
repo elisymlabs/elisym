@@ -580,9 +580,14 @@ export class ProviderPaymentAcceptor {
           // `windowFull` is counted on the RAW page, before failed transactions
           // are dropped.
           //
-          // The filter itself is NOT KILLED BY ANY TEST: `SolanaPaymentStrategy`
-          // refuses a transaction whose `meta.err` is set anyway, so dropping
-          // it here only saves RPC round-trips and `imperfectPass` marks. It
+          // The filter itself is NOT KILLED BY ANY TEST, and what it costs is
+          // more than round trips: `SolanaPaymentStrategy` refuses a
+          // transaction whose `meta.err` is set, so the money verdict does not
+          // move - but each failed entry then marks the pass imperfect, and
+          // that mark is exactly what decides between `window-empty` and
+          // `inconclusive`. Dropping the filter turns a window that really was
+          // empty into a poll that never terminates. The direction is the safe
+          // one, which is why this is stated rather than guarded harder, and it
           // stays because a third-party strategy owes no such check.
           windowFull = page.length >= DEFAULTS.VERIFY_SIGNATURE_LIMIT;
           candidates = page.filter((entry) => !entry.err).map((entry) => entry.signature);

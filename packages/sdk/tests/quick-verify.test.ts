@@ -255,6 +255,7 @@ describe('verifyJobPaymentQuick', () => {
     ['a null row in the post balances', (row: unknown) => ({ postTokenBalances: [null, row] })],
     ['a null row in the pre balances', (row: unknown) => ({ preTokenBalances: [null, row] })],
     ['post balances that are not a list at all', () => ({ postTokenBalances: 7 })],
+    ['pre balances that are not a list at all', () => ({ preTokenBalances: 7 })],
   ])('answers rather than throwing on %s', async (_label, shape) => {
     // The CONTAINER, which was never checked while the property inside it was:
     // `post.uiTokenAmount?.amount` one line down shows the intent, and
@@ -287,6 +288,84 @@ describe('verifyJobPaymentQuick', () => {
     }));
 
     const result = await verifyJobPaymentQuick(rpc, 'sig-bad-rows', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it.each([
+    ['an empty string', ''],
+    ['whitespace', '   '],
+    ['a hex literal', '0x10'],
+  ])('reads a TOKEN baseline of %s as unreadable, not as a number', async (_label, amount) => {
+    // `BigInt` is not only a thrower: `BigInt('')` is `0n`, `BigInt('   ')` is
+    // `0n`, and `BigInt('0x10')` is `16n`. None reach the `catch`, so without a
+    // shape test on the string each one turns a baseline nobody could read into
+    // a readable number - and the post balance above it into a credit.
+    //
+    // The token arm rather than the lamport one because `uiTokenAmount.amount`
+    // is a STRING in the JSON-RPC spec: an empty one is the natural way for a
+    // proxy to say nothing, where an array or a boolean is somebody being odd.
+    const recipient = makeAddress();
+    const mint = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: {
+            err: null,
+            preBalances: [10_000_000n, 0n],
+            postBalances: [10_000_000n, 0n],
+            preTokenBalances: [
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount } },
+            ],
+            postTokenBalances: [
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '2000000' } },
+            ],
+          },
+          transaction: { message: { accountKeys: [recipient, makeAddress()] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-odd-string', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('does not read a STRING of balances as a list of them', async () => {
+    // A non-array does not throw on index access, so this arm looked safe with
+    // a truthiness check. A string is the shape that makes it unsafe: it
+    // indexes character by character, the digits pass `readBalance`, and the
+    // difference between two of them becomes a credit for a transaction that
+    // never happened.
+    const recipient = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: { err: null, preBalances: '1234', postBalances: '5678' },
+          transaction: { message: { accountKeys: [recipient, makeAddress()] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-string-balances', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('answers rather than throwing when the transaction envelope is missing', async () => {
+    // `meta` is `<object|null>` in the spec and has its own row; `transaction`
+    // is not optional there, but nothing stops a proxy from leaving it out,
+    // and this read runs outside the `try` the same way.
+    const recipient = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: { err: null, preBalances: [10_000_000n], postBalances: [10_000_000n] },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-no-envelope', recipient, 'mainnet');
 
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('recipient_mismatch');

@@ -166,6 +166,12 @@ function accumulateTransfers(
 
   const preTokens = meta.preTokenBalances ?? [];
   const postTokens = meta.postTokenBalances ?? [];
+  // The `preTokens` half is NOT KILLED BY ANY TEST: every fixture with token
+  // balances carries both sides. The state it is for does occur - a transaction
+  // that closes all its token accounts reports a pre side and no post side -
+  // and without it that transaction falls to the lamport branch, where the
+  // returned rent is counted as payment volume. A statistic, not a payment,
+  // which is why it is stated here rather than given a row.
   const isSpl = postTokens.length > 0 || preTokens.length > 0;
 
   if (isSpl) {

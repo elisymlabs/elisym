@@ -128,25 +128,52 @@ describe('X402JobStore', () => {
     if (process.getuid?.() === 0) {
       return; // root ignores the mode bits
     }
-    await store.claimPaidAttempt('job-mode', 2, 2);
-    await store.saveTextResult('job-mode', 'the paid-for answer');
+    // Pinned umask, because without one this row passes against a build that
+    // sets no mode at all: `0o666 & ~0o077` is already `0o600`. A developer or
+    // a CI image with a tight umask would have seen green either way.
+    //
+    // The assertion is the OUTCOME, not either mechanism. `save` both passes a
+    // mode and chmods the temporary, and those mask each other - removing one
+    // leaves the other doing the job - so there is no mutation that kills only
+    // one of them. What matters here is that the file the customer's bought
+    // answers land in is not world-readable.
+    const previousUmask = process.umask(0o022);
+    try {
+      await store.claimPaidAttempt('job-mode', 2, 2);
+      await store.saveTextResult('job-mode', 'the paid-for answer');
 
-    expect(statSync(join(dir, X402_JOBS_FILE)).mode & 0o777).toBe(0o600);
+      expect(statSync(join(dir, X402_JOBS_FILE)).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previousUmask);
+    }
   });
 
-  it('refuses a record slot that is not a record, instead of clearing its ceiling', async () => {
-    // A hand-edited file is this store's stated threat model, and an ARRAY in a
-    // slot is the one shape that passes every gate: `?? {}` does not replace it,
-    // both counters read `undefined` so neither ceiling holds, and the
-    // properties `claimPaidAttempt` sets are dropped again by `JSON.stringify`.
-    // The state never heals - every retry is granted, and every grant is another
-    // signed payment to the upstream.
+  it.each([
+    ['an array', [], /non-record/],
+    ['a null', null, /non-record/],
+    ['a string counter', { attempts: 'abc', created_at: 1, updated_at: 1 }, /unusable record/],
+    ['an object counter', { attempts: {}, created_at: 1, updated_at: 1 }, /unusable record/],
+    [
+      'a non-numeric signature count',
+      { attempts: 0, signatures: 'zz', created_at: 1, updated_at: 1 },
+      /unusable record/,
+    ],
+    ['a missing updated_at', { attempts: 2, signatures: 2, created_at: 1 }, /unusable record/],
+  ])('refuses %s in a slot, instead of clearing its ceiling', async (_label, slot, expected) => {
+    // A hand-edited file is this store's stated threat model, and each of these
+    // clears the ceiling without healing. The array and the null survive
+    // `?? {}` - neither is undefined - so both counters read `undefined` and
+    // neither comparison holds. A counter that is not a number does it without
+    // changing shape: `'abc' >= 2` is false and `'abc' += 1` is `'abc1'`. A
+    // missing `updated_at` is worse still - `now - undefined` is `NaN`, so the
+    // sweep the driver runs from its constructor deletes the record on the next
+    // start, which resets the budget rather than merely failing to hold it.
     //
-    // Refused rather than dropped: dropping the slot resets that job's budget,
-    // which is the thing the ceiling exists to prevent.
-    await writeFile(join(dir, X402_JOBS_FILE), JSON.stringify({ 'job-1': [] }));
+    // Every one of them means another signed payment to the upstream on every
+    // retry, for as long as the file stays as it is.
+    await writeFile(join(dir, X402_JOBS_FILE), JSON.stringify({ 'job-1': slot }));
 
-    await expect(store.claimPaidAttempt('job-1', 2, 2)).rejects.toThrow(/non-record/);
+    await expect(store.claimPaidAttempt('job-1', 2, 2)).rejects.toThrow(expected);
   });
 
   it('round-trips a text result', async () => {

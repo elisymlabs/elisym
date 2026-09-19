@@ -131,20 +131,50 @@ export class X402JobStore {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error(`x402 store ${this.jobsPath} is not a JSON object`);
     }
-    // And the same check one level down, which is where it matters more. A slot
-    // holding an ARRAY passes `?? {}` - it is neither null nor undefined - so
-    // `claimPaidAttempt` reads `undefined` for both counters, clears both
-    // ceilings, and writes the array straight back, because `JSON.stringify`
-    // drops the non-index properties it just set. The state never heals: every
-    // retry is granted, and every grant is another signed payment to the
-    // upstream. `JobLedger.load` refuses the same shape for the same reason.
+    // And the same check one level down, where it matters more, on the SHAPE of
+    // the slot and on the VALUES in it. Both halves clear the ceiling and
+    // neither heals:
     //
-    // Refusing rather than dropping the slot, which is what this file's own
-    // top-level check argues: dropping it resets that job's paid-attempt budget,
-    // and a reset budget is the thing the ceiling exists to prevent.
+    //   An array, or any other non-record, survives `?? {}` - it is neither
+    //     null nor undefined - so both counters read `undefined`, both
+    //     comparisons are false, and `JSON.stringify` drops the properties the
+    //     claim just set, writing the array back unchanged.
+    //   A counter that is not a number does the same without changing shape:
+    //     `'abc' >= 2` is false, `'abc' += 1` is `'abc1'`, and the next pass
+    //     reads that. A missing `updated_at` is worse than either, because
+    //     `now - undefined` is `NaN`, every TTL comparison is false, and the
+    //     sweep the driver runs from its constructor deletes the record on the
+    //     next start - which resets the budget rather than merely failing to
+    //     enforce it.
+    //   `null` is the same reset by the shortest path: `?? {}` hands back a
+    //     fresh record, and the two readers without a `??` throw on it, one of
+    //     them inside the constructor's swallowed sweep - so a single null slot
+    //     also turns off temporary cleanup for that agent for good.
+    //
+    // Every grant these produce is another signed payment to the upstream, and
+    // the file's own threat model is a hand-edited one.
+    //
+    // Refusing rather than dropping, which is where this parts company with
+    // `JobLedger.load`: that one drops an unusable entry and warns, because a
+    // throw there used to land after a partially built index. Here the thing at
+    // stake is a spend ceiling, and dropping the slot resets it - so the whole
+    // read fails instead. The cost is real and worth naming: one corrupt slot
+    // refuses the whole store, including `getResult` for another job whose
+    // answer is already bought and on disk, and there is no rotation path back.
+    const isCount = (value: unknown): boolean =>
+      typeof value === 'number' && Number.isInteger(value) && value >= 0;
     for (const [jobId, record] of Object.entries(parsed)) {
-      if (record !== null && (typeof record !== 'object' || Array.isArray(record))) {
+      if (record === null || typeof record !== 'object' || Array.isArray(record)) {
         throw new Error(`x402 store ${this.jobsPath} holds a non-record at ${jobId}`);
+      }
+      const slot = record as Partial<X402JobRecord>;
+      if (
+        !isCount(slot.attempts) ||
+        !isCount(slot.created_at) ||
+        !isCount(slot.updated_at) ||
+        (slot.signatures !== undefined && !isCount(slot.signatures))
+      ) {
+        throw new Error(`x402 store ${this.jobsPath} holds an unusable record at ${jobId}`);
       }
     }
     return parsed as X402JobsFile;
@@ -167,10 +197,14 @@ export class X402JobStore {
       //
       // `chmod` on the temporary as well, for the reason `JobLedger.flush` gives:
       // `mode` is masked by the umask, and `rename` carries whatever the
-      // temporary ended up with onto the real name. NOT KILLED BY ANY TEST and
-      // it cannot be under a normal umask, which strips group and other bits
-      // and leaves 0o600 alone - it earns its line only under one that strips
-      // the owner's.
+      // temporary ended up with onto the real name.
+      //
+      // The two MASK each other, and no mutation kills either one alone because
+      // of it: under any ordinary umask `mode` by itself already lands 0o600, and
+      // `chmod` alone would fix whatever `mode` failed to set. The row asserts
+      // the OUTCOME for that reason rather than either mechanism. What `chmod`
+      // buys on its own is the umask that strips the owner's bits, where
+      // `writeFile` would leave the file unreadable to us as well.
       await writeFile(tempPath, JSON.stringify(file, null, 2), {
         encoding: 'utf-8',
         mode: INDEX_FILE_MODE,

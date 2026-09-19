@@ -17,9 +17,12 @@ import { mergeAccountKeys } from './account-keys';
  * the recipient and one agent's verdict is served to the next, drop the network
  * and one cluster's is served to the other, and a row holds each.
  *
- * Four guards change no answer and are left stated rather than measured (the
+ * Six guards change no answer and are left stated rather than measured (the
  * skip on an unreadable post amount is NOT among them - it looks neutral and
- * stops being so against a negative baseline, which is why it has a row): the
+ * stops being so against a negative baseline, which is why it has a row). Two
+ * are the `typeof` disjuncts in the token-row checks: a primitive has no
+ * `.owner` to read, so the `=== null` half beside each is what keeps the read
+ * from throwing and the `typeof` half does nothing alone. The other four: the
  * `typeof getTransaction` half of the rpc check (the `catch` below reports
  * `rpc_error` anyway, and the `!rpc` half beside it does change the answer, so
  * it has a row),
@@ -165,6 +168,15 @@ function readBalance(raw: unknown): bigint | null {
   if (typeof raw !== 'bigint' && typeof raw !== 'string' && typeof raw !== 'number') {
     return null;
   }
+  // And a string has to LOOK like an integer. `BigInt('')` is `0n`, and so is
+  // `BigInt('   ')`; `BigInt('0x10')` is `16n` and `BigInt(' 5 ')` is `5n`.
+  // None of those throw, so the `catch` never sees them, and every one turns a
+  // baseline nobody could read into a readable number. The token side makes it
+  // likelier than it looks: `uiTokenAmount.amount` is a STRING in the JSON-RPC
+  // spec, so an empty one is the natural way for a proxy to say nothing.
+  if (typeof raw === 'string' && !/^-?\d+$/.test(raw)) {
+    return null;
+  }
   try {
     return BigInt(raw);
   } catch {
@@ -207,8 +219,14 @@ async function doVerifyOnce(
   // arrays, but not part of `accountKeys` - a recipient supplied by a table is
   // invisible to `indexOf`, and the SOL branch below then falls through to
   // `recipient_mismatch` on a payment that actually happened.
+  //
+  // The envelope is read defensively for the same reason the rows below are:
+  // `meta` is `<object|null>` in the spec and has a row of its own, but nothing
+  // stops a proxy from omitting `transaction` too, and this runs outside the
+  // `try`.
+  const message = (tx.transaction as { message?: { accountKeys?: unknown } } | undefined)?.message;
   const accountKeys = mergeAccountKeys(
-    tx.transaction.message.accountKeys as readonly string[],
+    message?.accountKeys as readonly string[],
     tx.meta.loadedAddresses as LoadedAddresses | undefined,
   );
   const recipientStr = expectedRecipient as string;
@@ -217,7 +235,11 @@ async function doVerifyOnce(
   if (recipientIdx !== -1) {
     const preBalances = tx.meta.preBalances as readonly bigint[] | undefined;
     const postBalances = tx.meta.postBalances as readonly bigint[] | undefined;
-    if (preBalances && postBalances) {
+    // `Array.isArray`, not truthiness. A non-array does not throw on index
+    // access, so this arm looked safe - but a STRING indexes character by
+    // character, and the digits that come out pass `readBalance` and become a
+    // delta. Answering `true` on a page like that is worse than throwing.
+    if (Array.isArray(preBalances) && Array.isArray(postBalances)) {
       const pre = readBalance(preBalances[recipientIdx]);
       const post = readBalance(postBalances[recipientIdx]);
       if (pre !== null && post !== null) {
@@ -231,11 +253,20 @@ async function doVerifyOnce(
 
   const postTokenBalances = tx.meta.postTokenBalances as readonly TokenBalanceEntry[] | undefined;
   const preTokenBalances = tx.meta.preTokenBalances as readonly TokenBalanceEntry[] | undefined;
-  // `Array.isArray` rather than truthiness: a non-iterable here throws on the
-  // `for...of`, and every line in this half runs outside the `try`. Same reason
-  // the row shapes below are guarded - the container was never checked while
-  // the property inside it was.
-  if (Array.isArray(postTokenBalances)) {
+  // `Array.isArray` rather than truthiness on BOTH containers: a non-iterable
+  // post throws on the `for...of`, and a non-array pre has no `.find` at all -
+  // every line in this half runs outside the `try`.
+  //
+  // A pre container that is PRESENT and unreadable stops the half rather than
+  // being treated as absent. The two are not the same answer, for the reason
+  // `readBalance` gives one line down: absent means the token account was
+  // created in this transaction, so zero is its real baseline, while
+  // unreadable means we do not know, and reading it as zero makes whatever the
+  // recipient already held look like a credit.
+  const preRows = Array.isArray(preTokenBalances) ? preTokenBalances : undefined;
+  const preRowsUnreadable =
+    preTokenBalances !== undefined && preTokenBalances !== null && preRows === undefined;
+  if (Array.isArray(postTokenBalances) && !preRowsUnreadable) {
     for (const post of postTokenBalances) {
       if (post === null || typeof post !== 'object' || post.owner !== recipientStr) {
         continue;
@@ -244,7 +275,7 @@ async function doVerifyOnce(
       if (postAmount === null) {
         continue;
       }
-      const pre = preTokenBalances?.find(
+      const pre = preRows?.find(
         (entry) =>
           entry !== null &&
           typeof entry === 'object' &&
