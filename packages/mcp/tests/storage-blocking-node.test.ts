@@ -211,9 +211,9 @@ describe('the .gitignore an older agent directory carries', () => {
     // - which cannot match one. The write site is where the migration has to
     // run, because nothing else in an MCP process does it.
     //
-    // This row measures THAT the migration runs; the row in
-    // `storage-write-order.test.ts` measures that it runs FIRST, by watching
-    // the calls rather than by forcing a failure.
+    // These rows measure THAT the migration runs; `storage-write-order.test.ts`
+    // measures that it runs FIRST - for all four stores, by watching the calls
+    // rather than by forcing a failure.
     const root = join(sandbox, '.elisym');
     writeFileSync(join(root, '.gitignore'), '.secrets.json\n', 'utf-8');
 

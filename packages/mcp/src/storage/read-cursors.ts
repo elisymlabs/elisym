@@ -37,10 +37,11 @@ function withLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   // What keeps one failed write from jamming every later write to this path is
   // the ABSORPTION below, not this line: the promise put in the map settles
   // rejected-free, so the next caller always chains onto something that runs.
-  // The rejection handler here is kept as the second belt - NOT KILLED BY ANY
-  // TEST, and it cannot be while the stored promise is absorbed - because the
-  // two must not be reasoned about separately: remove the absorption and this
-  // is suddenly the only thing holding the queue open.
+  // The rejection handler here is therefore UNREACHABLE as the code stands and
+  // is kept as the reserve that takes over the moment somebody removes the
+  // absorption. Both are measured on `customer-history`, whose rows this is a
+  // copy of; the serialization itself is measured here too, in
+  // `storage-concurrency.test.ts`.
   const next = previous.then(fn, fn);
   // The stored promise absorbs the rejection. `finally` re-throws, so without
   // the `catch` every failed write left an unhandled rejection even though the

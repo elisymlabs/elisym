@@ -911,10 +911,14 @@ export async function cmdStart(
       : undefined;
 
   // NOT KILLED BY ANY TEST - `cmdStart` has no harness - so this ordering is
-  // kept on diff review. Every `.gitignore` migration runs HERE, before a card
-  // is published - and three of them additionally run EARLIER: the two whose
-  // stores can create a `.corrupt.<ts>` inside their constructor, and the one
-  // ahead of the media cache. Running twice is a no-op; running late is not.
+  // kept on diff review. FOUR migrations run HERE, before a card is published.
+  // A fifth - the delegated-pull nonce entry - runs ONLY earlier, beside the
+  // store whose constructor can create the `.corrupt.<ts>` it covers, and is
+  // deliberately not repeated here. The private-state entries run here AND
+  // twice earlier: ahead of the job ledger, for the same `.corrupt.<ts>`
+  // reason, and ahead of the media cache. Running twice is a no-op; running
+  // late is not.
+  //
   // They run here for the same reason the two indexes above are opened here: appending to
   // the file is not guarded - a read-only `.elisym` root, a root written under
   // sudo, a full disk - and a throw after the cards are on the relays leaves a

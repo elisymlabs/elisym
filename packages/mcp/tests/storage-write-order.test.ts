@@ -1,6 +1,11 @@
 /**
  * The `.gitignore` migration runs BEFORE the write, not merely alongside it.
  *
+ * All FOUR customer-side stores, because all four widened their entry on this
+ * branch - `.contacts.json*`, `.customer-history.json*`, `.job-sessions.json*`
+ * and `.messages-read.json*` - so on an older agent every one of them faces a
+ * `.gitignore` carrying the bare name.
+ *
  * These files are written through `${path}.tmp.${hex}` and renamed. A write
  * that dies in between leaves the temporary on disk, and only an entry that is
  * ALREADY in the `.gitignore` covers it - an agent created by an older build
@@ -30,6 +35,14 @@ vi.mock('@elisym/sdk/agent-store', async (importOriginal) => {
       calls.push('migration');
       return actual.ensureGitignoreHasPrivateStateEntries(root);
     },
+    ensureGitignoreHasJobSessionsEntry: async (root: string) => {
+      calls.push('migration');
+      return actual.ensureGitignoreHasJobSessionsEntry(root);
+    },
+    ensureGitignoreHasMessagesEntry: async (root: string) => {
+      calls.push('migration');
+      return actual.ensureGitignoreHasMessagesEntry(root);
+    },
     writeFileAtomic: async (path: string, data: string, mode: number) => {
       calls.push('write');
       return actual.writeFileAtomic(path, data, mode);
@@ -39,6 +52,8 @@ vi.mock('@elisym/sdk/agent-store', async (importOriginal) => {
 
 const { upsertContact } = await import('../src/storage/contacts.js');
 const { appendCustomerJob } = await import('../src/storage/customer-history.js');
+const { recordSessionSubmit } = await import('../src/storage/job-sessions.js');
+const { advanceReadCursor } = await import('../src/storage/read-cursors.js');
 
 let sandbox: string;
 let agentDir: string;
@@ -74,6 +89,27 @@ describe('a customer-side store writing to an older agent directory', () => {
           submittedAt: 1,
           completedAt: 2,
         });
+      },
+    ],
+    [
+      'the job-session list',
+      async (dir: string) => {
+        await recordSessionSubmit(
+          { agentDir: dir, identityPubkey: 'b'.repeat(64) },
+          {
+            sessionId: '3f2b8c1a-9d4e-4f6a-8b2c-1d3e5f7a9b0c',
+            providerPubkey: 'a'.repeat(64),
+            capability: 'text-gen',
+            firstPrompt: 'hello',
+            jobEventId: 'e'.repeat(64),
+          },
+        );
+      },
+    ],
+    [
+      'the DM read cursors',
+      async (dir: string) => {
+        await advanceReadCursor(dir, 'b'.repeat(64), 42);
       },
     ],
   ])('widens the .gitignore before %s reaches disk', async (_label, write) => {

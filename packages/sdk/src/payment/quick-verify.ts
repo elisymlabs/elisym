@@ -12,12 +12,19 @@ import { mergeAccountKeys } from './account-keys';
  * itself calls "not proof", and the undefined-slot check below is what keeps a
  * disagreement from throwing. Stated because the asymmetry is deliberate.
  *
- * Its guards are measured directly, in `tests/quick-verify.test.ts` - every
- * one whose removal changes an ANSWER. Four do not and are left stated instead:
- * the `typeof getTransaction` half (the `catch` below reports `rpc_error`
- * anyway), the forever-lifetime of a positive cache entry (measured only
- * inside the negative TTL, so weakening it costs RPC calls and not a verdict),
- * and the two redundant cache-key components named beside the key.
+ * Its guards are measured directly, in `tests/quick-verify.test.ts` - every one
+ * whose removal changes an ANSWER, the two cache-key components included: drop
+ * the recipient and one agent's verdict is served to the next, drop the network
+ * and one cluster's is served to the other, and a row holds each.
+ *
+ * Four guards change no answer and are left stated rather than measured: the
+ * `typeof getTransaction` half (the `catch` below reports `rpc_error` anyway),
+ * the forever-lifetime of a positive cache entry (measured only inside the
+ * negative TTL, so weakening it costs RPC calls and not a verdict),
+ * `recipientIdx !== -1` (the undefined-slot check below catches the same input),
+ * and the `delete` before re-caching an expired negative (the `set` overwrites
+ * it regardless; only LRU position moves). `MAX_CACHE_ENTRIES` is named
+ * separately below.
  *
  * Nothing in this monorepo calls it today - it is public surface for callers
  * building their own ranking, and that is worth saying out loud, because a

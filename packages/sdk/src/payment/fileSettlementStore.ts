@@ -162,6 +162,14 @@ export class FileSettlementStore implements SettlementStore {
     // about a file that holds real claims.
     const settlements: unknown = parsed === null ? undefined : parsed.settlements;
     if (
+      // The three top-level disjuncts are PROVABLY REDUNDANT and kept as a
+      // mirror: a `null`, a number or an array at the top level all give an
+      // `undefined` or non-object `settlements`, which the second half catches.
+      // They are written out because the pair reads as one rule, and a mirror
+      // with a line missing is a mirror somebody has to re-derive. No mutation
+      // can kill them - measured. (The TERNARY above is not redundant: without
+      // it, a bare `null` document throws a raw property access instead of the
+      // sentence, and a row holds that.)
       parsed === null ||
       typeof parsed !== 'object' ||
       Array.isArray(parsed) ||
@@ -200,6 +208,9 @@ export class FileSettlementStore implements SettlementStore {
       // and refusing the whole index over it would strand a provider whose file
       // is otherwise intact. Both directions are named so neither is mistaken
       // for an oversight.
+      // `Array.isArray(record)` is redundant here for the same reason - an array
+      // has no string `job`, so the next guard drops it either way - and kept
+      // for the same one. NOT KILLED BY ANY TEST.
       if (record === null || typeof record !== 'object' || Array.isArray(record)) {
         continue;
       }

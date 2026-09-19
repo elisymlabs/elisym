@@ -1537,6 +1537,37 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).toMatch(/Reference key not found/);
     });
 
+    it('refuses when the STATIC half is malformed, which shifts the MOST', async () => {
+      // The loaded half has its own row; the static one had none on the money
+      // path, and by `mergeAccountKeys`'s own docstring it is the worse of the
+      // two to skip - a string spread element-by-element lands INSIDE the
+      // prefix every balance index is read against, so every looked-up address
+      // slides onto somebody else's slot. Measured with the guard removed: this
+      // shape answers `verified: true`, reading the treasury's delta as the
+      // recipient's.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: 'ab' as unknown as (string | null)[],
+                loaded: { writable: [recipientAddr, TEST_TREASURY, referenceAddr], readonly: [] },
+                pre: [0, 0, 0, 0, 0],
+                post: [0, 0, netAmount, feeAmount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'badStaticSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Reference key not found/);
+    });
+
     it('refuses when the balance arrays disagree on length', async () => {
       // A SHORT `pre` with the reference PAST the prefix. Without the guard the
       // map is built over `preBalances.length`, the reference at index 3 never

@@ -1154,10 +1154,14 @@ describe('the store contract', () => {
     ['a number where the map belongs', { version: 1, settlements: 42 }],
     ['no settlements map at all', { version: 1 }],
     ['a top-level array', []],
+    ['a bare null document', null],
     ['no version at all', { settlements: {} }],
   ])('refuses %s rather than read it as empty', (_label, contents) => {
     // `typeof null` and `typeof []` are both `'object'`, which is exactly how
-    // these walked through the first version of this guard.
+    // these walked through the first version of this guard. The bare `null`
+    // row is the one that keeps the SENTENCE: without the ternary above the
+    // shape check, it comes back as a raw `Cannot read properties of null`
+    // instead of the line telling the operator to move the file aside.
     const path = join(dir, `shape-${String(_label).replace(/\W+/g, '-')}.json`);
     writeFileSync(path, JSON.stringify(contents), 'utf-8');
 
