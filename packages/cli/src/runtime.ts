@@ -82,6 +82,7 @@ import {
   needsPaymentScan,
   recoveryScanBudgetPerTick,
 } from './payment-recovery.js';
+import { redactRpcUrlsInText } from './rpc-redact.js';
 import {
   SESSION_MAX_CONCURRENT_JOBS,
   type RecoverySessionRef,
@@ -1430,8 +1431,32 @@ export class AgentRuntime {
     return { feeBps: config.feeBps, treasury: config.treasury };
   }
 
+  /**
+   * The ONE way a line leaves this runtime for the operator.
+   *
+   * Every line is scrubbed of RPC credentials here, once, rather than at the
+   * call sites that happen to quote an error. Third-party RPC providers carry
+   * the API key in the URL, and an error reaching this file can quote that URL:
+   * `@solana/kit` does not put it in its own transport errors - measured across
+   * refused connections, DNS failures, 429, 401, a JSON-RPC error and a body
+   * that is not JSON - but for a JSON-RPC error it does not recognize it passes
+   * the SERVER's message through, and a proxy is free to write the request URL
+   * into that. `start.ts` already scrubbed the wallet error for this reason and
+   * nothing here did.
+   *
+   * One place because the call sites are many and grow: seven bound a logger
+   * of their own, and the payment path alone quotes an error in four. Nothing
+   * this runtime logs carries a URL of its own, so the scrub costs no
+   * diagnostic. The sink is `onLog`, which `start` fans out to the terminal and
+   * to the structured log - so both are covered by the one pass.
+   */
+  private get operatorLog(): (line: string) => void {
+    const sink = this.callbacks.onLog ?? console.log;
+    return (line: string) => sink(redactRpcUrlsInText(line));
+  }
+
   async run(): Promise<void> {
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
 
     // Prune terminal ledger entries past the 30-day retention window.
     this.ledger.pruneOldEntries(LEDGER_RETENTION_MS);
@@ -1666,7 +1691,7 @@ export class AgentRuntime {
       this.callbacks.onStop?.();
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      (this.callbacks.onLog ?? console.log)(`onStop error: ${msg}`);
+      this.operatorLog(`onStop error: ${msg}`);
     }
     this.abortController.abort();
     for (const controller of this.jobAbortControllers) {
@@ -1710,7 +1735,7 @@ export class AgentRuntime {
       // payment, whether the next customer is refused before paying - reads the
       // same verdict however deep the write that failed was.
       const e: unknown = asHostScratchFailure(raw) ?? raw;
-      const log = this.callbacks.onLog ?? console.log;
+      const log = this.operatorLog;
       // `describeForOperator`, not `e.message`: a rejected null or a thrown
       // string would make this line throw before the job is marked failed and
       // before the customer is told anything at all. Computed once - it
@@ -1794,7 +1819,7 @@ export class AgentRuntime {
 
   /** Core job processing logic - payment, skill execution, result delivery. */
   private async executeJob(job: IncomingJob, signal?: AbortSignal): Promise<void> {
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
 
     // W2: Validate input length before processing. Byte-based, as defense in depth
     // (the SDK already caps at submit). A spilled job's inline text is '' (the real
@@ -2765,7 +2790,7 @@ export class AgentRuntime {
     kind: string,
     run: () => Promise<{ ticket: string; size: number }>,
   ): Promise<{ ticket: string; size: number }> {
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
     const started = Date.now();
     try {
       const seeded = await run();
@@ -3204,7 +3229,7 @@ export class AgentRuntime {
     jobAsset: Asset,
     signal?: AbortSignal,
   ): Promise<{ netAmount: number; paymentRequest: string }> {
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
 
     if (!this.config.solanaAddress) {
       throw new Error('Solana address not configured');
@@ -3590,7 +3615,7 @@ export class AgentRuntime {
       );
     }
 
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
     // BEFORE the empty-pending early return, for the same reason as the sweep
     // above: the tick that empties the backlog is precisely the tick an
     // operator has been waiting to see, and a summary that just stops appearing

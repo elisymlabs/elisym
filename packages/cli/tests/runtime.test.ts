@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ElisymIdentity, NATIVE_SOL } from '@elisym/sdk';
@@ -329,6 +329,65 @@ describe('AgentRuntime', () => {
       expect(refusal[0]).not.toMatch(/[\n\r]/);
       expect(refusal[0]).toContain('All jobs paid successfully');
       expect(skill.execute).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('an RPC credential in an error the runtime quotes', () => {
+    const KEYED_RPC = 'https://mainnet.helius-rpc.com/?api-key=hunter2-secret';
+    const PATH_KEYED_RPC = 'https://solana-mainnet.g.alchemy.com/v2/ALCHEMYSECRET99';
+
+    it('never reaches the operator log, whichever call site quoted it', async () => {
+      // Third-party RPC providers carry the API key IN the URL. `@solana/kit`
+      // keeps it out of its own transport errors - measured - but passes a
+      // JSON-RPC server's message through verbatim, and a proxy is free to write
+      // the request URL into that. The line is then one paste into a bug report
+      // away from somebody else's quota.
+      //
+      // A skill whose execution fails with such a message, because that is a
+      // path with no payment mocking in the way: the scrub is one chokepoint, so
+      // what is measured here holds for every other call site too, and the row
+      // below keeps it one.
+      const skill = makeFakeSkill('rpc-leaky', 'unused');
+      (skill.execute as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error(`upstream said: request to ${KEYED_RPC} failed, retry ${PATH_KEYED_RPC}`),
+      );
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      const logged: string[] = [];
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: (line: string) => logged.push(line) },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('rpc-leak-job'));
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      const everything = logged.join('\n');
+      // The failure WAS logged - otherwise this passes against a runtime that
+      // simply said nothing.
+      expect(everything).toContain('helius-rpc.com');
+      expect(everything).not.toContain('hunter2-secret');
+      expect(everything).not.toContain('ALCHEMYSECRET99');
+    });
+
+    it('has exactly one way out of the runtime, so a new call site cannot skip the scrub', () => {
+      // Structural, which this suite otherwise avoids. Seven sites used to bind
+      // `this.callbacks.onLog ?? console.log` for themselves; the scrub is only
+      // a guarantee while that expression appears once, inside the getter.
+      const source = readFileSync(join(__dirname, '..', 'src', 'runtime.ts'), 'utf-8');
+
+      expect(source.match(/this\.callbacks\.onLog/g) ?? []).toHaveLength(1);
+      expect(source).toMatch(/private get operatorLog\(\)/);
+      expect(source.match(/console\.(log|warn|error)\(/g) ?? []).toEqual([]);
     });
   });
 
