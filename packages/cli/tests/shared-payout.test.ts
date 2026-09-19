@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -194,6 +194,30 @@ describe('agents that would be paid at the same address', () => {
     const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
 
     expect(found.map((n) => [n.name, n.paid])).toEqual([['opaque', 'unknown']]);
+  });
+
+  it("says 'unknown' when the skills directory cannot be OPENED at all", async () => {
+    // The row above reaches the directory and stumbles inside it. This one
+    // cannot open it: EACCES on `readdir`, which says something about OUR
+    // process, not about the neighbor - their own agent reads it perfectly
+    // well. Collapsing that to `false` is the failure the whole warning exists
+    // to avoid: the operator is told nobody shares their payout address, on
+    // the strength of a directory we never looked in.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const own = makeAgent(projectRoot, 'starter');
+    const neighbor = makeAgent(homeRoot, 'sealed', { paid: true });
+    const skillsDir = join(neighbor, 'skills');
+    chmodSync(skillsDir, 0o000);
+
+    try {
+      const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
+
+      expect(found.map((entry) => [entry.name, entry.paid])).toEqual([['sealed', 'unknown']]);
+    } finally {
+      chmodSync(skillsDir, 0o700);
+    }
   });
 
   it("says 'unknown' when the loader silently dropped a skill it could read", async () => {

@@ -148,7 +148,13 @@ export class FileSettlementStore implements SettlementStore {
         // true, so zero would hand the next `prune` a reason to release a
         // settlement that is still binding. Holding one too long costs nothing;
         // releasing one early is the whole failure.
-        at: typeof candidate.at === 'number' ? candidate.at : Date.now(),
+        //
+        // `typeof` alone did NOT say that, and the comment above outran it for
+        // two rounds: zero IS a number, so it went through untouched, and so
+        // did a negative one. Neither needs a hand-edited file to appear - a
+        // machine whose clock has not reached NTP yet writes a small `at`
+        // itself, and the prune after the clock jumps forward sweeps it.
+        at: typeof candidate.at === 'number' && candidate.at > 0 ? candidate.at : Date.now(),
       };
     }
     return { version: FORMAT_VERSION, settlements: collected };

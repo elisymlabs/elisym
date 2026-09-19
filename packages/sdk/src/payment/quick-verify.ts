@@ -4,7 +4,12 @@ import type { LoadedAddresses } from './account-keys';
 import { mergeAccountKeys } from './account-keys';
 
 /**
- * Lightweight payment verifier used by discovery ranking.
+ * Lightweight payment verifier, exported for discovery ranking.
+ *
+ * Nothing in this monorepo calls it today - it is public surface for callers
+ * building their own ranking, and that is worth saying out loud, because a
+ * reader who assumes a caller assumes a test harness too. Its guards are
+ * measured directly, in `tests/quick-verify.test.ts`.
  *
  * Unlike `SolanaPaymentStrategy.verifyPayment`, this is a single-shot check
  * with no retries: discovery cannot afford the 30-second confirmation budget

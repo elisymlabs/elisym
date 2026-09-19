@@ -28,6 +28,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 let chmodFailure: Error | null = null;
 /** Every path `chmodSync` was asked to change, in order. */
 let chmodPaths: string[] = [];
+/** Every path written, and every path renamed ONTO, in order. */
+let writtenPaths: string[] = [];
+let renameTargets: string[] = [];
 /**
  * Set to make the WRITE fail after it has created the temporary, as ENOSPC
  * does. A separate lever from the chmod one because they fail at different
@@ -50,7 +53,12 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return actual.chmodSync(path, mode);
     },
+    renameSync: (from: string, to: string) => {
+      renameTargets.push(String(to));
+      return actual.renameSync(from, to);
+    },
     writeFileSync: (path: string, data: string, options?: unknown) => {
+      writtenPaths.push(String(path));
       if (writeFailure) {
         // A full disk leaves what it managed to put down, so the lever does the
         // same: half the bytes, then the error. Writing the WHOLE file and then
@@ -91,6 +99,8 @@ beforeEach(() => {
   partialBytes = 0;
   fullBytes = 0;
   chmodPaths = [];
+  writtenPaths = [];
+  renameTargets = [];
   dir = mkdtempSync(join(tmpdir(), 'elisym-settle-write-'));
   path = join(dir, 'settlements.json');
 });
@@ -124,6 +134,24 @@ describe('a write that fails leaves the settlement index untouched', () => {
     chmodFailure = null;
     expect(store.claim(SIG_A, 'job-a')).toBe('claimed');
     expect(createFileSettlementStore(path).owner(SIG_A)).toBe('job-a');
+  });
+
+  it('publishes the index by RENAME, never by writing over it', () => {
+    // The property the docstring leads with - "`rename` last, so a reader never
+    // sees a half-written index" - and the only one in this file that nothing
+    // measured: replace the temporary-plus-rename with a direct write to the
+    // target and every other row here stays green, because they all watch the
+    // chmod, which still lands on a `.tmp` name.
+    //
+    // A reader here is another process: `claim` is synchronous, but the CLI
+    // recovery tick and a second `elisym start` both open this same file.
+    const store = createFileSettlementStore(path);
+    store.claim(SIG_A, 'job-a');
+
+    expect(writtenPaths.length).toBeGreaterThan(0);
+    expect(writtenPaths.every((seen) => seen.includes('.tmp'))).toBe(true);
+    expect(writtenPaths).not.toContain(path);
+    expect(renameTargets).toContain(path);
   });
 
   it('leaves no temporary behind, because a random name is never reused', () => {

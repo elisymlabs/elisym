@@ -1233,15 +1233,20 @@ describe('the store contract', () => {
     ['null', null],
     ['a numeric string', '0'],
     ['a boolean', true],
+    ['the number zero', 0],
+    ['a negative number', -1],
   ])('keeps a settlement whose timestamp is %s', (_label, at) => {
     // `0` would be older than any cutoff, so the next prune would release a
     // binding settlement. Holding one too long costs nothing.
     //
     // An ABSENT field is deliberately not one of these rows: `undefined <
     // cutoff` is false, so a missing `at` survives however the value is read,
-    // and a fixture built on it is green with the type check removed. Each of
-    // these three coerces to something SMALLER than the cutoff instead - and
-    // the numeric string is why `?? Date.now()` is not enough either.
+    // and a fixture built on it is green with the type check removed. The
+    // others each land SMALLER than the cutoff instead - the numeric string is
+    // why `?? Date.now()` is not enough, and the last two are why `typeof ===
+    // 'number'` is not either: zero and a negative are numbers, they passed the
+    // check untouched, and the next prune released a binding settlement.
+    // Measured, on the build before this row existed.
     const path = join(dir, `no-timestamp-${String(_label).replace(/\W+/g, '-')}.json`);
     writeFileSync(
       path,
@@ -1603,6 +1608,11 @@ describe('what the acceptor actually hands the verifier', () => {
     const liveFee: ProtocolConfigInput = { feeBps: 300, treasury: TREASURY };
     const request = makeRequest({ fee_amount: 30_000 });
     const rpc = makeRpc();
+    // Snapshotted BEFORE the call: `toEqual` against the live object cannot see
+    // an argument corrupted IN PLACE on the way in, which is the cheaper way to
+    // get this wrong than passing a different object.
+    const sentRequest = structuredClone(request);
+    const sentConfig = structuredClone(liveFee);
     listedPages = [[{ signature: SIG_A, err: null }]];
 
     await new ProviderPaymentAcceptor({ strategy: recordingStrategy(seen), rpc, store }).accept(
@@ -1616,8 +1626,8 @@ describe('what the acceptor actually hands the verifier', () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0]?.rpc).toBe(rpc);
-    expect(seen[0]?.request).toEqual(request);
-    expect(seen[0]?.config).toEqual(liveFee);
+    expect(seen[0]?.request).toEqual(sentRequest);
+    expect(seen[0]?.config).toEqual(sentConfig);
     expect(seen[0]?.options).toMatchObject({ txSignature: SIG_A, retries: 2, intervalMs: 50 });
   });
 

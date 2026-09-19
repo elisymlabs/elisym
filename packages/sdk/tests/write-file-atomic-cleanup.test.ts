@@ -14,7 +14,7 @@
  * the rename is what the cleanup is for, and no healthy filesystem produces
  * one on demand.
  */
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -90,6 +90,12 @@ describe('a write that fails part way through', () => {
     writeFailure = new Error('EIO: i/o error, write');
     await expect(writeFileAtomic(target, 'second', 0o600)).rejects.toThrow(/EIO/);
 
+    // The CONTENTS, not just the listing: a version of this that wrote straight
+    // to the target passes the directory check in both worlds, and the lever
+    // puts half the bytes down - so what is left at `.secrets.json` would be
+    // half of the new keys and none of the old ones. Measured; the listing
+    // assertion alone did not catch it.
+    expect(readFileSync(target, 'utf-8')).toBe('first');
     expect(readdirSync(dir)).toEqual(['.secrets.json']);
   });
 });

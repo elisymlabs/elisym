@@ -1,4 +1,12 @@
-import { chmodSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  statSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -292,6 +300,41 @@ describe('createAgentDir', () => {
     expect(result.source).toBe('home');
     expect(existsSync(result.dir)).toBe(true);
     expect(existsSync(join(result.dir, 'skills'))).toBe(true);
+  });
+
+  it('refuses a name that would escape the elisym root', async () => {
+    // The comment on this call says a traversal "can never materialize", and
+    // nothing measured it: every caller validates earlier, so removing the
+    // check here left the package green and the claim standing on its own.
+    await expect(createAgentDir({ target: 'home', name: '../.ssh', cwd: work })).rejects.toThrow();
+  });
+
+  it('creates a HOME agent directory nobody else can enter', async () => {
+    // `writeSecrets` says home-global agents rely on directory permissions
+    // INSTEAD of a `.gitignore` - there is no repository around them to ignore
+    // anything. The whole `.gitignore` half of that sentence is measured a
+    // dozen ways in this file and the permission half was measured nowhere, so
+    // the mode could widen to 0o755 with the package green.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const result = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+
+    expect(statSync(result.dir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(result.dir, 'skills')).mode & 0o777).toBe(0o700);
+  });
+
+  it('writes .secrets.json readable only by its owner', async () => {
+    // The file the directory mode above is protecting: the agent's nostr and
+    // solana secret keys. Nothing asserted its mode either.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+
+    await writeSecrets(dir, { nostr_secret_key: 'a'.repeat(64) });
+
+    expect(statSync(join(dir, '.secrets.json')).mode & 0o777).toBe(0o600);
   });
 
   it('creates project layout with .gitignore', async () => {

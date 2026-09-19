@@ -80,8 +80,8 @@ describe('verifyJobPaymentQuick', () => {
     // The PRE half of the delta, unmeasured here exactly as it was in the
     // verifier: every other row starts the recipient at zero, so reading the
     // baseline as zero looks identical. Under that reading any transaction
-    // that so much as MENTIONS a provider's address reports "received funds",
-    // and this answer feeds discovery ranking.
+    // that so much as MENTIONS a provider's address reports "received funds" -
+    // the answer this function exists to give, to whoever ranks on it.
     const recipient = makeAddress();
     const payer = makeAddress();
     const rpc = createMockRpc(() => ({
@@ -130,6 +130,109 @@ describe('verifyJobPaymentQuick', () => {
     }));
 
     const result = await verifyJobPaymentQuick(rpc, 'sig-token-pre-held', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it("does not read SOMEONE ELSE's token credit as the recipient being paid", async () => {
+    // The other half of the same two lines: round 14 measured HOW MUCH and left
+    // WHOSE unmeasured, which is the shape the verifier's fee leg had. A real
+    // transaction carries the token accounts of everyone it touched, so without
+    // the owner test any transfer that merely includes the provider's address
+    // among its keys reports a paid job.
+    const recipient = makeAddress();
+    const stranger = makeAddress();
+    const payer = makeAddress();
+    const mint = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer, recipient],
+            pre: [10_000_000, 0],
+            post: [10_000_000, 0],
+            preTokenBalances: [],
+            postTokenBalances: [
+              {
+                accountIndex: 1,
+                mint: mint as string,
+                owner: stranger as string,
+                uiTokenAmount: { amount: '5000000', decimals: 6, uiAmount: 5 },
+              },
+            ],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-stranger-token', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('does not read a DIFFERENT mint as the baseline for this one', async () => {
+    // The baseline is matched by owner AND mint. Matched by owner alone, an
+    // account the recipient already held in another token supplies a zero
+    // baseline for a balance that did not move.
+    const recipient = makeAddress();
+    const payer = makeAddress();
+    const paidMint = makeAddress();
+    const otherMint = makeAddress();
+    const entry = (mint: string, amount: number) => ({
+      accountIndex: 1,
+      mint,
+      owner: recipient as string,
+      uiTokenAmount: { amount: String(amount), decimals: 6, uiAmount: amount / 1e6 },
+    });
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer, recipient],
+            pre: [10_000_000, 0],
+            post: [10_000_000, 0],
+            // The other mint FIRST, and empty: that is the row a match on owner
+            // alone settles on.
+            preTokenBalances: [entry(otherMint as string, 0), entry(paidMint as string, 4_000_000)],
+            postTokenBalances: [entry(paidMint as string, 4_000_000)],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(
+      rpc,
+      'sig-other-mint-baseline',
+      recipient,
+      'mainnet',
+    );
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
+  it('answers rather than throwing when a table supplies more keys than balance slots', async () => {
+    // This branch introduced `mergeAccountKeys`, which made the key list longer
+    // than it used to be - so the recipient's index can now point past the end
+    // of the balance arrays, which it could not before. The undefined-slot
+    // guard is what keeps that from being `BigInt(undefined)`, and
+    // `verifyJobPaymentQuick` wraps nothing in a try: a throw here rejects the
+    // caller's promise instead of answering "no payment seen".
+    const recipient = makeAddress();
+    const payer = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve(
+          makeTx({
+            keys: [payer],
+            loadedAddresses: { writable: [makeAddress(), recipient], readonly: [] },
+            pre: [10_000_000, 0],
+            post: [9_000_000, 1_000_000],
+          }),
+        ),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-keys-past-slots', recipient, 'mainnet');
 
     expect(result.receivedFunds).toBe(false);
     expect(result.reason).toBe('recipient_mismatch');

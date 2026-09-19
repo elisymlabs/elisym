@@ -842,7 +842,11 @@ describe('one settlement transaction settles one job', () => {
     expect(deliveredJobIds(transport)).toEqual([]);
     const entry = ledger.allEntries().find((candidate) => candidate.job_id === 'blank-settlement');
     expect(entry?.payment_signature).toBeUndefined();
-  });
+    // A budget of its own, because `waitFor` here is allowed 10 s and vitest's
+    // default is 5: with the guard broken this row waited on a prompt that
+    // never came and died on the harness timeout BEFORE any of the four
+    // assertions above ran. Red either way - but red saying nothing.
+  }, 30_000);
 });
 
 describe("a refused settlement never ends an honest customer's job", () => {

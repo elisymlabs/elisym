@@ -2931,10 +2931,15 @@ export class AgentRuntime {
       return undefined;
     }
     try {
-      // A FIFO reports size 0, so the cap above lets it through, and the read
-      // then never settles - one libuv worker per job, gone for good.
-      // NOT KILLED BY ANY TEST: this path needs a Blossom transport and an
-      // identity, and nothing in the suite builds one.
+      // NOT KILLED BY ANY TEST, and the honest reason is not the one that used
+      // to be written here: this is not merely un-harnessed, it is all but
+      // UNREACHABLE. The only caller seeds the same path through iroh one line
+      // earlier, and that seed fails on a node that blocks, so control never
+      // arrives. (`size` here comes from the iroh seed's own progress, not from
+      // `stat`, so the old note about a FIFO reporting size 0 described a check
+      // this function does not make.) Kept for the window the seed leaves open
+      // - the path can become a FIFO between the two calls - and because the
+      // guard costs one `stat` against a read that would never settle.
       if (await isBlockingNode(filePath)) {
         return undefined;
       }

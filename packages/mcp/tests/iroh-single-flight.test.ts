@@ -19,11 +19,16 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let created = 0;
+let shutdowns = 0;
 
 vi.mock('@elisym/sdk/node', () => ({
   createIrohTransport: () => {
     created += 1;
-    return { shutdown: async () => undefined };
+    return {
+      shutdown: async () => {
+        shutdowns += 1;
+      },
+    };
   },
 }));
 
@@ -34,6 +39,7 @@ let agentDir: string;
 
 beforeEach(() => {
   created = 0;
+  shutdowns = 0;
   sandbox = mkdtempSync(join(tmpdir(), 'elisym-iroh-flight-'));
   agentDir = join(sandbox, '.elisym', 'alice');
   mkdirSync(agentDir, { recursive: true });
@@ -71,6 +77,33 @@ describe('two file transfers that start at the same moment', () => {
     expect(created).toBe(1);
     expect(first).toBe(second);
     await shutdownIrohTransport(agent);
+  });
+
+  it('are shut down even when the transfer that opened them is still starting', async () => {
+    // `shutdownIrohTransport` sees `agent.irohTransport` only once creation has
+    // finished, and creation awaits. A teardown that lands in that window would
+    // otherwise walk away from a node that is about to exist - holding the
+    // store lock, with nothing left referencing it - so the shutdown waits for
+    // the pending creation first.
+    //
+    // Not a process-teardown-only concern, which is what makes it a race and
+    // not tidiness: `scrubAgent` calls this from `switch_agent` and
+    // `stop_agent`, ordinary tool calls that are not serialized against the
+    // file transfer they interrupt. The agent is then dropped from the registry
+    // while a node is still attaching to `<agentDir>/.iroh`, so the store lock
+    // is held by something unreachable and switching back opens a second node
+    // on the same store - the exact failure the single-flight above prevents,
+    // reached through the other door.
+    const agent = { agentDir } as never;
+
+    const starting = ensureIrohTransport(agent);
+    await shutdownIrohTransport(agent);
+
+    await starting;
+    expect(created).toBe(1);
+    expect(shutdowns).toBe(1);
+    // And nothing is left attached to the agent that was just torn down.
+    expect((agent as { irohTransport?: unknown }).irohTransport).toBeUndefined();
   });
 
   it('let a later transfer build a new node after shutdown', async () => {
