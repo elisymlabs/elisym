@@ -713,6 +713,51 @@ describe('buildPaymentInstructions', () => {
     );
   });
 
+  it('does not throw on a malformed CONFIG treasury either', async () => {
+    // The mirror of the row above, and the guard beside it used to be recorded
+    // as unkillable on the grounds that the value comes off the chain. It does
+    // on every first-party path - but this function is exported, and the
+    // option's own docstring says a direct caller is on their own. Reached that
+    // way, an unparseable treasury walked into `findAssociatedTokenPda` and
+    // came back as a raw encoder error about base58 lengths instead of simply
+    // contributing no account to the denylist.
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: makeAddress(),
+        fee_amount: 0,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'usdc',
+          mint: USDC_SOLANA_DEVNET.mint,
+          decimals: USDC_SOLANA_DEVNET.decimals,
+        },
+      } as never,
+      signer as never,
+      { programId: TEST_PROGRAM_ID, treasury: 'not-an-address' as Address },
+    );
+
+    // And the recipient is still paid in full, for the reason the row above
+    // gives: an instruction count alone is true of the ATA-create too.
+    const transfers = instructions.filter(
+      (instruction): instruction is { programAddress: string; data: Uint8Array } =>
+        typeof instruction === 'object' &&
+        instruction !== null &&
+        (instruction as { programAddress?: string }).programAddress ===
+          (TOKEN_PROGRAM_ADDRESS as string),
+    );
+    expect(transfers.length).toBe(1);
+    expect(getTransferCheckedInstructionDataDecoder().decode(transfers[0]?.data).amount).toBe(
+      100_000_000n,
+    );
+  });
+
   it('fee + providerAmount === totalAmount for various amounts', async () => {
     interface TransferIxLike {
       data: Uint8Array;
@@ -1024,6 +1069,11 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
      * transaction carries the token accounts of everyone it touched, so the
      * baseline is found by owner AND mint; these are the rows a half of that
      * match would settle on instead.
+     *
+     * They take the LOW `accountIndex` values, and the real rows move up to
+     * make room: a node sorts these rows by that index, so a decoy that has to
+     * be found first has to be numbered first. The code never reads the field -
+     * this is about the fixture answering the way the node would.
      */
     decoyPre?: { owner: string; mint: string; amount: number }[];
   }) {
@@ -1035,6 +1085,9 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     });
     const entry = (owner: string, index: number, raw: number) =>
       entryIn(owner, opts.mint, index, raw);
+    const decoyCount = (opts.decoyPre ?? []).length;
+    const recipientIndex = decoyCount + 1;
+    const treasuryIndex = decoyCount + 3;
     return {
       meta: {
         err: null,
@@ -1044,14 +1097,14 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           .slice(0, opts.keys.length - (opts.dropPostLamports ?? 0)),
         preTokenBalances: [
           ...(opts.decoyPre ?? []).map((decoy, offset) =>
-            entryIn(decoy.owner, decoy.mint, opts.keys.length + offset, decoy.amount),
+            entryIn(decoy.owner, decoy.mint, offset, decoy.amount),
           ),
-          entry(recipientAddr, 1, opts.recipientBefore),
-          entry(TEST_TREASURY, 3, opts.treasuryBefore),
+          entry(recipientAddr, recipientIndex, opts.recipientBefore),
+          entry(TEST_TREASURY, treasuryIndex, opts.treasuryBefore),
         ],
         postTokenBalances: [
-          entry(recipientAddr, 1, opts.recipientAfter),
-          entry(TEST_TREASURY, 3, opts.treasuryAfter),
+          entry(recipientAddr, recipientIndex, opts.recipientAfter),
+          entry(TEST_TREASURY, treasuryIndex, opts.treasuryAfter),
         ],
       },
       transaction: { message: { accountKeys: opts.keys } },
@@ -1327,8 +1380,10 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
 
     it('refuses a reference spelled the way a NULL account key stringifies', async () => {
       // `verifyPayment` checks the reference for PRESENCE, never for format, so
-      // the four letters `null` reach the key map unscreened - and a sparse
-      // transaction carries a null key, as the row above shows. Drop the
+      // the four letters `null` reach the key map unscreened - and a null
+      // account key is a shape this file's threat model already carries: a real
+      // node does not emit one, a proxy or shim between us and it can, which is
+      // the same door `mergeAccountKeys` guards a string through. Drop the
       // truthiness guard in `checkTxDiff` and that key registers as 'null', the
       // presence check that is the whole anti-replay on this rail passes, and
       // this transaction - which carries no reference at all - settles the job.
@@ -1570,10 +1625,16 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       // path, and by `mergeAccountKeys`'s own docstring it is the worse of the
       // two to skip - a string spread element-by-element lands INSIDE the
       // prefix every balance index is read against, so every looked-up address
-      // slides onto somebody else's slot. Measured with the guard removed: this
-      // shape answers `verified: true` - the two characters take indices 0 and
-      // 1, so every looked-up address sits two slots below the one it owns, and
-      // the deltas this page carries are read off those wrong slots.
+      // slides onto somebody else's slot.
+      //
+      // The page UNDERPAYS, which is what makes the shift cost money rather
+      // than merely look untidy: six balance slots against three looked-up
+      // addresses means the real static half is three keys, so the recipient
+      // owns slot 3 and was credited `feeAmount` there - a fee and nothing
+      // else. The malformed half spreads into two slots instead of three, so
+      // with the guard removed the recipient is read off slot 2, which belongs
+      // to nobody in this layout, and the shortfall disappears. Measured: the
+      // mutant answers `verified: true` on a transaction that never paid.
       const rpc = createMockRpc({
         getTransaction: () => ({
           send: () =>
@@ -1581,8 +1642,8 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
               makeTx({
                 keys: 'ab' as unknown as (string | null)[],
                 loaded: { writable: [recipientAddr, TEST_TREASURY, referenceAddr], readonly: [] },
-                pre: [0, 0, 0, 0, 0],
-                post: [0, 0, netAmount, feeAmount, 0],
+                pre: [0, 0, 0, 0, 0, 0],
+                post: [0, 0, netAmount, feeAmount, 0, 0],
               }),
             ),
         }),
@@ -1595,6 +1656,39 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
 
       expect(result.verified).toBe(false);
       expect(result.error).toMatch(/Reference key not found/);
+    });
+
+    it('reads that same page as an UNDERPAYMENT when the static half is well formed', async () => {
+      // The control for the row above, and the reason it is a row rather than a
+      // sentence: what makes that mutant dangerous is that the page it accepts
+      // is one the verifier REFUSES when it can read the key list. Three static
+      // keys put the recipient on slot 3, where this transaction credited
+      // `feeAmount` and nothing more.
+      //
+      // Without this, a later edit could quietly reshape the fixture into a
+      // page that is a valid payment - which is what the first version of it
+      // was, and why its comment then described a shift that was not happening.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, makeAddress(), makeAddress()],
+                loaded: { writable: [recipientAddr, TEST_TREASURY, referenceAddr], readonly: [] },
+                pre: [0, 0, 0, 0, 0, 0],
+                post: [0, 0, netAmount, feeAmount, 0, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'wellFormedStaticSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received/);
     });
 
     it('refuses when the balance arrays disagree on length', async () => {

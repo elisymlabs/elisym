@@ -138,13 +138,19 @@ export async function shutdownIrohTransport(
     );
     await Promise.race([observed, waitMs(pendingWaitMs)]);
     if (!settled) {
-      // Deferred, NOT returned early: the cleanup below still has to run, or an
-      // ephemeral agent's tmpdir - job inputs and bought results in the clear -
-      // is left behind by the very teardown that exists to remove it.
+      // The field is cleared along with the late shutdown: `createTransport`
+      // assigns `agent.irohTransport` when it finally lands, so without this
+      // the agent is left holding a transport that has already been shut down.
+      // Measured by `closes a node that turns up AFTER the teardown gave up
+      // waiting`.
       //
-      // And the field is cleared with it: `createTransport` assigns
-      // `agent.irohTransport` when it finally lands, so without this the agent
-      // is left holding a transport that has already been shut down.
+      // Falling through rather than returning here is uniformity, NOT a guard,
+      // and no test can make it one: reaching this line means the pending
+      // creation is still inside `ensureGitignoreHasIrohEntry`, which is the
+      // only await `createTransport` has - the ephemeral branch has none, so
+      // its promise is always settled by now. On that branch neither
+      // `irohTransport` nor `irohStoreDir` has been assigned yet, so both
+      // cleanups below are no-ops.
       void observed
         .then((transport) => {
           agent.irohTransport = undefined;

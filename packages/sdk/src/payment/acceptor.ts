@@ -375,18 +375,19 @@ export class ProviderPaymentAcceptor {
     // The carve-out: a job that already owns a settlement is NOT closed by a
     // step-0 verdict.
     //
-    // What step 1 can then do differs by BRANCH, and the two were measured
-    // rather than assumed:
+    // What step 1 can then do is the SAME on both branches with the strategy
+    // that ships, and it was measured rather than assumed: it cannot accept.
+    // `verifyPayment` refuses every shape the predicate calls
+    // `unusable-request` without asking the chain at all - the parity block in
+    // the suite asserts exactly that, by spying on `getTransaction` - and it
+    // runs the same degenerate-reference check ahead of both its branches, so
+    // it refuses that one too.
     //
-    //   degenerate_reference -> step 1 cannot accept either. `verifyPayment`
-    //     runs the same degenerate-reference check ahead of both its branches,
-    //     so it refuses too and the call ends `inconclusive`. The carve-out
-    //     buys a recoverable verdict, nothing more.
-    //   unusable-request -> step 1 is LIVE and can accept. The predicate reads
-    //     the REQUEST; `verifyPayment` reads the CHAIN, and a settled job's own
-    //     signature still verifies against a request this build calls unusable.
-    //     The suite pins this: a settled job whose request our predicate
-    //     rejects comes back `accepted: true` through step 1.
+    // So the carve-out buys one thing, not two: a RECOVERABLE verdict where a
+    // terminal one would have landed. Only an INJECTED strategy that verifies
+    // anything comes back `accepted: true` here, and a fixture built on one
+    // pins the opposite of what ships - which is why both carve-out rows that
+    // claim a shipped behaviour are written against the real strategy.
     //
     // The reason for both is that BOTH lists here grow in minor releases, so a
     // job paid and settled under an older build can be re-read as unpayable by

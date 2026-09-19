@@ -490,8 +490,9 @@ export async function writeSecrets(
   // the only one on the path that writes the keys themselves.) Before the
   // write, so that when it SUCCEEDS the widened entries are in place before
   // `.secrets.json.tmp.<hex>` can exist at all; a no-op when the file is
-  // absent, so a home-global agent is unaffected. When it FAILS the keys are written anyway and the warning below
-  // is the only thing between that temporary and a commit.
+  // absent, so a home-global agent is unaffected. When it FAILS the keys are
+  // written anyway and the warning below is the only thing between that
+  // temporary and a commit.
   //
   // WARNED, not fatal, and the asymmetry with `elisym start` is deliberate:
   // there a refusal protects an index that decides money, here it would stop an

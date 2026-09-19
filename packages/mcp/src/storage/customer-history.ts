@@ -91,9 +91,9 @@ function withLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   // moment somebody removes the absorption. NOT KILLED BY ANY TEST, and it
   // cannot be while the absorption stands.
   //
-  // The serialization itself IS measured, on this store: the concurrent-append
-  // row below loses entries without it, and so does the trimming row beside
-  // it.
+  // The serialization itself IS measured, on this store: in
+  // `customer-history.test.ts`, the concurrent-append row loses entries without
+  // it, and so does the trimming row beside it.
   const next = previous.then(fn, fn);
   // The map stores `wrapped`, so the cleanup must compare against `wrapped` too -
   // comparing against `next` (the inner promise) never matched the stored value,

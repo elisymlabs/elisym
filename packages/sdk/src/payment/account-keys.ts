@@ -21,8 +21,9 @@ export interface LoadedAddresses {
  * paid.
  *
  * Both halves are checked with `Array.isArray` rather than `?? []`. A proxy
- * that answers with a string or a number for one of them would otherwise be
- * spread element-by-element. For the WRITABLE half that does not merely add
+ * that answers with a STRING for one of them would otherwise be spread
+ * element-by-element - a number is not iterable and throws instead, which the
+ * retry loop turns into a refusal, so the string is the shape worth guarding. For the WRITABLE half that does not merely add
  * junk keys: it lengthens the merged list ahead of the read-only one and
  * shifts every read-only address onto another account's balance slot. For the
  * read-only half nothing follows it, so the cost is the real addresses that

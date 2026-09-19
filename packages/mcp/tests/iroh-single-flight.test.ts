@@ -13,7 +13,7 @@
  * `createIrohTransport` needs the native addon and a writable store, and what
  * is being measured here is HOW MANY TIMES it is called.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -201,14 +201,18 @@ describe('two file transfers that start at the same moment', () => {
     // serial, so every later agent kept its key bytes in memory, and a second
     // SIGINT is swallowed by the shutting-down flag. Measured before the bound
     // went in.
+    //
+    // `agentDir` and no `irohStoreDir`, which is the only shape that can reach
+    // this: the ephemeral branch of `createTransport` contains no `await` at
+    // all, so its promise is settled before any wait can expire. An agent
+    // carrying both - the shape this row used to build - is one the type's own
+    // docstring rules out, and asserting against it measured the fixture.
     const neverSettles = new Promise<never>(() => undefined);
     const agent = {
       name: 'alice',
       agentDir,
       irohTransportPending: neverSettles,
-      irohStoreDir: join(sandbox, 'ephemeral-store'),
     } as never;
-    mkdirSync(join(sandbox, 'ephemeral-store'), { recursive: true });
 
     // Raced HERE rather than left to the harness clock: unbounded, this call
     // never returns, and a row that dies on the test timeout reports a hang
@@ -221,9 +225,6 @@ describe('two file transfers that start at the same moment', () => {
     ]);
 
     expect(outcome).toBe('returned');
-    // And the ephemeral store is gone: giving up on the pending node must not
-    // skip the cleanup this teardown exists for.
-    expect(existsSync(join(sandbox, 'ephemeral-store'))).toBe(false);
   });
 
   it('closes a node that turns up AFTER the teardown gave up waiting', async () => {

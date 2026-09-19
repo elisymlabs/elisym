@@ -516,6 +516,18 @@ export async function cmdStart(
   const x402Skills = allSkills.filter((skill) => skill.mode === 'x402');
   let x402InvariantBroken: string | undefined;
   if (x402Skills.length > 0) {
+    // BEFORE the driver's constructor, like the ledger's and the nonce store's:
+    // the driver sweeps expired records from its constructor, and a sweep that
+    // finds one writes `.x402-jobs.json` and its random temporary right there.
+    //
+    // ABOVE the invariant check, not inside the branch that survives it. An
+    // agent whose wallet invariant is broken starts anyway - it just withholds
+    // the x402 cards - and it is the likeliest one to be carrying a
+    // hand-written x402 skill in the first place. Narrowing this to the healthy
+    // branch would leave exactly that agent with an older build's
+    // `.x402-jobs.json.tmp`, which the narrow entry does not match, uncovered
+    // and unswept on every start.
+    await ensureGitignoreHasX402Entries(dirname(loaded.dir));
     const solanaSecretKey = loaded.secrets.solana_secret_key;
     if (solanaSecretKey === undefined || solanaSecretKey.length === 0) {
       x402InvariantBroken = 'no solana_secret_key in .secrets.json';
@@ -569,12 +581,6 @@ export async function cmdStart(
         );
         return config.feeBps;
       }
-      // BEFORE the constructor, like the ledger's and the nonce store's: the
-      // driver sweeps expired records from its constructor, and a sweep that
-      // finds one writes `.x402-jobs.json` and its random temporary right
-      // there. This was the one migration on this path that still ran after
-      // the file it covers could already exist.
-      await ensureGitignoreHasX402Entries(dirname(loaded.dir));
       skillCtx.x402Driver = new X402Driver({
         agentDir: loaded.dir,
         paymentsAddress: solanaAddress,
@@ -918,12 +924,14 @@ export async function cmdStart(
 
   // NOT KILLED BY ANY TEST - `cmdStart` has no harness - so this ordering is
   // kept on diff review. THREE migrations run HERE, before a card is
-  // published. TWO more run ONLY earlier, each beside the constructor that can
-  // create the file it covers, and neither is repeated here: the delegated-pull
-  // nonce entry, whose store can produce a `.corrupt.<ts>` an older agent's
-  // narrow line does not match, and the x402 cache entry, whose driver sweeps
-  // from its constructor and writes the index the moment that sweep finds
-  // something. The private-state entries run here AND twice earlier: ahead of
+  // published. TWO more run ONLY earlier, ahead of the constructor that can
+  // create the file each covers, and neither is repeated here: the
+  // delegated-pull nonce entry, whose store can produce a `.corrupt.<ts>` an
+  // older agent's narrow line does not match, and the x402 cache entry, whose
+  // driver sweeps from its constructor and writes the index the moment that
+  // sweep finds something. The x402 one runs for EVERY agent carrying an x402
+  // skill, including one whose wallet invariant is broken and whose driver is
+  // therefore never built. The private-state entries run here AND twice earlier: ahead of
   // the job ledger, for the same `.corrupt.<ts>` reason, and ahead of the media
   // cache. Running twice is a no-op; running late is not.
   //

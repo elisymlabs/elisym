@@ -842,6 +842,11 @@ describe('a request that cannot be paid at all', () => {
     // configuration" holds within one version of this SDK, and both lists grow.
     // Growing one must never destroy money on a job whose settlement is already
     // claimed and was once verified.
+    //
+    // An INJECTED strategy, so what this pins is the CONTROL FLOW: the step-0
+    // verdict does not close the job, step 1 runs, and no listing happens. It
+    // does not pin that the shipped verifier would accept - it would not, and
+    // the two rows further down measure that against the real one.
     store.claim(SIG_A, 'job-1');
     const result = await makeAcceptor(strategyVerifying(SIG_A)).accept(
       { paymentRequest: makeRequest({ amount: 0 }), jobIdentity: 'job-1' },
@@ -936,10 +941,28 @@ describe('a request that cannot be paid at all', () => {
     // and it stays green while this branch tells the operator the wrong thing -
     // which is worse than telling them nothing, and nothing was the complaint
     // that put the verdict in the sentence to begin with.
+    //
+    // Against the REAL strategy, for the reason the row above gives: an
+    // injected one that verifies anything answers `accepted: true` here and
+    // would pin the opposite of what ships. `verifyPayment` refuses `amount: 0`
+    // without asking the chain, so step 1 cannot accept on this branch either,
+    // and the carve-out's sentence is the whole of what the operator gets.
     store.claim(SIG_A, 'job-1');
+    const rpc = makeRpc();
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: new SolanaPaymentStrategy(),
+      rpc,
+      store,
+    });
 
-    const result = await makeAcceptor(strategyVerifying()).accept(
-      { paymentRequest: makeRequest({ amount: 0 }), jobIdentity: 'job-1' },
+    const result = await acceptor.accept(
+      {
+        paymentRequest: makeRequest({ amount: 0 }),
+        jobIdentity: 'job-1',
+        // One-shot, so a mutant answers in milliseconds and this row goes red
+        // on the assertion below rather than on the vitest timeout.
+        budget: { retriesForOwnSettlement: 1, retriesPerCandidate: 1, intervalMs: 0 },
+      },
       CONFIG,
     );
 
@@ -948,6 +971,10 @@ describe('a request that cannot be paid at all', () => {
       reason: 'inconclusive',
       error: expect.stringContaining('unusable-request'),
     });
+    expect(listCalls).toBe(0);
+    expect(
+      (rpc as unknown as { getTransaction: ReturnType<typeof vi.fn> }).getTransaction,
+    ).not.toHaveBeenCalled();
   });
 
   it('is terminal for an asset nothing can resolve, and does not throw on it', async () => {
@@ -1543,6 +1570,21 @@ describe('the usability predicate against the real verifier', () => {
 
     expect(verified.verified).toBe(false);
     expect(getTransaction).not.toHaveBeenCalled();
+  });
+
+  it('calls a fee that eats the amount terminal even when the fee ADDRESS is wrong too', () => {
+    // The PLACEMENT of that mirror, which the parity row above cannot see: it
+    // runs on `feeBps: 0`, where every ordering answers the same. Move the net
+    // check below the config gate and this request comes back `inconclusive`
+    // instead - the gate stops at the missing fee address first - and the
+    // provider polls, to its own expiry, a request that no fee rate can make
+    // payable.
+    expect(
+      classifyRequestUsability(makeRequest({ fee_amount: 1_000_000, fee_address: undefined }), {
+        feeBps: 300,
+        treasury: TREASURY,
+      }),
+    ).toBe('unusable-request');
   });
 
   it('is STRICTER than the verifier about the reference format, and that is the safe way', async () => {

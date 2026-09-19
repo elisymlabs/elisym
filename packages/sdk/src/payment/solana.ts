@@ -792,7 +792,8 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
     // The guard is load-bearing, and the reason is the one this file used to
     // get wrong: the addresses compared against this map have NOT all passed
     // `isAddress`. `verifyPayment` checks the request's `reference` and
-    // `recipient` for PRESENCE only, a few dozen lines up - the format checks
+    // `recipient` for PRESENCE only, at the top of the function - the format
+    // checks
     // live on the config treasury and, on the reference rail, on the reference;
     // the signature rail has none. `classifyRequestUsability` in `acceptor.ts`
     // says the same thing in the other direction.
@@ -1162,10 +1163,13 @@ export async function buildPaymentInstructions(
   // a zero fee `fee_address` is optional, and the provider's denylist reads the
   // treasury from the config rather than from the request.
   let configTreasuryAta: Address | undefined;
-  // The `isAddress` here is NOT KILLED BY ANY TEST and cannot be: this value
-  // comes from the on-chain config, which `assertConfig` has already checked on
-  // every first-party path, and 32 bytes off the chain always decode. It is the
-  // mirror of the guard on `fee_address` above, which is a third party's field.
+  // The mirror of the guard on `fee_address` above, which is a third party's
+  // field. This one is the config's, and on every first-party path
+  // `assertConfig` has already checked it - but this function is EXPORTED, and
+  // the option's own docstring a few screens up says a direct caller is on
+  // their own. Measured through that door: the row named `does not throw on a
+  // malformed CONFIG treasury either` comes back from `findAssociatedTokenPda`
+  // as a raw base58-length error with the guard removed.
   if (
     options.treasury !== undefined &&
     options.treasury !== feeOwner &&

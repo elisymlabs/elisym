@@ -142,8 +142,8 @@ interface TokenBalanceEntry {
  * fractional number - and both arms below run OUTSIDE the `try` that wraps the
  * RPC call. A proxy answering with a shape the spec allows and the happy path
  * does not therefore turns a ranking hint into a rejected promise: the same
- * class as the four `answers rather than throwing` rows this file already
- * holds, which the balance reads had no pair for.
+ * class as every `answers rather than throwing` row in
+ * `tests/quick-verify.test.ts`, which the balance reads had no pair among.
  *
  * `null` rather than `0n`, because the two are not the same answer: a baseline
  * that could not be read, taken for zero, makes any positive balance look like

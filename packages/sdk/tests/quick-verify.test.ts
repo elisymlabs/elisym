@@ -138,7 +138,8 @@ describe('verifyJobPaymentQuick', () => {
   it('answers rather than throwing when a token row carries no amount at all', async () => {
     // `BigInt(undefined)` throws, and this arm runs outside the `try` that
     // wraps the RPC call, so the caller's promise rejects. Same class as the
-    // `no meta` and `no balance arrays` rows above, and the same reachability:
+    // `no meta` and `no balance arrays` rows further down, and the same
+    // reachability:
     // `uiTokenAmount` is an OBJECT in the JSON-RPC spec, so a proxy is free to
     // answer with one the happy path never sees.
     const recipient = makeAddress();
@@ -198,9 +199,10 @@ describe('verifyJobPaymentQuick', () => {
   });
 
   it('answers rather than throwing when a LAMPORT slot is not a number', async () => {
-    // The native arm of the same helper. The undefined-slot row above covers a
-    // slot that is not there; this covers one that is there and unreadable,
-    // which `BigInt` treats very differently.
+    // The native arm of the same helper. The row named `a table supplies more
+    // keys than balance slots`, further down, covers a slot that is not there;
+    // this covers one that is there and unreadable, which `BigInt` treats very
+    // differently.
     const recipient = makeAddress();
     const rpc = createMockRpc(() => ({
       send: () =>
