@@ -1173,6 +1173,63 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).toContain('Recipient received');
     });
 
+    it('refuses when the TREASURY is in no half of the transaction', async () => {
+      // Both fee-leg rows put the treasury in `keys` and only starve it, so
+      // neither reaches the branch where it is ABSENT - and that branch decides
+      // money: fall back to any other slot and a transfer paying the provider
+      // everything and the protocol nothing verifies. Measured: the mutant
+      // answers `verified: true`.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr],
+                pre: [200_000_000, 0, 0],
+                post: [200_000_000 - amount, amount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'treasuryAbsentSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury not found/);
+    });
+
+    it('refuses when the RECIPIENT is in no half of the transaction', async () => {
+      // The SPL twin of this sentence is pinned deliberately (a delta of -1
+      // used to be read as "no account here"), and the native one was not. The
+      // verdict is a refusal either way; what the guard buys is an operator who
+      // is told the recipient is missing instead of being told they were
+      // underpaid by the whole amount.
+      const strangerAddr = makeAddress();
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, strangerAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'recipientAbsentSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient not found/);
+    });
+
     it('refuses a native transfer the recipient merely already HELD', async () => {
       // The row above starts the recipient at zero, as every other row here
       // does, so it measures only the POST half of the delta. Read the baseline
@@ -1716,6 +1773,44 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
 
       expect(result.verified).toBe(false);
       expect(result.error).toMatch(/Treasury received \d+ tokens, expected >=/);
+    });
+
+    it('refuses an SPL transfer with NO treasury token account at all', async () => {
+      // `makeTokenTx` always emits a treasury row, so every SPL fixture starves
+      // the treasury rather than removing it - and the removed case is the one
+      // that decides money: fall back to the recipient's own delta and a
+      // transfer that paid the protocol nothing verifies.
+      const entry = (owner: string, raw: number) => ({
+        accountIndex: 1,
+        mint: USDC_SOLANA_DEVNET.mint as string,
+        owner,
+        uiTokenAmount: { amount: String(raw), decimals: 6, uiAmount: raw / 1e6 },
+      });
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve({
+              meta: {
+                err: null,
+                preBalances: [0n, 0n, 0n],
+                postBalances: [0n, 0n, 0n],
+                preTokenBalances: [entry(recipientAddr as string, 0)],
+                postTokenBalances: [entry(recipientAddr as string, amount)],
+              },
+              transaction: {
+                message: { accountKeys: [payerAddr, recipientAddr, referenceAddr] },
+              },
+            }),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splTreasuryAbsentSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury token account not found/);
     });
 
     it('refuses an SPL transfer the recipient merely already HELD', async () => {

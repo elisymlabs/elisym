@@ -697,6 +697,44 @@ describe('resolveAgent', () => {
 });
 
 describe('listAgents', () => {
+  it('lists an agent whose yaml sets no display_name', async () => {
+    // The docstring on the `=== null` guard says an empty display name keeps
+    // the agent LISTED, and nothing measured it. This is not an exotic file:
+    // the template `init` writes leaves `display_name` commented out, so a
+    // freshly created agent reaches here with an empty one - and a guard
+    // loosened to `!displayName` drops it out of `elisym list` and the MCP's
+    // `list_agents` without a word.
+    const created = await createAgentDir({
+      target: 'project',
+      name: 'Bob',
+      cwd: work,
+      projectRoot: work,
+    });
+    writeFileSync(join(created.dir, 'elisym.yaml'), 'description: no display name here\n');
+
+    const agents = await listAgents(work);
+
+    expect(agents.map((agent) => agent.name)).toEqual(['Bob']);
+    expect(agents[0]?.displayName).toBeUndefined();
+  });
+
+  it('still lists an agent whose yaml does not parse', async () => {
+    // The second way to reach an empty name, and the one that matters more:
+    // hiding an agent exactly when its config is broken is hiding it exactly
+    // when the operator needs to find it.
+    const created = await createAgentDir({
+      target: 'project',
+      name: 'Bob',
+      cwd: work,
+      projectRoot: work,
+    });
+    writeFileSync(join(created.dir, 'elisym.yaml'), 'display_name: [unclosed\n');
+
+    const agents = await listAgents(work);
+
+    expect(agents.map((agent) => agent.name)).toEqual(['Bob']);
+  });
+
   it('lists home and project agents, project shadows home', async () => {
     const home1 = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
     writeFileSync(join(home1.dir, 'elisym.yaml'), 'display_name: "Home Bob"\n');
