@@ -25,10 +25,9 @@ export interface LoadedAddresses {
  * element-by-element - a number is not iterable and throws instead, which on
  * the money path the retry loop turns into a refusal (the other two readers
  * call this outside a `try` and would reject). The string is the shape worth
- * guarding either way.
- * For the WRITABLE half that does not merely add junk keys: it lengthens the
- * merged list ahead of the read-only one and
- * shifts every read-only address onto another account's balance slot. For the
+ * guarding either way. For the WRITABLE half that does not merely add junk
+ * keys: it lengthens the merged list ahead of the read-only one and shifts
+ * every read-only address onto another account's balance slot. For the
  * read-only half nothing follows it, so the cost is the real addresses that
  * half was carrying - a refusal rather than a misread, which is why the two
  * guards are worth the same line but not the same sentence. A malformed
@@ -45,8 +44,12 @@ export function mergeAccountKeys(
   // a string here is spread character by character INSIDE the prefix every
   // index is read against, so every loaded address after it lands on somebody
   // else's balance slot. There is nothing to fall back to, so the answer is no
-  // keys at all, and every reader refuses on it - on the money path at the
-  // reference check, which comes first, not at the recipient.
+  // keys at all. On the money path that is a refusal, and it arrives at the
+  // reference check rather than at the recipient - the reference is looked up
+  // first. The other two readers do not refuse and are not meant to:
+  // `verifyJobPaymentQuick` falls through to the token-balance branch, which
+  // reads no keys at all, and `aggregateNetworkStats` loses only its
+  // bookkeeping-PDA skip, which costs a statistic and not a payment.
   if (!Array.isArray(accountKeys)) {
     return [];
   }

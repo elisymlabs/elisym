@@ -1070,11 +1070,12 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
      * baseline is found by owner AND mint; these are the rows a half of that
      * match would settle on instead.
      *
-     * They take the LOW `accountIndex` values, and the real rows move up to
-     * make room: a node sorts these rows by that index, so a decoy that has to
-     * be found first has to be numbered first. Only the ORDER is node-shaped -
-     * the absolute numbers are not, and cannot be while the real rows are
-     * pinned to fixed slots. The code never reads the field at all.
+     * They take the LOW `accountIndex` values, and the real rows shift up by
+     * however many there are: a node sorts these rows by that index, so a decoy
+     * that has to be found first has to be numbered first. Only the ORDER is
+     * node-shaped - the absolute numbers are not, and cannot be while the real
+     * rows keep a fixed offset from each other. The code never reads the field
+     * at all.
      */
     decoyPre?: { owner: string; mint: string; amount: number }[];
   }) {
@@ -1558,10 +1559,11 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
 
     it("refuses a reference equal to the recipient's TOKEN account, which only the DERIVED half knows", async () => {
       // Both rows above use the recipient's own address - a STATIC denylist
-      // entry, which the synchronous predicate carries too. Swap the full
-      // `degenerateReference` for `degenerateReferenceSync` here and the whole
-      // package stays green: nothing measured the derived half on this rail,
-      // though the builder's docstring rests on exactly that difference.
+      // entry, which the synchronous predicate carries too. Before this row,
+      // swapping the full `degenerateReference` for `degenerateReferenceSync`
+      // here left the whole package green: nothing measured the derived half on
+      // this rail, though the builder's docstring rests on exactly that
+      // difference. That swap now reddens this row and only this row.
       const [recipientAta] = await findAssociatedTokenPda({
         owner: recipientAddr,
         mint: address(USDC_SOLANA_DEVNET.mint as string),
@@ -1621,6 +1623,12 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       // that trusts them reads the recipient off slot 3 and the shortfall
       // disappears. The price is an ACCEPT, not a refusal: measured, the mutant
       // answers `verified: true` on a transaction that paid a fee.
+      //
+      // For the shift to cost money the recipient has to sit behind the
+      // malformed half, which puts them in the READ-ONLY one - so this page
+      // credits a read-only account, and a node would reject that transaction
+      // rather than report it. Same threat model as the null-key row: the
+      // liar here is a proxy or shim, not the node.
       //
       // The recipient must sit BEHIND the malformed half: a fixture that keeps
       // it among the static keys is green in both worlds.
@@ -1938,10 +1946,11 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     it('refuses a transaction with MORE account keys than balance slots', async () => {
       // The length guard above compares `pre` with `post`; these two AGREE, so
       // it says nothing. The third leg - keys against balances - is held by the
-      // `Math.min` clamp alone, and nothing measured it: without the clamp the
-      // reference is "found" at an index the balance arrays do not reach, both
-      // money slots read fine, and a transaction the node described
-      // inconsistently verifies as a payment.
+      // `Math.min` clamp alone, and before this row nothing measured it:
+      // without the clamp the reference is "found" at an index the balance
+      // arrays do not reach, both money slots read fine, and a transaction the
+      // node described inconsistently verifies as a payment. Dropping the clamp
+      // now reddens this row and only this row.
       const rpc = createMockRpc({
         getTransaction: () => ({
           send: () =>

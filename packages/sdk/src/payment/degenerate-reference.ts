@@ -38,8 +38,8 @@ import { TOKEN_2022_PROGRAM_ADDRESS_STR, resolveAssetFromPaymentRequest } from '
  * half at all. `buildPaymentInstructions` does see it, and leaves the payer's
  * own token account out of its denylist on purpose - said there. This is a
  * denylist of the addresses a payment for THIS request is computed from, and
- * it is hardening: every request the SDK builds carries a
- * randomly generated reference, so a false refusal here is unreachable.
+ * it is hardening: every request the SDK builds carries a randomly generated
+ * reference, so a false refusal here is unreachable.
  */
 export type DegenerateReferenceCode = 'degenerate_reference';
 

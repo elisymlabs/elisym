@@ -97,6 +97,25 @@ describe('X402JobStore', () => {
     expect(await store.paymentSignatures('legacy-job')).toBe(2);
   });
 
+  it('holds a legacy record to the SIGNATURE ceiling, not just the attempt one', async () => {
+    // The row above pins the fallback in the two readers that report counts.
+    // The reader that decides whether another signed payment goes out had
+    // none, and that is the one holding the money: read as zero signatures,
+    // this record is handed a fresh budget and the bridge signs a second
+    // payment for a job the upstream may already have settled.
+    await writeFile(
+      join(dir, X402_JOBS_FILE),
+      JSON.stringify({ 'legacy-job': { attempts: 2, created_at: 1, updated_at: 1 } }),
+    );
+
+    // Room to spare on attempts, none on signatures - so the refusal can only
+    // come from the ceiling this row is about.
+    expect(await store.claimPaidAttempt('legacy-job', 10, 2)).toMatchObject({
+      granted: false,
+      refusedBy: 'signatures',
+    });
+  });
+
   it('round-trips a text result', async () => {
     await store.saveTextResult('job-2', 'hello world');
     expect(await store.getResult('job-2')).toEqual({ data: 'hello world' });

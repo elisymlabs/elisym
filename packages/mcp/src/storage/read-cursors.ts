@@ -41,8 +41,8 @@ function withLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   // is kept as the reserve that takes over the moment somebody removes the
   // absorption. On `customer-history`, whose rows this is a copy of, the
   // absorption has a row of its own and the reserve does not - it cannot,
-  // while the absorption stands; the serialization itself is measured on THIS store, by
-  // `storage-concurrency.test.ts`.
+  // while the absorption stands; the serialization itself is measured on THIS
+  // store, by `storage-concurrency.test.ts`.
   const next = previous.then(fn, fn);
   // The stored promise absorbs the rejection. `finally` re-throws, so without
   // the `catch` every failed write left an unhandled rejection even though the

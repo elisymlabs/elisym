@@ -936,12 +936,13 @@ export async function cmdStart(
   // driver sweeps from its constructor and writes the index the moment that
   // sweep finds something. The x402 one runs for EVERY agent carrying an x402
   // skill, including one whose wallet invariant is broken and whose driver is
-  // therefore never built. The private-state entries run here AND twice earlier: ahead of
-  // the job ledger, for the same `.corrupt.<ts>` reason, and ahead of the media
-  // cache. Running twice is a no-op; running late is not.
+  // therefore never built. The private-state entries run here AND twice
+  // earlier: ahead of the job ledger, for the same `.corrupt.<ts>` reason, and
+  // ahead of the media cache. Running twice is a no-op; running late is not.
   //
-  // They run here for the same reason the two indexes above are opened here: appending to
-  // the file is not guarded - a read-only `.elisym` root, a root written under
+  // They run here for the same reason the two indexes above are opened here:
+  // appending to the file is not guarded - a read-only `.elisym` root, a root
+  // written under
   // sudo, a full disk - and a throw after the cards are on the relays leaves a
   // live paid provider advertised by an agent that has already exited. None of
   // these touches the network.

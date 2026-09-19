@@ -1526,21 +1526,39 @@ describe('the store contract', () => {
   });
 });
 
-describe('where the net-amount mirror sits inside the predicate', () => {
-  // Its own block because it never touches the verifier: the parity block below
-  // runs every row through both, and this one asks the predicate alone. Kept
-  // because the parity rows cannot see ORDER - they run on `feeBps: 0`, where
-  // every ordering answers the same.
+describe('where the config-independent mirrors sit inside the predicate', () => {
+  // Two mirrors run BEFORE the config gate where the verifier runs them after,
+  // and both rows here exist because the parity block cannot see that: it runs
+  // on `feeBps: 0`, where the gate is skipped and every ordering answers the
+  // same. A live rate is what makes the position observable, so these rows
+  // carry one and never reach the verifier at all.
+  const LIVE_CONFIG = { feeBps: 300, treasury: TREASURY };
+
   it('calls a fee that eats the amount terminal even when the fee ADDRESS is wrong too', () => {
     // Move the net check below the config gate and this request comes back
     // `inconclusive` instead - the gate stops at the missing fee address first -
     // and the provider polls, to its own expiry, a request that no fee rate can
     // make payable.
     expect(
-      classifyRequestUsability(makeRequest({ fee_amount: 1_000_000, fee_address: undefined }), {
-        feeBps: 300,
-        treasury: TREASURY,
-      }),
+      classifyRequestUsability(
+        makeRequest({ fee_amount: 1_000_000, fee_address: undefined }),
+        LIVE_CONFIG,
+      ),
+    ).toBe('unusable-request');
+  });
+
+  it('calls an unresolvable ASSET terminal even when the fee disagrees too', () => {
+    // The second mirror, and it had no row: moving the asset resolve below the
+    // gate survived the whole package. The parity block's `an unresolvable
+    // asset` row cannot catch it for the reason above - at `feeBps: 0` the gate
+    // it would have to cross is not there. A token the registry does not know
+    // is unknown at every rate, so `inconclusive` would poll a request that can
+    // never settle.
+    expect(
+      classifyRequestUsability(
+        makeRequest({ asset: { chain: 'solana', token: 'nosuch', decimals: 6 } } as never),
+        LIVE_CONFIG,
+      ),
     ).toBe('unusable-request');
   });
 });

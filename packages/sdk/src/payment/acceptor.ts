@@ -228,14 +228,19 @@ export function classifyRequestUsability(
   ) {
     return 'unusable-request';
   }
-  // The net the verifier requires, and the one mirror that moves: `verifyPayment`
-  // runs this AFTER its fee gate, and here it runs before. It can, because
-  // nothing in it depends on the config - both numbers come out of the request -
-  // so there is no fee rate under which this request becomes payable, and
-  // terminal is the honest verdict rather than a stricter one. Moved down past
-  // the config gate BELOW, this would answer `inconclusive` instead whenever
-  // the fee address disagreed - the gate stops there first - and the provider
-  // would poll a request that can never settle until its own expiry.
+  // The net the verifier requires, and the first of the two mirrors that MOVE:
+  // `verifyPayment` runs this after its fee gate, and here it runs before. The
+  // asset resolve just below is the second, for the same reason and with the
+  // same cost - the rest of the mirrors keep their position relative to that
+  // gate.
+  //
+  // Both can move up because nothing in either depends on the config: the two
+  // numbers here come out of the request, and an asset the registry does not
+  // know stays unknown at every fee rate. So no rate makes such a request
+  // payable, and terminal is the honest verdict rather than a stricter one.
+  // Moved down past the config gate BELOW, each would answer `inconclusive`
+  // instead whenever the fee disagreed - the gate stops there first - and the
+  // provider would poll, to its own expiry, a request that can never settle.
   if (request.amount - (request.fee_amount ?? 0) <= 0) {
     return 'unusable-request';
   }

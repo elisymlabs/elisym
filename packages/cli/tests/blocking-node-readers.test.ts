@@ -329,6 +329,36 @@ describe('a job ledger that cannot be READ', () => {
   );
 });
 
+describe('an x402 paid-attempt index that cannot be READ', () => {
+  it('is refused rather than treated as a cold start', async () => {
+    // The twin of the ledger rows above, and it had none of its own. The
+    // consequence is sharper here: this index is the count of how many times
+    // the bridge already PAID the upstream for a job, so reading EACCES as
+    // "no records" hands the job a fresh budget and the customer's money goes
+    // out a second time.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const store = new X402JobStore(sandbox);
+    await store.claimPaidAttempt('job-1', 2, 2);
+    const indexPath = join(sandbox, '.x402-jobs.json');
+    chmodSync(indexPath, 0o000);
+
+    try {
+      await expect(new X402JobStore(sandbox).claimPaidAttempt('job-1', 2, 2)).rejects.toThrow();
+      // And the file is still there: a store that rotated it aside would have
+      // destroyed the only record of what was already paid for.
+      expect(statSync(indexPath).isFile()).toBe(true);
+    } finally {
+      try {
+        chmodSync(indexPath, 0o600);
+      } catch {
+        /* the assertion above is the one worth reporting */
+      }
+    }
+  });
+});
+
 describe('the picture an agent advertises', () => {
   it('is skipped when it is a blocking node, instead of being uploaded', async () => {
     // `uploadOrReuse` is exported and has its own harness - a previous round

@@ -651,7 +651,17 @@ export class SessionStore {
       }
     }
     if (start === lines.length && lines.length > 0) {
-      // Even the most recent turn exceeds the budget - keep it anyway (floor).
+      // Reached only when the LAST line is not a turn: the size test above
+      // cannot fire on the first pass, because `start < lines.length` is false
+      // there. So this is not the "even the most recent turn exceeds the
+      // budget" floor it long claimed to be - no turn is ever kept by it.
+      //
+      // What it does instead is step back onto that trailing non-turn line, so
+      // the text handed to the summarizer stops one line short of it. The
+      // writers never produce that shape - appends add turns, and a rewrite
+      // emits `[summary, ...turns]` - so reaching it takes a hand-edited
+      // transcript. Kept as a bound on `start` rather than deleted, and NOT
+      // KILLED BY ANY TEST either way.
       start = lines.length - 1;
     }
     return start;
