@@ -75,7 +75,7 @@ import { cacheKeyFor, resolveTripleForOverride } from '../llm/cache.js';
 import { resolveProviderApiKey } from '../llm/keys.js';
 import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
 import { createLogger } from '../logging.js';
-import { mimeFromPath } from '../mime.js';
+import { IMAGE_EXTENSIONS, isImagePath, mimeFromPath } from '../mime.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SessionStore } from '../sessions.js';
 import { SkillRegistry, type Skill, type SkillContext, type SkillLlmOverride } from '../skill';
@@ -1463,6 +1463,25 @@ export async function uploadOrReuse(
   if (realPath === null) {
     console.warn(
       `  ! Skipping upload of ${basename(absPath)}: unreadable or escapes its directory.`,
+    );
+    return undefined;
+  }
+  // Staying inside the root is NOT enough, because the root is the agent
+  // directory and `.secrets.json` lives in it: `picture: .secrets.json` passed
+  // every check above, was read, uploaded to a public host as
+  // `application/octet-stream`, and had its URL published in the agent's
+  // profile. A template handed to `elisym init --config` is all it took, and a
+  // published key cannot be unpublished.
+  //
+  // Asked of the DEREFERENCED path, not the one in the YAML: a committed
+  // `avatar.png` that is a symlink to `.secrets.json` stays inside the root
+  // too, and resolves to the operator's own keys at run time. Here rather than
+  // in `resolveMediaField`, so the skill-image caller is covered by the same
+  // line and the next caller cannot forget it.
+  if (!isImagePath(realPath)) {
+    console.warn(
+      `  ! Skipping upload of ${basename(absPath)}: not an image ` +
+        `(${IMAGE_EXTENSIONS.join(', ')}). Nothing else is published from an agent directory.`,
     );
     return undefined;
   }

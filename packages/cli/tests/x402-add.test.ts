@@ -29,6 +29,42 @@ describe('sanitizeUpstreamText', () => {
   it('clamps to the given length', () => {
     expect(sanitizeUpstreamText('x'.repeat(600), LIMITS.MAX_DESCRIPTION_LENGTH)).toHaveLength(500);
   });
+
+  it.each([
+    ['a right-to-left override', '\u202Esnoitelpmoc-ianepo', 'snoitelpmoc-ianepo'],
+    ['a direction isolate', 'open\u2066ai\u2069', 'openai'],
+    ['a zero-width space', 'open\u200Bai', 'openai'],
+    ['a zero-width joiner', 'open\u200Dai', 'openai'],
+    ['a byte-order mark', '\uFEFFopenai', 'openai'],
+    ['a soft hyphen', 'open\u00ADai', 'openai'],
+    ['a tag character', 'openai\u{E0041}', 'openai'],
+    ['a variation selector', 'openai\uFE0F', 'openai'],
+    ['a replacement character', 'open\uFFFDai', 'openai'],
+  ])(
+    'removes %s, so what the operator confirms is what gets published',
+    (_label, raw, expected) => {
+      // The name goes to the operator's confirmation, into SKILL.md, and onto the
+      // capability card published under the operator's own key. An override makes
+      // the first of those READ differently from the other two.
+      expect(sanitizeUpstreamText(raw, 64)).toBe(expected);
+    },
+  );
+
+  it('turns a C1 control into a space, like the C0 ones', () => {
+    expect(sanitizeUpstreamText('open\u0085ai', 64)).toBe('open ai');
+  });
+
+  it('folds compatibility forms, so a fullwidth name is the name it looks like', () => {
+    expect(sanitizeUpstreamText('\uFF4F\uFF50\uFF45\uFF4E\uFF41\uFF49', 64)).toBe('openai');
+  });
+
+  it('leaves a name written in another script exactly as it is', () => {
+    // The other direction, and the reason look-alike letters are NOT folded: a
+    // fold onto Latin would mangle every name legitimately written in Cyrillic
+    // or Greek, and what identifies the upstream is the URL, not its own label.
+    expect(sanitizeUpstreamText('Погода в городе', 64)).toBe('Погода в городе');
+    expect(sanitizeUpstreamText('Καιρός', 64)).toBe('Καιρός');
+  });
 });
 
 describe('slugFromUrl', () => {

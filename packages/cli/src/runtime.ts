@@ -91,6 +91,31 @@ import type { Skill, SkillRegistry, SkillContext, SkillOutput } from './skill';
 import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 import { X402PreflightError, X402TransientError } from './x402/errors.js';
 
+/** Longest `mime` a log line will quote. A real one is a few dozen characters. */
+const MAX_LOGGED_MIME_CHARS = 128;
+
+/**
+ * A token amount as the ledger stores it.
+ *
+ * `LedgerEntry.net_amount` and the recorded pull amount are `number`s, and
+ * `Number()` on a bigint past 2^53 - 1 does not throw - it rounds, silently, to
+ * the nearest double. That is about nine billion USDC, so nothing reaches it
+ * today; it would take a token with fewer decimals or a metered ceiling set
+ * absurdly high. When it does happen the ledger would record an amount that was
+ * never charged, and that figure is what the customer is told and what the
+ * operator reconciles against. Loud instead: the caller places this before any
+ * money moves.
+ */
+export function ledgerAmount(subunits: bigint): number {
+  if (subunits < 0n || subunits > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      `Amount ${subunits.toString()} subunits cannot be recorded exactly: the ledger holds ` +
+        `amounts as numbers, and this one is outside the range a number represents without rounding.`,
+    );
+  }
+  return Number(subunits);
+}
+
 const payment = new SolanaPaymentStrategy();
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -1847,7 +1872,11 @@ export class AgentRuntime {
         job.attachment.size <= maxInputBytes;
       if (!attachmentOk) {
         log(
-          `[${job.jobId.slice(0, 8)}] Rejecting attachment on x402 skill (mime=${job.attachment.mime}, size=${job.attachment.size})`,
+          // `mime` is the customer's string and its schema bounds only the
+          // length, so a newline in it forged whole log lines. Every other
+          // piece of untrusted text in this file already goes through the
+          // excerpt; this was the one that did not.
+          `[${job.jobId.slice(0, 8)}] Rejecting attachment on x402 skill (mime=${excerptUntrusted(job.attachment.mime, MAX_LOGGED_MIME_CHARS)}, size=${job.attachment.size})`,
         );
         await this.transport
           .sendFeedback(job, {
@@ -1930,7 +1959,11 @@ export class AgentRuntime {
       // For a metered skill this is only the CEILING: the real figure is not
       // knowable until the work is done, so `netAmount` is re-read from the
       // pull context after `executeDelegatedPull` and before `deliverResult`.
-      netAmount = Number(delegatedPull.priceSubunits);
+      // Checked HERE, before the skill runs and before any pull is signed, so
+      // an amount the ledger cannot hold exactly fails the job while nothing
+      // has moved. The two conversions further down are of this figure or of a
+      // charge bounded by it, so neither can throw once this one has passed.
+      netAmount = ledgerAmount(delegatedPull.priceSubunits);
     } else if (jobPrice > 0) {
       const result = await this.collectPayment(job, jobPrice, jobAsset, signal);
       netAmount = result.netAmount;
@@ -2125,7 +2158,7 @@ export class AgentRuntime {
         const outcome = await this.executeDelegatedPull(job, delegatedPull, log);
         // Tell the customer what actually moved, not what was reserved. Without
         // this the result event would report the ceiling on every metered job.
-        netAmount = Number(delegatedPull.chargedSubunits ?? delegatedPull.priceSubunits);
+        netAmount = ledgerAmount(delegatedPull.chargedSubunits ?? delegatedPull.priceSubunits);
         if (outcome === 'dead') {
           // Provably no funds moved: error feedback, NO delivery, nonce stays
           // burned - the customer re-submits with a fresh proof.
@@ -2474,7 +2507,7 @@ export class AgentRuntime {
       job.jobId,
       pull.signature,
       Number(pull.lastValidBlockHeight),
-      Number(amount),
+      ledgerAmount(amount),
     );
     ctx.pullSignature = pull.signature;
     const outcome = await sendConfirmToTerminal(ctx.rpc, pull, {});

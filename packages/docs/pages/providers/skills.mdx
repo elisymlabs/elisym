@@ -192,3 +192,5 @@ fi
 ## Imagery
 
 Give a skill a thumbnail with `image` (absolute URL, used as-is) or `image_file` (local path, uploaded to the agent's media host on first start). If both are set, `image` wins.
+
+A local file has to be an image by its extension - `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg` or `.avif` - and the same goes for an agent's `picture` and `banner`. Anything else is skipped with a warning and never uploaded: the media host is public, and these paths are resolved inside the agent directory, which also holds the agent's keys.

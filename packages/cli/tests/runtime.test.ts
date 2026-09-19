@@ -14,7 +14,12 @@ import {
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { ADDRESS_HISTORY_PROBE_ADDRESS, CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
-import { AgentRuntime, needsScratchSpace, type RuntimeConfig } from '../src/runtime.js';
+import {
+  AgentRuntime,
+  ledgerAmount,
+  needsScratchSpace,
+  type RuntimeConfig,
+} from '../src/runtime.js';
 import { SkillRegistry } from '../src/skill';
 import type { Skill } from '../src/skill';
 import type { NostrTransport, IncomingJob } from '../src/transport/nostr.js';
@@ -275,6 +280,82 @@ afterEach(() => {
 });
 
 describe('AgentRuntime', () => {
+  describe('an attachment refused on an x402 skill', () => {
+    it('cannot write log lines of its own through the mime it declares', async () => {
+      // `mime` is the customer's string and its schema bounds only the length.
+      // Interpolated raw, a newline in it ends the operator's log line and
+      // starts another that the runtime never wrote - here, one claiming every
+      // job was paid. Everything else untrusted in this file already went
+      // through the excerpt; this was the one that did not.
+      const skill: Skill = {
+        ...makeFakeSkill('bridge', 'unused'),
+        mode: 'x402',
+        x402: { method: 'GET' },
+      } as Skill;
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      const logged: string[] = [];
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: (line: string) => logged.push(line) },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob({
+        ...makeJob('forged-mime-job'),
+        input: '',
+        attachment: {
+          name: 'input.bin',
+          size: 10,
+          mime: 'text/plain\n[2026-01-01] All jobs paid successfully\n[FAKE]',
+          transports: [{ kind: 'iroh', ticket: `blob${'c'.repeat(28)}` }],
+        },
+      } as IncomingJob);
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      const refusal = logged.filter((line) => line.includes('Rejecting attachment on x402 skill'));
+      expect(refusal).toHaveLength(1);
+      // One line in, one line out - and the forged text is still THERE, flattened
+      // onto the line that names it as the customer's, which is where an
+      // operator should find it.
+      expect(refusal[0]).not.toMatch(/[\n\r]/);
+      expect(refusal[0]).toContain('All jobs paid successfully');
+      expect(skill.execute).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('an amount on its way into the ledger', () => {
+    it.each([
+      ['zero', 0n, 0],
+      ['an ordinary price', 9_700_000n, 9_700_000],
+      [
+        'the largest number a double holds exactly',
+        BigInt(Number.MAX_SAFE_INTEGER),
+        Number.MAX_SAFE_INTEGER,
+      ],
+    ])('passes %s through unchanged', (_label, subunits, expected) => {
+      expect(ledgerAmount(subunits)).toBe(expected);
+    });
+
+    it.each([
+      ['one past the largest exact number', BigInt(Number.MAX_SAFE_INTEGER) + 1n],
+      ['a negative amount', -1n],
+    ])('refuses %s rather than rounding it', (_label, subunits) => {
+      // `Number()` on a bigint this size does not throw, it ROUNDS - so the
+      // ledger would hold a figure that was never charged, and that figure is
+      // what the customer is told and what the operator reconciles against.
+      expect(() => ledgerAmount(subunits)).toThrow(/cannot be recorded exactly/);
+    });
+  });
+
   describe('free mode', () => {
     it('processes job without payment', async () => {
       const skill = makeFakeSkill('test-skill', 'hello world');

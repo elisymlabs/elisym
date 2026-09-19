@@ -61,14 +61,48 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-/** Strip control chars and the (repo-banned) em dash from upstream-controlled text. */
+/** Every control character, C0 and C1 alike - each becomes a space. */
+const CONTROL_CHARACTERS = /\p{Cc}/gu;
+/**
+ * Everything a reader cannot SEE: format characters (direction overrides and
+ * isolates, zero-width spaces and joiners, the byte-order mark, the tag block),
+ * the default-ignorable set (variation selectors, fillers), and the replacement
+ * character.
+ */
+const UNSEEN_CHARACTERS = /[\p{Cf}\p{Default_Ignorable_Code_Point}\uFFFD]/gu;
+
+/**
+ * Make an upstream's own name and description safe to show and to publish.
+ *
+ * Both strings come out of an x402 challenge the upstream wrote, and both go
+ * three places: the confirmation the operator reads, the `SKILL.md`
+ * frontmatter, and the capability card published under the operator's key. So
+ * what matters is that the operator confirms the text everybody else will see.
+ * Stripping only C0 controls left that untrue - a right-to-left override
+ * (U+202E) ahead of a name spelled backwards makes it READ forwards, as some
+ * other service's name, and zero-width characters let two names that look
+ * identical differ.
+ *
+ * Stricter than `excerptUntrusted` on purpose. That one keeps ZWJ and ZWNJ,
+ * which are load-bearing in running prose; these are a name and a one-line
+ * label on a card, where an invisible character has nothing to carry and
+ * something to hide.
+ *
+ * NOT folded: look-alike letters across scripts. Folding Cyrillic or Greek onto
+ * Latin would mangle every name that is legitimately written in them, and the
+ * thing that identifies an upstream to the operator is the URL they typed, not
+ * the label the upstream chose for itself.
+ */
 export function sanitizeUpstreamText(raw: string, maxLength: number): string {
-  let withoutControls = '';
-  for (const char of raw) {
-    const code = char.codePointAt(0) ?? 0;
-    withoutControls += code < 0x20 || code === 0x7f ? ' ' : char;
-  }
-  return withoutControls.replace(/—/g, '-').replace(/\s+/g, ' ').trim().slice(0, maxLength).trim();
+  return raw
+    .normalize('NFKC')
+    .replace(CONTROL_CHARACTERS, ' ')
+    .replace(UNSEEN_CHARACTERS, '')
+    .replace(/—/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+    .trim();
 }
 
 export function slugFromUrl(url: URL): string {
