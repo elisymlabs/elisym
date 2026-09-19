@@ -148,9 +148,10 @@ export async function shutdownIrohTransport(
       // and no test can make it one: reaching this line means the pending
       // creation is still inside `ensureGitignoreHasIrohEntry`, which is the
       // only await `createTransport` has - the ephemeral branch has none, so
-      // its promise is always settled by now. On that branch neither
-      // `irohTransport` nor `irohStoreDir` has been assigned yet, so both
-      // cleanups below are no-ops.
+      // its promise is always settled by now. On the `agentDir` branch, which
+      // is therefore the only one that gets here, neither `irohTransport` nor
+      // `irohStoreDir` has been assigned yet, so both cleanups below are
+      // no-ops.
       void observed
         .then((transport) => {
           agent.irohTransport = undefined;

@@ -1072,8 +1072,9 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
      *
      * They take the LOW `accountIndex` values, and the real rows move up to
      * make room: a node sorts these rows by that index, so a decoy that has to
-     * be found first has to be numbered first. The code never reads the field -
-     * this is about the fixture answering the way the node would.
+     * be found first has to be numbered first. Only the ORDER is node-shaped -
+     * the absolute numbers are not, and cannot be while the real rows are
+     * pinned to fixed slots. The code never reads the field at all.
      */
     decoyPre?: { owner: string; mint: string; amount: number }[];
   }) {
@@ -1447,6 +1448,33 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       },
     };
 
+    /**
+     * One page of balances per malformed half, shared by the row that feeds it
+     * a malformed half and the control beside it.
+     *
+     * SHARED rather than copied. The control exists to catch a later edit that
+     * quietly turns the page into a valid payment - which is exactly what the
+     * first version of each of these rows was - and two hand-copied literals
+     * drift apart in silence, leaving the control passing against the page it
+     * no longer describes.
+     *
+     * Both pages UNDERPAY when their key list can be read: the recipient owns
+     * a slot carrying `feeAmount` and nothing more. The malformed half is one
+     * key short of the real one, so a build that trusts it reads the recipient
+     * off the slot before theirs and the shortfall disappears.
+     */
+    const staticHalfPage = {
+      loaded: { writable: [recipientAddr, TEST_TREASURY, referenceAddr], readonly: [] },
+      pre: [0, 0, 0, 0, 0, 0],
+      post: [0, 0, netAmount, feeAmount, 0, 0],
+    };
+    const loadedHalfReadonly = [recipientAddr, TEST_TREASURY, referenceAddr];
+    const loadedHalfPage = {
+      keys: [payerAddr],
+      pre: [200_000_000, 0, 0, 0, 0, 0, 0],
+      post: [200_000_000 - amount, 0, 0, netAmount, feeAmount, 0, 0],
+    };
+
     it('verifies a v0 payment whose reference and treasury came from a table', async () => {
       // `encoding: 'json'` puts only the STATIC keys in `accountKeys` and the
       // looked-up ones in `meta.loadedAddresses`; the balance arrays cover both,
@@ -1584,13 +1612,15 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       // to the static keys alone. Inline the raw concatenation instead - which
       // is what any refactor folding the helper back in would write - and a
       // proxy answering with a STRING for one half spreads it character by
-      // character: two junk keys that shift every loaded address two slots, so
-      // the delta of some other account is read as this payment.
+      // character.
       //
-      // The price is an ACCEPT, not a refusal: measured, the mutant answers
-      // `verified: true`. Of the three readers of that helper only the two that
-      // decide nothing about money were pinned - `quick-verify`, which nothing
-      // in this repo calls, and the analytics accumulator.
+      // Seven balance slots against one static key and three read-only ones
+      // means the real writable half is three keys, so the recipient owns slot
+      // 4, where this transaction credited `feeAmount` and nothing else. The
+      // two characters fill three slots' worth of room with two, so a build
+      // that trusts them reads the recipient off slot 3 and the shortfall
+      // disappears. The price is an ACCEPT, not a refusal: measured, the mutant
+      // answers `verified: true` on a transaction that paid a fee.
       //
       // The recipient must sit BEHIND the malformed half: a fixture that keeps
       // it among the static keys is green in both worlds.
@@ -1599,13 +1629,11 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
           send: () =>
             Promise.resolve(
               makeTx({
-                keys: [payerAddr],
+                ...loadedHalfPage,
                 loaded: {
                   writable: 'ab' as unknown as string[],
-                  readonly: [recipientAddr, TEST_TREASURY, referenceAddr],
+                  readonly: loadedHalfReadonly,
                 },
-                pre: [200_000_000, 0, 0, 0, 0, 0],
-                post: [200_000_000 - amount, 0, 0, netAmount, feeAmount, 0],
               }),
             ),
         }),
@@ -1618,6 +1646,36 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
 
       expect(result.verified).toBe(false);
       expect(result.error).toMatch(/Reference key not found/);
+    });
+
+    it('reads that same page as an UNDERPAYMENT when the writable half is well formed', async () => {
+      // The control for the row above, and it earns its place the same way the
+      // static one does: what makes that mutant dangerous is that the page it
+      // accepts is one the verifier REFUSES as soon as it can read the key
+      // list. Three writable keys put the recipient on slot 4, where this
+      // transaction credited `feeAmount` and stopped.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                ...loadedHalfPage,
+                loaded: {
+                  writable: [makeAddress(), makeAddress(), makeAddress()],
+                  readonly: loadedHalfReadonly,
+                },
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'wellFormedLoadedSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received/);
     });
 
     it('refuses when the STATIC half is malformed, which shifts the MOST', async () => {
@@ -1639,12 +1697,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         getTransaction: () => ({
           send: () =>
             Promise.resolve(
-              makeTx({
-                keys: 'ab' as unknown as (string | null)[],
-                loaded: { writable: [recipientAddr, TEST_TREASURY, referenceAddr], readonly: [] },
-                pre: [0, 0, 0, 0, 0, 0],
-                post: [0, 0, netAmount, feeAmount, 0, 0],
-              }),
+              makeTx({ keys: 'ab' as unknown as (string | null)[], ...staticHalfPage }),
             ),
         }),
       });
@@ -1672,12 +1725,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         getTransaction: () => ({
           send: () =>
             Promise.resolve(
-              makeTx({
-                keys: [payerAddr, makeAddress(), makeAddress()],
-                loaded: { writable: [recipientAddr, TEST_TREASURY, referenceAddr], readonly: [] },
-                pre: [0, 0, 0, 0, 0, 0],
-                post: [0, 0, netAmount, feeAmount, 0, 0],
-              }),
+              makeTx({ keys: [payerAddr, makeAddress(), makeAddress()], ...staticHalfPage }),
             ),
         }),
       });

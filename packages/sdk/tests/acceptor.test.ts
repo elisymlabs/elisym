@@ -1526,6 +1526,25 @@ describe('the store contract', () => {
   });
 });
 
+describe('where the net-amount mirror sits inside the predicate', () => {
+  // Its own block because it never touches the verifier: the parity block below
+  // runs every row through both, and this one asks the predicate alone. Kept
+  // because the parity rows cannot see ORDER - they run on `feeBps: 0`, where
+  // every ordering answers the same.
+  it('calls a fee that eats the amount terminal even when the fee ADDRESS is wrong too', () => {
+    // Move the net check below the config gate and this request comes back
+    // `inconclusive` instead - the gate stops at the missing fee address first -
+    // and the provider polls, to its own expiry, a request that no fee rate can
+    // make payable.
+    expect(
+      classifyRequestUsability(makeRequest({ fee_amount: 1_000_000, fee_address: undefined }), {
+        feeBps: 300,
+        treasury: TREASURY,
+      }),
+    ).toBe('unusable-request');
+  });
+});
+
 describe('the usability predicate against the real verifier', () => {
   /**
    * The parity the predicate's own docstring promises. It MIRRORS the
@@ -1570,21 +1589,6 @@ describe('the usability predicate against the real verifier', () => {
 
     expect(verified.verified).toBe(false);
     expect(getTransaction).not.toHaveBeenCalled();
-  });
-
-  it('calls a fee that eats the amount terminal even when the fee ADDRESS is wrong too', () => {
-    // The PLACEMENT of that mirror, which the parity row above cannot see: it
-    // runs on `feeBps: 0`, where every ordering answers the same. Move the net
-    // check below the config gate and this request comes back `inconclusive`
-    // instead - the gate stops at the missing fee address first - and the
-    // provider polls, to its own expiry, a request that no fee rate can make
-    // payable.
-    expect(
-      classifyRequestUsability(makeRequest({ fee_amount: 1_000_000, fee_address: undefined }), {
-        feeBps: 300,
-        treasury: TREASURY,
-      }),
-    ).toBe('unusable-request');
   });
 
   it('is STRICTER than the verifier about the reference format, and that is the safe way', async () => {

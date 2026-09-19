@@ -232,10 +232,10 @@ export function classifyRequestUsability(
   // runs this AFTER its fee gate, and here it runs before. It can, because
   // nothing in it depends on the config - both numbers come out of the request -
   // so there is no fee rate under which this request becomes payable, and
-  // terminal is the honest verdict rather than a stricter one. Left where the
-  // verifier has it, the config gate above would answer `inconclusive` first
-  // whenever the fee address disagreed, and the provider would poll a request
-  // that can never settle until its own expiry.
+  // terminal is the honest verdict rather than a stricter one. Moved down past
+  // the config gate BELOW, this would answer `inconclusive` instead whenever
+  // the fee address disagreed - the gate stops there first - and the provider
+  // would poll a request that can never settle until its own expiry.
   if (request.amount - (request.fee_amount ?? 0) <= 0) {
     return 'unusable-request';
   }
@@ -376,18 +376,29 @@ export class ProviderPaymentAcceptor {
     // step-0 verdict.
     //
     // What step 1 can then do is the SAME on both branches with the strategy
-    // that ships, and it was measured rather than assumed: it cannot accept.
-    // `verifyPayment` refuses every shape the predicate calls
-    // `unusable-request` without asking the chain at all - the parity block in
-    // the suite asserts exactly that, by spying on `getTransaction` - and it
-    // runs the same degenerate-reference check ahead of both its branches, so
-    // it refuses that one too.
+    // that ships: it cannot accept. The reasons are not the same, though, and
+    // only two of the three are about this code:
+    //
+    //   Most `unusable-request` shapes `verifyPayment` refuses without asking
+    //     the chain at all. The parity block in the suite pins that set by
+    //     spying on `getTransaction`.
+    //   The address FORMAT is the exception, and the one place the predicate
+    //     is deliberately stricter: `verifyPayment` tests `reference` and
+    //     `recipient` for truthiness only, so a malformed one does reach the
+    //     chain - the row named `is STRICTER than the verifier about the
+    //     reference format` asserts exactly that. It still cannot accept,
+    //     because no real node names a non-address among its account keys.
+    //     That is a fact about the NODE rather than about this code, so it is
+    //     stated here and not measured.
+    //   degenerate_reference `verifyPayment` refuses too: it runs the same
+    //     check ahead of both its branches.
     //
     // So the carve-out buys one thing, not two: a RECOVERABLE verdict where a
-    // terminal one would have landed. Only an INJECTED strategy that verifies
-    // anything comes back `accepted: true` here, and a fixture built on one
-    // pins the opposite of what ships - which is why both carve-out rows that
-    // claim a shipped behaviour are written against the real strategy.
+    // terminal one would have landed. What can come back `accepted: true` here
+    // is an INJECTED strategy that verifies anything, or a node answering with
+    // a non-address account key - and a fixture built on the first pins the
+    // opposite of what ships, which is why both carve-out rows that claim a
+    // shipped behaviour are written against the real strategy.
     //
     // The reason for both is that BOTH lists here grow in minor releases, so a
     // job paid and settled under an older build can be re-read as unpayable by

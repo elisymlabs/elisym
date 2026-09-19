@@ -123,7 +123,7 @@ describe('agents that would be paid at the same address', () => {
 
     const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
 
-    expect(found.map((n) => n.name)).toEqual(['neighbor']);
+    expect(found.map((entry) => entry.name)).toEqual(['neighbor']);
     expect(found[0]?.paid).toBe(true);
   });
 
@@ -137,7 +137,7 @@ describe('agents that would be paid at the same address', () => {
 
     const found = await findSharedPayoutNeighbors(work, realpathSync(own), 'devnet', ADDRESS);
 
-    expect(found.map((n) => n.name)).toEqual(['anchor']);
+    expect(found.map((entry) => entry.name)).toEqual(['anchor']);
   });
 
   it('does not exclude a same-named agent living in the other root', async () => {
@@ -148,7 +148,7 @@ describe('agents that would be paid at the same address', () => {
 
     const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
 
-    expect(found.map((n) => n.name)).toEqual(['alice']);
+    expect(found.map((entry) => entry.name)).toEqual(['alice']);
     expect(found[0]?.dir).toContain(join('home', '.elisym', 'alice'));
   });
 
@@ -160,7 +160,7 @@ describe('agents that would be paid at the same address', () => {
 
     const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
 
-    expect(found.map((n) => n.name)).toEqual(['neighbor']);
+    expect(found.map((entry) => entry.name)).toEqual(['neighbor']);
   });
 
   it('ignores a different address and a different network', async () => {
@@ -193,7 +193,7 @@ describe('agents that would be paid at the same address', () => {
 
     const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
 
-    expect(found.map((n) => [n.name, n.paid])).toEqual([['opaque', 'unknown']]);
+    expect(found.map((entry) => [entry.name, entry.paid])).toEqual([['opaque', 'unknown']]);
   });
 
   it("says 'unknown' when the skills directory cannot be OPENED at all", async () => {
@@ -234,7 +234,7 @@ describe('agents that would be paid at the same address', () => {
 
     const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
 
-    expect(found.map((n) => [n.name, n.paid])).toEqual([['loader-refuses', 'unknown']]);
+    expect(found.map((entry) => [entry.name, entry.paid])).toEqual([['loader-refuses', 'unknown']]);
   });
 
   it('does not warn about a neighbor that simply has no skills directory', async () => {
@@ -295,7 +295,7 @@ describe("a neighbor's SKILL.md that is not a regular file", () => {
 
     const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
 
-    expect(found.map((n) => [n.name, n.paid])).toEqual([['piped', 'unknown']]);
+    expect(found.map((entry) => [entry.name, entry.paid])).toEqual([['piped', 'unknown']]);
   });
 });
 
@@ -309,7 +309,7 @@ describe('what a neighbor directory is allowed to be called', () => {
 
     const found = await findSharedPayoutNeighbors(work, own, 'devnet', ADDRESS);
 
-    expect(found.map((n) => n.name)).toEqual(['anchor']);
+    expect(found.map((entry) => entry.name)).toEqual(['anchor']);
   });
 
   it('keeps a newline in a path from breaking the banner across lines', async () => {

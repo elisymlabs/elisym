@@ -295,8 +295,9 @@ export class FileSettlementStore implements SettlementStore {
     // sharing one reference - nothing here enforces that they do not, and
     // surviving that reuse is half of why this index exists - and one
     // transaction carrying the references of two jobs at once, which is the
-    // shape `ProviderPaymentAcceptor`'s own docstring opens with. Getting there takes a pass that failed to
-    // verify its OWN signature transiently and then settled a different one, so
+    // shape `ProviderPaymentAcceptor`'s own docstring opens with. Getting there
+    // takes a pass that failed to verify its OWN signature transiently and then
+    // settled a different one, so
     // it is a stated cost and not a guard: the alternative is a job holding two
     // settlements, and then nothing can say which one paid for the delivery.
     for (const [previous, record] of Object.entries(file.settlements)) {

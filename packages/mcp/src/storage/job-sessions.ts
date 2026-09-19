@@ -89,8 +89,9 @@ function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   // rejected-free, so the next caller always chains onto something that runs.
   // The rejection handler here is therefore UNREACHABLE as the code stands and
   // is kept as the reserve that takes over the moment somebody removes the
-  // absorption. Both are measured on `customer-history`, whose rows this is a
-  // copy of; the serialization itself is measured on THIS store, by
+  // absorption. On `customer-history`, whose rows this is a copy of, the
+  // absorption has a row of its own and the reserve does not - it cannot,
+  // while the absorption stands; the serialization itself is measured on THIS store, by
   // `storage-concurrency.test.ts`.
   const next = previous.then(fn, fn);
   // The stored promise absorbs the rejection. `finally` re-throws, so without

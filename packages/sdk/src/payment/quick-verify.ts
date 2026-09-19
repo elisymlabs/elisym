@@ -142,8 +142,9 @@ interface TokenBalanceEntry {
  * fractional number - and both arms below run OUTSIDE the `try` that wraps the
  * RPC call. A proxy answering with a shape the spec allows and the happy path
  * does not therefore turns a ranking hint into a rejected promise: the same
- * class as every `answers rather than throwing` row in
- * `tests/quick-verify.test.ts`, which the balance reads had no pair among.
+ * class as the `answers rather than throwing` rows in
+ * `tests/quick-verify.test.ts`. The balance reads got theirs last:
+ * `a token row carries no amount at all` and `a LAMPORT slot is not a number`.
  *
  * `null` rather than `0n`, because the two are not the same answer: a baseline
  * that could not be read, taken for zero, makes any positive balance look like

@@ -793,9 +793,8 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
     // get wrong: the addresses compared against this map have NOT all passed
     // `isAddress`. `verifyPayment` checks the request's `reference` and
     // `recipient` for PRESENCE only, at the top of the function - the format
-    // checks
-    // live on the config treasury and, on the reference rail, on the reference;
-    // the signature rail has none. `classifyRequestUsability` in `acceptor.ts`
+    // checks live on the config treasury and, on the reference rail, on the
+    // reference; the signature rail has none. `classifyRequestUsability` in `acceptor.ts`
     // says the same thing in the other direction.
     //
     // So a request whose reference is the four letters `null` reaches here

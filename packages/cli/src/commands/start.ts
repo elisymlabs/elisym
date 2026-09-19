@@ -524,9 +524,14 @@ export async function cmdStart(
     // agent whose wallet invariant is broken starts anyway - it just withholds
     // the x402 cards - and it is the likeliest one to be carrying a
     // hand-written x402 skill in the first place. Narrowing this to the healthy
-    // branch would leave exactly that agent with an older build's
-    // `.x402-jobs.json.tmp`, which the narrow entry does not match, uncovered
-    // and unswept on every start.
+    // branch would leave exactly that agent's older `.x402-jobs.json.tmp`,
+    // which the narrow entry does not match, uncovered on every start.
+    //
+    // COVERAGE is all this placement buys, and that is worth being exact
+    // about: the sweep that would delete such a fragment runs from
+    // `X402Driver`'s constructor, which a broken invariant stops us from
+    // building at all. So that agent's fragment stays on disk - it just stops
+    // being committable.
     await ensureGitignoreHasX402Entries(dirname(loaded.dir));
     const solanaSecretKey = loaded.secrets.solana_secret_key;
     if (solanaSecretKey === undefined || solanaSecretKey.length === 0) {
@@ -680,8 +685,8 @@ export async function cmdStart(
   // The widened ignore entries go in FIRST, though, because the constructor can
   // create the thing they cover: a ledger that was READ and could not be
   // PARSED is rotated to `.jobs.json.corrupt.<ts>` in there, and on an older
-  // agent the narrow line does not match that name. The migration below at Step 11 is too late for a run that
-  // exits right after this.
+  // agent the narrow line does not match that name. The migration below at
+  // Step 11 is too late for a run that exits right after this.
   await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
   const ledger = new JobLedger(paths.jobs);
 
