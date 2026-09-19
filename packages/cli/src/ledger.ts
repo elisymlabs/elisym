@@ -453,6 +453,15 @@ export class JobLedger {
    * this job - refusing the owner its own settlement until the next restart.
    */
   claimPaymentSignature(paymentSignature: string, jobId: string): PaymentSignatureClaim {
+    // The invariant is LOCAL, not spread across the two callers that happen to
+    // check it today: a claim keyed on an empty string owns nothing, and
+    // `indexPaymentSignatures` skips it on the next load - so the transaction
+    // it stood for is free for the next job while this one believes it settled.
+    // `unknown-job` rather than a new outcome, because the caller's own
+    // handling of "nothing durable to key this on" already fits.
+    if (!isUsableSignature(paymentSignature)) {
+      return 'unknown-job';
+    }
     // Entry existence FIRST. `unknown-job` is a provider wiring bug and
     // `consumed-by-other` a customer/attacker state; checking the index first
     // would report the second when the truth is the first, sending the operator

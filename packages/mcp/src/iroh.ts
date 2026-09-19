@@ -30,6 +30,15 @@ import type { AgentInstance } from './context';
  * trick: everything async happens inside it.
  */
 export function ensureIrohTransport(agent: AgentInstance): Promise<IrohBlobTransport> {
+  // A scrubbed agent is gone from the registry, so nothing would ever shut this
+  // down again: `server.ts`'s teardown walks the registry. The single-flight
+  // below closes the window where a teardown OVERTAKES a creation; this closes
+  // the mirror image, where a handler that captured its agent before the scrub
+  // arrives after it. Refusing is right either way - the caller's agent is not
+  // the one serving requests any more.
+  if (agent.scrubbed) {
+    throw new Error(`Agent ${agent.name} has been stopped; not opening a file transport for it`);
+  }
   if (agent.irohTransport) {
     return Promise.resolve(agent.irohTransport);
   }

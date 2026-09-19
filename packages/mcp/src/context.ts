@@ -134,6 +134,15 @@ export interface AgentInstance {
    */
   irohTransportPending?: Promise<IrohBlobTransport>;
   /**
+   * Set once the agent has been torn down (`scrubAgent`, or the server's own
+   * shutdown). A tool handler captures its `AgentInstance` before it starts
+   * awaiting, so a scrub that completes in between hands the handler an object
+   * that is no longer in the registry - and a transport opened on it afterwards
+   * holds the fs-store lock with nothing left to shut it down. Checked by
+   * `ensureIrohTransport`, which refuses rather than creating.
+   */
+  scrubbed?: boolean;
+  /**
    * Set only for an ephemeral agent (no `agentDir`): the `os.tmpdir()` store path,
    * removed on shutdown. Identity-backed agents store at `<agentDir>/.iroh/`.
    */

@@ -6,7 +6,7 @@
  * with `mode: x402`.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   LIMITS,
@@ -686,6 +686,10 @@ export async function cmdX402Add(
   });
 
   await mkdir(targetDir, { recursive: true, mode: 0o700 });
+  // `mode` applies only to a directory this call CREATES, so an agent whose
+  // `skills/<name>/` an older build left at 0o755 keeps it. The x402 result
+  // store learned this the same way and tightens explicitly; so does this.
+  await chmod(targetDir, 0o700).catch(() => undefined);
   const skillMdPath = join(targetDir, 'SKILL.md');
   await writeSkillMdRefusingBlockingNode(skillMdPath, content);
   await ensureGitignoreHasX402Entries(dirname(loaded.dir));

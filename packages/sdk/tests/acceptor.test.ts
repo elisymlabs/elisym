@@ -1570,6 +1570,48 @@ describe('the usability predicate mirrors the verifier, and says so', () => {
   });
 });
 
+describe('an index the store cannot read', () => {
+  /** What the file store does on EACCES, EISDIR, or a foreign format version. */
+  function unreadableStore(): SettlementStore {
+    const boom = (): never => {
+      throw new Error('Settlement index at /x is JSON but not a settlement index');
+    };
+    return {
+      claim: boom as unknown as SettlementStore['claim'],
+      owner: boom as unknown as SettlementStore['owner'],
+      claimedSignature: boom as unknown as SettlementStore['claimedSignature'],
+      prune: () => 0,
+    };
+  }
+
+  it('surfaces as an exception, never as a verdict about who paid', async () => {
+    // `accept`'s docstring promises the throw reaches the caller, and the
+    // store's constructor says why it has to: an index that cannot be read is
+    // not an empty one. Swallow it - one `try/catch` around the two reads is
+    // all it takes - and a pass over an empty window answers `window-empty`,
+    // the one verdict a provider may close a paid job on, about an index it
+    // never read. Measured: with those reads wrapped the whole file stays
+    // green.
+    //
+    // Not a hypothetical shape either: the file store re-reads its index on
+    // EVERY call, deliberately, so that several acceptors can share the file
+    // without sharing an instance - which means a permission change or a
+    // half-written file arrives between the constructor and the call. And
+    // `SettlementStore` is public: someone else's store owes only this
+    // contract.
+    listedPages = [[]];
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: strategyVerifying(),
+      rpc: makeRpc(),
+      store: unreadableStore(),
+    });
+
+    await expect(
+      acceptor.accept({ paymentRequest: makeRequest(), jobIdentity: 'job-1' }, CONFIG),
+    ).rejects.toThrow(/not a settlement index/);
+  });
+});
+
 describe('what the acceptor actually hands the verifier', () => {
   /** Records every call the acceptor makes, and never verifies anything. */
   function recordingStrategy(

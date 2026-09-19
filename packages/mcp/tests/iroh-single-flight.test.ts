@@ -33,6 +33,7 @@ vi.mock('@elisym/sdk/node', () => ({
 }));
 
 const { ensureIrohTransport, shutdownIrohTransport } = await import('../src/iroh.js');
+const { scrubAgent } = await import('../src/tools/agent.js');
 
 let sandbox: string;
 let agentDir: string;
@@ -104,6 +105,41 @@ describe('two file transfers that start at the same moment', () => {
     expect(shutdowns).toBe(1);
     // And nothing is left attached to the agent that was just torn down.
     expect((agent as { irohTransport?: unknown }).irohTransport).toBeUndefined();
+  });
+
+  it('are refused outright once the agent has been scrubbed', async () => {
+    // The mirror image of the row above, and the one the single-flight cannot
+    // help with: here the teardown finishes FIRST, and a handler that captured
+    // this agent before `switch_agent` arrived comes asking afterwards. The
+    // agent is out of the registry by then, so a node opened for it would hold
+    // the store lock with nothing left to shut it down - and switching back
+    // would open a second node on the same store.
+    const agent = { agentDir, scrubbed: true } as never;
+
+    expect(() => ensureIrohTransport(agent)).toThrow(/stopped/);
+    expect(created).toBe(0);
+  });
+
+  it('are refused from the moment a scrub STARTS, not from the moment it ends', async () => {
+    // The ordering is the whole guard: the handler being raced is already
+    // running, and everything `scrubAgent` does is asynchronous, so a flag set
+    // after its awaits protects nothing. This asks WHILE the scrub is still in
+    // flight - move the assignment below the first await and the transport is
+    // created here instead of refused.
+    const agent = {
+      name: 'alice',
+      agentDir,
+      client: { close: () => undefined },
+      identity: { scrub: () => undefined },
+    } as { name: string; agentDir: string; scrubbed?: boolean };
+    const registry = new Map<string, unknown>([['alice', agent]]);
+
+    const scrubbing = scrubAgent({ registry } as never, agent as never);
+    expect(() => ensureIrohTransport(agent as never)).toThrow(/stopped/);
+
+    await scrubbing;
+    expect(created).toBe(0);
+    expect(registry.has('alice')).toBe(false);
   });
 
   it('let a later transfer build a new node after shutdown', async () => {

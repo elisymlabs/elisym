@@ -50,6 +50,11 @@ interface VerifyCacheEntry {
 
 const NEGATIVE_CACHE_TTL_MS = 60_000;
 // Cap so a long-running process cannot grow the cache without bound (#44).
+/**
+ * NOT KILLED BY ANY TEST: removing the eviction below costs memory in a
+ * long-lived process and nothing else - no answer changes - so it is left
+ * stated rather than measured.
+ */
 const MAX_CACHE_ENTRIES = 5_000;
 
 const verifyCache = new Map<string, VerifyCacheEntry>();

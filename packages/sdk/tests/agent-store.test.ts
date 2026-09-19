@@ -28,6 +28,7 @@ import {
   writeYaml,
   writeYamlInitial,
   writeSecrets,
+  writeExampleSkillTemplate,
   readMediaCache,
   writeMediaCache,
   hashFile,
@@ -300,6 +301,40 @@ describe('createAgentDir', () => {
     expect(result.source).toBe('home');
     expect(existsSync(result.dir)).toBe(true);
     expect(existsSync(join(result.dir, 'skills'))).toBe(true);
+  });
+
+  it('leaves an existing .gitignore alone when a second agent joins the root', async () => {
+    // `flag: 'wx'` is the whole of it, and nothing measured it: with a plain
+    // write the second `createAgentDir` in a project root truncates the file
+    // that keeps `.secrets.json*` out of the commit and replaces it with the
+    // default list, losing whatever the operator put there. Every migration
+    // beside it APPENDS for exactly this reason - the one writer that does not
+    // append had no row.
+    const root = join(work, '.elisym');
+    await createAgentDir({ target: 'project', name: 'Bob', cwd: work, projectRoot: work });
+    const gitignorePath = join(root, '.gitignore');
+    const withOperatorLine = `${await readFile(gitignorePath, 'utf-8')}my-own-secret.txt\n`;
+    writeFileSync(gitignorePath, withOperatorLine, 'utf-8');
+
+    await createAgentDir({ target: 'project', name: 'Eva', cwd: work, projectRoot: work });
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('my-own-secret.txt');
+    expect(lines).toContain('.secrets.json*');
+  });
+
+  it('never overwrites an operator-edited EXAMPLE.md on a re-run of init', async () => {
+    // The other half of the same flag, and its docstring states this outright:
+    // "written with `wx` so we never overwrite an operator's edits on re-run of
+    // `init`". The claim stood on nothing.
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+    await writeExampleSkillTemplate(dir);
+    const examplePath = join(dir, 'skills', 'EXAMPLE.md');
+    writeFileSync(examplePath, 'my own notes\n', 'utf-8');
+
+    await writeExampleSkillTemplate(dir);
+
+    expect(await readFile(examplePath, 'utf-8')).toBe('my own notes\n');
   });
 
   it('refuses a name that would escape the elisym root', async () => {

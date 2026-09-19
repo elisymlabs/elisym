@@ -789,6 +789,9 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   const keyToIdx = new Map<string, number>();
   for (let i = 0; i < Math.min(keys.length, balanceCount); i++) {
     const key = keys[i];
+    // NOT KILLED BY ANY TEST, and no test could: dropping the guard
+    // maps a null key to the string 'null', and every address compared against
+    // this map has already passed `isAddress`, so nothing can collide with it.
     if (key) {
       keyToIdx.set(String(key), i);
     }
@@ -926,8 +929,13 @@ function waitMs(ms: number): Promise<void> {
  *
  * Async because SPL ATAs are PDAs and `findAssociatedTokenPda` is async.
  *
- * Caller is responsible for validating `paymentRequest` upstream;
- * `buildTransaction` already does that before invoking this helper.
+ * Caller is responsible for validating `paymentRequest` upstream - and that
+ * means the caller of `buildTransaction`, not `buildTransaction` itself, which
+ * checks only the config, the lamport amounts, the reference's shape, the
+ * expiry and `fee_address === treasury`. The STATIC denylist (a reference equal
+ * to the recipient, the treasury, the mint, the protocol tag, the system
+ * program) is `validatePaymentRequest`'s, and nothing below calls it. Both
+ * first-party callers do, before building.
  */
 /**
  * The customer's LAST look at the reference, and the half `validatePaymentRequest`

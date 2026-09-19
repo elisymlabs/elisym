@@ -315,7 +315,15 @@ describe('a job ledger that cannot be READ', () => {
         // the only record of which transaction paid for which job.
         expect(statSync(path).isFile()).toBe(true);
       } finally {
-        chmodSync(path, 0o600);
+        // A mutant that ROTATES the unreadable file aside leaves nothing here
+        // to chmod, and an ENOENT thrown from `finally` replaces the assertion
+        // error with a sentence about the wrong thing. The kill stays real
+        // either way; this keeps it legible.
+        try {
+          chmodSync(path, 0o600);
+        } catch {
+          /* the assertion above is the one worth reporting */
+        }
       }
     },
   );

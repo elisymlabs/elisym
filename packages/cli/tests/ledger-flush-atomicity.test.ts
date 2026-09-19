@@ -59,7 +59,7 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-const { JobLedger } = await import('../src/ledger.js');
+const { JobLedger, UsedNonceStore } = await import('../src/ledger.js');
 
 let tmpDir: string;
 let ledgerPath: string;
@@ -157,6 +157,26 @@ describe('a flush that fails part way through the write', () => {
 
     writeFailure = new Error('ENOSPC: no space left on device, write');
     expect(() => ledger.recordPaid(makeEntry('job-b'))).toThrow(/ENOSPC/);
+    writeFailure = null;
+
+    expect(readdirSync(tmpDir).filter((name) => name.includes('.tmp'))).toEqual([]);
+  });
+
+  it('leaves no fragment behind from the NONCE store either', () => {
+    // The same shape one file over, and the one member of this class that
+    // nothing measured: removing its cleanup alone left the whole cli package
+    // green. What a stranded fragment holds here is the burn set - the customer
+    // owner addresses that delegated to this agent - under a random name no
+    // sweep visits and no older agent's `.gitignore` line matches.
+    const noncePath = join(tmpDir, '.delegation-nonces.json');
+    const store = new UsedNonceStore(noncePath);
+    store.markUsed('nonce-1', Math.floor(Date.now() / 1000) + 3600);
+
+    // `markUsed` SWALLOWS a failed flush on purpose - the in-memory set still
+    // enforces single use for this process - so the fragment, not an exception,
+    // is the only observable thing a broken cleanup leaves behind.
+    writeFailure = new Error('ENOSPC: no space left on device, write');
+    store.markUsed('nonce-2', Math.floor(Date.now() / 1000) + 3600);
     writeFailure = null;
 
     expect(readdirSync(tmpDir).filter((name) => name.includes('.tmp'))).toEqual([]);

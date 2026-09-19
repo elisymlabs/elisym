@@ -48,6 +48,11 @@ export type DegenerateReferenceCode = 'degenerate_reference';
  * in one process, times a few mints, is what makes the key space unbounded over
  * a process lifetime.
  */
+/**
+ * NOT KILLED BY ANY TEST: removing the eviction below costs memory in a
+ * long-lived process and nothing else - no answer changes - so it is left
+ * stated rather than measured.
+ */
 const MAX_CACHE_ENTRIES = 5_000;
 
 const derivedCache = new Map<string, ReadonlySet<string>>();
