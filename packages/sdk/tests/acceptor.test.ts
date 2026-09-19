@@ -868,25 +868,47 @@ describe('a request that cannot be paid at all', () => {
     expect(listCalls).toBe(0);
   });
 
-  it('carves out a job that owns a settlement from the INCONCLUSIVE verdict too', async () => {
-    // The third step-0 branch, and the one with no row: the two below cover the
-    // terminal verdicts, where the carve-out is obviously load-bearing. This
-    // one is a fee rate the request does not match, which is not terminal - so
-    // it looks like the carve-out changes nothing, and returning the verdict
-    // straight away passes every other fixture in this file.
+  it('names the THIRD step-0 verdict when that is what carved the job out', async () => {
+    // The branch with no row: the two below cover the terminal verdicts, where
+    // the carve-out is obviously load-bearing. This one is a fee rate the
+    // request does not match, which is not terminal - so it looks like the
+    // carve-out changes nothing, and returning the verdict straight away
+    // passes every other fixture in this file.
     //
-    // What it costs is step 1. A job that already owns a settlement has one
-    // that was verified once; skipping the step means a provider whose
-    // on-chain fee moved after the customer paid never re-confirms it and
-    // never delivers the work it was paid for.
+    // What it actually buys is the SENTENCE. With the strategy that ships,
+    // step 1 cannot accept here either: the three conditions on which the
+    // predicate answers `inconclusive` are the three on which `verifyPayment`
+    // refuses, in the same order and with the same numbers, and the two gates
+    // agree because `calculateProtocolFee` rounds up and the amount is already
+    // known positive. So the carve-out turns a bare verdict into one that
+    // names WHY, which is what an operator rolling a fee change back has to
+    // act on.
+    //
+    // Against the REAL strategy for that reason. An injected one answers
+    // `accepted: true` here and would pin a delivery that does not happen -
+    // the trap the two rows below this one are written to avoid.
     store.claim(SIG_A, 'job-1');
+    const rpc = makeRpc();
+    const acceptor = new ProviderPaymentAcceptor({
+      strategy: new SolanaPaymentStrategy(),
+      rpc,
+      store,
+    });
 
-    const result = await makeAcceptor(strategyVerifying(SIG_A)).accept(
-      { paymentRequest: makeRequest({ fee_amount: 0 }), jobIdentity: 'job-1' },
+    const result = await acceptor.accept(
+      {
+        paymentRequest: makeRequest(),
+        jobIdentity: 'job-1',
+        budget: { retriesForOwnSettlement: 1, retriesPerCandidate: 1, intervalMs: 0 },
+      },
       { feeBps: 300, treasury: TREASURY },
     );
 
-    expect(result).toEqual({ accepted: true, txSignature: SIG_A });
+    expect(result).toMatchObject({
+      accepted: false,
+      reason: 'inconclusive',
+      error: expect.stringContaining('the request is inconclusive for this config'),
+    });
     expect(listCalls).toBe(0);
   });
 

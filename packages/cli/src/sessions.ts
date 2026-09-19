@@ -644,6 +644,11 @@ export class SessionStore {
       // `start < lines.length` is the FLOOR the docstring names - it is false
       // on the first pass, so the most recent turn is taken whatever it costs.
       // Not the branch below the loop, which says so itself.
+      //
+      // PROVABLY REDUNDANT all the same, and NOT KILLED BY ANY TEST: drop the
+      // conjunct and the loop exits with `start === lines.length`, which sends
+      // the branch below to the same index. The two spell the floor twice.
+      // Kept as the one that says it where the budget is being spent.
       if (cost > budget && start < lines.length) {
         break;
       }

@@ -30,6 +30,12 @@ import { isBlockingNode } from '@elisym/sdk/agent-store';
 import { X402_CACHE_TTL_MS } from './constants.js';
 
 /**
+ * Owner-only, like the result files beside it: this index carries the text
+ * results the bridge bought, not just the counters that cap what it spends.
+ */
+const INDEX_FILE_MODE = 0o600;
+
+/**
  * How stale a temporary must be before a sweep removes it. Long enough that a
  * live writer's file is never in question, short enough that a fragment left
  * by a dead process is not permanent.
@@ -125,6 +131,22 @@ export class X402JobStore {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error(`x402 store ${this.jobsPath} is not a JSON object`);
     }
+    // And the same check one level down, which is where it matters more. A slot
+    // holding an ARRAY passes `?? {}` - it is neither null nor undefined - so
+    // `claimPaidAttempt` reads `undefined` for both counters, clears both
+    // ceilings, and writes the array straight back, because `JSON.stringify`
+    // drops the non-index properties it just set. The state never heals: every
+    // retry is granted, and every grant is another signed payment to the
+    // upstream. `JobLedger.load` refuses the same shape for the same reason.
+    //
+    // Refusing rather than dropping the slot, which is what this file's own
+    // top-level check argues: dropping it resets that job's paid-attempt budget,
+    // and a reset budget is the thing the ceiling exists to prevent.
+    for (const [jobId, record] of Object.entries(parsed)) {
+      if (record !== null && (typeof record !== 'object' || Array.isArray(record))) {
+        throw new Error(`x402 store ${this.jobsPath} holds a non-record at ${jobId}`);
+      }
+    }
     return parsed as X402JobsFile;
   }
 
@@ -136,7 +158,24 @@ export class X402JobStore {
     // reused, so a failure would otherwise strand a full copy of this index -
     // which records what the bridge has already paid for - for good.
     try {
-      await writeFile(tempPath, JSON.stringify(file, null, 2), 'utf-8');
+      // Owner-only, and the third argument is an OPTIONS object rather than the
+      // encoding string it used to be: this index holds more than a budget.
+      // `saveTextResult` parks the upstream's answer in it, which is content the
+      // customer has already been charged for - the same content the result
+      // FILES beside it are written 0o600 for. A project-local agent directory
+      // is 0o755, so a default-mode file here is readable by every local user.
+      //
+      // `chmod` on the temporary as well, for the reason `JobLedger.flush` gives:
+      // `mode` is masked by the umask, and `rename` carries whatever the
+      // temporary ended up with onto the real name. NOT KILLED BY ANY TEST and
+      // it cannot be under a normal umask, which strips group and other bits
+      // and leaves 0o600 alone - it earns its line only under one that strips
+      // the owner's.
+      await writeFile(tempPath, JSON.stringify(file, null, 2), {
+        encoding: 'utf-8',
+        mode: INDEX_FILE_MODE,
+      });
+      await chmod(tempPath, INDEX_FILE_MODE);
       await rename(tempPath, this.jobsPath);
     } catch (error) {
       try {

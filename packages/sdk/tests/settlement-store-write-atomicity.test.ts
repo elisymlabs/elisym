@@ -166,10 +166,13 @@ describe('a write that fails leaves the settlement index untouched', () => {
   it('gives every write a temporary name of its own', () => {
     // The randomness itself, which the rows below rest on and none of them
     // measured: they plant fragments under names a reader chose, so a build
-    // that went back to ONE fixed temporary keeps them all green. A fixed name
-    // is what the two-process case cannot survive - a second `elisym start`
-    // writing the same temporary between this one's write and its rename hands
-    // the rename somebody else's bytes.
+    // that went back to ONE fixed temporary keeps them all green.
+    //
+    // What the random half buys, precisely: the name already carries the pid,
+    // so two PROCESSES were never going to collide. What randomness adds is
+    // that the next name is not guessable - a planted FIFO on it never
+    // returns - and that a stranded fragment is never reused, which is what
+    // the row below this one rests on.
     const store = createFileSettlementStore(path);
     store.claim(SIG_A, 'job-a');
     store.claim(SIG_B, 'job-b');

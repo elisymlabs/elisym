@@ -251,6 +251,47 @@ describe('verifyJobPaymentQuick', () => {
     expect(result.reason).toBe('recipient_mismatch');
   });
 
+  it.each([
+    ['a null row in the post balances', (row: unknown) => ({ postTokenBalances: [null, row] })],
+    ['a null row in the pre balances', (row: unknown) => ({ preTokenBalances: [null, row] })],
+    ['post balances that are not a list at all', () => ({ postTokenBalances: 7 })],
+  ])('answers rather than throwing on %s', async (_label, shape) => {
+    // The CONTAINER, which was never checked while the property inside it was:
+    // `post.uiTokenAmount?.amount` one line down shows the intent, and
+    // `post.owner` above it reads straight through. All of this runs outside
+    // the `try`, so each shape rejected the caller's promise instead of
+    // answering - the class this file closed four times over on the value side.
+    const recipient = makeAddress();
+    const mint = makeAddress();
+    const rpc = createMockRpc(() => ({
+      send: () =>
+        Promise.resolve({
+          meta: {
+            err: null,
+            preBalances: [10_000_000n, 0n],
+            postBalances: [10_000_000n, 0n],
+            preTokenBalances: [
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '1' } },
+            ],
+            postTokenBalances: [
+              { accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '1' } },
+            ],
+            // The real row stays, beside the bad one: drop it and the recipient
+            // simply has no baseline, which is a legitimate zero and a credit
+            // this function is right to report. Then the row would measure the
+            // fixture instead of the guard.
+            ...shape({ accountIndex: 1, mint, owner: recipient, uiTokenAmount: { amount: '1' } }),
+          },
+          transaction: { message: { accountKeys: [recipient, makeAddress()] } },
+        }),
+    }));
+
+    const result = await verifyJobPaymentQuick(rpc, 'sig-bad-rows', recipient, 'mainnet');
+
+    expect(result.receivedFunds).toBe(false);
+    expect(result.reason).toBe('recipient_mismatch');
+  });
+
   it('does not let an unreadable POST amount outrank a negative baseline', async () => {
     // The skip on an unreadable post amount looks answer-neutral, and for a
     // baseline of zero or more it is: `null > 0n` is false, so falling through

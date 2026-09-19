@@ -297,7 +297,7 @@ describe('two file transfers that start at the same moment', () => {
   });
 
   it('takes an EPHEMERAL store with it', async () => {
-    // The only guard in this file with neither a row nor a note, and three
+    // The only guard in this file with neither a row nor a note, and several
     // separate comments claim what it does - including the one beside the
     // server's teardown, which names the cost: a tmpdir holding job inputs and
     // bought results in the clear, left behind by the very teardown that exists

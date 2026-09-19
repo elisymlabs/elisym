@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -115,6 +116,37 @@ describe('X402JobStore', () => {
       granted: false,
       refusedBy: 'signatures',
     });
+  });
+
+  it('writes the index owner-only, because it carries bought results too', async () => {
+    // The counters are not the only thing in here: `saveTextResult` parks the
+    // upstream's answer in the same file, and that is content the customer has
+    // already paid for. The result FILES beside it are 0o600 and the directory
+    // is 0o700; this index was written with an encoding string where the
+    // options object goes, so it landed at whatever the umask allowed - 0o644
+    // inside a project-local agent directory, which is itself 0o755.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    await store.claimPaidAttempt('job-mode', 2, 2);
+    await store.saveTextResult('job-mode', 'the paid-for answer');
+
+    expect(statSync(join(dir, X402_JOBS_FILE)).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses a record slot that is not a record, instead of clearing its ceiling', async () => {
+    // A hand-edited file is this store's stated threat model, and an ARRAY in a
+    // slot is the one shape that passes every gate: `?? {}` does not replace it,
+    // both counters read `undefined` so neither ceiling holds, and the
+    // properties `claimPaidAttempt` sets are dropped again by `JSON.stringify`.
+    // The state never heals - every retry is granted, and every grant is another
+    // signed payment to the upstream.
+    //
+    // Refused rather than dropped: dropping the slot resets that job's budget,
+    // which is the thing the ceiling exists to prevent.
+    await writeFile(join(dir, X402_JOBS_FILE), JSON.stringify({ 'job-1': [] }));
+
+    await expect(store.claimPaidAttempt('job-1', 2, 2)).rejects.toThrow(/non-record/);
   });
 
   it('round-trips a text result', async () => {

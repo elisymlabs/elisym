@@ -1775,6 +1775,44 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).toMatch(/disagree on length/);
     });
 
+    it.each([
+      ['the RECIPIENT slot', [200_000_000 - amount], /Recipient received/],
+      ['the TREASURY slot', [200_000_000 - amount, netAmount], /Treasury received/],
+    ])('refuses a short postBalances that stops before %s', async (_label, post, expected) => {
+      // The other two shapes the comment beside the guard names. The row
+      // above covers a reference past the prefix; these cover a `post` that
+      // ends before a MONEY slot, where the missing entry reads as
+      // `undefined`, `bigIntDelta` takes it for `0n`, and the refusal blames
+      // the customer for a page we could not read.
+      //
+      // They exist because the comment claimed all three were measured and
+      // only the first was: no fixture in the package had a `post` stopping
+      // short of the recipient or the treasury. Measured now - with the
+      // guard removed these refuse for the WRONG reason, `Recipient received
+      // -97000000` and `Treasury received 0`.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+                pre: [200_000_000, 0, 0, 0],
+                post,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'shortPostSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/disagree on length/);
+      expect(result.error).not.toMatch(expected);
+    });
+
     it('refuses a short preBalances whose prefix still covers everything read', async () => {
       // The direction the other two fixtures miss. `pre` is short, but the
       // reference, the recipient and the treasury all sit inside the prefix, so

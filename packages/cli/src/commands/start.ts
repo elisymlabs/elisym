@@ -943,9 +943,8 @@ export async function cmdStart(
   // They run here for the same reason the two indexes above are opened here:
   // appending to the file is not guarded - a read-only `.elisym` root, a root
   // written under sudo, a full disk - and a throw after the cards are on the
-  // relays leaves a
-  // live paid provider advertised by an agent that has already exited. None of
-  // these touches the network.
+  // relays leaves a live paid provider advertised by an agent that has already
+  // exited. None of these touches the network.
   //
   // What they cover: the iroh blob store (cleartext job payloads), the private
   // files written through a random temporary (an agent created by an older

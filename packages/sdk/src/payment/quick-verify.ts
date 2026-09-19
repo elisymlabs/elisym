@@ -231,9 +231,13 @@ async function doVerifyOnce(
 
   const postTokenBalances = tx.meta.postTokenBalances as readonly TokenBalanceEntry[] | undefined;
   const preTokenBalances = tx.meta.preTokenBalances as readonly TokenBalanceEntry[] | undefined;
-  if (postTokenBalances) {
+  // `Array.isArray` rather than truthiness: a non-iterable here throws on the
+  // `for...of`, and every line in this half runs outside the `try`. Same reason
+  // the row shapes below are guarded - the container was never checked while
+  // the property inside it was.
+  if (Array.isArray(postTokenBalances)) {
     for (const post of postTokenBalances) {
-      if (post.owner !== recipientStr) {
+      if (post === null || typeof post !== 'object' || post.owner !== recipientStr) {
         continue;
       }
       const postAmount = readBalance(post.uiTokenAmount?.amount);
@@ -241,7 +245,11 @@ async function doVerifyOnce(
         continue;
       }
       const pre = preTokenBalances?.find(
-        (entry) => entry.owner === recipientStr && entry.mint === post.mint,
+        (entry) =>
+          entry !== null &&
+          typeof entry === 'object' &&
+          entry.owner === recipientStr &&
+          entry.mint === post.mint,
       );
       // A MISSING baseline is a zero baseline - the recipient's token account
       // was created inside this very transaction, which is what a first-ever
