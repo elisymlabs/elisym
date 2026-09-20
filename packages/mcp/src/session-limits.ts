@@ -10,8 +10,10 @@ import {
   assetKey,
   LSM_SOLANA_MAINNET,
   NATIVE_SOL,
+  PATHUSD_TEMPO,
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
+  USDCE_TEMPO_MAINNET,
   parseAssetAmount,
   resolveKnownAsset,
   type Asset,
@@ -28,7 +30,7 @@ export interface DefaultLimit {
 /**
  * Default caps shipped with the binary. Edit this list (and rebuild) to change
  * out-of-the-box limits. Entries for tokens that are not yet in
- * `@elisym/sdk` KNOWN_ASSETS have no effect until both lists are updated
+ * `@elisym/sdk` ALL_ASSETS have no effect until both lists are updated
  * together.
  */
 // The limiter is keyed by `assetKey` (mint included), so USDC needs one entry
@@ -36,12 +38,16 @@ export interface DefaultLimit {
 // missing mainnet row would leave real-money USDC spending uncapped. Native
 // SOL has no mint and therefore ONE cap shared across networks: deliberate -
 // in a mixed-network process the shared draw-down can only under-allow, never
-// over-spend.
+// over-spend. pathUSD is the same case on Tempo: one contract address on both
+// networks, so one key and one shared cap. The Tempo rows exist BEFORE anything
+// can pay on Tempo, so no build ever has a payable asset without a cap.
 export const DEFAULT_SESSION_LIMITS: readonly DefaultLimit[] = [
   { asset: NATIVE_SOL, humanAmount: '0.5' },
   { asset: USDC_SOLANA_DEVNET, humanAmount: '50' },
   { asset: USDC_SOLANA_MAINNET, humanAmount: '50' },
   { asset: LSM_SOLANA_MAINNET, humanAmount: '1000000' },
+  { asset: USDCE_TEMPO_MAINNET, humanAmount: '50' },
+  { asset: PATHUSD_TEMPO, humanAmount: '50' },
 ];
 
 /** Materialize DEFAULT_SESSION_LIMITS into a Map<AssetKey, rawBigint>. */
@@ -73,7 +79,7 @@ export async function buildEffectiveLimits(): Promise<Map<string, bigint>> {
         : `${entry.chain}:${entry.token}`;
       throw new Error(
         `Unknown asset in ${globalConfigPath()}: ${display}. ` +
-          'Update the SDK KNOWN_ASSETS list or remove the override.',
+          'Update the SDK asset lists or remove the override.',
       );
     }
     if (seen.has(key)) {

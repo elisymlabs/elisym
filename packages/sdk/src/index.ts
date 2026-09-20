@@ -139,6 +139,34 @@ export type {
 } from './payment/feeEstimate';
 export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
+export {
+  PaymentRequestV2Schema,
+  parseAnyPaymentRequest,
+  resolveAssetFromPaymentRequestV2,
+  caip19ForAsset,
+} from './payment/schema-v2';
+export type {
+  ParsedPaymentRequestV2,
+  ParseAnyOptions,
+  AnyParseError,
+  AnyParseResult,
+} from './payment/schema-v2';
+export { calculateProtocolFeeSubunits } from './payment/fee-subunits';
+export {
+  CHAINS,
+  isChainSlug,
+  chainFamilyOf,
+  chainFor,
+  chainByCaip2,
+  explorerTxUrl,
+  isEvmAddressFormat,
+  isEvmTxHashFormat,
+  isEvmWireAddress,
+  isEvmWireTxHash,
+  isVirtualEvmAddress,
+  normalizeEvmAddress,
+} from './payment/chains';
+export type { ChainSlug, ChainFamily, ChainConfig } from './payment/chains';
 export { ProviderPaymentAcceptor, MIN_SETTLEMENT_RETENTION_MS } from './payment/acceptor';
 export type {
   SettlementClaim,
@@ -174,7 +202,13 @@ export {
   USDC_SOLANA_MAINNET,
   LSM_SOLANA_MAINNET,
   TOKEN_2022_PROGRAM_ADDRESS_STR,
+  USDCE_TEMPO_MAINNET,
+  PATHUSD_TEMPO,
   KNOWN_ASSETS,
+  EVM_ASSETS,
+  ALL_ASSETS,
+  assetsFor,
+  defaultStablecoin,
   assetKey,
   assetByKey,
   resolveKnownAsset,

@@ -19,6 +19,14 @@ import {
 import { parseDelegationDescriptor } from '../delegation';
 import { parseMeteredDescriptor } from '../metered';
 import { parseOnchainDescriptor } from '../onchain';
+import { assetsFor } from '../payment/assets';
+import type { Asset } from '../payment/assets';
+import {
+  chainFamilyOf,
+  isChainSlug,
+  isEvmWireAddress,
+  isVirtualEvmAddress,
+} from '../payment/chains';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type {
@@ -28,6 +36,7 @@ import type {
   ExternalIdentityClaimInput,
   ExternalIdentityClaimsResult,
   Network,
+  PaymentInfo,
   SubCloser,
 } from '../types';
 import { normalizeNip05Identifier, splitNip05Identifier } from './identity-verify';
@@ -91,6 +100,68 @@ const PAYMENT_TOKEN_REGEX = /^[a-z0-9$._-]{1,32}$/;
 const PAYMENT_SYMBOL_REGEX = /^[A-Za-z0-9$._-]{1,32}$/;
 /** SPL mint (base58) or EVM contract (0x-hex). */
 const PAYMENT_MINT_REGEX = /^[0-9A-Za-z]{1,64}$/;
+// An address on a chain this SDK does not know is kept (clearing the payment
+// block would turn a paid card into a free one) but bounded, because it still
+// reaches client state and error messages. The charset is deliberate: base58,
+// bech32, hex, a `.sol` name and a `user@domain` Lightning address all pass;
+// whitespace, brackets and control characters do not.
+const FOREIGN_ADDRESS_REGEX = /^[0-9A-Za-z:._@-]{1,128}$/;
+// An EVM card's price travels as a digit STRING. Released SDKs accept only an
+// integer NUMBER and drop the whole card otherwise - which is the point: a
+// client that cannot pay on an EVM chain never sees an EVM card.
+const EVM_JOB_PRICE_WIRE_REGEX = /^(0|[1-9][0-9]*)$/;
+
+/**
+ * The address rule of a payment block, shared by the read and the write side.
+ * `null` means acceptable.
+ */
+function paymentAddressProblem(chain: string, address: string): string | null {
+  if (chain === 'solana') {
+    return SOLANA_ADDRESS_REGEX.test(address) ? null : 'Invalid Solana address format';
+  }
+  if (chainFamilyOf(chain) === 'evm') {
+    if (!isEvmWireAddress(address)) {
+      return 'Invalid EVM address format (lowercase 0x hex expected)';
+    }
+    return isVirtualEvmAddress(address) ? 'Virtual EVM addresses are not accepted' : null;
+  }
+  return FOREIGN_ADDRESS_REGEX.test(address) ? null : 'Invalid payment address format';
+}
+
+/**
+ * The registry coin an EVM card names, or `null`. A card that names no token, a
+ * contract the registry does not hold, or a coin of the other environment (USDC.e
+ * on devnet) is not payable by anyone, so it is dropped on read and refused on
+ * publish.
+ */
+function evmCardCoin(payment: PaymentInfo): Asset | null {
+  if (
+    !isChainSlug(payment.chain) ||
+    (payment.network !== 'mainnet' && payment.network !== 'devnet')
+  ) {
+    return null;
+  }
+  const coins = assetsFor(payment.chain, payment.network);
+  return coins.find((coin) => coin.token === payment.token && coin.mint === payment.mint) ?? null;
+}
+
+function withWirePrice(card: CapabilityCard): unknown {
+  return { ...card, payment: { ...card.payment, job_price: String(card.payment?.job_price) } };
+}
+
+/**
+ * Read an EVM card's wire price: a canonical digit string that is a safe
+ * integer becomes the `number` the public type keeps. Anything else - a NUMBER
+ * included, which is what a Solana card carries - is `null`, and the card is
+ * dropped.
+ */
+function readEvmJobPrice(wire: unknown): number | null {
+  if (typeof wire !== 'string' || !EVM_JOB_PRICE_WIRE_REGEX.test(wire)) {
+    return null;
+  }
+  const price = Number(wire);
+  return Number.isSafeInteger(price) ? price : null;
+}
 
 /**
  * Relay-side network isolation for capability queries (D2). Mainnet queries
@@ -244,7 +315,7 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
   // here keeps hostile strings (prompt-injection payloads, ANSI escapes) out of
   // client state and every downstream error message.
   if (card.payment) {
-    if (card.payment.chain === 'solana' && !SOLANA_ADDRESS_REGEX.test(card.payment.address)) {
+    if (paymentAddressProblem(card.payment.chain, card.payment.address) !== null) {
       return null;
     }
     if (card.payment.token !== undefined && !PAYMENT_TOKEN_REGEX.test(card.payment.token)) {
@@ -298,6 +369,18 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     card.context = undefined;
   }
 
+  // The three descriptors below promise SOLANA mechanics (an SPL approve, a
+  // Solana transaction to sign, a metered SPL pull). On a card that is paid on
+  // another chain they would mean "pay there, sign here", so they are cleared
+  // before anything reads them. Track C lifts this for `onchain` once an EVM
+  // descriptor can be verified.
+  // `payment` is `null` on a free card: a truthiness check, never `!== undefined`.
+  if (card.payment && card.payment.chain !== 'solana') {
+    card.delegation = undefined;
+    card.onchain = undefined;
+    card.metered = undefined;
+  }
+
   // Delegation descriptor: validate (`.strip()`) and CLEAR on failure rather
   // than dropping the card - a malformed/forward-incompatible delegation must
   // never hide an otherwise valid agent. A cleared descriptor just means the
@@ -319,7 +402,19 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     card.onchain = descriptor && descriptor.network === paymentNetwork ? descriptor : undefined;
   }
 
-  if (
+  if (card.payment && chainFamilyOf(card.payment.chain) === 'evm') {
+    const price = readEvmJobPrice(card.payment.job_price);
+    const coin = evmCardCoin(card.payment);
+    if (price === null || coin === null) {
+      return null;
+    }
+    // The coin of an EVM card comes from the registry ONLY. Without this a card
+    // naming no token is priced as SOL by every consumer's "no token means SOL"
+    // fallback, and one naming a foreign contract is priced with its own decimals.
+    card.payment.job_price = price;
+    card.payment.decimals = coin.decimals;
+    card.payment.symbol = coin.symbol;
+  } else if (
     card.payment?.job_price !== null &&
     card.payment?.job_price !== undefined &&
     (!Number.isInteger(card.payment.job_price) || card.payment.job_price < 0)
@@ -1144,8 +1239,29 @@ export class DiscoveryService {
     // Base58 charset + length check. Full validation (decode + 32 bytes) happens
     // at payment time via the @solana/kit `address()` helper - no Kit import here
     // to keep discovery browser-safe without a Solana peer dep at this layer.
-    if (card.payment.chain === 'solana' && !SOLANA_ADDRESS_REGEX.test(card.payment.address)) {
-      throw new Error(`Invalid Solana address format: ${card.payment.address}`);
+    const addressProblem = paymentAddressProblem(card.payment.chain, card.payment.address);
+    if (addressProblem !== null) {
+      throw new Error(`${addressProblem}: ${card.payment.address}`);
+    }
+    const paidOnEvm = chainFamilyOf(card.payment.chain) === 'evm';
+    if (paidOnEvm) {
+      const price = card.payment.job_price;
+      if (price === undefined || !Number.isSafeInteger(price) || price < 0) {
+        throw new Error('A card paid on an EVM chain needs a non-negative integer job_price.');
+      }
+      if (evmCardCoin(card.payment) === null) {
+        throw new Error(
+          `A card paid on ${card.payment.chain} must name a coin the SDK registry holds for ${card.payment.network}.`,
+        );
+      }
+    }
+    if (
+      card.payment.chain !== 'solana' &&
+      (card.delegation !== undefined || card.onchain !== undefined || card.metered !== undefined)
+    ) {
+      throw new Error(
+        `A card paid on ${card.payment.chain} cannot carry a delegation, onchain or metered descriptor: they describe Solana mechanics.`,
+      );
     }
     // Write-side mirror of parseCapabilityEvent's payment format checks:
     // readers reject violating cards, so publishing one would silently ship a
@@ -1250,7 +1366,7 @@ export class DiscoveryService {
         kind: KIND_APP_HANDLER,
         created_at: Math.floor(Date.now() / 1000),
         tags,
-        content: JSON.stringify(card),
+        content: JSON.stringify(paidOnEvm ? withWirePrice(card) : card),
       },
       identity.secretKey,
     );

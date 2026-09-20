@@ -22,8 +22,9 @@ import {
   MAX_PROOF_TTL_SECS,
   PROOF_CLOCK_SKEW_SECS,
 } from '../delegation/auth-proof';
+import { chainByCaip2, isEvmWireTxHash } from '../payment/chains';
 import { assertLamports } from '../payment/fee';
-import { parsePaymentRequest } from '../payment/schema';
+import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import { nip44Encrypt, nip44Decrypt } from '../primitives/crypto';
 import type { ElisymIdentity } from '../primitives/identity';
 import {
@@ -51,6 +52,61 @@ function isEncrypted(event: Event): boolean {
 
 function resolveRequestId(event: Event): string | undefined {
   return event.tags.find((t) => t[0] === 'e')?.[1];
+}
+
+/**
+ * A settlement on an EVM chain is reported with the wire form of its hash - the
+ * only form `readHistoryTxTag` keeps. Writing another would publish a tag every
+ * reader discards.
+ */
+function assertSettlementTx(txSignature: string, chainTag: string): void {
+  if (chainTag !== 'solana' && !isEvmWireTxHash(txSignature)) {
+    throw new Error('An EVM settlement is reported by its lowercase 0x transaction hash.');
+  }
+}
+
+/**
+ * The chain element of a `tx` or `amount` tag. `'solana'` is the spelling every
+ * released client writes and is kept; an EVM settlement is named by the CAIP-2
+ * id of a registry chain. The value comes from OUR caller, never from a remote
+ * event, so an unknown one is a programming error and throws.
+ */
+function settlementChainTag(chain: string | undefined): string {
+  if (chain === undefined || chain === 'solana') {
+    return 'solana';
+  }
+  if (chainByCaip2(chain)?.family === 'evm') {
+    return chain;
+  }
+  throw new Error(`Unknown settlement chain: ${chain}`);
+}
+
+/**
+ * Where a payment request says it settles: the CAIP-2 id of a v2 request,
+ * `'solana'` for a v1 request, `undefined` for a blob neither parser accepts.
+ */
+function settlementChainOfRequest(paymentRequestJson: string): string | undefined {
+  const parsed = parseAnyPaymentRequest(paymentRequestJson);
+  if (!parsed.ok) {
+    return undefined;
+  }
+  return parsed.version === 2 ? parsed.data.chain : 'solana';
+}
+
+/**
+ * A `tx` tag as job history may keep it. On a registry EVM chain the hash must
+ * be 32 bytes of lowercase hex; any other tag is kept as it always was.
+ */
+function readHistoryTxTag(tag: string[] | undefined): string | undefined {
+  const value = tag?.[1];
+  if (!value) {
+    return undefined;
+  }
+  const chain = tag[2];
+  if (chain !== undefined && chainByCaip2(chain)?.family === 'evm') {
+    return isEvmWireTxHash(value) ? value : undefined;
+  }
+  return value;
 }
 
 function safeParseInt(value: string | undefined): number | undefined {
@@ -565,7 +621,9 @@ export class MarketplaceService {
    *
    * `network` tags the event so the reputation tally can scope it to a network
    * (a missing tag is read as `devnet` by consumers). Optional and trailing to
-   * keep the published signature backward-compatible.
+   * keep the published signature backward-compatible. `chain` names where the
+   * payment settled: omitted or `'solana'` for Solana, the CAIP-2 id for an EVM
+   * chain.
    */
   async submitPaymentConfirmation(
     identity: ElisymIdentity,
@@ -573,12 +631,15 @@ export class MarketplaceService {
     providerPubkey: string,
     txSignature: string,
     network?: Network,
+    chain?: string,
   ): Promise<void> {
+    const chainTag = settlementChainTag(chain);
+    assertSettlementTx(txSignature, chainTag);
     const tags: string[][] = [
       ['e', jobEventId],
       ['p', providerPubkey],
       ['status', 'payment-completed'],
-      ['tx', txSignature, 'solana'],
+      ['tx', txSignature, chainTag],
       ['t', 'elisym'],
     ];
     if (network) {
@@ -612,7 +673,7 @@ export class MarketplaceService {
     providerPubkey: string,
     positive: boolean,
     capability?: string,
-    opts?: { txSignature?: string; network?: Network },
+    opts?: { txSignature?: string; network?: Network; chain?: string },
   ): Promise<void> {
     const tags: string[][] = [
       ['e', jobEventId],
@@ -625,7 +686,9 @@ export class MarketplaceService {
       tags.push(['t', capability]);
     }
     if (opts?.txSignature) {
-      tags.push(['tx', opts.txSignature, 'solana']);
+      const chainTag = settlementChainTag(opts.chain);
+      assertSettlementTx(opts.txSignature, chainTag);
+      tags.push(['tx', opts.txSignature, chainTag]);
     }
     if (opts?.network) {
       tags.push(['network', opts.network]);
@@ -858,7 +921,21 @@ export class MarketplaceService {
     requestEvent: Event,
     amount: number,
     paymentRequestJson: string,
+    chain?: string,
   ): Promise<void> {
+    // The tag must say what the BLOB says: a v2 request names its chain, a v1
+    // request settles on Solana. A caller's `chain` that disagrees is a bug, and a
+    // mis-tagged request would be read by history as the wrong currency.
+    const callerTag = settlementChainTag(chain);
+    // Bounded before it is parsed a second and a third time below.
+    const blobTag =
+      paymentRequestJson.length > LIMITS.MAX_INPUT_LENGTH
+        ? undefined
+        : settlementChainOfRequest(paymentRequestJson);
+    if (blobTag !== undefined && chain !== undefined && callerTag !== blobTag) {
+      throw new Error(`Settlement chain ${callerTag} does not match the payment request.`);
+    }
+    const chainTag = blobTag ?? callerTag;
     assertLamports(amount, 'payment amount');
     if (amount === 0) {
       throw new Error('Invalid payment amount: 0. Must be positive.');
@@ -882,7 +959,7 @@ export class MarketplaceService {
           ['e', requestEvent.id],
           ['p', requestEvent.pubkey],
           ['status', 'payment-required'],
-          ['amount', String(amount), paymentRequestJson, 'solana'],
+          ['amount', String(amount), paymentRequestJson, chainTag],
           ['t', 'elisym'],
         ],
         content: '',
@@ -1310,6 +1387,11 @@ export class MarketplaceService {
       let amount: number | undefined;
       let txHash: string | undefined;
       let asset: PaymentAssetRef | undefined;
+      // Set when the provider's payment request names an asset this SDK cannot
+      // resolve - a v2 request for an unknown coin, or a version it does not
+      // know. The amount is then dropped: with no asset a consumer reads the
+      // number as lamports, and a wrong amount is worse than none.
+      let amountUnreadable = false;
 
       if (result) {
         status = 'success';
@@ -1327,19 +1409,38 @@ export class MarketplaceService {
       const allFeedbacksForReq = feedbacksByRequestId.get(req.id) ?? [];
       for (const fb of allFeedbacksForReq) {
         if (!txHash && fb.pubkey === req.pubkey) {
-          const txTag = fb.tags.find((t) => t[0] === 'tx');
-          if (txTag?.[1]) {
-            txHash = txTag[1];
-          }
+          txHash = readHistoryTxTag(fb.tags.find((tag) => tag[0] === 'tx'));
         }
         if (!asset && jobProvider && fb.pubkey === jobProvider) {
           const amtTag = fb.tags.find((t) => t[0] === 'amount');
           const requestJson = amtTag?.[2];
+          // The tag itself names where the payment settles. Off Solana, an amount
+          // whose asset did not resolve - whatever the blob is: v2 for an unknown
+          // coin, not JSON at all, encrypted one day - is not lamports.
+          const settlesOffSolana = amtTag?.[3] !== undefined && amtTag[3] !== 'solana';
           if (requestJson) {
-            const parsed = parsePaymentRequest(requestJson);
-            if (parsed.ok && parsed.data.asset) {
+            const parsed = parseAnyPaymentRequest(requestJson);
+            if (parsed.ok && parsed.version === 1) {
               asset = parsed.data.asset;
+            } else if (parsed.ok) {
+              const known = resolveAssetFromPaymentRequestV2(parsed.data);
+              if (known?.mint === undefined) {
+                amountUnreadable = true;
+              } else {
+                asset = {
+                  chain: known.chain,
+                  token: known.token,
+                  mint: known.mint,
+                  decimals: known.decimals,
+                };
+              }
+            } else if (parsed.version !== 1 && parsed.error.code !== 'invalid_json') {
+              // A v2 blob this SDK refuses, or a version it does not know.
+              amountUnreadable = true;
             }
+          }
+          if (settlesOffSolana && asset === undefined) {
+            amountUnreadable = true;
           }
         }
       }
@@ -1366,6 +1467,10 @@ export class MarketplaceService {
           const amtTag = feedback.tags.find((t) => t[0] === 'amount');
           amount = safeParseInt(amtTag?.[1]);
         }
+      }
+
+      if (amountUnreadable) {
+        amount = undefined;
       }
 
       jobs.push({

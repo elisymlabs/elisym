@@ -52,7 +52,8 @@ events never leak into a mainnet tally.
 
 ## Payment proof (carried, not yet verified)
 
-A rating also carries the payment tx signature as `["tx", <sig>, "solana"]`. In
+A rating also carries the payment tx signature as `["tx", <sig>, "solana"]` (or, for a
+payment settled on an EVM chain, a lowercase `0x` hash and that chain's CAIP-2 id). In
 stage 1 this is **proof-carrying data only** - clients do not read the chain, so
 a rating is trusted at the Nostr layer (a real customer of a real completed job)
 but its payment is not yet proven on-chain. A provider can therefore still

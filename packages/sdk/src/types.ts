@@ -534,7 +534,10 @@ export type PaymentValidationCode =
   | 'invalid_fee_params'
   | 'invalid_asset'
   | 'asset_mismatch'
-  | 'degenerate_reference';
+  | 'degenerate_reference'
+  | 'unsupported_version'
+  | 'unsupported_chain'
+  | 'chain_mismatch';
 
 export interface PaymentValidationError {
   code: PaymentValidationCode;

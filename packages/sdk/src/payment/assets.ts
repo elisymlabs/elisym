@@ -5,15 +5,19 @@
  * or tokens (SPL, ERC-20). `assetKey` produces a stable string id for Map lookups.
  *
  * `KNOWN_ASSETS` holds native SOL plus the SPL assets (USDC per network, LSM
- * on mainnet). New assets and chains are extended by adding entries to
- * `KNOWN_ASSETS` and, always, to the MCP `DEFAULT_SESSION_LIMITS` catalogue -
- * an asset without a limits entry is spend-uncapped in MCP sessions.
+ * on mainnet) and stays Solana-only: it is public, and consumers iterate it
+ * with Solana tooling (`getNetworkStats` runs every mint through a base58
+ * address parser). EVM coins live in `EVM_ASSETS`; `ALL_ASSETS` is both, and
+ * is what the lookups search. A new asset goes into one of the two lists and,
+ * always, into the MCP `DEFAULT_SESSION_LIMITS` catalogue - an asset without a
+ * limits entry is spend-uncapped in MCP sessions.
  */
 
 import Decimal from 'decimal.js-light';
 import type { Network } from '../types';
+import type { ChainSlug } from './chains';
 
-export type Chain = 'solana';
+export type Chain = ChainSlug;
 
 /**
  * Token-2022 program address. Assets whose mint lives under this program set
@@ -26,7 +30,7 @@ export interface Asset {
   chain: Chain;
   /** Lowercase token id: 'sol', 'usdc', 'lsm', 'btc', 'eth'. */
   token: string;
-  /** SPL mint / ERC-20 contract. Undefined for a native coin. */
+  /** SPL mint, or the token contract (lowercase `0x` hex) on an EVM chain. Undefined for a native coin. */
   mint?: string;
   /** Subunits per whole (9 SOL, 6 USDC, 8 BTC, 18 ETH). */
   decimals: number;
@@ -89,6 +93,31 @@ export const KNOWN_ASSETS: readonly Asset[] = [
 ];
 
 /**
+ * Bridged USDC on Tempo - mainnet only. The token id is dot-free (`usdce`)
+ * because asset ids are `[a-z0-9-]`; the symbol keeps the dot.
+ */
+export const USDCE_TEMPO_MAINNET: Asset = {
+  chain: 'tempo',
+  token: 'usdce',
+  mint: '0x20c000000000000000000000b9537d11c60e8b50',
+  decimals: 6,
+  symbol: 'USDC.e',
+};
+
+/** pathUSD lives at the same address on Tempo mainnet and on Moderato, so one key names both. */
+export const PATHUSD_TEMPO: Asset = {
+  chain: 'tempo',
+  token: 'pathusd',
+  mint: '0x20c0000000000000000000000000000000000000',
+  decimals: 6,
+  symbol: 'pathUSD',
+};
+
+export const EVM_ASSETS: readonly Asset[] = [USDCE_TEMPO_MAINNET, PATHUSD_TEMPO];
+
+export const ALL_ASSETS: readonly Asset[] = [...KNOWN_ASSETS, ...EVM_ASSETS];
+
+/**
  * The canonical USDC asset for a network. The mint differs per cluster, so
  * every USDC-touching path must resolve through the active network - a flat
  * `KNOWN_ASSETS` lookup cannot distinguish the two.
@@ -117,6 +146,39 @@ export function splAssetsForNetwork(network: Network): Asset[] {
   return lsm ? [resolveUsdcAsset(network), lsm] : [resolveUsdcAsset(network)];
 }
 
+/**
+ * The assets that exist on a chain in an environment, the default stablecoin
+ * first among the stablecoins. Tempo has no native coin: gas is paid in a
+ * stablecoin too.
+ */
+export function assetsFor(chain: Chain, network: Network): Asset[] {
+  switch (chain) {
+    case 'solana':
+      return [NATIVE_SOL, ...splAssetsForNetwork(network)];
+    case 'tempo':
+      return network === 'mainnet' ? [USDCE_TEMPO_MAINNET, PATHUSD_TEMPO] : [PATHUSD_TEMPO];
+    default:
+      return assertNever(chain);
+  }
+}
+
+/** The stablecoin a price is quoted in when a skill names a chain and no token. */
+export function defaultStablecoin(chain: Chain, network: Network): Asset {
+  switch (chain) {
+    case 'solana':
+      return resolveUsdcAsset(network);
+    case 'tempo':
+      return network === 'mainnet' ? USDCE_TEMPO_MAINNET : PATHUSD_TEMPO;
+    default:
+      return assertNever(chain);
+  }
+}
+
+/** A chain added to `ChainSlug` without its coins fails to COMPILE here, not at run time. */
+function assertNever(chain: never): never {
+  throw new Error(`No assets are registered for chain ${String(chain)}`);
+}
+
 /** Stable Map key for `Asset`. Same shape regardless of Asset identity. */
 export function assetKey(a: Pick<Asset, 'chain' | 'token' | 'mint'>): string {
   return a.mint ? `${a.chain}:${a.token}:${a.mint}` : `${a.chain}:${a.token}`;
@@ -125,12 +187,12 @@ export function assetKey(a: Pick<Asset, 'chain' | 'token' | 'mint'>): string {
 /** Find a known asset by (chain, token, mint). Returns undefined if unknown. */
 export function resolveKnownAsset(chain: string, token: string, mint?: string): Asset | undefined {
   const key = mint ? `${chain}:${token}:${mint}` : `${chain}:${token}`;
-  return KNOWN_ASSETS.find((asset) => assetKey(asset) === key);
+  return ALL_ASSETS.find((asset) => assetKey(asset) === key);
 }
 
 /** Reverse lookup: given an assetKey string, return the known asset or undefined. */
 export function assetByKey(key: string): Asset | undefined {
-  return KNOWN_ASSETS.find((asset) => assetKey(asset) === key);
+  return ALL_ASSETS.find((asset) => assetKey(asset) === key);
 }
 
 /**
@@ -146,8 +208,10 @@ export function assetByKey(key: string): Asset | undefined {
  * before any Zod schema), so an un-stripped value could smuggle prompt-injection
  * text (newlines, fake markers) into an error that surfaces to a customer LLM.
  */
-function displayAssetId(value: string): string {
-  return value.replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 64);
+function displayAssetId(value: unknown): string {
+  return String(value)
+    .replace(/[^a-zA-Z0-9:_-]/g, '')
+    .slice(0, 64);
 }
 
 export function resolveAssetFromPaymentRequest(request: {
@@ -156,11 +220,23 @@ export function resolveAssetFromPaymentRequest(request: {
   if (!request.asset) {
     return NATIVE_SOL;
   }
-  const found = resolveKnownAsset(request.asset.chain, request.asset.token, request.asset.mint);
+  // A v1 request settles on Solana, whatever it names: it is looked up in
+  // `KNOWN_ASSETS` and not in `ALL_ASSETS`, so one naming an EVM coin stays
+  // "unknown" instead of handing an `0x` contract to the Solana payment code.
+  // This runs BEFORE any schema, on a provider's raw JSON. A v2 request carries
+  // `asset` as a CAIP-19 STRING; read as the v1 object it has no `chain` at all,
+  // and the released builds answer that with a TypeError out of `displayAssetId`.
+  // It failed closed, but by accident: refuse it by name instead.
+  // The KEY is built exactly as it always was - a template string over whatever
+  // the provider sent - so the set of requests this accepts is unchanged. Only the
+  // error text is made safe for a value that is not a string.
+  const { chain, token, mint } = request.asset;
+  const requestedKey = mint ? `${chain}:${token}:${mint}` : `${chain}:${token}`;
+  const found = KNOWN_ASSETS.find((asset) => assetKey(asset) === requestedKey);
   if (!found) {
-    const display = request.asset.mint
-      ? `${displayAssetId(request.asset.chain)}:${displayAssetId(request.asset.token)}:${displayAssetId(request.asset.mint)}`
-      : `${displayAssetId(request.asset.chain)}:${displayAssetId(request.asset.token)}`;
+    const display = mint
+      ? `${displayAssetId(chain)}:${displayAssetId(token)}:${displayAssetId(mint)}`
+      : `${displayAssetId(chain)}:${displayAssetId(token)}`;
     throw new Error(
       `Unknown asset in payment request: ${display}. ` +
         `Known assets: ${KNOWN_ASSETS.map(assetKey).join(', ')}`,

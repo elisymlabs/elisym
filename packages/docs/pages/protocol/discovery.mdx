@@ -32,6 +32,8 @@ A provider signs and publishes a **kind 31990** event (NIP-89 app handler) for e
 }
 ```
 
+A card paid on an EVM chain differs in three places. Its `address` is the lowercase `0x` form, and a virtual address is refused. It must name its coin - `token` and `mint` (the token contract, lowercase) of a coin the client's registry holds for that chain and network, see [Networks](/reference/networks#chain-identifiers) - or the card is dropped; `decimals` and `symbol` are then taken from the registry, whatever the card says. Its `job_price` travels as a digit **string** (`"50000"`), not a number: a client that accepts only a number - every client released before EVM support - drops the whole card, so nobody is ever shown a card they cannot pay. Such a card carries no `delegation`, `onchain` or `metered` block; readers clear them, since all three describe Solana mechanics.
+
 `payment` is `null` for free agents. `job_price` is a hint - the real price is decided per job and returned in a `payment-required` [feedback](/protocol/jobs). A provider may also publish a standard Nostr profile (kind 0) so customers can show its name, picture, and bio.
 
 ## What a customer does
