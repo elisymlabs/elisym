@@ -30,6 +30,30 @@ describe('mcp logger', () => {
     expect(records[0]?.ELISYM_NOSTR_PRIVATE_KEY).toBe('[REDACTED]');
   });
 
+  it('redacts every key of the secrets file, alone or under another parent', () => {
+    // The real pino pipeline, because a path that is in the list and misspelt
+    // redacts nothing: the delegate key was absent from the list altogether, so
+    // a call site logging it on its own - or an object that carries it - wrote
+    // it to stderr in clear. Only the whole `secrets` object was caught.
+    const { stream, records } = capture();
+    const logger = createLogger(stream);
+    logger.error(
+      {
+        event: 'delegate_setup_failed',
+        solana_delegate_secret_key: 'delegate-key-alone',
+        agent: { name: 'alice', solana_delegate_secret_key: 'delegate-key-nested' },
+      },
+      'delegate setup failed',
+    );
+    const joined = JSON.stringify(records[0]);
+    expect(joined).not.toContain('delegate-key-alone');
+    expect(joined).not.toContain('delegate-key-nested');
+    expect(records[0]?.solana_delegate_secret_key).toBe('[REDACTED]');
+    // The neighbour it sits beside is left alone: redaction names fields, it
+    // does not blank the object.
+    expect((records[0]?.agent as { name?: string } | undefined)?.name).toBe('alice');
+  });
+
   it('redacts input-path keys even when embedded in an error payload', () => {
     const { stream, records } = capture();
     const logger = createLogger(stream);
