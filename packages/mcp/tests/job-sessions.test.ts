@@ -171,7 +171,7 @@ describe('job-sessions store', () => {
     expect(await findSessionById(handle, UUID_A)).toBeDefined();
   });
 
-  it('caps jobIds per session and sessions per store (LRU)', async () => {
+  it('caps jobIds per session', async () => {
     for (let i = 0; i < MAX_JOB_IDS_PER_SESSION + 5; i++) {
       await seedSession(handle, UUID_A, PROVIDER_A_PUBKEY, `job-${i}`);
     }
@@ -184,6 +184,13 @@ describe('job-sessions store', () => {
   it('LRU-trims oldest sessions past MAX_SESSION_ENTRIES', async () => {
     // Write a full store directly (per-submit writes would be slow), then push
     // one more through the API and check the oldest fell out.
+    //
+    // The read limit has to sit ABOVE the store's cap, and that is the whole
+    // difference between this row and a row that measures itself:
+    // `listJobSessions` slices to the limit it is given, so asking for exactly
+    // `MAX_SESSION_ENTRIES` drops the extra entry here rather than in the
+    // trimmer. Measured - written that way, deleting the trimmer left this row
+    // and the whole package green.
     const now = Date.now();
     const sessions = Array.from({ length: MAX_SESSION_ENTRIES }, (_, i) => ({
       sessionId: `${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`,
@@ -200,10 +207,12 @@ describe('job-sessions store', () => {
       JSON.stringify({ version: 1, sessions }, null, 2),
     );
     await seedSession(handle, UUID_B, PROVIDER_B_PUBKEY);
-    const all = await listJobSessions(handle, MAX_SESSION_ENTRIES);
+    const all = await listJobSessions(handle, MAX_SESSION_ENTRIES + 5);
     expect(all.length).toBe(MAX_SESSION_ENTRIES);
     expect(all[0]?.sessionId).toBe(UUID_B);
-    expect(all.find((s) => s.sessionId === '00000000-0000-4000-8000-000000000000')).toBeUndefined();
+    expect(
+      all.find((session) => session.sessionId === '00000000-0000-4000-8000-000000000000'),
+    ).toBeUndefined();
   });
 
   it('tolerates a corrupt file (empty store, no throw)', async () => {

@@ -10,9 +10,14 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { writeFileAtomic } from '@elisym/sdk/agent-store';
+import { dirname, join } from 'node:path';
+import {
+  isBlockingNode,
+  ensureGitignoreHasPrivateStateEntries,
+  writeFileAtomic,
+} from '@elisym/sdk/agent-store';
 import { z } from 'zod';
+import { migrateGitignoreBestEffort } from './gitignore-migration.js';
 
 export const CONTACTS_FILENAME = '.contacts.json';
 
@@ -42,15 +47,32 @@ const writeLocks = new Map<string, Promise<unknown>>();
 
 function withLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const previous = writeLocks.get(path) ?? Promise.resolve();
+  // What keeps one failed write from jamming every later write to this path is
+  // the ABSORPTION below, not this line: the promise put in the map settles
+  // rejected-free, so the next caller always chains onto something that runs.
+  // The rejection handler here is therefore UNREACHABLE as the code stands and
+  // is kept as the reserve that takes over the moment somebody removes the
+  // absorption. On `customer-history`, whose rows this is a copy of, the
+  // absorption has a row of its own and the reserve does not - it cannot,
+  // while the absorption stands; the serialization itself is measured on THIS
+  // store, by the concurrent-upsert row in `contacts.test.ts`.
   const next = previous.then(fn, fn);
   // The map stores `wrapped`, so the cleanup must compare against `wrapped` too -
   // comparing against `next` (the inner promise) never matched the stored value,
   // so entries were never deleted and the map grew without bound.
-  const wrapped = next.finally(() => {
-    if (writeLocks.get(path) === wrapped) {
-      writeLocks.delete(path);
-    }
-  });
+  //
+  // And the stored promise absorbs the rejection. `finally` re-throws, so
+  // without the `catch` every failed write left an unhandled rejection even
+  // though the caller handled its own - noise in a server that only logs it,
+  // and a process exit anywhere that does not. `X402JobStore.runExclusive`
+  // stores an absorbed promise for the same reason.
+  const wrapped: Promise<unknown> = next
+    .finally(() => {
+      if (writeLocks.get(path) === wrapped) {
+        writeLocks.delete(path);
+      }
+    })
+    .catch(() => undefined);
   writeLocks.set(path, wrapped);
   return next;
 }
@@ -60,6 +82,14 @@ function pathFor(agentDir: string): string {
 }
 
 async function readRaw(path: string): Promise<Contacts> {
+  // A blocking node here does not fail the read - it never settles, and this
+  // read runs INSIDE the per-path write lock, so one of them jams every later
+  // write to this file for the life of the process (measured). Same answer the
+  // `catch` below gives: this is client-side bookkeeping, not an index that
+  // decides money, and the atomic writer renames its own file over the node.
+  if (await isBlockingNode(path)) {
+    return { ...EMPTY, contacts: [] };
+  }
   let raw: string;
   try {
     raw = await readFile(path, 'utf-8');
@@ -77,6 +107,13 @@ async function readRaw(path: string): Promise<Contacts> {
 
 async function writeRaw(path: string, contacts: Contacts): Promise<void> {
   const body = JSON.stringify(contacts, null, 2) + '\n';
+  // Before the write, like the other stores beside it: `writeFileAtomic` goes
+  // through a temporary whose suffix is random, and an agent created by an
+  // older build has a `.gitignore` line that cannot match one. Two directories
+  // up from the file is the `.elisym` root.
+  await migrateGitignoreBestEffort('contacts', () =>
+    ensureGitignoreHasPrivateStateEntries(dirname(dirname(path))),
+  );
   await writeFileAtomic(path, body, 0o600);
 }
 

@@ -352,10 +352,10 @@ whole cap, so the effective fee rate on actual spend rises by the same factor.
 
 ## Imagery
 
-| Field        | Type   | Notes                                                                                  |
-| ------------ | ------ | -------------------------------------------------------------------------------------- |
-| `image`      | string | Absolute URL. Used as-is.                                                              |
-| `image_file` | string | Local path (relative to skill dir). Uploaded to the agent's media host on first start. |
+| Field        | Type   | Notes                                                                                                                                                                                                                                         |
+| ------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `image`      | string | Absolute URL. Used as-is.                                                                                                                                                                                                                     |
+| `image_file` | string | Local path (relative to skill dir). Uploaded to the agent's media host on first start. Must be an image by extension (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.avif`); anything else is skipped with a warning and never uploaded. |
 
 Only one of these is needed. If both are set, `image` wins.
 

@@ -12,3 +12,5 @@ export type {
   SeedResult,
   FetchOptions,
 } from './transport/iroh';
+
+export { createFileSettlementStore } from './payment/fileSettlementStore';

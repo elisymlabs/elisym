@@ -41,6 +41,7 @@ interface FakeTransaction {
     postBalances: bigint[];
     preTokenBalances?: FakeTokenBalance[];
     postTokenBalances?: FakeTokenBalance[];
+    loadedAddresses?: { writable: string[]; readonly: string[] };
   } | null;
   transaction: {
     message: { accountKeys: string[] };
@@ -51,6 +52,7 @@ function makeRpc(
   signatures: SignatureRow[],
   txByHash: Record<string, FakeTransaction | null>,
   capturedSigArgs?: { address?: string },
+  fetched?: string[],
 ): Rpc<SolanaRpcApi> {
   return {
     getSignaturesForAddress: (addr: string) => {
@@ -58,7 +60,10 @@ function makeRpc(
       return { send: () => Promise.resolve(signatures) };
     },
     getTransaction: (sig: string) => ({
-      send: () => Promise.resolve(txByHash[sig] ?? null),
+      send: () => {
+        fetched?.push(sig);
+        return Promise.resolve(txByHash[sig] ?? null);
+      },
     }),
   } as unknown as Rpc<SolanaRpcApi>;
 }
@@ -79,26 +84,95 @@ describe('aggregateNetworkStats', () => {
     expect(result.latestSignature).toBeUndefined();
   });
 
-  it('skips signatures whose err field is non-null', async () => {
+  it('skips signatures whose err field is non-null, without fetching them', async () => {
+    // The failed signature needs a BODY, and one the happy path would count.
+    // Without it `getTransaction` answers `null`, the missing-meta guard drops
+    // the entry, and the filter this row is named after never runs at all -
+    // measured, the row was green against a build with no filter. Its twin in
+    // `payment.test.ts` had the same defect and was fixed the same way.
+    //
+    // A listing that says `err` while the body says `err: null` is the shape
+    // that matters: both come from the same RPC, so a proxy answering
+    // inconsistently is the threat model, and without the filter this
+    // transaction lands in `jobCount` and in the volume.
+    const body = (accounts: string[]) => ({
+      meta: {
+        err: null,
+        preBalances: [1000n, 0n, 0n],
+        postBalances: [400n, 500n, 100n],
+      },
+      transaction: { message: { accountKeys: accounts } },
+    });
+    const fetched: string[] = [];
     const rpc = makeRpc(
       [
         { signature: 'sig-failed', err: { InstructionError: [0, 'X'] } },
         { signature: 'sig-ok', err: null },
       ],
       {
-        'sig-ok': {
-          meta: {
-            err: null,
-            preBalances: [1000n, 0n, 0n],
-            postBalances: [400n, 500n, 100n],
-          },
-          transaction: { message: { accountKeys: ['payer', 'recipient', 'treasury'] } },
-        },
+        'sig-failed': body(['payer', 'recipient', 'treasury']),
+        'sig-ok': body(['payer', 'recipient', 'treasury']),
       },
+      undefined,
+      fetched,
     );
     const result = await aggregateNetworkStats(rpc);
     expect(result.jobCount).toBe(1);
     expect(result.volumeByAsset.native).toBe(600n);
+    // The round trip too: the filter is meant to save the fetch, not just the
+    // arithmetic.
+    expect(fetched).toEqual(['sig-ok']);
+  });
+
+  it('does not count the fee payer even when their own delta is positive', async () => {
+    // The two guards in this loop mask each other in every other fixture: the
+    // payer's delta is normally negative, so `delta > 0n` excludes them and the
+    // index skip never has to. Measured - each could be removed alone and the
+    // file stayed green.
+    //
+    // A payer whose balance GOES UP is what separates them, and it is not
+    // exotic: a transaction that closes an account, unwraps wSOL or collects a
+    // refund credits the fee payer. Counting that as volume inflates the
+    // network's reported throughput with money that never moved to a provider.
+    const rpc = makeRpc([{ signature: 'sig-refund', err: null }], {
+      'sig-refund': {
+        meta: {
+          err: null,
+          preBalances: [1000n, 0n],
+          postBalances: [3000n, 500n],
+        },
+        transaction: { message: { accountKeys: ['payer', 'recipient'] } },
+      },
+    });
+
+    const result = await aggregateNetworkStats(rpc);
+
+    expect(result.volumeByAsset.native).toBe(500n);
+  });
+
+  it('counts only the accounts that GAINED, not the net of the transaction', async () => {
+    // The other half of the pair, and the one the row above leaves alone: with
+    // the payer skipped, every fixture's remaining deltas happened to be
+    // non-negative, so summing them unconditionally gave the same answer.
+    // Measured - dropping `delta > 0n` left the file green.
+    //
+    // A non-payer account that LOSES lamports is ordinary: closing an account
+    // or unwrapping wSOL drains one inside the same transaction. Netted in, it
+    // subtracts from volume the provider was actually paid.
+    const rpc = makeRpc([{ signature: 'sig-drain', err: null }], {
+      'sig-drain': {
+        meta: {
+          err: null,
+          preBalances: [1000n, 0n, 800n],
+          postBalances: [400n, 500n, 300n],
+        },
+        transaction: { message: { accountKeys: ['payer', 'recipient', 'closed'] } },
+      },
+    });
+
+    const result = await aggregateNetworkStats(rpc);
+
+    expect(result.volumeByAsset.native).toBe(500n);
   });
 
   it('sums positive lamport deltas across non-payer accounts (native SOL)', async () => {
@@ -134,6 +208,32 @@ describe('aggregateNetworkStats', () => {
         },
         transaction: {
           message: { accountKeys: ['payer', 'recipient', sentinelPda as string] },
+        },
+      },
+    });
+    const result = await aggregateNetworkStats(rpc);
+    expect(result.volumeByAsset.native).toBe(194_000_000n);
+  });
+
+  it('excludes that PDA even when a lookup table supplied it', async () => {
+    // Same money as the test above, but the PDA arrives through the table, so
+    // it is absent from `accountKeys` while still holding a balance slot. Read
+    // against the static keys alone that slot has no name, the bookkeeping skip
+    // never fires, and the rent deposit is counted as payment volume.
+    const sentinelPda = await deriveAssetStatsAddress(
+      PROTOCOL_PROGRAM_ID_DEVNET,
+      NATIVE_ASSET_SENTINEL,
+    );
+    const rpc = makeRpc([{ signature: 'native-table', err: null }], {
+      'native-table': {
+        meta: {
+          err: null,
+          preBalances: [1_000_000_000n, 0n, 0n],
+          postBalances: [797_925_920n, 194_000_000n, 1_851_360n],
+          loadedAddresses: { writable: [sentinelPda as string], readonly: [] },
+        },
+        transaction: {
+          message: { accountKeys: ['payer', 'recipient'] },
         },
       },
     });

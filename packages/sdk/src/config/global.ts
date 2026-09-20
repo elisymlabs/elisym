@@ -8,6 +8,7 @@
 
 import { readFile } from 'node:fs/promises';
 import YAML from 'yaml';
+import { isBlockingNode } from '../agent-store/node-type';
 import { writeFileAtomic } from '../agent-store/writer';
 import { GlobalConfigSchema, type GlobalConfig } from './global-schema';
 
@@ -26,10 +27,16 @@ function isEnoent(e: unknown): boolean {
 
 /**
  * Read and validate `~/.elisym/config.yaml`. Returns `{}` if missing. Throws
- * on malformed YAML or schema violations — the MCP server treats these as fatal
+ * on malformed YAML or schema violations - the MCP server treats these as fatal
  * at startup rather than silently ignoring bad overrides.
  */
 export async function loadGlobalConfig(path: string): Promise<GlobalConfig> {
+  // The `.elisym` root is a directory other people can write to - a shared
+  // project checkout, a machine with several operators - and a blocking node
+  // here never settles the read, so the `catch` below would never run.
+  if (await isBlockingNode(path)) {
+    throw new Error(`Refusing to read ${path}: it is a pipe, socket or device, not a file`);
+  }
   let raw: string;
   try {
     raw = await readFile(path, 'utf-8');

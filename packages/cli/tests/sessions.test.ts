@@ -1,5 +1,10 @@
+import { execFileSync, spawn } from 'node:child_process';
+import { constants } from 'node:fs';
 import {
   appendFileSync,
+  chmodSync,
+  closeSync,
+  openSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -358,6 +363,44 @@ describe('SessionStore - TTL, caps, and eviction', () => {
     expect(existsSync(join(agentDir, SESSIONS_DIR_NAME, CUSTOMER))).toBe(false);
   });
 
+  it('gc sweeps a rewrite fragment too, which nothing else can see', async () => {
+    // The two rewrites take their own fragment with them when they THROW; a
+    // process killed outright leaves one. Since the suffix became random
+    // nothing reuses it, and the name does not end in `.jsonl`, so no listing
+    // counts it - this sweep was the only thing that could reach it, and it
+    // matched `.corrupt.` alone. What it holds is the customer's prompts and
+    // the model's answers in the clear.
+    const store = makeStore({ ttlMs: 60_000 });
+    await record(store, 'j1', 'q', 'a');
+    const fragment = `${sessionPath(CUSTOMER, SID)}.tmp.deadbeefcafe`;
+    writeFileSync(fragment, '{"type":"turn"');
+    backdate(fragment, 120_000);
+
+    store.gc();
+
+    expect(existsSync(fragment)).toBe(false);
+    // The live transcript is untouched: it is inside the TTL.
+    expect(existsSync(sessionPath(CUSTOMER, SID))).toBe(true);
+  });
+
+  it('gc sweeps the BARE .tmp an older build left, not only the random one', async () => {
+    // The upgrade case. Before this branch the rewrite temporary had one fixed
+    // name, so a fragment was overwritten by the next rewrite and bounded
+    // itself; with a random suffix nothing reuses it. A sweep matching only
+    // `.tmp.` would leave an older build's fragment - the customer's prompts
+    // and the model's answers in the clear - for good.
+    const store = makeStore({ ttlMs: 60_000 });
+    await record(store, 'j1', 'q', 'a');
+    const legacy = `${sessionPath(CUSTOMER, SID)}.tmp`;
+    writeFileSync(legacy, '{"type":"turn"');
+    backdate(legacy, 120_000);
+
+    store.gc();
+
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(sessionPath(CUSTOMER, SID))).toBe(true);
+  });
+
   it('gc never deletes a session whose mutex is held or with admitted jobs', async () => {
     const store = makeStore({ ttlMs: 60_000 });
     await record(store, 'j1', 'q', 'a');
@@ -515,6 +558,233 @@ describe('SessionStore - admitted counter and mutex', () => {
       expect(fresh.open(CUSTOMER, SID).stateless).toBe(false);
     } finally {
       release();
+    }
+  });
+});
+
+/** `-0` would signal OUR OWN process group, which is the vitest run. */
+function killGroup(child: ReturnType<typeof spawn>): void {
+  if (child.pid === undefined) {
+    child.kill('SIGKILL');
+    return;
+  }
+  try {
+    process.kill(-child.pid);
+  } catch {
+    child.kill('SIGKILL');
+  }
+}
+
+describe('a session file that is a node which blocks', () => {
+  it('is read as no session at all, rather than hanging the job', async () => {
+    // This read happens while a PAID job is being served, and it is
+    // synchronous: a FIFO here stops the agent mid-job, with the customer
+    // already charged. `statSync(path).size` is 0 for one, so every size check
+    // above it passes.
+    //
+    // The writer feeds a valid line, so the ungated build comes back with a
+    // KNOWN session carrying that message - the two differ by an answer, not by
+    // a hang.
+    const dir = join(agentDir, SESSIONS_DIR_NAME, CUSTOMER);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${SID}.jsonl`);
+    execFileSync('mkfifo', [path]);
+    const writer = spawn(
+      process.execPath,
+      [
+        '-e',
+        `require('fs').writeFileSync(${JSON.stringify(path)}, ${JSON.stringify(
+          `${JSON.stringify({ role: 'user', content: 'hello', at: Date.now() })}\n`,
+        )});`,
+      ],
+      { detached: true, stdio: 'ignore' },
+    );
+    try {
+      const store = makeStore();
+      const release = await store.acquire(CUSTOMER, SID);
+      try {
+        const opened = store.open(CUSTOMER, SID);
+
+        expect(opened.known).toBe(false);
+        expect(opened.messages).toEqual([]);
+      } finally {
+        release();
+      }
+    } finally {
+      killGroup(writer);
+    }
+  });
+
+  it('is not APPENDED to either, which is the half that runs after the work', async () => {
+    // `appendExchange` runs once the model has already been paid for and the
+    // answer produced. `appendFileSync` onto a FIFO never returns, so without
+    // its own gate the budget is burned, nothing is delivered, and the session
+    // mutex is never released.
+    //
+    // A DRAINER rather than a writer here: it keeps the pipe readable, so the
+    // ungated build completes its append and this fixture goes red on the
+    // missing log line instead of hanging the suite.
+    const dir = join(agentDir, SESSIONS_DIR_NAME, CUSTOMER);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${SID}.jsonl`);
+    execFileSync('mkfifo', [path]);
+    // A reader held open IN THIS PROCESS rather than a spawned drainer: opening
+    // a FIFO non-blocking for reading succeeds at once, so the append below
+    // cannot race a child that has not started yet. A fixture that can hang on
+    // a timing accident is a fixture that measures the clock.
+    //
+    // It does not DRAIN, so the payload has to stay under the pipe buffer
+    // (64 KiB on Linux and macOS). One exchange is a few hundred bytes.
+    const reader = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      const logged: string[] = [];
+      const store = new SessionStore(agentDir, (line) => {
+        logged.push(line);
+      });
+      store.init();
+      const release = await store.acquire(CUSTOMER, SID);
+      try {
+        store.appendExchange(CUSTOMER, SID, {
+          jobId: 'job-1',
+          capability: 'chat',
+          userContent: 'hello',
+          assistantContent: 'hi',
+          skipRoles: new Set(),
+        });
+      } finally {
+        release();
+      }
+
+      expect(logged.join('\n')).toContain('not a regular file');
+    } finally {
+      closeSync(reader);
+    }
+  });
+});
+
+describe('a transcript that cannot be appended to', () => {
+  it('does not throw into a job whose work is already done', async () => {
+    // The blocking-node gate above applies one rule to ONE cause of a failed
+    // append - "context is not worth a lost result" - and the write below it
+    // re-threw every other cause. `appendExchange` runs after the skill has
+    // executed, so the throw reached the runtime as a failed job: the work
+    // done, the model budget spent, the result discarded, recovery closed.
+    // Measured through the runtime on a transcript made read-only between two
+    // jobs, and on a paid skill that is the customer's money.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const logged: string[] = [];
+    const store = new SessionStore(agentDir, (line) => {
+      logged.push(line);
+    });
+    store.init();
+    const exchange = {
+      jobId: 'job-1',
+      capability: 'chat',
+      userContent: 'hello',
+      assistantContent: 'hi',
+      skipRoles: new Set<'user' | 'assistant'>(),
+    };
+    const release = await store.acquire(CUSTOMER, SID);
+    try {
+      store.appendExchange(CUSTOMER, SID, exchange);
+      const path = join(agentDir, SESSIONS_DIR_NAME, CUSTOMER, `${SID}.jsonl`);
+      const before = readFileSync(path, 'utf-8');
+      chmodSync(path, 0o444);
+      try {
+        expect(() =>
+          store.appendExchange(CUSTOMER, SID, { ...exchange, jobId: 'job-2' }),
+        ).not.toThrow();
+
+        expect(logged.join('\n')).toContain('could not record this exchange');
+        // And nothing half-landed: the transcript is what it was.
+        expect(readFileSync(path, 'utf-8')).toBe(before);
+      } finally {
+        chmodSync(path, 0o600);
+      }
+    } finally {
+      release();
+    }
+  });
+});
+
+describe('a session temporary somebody else can guess', () => {
+  it('cannot swallow the repair of a torn transcript', async () => {
+    // The ledger, the nonce store and the two x402 stores all got a random
+    // suffix; this one writes DURING a paid job, and its path is derivable
+    // from the customer's own pubkey and the session id the customer chose,
+    // so it is the most guessable of the set. The torn-line repair is the
+    // rewrite that runs first: the FIFO planted at the old fixed name is
+    // drained, so a build that still used it would write into the pipe and
+    // then rename the pipe over the transcript, rather than hang.
+    const dir = join(agentDir, SESSIONS_DIR_NAME, CUSTOMER);
+    mkdirSync(dir, { recursive: true });
+    const path = sessionPath(CUSTOMER, SID);
+    const ts = Math.floor(Date.now() / 1000);
+    // A COMPLETE exchange, because a trailing user turn with no answer is
+    // dropped from the replay and the fixture would then assert nothing.
+    const intact = [
+      JSON.stringify({ type: 'turn', role: 'user', content: 'hello', jobId: 'job-1', ts }),
+      JSON.stringify({ type: 'turn', role: 'assistant', content: 'hi', jobId: 'job-1', ts }),
+    ].join('\n');
+    // A last line cut mid-write, with no trailing newline: exactly what a crash
+    // during `appendFileSync` leaves, and what the repair exists to remove.
+    writeFileSync(path, `${intact}\n{"type":"turn","role":"assi`, 'utf-8');
+
+    const guessed = `${path}.tmp`;
+    execFileSync('mkfifo', [guessed]);
+    const drainer = spawn(
+      process.execPath,
+      ['-e', `require('fs').createReadStream(${JSON.stringify(guessed)}).resume();`],
+      { detached: true, stdio: 'ignore' },
+    );
+    try {
+      const store = makeStore();
+      const release = await store.acquire(CUSTOMER, SID);
+      try {
+        const opened = store.open(CUSTOMER, SID);
+        expect(opened.messages.map((message) => message.content)).toEqual(['hello', 'hi']);
+      } finally {
+        release();
+      }
+
+      // The transcript is still a FILE. With the old fixed name the rewrite
+      // went into the pipe and the rename put the pipe here, so the next job
+      // for this customer reads a node that never answers.
+      expect(statSync(path).isFile()).toBe(true);
+      expect(readFileSync(path, 'utf-8')).toBe(`${intact}\n`);
+      expect(statSync(guessed).isFIFO()).toBe(true);
+    } finally {
+      killGroup(drainer);
+    }
+  });
+
+  it('cannot swallow the rewrite that compaction performs', async () => {
+    // The second write of this shape, and the repair above does not cover it:
+    // narrowing only ONE of the two back to a fixed name leaves the other
+    // green. Compaction runs mid-conversation on a live paid session, and what
+    // it rewrites is the whole transcript.
+    const store = makeStore({ compactionTriggerChars: 200, compactionKeepChars: 80 });
+    await record(store, 'j1', 'x'.repeat(100), 'y'.repeat(100));
+    await record(store, 'j2', 'q recent', 'a recent');
+
+    const path = sessionPath(CUSTOMER, SID);
+    const guessed = `${path}.tmp`;
+    execFileSync('mkfifo', [guessed]);
+    const drainer = spawn(
+      process.execPath,
+      ['-e', `require('fs').createReadStream(${JSON.stringify(guessed)}).resume();`],
+      { detached: true, stdio: 'ignore' },
+    );
+    try {
+      store.compact(CUSTOMER, SID, 'the summary');
+
+      expect(statSync(path).isFile()).toBe(true);
+      expect(store.open(CUSTOMER, SID).messages[0]?.content).toContain('the summary');
+      expect(statSync(guessed).isFIFO()).toBe(true);
+    } finally {
+      killGroup(drainer);
     }
   });
 });

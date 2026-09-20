@@ -18,7 +18,7 @@
  * health monitor; the runtime keeps the routing and the ledger keeps the
  * durable state.
  */
-import { DEFAULTS, calculateProtocolFee } from '@elisym/sdk';
+import { DEFAULTS, calculateProtocolFee, degenerateReference } from '@elisym/sdk';
 import type {
   Network,
   PaymentRequestData,
@@ -30,6 +30,7 @@ import { address as asAddress, createSolanaRpc } from '@solana/kit';
 import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
 import { getRpcUrl } from './helpers.js';
 import type { JobLedger, LedgerEntry, PaymentSignatureClaim } from './ledger.js';
+import { isUsableSignature } from './ledger.js';
 
 // --- Constants ---
 
@@ -760,7 +761,7 @@ export class PaymentRecovery {
   private async listReferenceCandidates(
     reference: Address,
     rpc: Rpc<SolanaRpcApi>,
-    deadline: number,
+    pastDeadline: () => boolean,
   ): Promise<{ signatures: string[]; windowFull: boolean } | { error: string }> {
     let lastMessage = 'unknown error';
     let attempts = 0;
@@ -781,7 +782,7 @@ export class PaymentRecovery {
         };
       } catch (e: any) {
         lastMessage = e?.message ?? 'unknown error';
-        if (Date.now() >= deadline) {
+        if (pastDeadline()) {
           break;
         }
         if (attempt < REFERENCE_SCAN_LIST_ATTEMPTS - 1) {
@@ -824,7 +825,9 @@ export class PaymentRecovery {
    * the SDK default of 10 retries x 3s x a full window - over ten minutes for
    * one deferred entry.
    *
-   * TERMINAL ("none") REQUIRES ALL THREE, and the caller adds two more:
+   * TERMINAL ("none") REQUIRES ALL FOUR OF THESE, and the caller adds four more
+   * on top (they are counted as six in the docs, where 2-4 below are read as one
+   * condition - "nothing was skipped and nothing was left unverified"):
    *   1. the listing SUCCEEDED and came back SHORT of the window, so this is the
    *      reference's whole history rather than a truncated page. A flood that
    *      fills the window could be hiding the payment behind it, which is
@@ -836,10 +839,16 @@ export class PaymentRecovery {
    *      evidence of non-payment;
    *   3. no candidate was SKIPPED for belonging to another job. A skip means
    *      something did touch this reference and we chose not to look at it, so
-   *      the scan saw less than the whole truth.
-   * The caller then requires the payment request's own expiry to have passed and
-   * a second consecutive sighting. Anything else is inconclusive: a false
-   * deferral costs latency, a false "unpaid" destroys the customer's money.
+   *      the scan saw less than the whole truth;
+   *   4. no candidate was SKIPPED for an unusable signature. Same reasoning as
+   *      3, with the node rather than the ledger as the reason we did not look:
+   *      a blanked signature is still a transaction on this reference.
+   * The caller then requires, in this order: that the job owns no settlement of
+   * its own, that the payment request's own expiry has passed, that the endpoint
+   * proved its cluster and that it serves address history, and - one level up,
+   * in `runtime.ts` - a second consecutive sighting. Anything else is
+   * inconclusive: a false deferral costs latency, a false "unpaid" destroys the
+   * customer's money.
    *
    * What "none" therefore means is narrow and honest: after the failed-on-chain
    * transactions are dropped, the reference's entire history is EMPTY - there
@@ -849,10 +858,16 @@ export class PaymentRecovery {
     reference: Address,
     rpc: Rpc<SolanaRpcApi>,
     jobId: string,
-    deadline: number,
+    pastDeadline: () => boolean,
     verifySignature: (txSignature: string, retries: number) => Promise<VerifyResult>,
   ): Promise<ReferenceScan> {
-    const listed = await this.listReferenceCandidates(reference, rpc, deadline);
+    // Before the listing as well: a pass the caller has already abandoned, or
+    // one whose budget went on the steps before this, must not spend a shared
+    // slot on an RPC call whose answer it may not use.
+    if (pastDeadline()) {
+      return { outcome: 'inconclusive', error: 'the reference scan ran out of time' };
+    }
+    const listed = await this.listReferenceCandidates(reference, rpc, pastDeadline);
     if ('error' in listed) {
       return { outcome: 'inconclusive', error: listed.error };
     }
@@ -860,10 +875,20 @@ export class PaymentRecovery {
     // flood must still be found. `windowFull` only disqualifies the verdict at
     // the bottom.
     let skippedConsumed = false;
+    let skippedUnusable = false;
     let unverifiableCandidate: string | undefined;
     for (const candidate of listed.signatures) {
-      if (Date.now() > deadline) {
+      if (pastDeadline()) {
         return { outcome: 'inconclusive', error: 'the reference scan ran out of time' };
+      }
+      if (!isUsableSignature(candidate)) {
+        // Signatures arrive raw from the node's answer, and a broken or
+        // rewriting proxy can blank one. Verifying it takes the same falsy
+        // dispatch into the reference path, and the `verified` return below
+        // would then hand the blank back as the settlement to claim. Skipping
+        // is not enough on its own - see `skippedUnusable` at the bottom.
+        skippedUnusable = true;
+        continue;
       }
       const owner = this.ledger.paymentSignatureOwner(candidate);
       if (owner !== undefined && owner !== jobId) {
@@ -879,6 +904,15 @@ export class PaymentRecovery {
       }
       unverifiableCandidate ??= verified.error ?? 'no reason given';
     }
+    // Checked again HERE, and not only inside the loop above: an empty page
+    // means that loop never runs, so a listing that took longer than the whole
+    // budget would otherwise fall straight through to `none` - and on this rail
+    // `none` is what closes a paying customer's job. `listReferenceCandidates`
+    // reads the clock only in its `catch`, so a slow but SUCCESSFUL call never
+    // sees the deadline at all.
+    if (pastDeadline()) {
+      return { outcome: 'inconclusive', error: 'the reference scan ran out of time' };
+    }
     if (listed.windowFull) {
       return {
         outcome: 'inconclusive',
@@ -893,6 +927,14 @@ export class PaymentRecovery {
         error:
           'the reference carries a transaction another job already settled, so this scan did ' +
           'not see the whole picture',
+      };
+    }
+    if (skippedUnusable) {
+      return {
+        outcome: 'inconclusive',
+        error:
+          'the reference carries a transaction whose signature the node reported unusably, so ' +
+          'this scan did not see the whole picture',
       };
     }
     if (unverifiableCandidate !== undefined) {
@@ -961,14 +1003,70 @@ export class PaymentRecovery {
       );
       return 'corrupt-state';
     }
-    // The whole re-verification, the job's own settlement included, is bounded
-    // by one deadline. Left outside it, a claimed settlement that has aged out
-    // of RPC history costs a full retry budget of a shared `p-limit` slot on
-    // every single tick, before the scan it is supposed to precede even starts.
-    const deadline = Date.now() + REFERENCE_SCAN_DEADLINE_MS;
+    let deadline: number;
     try {
       const rpc = createSolanaRpc(getRpcUrl(this.network));
       const protocolConfig = await this.fetchProtocolConfig();
+      // The whole re-verification, the job's own settlement included, is bounded
+      // by one deadline. Left outside it, a claimed settlement that has aged out
+      // of RPC history costs a full retry budget of a shared `p-limit` slot on
+      // every single tick, before the scan it is supposed to precede even starts.
+      //
+      // Started AFTER the config read, which is an on-chain fetch of its own and
+      // refreshes on every tick: counting it against the scan's budget meant a
+      // slow config could spend the whole allowance before the scan began, and
+      // the scan would then answer as though it had looked.
+      deadline = Date.now() + REFERENCE_SCAN_DEADLINE_MS;
+      // Reads the SIGNAL as well as the clock, exactly as the acceptor's does.
+      // The signal used to reach the scan only through the `verify` closure -
+      // which an EMPTY listing never calls, so a pass the operator had already
+      // stopped could still walk out with `no-payment` and fail a paid job on
+      // the way down. One policy on both rails, or neither rail has one.
+      const pastDeadline = () => signal?.aborted === true || Date.now() >= deadline;
+
+      // After the config, because the treasury comes from it and a reference
+      // equal to the treasury drowns the payment in its history whether or not
+      // the request names it.
+      //
+      // Computed unconditionally, GATED on action - the same shape the acceptor
+      // uses. Gating the check itself would leave a job that owns a settlement
+      // walking into the scan and listing a degenerate reference: for one equal
+      // to the recipient that lists the provider's own wallet, which is always
+      // full, so the operator is told "its history is truncated and a payment
+      // could be hidden behind the flood" about their own address - the exact
+      // misdirection this check exists to remove.
+      //
+      // The carve-out itself is NOT "such a job can re-verify its own
+      // signature" - it cannot: the denylist inside `verifyPayment` sits ahead
+      // of both branches. It is that the denylist GROWS between releases, and
+      // the condition matches that scenario exactly rather than approximately:
+      // to own a `payment_signature` at all, the job must once have passed
+      // `verifyPayment`, which refuses a degenerate reference - so "owns a
+      // settlement AND the reference reads degenerate now" can only mean the
+      // list grew since. A deferral is recoverable by rolling the SDK back
+      // inside the window; a terminal verdict is recoverable by nothing.
+      //
+      // `ProviderPaymentAcceptor` carves the same exception, for this reason;
+      // the two rails must not answer this differently.
+      const degenerate = await degenerateReference(request, this.network, protocolConfig.treasury);
+      if (degenerate !== undefined) {
+        if (!isUsableSignature(entry.payment_signature)) {
+          log(
+            `[${shortId}] Recovery: the payment request's reference (${request.reference}) is an ` +
+              `address the payment itself is computed from, so the transfer cannot be singled ` +
+              `out by listing it. This is provider-side state, not a chain or customer problem.`,
+          );
+          return 'corrupt-state';
+        }
+        log(
+          `[${shortId}] Recovery: the reference (${request.reference}) is an address the payment ` +
+            `is computed from, but this job already owns settlement ${entry.payment_signature} - ` +
+            `deferring rather than failing it, in case this build's list grew past what the ` +
+            `settlement was accepted under. Not listing the reference: it cannot single out a ` +
+            `payment.`,
+        );
+        return 'deferred';
+      }
 
       /**
        * `retries` is the per-verification budget: `REFERENCE_SCAN_VERIFY_RETRIES`
@@ -1009,7 +1107,13 @@ export class PaymentRecovery {
       // Own evidence first - see the evidence-order note above.
       const ownSignature = entry.payment_signature;
       let txSignature: string | undefined;
-      if (ownSignature !== undefined) {
+      // Not `!== undefined`: an empty string is what a hand-edited ledger
+      // carries, and it passes that test while owning nothing. Re-verifying it
+      // sends `{ txSignature: '' }` into the strategy, whose falsy dispatch
+      // routes to the REFERENCE path, returns the first transaction carrying
+      // this reference - a stranger's, if one is there - and claims the empty
+      // string over it, leaving the real signature free for the next job.
+      if (isUsableSignature(ownSignature) && !pastDeadline()) {
         const own = await verify(ownSignature, OWN_SETTLEMENT_VERIFY_RETRIES);
         if (own.verified) {
           txSignature = ownSignature;
@@ -1026,11 +1130,15 @@ export class PaymentRecovery {
           reference,
           rpc,
           entry.job_id,
-          deadline,
+          pastDeadline,
           verify,
         );
         if (scan.outcome === 'none') {
-          if (ownSignature !== undefined) {
+          // The same predicate as the gate above, not `!== undefined`: an empty
+          // string means this job owns NOTHING, and reading it as ownership
+          // here would log a sentence naming no settlement at all and hold the
+          // entry to the 24h cutoff instead of letting the verdict land.
+          if (isUsableSignature(ownSignature)) {
             // The ledger says this job owns a settlement; an RPC that no longer
             // lists it has aged past its history horizon, which is not evidence
             // of non-payment. Never force-fail a job we recorded as paid.

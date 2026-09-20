@@ -104,6 +104,11 @@ export async function cmdInit(nameArg?: string, options: InitOptions = {}): Prom
   let template: ElisymYaml | undefined;
   if (options.config) {
     const configPath = resolve(cwd, options.config);
+    // NOT gated by node type, unlike every read of a file inside an agent
+    // directory: this path is one the operator typed on their own command line,
+    // in a foreground command with nothing else in flight. A FIFO here hangs a
+    // command they started and can stop; the gated reads are ones a THIRD party
+    // can aim, in a process that is serving paid jobs.
     const raw = readFileSync(configPath, 'utf-8');
     template = ElisymYamlSchema.parse(YAML.parse(raw) ?? {});
     console.log(`  Loaded template from ${configPath}\n`);

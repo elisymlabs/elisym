@@ -1,5 +1,15 @@
-import { NATIVE_ASSET_SENTINEL, deriveAssetStatsAddress } from '@elisym/config-client';
+import {
+  NATIVE_ASSET_SENTINEL,
+  deriveAssetStatsAddress,
+  deriveEventAuthorityAddress,
+  deriveNetworkStatsAddress,
+} from '@elisym/config-client';
 import { getTransferSolInstructionDataDecoder } from '@solana-program/system';
+import {
+  TOKEN_PROGRAM_ADDRESS,
+  findAssociatedTokenPda,
+  getTransferCheckedInstructionDataDecoder,
+} from '@solana-program/token';
 import {
   type Address,
   type Blockhash,
@@ -123,6 +133,44 @@ describe('SolanaPaymentStrategy.validatePaymentRequest', () => {
       recipientAddr,
     );
     expect(result).toBeNull();
+  });
+
+  it('rejects a reference that is an address the payment is computed from', () => {
+    // Preempts the fee codes deliberately: those are about diverting PART of
+    // the payment, this costs the customer all of it, because the transfer
+    // becomes unfindable once other traffic pushes it out of the listing.
+    const result = payment.validatePaymentRequest(
+      JSON.stringify({ ...validRequest, reference: recipientAddr }),
+      CONFIG,
+      'devnet',
+      recipientAddr,
+    );
+    expect(result?.code).toBe('degenerate_reference');
+  });
+
+  it('rejects it at feeBps=0 as well, the config mainnet actually runs', () => {
+    // The row above measures the gate only while a fee applies. On the deployed
+    // mainnet program the fee is 0, so the request takes the `expectedFee === 0`
+    // early return a few lines below - and a gate that drifted under that
+    // return would leave every other row in this file green while the
+    // commonest config in production lost the check entirely. Measured.
+    const result = payment.validatePaymentRequest(
+      JSON.stringify({ ...validRequest, fee_amount: 0, reference: recipientAddr }),
+      { feeBps: 0, treasury: TEST_TREASURY },
+      'devnet',
+      recipientAddr,
+    );
+    expect(result?.code).toBe('degenerate_reference');
+
+    // And it stays BELOW `recipient_mismatch`, which is the one refusal that
+    // outranks it: a redirected recipient makes the reference question moot.
+    const mismatched = payment.validatePaymentRequest(
+      JSON.stringify({ ...validRequest, fee_amount: 0, reference: recipientAddr }),
+      { feeBps: 0, treasury: TEST_TREASURY },
+      'devnet',
+      otherAddr,
+    );
+    expect(mismatched?.code).toBe('recipient_mismatch');
   });
 
   it('rejects invalid JSON', () => {
@@ -281,6 +329,435 @@ describe('buildPaymentInstructions', () => {
     expect(instructions.length).toBe(2);
   });
 
+  it('refuses a reference equal to an address it derives for the payment itself', async () => {
+    // The customer's last look, and the half `validatePaymentRequest` cannot
+    // take: it is synchronous, so it never sees the DERIVED addresses. Measured
+    // before this check existed - `validatePaymentRequest` answered `null` here
+    // while the provider's `verifyPayment` answers `degenerate_reference`, so
+    // the customer paid for a job that could never be delivered.
+    const signer = makeSigner(makeAddress());
+    const eventAuthority = await deriveEventAuthorityAddress(TEST_PROGRAM_ID);
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: eventAuthority as string,
+          fee_address: TEST_TREASURY,
+          fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
+
+  it("refuses a reference equal to the recipient's own token account", async () => {
+    // The SPL half of the same gap, and the one a hand-crafted request would
+    // actually use: the recipient's ATA is where the money lands, so listing it
+    // is listing the provider's whole balance history.
+    const recipient = makeAddress();
+    const [recipientAta] = await findAssociatedTokenPda({
+      owner: recipient,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient,
+          amount: 100_000_000,
+          reference: recipientAta as string,
+          fee_address: TEST_TREASURY,
+          fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
+
+  it.each([
+    ['the network stats PDA', async () => await deriveNetworkStatsAddress(TEST_PROGRAM_ID)],
+    [
+      'the asset stats PDA',
+      async () => await deriveAssetStatsAddress(TEST_PROGRAM_ID, NATIVE_ASSET_SENTINEL),
+    ],
+  ])('refuses a reference equal to %s as well', async (_label, derive) => {
+    // The set is three addresses wide and one fixture used to hold it up.
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: (await derive()) as string,
+          fee_address: TEST_TREASURY,
+          fee_amount: calculateProtocolFee(100_000_000, TEST_FEE_BPS),
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
+
+  it("refuses the fee address's token account on a ZERO-fee request", async () => {
+    // The commonest shape there is: the deployed mainnet program charges
+    // `feeBps: 0`, so every mainnet SPL payment takes the zero-fee branch.
+    // Deriving this account only when a fee leg gets built left exactly that
+    // case unchecked here and checked by the provider - measured, before this
+    // fixture existed: `validatePaymentRequest` answered `null`, the
+    // transaction BUILT, and `verifyPayment` answered `degenerate_reference`.
+    const [treasuryAta] = await findAssociatedTokenPda({
+      owner: TEST_TREASURY,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: treasuryAta as string,
+          fee_address: TEST_TREASURY,
+          fee_amount: 0,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
+
+  it("refuses the config treasury's token account when the request names no fee address", async () => {
+    // A zero-fee request may leave `fee_address` out entirely, and the provider
+    // reads the treasury from the CONFIG rather than from the request. Passing
+    // it is how this side gets to know the same account.
+    const [treasuryAta] = await findAssociatedTokenPda({
+      owner: TEST_TREASURY,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: treasuryAta as string,
+          fee_amount: 0,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID, treasury: TEST_TREASURY },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
+
+  it('creates no treasury token account on a ZERO-fee payment', async () => {
+    // Every mainnet payment takes this branch (`feeBps` is 0 there), and the
+    // idempotent create is not free: the customer pays the rent for an account
+    // this transaction will never credit. Three instructions, not four.
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: TEST_TREASURY,
+        fee_amount: 0,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'usdc',
+          mint: USDC_SOLANA_DEVNET.mint,
+          decimals: USDC_SOLANA_DEVNET.decimals,
+        },
+      } as never,
+      signer as never,
+      { programId: TEST_PROGRAM_ID, treasury: TEST_TREASURY },
+    );
+
+    expect(instructions.length).toBe(3);
+  });
+
+  it('pays the fee leg to the fee address, in the fee amount', async () => {
+    // Neither half was measured: a leg paying the RECIPIENT instead of the fee
+    // address, and a leg carrying `providerAmount` instead of `feeAmount`, both
+    // left the whole package green. The first sends the protocol's cut to the
+    // provider, the second sends the customer's whole payment to the treasury.
+    const recipient = makeAddress();
+    const fee = calculateProtocolFee(100_000_000, TEST_FEE_BPS);
+    const [recipientAta] = await findAssociatedTokenPda({
+      owner: recipient,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const [treasuryAta] = await findAssociatedTokenPda({
+      owner: TEST_TREASURY,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient,
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: TEST_TREASURY,
+        fee_amount: fee,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'usdc',
+          mint: USDC_SOLANA_DEVNET.mint,
+          decimals: USDC_SOLANA_DEVNET.decimals,
+        },
+      } as never,
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+
+    const transfers = instructions.filter(
+      (
+        instruction,
+      ): instruction is {
+        programAddress: string;
+        data: Uint8Array;
+        accounts: { address: string }[];
+      } =>
+        typeof instruction === 'object' &&
+        instruction !== null &&
+        (instruction as { programAddress?: string }).programAddress ===
+          (TOKEN_PROGRAM_ADDRESS as string),
+    );
+    const paid = transfers.map((transfer) => ({
+      // `TransferChecked` is `source, mint, destination, authority`, so the
+      // destination is index 2 - the THIRD account, not the second.
+      to: transfer.accounts[2]?.address,
+      amount: getTransferCheckedInstructionDataDecoder().decode(transfer.data).amount,
+    }));
+
+    expect(paid).toEqual([
+      { to: recipientAta as string, amount: BigInt(100_000_000 - fee) },
+      { to: treasuryAta as string, amount: BigInt(fee) },
+    ]);
+  });
+
+  it('pays the NATIVE legs to the recipient and the fee address, in the right amounts', async () => {
+    // The mirror of the SPL row above, on the path a request with no `asset`
+    // field takes - which is every SOL payment, the default asset. Measured:
+    // a provider leg paying the FEE ADDRESS and a fee leg paying the RECIPIENT
+    // both left the whole package green. The row that counts instructions does
+    // not look at destinations, and `fee + providerAmount === totalAmount`
+    // balances either way.
+    const recipient = makeAddress();
+    const fee = calculateProtocolFee(100_000_000, TEST_FEE_BPS);
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient,
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: TEST_TREASURY,
+        fee_amount: fee,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+      },
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+
+    const transfers = instructions.filter(
+      (
+        instruction,
+      ): instruction is {
+        programAddress: string;
+        data: Uint8Array;
+        accounts: { address: string }[];
+      } =>
+        typeof instruction === 'object' &&
+        instruction !== null &&
+        (instruction as { programAddress?: string }).programAddress ===
+          '11111111111111111111111111111111',
+    );
+    const paid = transfers.map((transfer) => ({
+      // `TransferSol` is `source, destination`, so the destination is index 1 -
+      // a different shape from `TransferChecked` above, which is why this is
+      // written out rather than copied.
+      to: transfer.accounts[1]?.address,
+      amount: getTransferSolInstructionDataDecoder().decode(transfer.data).amount,
+    }));
+
+    expect(paid).toEqual([
+      { to: recipient as string, amount: BigInt(100_000_000 - fee) },
+      { to: TEST_TREASURY as string, amount: BigInt(fee) },
+    ]);
+  });
+
+  it('refuses a malformed fee address when the fee is POSITIVE', async () => {
+    // The half the zero-fee row cannot reach, and it guards a hole this branch
+    // could have opened rather than one it found: before the zero-fee
+    // derivation went in, a malformed address threw out of `address()` and
+    // nothing was signed. With the `isAddress(...) ? ... : undefined` form that
+    // keeps a zero-fee request buildable, the same input would instead SKIP the
+    // fee leg while `providerAmount` still subtracts the fee - a transaction
+    // paying the recipient `amount - fee` and nobody the fee, which the
+    // provider's own verifier then refuses. The whole job's money, for a job
+    // that can never be accepted.
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      buildPaymentInstructions(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: makeAddress(),
+          fee_address: 'not-an-address',
+          fee_amount: 5_000_000,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        { programId: TEST_PROGRAM_ID },
+      ),
+    ).rejects.toThrow(/fee address/);
+  });
+
+  it('does not throw on a malformed fee address that a zero fee never spends', async () => {
+    // Payable today: with `fee_amount: 0` no fee leg is built, so nothing in
+    // this function used to look at the field at all. The degenerate check now
+    // does, and it must not turn a payable request into a raw encoder error -
+    // an owner it cannot parse simply contributes no account to compare.
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: 'not-an-address',
+        fee_amount: 0,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'usdc',
+          mint: USDC_SOLANA_DEVNET.mint,
+          decimals: USDC_SOLANA_DEVNET.decimals,
+        },
+      } as never,
+      signer as never,
+      { programId: TEST_PROGRAM_ID },
+    );
+
+    // Payable means the RECIPIENT is paid IN FULL, and that is what gets
+    // decoded: the first version of this row matched instructions by account
+    // count, which is true of the ATA-create as well, so it asserted nothing
+    // about the amount - measured, a mutant paying `amount - 1` on the zero-fee
+    // branch (every mainnet payment) left the whole package green.
+    const transfers = instructions.filter(
+      (instruction): instruction is { programAddress: string; data: Uint8Array } =>
+        typeof instruction === 'object' &&
+        instruction !== null &&
+        (instruction as { programAddress?: string }).programAddress ===
+          (TOKEN_PROGRAM_ADDRESS as string),
+    );
+    expect(transfers.length).toBe(1);
+    expect(getTransferCheckedInstructionDataDecoder().decode(transfers[0]?.data).amount).toBe(
+      100_000_000n,
+    );
+  });
+
+  it('does not throw on a malformed CONFIG treasury either', async () => {
+    // The mirror of the row above, and the guard beside it used to be recorded
+    // as unkillable on the grounds that the value comes off the chain. It does
+    // on every first-party path - but this function is exported, and the
+    // option's own docstring says a direct caller is on their own. Reached that
+    // way, an unparseable treasury walked into `findAssociatedTokenPda` and
+    // came back as a raw encoder error about base58 lengths instead of simply
+    // contributing no account to the denylist.
+    const signer = makeSigner(makeAddress());
+
+    const instructions = await buildPaymentInstructions(
+      {
+        recipient: makeAddress(),
+        amount: 100_000_000,
+        reference: makeAddress(),
+        fee_address: makeAddress(),
+        fee_amount: 0,
+        created_at: Math.floor(Date.now() / 1000),
+        expiry_secs: 600,
+        asset: {
+          chain: 'solana',
+          token: 'usdc',
+          mint: USDC_SOLANA_DEVNET.mint,
+          decimals: USDC_SOLANA_DEVNET.decimals,
+        },
+      } as never,
+      signer as never,
+      { programId: TEST_PROGRAM_ID, treasury: 'not-an-address' as Address },
+    );
+
+    // And the recipient is still paid in full, for the reason the row above
+    // gives: an instruction count alone is true of the ATA-create too.
+    const transfers = instructions.filter(
+      (instruction): instruction is { programAddress: string; data: Uint8Array } =>
+        typeof instruction === 'object' &&
+        instruction !== null &&
+        (instruction as { programAddress?: string }).programAddress ===
+          (TOKEN_PROGRAM_ADDRESS as string),
+    );
+    expect(transfers.length).toBe(1);
+    expect(getTransferCheckedInstructionDataDecoder().decode(transfers[0]?.data).amount).toBe(
+      100_000_000n,
+    );
+  });
+
   it('fee + providerAmount === totalAmount for various amounts', async () => {
     interface TransferIxLike {
       data: Uint8Array;
@@ -409,6 +886,44 @@ describe('SolanaPaymentStrategy.buildTransaction', () => {
       },
     };
   }
+
+  it('hands the config treasury to the instruction builder', async () => {
+    // The wiring the whole client-side check rests on for every MCP payment:
+    // without it a zero-fee request that names no `fee_address` - which is what
+    // a third-party provider on mainnet issues - gets no treasury account to
+    // compare against, and the customer pays for a job the provider's own
+    // verifier will refuse. Measured: deleting the one argument leaves every
+    // other test in this package green.
+    const [treasuryAta] = await findAssociatedTokenPda({
+      owner: TEST_TREASURY,
+      mint: address(USDC_SOLANA_DEVNET.mint as string),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    const signer = makeSigner(makeAddress());
+
+    await expect(
+      payment.buildTransaction(
+        {
+          recipient: makeAddress(),
+          amount: 100_000_000,
+          reference: treasuryAta as string,
+          fee_amount: 0,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        } as never,
+        signer as never,
+        createMockRpc(),
+        { feeBps: 0, treasury: TEST_TREASURY },
+        { programId: TEST_PROGRAM_ID, network: 'devnet' },
+      ),
+    ).rejects.toThrow(/computed from/);
+  });
 
   it('throws on negative provider amount (fee > amount)', async () => {
     const signer = makeSigner(makeAddress());
@@ -547,25 +1062,51 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
     recipientAfter: number;
     treasuryBefore: number;
     treasuryAfter: number;
+    /** Drops this many entries off `postBalances`, which this path never reads. */
+    dropPostLamports?: number;
+    /**
+     * Rows placed AHEAD of the real ones in `preTokenBalances`. A real
+     * transaction carries the token accounts of everyone it touched, so the
+     * baseline is found by owner AND mint; these are the rows a half of that
+     * match would settle on instead.
+     *
+     * They take the LOW `accountIndex` values, and the real rows shift up by
+     * however many there are: a node sorts these rows by that index, so a decoy
+     * that has to be found first has to be numbered first. Only the ORDER is
+     * node-shaped - the absolute numbers are not, and cannot be while the real
+     * rows keep a fixed offset from each other. The code never reads the field
+     * at all.
+     */
+    decoyPre?: { owner: string; mint: string; amount: number }[];
   }) {
-    const entry = (owner: string, index: number, raw: number) => ({
+    const entryIn = (owner: string, mint: string, index: number, raw: number) => ({
       accountIndex: index,
-      mint: opts.mint,
+      mint,
       owner,
       uiTokenAmount: { amount: String(raw), decimals: 6, uiAmount: raw / 1e6 },
     });
+    const entry = (owner: string, index: number, raw: number) =>
+      entryIn(owner, opts.mint, index, raw);
+    const decoyCount = (opts.decoyPre ?? []).length;
+    const recipientIndex = decoyCount + 1;
+    const treasuryIndex = decoyCount + 3;
     return {
       meta: {
         err: null,
         preBalances: opts.keys.map(() => 0n),
-        postBalances: opts.keys.map(() => 0n),
+        postBalances: opts.keys
+          .map(() => 0n)
+          .slice(0, opts.keys.length - (opts.dropPostLamports ?? 0)),
         preTokenBalances: [
-          entry(recipientAddr, 1, opts.recipientBefore),
-          entry(TEST_TREASURY, 3, opts.treasuryBefore),
+          ...(opts.decoyPre ?? []).map((decoy, offset) =>
+            entryIn(decoy.owner, decoy.mint, offset, decoy.amount),
+          ),
+          entry(recipientAddr, recipientIndex, opts.recipientBefore),
+          entry(TEST_TREASURY, treasuryIndex, opts.treasuryBefore),
         ],
         postTokenBalances: [
-          entry(recipientAddr, 1, opts.recipientAfter),
-          entry(TEST_TREASURY, 3, opts.treasuryAfter),
+          entry(recipientAddr, recipientIndex, opts.recipientAfter),
+          entry(TEST_TREASURY, treasuryIndex, opts.treasuryAfter),
         ],
       },
       transaction: { message: { accountKeys: opts.keys } },
@@ -687,6 +1228,115 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).toContain('Recipient received');
     });
 
+    it('refuses when the TREASURY is in no half of the transaction', async () => {
+      // Both fee-leg rows put the treasury in `keys` and only starve it, so
+      // neither reaches the branch where it is ABSENT - and that branch decides
+      // money: fall back to any other slot and a transfer paying the provider
+      // everything and the protocol nothing verifies. Measured: the mutant
+      // answers `verified: true`.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr],
+                pre: [200_000_000, 0, 0],
+                post: [200_000_000 - amount, amount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'treasuryAbsentSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury not found/);
+    });
+
+    it('refuses when the RECIPIENT is in no half of the transaction', async () => {
+      // The SPL twin of this sentence is pinned deliberately (a delta of -1
+      // used to be read as "no account here"), and the native one was not. The
+      // verdict is a refusal either way; what the guard buys is an operator who
+      // is told the recipient is missing instead of being told they were
+      // underpaid by the whole amount.
+      const strangerAddr = makeAddress();
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, strangerAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'recipientAbsentSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient not found/);
+    });
+
+    it('refuses a native transfer the recipient merely already HELD', async () => {
+      // The row above starts the recipient at zero, as every other row here
+      // does, so it measures only the POST half of the delta. Read the baseline
+      // as zero instead of as what was there and a transaction that moved
+      // nothing at all verifies: the balance was already on the account, and
+      // any wallet holding more than the price can pay for a job with a
+      // transaction that merely mentions the reference.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [0, netAmount, 0, 0],
+                post: [0, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'nativePreHeldSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received 0, expected >=/);
+    });
+
+    it('refuses a native transfer whose fee the treasury merely already HELD', async () => {
+      // The same hole on the fee leg: the provider is paid in full, so only the
+      // treasury baseline can refuse it.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [0, 0, 0, feeAmount],
+                post: [0, netAmount, 0, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'nativeTreasuryPreHeldSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury received 0, expected >=/);
+    });
+
     it('rejects insufficient fee', async () => {
       const rpc = createMockRpc({
         getTransaction: () => ({
@@ -730,6 +1380,36 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.verified).toBe(true);
     });
 
+    it('refuses a reference spelled the way a NULL account key stringifies', async () => {
+      // `verifyPayment` checks the reference for PRESENCE, never for format, so
+      // the four letters `null` reach the key map unscreened - and a null
+      // account key is a shape this file's threat model already carries: a real
+      // node does not emit one, a proxy or shim between us and it can, which is
+      // the same door `mergeAccountKeys` guards a string through. Drop the
+      // truthiness guard in `checkTxDiff` and that key registers as 'null', the
+      // presence check that is the whole anti-replay on this rail passes, and
+      // this transaction - which carries no reference at all - settles the job.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, null, recipientAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, 0, netAmount, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR({ reference: 'null' }), CONFIG, {
+        txSignature: 'nullRefSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Reference key not found/);
+    });
+
     it('retries on pending transaction', async () => {
       let calls = 0;
       const rpc = createMockRpc({
@@ -769,6 +1449,94 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       },
     };
 
+    /**
+     * One page of balances per malformed half, shared by the row that feeds it
+     * a malformed half and the control beside it.
+     *
+     * SHARED rather than copied. The control exists to catch a later edit that
+     * quietly turns the page into a valid payment - which is exactly what the
+     * first version of each of these rows was - and two hand-copied literals
+     * drift apart in silence, leaving the control passing against the page it
+     * no longer describes.
+     *
+     * Both pages UNDERPAY when their key list can be read: the recipient owns
+     * a slot carrying `feeAmount` and nothing more. The malformed half is one
+     * key short of the real one, so a build that trusts it reads the recipient
+     * off the slot before theirs and the shortfall disappears.
+     */
+    const staticHalfPage = {
+      loaded: { writable: [recipientAddr, TEST_TREASURY, referenceAddr], readonly: [] },
+      pre: [0, 0, 0, 0, 0, 0],
+      post: [0, 0, netAmount, feeAmount, 0, 0],
+    };
+    const loadedHalfReadonly = [recipientAddr, TEST_TREASURY, referenceAddr];
+    const loadedHalfPage = {
+      keys: [payerAddr],
+      pre: [200_000_000, 0, 0, 0, 0, 0, 0],
+      post: [200_000_000 - amount, 0, 0, netAmount, feeAmount, 0, 0],
+    };
+
+    it('verifies a ZERO-FEE payment whose transaction never names the treasury', async () => {
+      // The configuration the program is deployed under on mainnet right now -
+      // `feeBps: 0` - and nothing in the package verified a payment in it.
+      // With no fee there is no fee leg, so `buildPaymentInstructions` never
+      // puts the treasury among the accounts, and the only thing keeping the
+      // verifier from looking for it is the `expectedFee > 0` gate. Measured:
+      // forcing that gate open left the whole package green, and would refuse
+      // every real mainnet payment with `Treasury not found in transaction`.
+      const zeroFeeConfig = { feeBps: 0, treasury: TEST_TREASURY };
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr],
+                pre: [200_000_000, 0, 0],
+                post: [200_000_000 - amount, amount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR({ fee_amount: 0 }), zeroFeeConfig, {
+        txSignature: 'zeroFeeSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(true);
+    });
+
+    it('verifies a ZERO-FEE SPL payment whose transaction has no treasury ATA', async () => {
+      // The token twin of the row above, and the same gate: with no fee leg the
+      // treasury has no token account in the transaction, and `tokenDelta`
+      // would answer `null`.
+      const zeroFeeConfig = { feeBps: 0, treasury: TEST_TREASURY };
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: amount,
+                treasuryBefore: 0,
+                treasuryAfter: 0,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ ...usdcRequest, fee_amount: 0 }),
+        zeroFeeConfig,
+        { txSignature: 'zeroFeeSplSig' as Signature, ...FAST },
+      );
+
+      expect(result.verified).toBe(true);
+    });
+
     it('verifies a v0 payment whose reference and treasury came from a table', async () => {
       // `encoding: 'json'` puts only the STATIC keys in `accountKeys` and the
       // looked-up ones in `meta.loadedAddresses`; the balance arrays cover both,
@@ -796,6 +1564,372 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.verified).toBe(true);
     });
 
+    it('refuses a reference equal to the recipient, before it fetches anything', async () => {
+      // No RPC answer is configured on purpose: the refusal has to come before
+      // either path runs. This one drives the SIGNATURE path, which does not
+      // list anything - it fetches one transaction and checks the reference is
+      // present, and a reference equal to the recipient makes that check a
+      // tautology.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () => Promise.reject(new Error('the verifier must not get this far')),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ reference: recipientAddr }),
+        CONFIG,
+        { txSignature: 'degenerateSig' as Signature, ...FAST },
+      );
+
+      expect(result.verified).toBe(false);
+      expect(result.code).toBe('degenerate_reference');
+    });
+
+    it('refuses it on the REFERENCE path too, without listing anything', async () => {
+      // The half the row above cannot reach, and the more dangerous one: with
+      // no `txSignature` the call lists the reference's history, and a
+      // degenerate reference makes that a listing of a whole wallet rather than
+      // of this payment. The check sits ahead of BOTH branches, and only a
+      // fixture that takes this branch keeps it there - moving it inside the
+      // signature branch leaves every other test in this file green.
+      const listing = vi.fn(() => ({
+        send: () => Promise.reject(new Error('the verifier must not list a degenerate reference')),
+      }));
+      const rpc = createMockRpc({
+        getSignaturesForAddress: listing,
+        getTransaction: () => ({
+          send: () => Promise.reject(new Error('the verifier must not get this far')),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ reference: recipientAddr }),
+        CONFIG,
+        {
+          ...FAST,
+        },
+      );
+
+      expect(result.verified).toBe(false);
+      expect(result.code).toBe('degenerate_reference');
+      expect(listing).not.toHaveBeenCalled();
+    });
+
+    it("refuses a reference equal to the recipient's TOKEN account, which only the DERIVED half knows", async () => {
+      // Both rows above use the recipient's own address - a STATIC denylist
+      // entry, which the synchronous predicate carries too. Before this row,
+      // swapping the full `degenerateReference` for `degenerateReferenceSync`
+      // here left the whole package green: nothing measured the derived half on
+      // this rail, though the builder's docstring rests on exactly that
+      // difference. That swap now reddens this row and only this row.
+      const [recipientAta] = await findAssociatedTokenPda({
+        owner: recipientAddr,
+        mint: address(USDC_SOLANA_DEVNET.mint as string),
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () => Promise.reject(new Error('the verifier must not get this far')),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ ...usdcRequest, reference: recipientAta }),
+        CONFIG,
+        { txSignature: 'degenerateAtaSig' as Signature, ...FAST },
+      );
+
+      expect(result.verified).toBe(false);
+      expect(result.code).toBe('degenerate_reference');
+    });
+
+    it('refuses a reference equal to the CONFIG treasury on a zero-fee request', async () => {
+      // The treasury argument, unpinned on this rail. It cannot be seen at a
+      // non-zero fee, because the fee block above forces `fee_address` to equal
+      // the treasury and the request carries it - so the static half catches it
+      // anyway. At feeBps 0, the config is the only place the treasury is
+      // named, and that is the configuration mainnet runs.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () => Promise.reject(new Error('the verifier must not get this far')),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({ reference: TEST_TREASURY, fee_address: undefined, fee_amount: 0 }),
+        { feeBps: 0, treasury: TEST_TREASURY },
+        { txSignature: 'treasuryRefSig' as Signature, ...FAST },
+      );
+
+      expect(result.verified).toBe(false);
+      expect(result.code).toBe('degenerate_reference');
+    });
+
+    it('refuses rather than MISREADS when the loaded half is malformed', async () => {
+      // `mergeAccountKeys` guards each half with `Array.isArray` and falls back
+      // to the static keys alone. Inline the raw concatenation instead - which
+      // is what any refactor folding the helper back in would write - and a
+      // proxy answering with a STRING for one half spreads it character by
+      // character.
+      //
+      // Seven balance slots against one static key and three read-only ones
+      // means the real writable half is three keys, so the recipient owns slot
+      // 4, where this transaction credited `feeAmount` and nothing else. The
+      // two characters fill three slots' worth of room with two, so a build
+      // that trusts them reads the recipient off slot 3 and the shortfall
+      // disappears. The price is an ACCEPT, not a refusal: measured, the mutant
+      // answers `verified: true` on a transaction that paid a fee.
+      //
+      // For the shift to cost money the recipient has to sit behind the
+      // malformed half, which puts them in the READ-ONLY one - so this page
+      // credits a read-only account, and a node would reject that transaction
+      // rather than report it. Same threat model as the null-key row: the
+      // liar here is a proxy or shim, not the node.
+      //
+      // The recipient must sit BEHIND the malformed half: a fixture that keeps
+      // it among the static keys is green in both worlds.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                ...loadedHalfPage,
+                loaded: {
+                  writable: 'ab' as unknown as string[],
+                  readonly: loadedHalfReadonly,
+                },
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'badLoadedSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Reference key not found/);
+    });
+
+    it('reads that same page as an UNDERPAYMENT when the writable half is well formed', async () => {
+      // The control for the row above, and it earns its place the same way the
+      // static one does: what makes that mutant dangerous is that the page it
+      // accepts is one the verifier REFUSES as soon as it can read the key
+      // list. Three writable keys put the recipient on slot 4, where this
+      // transaction credited `feeAmount` and stopped.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                ...loadedHalfPage,
+                loaded: {
+                  writable: [makeAddress(), makeAddress(), makeAddress()],
+                  readonly: loadedHalfReadonly,
+                },
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'wellFormedLoadedSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received/);
+    });
+
+    it('refuses when the STATIC half is malformed, which shifts the MOST', async () => {
+      // The loaded half has its own row; the static one had none on the money
+      // path, and by `mergeAccountKeys`'s own docstring it is the worse of the
+      // two to skip - a string spread element-by-element lands INSIDE the
+      // prefix every balance index is read against, so every looked-up address
+      // slides onto somebody else's slot.
+      //
+      // The page UNDERPAYS, which is what makes the shift cost money rather
+      // than merely look untidy: six balance slots against three looked-up
+      // addresses means the real static half is three keys, so the recipient
+      // owns slot 3 and was credited `feeAmount` there - a fee and nothing
+      // else. The malformed half spreads into two slots instead of three, so
+      // with the guard removed the recipient is read off slot 2, which belongs
+      // to nobody in this layout, and the shortfall disappears. Measured: the
+      // mutant answers `verified: true` on a transaction that paid a fee.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({ keys: 'ab' as unknown as (string | null)[], ...staticHalfPage }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'badStaticSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Reference key not found/);
+    });
+
+    it('reads that same page as an UNDERPAYMENT when the static half is well formed', async () => {
+      // The control for the row above, and the reason it is a row rather than a
+      // sentence: what makes that mutant dangerous is that the page it accepts
+      // is one the verifier REFUSES when it can read the key list. Three static
+      // keys put the recipient on slot 3, where this transaction credited
+      // `feeAmount` and nothing more.
+      //
+      // Without this, a later edit could quietly reshape the fixture into a
+      // page that is a valid payment - which is what the first version of it
+      // was, and why its comment then described a shift that was not happening.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({ keys: [payerAddr, makeAddress(), makeAddress()], ...staticHalfPage }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'wellFormedStaticSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received/);
+    });
+
+    it('refuses when the balance arrays disagree on length', async () => {
+      // A SHORT `pre` with the reference PAST the prefix. Without the guard the
+      // map is built over `preBalances.length`, the reference at index 3 never
+      // gets mapped, and the refusal reads "Reference key not found - possible
+      // replay" - blaming the customer for a page we could not read. Move the
+      // reference inside the prefix and the very same shape accepts instead;
+      // that case is below.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+                pre: [200_000_000, 0, 0],
+                post: [200_000_000 - amount, netAmount, feeAmount, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'lenMismatchSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/disagree on length/);
+    });
+
+    it.each([
+      ['the RECIPIENT slot', [200_000_000 - amount], /Recipient received/],
+      ['the TREASURY slot', [200_000_000 - amount, netAmount], /Treasury received/],
+    ])('refuses a short postBalances that stops before %s', async (_label, post, expected) => {
+      // The other two shapes the comment beside the guard names. The row
+      // above covers a reference past the prefix; these cover a `post` that
+      // ends before a MONEY slot, where the missing entry reads as
+      // `undefined`, `bigIntDelta` takes it for `0n`, and the refusal blames
+      // the customer for a page we could not read.
+      //
+      // They exist because the comment claimed all three were measured and
+      // only the first was: no fixture in the package had a `post` stopping
+      // short of the recipient or the treasury. Measured now - with the
+      // guard removed these refuse for the WRONG reason, `Recipient received
+      // 0` and `Treasury received 0`. The production comment lists a NEGATIVE
+      // delta among the shapes too, and that one needs a non-zero `pre` at the
+      // missing slot, which this page does not have.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+                pre: [200_000_000, 0, 0, 0],
+                post,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'shortPostSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/disagree on length/);
+      expect(result.error).not.toMatch(expected);
+    });
+
+    it('refuses a short preBalances whose prefix still covers everything read', async () => {
+      // The direction the other two fixtures miss. `pre` is short, but the
+      // reference, the recipient and the treasury all sit inside the prefix, so
+      // every slot the verifier reads pairs correctly and the missing tail is
+      // never noticed: measured without the guard, this verifies as `true`.
+      const junkAddr = makeAddress();
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr, junkAddr],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, feeAmount, 0, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'shortPreCoveredSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/disagree on length/);
+    });
+
+    it('refuses a short postBalances, which without the guard is ACCEPTED', async () => {
+      // The direction that costs money, measured: with the guard removed this
+      // exact shape verifies as `true`. `postBalances` is short by one but
+      // still covers the recipient and the treasury, so every index the
+      // verifier actually reads is present and the missing slot is never
+      // noticed - the payment is accepted on a page we could not read.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'shortPostSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/disagree on length/);
+    });
+
     it('still refuses a transaction the reference is in no half of', async () => {
       const rpc = createMockRpc({
         getTransaction: () => ({
@@ -817,6 +1951,68 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       });
       expect(result.verified).toBe(false);
       expect(result.error).toMatch(/replay/);
+    });
+
+    it('refuses an SPL transfer the reference is in no half of', async () => {
+      // The reference check runs BEFORE the SPL dispatch, and the whole case for
+      // the length guard being native-only rests on that order: on this path the
+      // worst a truncated prefix can do is lose the reference and refuse. Move
+      // the check below the dispatch and the suite stays green while any past
+      // USDC transfer of the right size pays for a new job - measured.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splNoReferenceSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/replay/);
+    });
+
+    it('does not let one token pay a request denominated in another', async () => {
+      // The token deltas are matched by owner AND mint. Matched by owner alone,
+      // an LSM transfer satisfies a USDC request - both are six decimals, so the
+      // amounts line up exactly - and the provider is paid in the cheaper of the
+      // two. Measured: the whole suite stays green with the mint dropped from
+      // the match.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: LSM_SOLANA_MAINNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'wrongMintSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/token account not found/);
     });
 
     it('names the real problem when a token account is short by one subunit', async () => {
@@ -846,6 +2042,399 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.verified).toBe(false);
       expect(result.error).toMatch(/Recipient received -1 tokens/);
       expect(result.error).not.toMatch(/not found/);
+    });
+
+    it('refuses a transaction with MORE account keys than balance slots', async () => {
+      // The length guard above compares `pre` with `post`; these two AGREE, so
+      // it says nothing. The third leg - keys against balances - is held by the
+      // `Math.min` clamp alone, and before this row nothing measured it:
+      // without the clamp the reference is "found" at an index the balance
+      // arrays do not reach, both money slots read fine, and a transaction the
+      // node described inconsistently verifies as a payment. Dropping the clamp
+      // now reddens this row and only this row.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+                pre: [200_000_000, 0, 0],
+                post: [200_000_000 - amount, netAmount, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'keysPastBalancesSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/possible replay/);
+    });
+
+    it('refuses an SPL transfer that is short of the net by one subunit', async () => {
+      // The row above cannot measure the comparison itself: a delta of -1 is
+      // below zero as well as below the net, so weakening the check to
+      // `recipientDelta < 0n` keeps that row red for the wrong reason. This
+      // delta is SHORT and POSITIVE, which is the shape an underpayment
+      // actually has, and it is the only row in the package that separates the
+      // two - measured: with the comparison weakened, everything else stayed
+      // green.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount - 1,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splShortNetSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received \d+ tokens, expected >=/);
+    });
+
+    it('refuses an SPL transfer whose fee leg is short by one subunit', async () => {
+      // The native twin of this check has a row of its own; the SPL one had
+      // none, and the whole `expectedFee > 0` block could be deleted with the
+      // package still green - measured. The provider is paid in full here, so
+      // nothing but the treasury comparison can refuse it: this is the protocol
+      // fee being skimmed by a customer who builds their own transaction.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount - 1,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splShortFeeSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury received \d+ tokens, expected >=/);
+    });
+
+    it('refuses an SPL transfer with NO treasury token account at all', async () => {
+      // `makeTokenTx` always emits a treasury row, so every SPL fixture starves
+      // the treasury rather than removing it - and the removed case is the one
+      // that decides money: fall back to the recipient's own delta and a
+      // transfer that paid the protocol nothing verifies.
+      const entry = (owner: string, raw: number) => ({
+        accountIndex: 1,
+        mint: USDC_SOLANA_DEVNET.mint as string,
+        owner,
+        uiTokenAmount: { amount: String(raw), decimals: 6, uiAmount: raw / 1e6 },
+      });
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve({
+              meta: {
+                err: null,
+                preBalances: [0n, 0n, 0n],
+                postBalances: [0n, 0n, 0n],
+                preTokenBalances: [entry(recipientAddr as string, 0)],
+                postTokenBalances: [entry(recipientAddr as string, amount)],
+              },
+              transaction: {
+                message: { accountKeys: [payerAddr, recipientAddr, referenceAddr] },
+              },
+            }),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splTreasuryAbsentSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury token account not found/);
+    });
+
+    /** A page that moved NOTHING: the recipient held the net before and holds it after. */
+    function alreadyHeldPage() {
+      return makeTokenTx({
+        keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+        mint: USDC_SOLANA_DEVNET.mint as string,
+        recipientBefore: netAmount,
+        recipientAfter: netAmount,
+        treasuryBefore: 0,
+        treasuryAfter: feeAmount,
+      });
+    }
+    type TokenPage = ReturnType<typeof alreadyHeldPage>;
+
+    it.each([
+      [
+        'an EMPTY string for the baseline amount',
+        (page: TokenPage) => {
+          (page.meta.preTokenBalances[0] as { uiTokenAmount: unknown }).uiTokenAmount = {
+            amount: '',
+          };
+        },
+        /Recipient token amount is unreadable/,
+      ],
+      [
+        'a baseline amount that is an array',
+        (page: TokenPage) => {
+          (page.meta.preTokenBalances[0] as { uiTokenAmount: unknown }).uiTokenAmount = {
+            amount: [],
+          };
+        },
+        /Recipient token amount is unreadable/,
+      ],
+      [
+        'a baseline row with no amount object at all',
+        (page: TokenPage) => {
+          delete (page.meta.preTokenBalances[0] as { uiTokenAmount?: unknown }).uiTokenAmount;
+        },
+        /Recipient token amount is unreadable/,
+      ],
+      [
+        'a baseline row with no OWNER',
+        (page: TokenPage) => {
+          delete (page.meta.preTokenBalances[0] as { owner?: unknown }).owner;
+        },
+        /token balance row is unreadable/,
+      ],
+      [
+        'a baseline row that is not an object',
+        (page: TokenPage) => {
+          (page.meta.preTokenBalances as unknown[])[0] = 'x';
+        },
+        /token balance row is unreadable/,
+      ],
+      [
+        'a NEGATIVE baseline amount',
+        (page: TokenPage) => {
+          (page.meta.preTokenBalances[0] as { uiTokenAmount: unknown }).uiTokenAmount = {
+            amount: '-5000000',
+          };
+        },
+        /Recipient token amount is unreadable/,
+      ],
+      [
+        'a baseline row whose mint is padded with a space',
+        (page: TokenPage) => {
+          const row = page.meta.preTokenBalances[0] as { mint: string };
+          row.mint = ` ${row.mint}`;
+        },
+        /token balance row is unreadable/,
+      ],
+      [
+        'a baseline LIST that is not a list',
+        (page: TokenPage) => {
+          (page.meta as { preTokenBalances: unknown }).preTokenBalances = { length: 2 };
+        },
+        /Token balance lists are not lists/,
+      ],
+    ])('does not read %s as a baseline of ZERO', async (_label, doctor, expected) => {
+      // The same page as the row below, which an honest node gets refused:
+      // nothing moved, the recipient simply already held the money. Each of
+      // these makes the baseline UNREADABLE rather than absent, and the
+      // verifier used to take both for zero - `BigInt('')` is `0n` without a
+      // throw, and a row that cannot be matched by owner is simply never
+      // found - so the whole post balance verified as this payment.
+      //
+      // Measured on a real mainnet transfer before it was measured here: 0.45
+      // USDC against a price of 1.8, refused from an honest node and VERIFIED
+      // with the baseline blanked. The ranking hint in `quick-verify` already
+      // had this rule; the function that decides the money did not.
+      const page = alreadyHeldPage();
+      doctor(page);
+      const rpc = createMockRpc({
+        getTransaction: () => ({ send: () => Promise.resolve(page) }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'unreadableBaselineSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(expected);
+    });
+
+    it.each([
+      ['an empty string', ''],
+      ['an array', []],
+      ['a boolean', true],
+      // Worse than zero: the delta is `post - pre`, so a negative baseline ADDS
+      // itself to whatever arrived. A balance is a u64 in every spelling.
+      ['a negative bigint', -5_000_000n],
+      ['a negative number', -5_000_000],
+      ['a negative string', '-5000000'],
+    ])('does not read a LAMPORT baseline of %s as zero', async (_label, slot) => {
+      // The native twin. `pre` and `post` agree on length, so the length guard
+      // says nothing, and the recipient's baseline is THERE - it is just not a
+      // number. A bare `BigInt` takes all three without throwing, the baseline
+      // reads as zero or one, and the 97 the recipient already held is read as
+      // what this transaction paid.
+      const page = makeTx({
+        keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+        pre: [200_000_000, netAmount, 0, 0],
+        post: [200_000_000, netAmount, feeAmount, 0],
+      });
+      (page.meta.preBalances as unknown[])[1] = slot;
+      const rpc = createMockRpc({
+        getTransaction: () => ({ send: () => Promise.resolve(page) }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'unreadableLamportSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient balance slot is unreadable/);
+    });
+
+    it('does not index an array-LIKE as if it were the balance array', async () => {
+      // `{ length: 4 }` agrees with itself on length, so it walks past the
+      // length guard, and every slot in it reads `undefined` - which used to
+      // count as a balance of zero on both sides.
+      const page = makeTx({
+        keys: [payerAddr, recipientAddr, TEST_TREASURY, referenceAddr],
+        pre: [200_000_000, 0, 0, 0],
+        post: [200_000_000 - amount, netAmount, feeAmount, 0],
+      });
+      (page.meta as { preBalances: unknown }).preBalances = { length: 4 };
+      const rpc = createMockRpc({
+        getTransaction: () => ({ send: () => Promise.resolve(page) }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, {
+        txSignature: 'arrayLikeSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Balance arrays are not arrays/);
+    });
+
+    it('refuses an SPL transfer the recipient merely already HELD', async () => {
+      // Every other row in this file leaves the recipient at zero before the
+      // transfer, so the whole PRE half of the delta went unmeasured: read the
+      // baseline as zero and a transaction that moved NOTHING verifies as a
+      // payment, because the money was already sitting there. The decoy rows
+      // are what makes the match itself measurable - a stranger's account in
+      // the same mint and the recipient's account in another one, both empty,
+      // are exactly the rows half of `owner === ... && mint === ...` settles on.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: netAmount,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+                decoyPre: [
+                  { owner: makeAddress(), mint: USDC_SOLANA_DEVNET.mint as string, amount: 0 },
+                  { owner: recipientAddr, mint: LSM_SOLANA_MAINNET.mint as string, amount: 0 },
+                ],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splPreHeldSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Recipient received 0 tokens, expected >=/);
+    });
+
+    it('refuses an SPL transfer whose fee the treasury merely already HELD', async () => {
+      // The same hole on the fee leg. The provider is paid in full here, so
+      // nothing but the treasury baseline can refuse it.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: feeAmount,
+                treasuryAfter: feeAmount,
+                decoyPre: [
+                  { owner: makeAddress(), mint: USDC_SOLANA_DEVNET.mint as string, amount: 0 },
+                  { owner: TEST_TREASURY, mint: LSM_SOLANA_MAINNET.mint as string, amount: 0 },
+                ],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splTreasuryPreHeldSig' as Signature,
+        ...FAST,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.error).toMatch(/Treasury received 0 tokens, expected >=/);
+    });
+
+    it('takes an SPL transfer whose LAMPORT arrays disagree, reading none of them', async () => {
+      // The length guard is native-only, and this fixture is why. This path
+      // pairs accounts by owner and mint out of `pre/postTokenBalances`; it
+      // opens no lamport slot, so a disagreement there cannot make it read a
+      // wrong slot as a payment. Gating it here would refuse a USDC transfer
+      // the token balances prove, over arrays the path never touches - the
+      // customer pays and is never delivered to.
+      const rpc = createMockRpc({
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+                dropPostLamports: 1,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(usdcRequest), CONFIG, {
+        txSignature: 'splShortPostSig' as Signature,
+        ...FAST,
+      });
+      expect(result.verified).toBe(true);
     });
 
     it('still says so when the recipient really has no token account', async () => {
@@ -913,7 +2502,25 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
       expect(result.error).toContain('No matching transaction found');
     });
 
-    it('skips errored signatures', async () => {
+    it('skips errored signatures without fetching them', async () => {
+      // The verdict is NOT what this measures, and the old version of this row
+      // pretended otherwise: it answered `null` from `getTransaction`, so the
+      // entry was dropped by the missing-meta guard and the filter the row is
+      // named after never ran. Drop the filter and the verdict is still the
+      // same - a failed transaction carries `meta.err` and is refused one line
+      // later. What the filter actually buys is the round trip, so that is what
+      // is asserted: an errored signature is never fetched at all.
+      const fetched = vi.fn(() => ({
+        send: () =>
+          Promise.resolve(
+            makeTx({
+              keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+              pre: [200_000_000, 0, 0, 0],
+              post: [200_000_000 - amount, netAmount, 0, feeAmount],
+              err: { InstructionError: 'x' },
+            }),
+          ),
+      }));
       const rpc = createMockRpc({
         getSignaturesForAddress: () => ({
           send: () =>
@@ -924,33 +2531,197 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
               },
             ]),
         }),
-        getTransaction: () => ({ send: () => Promise.resolve(null) }),
+        getTransaction: fetched,
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
+      expect(result.verified).toBe(false);
+      expect(fetched).not.toHaveBeenCalled();
+    });
+
+    it('refuses a transaction found under the reference that UNDERPAYS', async () => {
+      // The signature path measures this gate with fourteen rows; this path -
+      // the one a provider runs by default, with no `txSignature` in hand -
+      // measured it with none, so `if (verdict.ok)` could be deleted outright
+      // and every transaction carrying the reference would settle the job.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () => Promise.resolve([{ signature: 'refShortSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount - 1, 0, feeAmount],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
+      expect(result.verified).toBe(false);
+      expect(result.error).toContain('No matching transaction found');
+    });
+
+    it('refuses one found under the reference that pays the TREASURY nothing', async () => {
+      // The rail a provider runs by default, and its fee leg was a vacuum: the
+      // fee amount could be passed as 0 and the treasury as the recipient, both
+      // with the package green. `runtime.ts` takes this path on its own before
+      // the signature one, so under either mutant the provider delivers work
+      // for a transaction that paid the protocol nothing.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () => Promise.resolve([{ signature: 'refNoFeeSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - netAmount, netAmount, 0, 0],
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
+      expect(result.verified).toBe(false);
+      expect(result.error).toContain('No matching transaction found');
+    });
+
+    it('refuses one where the fee went to the RECIPIENT instead of the treasury', async () => {
+      // The other half: the customer paid the full amount, all of it to the
+      // provider. Reading the fee leg against the recipient's own slot makes
+      // that pass, because the recipient received more than the fee.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () =>
+            Promise.resolve([{ signature: 'refFeeToProviderSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, amount, 0, 0],
+              }),
+            ),
+        }),
       });
 
       const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
       expect(result.verified).toBe(false);
     });
+
+    it('verifies an SPL payment on the reference rail too', async () => {
+      // The only row that holds the mint on this rail. Dropped, an SPL request
+      // is verified as if it were native - the lamport arrays are all zeroes
+      // here, so it refuses rather than misreads, but nothing said so.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () => Promise.resolve([{ signature: 'refSplSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTokenTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                mint: USDC_SOLANA_DEVNET.mint as string,
+                recipientBefore: 0,
+                recipientAfter: netAmount,
+                treasuryBefore: 0,
+                treasuryAfter: feeAmount,
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(
+        rpc,
+        makePR({
+          asset: {
+            chain: 'solana',
+            token: 'usdc',
+            mint: USDC_SOLANA_DEVNET.mint,
+            decimals: USDC_SOLANA_DEVNET.decimals,
+          },
+        }),
+        CONFIG,
+        FAST,
+      );
+      expect(result.verified).toBe(true);
+    });
+
+    it('refuses a FAILED transaction found under the reference', async () => {
+      // The listing's own `err` field is not the only place a failure shows up:
+      // a node that reports a signature as fine and the transaction as failed
+      // gets past the filter, and this is the guard that catches it. Its twin
+      // on the signature path has a row; this one had none, and a failed
+      // transfer moves no money at all.
+      const rpc = createMockRpc({
+        getSignaturesForAddress: () => ({
+          send: () => Promise.resolve([{ signature: 'refFailedSig' as Signature, err: null }]),
+        }),
+        getTransaction: () => ({
+          send: () =>
+            Promise.resolve(
+              makeTx({
+                keys: [payerAddr, recipientAddr, referenceAddr, TEST_TREASURY],
+                pre: [200_000_000, 0, 0, 0],
+                post: [200_000_000 - amount, netAmount, 0, feeAmount],
+                err: { InstructionError: 'x' },
+              }),
+            ),
+        }),
+      });
+
+      const result = await payment.verifyPayment(rpc, makePR(), CONFIG, FAST);
+      expect(result.verified).toBe(false);
+      expect(result.error).toContain('No matching transaction found');
+    });
   });
 
   describe('input validation', () => {
+    // Every row here passes `FAST` even where the refusal is meant to come
+    // before any RPC call: a guard that stops guarding falls through to the
+    // reference path, and on the default budget the assertion arrives some
+    // half a minute later, past the test timeout, as a hang rather than as the
+    // sentence that says what broke. (The two default budgets are tuning, not
+    // guards - `VERIFY_BY_REF_*` and `VERIFY_*` both come to about 30 seconds
+    // and swapping them changes nothing measurable.)
     it('rejects invalid rpc', async () => {
       const result = await payment.verifyPayment(
         null as unknown as Rpc<SolanaRpcApi>,
         makePR(),
         CONFIG,
+        FAST,
       );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid rpc');
     });
 
     it('rejects zero amount', async () => {
-      const result = await payment.verifyPayment(createMockRpc(), makePR({ amount: 0 }), CONFIG);
+      const result = await payment.verifyPayment(
+        createMockRpc(),
+        makePR({ amount: 0 }),
+        CONFIG,
+        FAST,
+      );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid payment amount');
     });
 
     it('rejects negative amount', async () => {
-      const result = await payment.verifyPayment(createMockRpc(), makePR({ amount: -1 }), CONFIG);
+      const result = await payment.verifyPayment(
+        createMockRpc(),
+        makePR({ amount: -1 }),
+        CONFIG,
+        FAST,
+      );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid payment amount');
     });
@@ -960,6 +2731,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         createMockRpc(),
         makePR({ fee_amount: 1 }),
         CONFIG,
+        FAST,
       );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Protocol fee');
@@ -970,6 +2742,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         createMockRpc(),
         makePR({ fee_address: makeAddress() }),
         CONFIG,
+        FAST,
       );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('Invalid fee address');
@@ -980,6 +2753,7 @@ describe('SolanaPaymentStrategy.verifyPayment', () => {
         createMockRpc(),
         makePR({ fee_amount: amount + 1 }),
         CONFIG,
+        FAST,
       );
       expect(result.verified).toBe(false);
       expect(result.error).toContain('exceeds or equals');

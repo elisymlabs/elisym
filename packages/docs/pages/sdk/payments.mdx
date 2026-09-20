@@ -51,7 +51,64 @@ import { getProtocolConfig, clearProtocolConfigCache, getProtocolProgramId } fro
 
 These APIs are network-explicit: request creation stamps the provider's `network` into the request, `SolanaPaymentStrategy.validatePaymentRequest` takes the customer's network and rejects a cross-network request before any money check, and `buildPaymentInstructions` requires an explicit `programId` (no silent devnet default - the program id is cluster-ambiguous by design).
 
+`validatePaymentRequest` also refuses a **degenerate reference** - one that is itself an address this payment is computed from, the recipient or the treasury among them. Verification finds a transfer by listing its reference's history, so such a reference cannot single the payment out: the customer's transfer falls off the end of the window and is never found again. `verifyPayment` refuses a strict superset - it derives the associated token accounts and program PDAs too, which the synchronous check cannot - so passing `validatePaymentRequest` is not a promise the provider will accept. It usually says so with `code: 'degenerate_reference'` on `VerifyResult`, though a request that is also wrong about the fee fields is refused on those first, without a code, and both `degenerateReferenceSync` and `degenerateReference` are exported if you want the check on its own. Both throw on an asset they cannot resolve - the mint is part of what they compare - so resolve the asset first if you are not already past that point.
+
+`buildPaymentInstructions` also throws on a `fee_address` that is not an address when the fee is positive: a fee has to have a destination, or the transaction pays the recipient `amount - fee` and nobody the rest, which no provider can accept. A zero fee builds no fee leg and stays payable whatever that field holds.
+
+That reference gap is closed at the last point before the customer signs: `buildPaymentInstructions` throws on a reference equal to any address it derives for this payment - the stats PDAs, the event authority, the recipient's token account - rather than building a transaction whose transfer could never be found again. The **treasury's** token account joins that set when the request names it in `fee_address`, or when you pass `options.treasury`. (A native SOL payment has no token accounts at all, so there the set is the three program-derived addresses.) Pass it: `feeBps` is 0 on mainnet today, a zero-fee request is allowed to omit `fee_address` entirely, and without either the one account a hostile request would point at goes unchecked. `SolanaPaymentStrategy.buildTransaction` passes it for you; call the builder directly and it is yours to pass. The builder covers only the DERIVED half of the denylist - the addresses it computes itself. The static half (a reference equal to the recipient, the treasury, the mint, or a system program) lives in `validatePaymentRequest`, so call that too rather than treating the builder as the whole net.
+
 `validatePaymentRequest` also binds the asset. It refuses any asset that does not exist on the customer's network (the other cluster's USDC, or a mainnet-only asset quoted to a devnet customer), and `options.expectedAsset` closes the currency bait-and-switch the same way `expectedRecipient` closes payment redirection - pass the asset you agreed to pay and a request debiting a different one is rejected with `asset_mismatch`. The membership check alone cannot catch that: USDC and LSM are both mainnet assets with 6 decimals, so the same number in the wrong currency passes everything else.
+
+## Accepting a payment exactly once
+
+`verifyPayment` answers "a transaction satisfying this request exists". That is not "this transaction is mine to keep": one transfer can carry several jobs' references, so the same payment can satisfy several requests. Binding a settlement to exactly one job is the caller's duty, and `ProviderPaymentAcceptor` is that duty done for you.
+
+```ts twoslash
+import type { PaymentRequestData, PaymentStrategy, ProtocolConfigInput } from '@elisym/sdk';
+declare const rpc: Parameters<PaymentStrategy['verifyPayment']>[0];
+declare const paymentRequest: PaymentRequestData;
+declare const protocolConfig: ProtocolConfigInput;
+declare const job: { id: string };
+declare const customerSuppliedSignature: string;
+// ---cut---
+import { ProviderPaymentAcceptor, SolanaPaymentStrategy } from '@elisym/sdk';
+import { createFileSettlementStore } from '@elisym/sdk/node';
+
+const acceptor = new ProviderPaymentAcceptor({
+  strategy: new SolanaPaymentStrategy(),
+  rpc,
+  store: createFileSettlementStore('./settlements.json'),
+});
+
+const result = await acceptor.accept(
+  { paymentRequest, jobIdentity: job.id, txSignature: customerSuppliedSignature },
+  protocolConfig,
+);
+```
+
+`jobIdentity` has to be unique per job and stable across restarts. Deriving it from something stable but SHARED - the customer's pubkey, the request's reference, a skill name - closes several jobs with one signature and defeats the whole thing.
+
+On success you get `{ accepted: true, txSignature }`, the settlement now bound to this job and to no other. A refusal carries a `reason` - and, sometimes, an `error`. The `error` is diagnostics, never contract, and it is not for the customer: it can name another job's settlement and the signature that settled it, which is a fact about a stranger's payment. Log it; do not relay it.
+
+`accept` bounds itself: one pass gives up after `budget.deadlineMs`, **30 seconds by default**, and answers `inconclusive`. The deadline is read at step boundaries and never handed to the strategy, so a verification already in flight still runs its own retries out - it is a floor, not a wall. `budget` also carries `retriesPerCandidate` (3), `retriesForOwnSettlement` (5), `intervalMs` (2000) and `listAttempts` (3), and every one of them takes `0` meaningfully. Pass an `AbortSignal` as `signal` to abandon a pass early; it reports `inconclusive`, never `window-empty`, because it has seen less than the whole window.
+
+`./settlements.json` in the snippet above is relative to the process's working directory. The file names which transaction paid for which job, so keep it out of a repository or put it where your ignore rules already reach - it is the one private index in this system that no `.gitignore` of ours stands behind, because the path is yours to choose. The store creates its directory `0700` and the file `0600`, and on construction removes its own stranded `.settlements.json.<pid>.<hex>.tmp` siblings once they are an hour old.
+
+`window-empty` is the closest thing to "nobody paid", and it is **not** that verdict. It says one thing: in this one pass, the reference's window was read whole and held no payment for this request. A customer who confirms in their wallet a second later, or an RPC lagging its own index, produces exactly the same answer. The CLI's terminal "the customer did not pay" stands on six conditions, and `accept` can supply only three of them - the window was short rather than truncated, nothing was skipped or left unverified, and the job owns no settlement of its own. The other three are yours to build before you may close a job on it:
+
+- the payment request's **own expiry** has passed (`created_at + expiry_secs`, ten minutes by default) - `accept` does not check it;
+- a **second consecutive** pass says the same thing, with real time between the two looks: two listings a minute apart against an index the RPC is known to lag are barely independent, and independence is the whole reason a second look is required;
+- the **endpoint** has proven it is on the cluster you believe it is and keeps a history index at all - an empty answer from a node that indexes nothing is not evidence of anything.
+
+Until all three hold, treat `window-empty` exactly as you treat `inconclusive`: keep asking. `inconclusive` means the pass did not see everything - a listing that failed, a candidate that did not verify, one skipped as another job's, one the node described with a signature it could not be asked about, a full window, a deadline that expired, or a request whose fee fields disagree with the fee rate the chain reports today - and the job should be retried until the request's own expiry, which the acceptor does not check for you. That last one is why a fee disagreement is not terminal: the rate lives on-chain and moves without a client release, so a request today's rate rejects is polled rather than killed. `not-persisted` is the one to handle separately: the payment verified but the claim did not reach disk, so the job must NOT be delivered - retry once the disk is writable. `unusable-request` and `degenerate_reference` are terminal: no retry against this config would have made that request payable. One exception, and it is deliberate - a job that already owns a claimed settlement is never closed by either of them, because both lists grow over time and growing one must not retroactively destroy money on a job that was already paid and verified.
+
+Bring your own store if you already have one. `SettlementStore` is four methods, and the one constraint that matters is that `claim` is **synchronous**: the read and the write have to happen in one uninterrupted step, or two concurrent jobs both see a signature as unclaimed. A database, a KV or IndexedDB cannot implement it. `claim` also throws on an empty signature or an empty `jobIdentity`, and `prune` throws below `MIN_SETTLEMENT_RETENTION_MS` (30 days) - a signature dropped from the index has to be unverifiable on-chain by then, or it settles a second job. Nothing calls `prune` for you: the acceptor never does, so the index grows until you schedule it yourself.
+
+**One process per index file - and one index per payout address.** The file-backed store has no cross-process lock: two processes racing on one `settlements.json` can both believe they claimed a signature, and one transfer then settles two jobs. That is the same rule the CLI follows with one `elisym start` per agent directory. Splitting the index per worker only moves the problem, because two indexes are two separate de-duplication scopes: a transfer one worker has already settled is unclaimed as far as the other can see. Give each worker its own index **only** if each is paid at a different address; workers sharing an address need a store of your own that is atomic across all of them.
+
+Two concurrent `accept` calls for the same `jobIdentity` are forbidden for the same reason. A job holds at most one settlement, so the second call's claim releases the first one's - and the transaction it released is free for another job again. Serialize per job.
+
+The file-backed store refuses to start on an index it cannot read - unparseable, wrong shape, written by a different format version, or a pipe or device where the file belongs - rather than treating it as empty. It re-reads the index on **every** operation, so such a refusal surfaces from `accept` as well as from the constructor: wrap both. `accept` also throws, rather than answering, on an empty `jobIdentity`, an empty `txSignature`, or a `feeBps` that is not a non-negative integer - those are bugs in the caller, not verdicts about a payment. An index read as empty reports every settlement as unclaimed, which is the exact failure the store exists to prevent, so a corrupt FILE is something to move aside deliberately rather than something to recover from silently. One unreadable RECORD is the deliberate exception to that sentence: it is skipped and the rest of the index is kept, because refusing the whole file over one entry would strand a provider whose index is otherwise intact. The cost is that the skipped signature reads as unclaimed and can settle a second job, and nothing says so out loud - an index you have had to hand-edit is one to audit, not one to keep running against. A record whose timestamp is unreadable is kept as if it had just been written, so a prune cannot release it early.
 
 ## Estimating cost
 

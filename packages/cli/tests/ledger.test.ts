@@ -397,6 +397,23 @@ describe('settlement-signature index', () => {
     expect(ledger.claimPaymentSignature('sigA', 'job-2')).toBe('consumed-by-other');
   });
 
+  it('refuses to key a claim on an unusable signature, whoever asks', () => {
+    // The invariant is the method's own, not a favour from the two callers that
+    // check it first today. A claim keyed on an empty string owns nothing -
+    // `indexPaymentSignatures` skips it on the next load - so the transaction
+    // it stood for is free for the next job while this one believes it
+    // settled. Measured here because the runtime's own guard sits in front of
+    // this one: with only that row, removing EITHER gate alone left the package
+    // green, and neither was pinned on its own.
+    const ledger = new JobLedger(ledgerPath);
+    ledger.recordPaid(makeEntry('job-1'));
+
+    expect(ledger.claimPaymentSignature('', 'job-1')).toBe('unknown-job');
+    expect(ledger.paymentSignatureOwner('')).toBeUndefined();
+    const entry = ledger.allEntries().find((candidate) => candidate.job_id === 'job-1');
+    expect(entry?.payment_signature).toBeUndefined();
+  });
+
   it('refuses a signature already consumed by a DIFFERENT job', () => {
     const ledger = new JobLedger(ledgerPath);
     ledger.recordPaid(makeEntry('job-1'));

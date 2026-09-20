@@ -1,4 +1,12 @@
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  statSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,10 +23,12 @@ import {
   loadAgent,
   createAgentDir,
   ensureGitignoreHasIrohEntry,
+  ensureGitignoreHasPrivateStateEntries,
   renderInitialYaml,
   writeYaml,
   writeYamlInitial,
   writeSecrets,
+  writeExampleSkillTemplate,
   readMediaCache,
   writeMediaCache,
   hashFile,
@@ -293,6 +303,75 @@ describe('createAgentDir', () => {
     expect(existsSync(join(result.dir, 'skills'))).toBe(true);
   });
 
+  it('leaves an existing .gitignore alone when a second agent joins the root', async () => {
+    // `flag: 'wx'` is the whole of it, and nothing measured it: with a plain
+    // write the second `createAgentDir` in a project root truncates the file
+    // that keeps `.secrets.json*` out of the commit and replaces it with the
+    // default list, losing whatever the operator put there. Every migration
+    // beside it APPENDS for exactly this reason - the one writer that does not
+    // append had no row.
+    const root = join(work, '.elisym');
+    await createAgentDir({ target: 'project', name: 'Bob', cwd: work, projectRoot: work });
+    const gitignorePath = join(root, '.gitignore');
+    const withOperatorLine = `${await readFile(gitignorePath, 'utf-8')}my-own-secret.txt\n`;
+    writeFileSync(gitignorePath, withOperatorLine, 'utf-8');
+
+    await createAgentDir({ target: 'project', name: 'Eva', cwd: work, projectRoot: work });
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('my-own-secret.txt');
+    expect(lines).toContain('.secrets.json*');
+  });
+
+  it('never overwrites an operator-edited EXAMPLE.md on a re-run of init', async () => {
+    // The other half of the same flag, and its docstring states this outright:
+    // "written with `wx` so we never overwrite an operator's edits on re-run of
+    // `init`". The claim stood on nothing.
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+    await writeExampleSkillTemplate(dir);
+    const examplePath = join(dir, 'skills', 'EXAMPLE.md');
+    writeFileSync(examplePath, 'my own notes\n', 'utf-8');
+
+    await writeExampleSkillTemplate(dir);
+
+    expect(await readFile(examplePath, 'utf-8')).toBe('my own notes\n');
+  });
+
+  it('refuses a name that would escape the elisym root', async () => {
+    // The comment on this call says a traversal "can never materialize", and
+    // nothing measured it: every caller validates earlier, so removing the
+    // check here left the package green and the claim standing on its own.
+    await expect(createAgentDir({ target: 'home', name: '../.ssh', cwd: work })).rejects.toThrow();
+  });
+
+  it('creates a HOME agent directory nobody else can enter', async () => {
+    // `ensureGitignoreHasEntries` says home-global agents rely on directory
+    // permissions INSTEAD of a `.gitignore` - there is no repository around
+    // them to ignore anything. The whole `.gitignore` half of that sentence is
+    // measured a dozen ways in this file and the permission half was measured
+    // nowhere, so the mode could widen to 0o755 with the package green.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const result = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+
+    expect(statSync(result.dir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(result.dir, 'skills')).mode & 0o777).toBe(0o700);
+  });
+
+  it('writes .secrets.json readable only by its owner', async () => {
+    // The file the directory mode above is protecting: the agent's nostr and
+    // solana secret keys. Nothing asserted its mode either.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+
+    await writeSecrets(dir, { nostr_secret_key: 'a'.repeat(64) });
+
+    expect(statSync(join(dir, '.secrets.json')).mode & 0o777).toBe(0o600);
+  });
+
   it('creates project layout with .gitignore', async () => {
     const result = await createAgentDir({
       target: 'project',
@@ -303,13 +382,179 @@ describe('createAgentDir', () => {
     expect(result.source).toBe('project');
     expect(result.createdNewElisymRoot).toBe(true);
     const gitignore = await readFile(join(work, '.elisym', '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('.secrets.json');
-    expect(gitignore).toContain('.media-cache.json');
-    expect(gitignore).toContain('.jobs.json');
+    // Exact LINES, not substrings: `.secrets.json` matches `.secrets.json*` as a
+    // substring, so a narrowed entry would pass unnoticed - and the narrow form
+    // no longer covers the temporaries these files are written through, whose
+    // suffix is random. What sits in them is the agent's keys and the ledger.
+    const lines = gitignore.split('\n');
+    // EVERY file written through a random temporary, not the three that were
+    // noticed first: a fixed entry cannot match `.tmp.<hex>`, and what these
+    // hold is keys, customer inputs, paid results, and who the agent talks to.
+    expect(lines).toContain('.secrets.json*');
+    expect(lines).toContain('.media-cache.json*');
+    expect(lines).toContain('.jobs.json*');
+    expect(lines).toContain('.customer-history.json*');
+    expect(lines).toContain('.contacts.json*');
+    expect(lines).toContain('.messages-read.json*');
+    expect(lines).toContain('.job-sessions.json*');
+    // The x402 bridge cache: which upstream calls were paid for, and the
+    // results bought with them. Exact lines here for the same reason as above -
+    // `.x402-jobs.json` is a SUBSTRING of the widened entry, so the only other
+    // assertion on it in the monorepo passes just as happily on the narrow one.
+    expect(lines).toContain('.x402-jobs.json*');
+    expect(lines).toContain('.x402-results/');
     // The iroh blob store holds cleartext job payloads - must be ignored.
     expect(gitignore).toContain('.iroh/');
     // The delegation nonce set maps which customer wallets delegated here.
     expect(gitignore).toContain('.delegation-nonces.json*');
+  });
+
+  it('migrates the .gitignore when SECRETS are written, not only at start', async () => {
+    // `writeSecrets` is what `init`, `profile`, `delegate-key`, `x402 add` and
+    // the MCP's `create_agent` all go through, and none of them runs the
+    // start-up migration. Without this, `elisym delegate-key <old-agent>` writes
+    // `.secrets.json.tmp.<hex>` - the agent's keys - into a directory whose
+    // ignore line cannot match it.
+    const root = join(work, '.elisym');
+    const agentDir = join(root, 'alice');
+    mkdirSync(agentDir, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, ['.secrets.json', ''].join('\n'), 'utf-8');
+
+    await writeSecrets(agentDir, { nostr_secret_key: 'a'.repeat(64) });
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('.secrets.json*');
+  });
+
+  it('widens the .gitignore BEFORE the keys are written, not after', async () => {
+    // The ordering is the whole point of the block, and the row above measures
+    // it only on the happy path, where before and after look the same. A write
+    // that dies between the temporary and the rename leaves
+    // `.secrets.json.tmp.<hex>` on disk - the agent's keys in the clear - and
+    // only an entry that is ALREADY there keeps it out of the next commit.
+    // Measured by putting a non-empty directory where the file belongs, which
+    // is what makes the rename fail.
+    const root = join(work, '.elisym');
+    const agentDir = join(root, 'alice');
+    mkdirSync(agentDir, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, ['.secrets.json', ''].join('\n'), 'utf-8');
+    mkdirSync(join(agentDir, '.secrets.json'));
+    writeFileSync(join(agentDir, '.secrets.json', 'occupied'), 'x', 'utf-8');
+
+    await expect(writeSecrets(agentDir, { nostr_secret_key: 'a'.repeat(64) })).rejects.toThrow();
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('.secrets.json*');
+  });
+
+  it('appends to a .gitignore whose last line has no newline', async () => {
+    // `writeSecrets` now runs this migration on every agent creation, so the
+    // separator is on a hot path. Without it the new entry is glued to the last
+    // line: `.secrets.json.secrets.json*` ignores neither of them.
+    const root = join(work, '.elisym');
+    const agentDir = join(root, 'alice');
+    mkdirSync(agentDir, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, 'node_modules', 'utf-8');
+
+    await writeSecrets(agentDir, { nostr_secret_key: 'a'.repeat(64) });
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('node_modules');
+    expect(lines).toContain('.secrets.json*');
+  });
+
+  it('still writes the keys when the .gitignore cannot be appended to', async () => {
+    // The asymmetry with `elisym start` is deliberate and this is what holds
+    // it: there a refusal protects an index that decides money, here it would
+    // stop an agent being created at all over a hygiene step. Measured - the
+    // warn path is new, and turning it back into a throw left the package
+    // green.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const root = join(work, '.elisym');
+    const agentDir = join(root, 'alice');
+    mkdirSync(agentDir, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, '.secrets.json\n', 'utf-8');
+    chmodSync(gitignorePath, 0o444);
+
+    try {
+      await writeSecrets(agentDir, { nostr_secret_key: 'a'.repeat(64) });
+
+      expect(existsSync(join(agentDir, '.secrets.json'))).toBe(true);
+    } finally {
+      chmodSync(gitignorePath, 0o644);
+    }
+  });
+
+  it('migrates an older .gitignore to the widened private-state entries', async () => {
+    // `GITIGNORE_CONTENT` is written ONCE, at directory creation, so an agent
+    // created by an older build keeps the narrow names for good - and those no
+    // longer match a temporary whose suffix is random. Every other entry added
+    // after the fact has a migration like this one; these three did not.
+    const root = join(work, '.elisym');
+    mkdirSync(root, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(
+      gitignorePath,
+      ['# elisym private state - do not commit.', '.secrets.json', '.jobs.json', ''].join('\n'),
+      'utf-8',
+    );
+
+    await ensureGitignoreHasPrivateStateEntries(root);
+
+    const lines = (await readFile(gitignorePath, 'utf-8')).split('\n');
+    expect(lines).toContain('.secrets.json*');
+    expect(lines).toContain('.media-cache.json*');
+    expect(lines).toContain('.jobs.json*');
+    expect(lines).toContain('.customer-history.json*');
+    expect(lines).toContain('.contacts.json*');
+    // Append-only: what was there stays, so an older build reading this file
+    // still finds the names it wrote.
+    expect(lines).toContain('.secrets.json');
+  });
+
+  it('writes NOTHING when every entry is already there', async () => {
+    // The migration runs on every `writeSecrets`, and `writeSecrets` is on the
+    // path of `init`, `profile`, `delegate-key`, `x402 add` and the MCP's
+    // `create_agent`. Without the early return each of those appends a bare
+    // newline to the user's `.gitignore`, so the file grows by a line every
+    // time an agent is touched - measured, nothing caught it.
+    const root = join(work, '.elisym');
+    mkdirSync(root, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    // Seeded, because the migration is a no-op when there is no file to widen.
+    writeFileSync(gitignorePath, '.secrets.json\n', 'utf-8');
+    await ensureGitignoreHasPrivateStateEntries(root);
+    const afterFirst = await readFile(gitignorePath, 'utf-8');
+
+    await ensureGitignoreHasPrivateStateEntries(root);
+    await ensureGitignoreHasPrivateStateEntries(root);
+
+    expect(await readFile(gitignorePath, 'utf-8')).toBe(afterFirst);
+  });
+
+  it('matches an entry a CRLF file already carries', async () => {
+    // The `.trim()` when the existing lines are read, which nothing measured.
+    // A `.gitignore` written on Windows ends its lines `\r\n`, so every entry
+    // reads as `.secrets.json*\r` and matches nothing - and then the whole list
+    // is appended again on every single write.
+    const root = join(work, '.elisym');
+    mkdirSync(root, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    writeFileSync(gitignorePath, '.secrets.json\n', 'utf-8');
+    await ensureGitignoreHasPrivateStateEntries(root);
+    const unix = await readFile(gitignorePath, 'utf-8');
+    writeFileSync(gitignorePath, unix.replaceAll('\n', '\r\n'), 'utf-8');
+    const before = await readFile(gitignorePath, 'utf-8');
+
+    await ensureGitignoreHasPrivateStateEntries(root);
+
+    expect(await readFile(gitignorePath, 'utf-8')).toBe(before);
   });
 
   it('reuses existing .elisym dir when creating additional agent', async () => {
@@ -491,6 +736,66 @@ describe('resolveAgent', () => {
 });
 
 describe('listAgents', () => {
+  it('lists an agent whose yaml sets no display_name', async () => {
+    // The docstring on the `=== null` guard says an empty display name keeps
+    // the agent LISTED, and nothing measured it. This is not an exotic file:
+    // the template `init` writes leaves `display_name` commented out, so a
+    // freshly created agent reaches here with an empty one - and a guard
+    // loosened to `!displayName` drops it out of `elisym list` and the MCP's
+    // `list_agents` without a word.
+    const created = await createAgentDir({
+      target: 'project',
+      name: 'Bob',
+      cwd: work,
+      projectRoot: work,
+    });
+    writeFileSync(join(created.dir, 'elisym.yaml'), 'description: no display name here\n');
+
+    const agents = await listAgents(work);
+
+    expect(agents.map((agent) => agent.name)).toEqual(['Bob']);
+    expect(agents[0]?.displayName).toBeUndefined();
+  });
+
+  it('still lists an agent whose yaml does not parse', async () => {
+    // The second way to reach an empty name, and the one that matters more:
+    // hiding an agent exactly when its config is broken is hiding it exactly
+    // when the operator needs to find it.
+    const created = await createAgentDir({
+      target: 'project',
+      name: 'Bob',
+      cwd: work,
+      projectRoot: work,
+    });
+    writeFileSync(join(created.dir, 'elisym.yaml'), 'display_name: [unclosed\n');
+
+    const agents = await listAgents(work);
+
+    expect(agents.map((agent) => agent.name)).toEqual(['Bob']);
+  });
+
+  it('still lists an agent whose yaml parses but fails the schema', async () => {
+    // The third path to an empty name, and the only one that does not go
+    // through a throw: the YAML is valid, its shape is not. `=== null` is what
+    // separates "could not read the file" from "read it and it gave nothing" -
+    // return null here and the agent drops out of `elisym list` and the MCP's
+    // `list_agents` without a word, exactly when its config needs fixing.
+    const created = await createAgentDir({
+      target: 'project',
+      name: 'Bob',
+      cwd: work,
+      projectRoot: work,
+    });
+    writeFileSync(join(created.dir, 'elisym.yaml'), 'display_name: 42\n');
+
+    const agents = await listAgents(work);
+
+    expect(agents.map((agent) => agent.name)).toEqual(['Bob']);
+    // And with no display name attached: `''` means "read it, got nothing",
+    // which the caller shows as the folder name.
+    expect(agents[0]?.displayName).toBeUndefined();
+  });
+
   it('lists home and project agents, project shadows home', async () => {
     const home1 = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
     writeFileSync(join(home1.dir, 'elisym.yaml'), 'display_name: "Home Bob"\n');

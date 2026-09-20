@@ -87,7 +87,14 @@ const REF_SCAN_CANDIDATE = 'refScanCandidateSignature';
  * `@solana/kit` exactly as it would be in production, so a fixture that uses one
  * is not exercising the shipped code at all.
  */
-const PAYMENT_REFERENCE = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+/**
+ * A plain random address, and it has to stay one: the verifier refuses a
+ * reference that is itself an address the payment is computed from - a program
+ * id among them - because listing such an address cannot single out this
+ * transfer. An earlier fixture used the memo program's address here simply
+ * because it was valid base58.
+ */
+const PAYMENT_REFERENCE = 'DLZ1JYbYLEe4QowxxuNtGEzeYkJiSqmNHZhQSiAfzHms';
 const PROVIDER_ADDRESS = 'So11111111111111111111111111111111111111112';
 const TREASURY_ADDRESS = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
 /** Matches the `getProtocolConfig` mock below; 3% of `PRICE_SUBUNITS`. */
@@ -808,6 +815,44 @@ describe('one settlement transaction settles one job', () => {
     expect(skill.execute).not.toHaveBeenCalled();
     expect(deliveredJobIds(transport)).toEqual([]);
   });
+
+  it('a verification naming an EMPTY settlement is refused the same way', async () => {
+    // Same branch, the value that actually reaches it in the field. The
+    // reference path asks about no signature, so whatever the answer carries is
+    // what would be claimed - and a proxy rewriting an RPC page carries an
+    // empty string, not `undefined`. A claim keyed on one owns nothing: the
+    // ledger index drops it, the transaction it stood for stays free for the
+    // next job carrying this reference, and the job is marked paid regardless.
+    refPathVerify = () => ({ verified: true, txSignature: '' });
+    const skill = makePaidSkill();
+    const { transport, triggerJob } = makeFakeTransport(always(null));
+    const runtime = makeRuntime(skill, transport);
+
+    const runPromise = runtime.run();
+    await tick();
+    triggerJob(makeJob('blank-settlement'));
+    await waitFor(
+      () => errorMessages(transport, 'blank-settlement').length > 0,
+      'job resolved with an error',
+    );
+    runtime.stop();
+    await runPromise.catch(() => {});
+
+    expect(skill.execute).not.toHaveBeenCalled();
+    expect(deliveredJobIds(transport)).toEqual([]);
+    const entry = ledger.allEntries().find((candidate) => candidate.job_id === 'blank-settlement');
+    expect(entry?.payment_signature).toBeUndefined();
+    // The RUNTIME's own guard said so, not the ledger's: both refuse an
+    // unusable signature, and without this line removing either one alone left
+    // the package green while the other covered for it. The sentence is also
+    // the honest one - with only the ledger's guard the operator reads "job has
+    // no ledger entry" about a job whose entry is right there.
+    expect(logged(/verified without a settlement signature/)).toBe(true);
+    // A budget of its own, because `waitFor` here is allowed 10 s and vitest's
+    // default is 5: with the guard broken this row waited on a prompt that
+    // never came and died on the harness timeout BEFORE any of the four
+    // assertions above ran. Red either way - but red saying nothing.
+  }, 30_000);
 });
 
 describe("a refused settlement never ends an honest customer's job", () => {

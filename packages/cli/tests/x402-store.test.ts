@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmodSync, statSync } from 'node:fs';
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -97,6 +98,110 @@ describe('X402JobStore', () => {
     expect(await store.paymentSignatures('legacy-job')).toBe(2);
   });
 
+  it('holds a legacy record to the SIGNATURE ceiling, not just the attempt one', async () => {
+    // The row above pins the fallback in the two places that carry a count
+    // forward - the reader that reports it and the refund that preserves it.
+    // The one that decides whether another signed payment goes out had none,
+    // and that is the one holding the money: read as zero signatures,
+    // this record is handed a fresh budget and the bridge signs a second
+    // payment for a job the upstream may already have settled.
+    await writeFile(
+      join(dir, X402_JOBS_FILE),
+      JSON.stringify({ 'legacy-job': { attempts: 2, created_at: 1, updated_at: 1 } }),
+    );
+
+    // Room to spare on attempts, none on signatures - so the refusal can only
+    // come from the ceiling this row is about.
+    expect(await store.claimPaidAttempt('legacy-job', 10, 2)).toMatchObject({
+      granted: false,
+      refusedBy: 'signatures',
+    });
+  });
+
+  it('writes the index owner-only, because it carries bought results too', async () => {
+    // The counters are not the only thing in here: `saveTextResult` parks the
+    // upstream's answer in the same file, and that is content the customer has
+    // already paid for. The result FILES beside it are 0o600 and the directory
+    // is 0o700; this index was written with an encoding string where the
+    // options object goes, so it landed at whatever the umask allowed - 0o644
+    // inside a project-local agent directory, which is itself 0o755.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    // Pinned umask, because without one this row passes against a build that
+    // sets no mode at all: `0o666 & ~0o077` is already `0o600`. A developer or
+    // a CI image with a tight umask would have seen green either way.
+    //
+    // The assertion is the OUTCOME, not either mechanism. `save` both passes a
+    // mode and chmods the temporary, and those mask each other - removing one
+    // leaves the other doing the job - so there is no mutation that kills only
+    // one of them. What matters here is that the file the customer's bought
+    // answers land in is not world-readable.
+    const previousUmask = process.umask(0o022);
+    try {
+      await store.claimPaidAttempt('job-mode', 2, 2);
+      await store.saveTextResult('job-mode', 'the paid-for answer');
+
+      expect(statSync(join(dir, X402_JOBS_FILE)).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previousUmask);
+    }
+  });
+
+  it('tightens an index an older build left world-readable, without waiting for a write', async () => {
+    // `save` lands 0o600 through its temporary, but a bridge with no new job
+    // never saves - and this file holds answers customers already paid for.
+    // Found on a real agent directory, still 0o644 months after it was written.
+    // The sweep is what the driver runs from its constructor, so this is what
+    // the first start of a new build does to it.
+    if (process.getuid?.() === 0) {
+      return; // root ignores the mode bits
+    }
+    const indexPath = join(dir, X402_JOBS_FILE);
+    await writeFile(
+      indexPath,
+      JSON.stringify({
+        'job-old': { attempts: 1, created_at: Date.now(), updated_at: Date.now() },
+      }),
+      { mode: 0o644 },
+    );
+    chmodSync(indexPath, 0o644);
+
+    await store.sweepExpired();
+
+    expect(statSync(indexPath).mode & 0o777).toBe(0o600);
+    // And it was only the mode: the record is still there to cap the spend.
+    expect(await store.paidAttempts('job-old')).toBe(1);
+  });
+
+  it.each([
+    ['an array', [], /non-record/],
+    ['a null', null, /non-record/],
+    ['a string counter', { attempts: 'abc', created_at: 1, updated_at: 1 }, /unusable record/],
+    ['an object counter', { attempts: {}, created_at: 1, updated_at: 1 }, /unusable record/],
+    [
+      'a non-numeric signature count',
+      { attempts: 0, signatures: 'zz', created_at: 1, updated_at: 1 },
+      /unusable record/,
+    ],
+    ['a missing updated_at', { attempts: 2, signatures: 2, created_at: 1 }, /unusable record/],
+  ])('refuses %s in a slot, instead of clearing its ceiling', async (_label, slot, expected) => {
+    // A hand-edited file is this store's stated threat model, and each of these
+    // clears the ceiling without healing. The array and the null survive
+    // `?? {}` - neither is undefined - so both counters read `undefined` and
+    // neither comparison holds. A counter that is not a number does it without
+    // changing shape: `'abc' >= 2` is false and `'abc' += 1` is `'abc1'`. A
+    // missing `updated_at` is worse still - `now - undefined` is `NaN`, so the
+    // sweep the driver runs from its constructor deletes the record on the next
+    // start, which resets the budget rather than merely failing to hold it.
+    //
+    // Every one of them means another signed payment to the upstream on every
+    // retry, for as long as the file stays as it is.
+    await writeFile(join(dir, X402_JOBS_FILE), JSON.stringify({ 'job-1': slot }));
+
+    await expect(store.claimPaidAttempt('job-1', 2, 2)).rejects.toThrow(expected);
+  });
+
   it('round-trips a text result', async () => {
     await store.saveTextResult('job-2', 'hello world');
     expect(await store.getResult('job-2')).toEqual({ data: 'hello world' });
@@ -150,6 +255,23 @@ describe('X402JobStore', () => {
     expect(await store.getResult('old-job')).toBeNull();
     expect(await store.getResult('old-file-job')).toBeNull();
     await expect(stat(filePath)).rejects.toThrow();
+  });
+
+  it('sweeps a temporary stranded by a crash between write and rename', async () => {
+    // The name carries a random suffix, so nothing reuses it and nothing else
+    // removes it - and it holds a result the bridge already paid for. The sweep
+    // that drops the record has to take it too.
+    const filePath = await store.saveFileResult('old-file-job', 'image/png', new Uint8Array([1]));
+    const stranded = `${filePath}.tmp.deadbeef`;
+    await writeFile(stranded, new Uint8Array([1]));
+    // Aged past the guard that protects a live writer's temporary: this row is
+    // about what a process that DIED left, not about a write in flight.
+    const stale = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(stranded, stale, stale);
+
+    await store.sweepExpired(Date.now() + X402_CACHE_TTL_MS + 1000);
+
+    await expect(stat(stranded)).rejects.toThrow();
   });
 
   it('sanitizes hostile job ids in result file paths', async () => {

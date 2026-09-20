@@ -82,6 +82,16 @@ One skill carries exactly one `(token, price)` pair. To offer the same service i
 With a paid skill, `start` requires the Solana address - it exits early if a skill has a non-zero price but no address configured. (The quickstart already set one.)
 :::
 
+:::note
+**`start` refuses to run on state it cannot read.** Two indexes decide money, and each is opened before the thing it protects goes out: the job ledger (which transaction paid for which job), opened before the agent publishes anything - profile, identity claims, policies or capability cards - and, when a skill declares delegation and the agent's delegate key decodes, the delegated-pull nonce store (which pull has been spent), opened before any capability card goes out. If either cannot be READ - a permission error, a directory in the way, a pipe or device where the file belongs - the agent exits with that path named, rather than starting with an empty index: an empty ledger settles the same transaction a second time, an empty nonce store replays a delegated pull. A file that was read and could not be PARSED is different: that one is moved aside as `.corrupt.<timestamp>` and the agent starts. Moving it aside is best-effort - if the rename itself fails the agent still starts, on an empty index, so a `.corrupt.<timestamp>` you cannot find beside a fresh index means exactly that. The usual cause of the first is a file written under `sudo` - `chown` it back.
+
+The x402 bridge cache is **not** part of that gate: `start` does not gate on it. The one read it does at startup is a fire-and-forget retention sweep inside the bridge driver, whose failure is ignored. The cache fails closed at the point a bridged job needs it, so the job errors instead of paying the upstream a second time, and a file that cannot be read, cannot be parsed, or holds a record the bridge cannot use has to be moved aside by hand.
+:::
+
+:::warning
+**Give each paid agent its own address.** De-duplication - one transaction settles one job - is per agent directory, so two agents paid at the same address on the same network can both count one customer's transfer. `start` warns when it finds such a neighbor, but it only looks in `~/.elisym/` and in the one project root above the working directory; two agents in two different project trees are a collision it cannot see. See [Payments](/protocol/payments) for what the rail does and does not promise.
+:::
+
 ## Test the paid loop
 
 A paid job needs a **funded customer** to pay the invoice, so this test needs a second funded devnet wallet on the customer side. From that customer, submit a job to the skill; the customer pays the quoted amount in one transaction (provider + protocol fee), the provider verifies it, runs the script, and returns the result. See [Payments](/protocol/payments) for the exact transaction shape.

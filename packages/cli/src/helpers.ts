@@ -1,14 +1,27 @@
 /**
  * Shared CLI helpers - RPC URLs, SOL formatting, price validation.
  */
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type Asset,
   type Network,
   calculateProtocolFee,
+  deleteControlCharacters,
   formatAssetAmount,
   resolveUsdcAsset,
 } from '@elisym/sdk';
-import { type ListedAgent, readAgentPublic } from '@elisym/sdk/agent-store';
+import {
+  isBlockingNodeSync,
+  AgentNameSchema,
+  type AgentSource,
+  type ListedAgent,
+  agentPaths,
+  listAgents,
+  readAgentPublic,
+  resolveInHome,
+} from '@elisym/sdk/agent-store';
+import { type Skill, loadSkillsFromDir } from '@elisym/sdk/skills';
 import { type Rpc, type SolanaRpcApi, address } from '@solana/kit';
 
 // --- Constants ---
@@ -181,4 +194,214 @@ export function validateJobPrice(
     );
   }
   return null;
+}
+
+// --- Shared payout address ---
+
+/** A neighboring agent serving the same (network, address) pair. */
+export interface SharedPayoutNeighbor {
+  name: string;
+  /** As the operator sees it on disk: not dereferenced, but sanitized. */
+  dir: string;
+  /** `'unknown'` when this process could not read enough of `skills/` to tell. */
+  paid: true | 'unknown';
+}
+
+/**
+ * Agents other than this one that would be paid at the same address.
+ *
+ * Scope, so the quiet answer is not mistaken for a clean bill: this sees the
+ * home root and the ONE project root reachable by walking up from `cwd`. Two
+ * agents in two different project trees, both paid at one address, are a real
+ * collision this cannot see.
+ *
+ * Not a lock, and deliberately not a refusal: a safe would need a cross-process
+ * lock this repository does not have. One transaction carrying two jobs'
+ * references settles both on the flat paid rail, and two agents behind one
+ * address make that reachable without anybody doing anything wrong - so the
+ * answer is to make it visible at start.
+ *
+ * Reads the disk, touches no network, never exits. The "is THIS agent paid"
+ * gate lives in the caller.
+ */
+export async function findSharedPayoutNeighbors(
+  cwd: string,
+  ownDir: string,
+  network: Network,
+  payoutAddress: string,
+): Promise<SharedPayoutNeighbor[]> {
+  let ownReal: string;
+  try {
+    ownReal = realpathSync(ownDir);
+  } catch {
+    // Without our own directory we cannot tell ourselves from a neighbor, and
+    // an agent warning about itself is worse than one that says nothing.
+    return [];
+  }
+
+  const listed = await listAgents(cwd);
+  // Shadowed home twins are expanded BEFORE anyone is dropped: dropping our own
+  // record first would take the record the home twin is derived from with it.
+  const candidates: { name: string; dir: string; source: AgentSource }[] = [];
+  for (const agent of listed) {
+    candidates.push({ name: agent.name, dir: agent.dir, source: agent.source });
+    if (agent.shadowsGlobal) {
+      const homeDir = resolveInHome(agent.name);
+      if (homeDir !== null) {
+        candidates.push({ name: agent.name, dir: homeDir, source: 'home' });
+      }
+    }
+  }
+
+  const neighbors: SharedPayoutNeighbor[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    // The name is checked RAW - sanitizing first would turn `ali\x01ce` into
+    // `alice` and print it as a legitimate neighbor's. `safeParse`, never
+    // `validateAgentName`: that one throws instead of answering, and
+    // `if (!validateAgentName(n))` would drop every neighbor and silently
+    // switch this whole feature off.
+    if (!AgentNameSchema.safeParse(candidate.name).success) {
+      continue;
+    }
+    let candidateReal: string;
+    try {
+      candidateReal = realpathSync(candidate.dir);
+    } catch {
+      continue;
+    }
+    // BOTH sides dereferenced. On macOS `tmpdir()` lives behind a symlink, so
+    // comparing a resolved path against a raw one diverges in every test and
+    // usually not in production - which is exactly how such a bug survives
+    // review. Neighbors are de-duplicated on the same resolved path, so a
+    // project `.elisym` that is a symlink to the home root cannot list one
+    // physical directory twice.
+    if (candidateReal === ownReal || seen.has(candidateReal)) {
+      continue;
+    }
+    seen.add(candidateReal);
+
+    let neighborAddress: string | undefined;
+    let neighborNetwork: string | undefined;
+    try {
+      const { yaml } = await readAgentPublic({
+        name: candidate.name,
+        dir: candidate.dir,
+        source: candidate.source,
+        shadowsGlobal: false,
+      });
+      const solana = yaml.payments.find((entry) => entry.chain === 'solana');
+      neighborAddress = solana?.address;
+      neighborNetwork = solana?.network;
+    } catch {
+      continue;
+    }
+    if (neighborAddress !== payoutAddress || neighborNetwork !== network) {
+      continue;
+    }
+
+    // Skills are read only AFTER the pair matches: this is the expensive half,
+    // and it opens files inside somebody else's directory.
+    const paid = await neighborPaidState(candidate.dir, network);
+    if (paid === false) {
+      continue;
+    }
+    neighbors.push({
+      name: candidate.name,
+      // Sanitized, and newlines collapsed SEPARATELY: the sanitizer deletes
+      // every C0/C1 control except tab and newline, and a newline in a POSIX
+      // path is legal - left alone it would break the banner across lines. Two
+      // different defenses, and neither substitutes for the other: the name is
+      // checked by a pattern that admits nothing the sanitizer touches, while
+      // the path carries an operator's project root that nobody validates.
+      // `\s+` would be wrong here - it would eat the legitimate double spaces
+      // and tabs a real path can carry, and the printed path would stop
+      // matching the one on disk.
+      dir: deleteControlCharacters(candidate.dir).replace(/\n+/g, ' '),
+      paid,
+    });
+  }
+  return neighbors;
+}
+
+/**
+ * Does this neighbor serve anything paid?
+ *
+ * `true`, `false`, or `'unknown'` - and the third is not a nicety. The loader
+ * collapses an unreadable `skills/` and a skipped subdirectory into the same
+ * empty list, so "no paid skills" and "I could not see" are indistinguishable
+ * from its answer alone. Counting the denominator ourselves is what separates
+ * them, and the count is over subdirectories whose `SKILL.md` EXISTS AND READS -
+ * not over `readdir` entries, or a stray `.DS_Store` would tip every neighbor
+ * into `'unknown'` forever.
+ */
+async function neighborPaidState(
+  neighborDir: string,
+  network: Network,
+): Promise<true | false | 'unknown'> {
+  const skillsDir = agentPaths(neighborDir).skills;
+  let entries: string[];
+  try {
+    entries = readdirSync(skillsDir);
+  } catch (error) {
+    // ENOENT is absolute - there is no directory. Anything else (EACCES,
+    // ENOTDIR) may be a fact about OUR process rather than about the agent,
+    // whose own process may read it perfectly well.
+    return (error as { code?: string }).code === 'ENOENT' ? false : 'unknown';
+  }
+
+  let denominator = 0;
+  let sawLess = false;
+  for (const entry of entries) {
+    const entryPath = join(skillsDir, entry);
+    try {
+      if (!statSync(entryPath).isDirectory()) {
+        continue;
+      }
+    } catch {
+      sawLess = true;
+      continue;
+    }
+    const skillMd = join(entryPath, 'SKILL.md');
+    try {
+      // The SHARED predicate, not a fourth hand-written copy: these gates have
+      // to agree, and one of them drifting is how a node type stops being
+      // blocking in one reader and not in another. A blocking node here would
+      // hang the synchronous read below and take the event loop with it, so the
+      // loader is not called for this neighbor at all - the whole neighbor goes
+      // `'unknown'`, whatever else is in `skills/`.
+      //
+      // It swallows its own `stat` error, which is why the read below still
+      // runs: ENOENT has to reach the `catch` to stay out of the denominator.
+      if (isBlockingNodeSync(skillMd)) {
+        return 'unknown';
+      }
+      readFileSync(skillMd, 'utf-8');
+      denominator += 1;
+    } catch (error) {
+      // ENOENT on SKILL.md is NOT a signal: a subdirectory without one simply
+      // is not in the denominator. Anything else is.
+      if ((error as { code?: string }).code !== 'ENOENT') {
+        sawLess = true;
+      }
+    }
+  }
+
+  let skills: Skill[];
+  try {
+    skills = loadSkillsFromDir(skillsDir, {
+      network,
+      allowFreeSkills: true,
+      allowX402Skills: true,
+      logger: { warn: () => {} },
+    });
+  } catch {
+    return 'unknown';
+  }
+  if (skills.some((skill) => skill.priceSubunits > 0n)) {
+    return true;
+  }
+  // Symmetric in both directions: a paid skill among those loaded wins
+  // outright; with none loaded the answer depends on whether we saw everything.
+  return sawLess || skills.length < denominator ? 'unknown' : false;
 }

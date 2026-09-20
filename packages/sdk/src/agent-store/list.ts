@@ -8,6 +8,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import YAML from 'yaml';
+import { isBlockingNode } from './node-type';
 import { findProjectElisymDir, homeElisymDir, YAML_FILENAME } from './paths';
 import type { AgentSource } from './resolver';
 import { ElisymYamlSchema } from './schema';
@@ -80,10 +81,20 @@ async function listAgentsInDir(rootDir: string, source: AgentSource): Promise<Li
 }
 
 /**
- * Read display_name from a YAML file. Returns null if the file is missing
- * or cannot be parsed (agent directory is skipped in listings).
+ * Read display_name from a YAML file.
+ *
+ * Returns null when the file is missing or unreadable (a non-regular blocking
+ * node included) - such an agent directory is skipped in listings. Returns `''`
+ * when the file reads but yields no `display_name`: it fails to parse, fails
+ * the partial schema, or simply omits the field - such an agent STAYS in
+ * listings. Otherwise returns the `display_name` string.
  */
 async function tryReadDisplayName(yamlPath: string): Promise<string | null> {
+  // Before the open, not after: a FIFO here never returns and never rejects,
+  // so there is no `catch` that could rescue this.
+  if (await isBlockingNode(yamlPath)) {
+    return null;
+  }
   let raw: string;
   try {
     raw = await readFile(yamlPath, 'utf-8');

@@ -32,6 +32,8 @@ import {
   type Network,
 } from '@elisym/sdk';
 import {
+  ensureGitignoreHasPrivateStateEntries,
+  isBlockingNodeSync,
   agentPaths,
   ensureGitignoreHasDelegationNoncesEntry,
   ensureGitignoreHasIrohEntry,
@@ -53,6 +55,7 @@ import { address, createSolanaRpc } from '@solana/kit';
 import { probeRelays } from '../diagnostics.js';
 import {
   fetchSplBalance,
+  findSharedPayoutNeighbors,
   formatSplBalanceValue,
   getRpcUrl,
   MAX_CONCURRENT_JOBS,
@@ -72,7 +75,8 @@ import { cacheKeyFor, resolveTripleForOverride } from '../llm/cache.js';
 import { resolveProviderApiKey } from '../llm/keys.js';
 import { resolveSkillLlm, type ResolvedSkillLlm } from '../llm/resolve.js';
 import { createLogger } from '../logging.js';
-import { mimeFromPath } from '../mime.js';
+import { IMAGE_EXTENSIONS, isImagePath, mimeFromPath } from '../mime.js';
+import { isPublicSolanaRpcUrl, redactRpcUrlsInText, stripRpcSecrets } from '../rpc-redact.js';
 import { AgentRuntime, type RuntimeConfig } from '../runtime.js';
 import { SessionStore } from '../sessions.js';
 import { SkillRegistry, type Skill, type SkillContext, type SkillLlmOverride } from '../skill';
@@ -211,6 +215,57 @@ export async function cmdStart(
       '  ! Paid skills require a Solana address. Run `npx @elisym/cli profile` to configure.\n',
     );
     process.exit(1);
+  }
+
+  // A second agent behind the same payout address is not a misconfiguration
+  // anyone would notice, and on the flat paid rail one transaction carrying two
+  // jobs' references settles both. Not refused and not locked - a safe needs a
+  // cross-process lock this repository does not have - but said out loud.
+  //
+  // Its own try/catch, at the CALL: the rule "every reach into somebody else's
+  // directory is guarded" lives inside the scan, but there is no margin here
+  // and the cost of an unaccounted throw is out of all proportion - a cosmetic
+  // warning turning into a refusal to start a paid agent. A separate branch
+  // rather than reusing the gate above: from `hasPaid && !solanaAddress`
+  // TypeScript cannot tell that `solanaAddress` is defined, and non-null
+  // assertions are forbidden here.
+  if (hasPaid && solanaAddress) {
+    try {
+      const neighbors = await findSharedPayoutNeighbors(
+        cwd,
+        loaded.dir,
+        walletNetwork,
+        solanaAddress,
+      );
+      for (const neighbor of neighbors) {
+        console.log(
+          `  ! WARNING: agent "${neighbor.name}" (${neighbor.dir}) ` +
+            (neighbor.paid === 'unknown'
+              ? `shares this payout address on ${walletNetwork}, and its skills could not be ` +
+                `read to tell whether any of them are paid.`
+              : `is paid at the same address on ${walletNetwork}.`) +
+            ` One transaction can then be counted for jobs of both agents, so a customer could ` +
+            `be served twice for one transfer. See ` +
+            `https://docs.elisym.network/protocol/payments for what the rail does and does not ` +
+            `promise.`,
+        );
+      }
+      if (neighbors.length > 0) {
+        console.log();
+      }
+    } catch (error) {
+      // Never a gate - a failed check must not stop a paid agent from starting.
+      // But not silent either: silence here is indistinguishable from "no
+      // neighbor shares this address", and the operator would read a check that
+      // never ran as a clean bill of health.
+      console.log(
+        `  ! Could not check whether another agent is paid at this address ` +
+          `(${deleteControlCharacters(
+            error instanceof Error ? error.message : String(error),
+          )}). Starting anyway.`,
+      );
+      console.log();
+    }
   }
 
   // -- Step 6: LLM check (only when at least one skill needs it) --
@@ -462,6 +517,23 @@ export async function cmdStart(
   const x402Skills = allSkills.filter((skill) => skill.mode === 'x402');
   let x402InvariantBroken: string | undefined;
   if (x402Skills.length > 0) {
+    // BEFORE the driver's constructor, like the ledger's and the nonce store's:
+    // the driver sweeps expired records from its constructor, and a sweep that
+    // finds one writes `.x402-jobs.json` and its random temporary right there.
+    //
+    // ABOVE the invariant check, not inside the branch that survives it. An
+    // agent whose wallet invariant is broken starts anyway - it just withholds
+    // the x402 cards - and it is the likeliest one to be carrying a
+    // hand-written x402 skill in the first place. Narrowing this to the healthy
+    // branch would leave exactly that agent's older `.x402-jobs.json.tmp`,
+    // which the narrow entry does not match, uncovered on every start.
+    //
+    // COVERAGE is all this placement buys, and that is worth being exact
+    // about: the sweep that would delete such a fragment runs from
+    // `X402Driver`'s constructor, which a broken invariant stops us from
+    // building at all. So that agent's fragment stays on disk - it just stops
+    // being committable.
+    await ensureGitignoreHasX402Entries(dirname(loaded.dir));
     const solanaSecretKey = loaded.secrets.solana_secret_key;
     if (solanaSecretKey === undefined || solanaSecretKey.length === 0) {
       x402InvariantBroken = 'no solana_secret_key in .secrets.json';
@@ -595,8 +667,29 @@ export async function cmdStart(
   }
 
   if (mediaCacheDirty) {
+    // The widened ignore entries have to be in place BEFORE this: the cache is
+    // written through a temporary whose suffix is random, and an agent created
+    // by an older build carries the narrow `.media-cache.json` line, which
+    // cannot match one. `writeSecrets` does the same for the keys.
+    await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
     await writeMediaCache(loaded.dir, mediaCache);
   }
+
+  // The job ledger is opened BEFORE anything is published, and that ordering is
+  // the point: it refuses to load a file it cannot read - an empty settlement
+  // index is the whole of "one transaction settles one job" - and a refusal
+  // after the capability cards are on the relays leaves a live paid provider
+  // advertised by an agent that has already exited. CONSTRUCTING the ledger
+  // touches no network - the steps above it do, the media cache uploads blobs -
+  // so the only cost of moving it up is that the failure lands sooner.
+  //
+  // The widened ignore entries go in FIRST, though, because the constructor can
+  // create the thing they cover: a ledger that was READ and could not be
+  // PARSED is rotated to `.jobs.json.corrupt.<ts>` in there, and on an older
+  // agent the narrow line does not match that name. The migration below at
+  // Step 11 is too late for a run that exits right after this.
+  await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
+  const ledger = new JobLedger(paths.jobs);
 
   // -- Step 10: Publish kind:0 profile --
   // `nip05` is the website identity claim (managed by `elisym identity link
@@ -817,6 +910,54 @@ export async function cmdStart(
     }
   }
 
+  // Opened HERE, before any card goes out, for the same reason the job ledger
+  // is: its constructor refuses a file it cannot read - an empty nonce set lets
+  // a delegated pull be replayed - and a refusal after the cards are published
+  // leaves a live paid provider advertised by an agent that has already exited.
+  // Only wired when the agent can actually settle delegated jobs.
+  if (delegateSigner !== undefined) {
+    // BEFORE the constructor, like the ledger's: the nonce set is keyed by
+    // customer owner addresses and must never be committable from a
+    // project-local agent dir - and the constructor itself can produce
+    // `.delegation-nonces.json.corrupt.<ts>`, which an older agent's narrow
+    // line does not match.
+    await ensureGitignoreHasDelegationNoncesEntry(dirname(loaded.dir));
+  }
+  const nonceStore =
+    delegateSigner !== undefined
+      ? new UsedNonceStore(join(loaded.dir, '.delegation-nonces.json'))
+      : undefined;
+
+  // NOT KILLED BY ANY TEST - `cmdStart` has no harness - so this ordering is
+  // kept on diff review. THREE migrations run HERE, before a card is
+  // published. TWO more run ONLY earlier, ahead of the constructor that can
+  // create the file each covers, and neither is repeated here: the
+  // delegated-pull nonce entry, whose store can produce a `.corrupt.<ts>` an
+  // older agent's narrow line does not match, and the x402 cache entry, whose
+  // driver sweeps from its constructor and writes the index the moment that
+  // sweep finds something. The x402 one runs for EVERY agent carrying an x402
+  // skill, including one whose wallet invariant is broken and whose driver is
+  // therefore never built. The private-state entries run here AND twice
+  // earlier: ahead of the job ledger, for the same `.corrupt.<ts>` reason, and
+  // ahead of the media cache. Running twice is a no-op; running late is not.
+  //
+  // They run here for the same reason the two indexes above are opened here:
+  // appending to the file is not guarded - a read-only `.elisym` root, a root
+  // written under sudo, a full disk - and a throw after the cards are on the
+  // relays leaves a live paid provider advertised by an agent that has already
+  // exited. None of these touches the network.
+  //
+  // What they cover: the iroh blob store (cleartext job payloads), the private
+  // files written through a random temporary (an agent created by an older
+  // build has the narrow names, which no longer match), and the session
+  // transcripts.
+  await ensureGitignoreHasIrohEntry(dirname(loaded.dir));
+  await ensureGitignoreHasPrivateStateEntries(dirname(loaded.dir));
+  const hasContextSkills = registry.all().some((skill) => skill.context === true);
+  if (hasContextSkills) {
+    await ensureGitignoreHasSessionsEntry(dirname(loaded.dir));
+  }
+
   const buildCard = (skill: (typeof allSkills)[0]): CapabilityCard =>
     buildCapabilityCard(skill, { walletNetwork, solanaAddress, delegatePubkey });
 
@@ -934,28 +1075,9 @@ export async function cmdStart(
 
   // -- Step 14: Build transport + ledger + runtime --
   const transport = new NostrTransport(client, identity, [DEFAULT_KIND_OFFSET]);
-  const ledger = new JobLedger(paths.jobs);
   // iroh blob transport for file results, bound to a persistent fs-store at
   // <agent-dir>/.iroh/ (the node is created lazily on the first transfer).
   const irohTransport = createIrohTransport({ storePath: join(loaded.dir, '.iroh') });
-  // Migration: ensure a project-local .gitignore created before `.iroh/` became a
-  // default ignore entry still excludes the (cleartext) blob store.
-  await ensureGitignoreHasIrohEntry(dirname(loaded.dir));
-  if (x402Skills.length > 0) {
-    // Same migration for the x402 idempotency cache (customer inputs/results
-    // + upstream payment history) - `x402 add` also ensures this, but a
-    // hand-written x402 skill must not leave the cache committable.
-    await ensureGitignoreHasX402Entries(dirname(loaded.dir));
-  }
-
-  // Conversation-session gitignore migration: session transcripts hold customer
-  // inputs and LLM results in cleartext, same posture as the other stores. The
-  // store itself is constructed below, once the diagnostics logger exists.
-  const hasContextSkills = registry.all().some((skill) => skill.context === true);
-  if (hasContextSkills) {
-    await ensureGitignoreHasSessionsEntry(dirname(loaded.dir));
-  }
-
   const runtimeConfig: RuntimeConfig = {
     paymentTimeoutSecs: DEFAULTS.PAYMENT_EXPIRY_SECS,
     maxConcurrentJobs: MAX_CONCURRENT_JOBS,
@@ -970,19 +1092,6 @@ export async function cmdStart(
     // the payment key) to execute post-work pulls from customer delegations.
     delegateSigner,
   };
-
-  // Durable single-use nonce set for delegated job payment - only wired when
-  // the agent can actually settle delegated jobs (delegate key resolved).
-  const nonceStore =
-    delegateSigner !== undefined
-      ? new UsedNonceStore(join(loaded.dir, '.delegation-nonces.json'))
-      : undefined;
-  if (nonceStore !== undefined) {
-    // Same gitignore migration as the other private stores: the nonce set is
-    // keyed by customer owner addresses and must never be committable from a
-    // project-local agent dir.
-    await ensureGitignoreHasDelegationNoncesEntry(dirname(loaded.dir));
-  }
 
   // Custom SOLANA_RPC_URL values (Helius, Alchemy, QuickNode) routinely
   // embed API keys in the query string. Strip query + auth before logging
@@ -1208,77 +1317,6 @@ export function buildScriptEnv(secrets: LoadedAgent['secrets']): NodeJS.ProcessE
   return scriptEnv;
 }
 
-/**
- * Public Solana RPC hosts whose URL path carries no secret. For these the
- * path is safe to keep; every other host is treated as a third-party RPC
- * (Helius/Alchemy/QuickNode) whose path may embed an API key.
- */
-const PUBLIC_SOLANA_RPC_HOSTS = new Set([
-  'api.devnet.solana.com',
-  'api.mainnet-beta.solana.com',
-  'api.testnet.solana.com',
-]);
-
-/**
- * Return a log-safe representation of an RPC URL. Strips any userinfo and
- * query string so credentials embedded by third-party RPC providers
- * (Helius/Alchemy/QuickNode style `?api-key=...`) never land in verbose
- * stderr output or the startup banner.
- *
- * FIX #11: Alchemy/QuickNode embed the API key in the URL *path* (e.g.
- * `https://solana-mainnet.g.alchemy.com/v2/<APIKEY>`), so stripping only the
- * userinfo + query still leaks the key. For any host that is not a public
- * `api.*.solana.com` endpoint we therefore redact the path too, returning just
- * `protocol//host/***`. Public Solana hosts keep their (secret-free) path.
- */
-export function stripRpcSecrets(raw: string): string {
-  try {
-    const parsed = new URL(raw);
-    parsed.username = '';
-    parsed.password = '';
-    if (!PUBLIC_SOLANA_RPC_HOSTS.has(parsed.hostname)) {
-      // Third-party RPC: the path may carry an API key - drop it entirely.
-      return `${parsed.protocol}//${parsed.host}/***`;
-    }
-    const marker = parsed.search.length > 0 ? '?***' : '';
-    parsed.search = '';
-    return `${parsed.toString()}${marker}`;
-  } catch {
-    return '[unparseable RPC URL]';
-  }
-}
-
-/**
- * True when the URL points at a public `api.*.solana.com` endpoint with no
- * userinfo, path, or query - the shapes `stripRpcSecrets` treats as
- * credential-bearing. Public hosts need no API key, so anything beyond the
- * bare origin is treated as a secret an operator pasted in.
- */
-export function isPublicSolanaRpcUrl(raw: string): boolean {
-  try {
-    const parsed = new URL(raw);
-    return (
-      PUBLIC_SOLANA_RPC_HOSTS.has(parsed.hostname) &&
-      !parsed.username &&
-      !parsed.password &&
-      !parsed.search &&
-      (parsed.pathname === '' || parsed.pathname === '/')
-    );
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Redact any RPC URL embedded in free-form text (e.g. a thrown error message) by
- * routing every http(s) URL it contains through `stripRpcSecrets`. Used on error
- * messages that may interpolate the request URL (and thus an embedded API key)
- * while preserving the surrounding diagnostic text.
- */
-export function redactRpcUrlsInText(text: string): string {
-  return text.replace(/https?:\/\/[^\s)'"]+/g, (url) => stripRpcSecrets(url));
-}
-
 /** Resolve a YAML media field (picture/banner) - URL returned as-is, local path uploaded via cache. */
 async function resolveMediaField(
   value: string | undefined,
@@ -1358,10 +1396,38 @@ export async function uploadOrReuse(
     );
     return undefined;
   }
+  // Staying inside the root is NOT enough, because the root is the agent
+  // directory and `.secrets.json` lives in it: `picture: .secrets.json` passed
+  // every check above, was read, uploaded to a public host as
+  // `application/octet-stream`, and had its URL published in the agent's
+  // profile. A template handed to `elisym init --config` is all it took, and a
+  // published key cannot be unpublished.
+  //
+  // Asked of the DEREFERENCED path, not the one in the YAML: a committed
+  // `avatar.png` that is a symlink to `.secrets.json` stays inside the root
+  // too, and resolves to the operator's own keys at run time. Here rather than
+  // in `resolveMediaField`, so the skill-image caller is covered by the same
+  // line and the next caller cannot forget it.
+  if (!isImagePath(realPath)) {
+    console.warn(
+      `  ! Skipping upload of ${basename(absPath)}: not an image ` +
+        `(${IMAGE_EXTENSIONS.join(', ')}). Nothing else is published from an agent directory.`,
+    );
+    return undefined;
+  }
   try {
     const cached = await lookupCachedUrl(cache, cacheKey, realPath);
     if (cached) {
       return cached;
+    }
+    // The path comes out of `elisym.yaml`, which nobody validates as a node
+    // type. Checked BEFORE the "Uploading" line, so the operator is not told a
+    // file is going up and then that it is not.
+    if (isBlockingNodeSync(realPath)) {
+      console.warn(
+        `  ! Skipping ${basename(realPath)}: it is a pipe, socket or device, not a file`,
+      );
+      return undefined;
     }
     console.log(`  Uploading ${basename(realPath)}...`);
     const data = readFileSync(realPath);
@@ -1460,3 +1526,5 @@ async function loadAgentWithPrompt(name: string, cwd: string): Promise<LoadedAge
   }
   throw new Error('Unreachable');
 }
+
+export { isPublicSolanaRpcUrl, redactRpcUrlsInText, stripRpcSecrets };

@@ -18,6 +18,7 @@
  *
  * Design doc: docs/plans/job-conversation-context.md (§2, §3, §4, §5).
  */
+import { randomBytes } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -32,6 +33,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { SESSION_ID_REGEX } from '@elisym/sdk';
+import { isBlockingNodeSync } from '@elisym/sdk/agent-store';
 import type { ChatTurn } from '@elisym/sdk/skills';
 
 /** Directory name under the agent dir. Gitignored (cleartext customer content). */
@@ -455,16 +457,39 @@ export class SessionStore {
     }
     const payload = lines.map((line) => JSON.stringify(line)).join('\n') + '\n';
     const path = this.sessionPath(customerId, sessionId);
+    // The one write in this file with no temporary to randomize, so it is gated
+    // like the read is - and it matters MORE than the read: this runs after the
+    // paid work is done, so a blocking node here burns the model budget, never
+    // delivers, and never releases the mutex. Skipped rather than thrown, the
+    // same answer `readSessionLines` gives: context is not worth a lost result.
+    if (isBlockingNodeSync(path)) {
+      this.log(`[sessions] session file is not a regular file; not recording this exchange`);
+      return;
+    }
+    // The same rule for a write that simply FAILS, which the gate above applied
+    // to one cause of failure and this `try` used to re-throw for every other: a
+    // transcript checked out read-only, a full disk, a read-only mount. It ran
+    // the runtime into `markFailed` AFTER the skill had executed - measured on a
+    // session file made 0o444 between two jobs: the work done, the model budget
+    // spent, the result thrown away, and recovery closed off. On a paid skill
+    // that is the customer's money. What is lost by not throwing is one exchange
+    // of context, and the next turn is answered without it.
     try {
-      appendFileSync(path, payload, { mode: FILE_MODE });
-    } catch (error: unknown) {
-      // The hourly sweep may have rmdir'd an emptied customer dir between this
-      // job's open and its append; recreate and retry once.
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw error;
+      try {
+        appendFileSync(path, payload, { mode: FILE_MODE });
+      } catch (error: unknown) {
+        // The hourly sweep may have rmdir'd an emptied customer dir between this
+        // job's open and its append; recreate and retry once.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+        mkdirSync(join(this.root, customerId), { recursive: true, mode: DIR_MODE });
+        appendFileSync(path, payload, { mode: FILE_MODE });
       }
-      mkdirSync(join(this.root, customerId), { recursive: true, mode: DIR_MODE });
-      appendFileSync(path, payload, { mode: FILE_MODE });
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.log(`[sessions] could not record this exchange (${reason}); delivering without it`);
+      return;
     }
     this.globalBytes += Buffer.byteLength(payload);
   }
@@ -546,6 +571,12 @@ export class SessionStore {
     let raw: string;
     let size: number;
     try {
+      // A FIFO reports size 0 and passes every check below, then blocks the
+      // read forever - in the middle of a paid job, since this runs while one
+      // is being served.
+      if (isBlockingNodeSync(path)) {
+        return null;
+      }
       size = statSync(path).size;
       raw = readFileSync(path, 'utf-8');
     } catch {
@@ -579,9 +610,21 @@ export class SessionStore {
     if (torn) {
       const payload =
         lines.map((line) => JSON.stringify(line)).join('\n') + (lines.length > 0 ? '\n' : '');
-      const tempPath = `${path}.tmp`;
-      writeFileSync(tempPath, payload, { mode: FILE_MODE });
-      renameSync(tempPath, path);
+      const tempPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
+      // Write and rename together: the name is random, so nothing ever reuses
+      // or sweeps a leftover - a write that fails part way through has to take
+      // its own fragment with it.
+      try {
+        writeFileSync(tempPath, payload, { mode: FILE_MODE });
+        renameSync(tempPath, path);
+      } catch (error) {
+        try {
+          unlinkSync(tempPath);
+        } catch {
+          /* best effort */
+        }
+        throw error;
+      }
       this.globalBytes = Math.max(0, this.globalBytes - size + Buffer.byteLength(payload));
     }
     return lines;
@@ -612,6 +655,14 @@ export class SessionStore {
         break;
       }
       const cost = line.content.length;
+      // `start < lines.length` is the FLOOR the docstring names - it is false
+      // on the first pass, so the most recent turn is taken whatever it costs.
+      // Not the branch below the loop, which says so itself.
+      //
+      // PROVABLY REDUNDANT all the same, and NOT KILLED BY ANY TEST: drop the
+      // conjunct and the loop exits with `start === lines.length`, which sends
+      // the branch below to the same index. The two spell the floor twice.
+      // Kept as the one that says it where the budget is being spent.
       if (cost > budget && start < lines.length) {
         break;
       }
@@ -622,7 +673,24 @@ export class SessionStore {
       }
     }
     if (start === lines.length && lines.length > 0) {
-      // Even the most recent turn exceeds the budget - keep it anyway (floor).
+      // Reached only when the LAST line is not a turn: the size test above
+      // cannot fire on the first pass, because `start < lines.length` is false
+      // there. So this is not the "even the most recent turn exceeds the
+      // budget" floor it long claimed to be - no turn is ever kept by it.
+      //
+      // What it does instead is step back onto that trailing non-turn line, so
+      // the text handed to the summarizer stops one line short of it.
+      //
+      // Reachable without anyone hand-editing anything: `rewriteWithSummary`
+      // emits `[summary, ...tail]`, and `tail` is EMPTY whenever the read that
+      // feeds it came back `null` - an unreadable file, a blocking node, a
+      // transcript just quarantined for size or corruption. The file is then
+      // one summary line, and the next compaction lands here. Measured through
+      // the public store: compacting a session whose file was made unreadable
+      // leaves exactly that shape on disk.
+      //
+      // Kept as a bound on `start` rather than deleted, and NOT KILLED BY ANY
+      // TEST either way - both `lines.length` and `0` leave the suite green.
       start = lines.length - 1;
     }
     return start;
@@ -658,10 +726,20 @@ export class SessionStore {
 
     const path = this.sessionPath(customerId, sessionId);
     const oldSize = existsSync(path) ? statSync(path).size : 0;
-    const tempPath = `${path}.tmp`;
+    const tempPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
     mkdirSync(join(this.root, customerId), { recursive: true, mode: DIR_MODE });
-    writeFileSync(tempPath, payload, { mode: FILE_MODE });
-    renameSync(tempPath, path);
+    // Same cleanup as the torn-file repair above.
+    try {
+      writeFileSync(tempPath, payload, { mode: FILE_MODE });
+      renameSync(tempPath, path);
+    } catch (error) {
+      try {
+        unlinkSync(tempPath);
+      } catch {
+        /* best effort */
+      }
+      throw error;
+    }
     this.globalBytes = Math.max(0, this.globalBytes - oldSize + Buffer.byteLength(payload));
 
     return assembleReplay(rewritten, undefined);
@@ -814,7 +892,19 @@ export class SessionStore {
         continue;
       }
       for (const name of names) {
-        if (!name.includes('.corrupt.')) {
+        // `.tmp.<hex>` as well as `.corrupt.<ts>`: the two rewrites in this
+        // file take their own fragment with them when they THROW, but a
+        // process killed outright leaves one - and since the suffix became
+        // random nothing reuses it, the name does not end in `.jsonl` so no
+        // listing counts it, and this was the only sweep that could have. What
+        // it holds is the customer's prompts and the model's answers in the
+        // clear.
+        // `.tmp` without the dot too: builds before this one wrote through a
+        // single fixed name, where the next rewrite reused the leftover. The
+        // random suffix removed that accident, so an older build's fragment -
+        // a customer's prompts and the model's answers in the clear - would
+        // otherwise stay for good.
+        if (!name.includes('.corrupt.') && !name.includes('.tmp')) {
           continue;
         }
         const path = join(dir, name);

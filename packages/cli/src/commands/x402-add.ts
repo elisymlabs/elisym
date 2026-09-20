@@ -6,7 +6,7 @@
  * with `mode: x402`.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   LIMITS,
@@ -22,6 +22,7 @@ import {
 } from '@elisym/sdk';
 import type { Network } from '@elisym/sdk';
 import {
+  isBlockingNodeSync,
   ensureGitignoreHasX402Entries,
   listAgents,
   loadAgent,
@@ -60,14 +61,48 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-/** Strip control chars and the (repo-banned) em dash from upstream-controlled text. */
+/** Every control character, C0 and C1 alike - each becomes a space. */
+const CONTROL_CHARACTERS = /\p{Cc}/gu;
+/**
+ * Everything a reader cannot SEE: format characters (direction overrides and
+ * isolates, zero-width spaces and joiners, the byte-order mark, the tag block),
+ * the default-ignorable set (variation selectors, fillers), and the replacement
+ * character.
+ */
+const UNSEEN_CHARACTERS = /[\p{Cf}\p{Default_Ignorable_Code_Point}\uFFFD]/gu;
+
+/**
+ * Make an upstream's own name and description safe to show and to publish.
+ *
+ * Both strings come out of an x402 challenge the upstream wrote, and both go
+ * three places: the confirmation the operator reads, the `SKILL.md`
+ * frontmatter, and the capability card published under the operator's key. So
+ * what matters is that the operator confirms the text everybody else will see.
+ * Stripping only C0 controls left that untrue - a right-to-left override
+ * (U+202E) ahead of a name spelled backwards makes it READ forwards, as some
+ * other service's name, and zero-width characters let two names that look
+ * identical differ.
+ *
+ * Stricter than `excerptUntrusted` on purpose. That one keeps ZWJ and ZWNJ,
+ * which are load-bearing in running prose; these are a name and a one-line
+ * label on a card, where an invisible character has nothing to carry and
+ * something to hide.
+ *
+ * NOT folded: look-alike letters across scripts. Folding Cyrillic or Greek onto
+ * Latin would mangle every name that is legitimately written in them, and the
+ * thing that identifies an upstream to the operator is the URL they typed, not
+ * the label the upstream chose for itself.
+ */
 export function sanitizeUpstreamText(raw: string, maxLength: number): string {
-  let withoutControls = '';
-  for (const char of raw) {
-    const code = char.codePointAt(0) ?? 0;
-    withoutControls += code < 0x20 || code === 0x7f ? ' ' : char;
-  }
-  return withoutControls.replace(/—/g, '-').replace(/\s+/g, ' ').trim().slice(0, maxLength).trim();
+  return raw
+    .normalize('NFKC')
+    .replace(CONTROL_CHARACTERS, ' ')
+    .replace(UNSEEN_CHARACTERS, '')
+    .replace(/—/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+    .trim();
 }
 
 export function slugFromUrl(url: URL): string {
@@ -96,6 +131,10 @@ function parseMarginBps(raw: string | undefined): number {
 export async function parseImportedSecret(input: string): Promise<string> {
   const trimmed = input.trim();
   if (existsSync(trimmed)) {
+    // NOT gated by node type, like `init --config` and for the same reason: an
+    // operator typed this path into a foreground command they can stop. The
+    // gated readers are the ones a third party can aim, in a process serving
+    // paid jobs.
     const content = await readFile(trimmed, 'utf-8');
     let parsed: unknown;
     try {
@@ -230,6 +269,16 @@ export function scanExistingSkills(
       if (!statSync(join(skillsDir, entry)).isDirectory()) {
         continue;
       }
+      // Said out loud, unlike the other gates: this scan exists to catch a
+      // d-tag collision, so a skill it could not read is a hole in the ANSWER
+      // rather than one missing skill.
+      if (isBlockingNodeSync(skillMdPath)) {
+        console.warn(
+          `  ! Could not check ${skillMdPath} for a name collision: it is a pipe, socket or ` +
+            `device, not a file`,
+        );
+        continue;
+      }
       const { frontmatter } = parseSkillMd(readFileSync(skillMdPath, 'utf-8'));
       if (typeof frontmatter.name !== 'string') {
         continue;
@@ -271,6 +320,34 @@ function describeUnacceptableAccepts(probe: X402ProbeResult, agentNetwork: Netwo
     );
   }
   return `no exact-scheme ${agentNetwork}-USDC requirement found (service accepts: ${networks.join(', ') || 'nothing parseable'})`;
+}
+
+/**
+ * Create the skill directory owner-only and write the generated `SKILL.md`,
+ * refusing a path that is not a regular file.
+ *
+ * The last write of this class, and the window is the interactive prompt that
+ * runs between the existence check and this call: a neighbor with write access
+ * to `skills/` can put a FIFO here, and `writeFile` onto one never settles -
+ * the command hangs with nothing to show for it. Lifted out of `cmdX402Add`
+ * so the guard can be driven on its own; the command itself needs a live
+ * upstream and an interactive prompt to reach this line.
+ */
+export async function writeSkillMdRefusingBlockingNode(
+  targetDir: string,
+  content: string,
+): Promise<string> {
+  await mkdir(targetDir, { recursive: true, mode: 0o700 });
+  // `mode` applies only to a directory this call CREATES, so an agent whose
+  // `skills/<name>/` an older build left at 0o755 keeps it. The x402 result
+  // store learned this the same way and tightens explicitly; so does this.
+  await chmod(targetDir, 0o700).catch(() => undefined);
+  const skillMdPath = join(targetDir, 'SKILL.md');
+  if (isBlockingNodeSync(skillMdPath)) {
+    throw new Error(`Refusing to write ${skillMdPath}: it is a pipe, socket or device, not a file`);
+  }
+  await writeFile(skillMdPath, content, 'utf-8');
+  return skillMdPath;
 }
 
 export async function cmdX402Add(
@@ -650,8 +727,7 @@ export async function cmdX402Add(
     allowX402Skills: true,
   });
 
-  await mkdir(targetDir, { recursive: true });
-  await writeFile(join(targetDir, 'SKILL.md'), content, 'utf-8');
+  await writeSkillMdRefusingBlockingNode(targetDir, content);
   await ensureGitignoreHasX402Entries(dirname(loaded.dir));
 
   console.log(`\n  Wrote ${join(targetDir, 'SKILL.md')}`);

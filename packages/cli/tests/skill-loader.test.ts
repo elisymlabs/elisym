@@ -1,3 +1,4 @@
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +10,64 @@ function createTempSkill(dir: string, name: string, content: string): void {
   mkdirSync(skillDir, { recursive: true });
   writeFileSync(join(skillDir, 'SKILL.md'), content);
 }
+
+function skillMd(name: string): string {
+  return `---\nname: ${name}\ndescription: a skill for the fixture\ncapabilities: [text-gen]\n---\n\nBody.\n`;
+}
+
+describe('a SKILL.md that is a node which blocks', () => {
+  it('is skipped, and the rest of the directory still loads', () => {
+    // This is the FIRST thing `elisym start` reads out of an agent directory
+    // (`start.ts` loads skills before anything else touches the neighbours), and
+    // it is a SYNCHRONOUS read: a FIFO here does not fail the start, it stops
+    // the process outright - no catch, no timeout, nothing in the log.
+    //
+    // The writer is mandatory and writes a VALID skill, so the mutant loads two
+    // skills where the fixed code loads one. Without it the mutant would HANG,
+    // and a hung run is not a killed mutant.
+    const tmp = mkdtempSync(join(tmpdir(), 'skill-fifo-'));
+    const writers: ReturnType<typeof spawn>[] = [];
+    try {
+      const good = join(tmp, 'good');
+      mkdirSync(good, { recursive: true });
+      writeFileSync(join(good, 'SKILL.md'), skillMd('good'), 'utf-8');
+      const pipedDir = join(tmp, 'piped');
+      mkdirSync(pipedDir, { recursive: true });
+      const piped = join(pipedDir, 'SKILL.md');
+      execFileSync('mkfifo', [piped]);
+      writers.push(
+        spawn(
+          process.execPath,
+          [
+            '-e',
+            `const fs=require('fs');
+             const loop=()=>{ try { fs.writeFileSync(${JSON.stringify(piped)}, ${JSON.stringify(skillMd('piped'))}); } catch {} setImmediate(loop); };
+             loop();`,
+          ],
+          { detached: true, stdio: 'ignore' },
+        ),
+      );
+
+      const skills = loadSkillsFromDir(tmp, { network: 'devnet' });
+
+      expect(skills.map((skill) => skill.name)).toEqual(['good']);
+    } finally {
+      for (const writer of writers) {
+        // `-0` would signal OUR OWN process group, which is the vitest run.
+        if (writer.pid === undefined) {
+          writer.kill('SIGKILL');
+        } else {
+          try {
+            process.kill(-writer.pid);
+          } catch {
+            writer.kill('SIGKILL');
+          }
+        }
+      }
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('loadSkillsFromDir', () => {
   it('loads a valid skill', () => {

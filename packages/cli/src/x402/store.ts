@@ -23,9 +23,34 @@
  * crash-only case. Files are owned by this store's TTL sweep - result file
  * paths handed out for delivery must NOT be cleaned up by callers.
  */
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { isBlockingNode } from '@elisym/sdk/agent-store';
 import { X402_CACHE_TTL_MS } from './constants.js';
+
+/**
+ * Owner-only, like the result files beside it: this index carries the text
+ * results the bridge bought, not just the counters that cap what it spends.
+ */
+const INDEX_FILE_MODE = 0o600;
+
+/**
+ * What an operator is told to do about a record this store refuses. The refusal
+ * is deliberate and has no way back on its own - there is no rotation here, on
+ * purpose, because rotating resets the spend ceiling - so the sentence has to
+ * carry the repair: every bridged job fails until a person acts on it.
+ */
+const REPAIR_HINT =
+  'every bridged job is refused until that entry is corrected or removed by hand; ' +
+  'removing it forgets what was already paid for that job';
+
+/**
+ * How stale a temporary must be before a sweep removes it. Long enough that a
+ * live writer's file is never in question, short enough that a fragment left
+ * by a dead process is not permanent.
+ */
+const STRANDED_TEMP_MIN_AGE_MS = 60 * 60 * 1000;
 
 export const X402_JOBS_FILE = '.x402-jobs.json';
 export const X402_RESULTS_DIR = '.x402-results';
@@ -87,6 +112,14 @@ export class X402JobStore {
   }
 
   private async load(): Promise<X402JobsFile> {
+    // Ahead of the read for the reason the `catch` gives: this store gates
+    // re-payment, so anything that is not a plain absence has to fail closed -
+    // and a blocking node would never reach that `catch` at all.
+    if (await isBlockingNode(this.jobsPath)) {
+      throw new Error(
+        `Refusing to read ${this.jobsPath}: it is a pipe, socket or device, not a file`,
+      );
+    }
     let raw: string;
     try {
       raw = await readFile(this.jobsPath, 'utf-8');
@@ -108,17 +141,138 @@ export class X402JobStore {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error(`x402 store ${this.jobsPath} is not a JSON object`);
     }
+    // And the same check one level down, where it matters more, on the SHAPE of
+    // the slot and on the VALUES in it. Both halves clear the ceiling and
+    // neither heals:
+    //
+    //   An array, or any other non-record, survives `?? {}` - it is neither
+    //     null nor undefined - so both counters read `undefined`, both
+    //     comparisons are false, and `JSON.stringify` drops the properties the
+    //     claim just set, writing the array back unchanged.
+    //   A counter that is not a number does the same without changing shape:
+    //     `'abc' >= 2` is false, `'abc' += 1` is `'abc1'`, and the next pass
+    //     reads that. A missing `updated_at` is worse than either, because
+    //     `now - undefined` is `NaN`, every TTL comparison is false, and the
+    //     sweep the driver runs from its constructor deletes the record on the
+    //     next start - which resets the budget rather than merely failing to
+    //     enforce it.
+    //   `null` is the same reset by the shortest path: `?? {}` hands back a
+    //     fresh record, and the two readers without a `??` throw on it, one of
+    //     them inside the constructor's swallowed sweep - so a single null slot
+    //     also turns off temporary cleanup for that agent for good.
+    //
+    // Every grant these produce is another signed payment to the upstream, and
+    // the file's own threat model is a hand-edited one.
+    //
+    // Refusing rather than dropping, which is where this parts company with
+    // `JobLedger.load`: that one drops an unusable entry and warns, because a
+    // throw there used to land after a partially built index. Here the thing at
+    // stake is a spend ceiling, and dropping the slot resets it - so the whole
+    // read fails instead. The cost is real and worth naming: one corrupt slot
+    // refuses the whole store, including `getResult` for another job whose
+    // answer is already bought and on disk, and there is no rotation path back.
+    const isCount = (value: unknown): boolean =>
+      typeof value === 'number' && Number.isInteger(value) && value >= 0;
+    for (const [jobId, record] of Object.entries(parsed)) {
+      if (record === null || typeof record !== 'object' || Array.isArray(record)) {
+        throw new Error(
+          `x402 store ${this.jobsPath} holds a non-record at ${jobId} - ${REPAIR_HINT}`,
+        );
+      }
+      const slot = record as Partial<X402JobRecord>;
+      if (
+        !isCount(slot.attempts) ||
+        !isCount(slot.created_at) ||
+        !isCount(slot.updated_at) ||
+        (slot.signatures !== undefined && !isCount(slot.signatures))
+      ) {
+        throw new Error(
+          `x402 store ${this.jobsPath} holds an unusable record at ${jobId} - ${REPAIR_HINT}`,
+        );
+      }
+    }
     return parsed as X402JobsFile;
   }
 
   private async save(file: X402JobsFile): Promise<void> {
-    const tempPath = `${this.jobsPath}.tmp`;
-    await writeFile(tempPath, JSON.stringify(file, null, 2), 'utf-8');
-    await rename(tempPath, this.jobsPath);
+    // Random suffix: a predictable temporary is a path somebody else can put a
+    // FIFO on, and a write to one never returns.
+    const tempPath = `${this.jobsPath}.tmp.${randomBytes(6).toString('hex')}`;
+    // Cleaned up like every other temporary here: a random name is never
+    // reused, so a failure would otherwise strand a full copy of this index -
+    // which records what the bridge has already paid for - for good.
+    try {
+      // Owner-only, and the third argument is an OPTIONS object rather than the
+      // encoding string it used to be: this index holds more than a budget.
+      // `saveTextResult` parks the upstream's answer in it, which is content the
+      // customer has already been charged for - the same content the result
+      // FILES beside it are written 0o600 for. A project-local agent directory
+      // is 0o755, so a default-mode file here is readable by every local user.
+      //
+      // `chmod` on the temporary as well, for the reason `JobLedger.flush` gives:
+      // `mode` is masked by the umask, and `rename` carries whatever the
+      // temporary ended up with onto the real name.
+      //
+      // The two MASK each other, and no mutation kills either one alone because
+      // of it: under any ordinary umask `mode` by itself already lands 0o600, and
+      // `chmod` alone would fix whatever `mode` failed to set. The row asserts
+      // the OUTCOME for that reason rather than either mechanism. What `chmod`
+      // buys on its own is the umask that strips the owner's bits, where
+      // `writeFile` would leave the file unreadable to us as well.
+      await writeFile(tempPath, JSON.stringify(file, null, 2), {
+        encoding: 'utf-8',
+        mode: INDEX_FILE_MODE,
+      });
+      await chmod(tempPath, INDEX_FILE_MODE);
+      await rename(tempPath, this.jobsPath);
+    } catch (error) {
+      try {
+        await rm(tempPath, { force: true });
+      } catch {
+        /* the caller's error is the one worth reporting */
+      }
+      throw error;
+    }
   }
 
   resultFilePath(jobId: string): string {
     return join(this.resultsDir, sanitizeJobId(jobId));
+  }
+
+  /** Remove `<result>.tmp.<hex>` leftovers for one job. Best effort. */
+  private async sweepStrandedTemporaries(jobId: string): Promise<void> {
+    const prefix = `${sanitizeJobId(jobId)}.tmp.`;
+    try {
+      const entries = await readdir(this.resultsDir);
+      await Promise.all(
+        entries
+          .filter((entry) => entry.startsWith(prefix))
+          .map((entry) => this.removeIfStale(join(this.resultsDir, entry))),
+      );
+    } catch {
+      /* the directory may not exist yet; nothing to sweep */
+    }
+  }
+
+  /**
+   * Remove a temporary only once it is too old to be a live writer's.
+   *
+   * The queue serializes writers inside ONE process, and there is meant to be
+   * one store per agent directory - but `sweepExpired` runs from the driver's
+   * constructor, so a second `elisym start` on the same directory sweeps while
+   * the first is mid-write. Same argument as the ledger's guard: two agents on
+   * one directory is unsupported, and a sweep is no place to make it worse.
+   */
+  private async removeIfStale(path: string): Promise<void> {
+    try {
+      const info = await stat(path);
+      if (Date.now() - info.mtimeMs < STRANDED_TEMP_MIN_AGE_MS) {
+        return;
+      }
+    } catch {
+      return; // raced deletion - nothing to do
+    }
+    await rm(path, { force: true }).catch(() => undefined);
   }
 
   /**
@@ -211,8 +365,34 @@ export class X402JobStore {
   /** Binary result: bytes hit disk BEFORE the record flush (crash-safe ordering). */
   async saveFileResult(jobId: string, mime: string, bytes: Uint8Array): Promise<string> {
     const filePath = this.resultFilePath(jobId);
-    await mkdir(this.resultsDir, { recursive: true });
-    await writeFile(filePath, bytes);
+    // Owner-only, like every other directory this repository creates for agent
+    // state. `mkdir` without a mode is 0o777 minus the umask - usually 0o755 -
+    // and what lands here is a result somebody has already been charged for.
+    await mkdir(this.resultsDir, { recursive: true, mode: 0o700 });
+    // `mkdir`'s mode applies only to directories it CREATES, so an agent whose
+    // `.x402-results/` predates this is left at whatever it had - 0o755 from
+    // the old call. Tightened explicitly, best effort: the results inside were
+    // paid for.
+    await chmod(this.resultsDir, 0o700).catch(() => {});
+    // Written through a temporary with a RANDOM name, then renamed. The final
+    // name is derived from the job id, which is a public Nostr event id: a
+    // predictable path is one somebody can put a FIFO on, and `writeFile` onto
+    // one never settles. That write happens AFTER the upstream has been paid,
+    // so the customer's money is already gone - and with a reader draining the
+    // pipe it is worse than a hang, because the record then reads as
+    // attempt-without-result and the bridge pays the upstream a second time.
+    const tempPath = `${filePath}.tmp.${randomBytes(6).toString('hex')}`;
+    try {
+      await writeFile(tempPath, bytes, { mode: 0o600 });
+      await rename(tempPath, filePath);
+    } catch (error) {
+      try {
+        await rm(tempPath, { force: true });
+      } catch {
+        /* the caller's error is the one worth reporting */
+      }
+      throw error;
+    }
     await this.runExclusive(async () => {
       const file = await this.load();
       const now = Date.now();
@@ -250,9 +430,53 @@ export class X402JobStore {
     return { data: '', outputMime: result.mime, filePath };
   }
 
+  /**
+   * Remove fragments of the INDEX left by a crash between write and rename.
+   *
+   * Keyed by record id like the result sweep cannot be: the index has no job to
+   * expire with, so nothing would ever visit its fragments - the suffix is
+   * random, the name is not `.x402-jobs.json`, and `sweepStrandedTemporaries`
+   * walks the results directory only. What a fragment holds is which upstream
+   * calls this bridge has already paid for.
+   */
+  private async sweepStrandedIndexTemporaries(): Promise<void> {
+    const dir = dirname(this.jobsPath);
+    // The bare `.tmp` as well: builds before this one wrote through one fixed
+    // name, where a fragment bounded itself because the next write reused it.
+    // A random suffix removes that accident, so an older build's leftover would
+    // sit here for good if this sweep matched only the new shape.
+    const legacyName = `${basename(this.jobsPath)}.tmp`;
+    const prefix = `${legacyName}.`;
+    try {
+      const entries = await readdir(dir);
+      await Promise.all(
+        entries
+          .filter((entry) => entry === legacyName || entry.startsWith(prefix))
+          .map((entry) => this.removeIfStale(join(dir, entry))),
+      );
+    } catch {
+      /* the directory may not exist yet; nothing to sweep */
+    }
+  }
+
   /** Drop records (and their result files) older than the cache TTL. */
   async sweepExpired(now = Date.now()): Promise<void> {
     await this.runExclusive(async () => {
+      // INSIDE the queue, though it is tied to no record: `save` writes its
+      // temporary and renames it in two steps, and a sweep running between
+      // them would delete the file the rename is about to move - turning a
+      // healthy write into ENOENT. Unconditional within the transaction,
+      // because an index fragment belongs to no record and would otherwise
+      // never be visited at all.
+      await this.sweepStrandedIndexTemporaries();
+      // An index an older build left world-readable is tightened HERE rather
+      // than waiting for the next write. `save` lands 0o600 through its
+      // temporary, but a bridge with no new job never saves, and the file holds
+      // answers customers have already paid for - measured on a real agent
+      // directory, which still carried 0o644. This runs from the driver's
+      // constructor, so it happens on the first start of the new build. Best
+      // effort: a missing file is the ordinary cold start.
+      await chmod(this.jobsPath, INDEX_FILE_MODE).catch(() => undefined);
       const file = await this.load();
       let changed = false;
       for (const [jobId, record] of Object.entries(file)) {
@@ -262,6 +486,10 @@ export class X402JobStore {
         delete file[jobId];
         changed = true;
         await rm(this.resultFilePath(jobId), { force: true }).catch(() => {});
+        // And any temporary stranded by a crash between its write and its
+        // rename: the name is random, so nothing else will ever reuse or
+        // remove it, and it holds a result somebody has already paid for.
+        await this.sweepStrandedTemporaries(jobId);
       }
       if (changed) {
         await this.save(file);

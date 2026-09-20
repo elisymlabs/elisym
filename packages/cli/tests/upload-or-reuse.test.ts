@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ElisymIdentity, type BlobDescriptor, type BlossomService } from '@elisym/sdk';
@@ -97,5 +97,95 @@ describe('uploadOrReuse', () => {
     expect(url).toBe(cachedUrl);
     expect(upload).not.toHaveBeenCalled();
     expect(onCacheUpdate).not.toHaveBeenCalled();
+  });
+
+  describe('a path that is not an image', () => {
+    // Everything this function reads goes to a PUBLIC media host, and the URL is
+    // published in the agent's profile. Its only containment used to be "stays
+    // inside the agent directory" - and `.secrets.json` lives in that directory.
+    function freshUploader() {
+      const { blossom, upload } = makeBlossom({
+        url: 'https://files.elisym.network/leak',
+        sha256: SHA256,
+        size: CONTENT.byteLength,
+        type: 'application/octet-stream',
+        provider: 'blossom',
+      });
+      return { blossom, upload, identity: ElisymIdentity.generate() };
+    }
+
+    it.each([
+      ['.secrets.json', 'the agent keys'],
+      ['.contacts.json', 'who the agent talks to'],
+      ['.jobs.json', 'customer inputs and results'],
+      ['elisym.yaml', 'a file with no business being a picture'],
+      ['avatar', 'a name with no extension at all'],
+    ])('never uploads %s (%s)', async (name) => {
+      // `picture: .secrets.json` in a template handed to `elisym init --config`
+      // was all it took: the path is inside the root, the mime fell back to
+      // `application/octet-stream`, and the upload went ahead.
+      const target = join(dir, name);
+      writeFileSync(target, JSON.stringify({ nostr_secret_key: 'a'.repeat(64) }));
+      const { blossom, upload, identity } = freshUploader();
+      const onCacheUpdate = vi.fn();
+      const cache: MediaCache = {};
+
+      const url = await uploadOrReuse(
+        'picture',
+        target,
+        dir,
+        cache,
+        blossom,
+        identity,
+        onCacheUpdate,
+      );
+
+      expect(url).toBeUndefined();
+      expect(upload).not.toHaveBeenCalled();
+      expect(cache).toEqual({});
+    });
+
+    it('never uploads the keys through a symlink that is NAMED like an image', async () => {
+      // The check is made on the dereferenced path for this: a committed
+      // `avatar.png` pointing at `.secrets.json` stays inside the root as well,
+      // and resolves to the operator's OWN keys on the machine that runs it.
+      const secrets = join(dir, '.secrets.json');
+      writeFileSync(secrets, JSON.stringify({ nostr_secret_key: 'a'.repeat(64) }));
+      const disguised = join(dir, 'avatar.png');
+      symlinkSync(secrets, disguised);
+      const { blossom, upload, identity } = freshUploader();
+
+      try {
+        const url = await uploadOrReuse('picture', disguised, dir, {}, blossom, identity, vi.fn());
+
+        expect(url).toBeUndefined();
+        expect(upload).not.toHaveBeenCalled();
+      } finally {
+        rmSync(disguised, { force: true });
+      }
+    });
+
+    it('still uploads every extension the mime table knows', async () => {
+      // The other direction: an allowlist that lost an entry would silently
+      // stop publishing a provider's picture.
+      for (const extension of ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.PNG']) {
+        const target = join(dir, `picture${extension}`);
+        writeFileSync(target, CONTENT);
+        const { blossom, upload, identity } = freshUploader();
+
+        const url = await uploadOrReuse(
+          `key${extension}`,
+          target,
+          dir,
+          {},
+          blossom,
+          identity,
+          vi.fn(),
+        );
+
+        expect(url, extension).toBe('https://files.elisym.network/leak');
+        expect(upload, extension).toHaveBeenCalledTimes(1);
+      }
+    });
   });
 });

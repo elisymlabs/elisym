@@ -139,6 +139,15 @@ export type {
 } from './payment/feeEstimate';
 export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
 export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
+export { ProviderPaymentAcceptor, MIN_SETTLEMENT_RETENTION_MS } from './payment/acceptor';
+export type {
+  SettlementClaim,
+  SettlementStore,
+  AcceptPaymentInput,
+  AcceptPaymentResult,
+} from './payment/acceptor';
+export { degenerateReference, degenerateReferenceSync } from './payment/degenerate-reference';
+export type { DegenerateReferenceCode } from './payment/degenerate-reference';
 export { verifyJobPaymentQuick, clearQuickVerifyCache } from './payment/quick-verify';
 export type { QuickVerifyResult, QuickVerifyReason } from './payment/quick-verify';
 export {
@@ -384,6 +393,7 @@ export type {
   VerifyResult,
   VerifyOptions,
   PaymentValidationCode,
+  VerifyRefusalCode,
   PaymentValidationError,
   // Stats
   NetworkStats,

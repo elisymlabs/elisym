@@ -27,6 +27,7 @@ import {
   type TransportKind,
 } from '@elisym/sdk';
 import {
+  type Address,
   address,
   appendTransactionMessageInstructions,
   compileTransaction,
@@ -156,11 +157,18 @@ async function buildVersionedPaymentTransaction(
   paymentRequest: PaymentRequestData,
   payerAddress: string,
   jobEventId: string,
+  treasury: Address,
 ): Promise<{ tx: VersionedTransaction; blockhash: string; lastValidBlockHeight: number }> {
   const payerSigner = createNoopSigner(address(payerAddress));
+  // The treasury goes in so the builder can refuse a reference equal to its
+  // token account: a zero-fee request - which is every mainnet request today -
+  // may leave `fee_address` out, and then this is the only way the check can
+  // know the account. Paying such a request loses the whole amount: the
+  // provider's own verifier refuses it afterwards.
   const instructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
     jobEventId,
     programId: PROTOCOL_PROGRAM_ID,
+    treasury,
   });
   const priorityFeeMicroLamports = await estimatePriorityFeeMicroLamports(kitRpc, {
     network: SOLANA_CLUSTER,
@@ -900,6 +908,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
                   paymentRequest,
                   publicKey.toBase58(),
                   jobEventId,
+                  protocolConfig.treasury,
                 );
                 const signature = await sendTransaction(versionedTx, connection);
                 paymentSubmitted = true;

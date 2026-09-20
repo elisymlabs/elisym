@@ -73,6 +73,7 @@ export {
   ensureGitignoreHasSessionsEntry,
   ensureGitignoreHasJobSessionsEntry,
   ensureGitignoreHasDelegationNoncesEntry,
+  ensureGitignoreHasPrivateStateEntries,
 } from './writer';
 export type { CreateAgentDirOptions, CreatedAgentDir } from './writer';
 
@@ -91,6 +92,12 @@ export {
   lookupCachedUrl,
   newCacheEntry,
 } from './media-cache';
+
+// --- Node type gate ---
+// Public because every reader of a file inside an agent directory owes it, and
+// the CLI's own skill loader is one of them. A FIFO, socket or device where an
+// agent's file belongs does not fail a read - it never returns.
+export { isBlockingNode, isBlockingNodeSync } from './node-type';
 
 // --- Policies (disk loader) ---
 export { loadPoliciesFromDir } from './policies';

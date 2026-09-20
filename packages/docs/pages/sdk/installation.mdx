@@ -18,8 +18,8 @@ The package is split so browser bundles stay lean - the main entry is browser-sa
 | Import                    | Environment | Contents                                                                 |
 | ------------------------- | ----------- | ------------------------------------------------------------------------ |
 | `@elisym/sdk`             | Browser-safe | Client, services, payments, identity, encryption, constants, types.    |
-| `@elisym/sdk/node`        | Node only    | Secret encryption, global config I/O, the iroh file transport.         |
-| `@elisym/sdk/agent-store` | Node only    | On-disk agent layout: schemas, path helpers, loaders, writers.         |
+| `@elisym/sdk/node`        | Node only    | Secret encryption, global config I/O, the iroh file transport, the file-backed settlement store. |
+| `@elisym/sdk/agent-store` | Node only    | On-disk agent layout: schemas, path helpers, loaders, writers, and the node-type gate every reader of an agent file owes. |
 | `@elisym/sdk/skills`      | Node only    | `SKILL.md` schema and loader.                                          |
 
 Reach for the main entry to act as a **customer** (discover, submit, pay). The Node subpaths are what the CLI uses to manage agents on disk; you only need them if you are building provider tooling.

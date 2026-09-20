@@ -5,6 +5,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { isBlockingNode } from './node-type';
 import { agentPaths } from './paths';
 import { MediaCacheSchema, type MediaCache, type MediaCacheEntry } from './schema';
 import { writeFileAtomic } from './writer';
@@ -12,6 +13,18 @@ import { writeFileAtomic } from './writer';
 /** Read .media-cache.json. Returns empty object if missing or corrupt. */
 export async function readMediaCache(agentDir: string): Promise<MediaCache> {
   const path = agentPaths(agentDir).mediaCache;
+  // Same answer as an absent or corrupt cache, which is what this function
+  // promises - and the only safe one: a FIFO here never settles the read, so
+  // the `catch` below would never run and a libuv worker would be gone for the
+  // life of the process.
+  //
+  // Read only. `writeMediaCache` will happily rename a regular file over such a
+  // node the next time anything is cached, and that is deliberate: this file
+  // belongs to the agent, unlike the `.gitignore` of a shared `.elisym` root,
+  // which the writer leaves exactly as it found it.
+  if (await isBlockingNode(path)) {
+    return {};
+  }
   let raw: string;
   try {
     raw = await readFile(path, 'utf-8');
@@ -33,8 +46,21 @@ export async function writeMediaCache(agentDir: string, cache: MediaCache): Prom
   await writeFileAtomic(path, body, 0o600);
 }
 
-/** Compute sha256 hex of a file's contents. */
+/**
+ * Compute sha256 hex of a file's contents.
+ *
+ * THROWS on a path that is a pipe, socket or device, as well as on the ordinary
+ * read errors: a blocking node never settles the read, so refusing is the only
+ * answer that returns. `lookupCachedUrl` turns that into "not cached", which is
+ * what an unreadable file already gets.
+ */
 export async function hashFile(filePath: string): Promise<string> {
+  // The path comes from `elisym.yaml` (a picture, a banner), which nobody
+  // validates as a node type. `lookupCachedUrl` turns this throw into "not
+  // cached", which is the same answer an unreadable file already gets.
+  if (await isBlockingNode(filePath)) {
+    throw new Error(`Refusing to read ${filePath}: it is a pipe, socket or device, not a file`);
+  }
   const buf = await readFile(filePath);
   return createHash('sha256').update(buf).digest('hex');
 }

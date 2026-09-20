@@ -1,8 +1,19 @@
 /**
  * Job recovery ledger - persistent JSON storage for crash recovery.
  */
-import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { isBlockingNodeSync } from '@elisym/sdk/agent-store';
 
 // Ledger files hold customer-confidential job content (inputs, results). Lock
 // the directory and files down to owner-only, matching the rest of the agent
@@ -11,6 +22,25 @@ const LEDGER_DIR_MODE = 0o700;
 const LEDGER_FILE_MODE = 0o600;
 
 export type LedgerStatus = 'paid' | 'executed' | 'delivered' | 'failed';
+
+/**
+ * A signature this ledger can actually key a de-duplication claim on.
+ *
+ * Written once PER PACKAGE and imported everywhere rather than spelled out at
+ * each gate, because the gates have to agree. (`@elisym/sdk` keeps its own copy
+ * for its acceptor; that one is exported from its module but NOT from the
+ * package's public surface, so this is a deliberate second one and the two have
+ * to stay identical by hand.) They have to agree because: two of them differing by an
+ * `=== undefined` instead of this would let an empty string through one and
+ * not the other, and an empty string is the value that both a hand-edited
+ * ledger and a proxy rewriting an RPC page produce. A claim keyed on one owns
+ * nothing, so the transaction it stood for stays free for the next job to
+ * settle against - the payment is accepted and the de-duplication record is
+ * not written.
+ */
+export function isUsableSignature(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
 
 export interface LedgerEntry {
   job_id: string;
@@ -115,6 +145,59 @@ export type PaymentSignatureClaim =
  */
 const MAX_DOUBLE_SETTLE_WARNINGS = 20;
 
+/**
+ * How stale a `<name>.tmp.<hex>` fragment must be before a sweep removes it.
+ *
+ * A fragment is only ever left by a process that DIED between the write and
+ * the rename - a failure that merely throws takes its own with it. An hour is
+ * far longer than either flush takes and far shorter than "forever", which is
+ * how long these lived before: the suffix is random, so nothing reuses one, and
+ * nothing else looks for them. What a job-ledger fragment holds is a full copy
+ * of the ledger - customer inputs, results, the settlement signature - in the
+ * clear.
+ *
+ * The age guard is what keeps a second process's live temporary safe. Running
+ * two agents on one directory is already unsupported (see the flush comment),
+ * but a sweep is no place to make that worse.
+ */
+const STRANDED_TEMP_MIN_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Remove `<path>.tmp.<hex>` fragments a crash left beside `path`.
+ *
+ * The bare `<path>.tmp` too, and that one is the UPGRADE case rather than a
+ * crash: builds before this one wrote through a single fixed name, so a
+ * fragment there bounded itself - the next flush reused it. Moving to a random
+ * suffix removes that accident, which turns any fragment an older build left
+ * into a permanent one unless this sweep takes it. For the job ledger that
+ * fragment is a full copy of every job's input, result and settlement
+ * signature in the clear.
+ */
+function sweepStrandedTemporaries(path: string): void {
+  const legacyName = `${basename(path)}.tmp`;
+  const prefix = `${legacyName}.`;
+  const cutoff = Date.now() - STRANDED_TEMP_MIN_AGE_MS;
+  let names: string[];
+  try {
+    names = readdirSync(dirname(path));
+  } catch {
+    return; // the directory may not exist yet; nothing to sweep
+  }
+  for (const name of names) {
+    if (name !== legacyName && !name.startsWith(prefix)) {
+      continue;
+    }
+    const candidate = join(dirname(path), name);
+    try {
+      if (statSync(candidate).mtimeMs < cutoff) {
+        unlinkSync(candidate);
+      }
+    } catch {
+      /* raced deletion, or somebody else's node - leave it */
+    }
+  }
+}
+
 export class JobLedger {
   private entries = new Map<string, LedgerEntry>();
   /**
@@ -133,9 +216,28 @@ export class JobLedger {
   constructor(ledgerPath: string) {
     this.path = ledgerPath;
     this.load();
+    // AFTER the load, so a refusal to read the index is reported before
+    // anything is deleted beside it.
+    sweepStrandedTemporaries(this.path);
   }
 
   private load(): void {
+    // BEFORE the try, and it throws rather than starting empty. A FIFO here
+    // does not fail the read, it takes the event loop with it - and starting
+    // with an EMPTY ledger would be worse than either: this index is what keeps
+    // one transaction from paying two jobs.
+    //
+    // `cmdStart` opens this BEFORE it publishes anything, precisely so a
+    // refusal cannot leave a live paid provider advertised by an agent that has
+    // already exited. Outside the try because the `catch` below renames what it
+    // cannot parse to `.corrupt.<ts>`, and somebody else's node is not ours to
+    // move.
+    if (isBlockingNodeSync(this.path)) {
+      throw new Error(
+        `Refusing to read the job ledger at ${this.path}: it is a pipe, socket or device, not a ` +
+          `file. An empty ledger would drop the record of which transaction paid for which job.`,
+      );
+    }
     try {
       const raw = readFileSync(this.path, 'utf-8');
       const data = JSON.parse(raw) as Record<string, unknown>;
@@ -177,6 +279,22 @@ export class JobLedger {
         );
       }
     } catch (e: any) {
+      // An I/O error is not a corrupt FILE. EACCES, EISDIR, EIO mean we could
+      // not read the ledger at all, and starting empty there frees every
+      // settlement it records - the same reasoning as the node-type gate above,
+      // and the same answer the SDK's settlement store gives. Rotating it aside
+      // would be worse still: the evidence moves out of the way too.
+      //
+      // The discriminator is the `code` field: `readFileSync` failures carry
+      // one, `JSON.parse` failures do not. Only a file we READ and could not
+      // PARSE is rotated and replaced, which is what the recovery below is for.
+      if (typeof e?.code === 'string' && e.code !== 'ENOENT') {
+        throw new Error(
+          `Refusing to start on a job ledger that cannot be read (${e.code}) at ${this.path}. ` +
+            `An empty ledger would drop the record of which transaction paid for which job. ` +
+            `Check the file's owner and mode (a ledger written under sudo needs a chown).`,
+        );
+      }
       // W4: Log warning on malformed ledger and backup corrupt file
       if (e?.code !== 'ENOENT') {
         console.warn(`  ! Ledger load warning: ${e?.message ?? 'unknown error'}`);
@@ -205,13 +323,24 @@ export class JobLedger {
     const dir = dirname(this.path);
     mkdirSync(dir, { recursive: true, mode: LEDGER_DIR_MODE });
     const obj = Object.fromEntries(this.entries);
-    const tmp = this.path + '.tmp';
-    writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: LEDGER_FILE_MODE });
-    // `writeFileSync`'s `mode` applies only when it CREATES the file, so a stale
-    // `.tmp` left behind by a crash - possibly with looser permissions - would be
-    // reused as it stands. This chmod is what closes that, and it runs on the
-    // TEMP file so that `renameSync` stays the LAST statement and the whole
-    // method is all-or-nothing.
+    // The temporary carries a RANDOM suffix, exactly as `writeFileAtomic` in
+    // the SDK does, and that is a safety property rather than a nicety:
+    // `writeFileSync` onto a FIFO never returns - it takes the whole event loop
+    // with it - so a predictable temporary name is a way to hang this process
+    // from outside. Reading is gated by node type; writing is protected by
+    // there being nothing to plant.
+    const tmp = `${this.path}.tmp.${randomBytes(6).toString('hex')}`;
+    // Cleaned up on any failure below, and that only became worth doing once
+    // the name became random: with one fixed name the next flush reused the
+    // leftover, so the garbage bounded itself. Now every failure between the
+    // write and the rename would leave a unique file holding a full copy of the
+    // ledger - customer inputs included - and nothing ever sweeps them.
+    // The chmod is NOT about a stale temporary any more - the name is random,
+    // so there is never one to reuse. What it still does is undo the umask:
+    // `writeFileSync`'s `mode` is a request, and a umask of 0o200 would leave
+    // the ledger read-only to its own owner. It runs on the TEMP file so that
+    // `renameSync` stays the LAST statement and the whole method is
+    // all-or-nothing.
     //
     // That ordering is not tidiness. `claimPaymentSignature` rolls itself back
     // when this throws, on the understanding that a failed flush wrote nothing.
@@ -222,8 +351,18 @@ export class JobLedger {
     // claim exists to prevent.
     //
     // `UsedNonceStore.flush` deliberately keeps the opposite order; see there.
-    chmodSync(tmp, LEDGER_FILE_MODE);
-    renameSync(tmp, this.path);
+    try {
+      writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: LEDGER_FILE_MODE });
+      chmodSync(tmp, LEDGER_FILE_MODE);
+      renameSync(tmp, this.path);
+    } catch (error) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* best effort: the caller's error is the one worth reporting */
+      }
+      throw error;
+    }
   }
 
   recordPaid(entry: Omit<LedgerEntry, 'status' | 'retry_count'>): void {
@@ -305,7 +444,7 @@ export class JobLedger {
       // Index STRINGS only: a hand-edited ledger can carry a number, object or
       // null here, and keying the map on one blocks a slot no ordinary claim can
       // ever collide with. Ignoring it just means the entry owns nothing.
-      if (typeof paymentSignature !== 'string' || paymentSignature.length === 0) {
+      if (!isUsableSignature(paymentSignature)) {
         continue;
       }
       const owner = this.paymentSignatureOwners.get(paymentSignature);
@@ -380,6 +519,15 @@ export class JobLedger {
    * this job - refusing the owner its own settlement until the next restart.
    */
   claimPaymentSignature(paymentSignature: string, jobId: string): PaymentSignatureClaim {
+    // The invariant is LOCAL, not spread across the two callers that happen to
+    // check it today: a claim keyed on an empty string owns nothing, and
+    // `indexPaymentSignatures` skips it on the next load - so the transaction
+    // it stood for is free for the next job while this one believes it settled.
+    // `unknown-job` rather than a new outcome, because the caller's own
+    // handling of "nothing durable to key this on" already fits.
+    if (!isUsableSignature(paymentSignature)) {
+      return 'unknown-job';
+    }
     // Entry existence FIRST. `unknown-job` is a provider wiring bug and
     // `consumed-by-other` a customer/attacker state; checking the index first
     // would report the second when the truth is the first, sending the operator
@@ -541,7 +689,7 @@ export class JobLedger {
         entry.created_at < cutoff
       ) {
         this.entries.delete(id);
-        if (typeof entry.payment_signature === 'string' && entry.payment_signature.length > 0) {
+        if (isUsableSignature(entry.payment_signature)) {
           prunedSignatures.add(entry.payment_signature);
         }
         deleted += 1;
@@ -609,9 +757,18 @@ export class UsedNonceStore {
     this.path = noncePath;
     this.maxEntries = maxEntries;
     this.load();
+    sweepStrandedTemporaries(this.path);
   }
 
   private load(): void {
+    // Same gate as the job ledger, and the same reasoning: this index is what
+    // makes a delegated pull single-use, so an empty one is not a safe default.
+    if (isBlockingNodeSync(this.path)) {
+      throw new Error(
+        `Refusing to read the nonce store at ${this.path}: it is a pipe, socket or device, not a ` +
+          `file. An empty store would let a delegated pull be replayed.`,
+      );
+    }
     try {
       const raw = readFileSync(this.path, 'utf-8');
       const data = JSON.parse(raw) as Record<string, number>;
@@ -621,6 +778,15 @@ export class UsedNonceStore {
         }
       }
     } catch (e: any) {
+      // Same split as the job ledger: a file we could not READ is refused, a
+      // file we read and could not PARSE is rotated aside and replaced.
+      if (typeof e?.code === 'string' && e.code !== 'ENOENT') {
+        throw new Error(
+          `Refusing to start on a nonce store that cannot be read (${e.code}) at ${this.path}. ` +
+            `An empty store would let a delegated pull be replayed. Check the file's owner and ` +
+            `mode (a store written under sudo needs a chown).`,
+        );
+      }
       if (e?.code !== 'ENOENT') {
         console.warn(`  ! Nonce store load warning: ${e?.message ?? 'unknown error'}`);
         try {
@@ -638,8 +804,8 @@ export class UsedNonceStore {
     const dir = dirname(this.path);
     mkdirSync(dir, { recursive: true, mode: LEDGER_DIR_MODE });
     const obj = Object.fromEntries(this.entries);
-    const tmp = this.path + '.tmp';
-    writeFileSync(tmp, JSON.stringify(obj), { mode: LEDGER_FILE_MODE });
+    // Random suffix for the same reason as `JobLedger.flush`.
+    const tmp = `${this.path}.tmp.${randomBytes(6).toString('hex')}`;
     // The REVERSE of `JobLedger.flush`, and deliberately so. This store's only
     // writers (`markUsed`, `prune`) swallow a flush failure and KEEP the
     // in-memory mark, because an unpersisted nonce still enforces single-use for
@@ -648,7 +814,23 @@ export class UsedNonceStore {
     // the nonce is spent. Make this all-or-nothing like the job ledger and the
     // failure mode inverts - the mark lives only in memory, a restart forgets
     // it, and a delegated pull can be replayed.
-    renameSync(tmp, this.path);
+    // The write and the RENAME are wrapped, and the chmod stays AFTER the
+    // rename so the order above is preserved. Being outside the `try` changes
+    // nothing on its own - it throws out of `flush` either way, and the cleanup
+    // would find nothing to remove - so the load-bearing half is the position,
+    // not the bracket. The cleanup exists because the temporary now carries a
+    // random name and would otherwise be left behind for good.
+    try {
+      writeFileSync(tmp, JSON.stringify(obj), { mode: LEDGER_FILE_MODE });
+      renameSync(tmp, this.path);
+    } catch (error) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* best effort */
+      }
+      throw error;
+    }
     chmodSync(this.path, LEDGER_FILE_MODE);
   }
 

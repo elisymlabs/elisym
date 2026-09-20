@@ -14,6 +14,8 @@ import {
   PROTOCOL_PROGRAM_ID_MAINNET,
 } from '../constants';
 import type { Network } from '../types';
+import type { LoadedAddresses } from './account-keys';
+import { mergeAccountKeys } from './account-keys';
 import { KNOWN_ASSETS, NATIVE_SOL, assetKey, resolveUsdcAsset } from './assets';
 
 /**
@@ -124,6 +126,7 @@ interface RawTransaction {
     postBalances: readonly bigint[];
     preTokenBalances?: readonly TokenBalanceEntry[];
     postTokenBalances?: readonly TokenBalanceEntry[];
+    loadedAddresses?: LoadedAddresses;
   } | null;
   transaction: {
     message: {
@@ -163,6 +166,12 @@ function accumulateTransfers(
 
   const preTokens = meta.preTokenBalances ?? [];
   const postTokens = meta.postTokenBalances ?? [];
+  // The `preTokens` half is NOT KILLED BY ANY TEST: every fixture with token
+  // balances carries both sides. The state it is for does occur - a transaction
+  // that closes all its token accounts reports a pre side and no post side -
+  // and without it that transaction falls to the lamport branch, where the
+  // returned rent is counted as payment volume. A statistic, not a payment,
+  // which is why it is stated here rather than given a row.
   const isSpl = postTokens.length > 0 || preTokens.length > 0;
 
   if (isSpl) {
@@ -173,7 +182,12 @@ function accumulateTransfers(
   accumulateNativeDeltas(
     meta.preBalances,
     meta.postBalances,
-    raw.transaction.message.accountKeys,
+    // Balance slots cover the looked-up addresses too. Indexing a merged list
+    // keeps the bookkeeping-PDA skip below working for a PDA a lookup table
+    // supplied; against `accountKeys` alone that slot reads `undefined`, the
+    // skip never fires, and the PDA's one-time rent deposit is counted as
+    // payment volume.
+    mergeAccountKeys(raw.transaction.message.accountKeys, meta.loadedAddresses),
     bookkeepingAddresses,
     volumeByAsset,
   );

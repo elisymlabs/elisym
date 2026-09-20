@@ -42,6 +42,8 @@ import type {
   VerifyOptions,
   VerifyResult,
 } from '../types';
+import type { LoadedAddresses } from './account-keys';
+import { mergeAccountKeys } from './account-keys';
 import {
   type Asset,
   NATIVE_SOL,
@@ -49,8 +51,10 @@ import {
   resolveAssetFromPaymentRequest,
   splAssetsForNetwork,
 } from './assets';
+import { degenerateReference, degenerateReferenceSync } from './degenerate-reference';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
+import { isReadableTokenRow, readBalance } from './read-balance';
 import { parsePaymentRequest } from './schema';
 import type {
   BuildTransactionOptions,
@@ -262,6 +266,22 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     const expectedFee = calculateProtocolFee(data.amount, config.feeBps);
     const treasury = config.treasury;
 
+    // Ahead of the fee codes on purpose, and the trade is worth naming: those
+    // are about diverting part of the customer's payment, and this preempts
+    // them. A degenerate reference harms both sides and costs the customer the
+    // WHOLE payment - the transfer can no longer be picked out - so it is first.
+    // `recipient_mismatch` still goes ahead of both.
+    if (degenerateReferenceSync(data, network, treasury) !== undefined) {
+      return {
+        code: 'degenerate_reference',
+        message:
+          `Reference key ${data.reference} is an address this payment is computed from. ` +
+          `Verification lists the reference's history to find the transfer, so a payment to ` +
+          `this request cannot be found again once other traffic pushes it out of the ` +
+          `window. Ask the provider for a payment request with a fresh reference.`,
+      };
+    }
+
     // feeBps=0 is a legal on-chain state (set_fee_bps only enforces <= MAX_FEE_BPS).
     // createPaymentRequest still populates fee_address=treasury and fee_amount=0 in
     // that case. Do NOT skip the fee fields entirely: a hostile request could carry
@@ -384,6 +404,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     const paymentInstructions = await buildPaymentInstructions(paymentRequest, payerSigner, {
       jobEventId: options.jobEventId,
       programId: options.programId,
+      treasury,
     });
 
     const priorityFeeMicroLamports =
@@ -487,6 +508,27 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       };
     }
     const mint = asset.mint;
+
+    // After the asset resolves (the check compares the mint and its token
+    // program, so it throws without one) and before either path runs. Each path
+    // is ruined differently, which is why the check sits ahead of both rather
+    // than inside one: the REFERENCE path lists the reference's history, and a
+    // degenerate one lists a whole wallet instead of this payment; the
+    // SIGNATURE path fetches one transaction and checks the reference is in it,
+    // which a degenerate reference turns into a tautology - any transfer
+    // crediting the recipient enough would pass.
+    if (
+      (await degenerateReference(paymentRequest, paymentRequest.network ?? 'devnet', treasury)) !==
+      undefined
+    ) {
+      return {
+        verified: false,
+        code: 'degenerate_reference',
+        error:
+          `Reference key ${paymentRequest.reference} is an address this payment is computed ` +
+          `from, so listing it cannot single out this transfer.`,
+      };
+    }
 
     if (options?.txSignature) {
       return this._verifyBySignature(
@@ -602,6 +644,11 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
             limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
           })
           .send();
+        // NOT KILLED BY ANY VERDICT: drop this filter and a failed transaction
+        // is still refused one screen below, by `tx.meta.err`. What it buys is
+        // the round trip - one `getTransaction` per errored signature, against
+        // a reference anyone can attach a failing transaction to - so that is
+        // what the test asserts, rather than an outcome that does not move.
         const validSigs = signatures.filter((entry) => !entry.err);
 
         if (validSigs.length > 0) {
@@ -673,20 +720,6 @@ interface TokenBalanceEntry {
   uiTokenAmount: { amount: string };
 }
 
-/**
- * The addresses a v0 transaction pulled in from an Address Lookup Table.
- *
- * Absent on a legacy transaction, and absent from `accountKeys` on a v0 one:
- * with `encoding: 'json'` the RPC returns only the STATIC keys there and puts
- * the rest here. The balance arrays cover all of them, ordered static keys
- * first, then the writable loaded ones, then the read-only loaded ones - which
- * is the order this pair has to be appended in.
- */
-interface LoadedAddresses {
-  readonly writable: readonly string[];
-  readonly readonly: readonly string[];
-}
-
 interface TxDiffInput {
   accountKeys: readonly string[];
   /** Absent for a legacy transaction, and for a v0 one that used no table. */
@@ -707,6 +740,52 @@ interface TxDiffInput {
 type BalanceVerdict = { ok: true } | { ok: false; reason: string };
 
 function checkTxDiff(input: TxDiffInput): BalanceVerdict {
+  // The two lamport arrays are indexed in lockstep - `pre[i]` and `post[i]` are
+  // the same account - so a length mismatch means the pairing below cannot be
+  // interpreted at all.
+  //
+  // THIS GUARD IS NOT COSMETIC, and it is not one-sided either. Both
+  // directions were measured with it removed, and both ACCEPT a payment when
+  // the slots that went missing are not ones the verifier happens to read:
+  //
+  //   pre=4 post=3, recipient and treasury still covered -> verified: true
+  //   pre=4 post=5, reference inside the short prefix    -> verified: true
+  //
+  // `keyToIdx` is built over `min(keys.length, preBalances.length)`, so every
+  // name inside that prefix pairs with a correct slot and nothing notices the
+  // ones past it. The mismatches that do NOT slip through land as a refusal,
+  // and there are three separate shapes of it, all measured: a reference past
+  // the short prefix gives "Reference key not found - possible replay", while a
+  // recipient or treasury slot past the end of a short `post` reads as
+  // `undefined`, which `bigIntDelta` takes for `0n` and reports as "Recipient
+  // received 0", "Recipient received -N" or "Treasury received 0". Every one of
+  // those blames the customer for an answer WE could not read, and which one a
+  // given page produces is a question of layout, not a safety property. So the
+  // pairing is refused by name rather than read anyway.
+  //
+  // NATIVE ONLY, and that is the narrow half deliberately: the SPL path below
+  // pairs accounts by owner and mint out of `pre/postTokenBalances` and opens
+  // no lamport slot at all. A disagreement there cannot make a wrong slot read
+  // as a payment - the worst it does is shorten the prefix `keyToIdx` is built
+  // over, which loses the reference and REFUSES. Gating that path too would
+  // refuse a USDC or LSM transfer the token balances prove, over an
+  // inconsistency in arrays it never opens, and cost a paying customer their
+  // delivery.
+  // The containers first, because everything below indexes into them. An
+  // array-like that is not an array - `{ length: 4 }`, a typed array - agrees
+  // with itself on length, walks straight past the guard below, and hands back
+  // `undefined` for every slot.
+  if (!input.mint && (!Array.isArray(input.preBalances) || !Array.isArray(input.postBalances))) {
+    return { ok: false, reason: 'Balance arrays are not arrays - cannot read a balance slot' };
+  }
+  if (!input.mint && input.preBalances.length !== input.postBalances.length) {
+    return {
+      ok: false,
+      reason:
+        `Balance arrays disagree on length (pre ${input.preBalances.length}, ` +
+        `post ${input.postBalances.length}) - cannot pair an account with its balance`,
+    };
+  }
   const balanceCount = input.preBalances.length;
   // The LOOKED-UP addresses count as being in the transaction. Reading only
   // `accountKeys` means a v0 transaction that put the reference, the recipient
@@ -714,14 +793,25 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
   // composer builds - is rejected as "possible replay" though the customer
   // paid: fail-closed, and wrong. The concatenation order is the one the
   // balance arrays are indexed by, so the indices below stay aligned.
-  const keys = [
-    ...input.accountKeys,
-    ...(input.loadedAddresses?.writable ?? []),
-    ...(input.loadedAddresses?.readonly ?? []),
-  ];
+  const keys = mergeAccountKeys(input.accountKeys, input.loadedAddresses);
   const keyToIdx = new Map<string, number>();
   for (let i = 0; i < Math.min(keys.length, balanceCount); i++) {
     const key = keys[i];
+    // The guard is load-bearing, and the reason is the one this file used to
+    // get wrong: the addresses compared against this map have NOT all passed
+    // `isAddress`. `verifyPayment` checks the request's `reference` and
+    // `recipient` for PRESENCE only, at the top of the function - the format
+    // checks live on the config treasury and, on the reference rail, on the
+    // reference; the signature rail has none. `classifyRequestUsability` in `acceptor.ts`
+    // says the same thing in the other direction.
+    //
+    // So a request whose reference is the four letters `null` reaches here
+    // unscreened. Without the guard a null account key registers under exactly
+    // that name, the presence check below - which is the whole of the
+    // anti-replay on this rail - passes, and a stranger's transfer to the same
+    // recipient for the same amount settles the job. Measured: the row named
+    // `refuses a reference spelled the way a NULL account key stringifies`
+    // answers `verified: true` with the guard dropped.
     if (key) {
       keyToIdx.set(String(key), i);
     }
@@ -743,6 +833,9 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
     input.postBalances[recipientIdx],
     input.preBalances[recipientIdx],
   );
+  if (recipientDelta === null) {
+    return { ok: false, reason: 'Recipient balance slot is unreadable' };
+  }
   if (recipientDelta < BigInt(input.expectedNet)) {
     return {
       ok: false,
@@ -759,6 +852,9 @@ function checkTxDiff(input: TxDiffInput): BalanceVerdict {
       input.postBalances[treasuryIdx],
       input.preBalances[treasuryIdx],
     );
+    if (treasuryDelta === null) {
+      return { ok: false, reason: 'Treasury balance slot is unreadable' };
+    }
     if (treasuryDelta < BigInt(input.expectedFee)) {
       return {
         ok: false,
@@ -774,8 +870,29 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
   if (!mint) {
     return { ok: false, reason: 'Expected mint for SPL verification, got none' };
   }
-  const pre = input.preTokenBalances ?? [];
-  const post = input.postTokenBalances ?? [];
+  // ABSENT containers are empty ones - a native-only page carries none, and a
+  // first-ever payment has no pre row because the token account is created
+  // inside this transaction. A container or a row that is PRESENT and cannot
+  // be read is a different thing, and the difference is money: matched by
+  // owner and mint, an unreadable pre row is simply never found, the baseline
+  // reads as absent, absent reads as zero, and whatever the recipient already
+  // held verifies as this payment. Measured on a real mainnet transfer of 0.45
+  // USDC against a price of 1.8 - refused from an honest node, verified with
+  // the baseline row's `owner` removed. `quick-verify` had this rule and this
+  // function did not.
+  const preRaw: unknown = input.preTokenBalances ?? [];
+  const postRaw: unknown = input.postTokenBalances ?? [];
+  if (!Array.isArray(preRaw) || !Array.isArray(postRaw)) {
+    return { ok: false, reason: 'Token balance lists are not lists - cannot read a baseline' };
+  }
+  if (!preRaw.every(isReadableTokenRow) || !postRaw.every(isReadableTokenRow)) {
+    return {
+      ok: false,
+      reason: 'A token balance row is unreadable - cannot tell whose balance it is',
+    };
+  }
+  const pre: readonly TokenBalanceEntry[] = preRaw;
+  const post: readonly TokenBalanceEntry[] = postRaw;
 
   // `null` for "no account here", never a sentinel AMOUNT: `-1n` is also what a
   // token account that lost exactly one subunit between pre and post reports,
@@ -783,7 +900,11 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
   // that exists while the real answer - the recipient was short-changed - never
   // reaches them. Both paths refuse the payment either way; only the sentence
   // the operator gets to act on differs.
-  const tokenDelta = (ownerAddress: string): bigint | null => {
+  //
+  // A THIRD answer beside those two, for the same reason: `'unreadable'` when
+  // the row is there and its amount is not a number. `BigInt` takes `''` for
+  // `0n` without complaint, so a blanked baseline used to read as zero here.
+  const tokenDelta = (ownerAddress: string): bigint | null | 'unreadable' => {
     // Pre-entry may be absent when the ATA is created inside the same tx
     // (first-ever payment to this recipient). Missing => 0.
     const preEntry = pre.find((entry) => entry.owner === ownerAddress && entry.mint === mint);
@@ -791,12 +912,18 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
     if (!postEntry) {
       return null;
     }
-    const preAmount = preEntry ? BigInt(preEntry.uiTokenAmount.amount) : 0n;
-    const postAmount = BigInt(postEntry.uiTokenAmount.amount);
+    const preAmount = preEntry ? readBalance(preEntry.uiTokenAmount?.amount) : 0n;
+    const postAmount = readBalance(postEntry.uiTokenAmount?.amount);
+    if (preAmount === null || postAmount === null) {
+      return 'unreadable';
+    }
     return postAmount - preAmount;
   };
 
   const recipientDelta = tokenDelta(input.recipientAddress);
+  if (recipientDelta === 'unreadable') {
+    return { ok: false, reason: 'Recipient token amount is unreadable' };
+  }
   if (recipientDelta === null) {
     return { ok: false, reason: 'Recipient token account not found in transaction' };
   }
@@ -809,6 +936,9 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
 
   if (input.expectedFee > 0) {
     const treasuryDelta = tokenDelta(input.treasuryAddress);
+    if (treasuryDelta === 'unreadable') {
+      return { ok: false, reason: 'Treasury token amount is unreadable' };
+    }
     if (treasuryDelta === null) {
       return { ok: false, reason: 'Treasury token account not found in transaction' };
     }
@@ -822,14 +952,61 @@ function checkTokenBalanceDiff(input: TxDiffInput): BalanceVerdict {
   return { ok: true };
 }
 
-function bigIntDelta(post: bigint | undefined, pre: bigint | undefined): bigint {
-  const postValue = post === undefined ? 0n : BigInt(post);
-  const preValue = pre === undefined ? 0n : BigInt(pre);
+/**
+ * The change in one lamport slot, or `null` when either side cannot be read.
+ *
+ * An absent slot used to count as `0n` on both sides, and a present one went
+ * through a bare `BigInt` - which takes `''`, `true` and `[]` for numbers
+ * without throwing. Either way a slot nobody could read became a baseline of
+ * zero, and the whole post balance became the payment.
+ */
+function bigIntDelta(post: unknown, pre: unknown): bigint | null {
+  const postValue = readBalance(post);
+  const preValue = readBalance(pre);
+  if (postValue === null || preValue === null) {
+    return null;
+  }
   return postValue - preValue;
 }
 
 function waitMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The customer's LAST look at the reference, and the half `validatePaymentRequest`
+ * cannot take.
+ *
+ * That function is synchronous - the `PaymentStrategy` interface is - so it runs
+ * only `degenerateReferenceSync` and never sees the DERIVED addresses: the stats
+ * PDAs, the event authority, or a token account belonging to the recipient or
+ * the treasury. The provider's verifier runs the full check and refuses such a
+ * payment. Measured: `validatePaymentRequest` answers `null` for a reference
+ * equal to the recipient's ATA while `verifyPayment` answers
+ * `degenerate_reference` - so without this the customer pays, the transfer
+ * cannot be singled out of that account's history, and the job is never
+ * delivered. The money is gone and it went to the provider, which is what makes
+ * a hand-crafted request worth someone's while.
+ *
+ * Here rather than in the schema because these addresses only exist once the
+ * program id, the asset and the fee address are known - which is exactly what
+ * this function already derives, one line above each check.
+ */
+function refuseDegenerateReferenceAgainst(
+  reference: Address,
+  derived: readonly (Address | undefined)[],
+): void {
+  // `candidate !== undefined` is redundant and stays for shape: `reference` is
+  // an `Address`, so `undefined === reference` is never true. NOT KILLED BY ANY
+  // TEST, and no test could be written for it.
+  if (!derived.some((candidate) => candidate !== undefined && candidate === reference)) {
+    return;
+  }
+  throw new Error(
+    `Reference key ${reference} is an address this payment is computed from, so the transfer ` +
+      `could not be singled out of that account's history afterwards. Ask the provider for a ` +
+      `payment request with a fresh reference.`,
+  );
 }
 
 /**
@@ -859,19 +1036,63 @@ function waitMs(ms: number): Promise<void> {
  *
  * Async because SPL ATAs are PDAs and `findAssociatedTokenPda` is async.
  *
- * Caller is responsible for validating `paymentRequest` upstream;
- * `buildTransaction` already does that before invoking this helper.
+ * Caller is responsible for validating `paymentRequest` upstream - and that
+ * means the caller of `buildTransaction`, not `buildTransaction` itself, which
+ * checks only the config, the lamport amounts, the reference's shape, the
+ * expiry and `fee_address === treasury`. The STATIC denylist (a reference equal
+ * to the recipient, the treasury, the mint, the protocol tag, the system
+ * program) is `validatePaymentRequest`'s, and nothing below calls it. Both
+ * first-party callers do, before building.
  */
 export async function buildPaymentInstructions(
   paymentRequest: PaymentRequestData,
   payerSigner: Signer,
-  options: { jobEventId?: string; programId: Address },
+  options: {
+    jobEventId?: string;
+    programId: Address;
+    /**
+     * The treasury from the on-chain config, when the caller has it.
+     *
+     * Optional only for compatibility, and what it costs to leave out is
+     * specific: the degenerate-reference check below then cannot see the
+     * treasury's TOKEN ACCOUNT unless the request happens to name the same
+     * address in `fee_address`. A zero-fee request may omit `fee_address`
+     * entirely - and `feeBps` is 0 on the deployed mainnet program - so a
+     * third-party request built that way passes this check and is then refused
+     * by the provider's verifier, after the customer has paid. Pass it.
+     *
+     * `buildTransaction` passes it for you; a direct caller is on their own.
+     */
+    treasury?: Address;
+  },
 ): Promise<readonly unknown[]> {
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);
   const protocolTag = address(ELISYM_PROTOCOL_TAG);
   const programId = options.programId;
   const feeAmount = paymentRequest.fee_amount ?? 0;
+  // A POSITIVE fee needs a destination that exists, and the honest history is
+  // worth writing down: before this branch a malformed `fee_address` THREW out
+  // of `address()` further down, so nothing was signed. What this branch added
+  // - deriving the fee owner's ATA through `isAddress(...) ? ... : undefined`
+  // so a zero-fee request stays buildable - is what would otherwise turn that
+  // throw into a silent skip, and a silent skip is the dangerous one:
+  // `providerAmount` below subtracts the fee on the mere PRESENCE of the field
+  // while the fee leg is built only for an address that parses, so the customer
+  // would sign a transaction paying the recipient `amount - fee` and nobody the
+  // fee. The provider's verifier then answers `Recipient received N, expected
+  // >= amount` and the job can never be accepted. That silent skip is the SPL
+  // branch's alone - on the native branch `address()` is still reached and
+  // still throws - which is why the row that measures this builds a USDC
+  // request. Refusing here keeps the old outcome on both and gives it a
+  // sentence an operator can act on. A zero fee stays
+  // payable: no leg is built either way, which is the request shape a
+  // third-party provider issues on mainnet.
+  if (paymentRequest.fee_address && feeAmount > 0 && !isAddress(paymentRequest.fee_address)) {
+    throw new Error(
+      `Invalid fee address: ${paymentRequest.fee_address}. A positive fee has no valid destination.`,
+    );
+  }
   const providerAmount =
     paymentRequest.fee_address && feeAmount > 0
       ? paymentRequest.amount - feeAmount
@@ -894,6 +1115,8 @@ export async function buildPaymentInstructions(
     },
     { programAddress: programId },
   );
+
+  refuseDegenerateReferenceAgainst(reference, [statsPda, assetStatsPda, eventAuthority]);
 
   if (providerAmount <= 0) {
     throw new Error(
@@ -972,20 +1195,58 @@ export async function buildPaymentInstructions(
     ),
   );
 
-  let treasuryAta: Address | undefined;
-  if (paymentRequest.fee_address && feeAmount > 0) {
-    const treasuryOwner = address(paymentRequest.fee_address);
-    [treasuryAta] = await findAssociatedTokenPda({
-      owner: treasuryOwner,
+  // Derived whenever there is an owner to derive one FOR, not only when a fee
+  // leg gets built. `feeBps` is 0 on the deployed mainnet program, so every
+  // mainnet SPL payment takes the zero-fee branch - while the provider's
+  // denylist derives these accounts unconditionally. Gating the derivation on
+  // the fee amount therefore left the commonest case unchecked on this side and
+  // checked on the other, which is the customer paying for a job that can never
+  // be delivered.
+  //
+  // Each owner is checked with `isAddress` first, exactly as the provider's
+  // denylist does and for the same reason: `findAssociatedTokenPda` encodes its
+  // owner and THROWS on a string that is not an address, and a malformed
+  // `fee_address` on a zero-fee request is payable today - the fee leg is not
+  // built at all, so nothing in this function used to look at the field. An
+  // owner we cannot parse simply contributes no account to compare against.
+  const feeOwner =
+    paymentRequest.fee_address && isAddress(paymentRequest.fee_address)
+      ? address(paymentRequest.fee_address)
+      : undefined;
+  let feeOwnerAta: Address | undefined;
+  if (feeOwner) {
+    [feeOwnerAta] = await findAssociatedTokenPda({ owner: feeOwner, tokenProgram, mint });
+  }
+  // And the treasury the CONFIG names, which a request may omit entirely: with
+  // a zero fee `fee_address` is optional, and the provider's denylist reads the
+  // treasury from the config rather than from the request.
+  let configTreasuryAta: Address | undefined;
+  // The mirror of the guard on `fee_address` above, which is a third party's
+  // field. This one is the config's, and on every first-party path
+  // `assertConfig` has already checked it - but this function is EXPORTED, and
+  // the option's own docstring a few screens up says a direct caller is on
+  // their own. Measured through that door: the row named `does not throw on a
+  // malformed CONFIG treasury either` comes back from `findAssociatedTokenPda`
+  // as a raw base58-length error with the guard removed.
+  if (
+    options.treasury !== undefined &&
+    options.treasury !== feeOwner &&
+    isAddress(options.treasury)
+  ) {
+    [configTreasuryAta] = await findAssociatedTokenPda({
+      owner: options.treasury,
       tokenProgram,
       mint,
     });
+  }
+
+  if (feeOwner && feeOwnerAta && feeAmount > 0) {
     instructions.push(
       getCreateAssociatedTokenIdempotentInstruction(
         {
           payer: payerSigner,
-          ata: treasuryAta,
-          owner: treasuryOwner,
+          ata: feeOwnerAta,
+          owner: feeOwner,
           mint,
           tokenProgram,
         },
@@ -993,6 +1254,12 @@ export async function buildPaymentInstructions(
       ),
     );
   }
+
+  // The token halves, checked where they become known. The payer's own ATA is
+  // not in the set: a reference equal to it is the CUSTOMER's account, which
+  // the verifier's denylist does not carry either - it lists what the payment
+  // is computed from on the receiving side.
+  refuseDegenerateReferenceAgainst(reference, [recipientAta, feeOwnerAta, configTreasuryAta]);
 
   const providerTransferIx = getTransferCheckedInstruction(
     {
@@ -1015,13 +1282,13 @@ export async function buildPaymentInstructions(
   };
   instructions.push(providerTransferIxWithMarkers);
 
-  if (treasuryAta && paymentRequest.fee_address && feeAmount > 0) {
+  if (feeOwnerAta && paymentRequest.fee_address && feeAmount > 0) {
     instructions.push(
       getTransferCheckedInstruction(
         {
           source: payerAta,
           mint,
-          destination: treasuryAta,
+          destination: feeOwnerAta,
           authority: payerSigner,
           amount: BigInt(feeAmount),
           decimals: asset.decimals,

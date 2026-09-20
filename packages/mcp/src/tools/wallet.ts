@@ -128,32 +128,15 @@ async function linkManualPayment(
       return '  Not linked: job request has no capability tag.';
     }
 
-    const paidAsset = sdkResolveAssetFromPaymentRequest(requestData);
-    if (agent.agentDir) {
-      const now = Date.now();
-      const paymentFields = {
-        completedAt: now,
-        paymentSig: signature,
-        assetKey: assetKey(paidAsset),
-        paidAmountSubunits: requestData.amount.toString(),
-      };
-      const existing = await findCustomerJob(agent.agentDir, jobEventId);
-      if (existing) {
-        // Merge into the existing entry (submit_and_pay_job may have set
-        // providerName/resultPreview/attachmentJson; submit_feedback customerFeedback) -
-        // appendCustomerJob replaces the whole entry and would clobber those fields.
-        await updateCustomerJob(agent.agentDir, jobEventId, paymentFields);
-      } else {
-        await appendCustomerJob(agent.agentDir, {
-          jobEventId,
-          capability,
-          providerPubkey,
-          status: 'pending',
-          submittedAt: now,
-          ...paymentFields,
-        });
-      }
-    }
+    // The provider is told FIRST. The money is already on-chain by the time this
+    // function runs, and the confirmation is what lets the provider find it
+    // inside its verification window - a manual payment driven through an LLM
+    // easily outlasts that window on its own. The local record used to be
+    // written ahead of it in the same `try`, so anything that failed the write
+    // (a read-only agent directory, a directory where the history file belongs,
+    // a full disk) also silenced the confirmation: paid, and nobody told.
+    // Everywhere else in this package the history is already kept off the money
+    // path - `recordJobOutcome`, and `onchain.ts` says it in so many words.
     await agent.client.marketplace.submitPaymentConfirmation(
       agent.identity,
       jobEventId,
@@ -161,14 +144,52 @@ async function linkManualPayment(
       signature,
       agent.network,
     );
+    let recordedLocally = true;
+    if (agent.agentDir) {
+      try {
+        const paidAsset = sdkResolveAssetFromPaymentRequest(requestData);
+        const now = Date.now();
+        const paymentFields = {
+          completedAt: now,
+          paymentSig: signature,
+          assetKey: assetKey(paidAsset),
+          paidAmountSubunits: requestData.amount.toString(),
+        };
+        const existing = await findCustomerJob(agent.agentDir, jobEventId);
+        if (existing) {
+          // Merge into the existing entry (submit_and_pay_job may have set
+          // providerName/resultPreview/attachmentJson; submit_feedback customerFeedback) -
+          // appendCustomerJob replaces the whole entry and would clobber those fields.
+          await updateCustomerJob(agent.agentDir, jobEventId, paymentFields);
+        } else {
+          await appendCustomerJob(agent.agentDir, {
+            jobEventId,
+            capability,
+            providerPubkey,
+            status: 'pending',
+            submittedAt: now,
+            ...paymentFields,
+          });
+        }
+      } catch (error) {
+        recordedLocally = false;
+        logger.warn(
+          { event: 'manual_payment_history_failed', jobEventId },
+          `Payment sent and confirmed to the provider, but the local record failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
     // The capability name is provider-influenced (a customer copies it from an
     // untrusted card into the job's `t` tag), so echoing it verbatim to the LLM is a
     // prompt-injection surface. Wrap it in the untrusted-content boundary markers.
     const safeCapability = sanitizeUntrusted(capability, 'structured').text;
-    return (
-      `  Linked to job ${jobEventId}. Rate it later with submit_feedback.\n` +
-      `  Capability (from the job's t-tag, untrusted):\n${safeCapability}`
-    );
+    const linkNote = recordedLocally
+      ? `  Linked to job ${jobEventId}. Rate it later with submit_feedback.`
+      : `  Provider notified for job ${jobEventId}, but the local record could not be written ` +
+        `(submit_feedback will not find this payment).`;
+    return `${linkNote}\n  Capability (from the job's t-tag, untrusted):\n${safeCapability}`;
   } catch (e) {
     logger.warn(
       { event: 'manual_payment_link_failed', jobEventId },

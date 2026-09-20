@@ -125,6 +125,27 @@ export interface AgentInstance {
    */
   irohTransport?: IrohBlobTransport;
   /**
+   * The in-flight creation, held so that concurrent callers join it instead of
+   * each opening their own node. `ensureIrohTransport` awaits inside, and MCP
+   * tool calls are not serialized against each other, so without this two
+   * `submit_and_pay_job` calls a moment apart open two `Iroh.persistent` nodes
+   * on the SAME fs-store: one takes the lock, the other is stuck on it for the
+   * life of the process, and only one of the two is reachable for shutdown.
+   */
+  irohTransportPending?: Promise<IrohBlobTransport>;
+  /**
+   * Set once the agent has been torn down - by `scrubAgent` for the one agent a
+   * `switch_agent`, `stop_agent` or activating `create_agent` retires, and by
+   * `markAgentsScrubbed` for all of them at server shutdown. Both mark BEFORE
+   * the first await of their teardown; that ordering is the guard, not the flag
+   * itself. A tool handler captures its `AgentInstance` before it starts
+   * awaiting, so a scrub that completes in between hands the handler an object
+   * that is no longer in the registry - and a transport opened on it afterwards
+   * holds the fs-store lock with nothing left to shut it down. Checked by
+   * `ensureIrohTransport`, which refuses rather than creating.
+   */
+  scrubbed?: boolean;
+  /**
    * Set only for an ephemeral agent (no `agentDir`): the `os.tmpdir()` store path,
    * removed on shutdown. Identity-backed agents store at `<agentDir>/.iroh/`.
    */

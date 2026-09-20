@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { isBlockingNode } from '../agent-store/node-type';
 import type { Asset } from '../payment/assets';
 import { resolveInsidePathReal } from './path-safety';
 import type {
@@ -73,6 +74,11 @@ export class StaticFileSkill implements Skill {
     const safePath = resolveInsidePathReal(this.skillDir, this.outputFilePath);
     if (safePath === null) {
       throw new Error('static-file "output_file" escapes the skill directory');
+    }
+    // The gate every other reader of a file inside a skill directory uses. This
+    // one runs while a paying customer waits for the result.
+    if (await isBlockingNode(safePath)) {
+      throw new Error('static-file "output_file" is a pipe, socket or device, not a file');
     }
     // Measure UTF-8 bytes, not JS string length: relays reject by byte size,
     // and a non-ASCII file is 1.5-4x its char count in UTF-8.

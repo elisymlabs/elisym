@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import YAML from 'yaml';
 import { validateAgentName } from '../primitives/config';
 import { encryptSecret, isEncrypted } from '../primitives/encryption';
+import { isBlockingNode } from './node-type';
 import { agentPaths, type AgentPaths } from './paths';
 import { elisymRootFor, type AgentSource } from './resolver';
 import { ElisymYamlSchema, SecretsSchema, type ElisymYaml, type Secrets } from './schema';
@@ -17,16 +18,16 @@ import { renderInitialYaml } from './template';
 const IROH_GITIGNORE_ENTRY = '.iroh/';
 
 /** x402 bridge idempotency cache: upstream payment attempts + bought results. */
-const X402_GITIGNORE_ENTRIES = ['.x402-jobs.json', '.x402-results/'] as const;
+const X402_GITIGNORE_ENTRIES = ['.x402-jobs.json*', '.x402-results/'] as const;
 
 /** DM read cursors: keyed by counterpart pubkeys - maps who the agent talks to. */
-const MESSAGES_GITIGNORE_ENTRY = '.messages-read.json';
+const MESSAGES_GITIGNORE_ENTRY = '.messages-read.json*';
 
 /** Conversation-session transcripts: customer job inputs and LLM results in cleartext. */
 const SESSIONS_GITIGNORE_ENTRY = '.sessions/';
 
 /** Customer-side session bookkeeping: session ids + first-prompt clips per provider. */
-const JOB_SESSIONS_GITIGNORE_ENTRY = '.job-sessions.json';
+const JOB_SESSIONS_GITIGNORE_ENTRY = '.job-sessions.json*';
 
 /**
  * Delegated-payment nonce burn set (plus its `.tmp`/`.corrupt.*` siblings):
@@ -35,14 +36,37 @@ const JOB_SESSIONS_GITIGNORE_ENTRY = '.job-sessions.json';
  */
 const DELEGATION_NONCES_GITIGNORE_ENTRY = '.delegation-nonces.json*';
 
+/**
+ * Every private file written through `writeFileAtomic` or an equivalent, which
+ * means every one whose temporary carries a RANDOM suffix. The rule is the
+ * trailing `*`, and it applies to all of them or to none: a fixed entry cannot
+ * match `.tmp.<hex>`, the next write never reuses that name, and nothing sweeps
+ * it - so a crash between the write and the rename leaves the file's contents
+ * committable for good, inside somebody's repository.
+ *
+ * `.messages-read.json*` and `.job-sessions.json*` carry the same `*` but keep
+ * their own migrations, which their writers call at the write site.
+ */
+const PRIVATE_STATE_GITIGNORE_ENTRIES = [
+  '.secrets.json*',
+  '.media-cache.json*',
+  '.jobs.json*',
+  '.customer-history.json*',
+  '.contacts.json*',
+] as const;
+
 const GITIGNORE_CONTENT = [
   '# elisym private state - do not commit.',
-  '.secrets.json',
-  '.media-cache.json',
-  '.jobs.json',
-  '.jobs.json.corrupt.*',
-  '.customer-history.json',
-  '.contacts.json',
+  // Trailing `*` on the files that are written through a TEMPORARY: the
+  // temporary carries a random suffix (`.tmp.<hex>`), so a crash between the
+  // write and the rename leaves a name no fixed entry can match - and those
+  // files hold exactly what the entry beside them is here to keep out of a
+  // commit: secret keys, a customer's job input, an upstream's paid result.
+  // `.jobs.json*` swallows the `.corrupt.*` sibling that used to need its own
+  // line. This is the template a NEW root gets; an older root is migrated by
+  // appending the widened entries beside its narrow ones, never by rewriting
+  // the file, so whatever the operator put there survives.
+  ...PRIVATE_STATE_GITIGNORE_ENTRIES,
   MESSAGES_GITIGNORE_ENTRY,
   SESSIONS_GITIGNORE_ENTRY,
   JOB_SESSIONS_GITIGNORE_ENTRY,
@@ -71,6 +95,17 @@ async function ensureGitignoreHasEntries(
   entries: readonly string[],
 ): Promise<void> {
   const gitignorePath = join(elisymRoot, '.gitignore');
+  // Same class as every other read of a file in somebody's `.elisym` root: a
+  // FIFO left here never settles, and this one runs while an agent is being
+  // created. Leaving the file alone is what the `catch` below already does for
+  // every other reason it cannot be read.
+  if (await isBlockingNode(gitignorePath)) {
+    // Said out loud rather than returned in silence: the entries this would have
+    // added keep private files out of a commit, and an operator who never hears
+    // about it has no reason to look.
+    console.warn(`  ! Leaving ${gitignorePath} alone: it is a pipe, socket or device, not a file`);
+    return;
+  }
   let current: string;
   try {
     current = await readFile(gitignorePath, 'utf-8');
@@ -152,6 +187,26 @@ export async function ensureGitignoreHasJobSessionsEntry(elisymRoot: string): Pr
  */
 export async function ensureGitignoreHasDelegationNoncesEntry(elisymRoot: string): Promise<void> {
   await ensureGitignoreHasEntries(elisymRoot, [DELEGATION_NONCES_GITIGNORE_ENTRY]);
+}
+
+/**
+ * The private files written through a TEMPORARY, plus their siblings:
+ * `.secrets.json.tmp.<hex>` (the agent's nostr and solana keys),
+ * `.media-cache.json.tmp.<hex>`, `.jobs.json.tmp.<hex>` (a full copy of the
+ * ledger - customer inputs in the clear and every payment's settlement
+ * signature), `.jobs.json.corrupt.<ts>`, and the customer-side pair
+ * `.customer-history.json.tmp.<hex>` (paid results, amounts, signatures) and
+ * `.contacts.json.tmp.<hex>`.
+ *
+ * A migration rather than only a line in the template, and that is the whole
+ * point: `GITIGNORE_CONTENT` is written ONCE, when the agent directory is
+ * created, so every agent that already exists carries the narrow lines. The
+ * temporaries used to share one fixed name that the next write reused, so an
+ * exposure cleared itself; a random name never does, and a project-local agent
+ * lives inside somebody's git repository.
+ */
+export async function ensureGitignoreHasPrivateStateEntries(elisymRoot: string): Promise<void> {
+  await ensureGitignoreHasEntries(elisymRoot, PRIVATE_STATE_GITIGNORE_ENTRIES);
 }
 
 export interface CreateAgentDirOptions {
@@ -427,6 +482,32 @@ export async function writeSecrets(
   };
   const body = JSON.stringify(finalSecrets, null, 2) + '\n';
   const target = agentPaths(agentDir).secrets;
+  // The choke point every writer of KEYS goes through - `init`, `profile`,
+  // `delegate-key`, `x402 add`, the MCP's `create_agent` - which is why the
+  // migration runs here and not only at start-up: an agent used purely through
+  // the MCP never runs `elisym start`. (It is not the only caller - `start`
+  // runs it too, and so do the customer-history and contacts stores - but it is
+  // the only one on the path that writes the keys themselves.) Before the
+  // write, so that when it SUCCEEDS the widened entries are in place before
+  // `.secrets.json.tmp.<hex>` can exist at all; a no-op when the file is
+  // absent, so a home-global agent is unaffected. When it FAILS the keys are
+  // written anyway and the warning below is the only thing between that
+  // temporary and a commit.
+  //
+  // WARNED, not fatal, and the asymmetry with `elisym start` is deliberate:
+  // there a refusal protects an index that decides money, here it would stop an
+  // agent being created at all over a `.gitignore` that cannot be appended to -
+  // a read-only root, a root owned by somebody else. The keys are the point of
+  // the call; the hygiene is not worth losing them over.
+  try {
+    await ensureGitignoreHasPrivateStateEntries(dirname(agentDir));
+  } catch (error) {
+    console.warn(
+      `  ! Could not update the .gitignore in ${dirname(agentDir)} ` +
+        `(${error instanceof Error ? error.message : String(error)}). ` +
+        `Check that it ignores .secrets.json* before committing.`,
+    );
+  }
   await writeFileAtomic(target, body, 0o600);
 }
 
@@ -448,11 +529,15 @@ export async function writeFileAtomic(
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmpPath = `${path}.tmp.${randomBytes(6).toString('hex')}`;
-  await writeFile(tmpPath, data, { mode });
   try {
+    await writeFile(tmpPath, data, { mode });
     await rename(tmpPath, path);
   } catch (e) {
-    // Best-effort cleanup of temp file on rename failure.
+    // Best-effort cleanup, and the `try` above deliberately covers the WRITE as
+    // well as the rename: a disk that fills up part way through leaves a
+    // fragment of whatever was being written - for `.secrets.json` that is half
+    // the agent's keys - under a random name nothing reuses or sweeps.
+    // `write-file-atomic-cleanup.test.ts` pins both halves.
     try {
       const { unlink } = await import('node:fs/promises');
       await unlink(tmpPath);

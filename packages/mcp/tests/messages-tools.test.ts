@@ -337,6 +337,9 @@ describe('read cursors', () => {
     await advanceReadCursor(agentDir, BOB_PUBKEY, nowSecs());
 
     const gitignore = await readFile(join(root, '.gitignore'), 'utf-8');
-    expect(gitignore.split('\n')).toContain('.messages-read.json');
+    // With the trailing `*`: this file is written through a temporary whose
+    // suffix is random, so the bare name cannot match the fragment a crash
+    // between the write and the rename leaves behind.
+    expect(gitignore.split('\n')).toContain('.messages-read.json*');
   });
 });

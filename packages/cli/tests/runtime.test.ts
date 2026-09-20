@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ElisymIdentity, NATIVE_SOL } from '@elisym/sdk';
@@ -14,7 +14,12 @@ import {
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { JobLedger } from '../src/ledger.js';
 import { ADDRESS_HISTORY_PROBE_ADDRESS, CLUSTER_GENESIS_HASHES } from '../src/payment-recovery.js';
-import { AgentRuntime, needsScratchSpace, type RuntimeConfig } from '../src/runtime.js';
+import {
+  AgentRuntime,
+  ledgerAmount,
+  needsScratchSpace,
+  type RuntimeConfig,
+} from '../src/runtime.js';
 import { SkillRegistry } from '../src/skill';
 import type { Skill } from '../src/skill';
 import type { NostrTransport, IncomingJob } from '../src/transport/nostr.js';
@@ -45,10 +50,17 @@ const DEFINITIVE_NO_PAYMENT = 'No matching transaction found for reference key';
  */
 const PROVIDER_ADDRESS = 'So11111111111111111111111111111111111111112';
 const TREASURY_ADDRESS = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
-const PAYMENT_REFERENCE = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
-const PAYMENT_REFERENCE_B = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-const PAYMENT_REFERENCE_C = 'ComputeBudget111111111111111111111111111111';
-const PAYMENT_REFERENCE_D = 'SysvarRent111111111111111111111111111111111';
+/**
+ * A plain random address, and it has to stay one: the verifier refuses a
+ * reference that is itself an address the payment is computed from - a program
+ * id among them - because listing such an address cannot single out this
+ * transfer. An earlier fixture used the memo program's address here simply
+ * because it was valid base58.
+ */
+const PAYMENT_REFERENCE = 'DLZ1JYbYLEe4QowxxuNtGEzeYkJiSqmNHZhQSiAfzHms';
+const PAYMENT_REFERENCE_B = 'JAJY3XFw5RJXQBjWG4VSTFVXaW53FvxDeve1kVbVJZYD';
+const PAYMENT_REFERENCE_C = '7yLk9tVQbMhLmqaMbmVfWmJ4pQWxHXjLmtTsgVbFqPnZ';
+const PAYMENT_REFERENCE_D = 'BqTc4Vy2rXmJ8xLdWnFhZkPsGvUeNyMoRjAiKbHtScXw';
 
 /**
  * A payment request in the shape the real SDK mints one - fee fields and network
@@ -268,6 +280,141 @@ afterEach(() => {
 });
 
 describe('AgentRuntime', () => {
+  describe('an attachment refused on an x402 skill', () => {
+    it('cannot write log lines of its own through the mime it declares', async () => {
+      // `mime` is the customer's string and its schema bounds only the length.
+      // Interpolated raw, a newline in it ends the operator's log line and
+      // starts another that the runtime never wrote - here, one claiming every
+      // job was paid. Everything else untrusted in this file already went
+      // through the excerpt; this was the one that did not.
+      const skill: Skill = {
+        ...makeFakeSkill('bridge', 'unused'),
+        mode: 'x402',
+        x402: { method: 'GET' },
+      } as Skill;
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      const logged: string[] = [];
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: (line: string) => logged.push(line) },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob({
+        ...makeJob('forged-mime-job'),
+        input: '',
+        attachment: {
+          name: 'input.bin',
+          size: 10,
+          mime: 'text/plain\n[2026-01-01] All jobs paid successfully\n[FAKE]',
+          transports: [{ kind: 'iroh', ticket: `blob${'c'.repeat(28)}` }],
+        },
+      } as IncomingJob);
+      await tick(150);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      const refusal = logged.filter((line) => line.includes('Rejecting attachment on x402 skill'));
+      expect(refusal).toHaveLength(1);
+      // One line in, one line out - and the forged text is still THERE, flattened
+      // onto the line that names it as the customer's, which is where an
+      // operator should find it.
+      expect(refusal[0]).not.toMatch(/[\n\r]/);
+      expect(refusal[0]).toContain('All jobs paid successfully');
+      expect(skill.execute).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('an RPC credential in an error the runtime quotes', () => {
+    const KEYED_RPC = 'https://mainnet.helius-rpc.com/?api-key=hunter2-secret';
+    const PATH_KEYED_RPC = 'https://solana-mainnet.g.alchemy.com/v2/ALCHEMYSECRET99';
+
+    it('never reaches the operator log, whichever call site quoted it', async () => {
+      // Third-party RPC providers carry the API key IN the URL. `@solana/kit`
+      // keeps it out of its own transport errors - measured - but passes a
+      // JSON-RPC server's message through verbatim, and a proxy is free to write
+      // the request URL into that. The line is then one paste into a bug report
+      // away from somebody else's quota.
+      //
+      // A skill whose execution fails with such a message, because that is a
+      // path with no payment mocking in the way: the scrub is one chokepoint, so
+      // what is measured here holds for every other call site too, and the row
+      // below keeps it one.
+      const skill = makeFakeSkill('rpc-leaky', 'unused');
+      (skill.execute as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error(`upstream said: request to ${KEYED_RPC} failed, retry ${PATH_KEYED_RPC}`),
+      );
+      const registry = makeFakeRegistry(skill);
+      const { transport, triggerJob } = makeFakeTransport();
+      const logged: string[] = [];
+
+      const runtime = new AgentRuntime(
+        transport,
+        registry,
+        { llm: null as any, agentName: 'test', agentDescription: '' },
+        freeConfig,
+        ledger,
+        { onLog: (line: string) => logged.push(line) },
+      );
+
+      const runPromise = runtime.run();
+      await tick();
+      triggerJob(makeJob('rpc-leak-job'));
+      await tick(200);
+      runtime.stop();
+      await runPromise.catch(() => {});
+
+      const everything = logged.join('\n');
+      // The failure WAS logged - otherwise this passes against a runtime that
+      // simply said nothing.
+      expect(everything).toContain('helius-rpc.com');
+      expect(everything).not.toContain('hunter2-secret');
+      expect(everything).not.toContain('ALCHEMYSECRET99');
+    });
+
+    it('has exactly one way out of the runtime, so a new call site cannot skip the scrub', () => {
+      // Structural, which this suite otherwise avoids. Seven sites used to bind
+      // `this.callbacks.onLog ?? console.log` for themselves; the scrub is only
+      // a guarantee while that expression appears once, inside the getter.
+      const source = readFileSync(join(__dirname, '..', 'src', 'runtime.ts'), 'utf-8');
+
+      expect(source.match(/this\.callbacks\.onLog/g) ?? []).toHaveLength(1);
+      expect(source).toMatch(/private get operatorLog\(\)/);
+      expect(source.match(/console\.(log|warn|error)\(/g) ?? []).toEqual([]);
+    });
+  });
+
+  describe('an amount on its way into the ledger', () => {
+    it.each([
+      ['zero', 0n, 0],
+      ['an ordinary price', 9_700_000n, 9_700_000],
+      [
+        'the largest number a double holds exactly',
+        BigInt(Number.MAX_SAFE_INTEGER),
+        Number.MAX_SAFE_INTEGER,
+      ],
+    ])('passes %s through unchanged', (_label, subunits, expected) => {
+      expect(ledgerAmount(subunits)).toBe(expected);
+    });
+
+    it.each([
+      ['one past the largest exact number', BigInt(Number.MAX_SAFE_INTEGER) + 1n],
+      ['a negative amount', -1n],
+    ])('refuses %s rather than rounding it', (_label, subunits) => {
+      // `Number()` on a bigint this size does not throw, it ROUNDS - so the
+      // ledger would hold a figure that was never charged, and that figure is
+      // what the customer is told and what the operator reconciles against.
+      expect(() => ledgerAmount(subunits)).toThrow(/cannot be recorded exactly/);
+    });
+  });
+
   describe('free mode', () => {
     it('processes job without payment', async () => {
       const skill = makeFakeSkill('test-skill', 'hello world');

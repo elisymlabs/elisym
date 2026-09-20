@@ -53,6 +53,7 @@ import type {
   TransportKind,
   VerifyResult,
 } from '@elisym/sdk';
+import { isBlockingNode } from '@elisym/sdk/agent-store';
 import {
   createFreeLlmLimiterSet,
   FREE_LLM_GLOBAL_KEY,
@@ -72,7 +73,7 @@ import { createSolanaRpc, signature as asSignature } from '@solana/kit';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import pLimit from 'p-limit';
 import { LEDGER_RETENTION_MS, MAX_PAID_AGE_MS, getRpcUrl } from './helpers.js';
-import { JobLedger, UsedNonceStore } from './ledger.js';
+import { JobLedger, UsedNonceStore, isUsableSignature } from './ledger.js';
 import {
   PaymentRecovery,
   RecoveryDeferrals,
@@ -81,6 +82,7 @@ import {
   needsPaymentScan,
   recoveryScanBudgetPerTick,
 } from './payment-recovery.js';
+import { redactRpcUrlsInText } from './rpc-redact.js';
 import {
   SESSION_MAX_CONCURRENT_JOBS,
   type RecoverySessionRef,
@@ -89,6 +91,31 @@ import {
 import type { Skill, SkillRegistry, SkillContext, SkillOutput } from './skill';
 import type { NostrTransport, IncomingJob } from './transport/nostr.js';
 import { X402PreflightError, X402TransientError } from './x402/errors.js';
+
+/** Longest `mime` a log line will quote. A real one is a few dozen characters. */
+const MAX_LOGGED_MIME_CHARS = 128;
+
+/**
+ * A token amount as the ledger stores it.
+ *
+ * `LedgerEntry.net_amount` and the recorded pull amount are `number`s, and
+ * `Number()` on a bigint past 2^53 - 1 does not throw - it rounds, silently, to
+ * the nearest double. That is about nine billion USDC, so nothing reaches it
+ * today; it would take a token with fewer decimals or a metered ceiling set
+ * absurdly high. When it does happen the ledger would record an amount that was
+ * never charged, and that figure is what the customer is told and what the
+ * operator reconciles against. Loud instead: the caller places this before any
+ * money moves.
+ */
+export function ledgerAmount(subunits: bigint): number {
+  if (subunits < 0n || subunits > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      `Amount ${subunits.toString()} subunits cannot be recorded exactly: the ledger holds ` +
+        `amounts as numbers, and this one is outside the range a number represents without rounding.`,
+    );
+  }
+  return Number(subunits);
+}
 
 const payment = new SolanaPaymentStrategy();
 const LEDGER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -1404,8 +1431,32 @@ export class AgentRuntime {
     return { feeBps: config.feeBps, treasury: config.treasury };
   }
 
+  /**
+   * The ONE way a line leaves this runtime for the operator.
+   *
+   * Every line is scrubbed of RPC credentials here, once, rather than at the
+   * call sites that happen to quote an error. Third-party RPC providers carry
+   * the API key in the URL, and an error reaching this file can quote that URL:
+   * `@solana/kit` does not put it in its own transport errors - measured across
+   * refused connections, DNS failures, 429, 401, a JSON-RPC error and a body
+   * that is not JSON - but for a JSON-RPC error it does not recognize it passes
+   * the SERVER's message through, and a proxy is free to write the request URL
+   * into that. `start.ts` already scrubbed the wallet error for this reason and
+   * nothing here did.
+   *
+   * One place because the call sites are many and grow: seven bound a logger
+   * of their own, and the payment path alone quotes an error in four. Nothing
+   * this runtime logs carries a URL of its own, so the scrub costs no
+   * diagnostic. The sink is `onLog`, which `start` fans out to the terminal and
+   * to the structured log - so both are covered by the one pass.
+   */
+  private get operatorLog(): (line: string) => void {
+    const sink = this.callbacks.onLog ?? console.log;
+    return (line: string) => sink(redactRpcUrlsInText(line));
+  }
+
   async run(): Promise<void> {
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
 
     // Prune terminal ledger entries past the 30-day retention window.
     this.ledger.pruneOldEntries(LEDGER_RETENTION_MS);
@@ -1640,7 +1691,7 @@ export class AgentRuntime {
       this.callbacks.onStop?.();
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      (this.callbacks.onLog ?? console.log)(`onStop error: ${msg}`);
+      this.operatorLog(`onStop error: ${msg}`);
     }
     this.abortController.abort();
     for (const controller of this.jobAbortControllers) {
@@ -1684,7 +1735,7 @@ export class AgentRuntime {
       // payment, whether the next customer is refused before paying - reads the
       // same verdict however deep the write that failed was.
       const e: unknown = asHostScratchFailure(raw) ?? raw;
-      const log = this.callbacks.onLog ?? console.log;
+      const log = this.operatorLog;
       // `describeForOperator`, not `e.message`: a rejected null or a thrown
       // string would make this line throw before the job is marked failed and
       // before the customer is told anything at all. Computed once - it
@@ -1768,7 +1819,7 @@ export class AgentRuntime {
 
   /** Core job processing logic - payment, skill execution, result delivery. */
   private async executeJob(job: IncomingJob, signal?: AbortSignal): Promise<void> {
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
 
     // W2: Validate input length before processing. Byte-based, as defense in depth
     // (the SDK already caps at submit). A spilled job's inline text is '' (the real
@@ -1846,7 +1897,11 @@ export class AgentRuntime {
         job.attachment.size <= maxInputBytes;
       if (!attachmentOk) {
         log(
-          `[${job.jobId.slice(0, 8)}] Rejecting attachment on x402 skill (mime=${job.attachment.mime}, size=${job.attachment.size})`,
+          // `mime` is the customer's string and its schema bounds only the
+          // length, so a newline in it forged whole log lines. Every other
+          // piece of untrusted text in this file already goes through the
+          // excerpt; this was the one that did not.
+          `[${job.jobId.slice(0, 8)}] Rejecting attachment on x402 skill (mime=${excerptUntrusted(job.attachment.mime, MAX_LOGGED_MIME_CHARS)}, size=${job.attachment.size})`,
         );
         await this.transport
           .sendFeedback(job, {
@@ -1929,7 +1984,11 @@ export class AgentRuntime {
       // For a metered skill this is only the CEILING: the real figure is not
       // knowable until the work is done, so `netAmount` is re-read from the
       // pull context after `executeDelegatedPull` and before `deliverResult`.
-      netAmount = Number(delegatedPull.priceSubunits);
+      // Checked HERE, before the skill runs and before any pull is signed, so
+      // an amount the ledger cannot hold exactly fails the job while nothing
+      // has moved. The two conversions further down are of this figure or of a
+      // charge bounded by it, so neither can throw once this one has passed.
+      netAmount = ledgerAmount(delegatedPull.priceSubunits);
     } else if (jobPrice > 0) {
       const result = await this.collectPayment(job, jobPrice, jobAsset, signal);
       netAmount = result.netAmount;
@@ -2124,7 +2183,7 @@ export class AgentRuntime {
         const outcome = await this.executeDelegatedPull(job, delegatedPull, log);
         // Tell the customer what actually moved, not what was reserved. Without
         // this the result event would report the ceiling on every metered job.
-        netAmount = Number(delegatedPull.chargedSubunits ?? delegatedPull.priceSubunits);
+        netAmount = ledgerAmount(delegatedPull.chargedSubunits ?? delegatedPull.priceSubunits);
         if (outcome === 'dead') {
           // Provably no funds moved: error feedback, NO delivery, nonce stays
           // burned - the customer re-submits with a fresh proof.
@@ -2473,7 +2532,7 @@ export class AgentRuntime {
       job.jobId,
       pull.signature,
       Number(pull.lastValidBlockHeight),
-      Number(amount),
+      ledgerAmount(amount),
     );
     ctx.pullSignature = pull.signature;
     const outcome = await sendConfirmToTerminal(ctx.rpc, pull, {});
@@ -2731,7 +2790,7 @@ export class AgentRuntime {
     kind: string,
     run: () => Promise<{ ticket: string; size: number }>,
   ): Promise<{ ticket: string; size: number }> {
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
     const started = Date.now();
     try {
       const seeded = await run();
@@ -2930,6 +2989,18 @@ export class AgentRuntime {
       return undefined;
     }
     try {
+      // NOT KILLED BY ANY TEST, and the honest reason is not the one that used
+      // to be written here: this is not merely un-harnessed, it is all but
+      // UNREACHABLE. The only caller seeds the same path through iroh one line
+      // earlier, and that seed fails on a node that blocks, so control never
+      // arrives. (`size` here comes from the iroh seed's own progress, not from
+      // `stat`, so the old note about a FIFO reporting size 0 described a check
+      // this function does not make.) Kept for the window the seed leaves open
+      // - the path can become a FIFO between the two calls - and because the
+      // guard costs one `stat` against a read that would never settle.
+      if (await isBlockingNode(filePath)) {
+        return undefined;
+      }
       const bytes = await readFile(filePath);
       return await this.seedBlossomMember(bytes, recipientPubkey);
     } catch {
@@ -3158,7 +3229,7 @@ export class AgentRuntime {
     jobAsset: Asset,
     signal?: AbortSignal,
   ): Promise<{ netAmount: number; paymentRequest: string }> {
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
 
     if (!this.config.solanaAddress) {
       throw new Error('Solana address not configured');
@@ -3290,10 +3361,14 @@ export class AgentRuntime {
             return;
           }
           const txSignature = askedSignature ?? verified.txSignature;
-          if (txSignature === undefined) {
+          if (!isUsableSignature(txSignature)) {
             // A verification we cannot name cannot be de-duplicated. Every
             // real SDK success carries its signature, so this is a broken
             // strategy implementation, not a customer state - fail closed.
+            // An empty string is exactly such a name: the reference path asks
+            // about no signature, so whatever the answer carries is what gets
+            // claimed, and a blank claim owns nothing while the job is marked
+            // paid.
             paymentRefusal = { consumedByOther: false, sentence: UNNAMED_SETTLEMENT_SENTENCE };
             lose({ verified: false }, `${pathLabel}: ${UNNAMED_SETTLEMENT_SENTENCE}`);
             return;
@@ -3540,7 +3615,7 @@ export class AgentRuntime {
       );
     }
 
-    const log = this.callbacks.onLog ?? console.log;
+    const log = this.operatorLog;
     // BEFORE the empty-pending early return, for the same reason as the sweep
     // above: the tick that empties the backlog is precisely the tick an
     // operator has been waiting to see, and a summary that just stops appearing
