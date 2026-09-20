@@ -109,6 +109,7 @@ openclaw
 oxfmt
 oxlint
 pasteable
+pathusd
 permissionless
 pino
 pipefail
@@ -173,6 +174,7 @@ unsignable
 unstored
 untargeted
 untrusted
+usdce
 vite
 vitest
 vocs

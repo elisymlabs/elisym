@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  KNOWN_ASSETS,
+  ALL_ASSETS,
   LSM_SOLANA_MAINNET,
   assetKey,
   NATIVE_SOL,
@@ -51,8 +51,9 @@ describe('defaultSpendLimitsMap', () => {
     const solEntries = DEFAULT_SESSION_LIMITS.filter((entry) => entry.asset.token === 'sol');
     expect(solEntries).toHaveLength(1);
     expect(solEntries[0]?.asset.mint).toBeUndefined();
-    // Exactly four default entries: shared SOL + USDC per network + mainnet LSM.
-    expect(defaultSpendLimitsMap().size).toBe(4);
+    // Exactly six default entries: shared SOL + USDC per network + mainnet LSM,
+    // and on Tempo USDC.e (mainnet) + pathUSD (one address on both networks).
+    expect(defaultSpendLimitsMap().size).toBe(6);
   });
 
   it('contains 1,000,000 LSM as the mainnet-only default cap', () => {
@@ -66,10 +67,12 @@ describe('defaultSpendLimitsMap', () => {
 
   it('caps EVERY known asset - an asset with no row spends uncapped', () => {
     // `assertCanSpend` returns early when an asset has no limit, so a new
-    // KNOWN_ASSETS member added without a DEFAULT_SESSION_LIMITS row would be
-    // spendable without any session cap. This fails the moment that happens.
+    // asset added without a DEFAULT_SESSION_LIMITS row would be spendable
+    // without any session cap. This fails the moment that happens. It walks
+    // ALL_ASSETS, not the Solana-only KNOWN_ASSETS: an EVM coin needs its row
+    // just the same.
     const map = defaultSpendLimitsMap();
-    for (const asset of KNOWN_ASSETS) {
+    for (const asset of ALL_ASSETS) {
       expect(map.has(assetKey(asset)), `${assetKey(asset)} has no default session cap`).toBe(true);
     }
   });

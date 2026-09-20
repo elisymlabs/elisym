@@ -29,7 +29,31 @@ resolveLsmAsset('mainnet'); // LSM_SOLANA_MAINNET (undefined on devnet)
 splAssetsForNetwork('mainnet'); // [USDC_SOLANA_MAINNET, LSM_SOLANA_MAINNET]
 ```
 
-`KNOWN_ASSETS` is the registry of recognized assets; helpers like `resolveKnownAsset` and `assetByKey` look them up - note both USDC mints and LSM are registered, so a flat lookup cannot distinguish networks; prefer the per-network resolvers. An `Asset` may declare a `tokenProgram` - the owner program of its mint. LSM's mint is **Token-2022** (`TOKEN_2022_PROGRAM_ADDRESS_STR`), and the payment builders derive token accounts and target `transferChecked` at that program automatically; assets without the field use the classic SPL Token program. All money math goes through `decimal.js-light` and basis points - never floats.
+`KNOWN_ASSETS` is the registry of recognized Solana assets; helpers like `resolveKnownAsset` and `assetByKey` look an asset up across every chain (see [Chains and EVM coins](#chains-and-evm-coins)) - note both USDC mints and LSM are registered, so a flat lookup cannot distinguish networks; prefer the per-network resolvers. An `Asset` may declare a `tokenProgram` - the owner program of its mint. LSM's mint is **Token-2022** (`TOKEN_2022_PROGRAM_ADDRESS_STR`), and the payment builders derive token accounts and target `transferChecked` at that program automatically; assets without the field use the classic SPL Token program. All money math goes through `decimal.js-light` and basis points - never floats.
+
+### Chains and EVM coins
+
+A chain is named two ways. The **slug** (`solana`, `tempo`) is what a capability card and a `SKILL.md` carry; the **CAIP-2 id** (`eip155:4217`) is what a [v2 payment request](/protocol/payments#payment-request-v2-evm-chains) and the wire tags carry. `CHAINS` is the registry, one entry per chain and environment, and `network` (`mainnet` | `devnet`) stays the environment: Tempo's public testnet, Moderato, is `tempo` on `devnet`.
+
+```ts twoslash
+import {
+  CHAINS,
+  PATHUSD_TEMPO,
+  assetsFor,
+  chainByCaip2,
+  chainFor,
+  defaultStablecoin,
+  explorerTxUrl,
+} from '@elisym/sdk';
+
+chainFor('tempo', 'mainnet').caip2; // "eip155:4217"
+chainByCaip2('eip155:42431') === CHAINS.TEMPO_DEVNET; // true
+assetsFor('tempo', 'devnet')[0] === PATHUSD_TEMPO; // true - USDC.e exists on mainnet only
+defaultStablecoin('tempo', 'mainnet'); // USDCE_TEMPO_MAINNET
+explorerTxUrl(CHAINS.TEMPO_MAINNET, '0xabc'); // "https://explore.tempo.xyz/tx/0xabc"
+```
+
+`KNOWN_ASSETS` stays **Solana-only** - it is public, and code that iterates it runs every mint through a Solana address parser. EVM coins are in `EVM_ASSETS`, and `ALL_ASSETS` is both lists; `resolveKnownAsset` and `assetByKey` search `ALL_ASSETS`. An EVM asset's `mint` is its token contract in lowercase hex, and its token id has no dot (`usdce`; the symbol is still `USDC.e`). The string checks `isEvmAddressFormat`, `isEvmTxHashFormat`, `normalizeEvmAddress` and `isVirtualEvmAddress` need no EVM library: they check shape only. `isEvmWireAddress` and `isEvmWireTxHash` check the **wire form** - lowercase - which is what cards, payment requests and tags carry. `isChainSlug` and `chainFamilyOf` classify a chain string from untrusted input. For a v2 request, `PaymentRequestV2Schema` is the strict schema, `resolveAssetFromPaymentRequestV2` returns the registry coin it names (or `undefined` - a consumer then shows no amount at all), and `caip19ForAsset(caip2, asset)` builds the `asset` id of a registry coin on its own chain. A Tempo virtual address (TIP-1022) is refused wherever elisym accepts an address, because a transfer to one bypasses the receive-policy reads a verifier relies on.
 
 ## The on-chain fee config
 
@@ -43,8 +67,10 @@ import { getProtocolConfig, clearProtocolConfigCache, getProtocolProgramId } fro
 
 | Export                                | Purpose                                                            |
 | ------------------------------------- | ----------------------------------------------------------------- |
-| `parsePaymentRequest`                 | Parse and validate a `payment-required` payload.                  |
+| `parsePaymentRequest`                 | Parse and validate a v1 (Solana) `payment-required` payload.     |
+| `parseAnyPaymentRequest`              | Decide the version first: no `v` is v1, `v: 2` is the EVM shape, anything else is refused. One `maxAmountSubunits` cap applies to both. |
 | `calculateProtocolFee`                | Compute the fee from amount + on-chain rate (bps).               |
+| `calculateProtocolFeeSubunits`        | The same rule over `bigint` subunits, for amounts that travel as strings. |
 | `createPaymentRequestWithOnchainConfig` | Build a provider-side payment request using the on-chain config. |
 | `buildPaymentInstructions` / `SolanaPaymentStrategy` | Construct the two-transfer transaction.            |
 | `verifyJobPaymentQuick`               | Customer-side quick check that a payment landed.                 |

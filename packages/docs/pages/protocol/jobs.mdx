@@ -24,7 +24,7 @@ A single kind carries every status update from provider to customer:
 | `success` (+rating) | Customer rates the completed job: `["rating", "1"\|"0"]`, plus `["tx", <sig>, "solana"]` and `["network", <net>]`. |
 | `success` (call report) | Customer reports that an [on-chain call](/customers/onchain-calls) the job returned was signed and sent: `["call_tx", <sig>, "solana"]` and `["network", <net>]`, with **no** `rating`. `call_tx` is the customer's action, never a payment reference. |
 
-The `payment-required` feedback carries the request in a tuple: `["amount", <amount>, <paymentRequestJson>, "solana"]`. See [Payments](/protocol/payments) for what the customer does with it.
+The `payment-required` feedback carries the request in a tuple: `["amount", <amount>, <paymentRequestJson>, "solana"]`. The last element of this tuple, and of a `tx` tag, names where the payment settles: the literal `"solana"`, or the [CAIP-2 id](/reference/networks#chain-identifiers) of an EVM chain (`"eip155:4217"`), in which case the request is a [v2 request](/protocol/payments#payment-request-v2-evm-chains) and the `tx` value is a lowercase `0x` transaction hash. See [Payments](/protocol/payments) for what the customer does with it.
 
 Rating and payment-completed events carry two additional tags:
 

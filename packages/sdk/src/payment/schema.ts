@@ -109,7 +109,7 @@ export type ParseResult =
  * payment request itself. Naming the field is enough to debug with; the value
  * adds nothing a caller needs and carries everything an attacker wants.
  */
-function describeIssues(issues: readonly { path: PropertyKey[]; code: string }[]): string {
+export function describeIssues(issues: readonly { path: PropertyKey[]; code: string }[]): string {
   if (issues.length === 0) {
     return 'Payment request does not match the expected shape.';
   }
