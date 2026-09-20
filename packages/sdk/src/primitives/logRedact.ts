@@ -29,11 +29,19 @@ export const SECRET_REDACT_PATHS: string[] = [
   // `secrets` object, or any single field directly, must not leak.
   // `llm_api_keys` is a Record<provider-id, key> after the registry
   // refactor; the wildcard variants cover any nested provider id.
+  //
+  // EVERY field of `SecretsSchema` belongs here, bare and under a wildcard: the
+  // `secrets` paths below only catch the whole object, not a single field
+  // logged on its own or under another parent. `logRedact.test.ts` walks the
+  // schema, so a field added there and forgotten here fails the suite - which
+  // is how `solana_delegate_secret_key` was missed for as long as it existed.
   'nostr_secret_key',
   'solana_secret_key',
+  'solana_delegate_secret_key',
   'llm_api_keys',
   '*.nostr_secret_key',
   '*.solana_secret_key',
+  '*.solana_delegate_secret_key',
   '*.llm_api_keys',
   'llm_api_keys.*',
   '*.llm_api_keys.*',

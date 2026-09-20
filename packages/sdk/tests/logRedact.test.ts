@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SecretsSchema } from '../src/agent-store/schema';
 import {
   DEFAULT_REDACT_PATHS,
   INPUT_REDACT_PATHS,
@@ -30,6 +31,21 @@ describe('log redact constants', () => {
     expect(SECRET_REDACT_PATHS).toContain('*.llm_api_keys');
     expect(SECRET_REDACT_PATHS).toContain('llm_api_keys.*');
     expect(SECRET_REDACT_PATHS).toContain('*.llm_api_keys.*');
+  });
+
+  it('covers EVERY field of the on-disk secrets file, bare and under any parent', () => {
+    // Walks the schema rather than naming fields, because naming them is how
+    // `solana_delegate_secret_key` went unredacted: the list was written when
+    // the file had two keys and nothing tied it to the third. A delegate key
+    // logged as `{ solana_delegate_secret_key }` or `{ agent: { ... } }` went
+    // out in clear - only the whole `secrets` object was caught.
+    const fields = Object.keys(SecretsSchema.shape);
+    expect(fields).toContain('solana_delegate_secret_key');
+
+    for (const field of fields) {
+      expect(SECRET_REDACT_PATHS, `bare path for ${field}`).toContain(field);
+      expect(SECRET_REDACT_PATHS, `wildcard path for ${field}`).toContain(`*.${field}`);
+    }
   });
 
   it('INPUT_REDACT_PATHS matches the expected snapshot', () => {
@@ -84,6 +100,8 @@ describe('makeCensor', () => {
     expect(censor('leak', ['llm_api_keys', 'openai'])).toBe('[REDACTED]');
     expect(censor('leak', ['nostr_secret_key'])).toBe('[REDACTED]');
     expect(censor('leak', ['solana_secret_key'])).toBe('[REDACTED]');
+    expect(censor('leak', ['solana_delegate_secret_key'])).toBe('[REDACTED]');
+    expect(censor('leak', ['agent', 'solana_delegate_secret_key'])).toBe('[REDACTED]');
     expect(censor('{leak-object}', ['secrets'])).toBe('[REDACTED]');
   });
 
