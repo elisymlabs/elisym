@@ -277,13 +277,118 @@ describe('getEvmProtocolConfig', () => {
     ).rejects.toThrow(/no cached value exists/);
   });
 
-  it('a refusal closes the door behind it: nothing in flight may re-cache', async () => {
-    // The refusing read is the OLDER one here, so a generation alone would let
-    // the newer good one put a snapshot back. After the chain has answered
-    // something this SDK will not price against, nothing in flight gets to
-    // establish one - the next call reads again from scratch.
-    await getEvmProtocolConfig(clientAnswering(answer(250)), CHAINS.TEMPO_DEVNET);
-    const slowGood = {
+  it('lets a read that started AFTER a refusal establish a snapshot again', async () => {
+    // The order is what decides, not the verdict: this read asked the chain
+    // later than the refusal did, so its answer is the current one. Blocking it
+    // would leave the process refusing a config the chain no longer has.
+    await getEvmProtocolConfig(clientAnswering(answer(250)).client, CHAINS.TEMPO_DEVNET);
+    await expect(
+      getEvmProtocolConfig(clientAnswering(answer(1001)).client, CHAINS.TEMPO_DEVNET, { ttlMs: 0 }),
+    ).rejects.toThrow(/Refusing the elisym config at/);
+    const recovered = await getEvmProtocolConfig(
+      clientAnswering(answer(300)).client,
+      CHAINS.TEMPO_DEVNET,
+    );
+    expect(recovered.feeBps).toBe(300);
+  });
+
+  it('an OVERLAPPING read is never served a snapshot a refusal has removed', async () => {
+    // The trigger needs nothing exotic: two ordinary reads overlap, the later
+    // one refuses, and the earlier one - which entered while the old snapshot
+    // was good - must not hand its caller the fee that refusal just retired.
+    await getEvmProtocolConfig(clientAnswering(answer(250)).client, CHAINS.TEMPO_DEVNET);
+    const slowChainId = {
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          return '0xa5bf';
+        }
+        return answer(250);
+      },
+    } as unknown as Eip1193Client;
+    const overlapping = getEvmProtocolConfig(slowChainId, CHAINS.TEMPO_DEVNET);
+    await expect(
+      getEvmProtocolConfig(clientAnswering(answer(1001)).client, CHAINS.TEMPO_DEVNET, { ttlMs: 0 }),
+    ).rejects.toThrow(/Refusing the elisym config at/);
+    const served = await overlapping;
+    expect(served.source).toBe('onchain');
+    expect(served.feeBps).toBe(250);
+  });
+
+  it('serves a snapshot another read established while this one was failing', async () => {
+    // Entered on an empty cache, so a reference taken at entry would have been
+    // `undefined` and this would refuse - although a good snapshot now exists.
+    const slowFailing = {
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          return '0xa5bf';
+        }
+        throw new Error('rpc exploded');
+      },
+    } as unknown as Eip1193Client;
+    const failing = getEvmProtocolConfig(slowFailing, CHAINS.TEMPO_DEVNET);
+    await getEvmProtocolConfig(clientAnswering(answer(250)).client, CHAINS.TEMPO_DEVNET);
+    const served = await failing;
+    expect(served.feeBps).toBe(250);
+    expect(served.source).toBe('cache');
+  });
+
+  it('keeps the value of the read that asked the chain LAST', async () => {
+    const slowOld = {
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') {
+          return '0xa5bf';
+        }
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return answer(250);
+      },
+    } as unknown as Eip1193Client;
+    const older = getEvmProtocolConfig(slowOld, CHAINS.TEMPO_DEVNET);
+    const newer = await getEvmProtocolConfig(
+      clientAnswering(answer(300)).client,
+      CHAINS.TEMPO_DEVNET,
+      {
+        ttlMs: 0,
+      },
+    );
+    expect(newer.feeBps).toBe(300);
+    await older;
+    const cached = await getEvmProtocolConfig(
+      clientAnswering(answer(999)).client,
+      CHAINS.TEMPO_DEVNET,
+    );
+    expect(cached.feeBps).toBe(300);
+    expect(cached.source).toBe('cache');
+  });
+
+  it('does not let one chain read block another chain from caching', async () => {
+    const slowOther = {
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return '0x1079';
+        }
+        return answer(250);
+      },
+    } as unknown as Eip1193Client;
+    const other = getEvmProtocolConfig(slowOther, CHAINS.TEMPO_MAINNET).catch(() => undefined);
+    await getEvmProtocolConfig(clientAnswering(answer(250)).client, CHAINS.TEMPO_DEVNET);
+    await other;
+    const cached = await getEvmProtocolConfig(
+      clientAnswering(answer(999)).client,
+      CHAINS.TEMPO_DEVNET,
+    );
+    expect(cached.source).toBe('cache');
+    expect(cached.feeBps).toBe(250);
+  });
+
+  it('a cleared cache is not repopulated by a read that was already in flight', async () => {
+    await getEvmProtocolConfig(clientAnswering(answer(250)).client, CHAINS.TEMPO_DEVNET);
+    // Already past its own `eth_call` when the clear lands, so its answer is
+    // older than the clear and must not become the cache again. (A read that
+    // asks the chain AFTER the clear is a fresh read and does cache.)
+    const slow = {
       request: async ({ method }: { method: string }) => {
         if (method === 'eth_chainId') {
           return '0xa5bf';
@@ -292,22 +397,47 @@ describe('getEvmProtocolConfig', () => {
         return answer(250);
       },
     } as unknown as Eip1193Client;
-    const refusing = getEvmProtocolConfig(clientAnswering(answer(1001)), CHAINS.TEMPO_DEVNET, {
-      ttlMs: 0,
-    });
-    const good = getEvmProtocolConfig(slowGood, CHAINS.TEMPO_DEVNET, { ttlMs: 0 });
-    await expect(refusing).rejects.toThrow(/Refusing the elisym config at/);
-    await good;
+    const inFlight = getEvmProtocolConfig(slow, CHAINS.TEMPO_DEVNET, { ttlMs: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    clearEvmProtocolConfigCache();
+    await inFlight;
     const failing = clientAnswering(new Error('rpc exploded'));
     await expect(getEvmProtocolConfig(failing.client, CHAINS.TEMPO_DEVNET)).rejects.toThrow(
       /no cached value exists/,
     );
   });
 
+  it('gives up awaiting a deadline on the CALL, not only on the chain read', async () => {
+    const good = clientAnswering(answer(250));
+    await getEvmProtocolConfig(good.client, CHAINS.TEMPO_DEVNET);
+    const hangingCall = {
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') {
+          return '0xa5bf';
+        }
+        return new Promise(() => undefined);
+      },
+    } as unknown as Eip1193Client;
+    const cached = await getEvmProtocolConfig(hangingCall, CHAINS.TEMPO_DEVNET, {
+      ttlMs: 0,
+      signal: AbortSignal.timeout(10),
+    });
+    expect(cached.source).toBe('cache');
+    expect(cached.feeBps).toBe(250);
+  });
+
+  it('reports a real age, and never a negative one', async () => {
+    const { client } = clientAnswering(answer(250));
+    await getEvmProtocolConfig(client, CHAINS.TEMPO_DEVNET);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const cached = await getEvmProtocolConfig(client, CHAINS.TEMPO_DEVNET);
+    expect(cached.cachedAgeMs ?? -1).toBeGreaterThan(15);
+  });
+
   it('a REFUSAL is not undone by a slower good read that was already in flight', async () => {
     // Both writers are last-one-wins by arrival, so without a generation the
     // refusal deletes the snapshot and the older read puts it straight back.
-    await getEvmProtocolConfig(clientAnswering(answer(250)), CHAINS.TEMPO_DEVNET);
+    await getEvmProtocolConfig(clientAnswering(answer(250)).client, CHAINS.TEMPO_DEVNET);
     const slowGood = {
       request: async ({ method }: { method: string }) => {
         if (method === 'eth_chainId') {
@@ -319,7 +449,7 @@ describe('getEvmProtocolConfig', () => {
     } as unknown as Eip1193Client;
     const settled = await Promise.allSettled([
       getEvmProtocolConfig(slowGood, CHAINS.TEMPO_DEVNET, { ttlMs: 0 }),
-      getEvmProtocolConfig(clientAnswering(answer(1001)), CHAINS.TEMPO_DEVNET, { ttlMs: 0 }),
+      getEvmProtocolConfig(clientAnswering(answer(1001)).client, CHAINS.TEMPO_DEVNET, { ttlMs: 0 }),
     ]);
     expect(settled.map((outcome) => outcome.status)).toEqual(['fulfilled', 'rejected']);
     const failing = clientAnswering(new Error('rpc exploded'));

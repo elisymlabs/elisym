@@ -8,6 +8,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CHAINS, isEvmWireAddress } from '../src/payment/chains';
+import { CONFIG_CONTRACT_MODERATO } from './evm-deployment';
 
 const SRC = join(__dirname, '..', 'src');
 
@@ -85,17 +86,18 @@ describe('the EVM rail stays in its own entry point', () => {
   // rules missed would land in the root bundle without a word. This asserts the
   // artefact itself whenever there is one to assert.
   it('keeps the rail out of the built root bundle', () => {
-    // A stale bundle is worse than none: it would assert whatever the last build
-    // happened to hold. `bun qa` builds before it tests, so inside the pipeline
-    // this always runs against fresh output.
-    const newestSource = Math.max(...outsideEvm.map((path) => statSync(path).mtimeMs));
+    // The ORDER is structural, not asserted here: `turbo.json` makes this
+    // package's `test` depend on its `build`, so inside `bun qa` this always
+    // runs against fresh output. An mtime comparison would only add spurious
+    // failures - a cache hit leaves `dist` untouched, so anything that rewrites
+    // a source file's mtime without changing its content makes a current build
+    // look stale.
     for (const name of ['dist/index.js', 'dist/index.cjs']) {
       const bundle = join(__dirname, '..', name);
-      expect(existsSync(bundle), `${name} is missing - run the build before this test`).toBe(true);
       expect(
-        statSync(bundle).mtimeMs,
-        `${name} is older than src - run the build before this test`,
-      ).toBeGreaterThan(newestSource);
+        existsSync(bundle),
+        `${name} is missing - run \`bun run build --filter=@elisym/sdk\` before this test`,
+      ).toBe(true);
       const built = readFileSync(bundle, 'utf8');
       expect(built).not.toContain(RAIL_MARKER);
       expect(built).not.toContain('viem');
@@ -104,6 +106,14 @@ describe('the EVM rail stays in its own entry point', () => {
 });
 
 describe('the chain registry', () => {
+  it('names the config contract that was actually deployed and read back', () => {
+    // A hand-reviewed constant with a recorded code hash (DEPLOYMENTS.md). A
+    // typo or a bad merge here silently redirects every fee read on the chain,
+    // and nothing else in the suite would notice: the other tests read the
+    // address out of the registry they are asserting.
+    expect(CHAINS.TEMPO_DEVNET.protocolConfig.address).toBe(CONFIG_CONTRACT_MODERATO);
+  });
+
   it('names every config contract in wire form', () => {
     // The address goes verbatim into `eth_call`'s `to` and out again as
     // `EvmProtocolConfig.contract`; a checksummed one would work on the wire

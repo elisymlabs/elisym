@@ -19,8 +19,8 @@ export const MAX_EVM_FEE_BPS = 1000;
 const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
 
 /** The cached object is never handed out, and it says how old it is. */
-function snapshotOf(entry: CacheEntry): EvmProtocolConfig {
-  return { ...entry.config, source: 'cache', cachedAgeMs: Date.now() - entry.cachedAt };
+function snapshotOf(config: EvmProtocolConfig, cachedAt: number): EvmProtocolConfig {
+  return { ...config, source: 'cache', cachedAgeMs: monotonicNow() - cachedAt };
 }
 
 export interface EvmProtocolConfig {
@@ -46,29 +46,65 @@ export interface GetEvmProtocolConfigOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * One entry per chain, and it is the ONLY thing anyone reads: never a reference
+ * taken before an `await`, because what the chain says can change while a read
+ * is in flight.
+ *
+ * An entry with no `config` is a TOMBSTONE - a refusal happened, and there is
+ * no snapshot to serve. Writing one instead of deleting is what makes the
+ * ordering rule a single comparison in both directions: an entry is replaced
+ * only by a read that STARTED LATER. Without that, a refusal and a slower good
+ * read that overlapped it decide by arrival order - the refusal clears the
+ * snapshot, the older read puts it straight back, and the process keeps quoting
+ * a fee the chain no longer has while a process without the overlap refuses
+ * outright.
+ */
 interface CacheEntry {
-  config: EvmProtocolConfig;
+  /** Absent on a tombstone: the chain answered something this SDK will not price against. */
+  config?: EvmProtocolConfig;
   cachedAt: number;
+  /** The ticket the writing read took BEFORE it asked the chain. */
+  generation: number;
 }
 
 const cache = new Map<string, CacheEntry>();
 
-/**
- * Every read that is about to write takes a number; only the LATEST one may
- * write, and a refusal takes a number of its own so that nothing older can undo
- * it. Without this, a refusal and a slower good read racing each other decide
- * by arrival order: the refusal deletes the snapshot, the older read puts it
- * back, and the process keeps quoting a fee the chain no longer has while a
- * process without the overlap refuses outright.
- */
+/** Ticket numbers, in the order reads START. Monotonic for the life of the module. */
 let writes = 0;
 
-export function clearEvmProtocolConfigCache(): void {
-  cache.clear();
-  writes += 1;
+/**
+ * A monotonic clock, so that a backward system clock cannot make a snapshot
+ * look fresh for ever, nor report a negative age to a caller imposing its own
+ * bound on staleness.
+ */
+function monotonicNow(): number {
+  return typeof performance === 'undefined' ? Date.now() : performance.now();
 }
 
-/** Thrown when the endpoint is not the chain it was asked about. Never served from cache. */
+/** Replace the entry only from a read that started later than the one there. */
+function writeEntry(caip2: string, entry: CacheEntry): void {
+  const existing = cache.get(caip2);
+  if (existing === undefined || existing.generation < entry.generation) {
+    cache.set(caip2, entry);
+  }
+}
+
+export function clearEvmProtocolConfigCache(): void {
+  // Tombstones rather than a bare clear: a read already in flight holds an
+  // older ticket and must not repopulate a cache the caller just emptied.
+  for (const caip2 of [...cache.keys()]) {
+    cache.set(caip2, { cachedAt: monotonicNow(), generation: ++writes });
+  }
+}
+
+/**
+ * Thrown when the endpoint is not the chain it was asked about. It is never a
+ * cached value's fault, so it is never swallowed into stale-while-error - with
+ * the one exception a caller asks for: a DEADLINE that expires before the chain
+ * read answers leaves the question unanswered, and a snapshot is then served
+ * exactly as it would be for any other unanswered read.
+ */
 export class WrongEvmChainError extends Error {
   constructor(expected: number, actual: string) {
     super(`The rpc endpoint is not chain ${expected} (it answered ${actual}).`);
@@ -101,8 +137,12 @@ export async function checkEvmChain(
 /**
  * Read the config, cached for 60 s per chain. On an rpc FAILURE the last good
  * snapshot is served (stale-while-error, as on Solana); with nothing cached it
- * throws and the caller refuses. A wrong chain id is not a failure of that kind:
- * it is a misconfigured endpoint, and it always throws.
+ * throws and the caller refuses. A wrong chain id is not a failure of that
+ * kind: it is a misconfigured endpoint, and an ANSWERED chain read that names
+ * another chain always throws. Two reads leave the question unanswered rather
+ * than answered wrongly, and both then behave like any other unanswered read -
+ * a caller's deadline expiring first, and an endpoint that will not name its
+ * chain readably at all.
  */
 export async function getEvmProtocolConfig(
   client: Eip1193Client,
@@ -113,7 +153,6 @@ export async function getEvmProtocolConfig(
   if (chain.family !== 'evm' || chain.evmChainId === undefined || contract === undefined) {
     throw new Error(`No elisym config contract is registered for ${chain.caip2}.`);
   }
-  const cached = cache.get(chain.caip2);
   const ttlMs = options?.ttlMs ?? CACHE_TTL_MS;
   let raw: unknown;
   let generation = 0;
@@ -124,8 +163,15 @@ export async function getEvmProtocolConfig(
     // Inside the try, so that a caller's deadline during THIS read falls back to
     // the snapshot exactly as a deadline during the call below does.
     const chainId = await withAbort(checkEvmChain(client, chain), options?.signal);
-    if (options?.forceRefresh !== true && cached && Date.now() - cached.cachedAt < ttlMs) {
-      return snapshotOf(cached);
+    // Read the map HERE, not before the await: a refusal may have landed while
+    // this read was waiting, and a reference taken earlier would not see it.
+    const cached = cache.get(chain.caip2);
+    if (
+      options?.forceRefresh !== true &&
+      cached?.config &&
+      monotonicNow() - cached.cachedAt < ttlMs
+    ) {
+      return snapshotOf(cached.config, cached.cachedAt);
     }
     if (chainId === null) {
       throw new Error('eth_chainId was unreadable');
@@ -147,13 +193,17 @@ export async function getEvmProtocolConfig(
     if (error instanceof WrongEvmChainError) {
       throw error;
     }
-    // Stale-while-error covers the TRANSPORT only.
-    if (cached) {
-      return snapshotOf(cached);
+    // Stale-while-error covers the TRANSPORT only - and reads the map at the
+    // moment it needs it, so a snapshot another read established since this one
+    // started is served, and one a refusal removed is not.
+    const fallback = cache.get(chain.caip2);
+    if (fallback?.config) {
+      return snapshotOf(fallback.config, fallback.cachedAt);
     }
     throw new Error(
       `Failed to read the elisym config contract ${contract} on ${chain.caip2} and no cached value exists. ` +
         `Cause: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 
@@ -164,22 +214,18 @@ export async function getEvmProtocolConfig(
   // has, split by how long each process had been running.
   try {
     const config = parseConfig(raw, chain.caip2, contract);
-    // A read that another one overtook does not get to write: its answer is the
-    // older of the two. `ttlMs` is a per-CALL leniency and never writes a global
-    // one, so one caller's long TTL cannot pin the snapshot every other caller
-    // in the process reads.
-    if (generation === writes) {
-      cache.set(chain.caip2, { config, cachedAt: Date.now() });
-    }
+    // `ttlMs` is a per-CALL leniency and is never written into the entry, so
+    // one caller's long TTL cannot pin the snapshot every other caller reads.
+    writeEntry(chain.caip2, { config, cachedAt: monotonicNow(), generation });
     // A copy: the cached object is this module's, and a caller that edited the
     // returned one in place would change the fee every other caller reads.
     return { ...config };
   } catch (error) {
-    writes += 1;
-    cache.delete(chain.caip2);
+    writeEntry(chain.caip2, { cachedAt: monotonicNow(), generation });
     throw new Error(
       `Refusing the elisym config at ${contract} on ${chain.caip2}: ` +
         `${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 }
