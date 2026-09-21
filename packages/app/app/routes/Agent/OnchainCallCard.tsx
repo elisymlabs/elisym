@@ -2,6 +2,7 @@ import {
   defaultCeilings,
   NATIVE_SOL,
   ONCHAIN_DISCLAIMER,
+  ONCHAIN_AUTHORITY_CHANGE_NOTICE,
   ONCHAIN_UNATTRIBUTED_NOTICE,
   toDTag,
   verifyOnchainCall,
@@ -675,6 +676,9 @@ export function OnchainCallCard({
               after this call, until you revoke it.
             </span>
           ))}
+          {refusedView !== null && refusedView.authorityChanged.length > 0 && (
+            <span className="font-medium">{ONCHAIN_AUTHORITY_CHANGE_NOTICE}</span>
+          )}
           {refusedView !== null && refusedView.unattributed.length > 0 && (
             <span>{ONCHAIN_UNATTRIBUTED_NOTICE}</span>
           )}
@@ -710,6 +714,17 @@ export function OnchainCallCard({
             ))}
             <span className="text-text-2">Network fee: {verified.view.fee} SOL</span>
           </div>
+
+          {verified.view.authorityChanged.length > 0 && (
+            <div className="flex flex-col gap-4 rounded-8 bg-feedback-negative-bg px-8 py-6">
+              <span className="font-medium">{ONCHAIN_AUTHORITY_CHANGE_NOTICE}</span>
+              {verified.view.authorityChanged.map((account) => (
+                <span key={account} className="break-all">
+                  {account}
+                </span>
+              ))}
+            </div>
+          )}
 
           {verified.view.unattributed.length > 0 && (
             <div className="flex flex-col gap-4 rounded-8 bg-feedback-negative-bg px-8 py-6">

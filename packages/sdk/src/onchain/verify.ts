@@ -199,6 +199,7 @@ export async function verifyOnchainCall(args: VerifyOnchainCallArgs): Promise<On
       feeLamports: simulated.feeLamports,
       unitsConsumed: simulated.unitsConsumed,
       unattributed: change.unattributed,
+      unattributedAuthority: change.unattributedAuthority,
       ...(envelope.explain ? { explain: envelope.explain } : {}),
     };
 
