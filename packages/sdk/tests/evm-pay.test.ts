@@ -95,6 +95,7 @@ describe('validateTempoPaymentRequest', () => {
     ['fee_address', { fee_address: 'not-an-address', fee_amount: '250' }, 'fee_address_mismatch'],
     ['fee_amount', { fee_address: TREASURY, fee_amount: 250 }, 'fee_amount_mismatch'],
     ['a field with no code of its own', { expiry_secs: -1 }, 'invalid_amount'],
+    ['a version this rail does not speak', { v: 3 }, 'unsupported_version'],
   ])('maps a schema failure on %s to a code that names the field', (_label, fields, code) => {
     // The deviation this validator claims over the Solana one is that a
     // caller switching on the code never has to read English. Four of the
@@ -734,6 +735,24 @@ describe('checkTempoReceivePolicies', () => {
     expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
   });
 
+  it('accepts the CHECKSUMMED addresses a wallet hands it', async () => {
+    // `getAddresses()` answers EIP-55. Refusing that spelling here refuses the
+    // customer's own address before a single rpc call, and `unreadable` means
+    // "do not sign" - so the customer simply cannot pay. The synchronous
+    // sibling has had this row since round 3; this half went without one, and
+    // round 10's own guard re-opened the trap.
+    const chain = answering({});
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE.toUpperCase().replace('0X', '0x'),
+      payer: '0x0Ed8e782415d51EB7192cf0FcE9914a5Ed23bCe1',
+      recipient: '0x5696dA2ceCEA22f127948458382Ac2c59bc8E4bb',
+    });
+    expect(verdict).toEqual({ ok: true });
+    // One leg, one read: the treasury is only asked when a fee address is given.
+    expect(chain.calls.filter((call) => call.method === 'eth_call')).toHaveLength(1);
+  });
+
   it('asks the registry with the TIP-403 selector, not merely at its address', async () => {
     // The fake checks where the call goes and how its arguments are laid out;
     // nothing said which function is being called.
@@ -850,6 +869,63 @@ describe('resolveTempoTransferOutcome', () => {
       logIndex: 0,
     }));
   }
+
+  it('will not satisfy a memo leg with a plain Transfer to the same destination', async () => {
+    // A `Transfer` carries no memo at all. Comparing two absent words as equal
+    // would let any transfer of the right size to the right address complete a
+    // memo leg - and a memo is the only thing binding a transfer to a request.
+    const plain: FakeLog = {
+      address: USDCE,
+      topics: [TRANSFER_TOPIC, topicWord(PAYER), topicWord(RECIPIENT)],
+      data: `0x${10_000n.toString(16).padStart(64, '0')}`,
+      blockNumber: BATCH_BLOCK,
+      transactionHash: BATCH_HASH,
+      logIndex: 0,
+    };
+    const chain = chainWith({
+      receipts: {
+        [BATCH_HASH]: {
+          ...BATCH,
+          logs: [plain].map((log) => ({
+            ...log,
+            blockNumber: `0x${log.blockNumber.toString(16)}`,
+            logIndex: '0x0',
+            removed: false,
+          })),
+        },
+      },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ token: USDCE, from: PAYER, to: RECIPIENT, amount: 10_000n, memo: BATCH_MEMO }],
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
+    );
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('calls the recorded batch DELIVERED when the caller holds its memo in UPPER case', async () => {
+    // Every address on a leg goes through `sameAddress`; the memo was the one
+    // binding compared raw. A caller that stored its own memo checksummed or
+    // upper-cased would match no log and no receipt - `pending` for ever, on
+    // money that moved.
+    const shouting = legs.map((leg) => ({
+      ...leg,
+      ...(leg.memo === undefined ? {} : { memo: leg.memo.toUpperCase().replace('0X', '0x') }),
+    }));
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, shouting, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toMatchObject({ state: 'delivered' });
+  });
 
   it('calls the recorded batch DELIVERED, from its own receipt', async () => {
     const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });

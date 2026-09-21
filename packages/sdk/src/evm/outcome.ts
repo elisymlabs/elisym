@@ -130,6 +130,18 @@ function isAddressLike(value: unknown): boolean {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
 }
 
+/**
+ * Two 32-byte words are the same word whatever case they are spelled in.
+ *
+ * Both sides are always present here: a leg reaches this only when it names a
+ * memo, and the decoder is asked for `TransferWithMemo` in that case, so a log
+ * without one is `other` and never arrives. A guard for the absent side would
+ * be a claim this code does not make.
+ */
+function sameWord(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
 function sameAddress(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
 }
@@ -147,7 +159,12 @@ function matchesLeg(log: TempoTransferLog, leg: TempoLegExpectation): boolean {
     // shape this must never match, and it never does: a different destination.
     return sameAddress(log.from, leg.from) && log.amount === leg.amount;
   }
-  return log.memo === leg.memo && log.amount >= leg.amount;
+  // `log.memo` is optional on the type and never absent here: this line is
+  // reached only for a leg that names a memo, and such a leg asks the decoder
+  // for `TransferWithMemo`, so a log without one is `other` and never arrives.
+  // The narrowing is for the compiler; no test can kill it, and none should be
+  // written to pretend otherwise.
+  return log.memo !== undefined && sameWord(log.memo, leg.memo) && log.amount >= leg.amount;
 }
 
 /**
@@ -331,7 +348,7 @@ function matchesBlocked(blocked: TempoBlockedLog, leg: TempoLegExpectation): boo
   }
   return leg.memo === undefined
     ? sameAddress(blocked.originator, leg.from)
-    : blocked.memo === leg.memo;
+    : sameWord(blocked.memo, leg.memo);
 }
 
 const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
@@ -387,7 +404,7 @@ async function provenUnsent(
       // A memo-less leg is bound by its sender, and ANY transfer of the right
       // size between them counts as something - which can only turn "unsent"
       // into "pending", never the other way.
-      ...(leg.memo === undefined ? { from: leg.from } : { memo: leg.memo }),
+      ...(leg.memo === undefined ? { from: leg.from } : { memo: leg.memo.toLowerCase() }),
       minAmount: leg.amount,
       fromBlock: options.floor,
       // Ending AT the finalized number is enough only because `valid_before`

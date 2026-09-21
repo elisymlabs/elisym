@@ -22,7 +22,7 @@
 import type { Asset } from '../payment/assets';
 import { assetKey } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
-import { isEvmWireAddress, isVirtualEvmAddress } from '../payment/chains';
+import { isEvmAddressFormat, isEvmWireAddress, isVirtualEvmAddress } from '../payment/chains';
 import { calculateProtocolFeeSubunits } from '../payment/fee-subunits';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
@@ -402,8 +402,14 @@ export async function checkTempoReceivePolicies(
   // answers `(1, 0)` - open - on the other.
   // This function's contract is to return a verdict, never to throw: every
   // address below is spliced into a calldata template, which throws on
-  // anything that is not a string. Its synchronous sibling refuses the same
-  // class with `invalid_bounds` and has a named test for it.
+  // anything that is not a string.
+  //
+  // Case-INSENSITIVE, like every other address gate a caller's own value
+  // reaches: a wallet's `getAddresses()` answers EIP-55, and refusing that
+  // spelling here would refuse the customer's own address before a single rpc
+  // call. The calldata template lowercases what it splices, so nothing
+  // downstream cares. (`isEvmWireAddress` belongs on values that arrived on
+  // the WIRE, where lowercase is the format; these arrive from the caller.)
   const asked = [
     check.token,
     check.payer,
@@ -414,7 +420,7 @@ export async function checkTempoReceivePolicies(
     // wrong one file over.
     ...(check.feeAddress === undefined ? [] : [check.feeAddress]),
   ];
-  if (asked.some((address) => !isEvmWireAddress(address))) {
+  if (asked.some((address) => !isEvmAddressFormat(address))) {
     return {
       ok: false,
       leg: 'provider',
