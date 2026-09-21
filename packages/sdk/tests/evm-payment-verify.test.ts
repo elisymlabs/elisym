@@ -231,13 +231,17 @@ describe('verifyTempoPayment - by hash, over recorded receipts', () => {
     expect(result).toEqual({ outcome: 'refused', code: 'unknown_asset' });
   });
 
-  it('refuses when the endpoint is not the chain the request names', async () => {
+  it('says nothing about a payment when the ENDPOINT is another chain', async () => {
+    // An operator repoints `EVM_RPC_URL`, or a multi-chain gateway fails over
+    // for one call. That is a fact about the endpoint, and refusing every
+    // in-flight job on it is the same mistake as reading a broken receipt as
+    // evidence - the money is on the chain the request names, untouched.
     const chain = chainWith({ chainId: '0xa5bf', receipts: { [SINGLE_HASH]: SINGLE } });
     const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
       txSignature: SINGLE_HASH,
       fromBlock: SINGLE_BLOCK - 100,
     });
-    expect(result).toEqual({ outcome: 'refused', code: 'wrong_chain' });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
   });
 
   it('does not conclude anything when the chain id is unreadable', async () => {
@@ -904,6 +908,32 @@ describe('verifyTempoPayment - the fee leg', () => {
     },
   );
 
+  it.each([
+    ['in the log store, as a real one is', true],
+    ['in the receipt alone', false],
+  ])(
+    'WAITS on a bounced fee leg while the window is open, with the guard log %s',
+    async (_label, inTheStore) => {
+      // Round 7's own scenario: the provider leg is paid, the fee leg is bounced
+      // by the treasury's policy, and the customer can still send it again. The
+      // deadline has to gate the blocked verdict from BOTH lookups, or the
+      // range one reaches a terminal refusal before the retry can land.
+      const bounced = bouncedFeeLeg(BATCH_HASH, BATCH_BLOCK);
+      const { providerLogs } = splitBatch(`0x${'fe'.repeat(32)}`);
+      const chain = chainWith({
+        receipts: {
+          [BATCH_HASH]: { ...BATCH, logs: [...providerLogs.map(wire), ...bounced.map(wire)] },
+        },
+        logs: inTheStore ? [...providerLogs, ...bounced] : providerLogs,
+      });
+      const result = await verifyTempoPayment(chain.client, feeRequest, {
+        txSignature: BATCH_HASH,
+        fromBlock: BATCH_BLOCK - 100,
+      });
+      expect(result).toEqual({ outcome: 'inconclusive', reason: 'not_yet_due' });
+    },
+  );
+
   it('says the fee leg was BLOCKED from a guard log found by the RANGE scan', async () => {
     // The guard log is not in the named receipt at all - a second transaction
     // tried to pay the fee and the treasury bounced it.
@@ -946,6 +976,43 @@ describe('verifyTempoPayment - the fee leg', () => {
       pollBudgetMs: 0,
     });
     expect(result.outcome).toBe('inconclusive');
+  });
+
+  /** The finalized TAG answers; the same block asked for by NUMBER does not. */
+  function headByNumberUnreadable(chain: { client: { request: (args: never) => unknown } }) {
+    return {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getBlockByNumber' && args.params?.[0] !== 'finalized'
+          ? null
+          : chain.client.request(args as never),
+    };
+  }
+
+  it.each([
+    ['the fee-leg lookup', true],
+    ['the no-hash pass', false],
+  ])('says nothing when the head block will not read, on %s', async (_label, withHash) => {
+    // The deadline is read off a block. A node that serves `eth_getLogs` but
+    // not `eth_getBlockByNumber` for its own head has answered NOTHING about
+    // the payment, and both verdicts below it are terminal.
+    const { providerLogs } = splitBatch(`0x${'fe'.repeat(32)}`);
+    const chain = chainWith({
+      receipts: withHash ? { [BATCH_HASH]: { ...BATCH, logs: providerLogs.map(wire) } } : {},
+      logs: withHash
+        ? [...controlTraffic(BATCH_BLOCK - 150, 39_999_900), ...providerLogs]
+        : controlTraffic(BATCH_BLOCK - 150, 39_999_900),
+      timestamps: { 40_000_000: PAST_DEADLINE },
+    });
+    const result = await verifyTempoPayment(
+      headByNumberUnreadable(chain),
+      withHash ? feeRequest : requestOf({ memo: `0x${'ab'.repeat(32)}` }),
+      {
+        ...(withHash ? { txSignature: BATCH_HASH } : {}),
+        fromBlock: BATCH_BLOCK - 100,
+        pollBudgetMs: 0,
+      },
+    );
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
   });
 
   it('says the fee leg is MISSING with no hash at all, once the window has closed', async () => {
@@ -1263,6 +1330,35 @@ describe('verifyTempoPayment - a leg the recipient blocked', () => {
       pollBudgetMs: 0,
     });
     expect(result.outcome).toBe('verified');
+  });
+
+  it('reads a blocked PROVIDER leg against the price less the fee', async () => {
+    // With a fee, the provider's own leg is smaller than the request's amount.
+    // Comparing the guard log against the full amount would answer `none` -
+    // "nothing was ever sent" - on money sitting with the guard.
+    const withFee = PaymentRequestV2Schema.parse({
+      v: 2,
+      chain: 'eip155:42431',
+      asset: `eip155:42431/erc20:${PATHUSD}`,
+      recipient: BLOCKED_RECEIVER,
+      amount: '30000000',
+      fee_address: TREASURY,
+      fee_amount: '5000000',
+      memo: BLOCKED_MEMO,
+      created_at: NOW - 60,
+      expiry_secs: 600,
+    });
+    // Through the RANGE lookup, with no hash: that is where the amount the
+    // guard log must cover is chosen, and the receipt path compares its own.
+    const chain = settledModerato({
+      receipts: {},
+      logs: receiptLogs(BLOCKED),
+    });
+    const result = await verifyTempoPayment(chain.client, withFee, {
+      fromBlock: BLOCKED_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toEqual({ outcome: 'refused', code: 'provider_leg_blocked' });
   });
 
   it('ignores a guard log for another RECEIVER that carries our memo', async () => {
@@ -1822,6 +1918,19 @@ describe('createTempoPaymentRequest', () => {
     // The memo is what binds a transfer to THIS request. Two requests for the
     // same price to the same address must never share one.
     expect(second.request.memo).not.toBe(first.request.memo);
+  });
+
+  it('stamps the request with the chain clock, not the machine it runs on', async () => {
+    // Every deadline downstream is judged against a block timestamp, and the
+    // issuer has already read one. A provider whose machine is behind chain
+    // time by more than the window would issue requests born expired.
+    const chain = issuer();
+    const { request } = await createTempoPaymentRequest(chain.client, MODERATO, {
+      recipient: RECIPIENT,
+      amount: 1_000_000n,
+      asset,
+    });
+    expect(request.created_at).toBe(NOW);
   });
 
   it('carries the fee legs when the chain says there is a fee', async () => {

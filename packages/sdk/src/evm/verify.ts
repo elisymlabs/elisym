@@ -23,7 +23,7 @@ import { resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
 import { monotonicNow } from './clock';
-import { assertEvmChain, WrongEvmChainError } from './config';
+import { assertEvmChain } from './config';
 import {
   EVM_LATE_PAYMENT_GRACE_SECS,
   TEMPO_LIVE_NOHASH_BUDGET_MS,
@@ -193,6 +193,12 @@ export async function verifyTempoPayment(
   request: ParsedPaymentRequestV2,
   options: VerifyTempoPaymentOptions,
 ): Promise<TempoVerifyResult> {
+  // The immutable half of "wrong chain", and the only one that stays terminal:
+  // no endpoint answers for a chain the registry does not carry, so nothing
+  // about such a request can ever become verifiable. No test kills this and
+  // none can - the v2 schema refuses the same request first - but it guards an
+  // exported function whose input is a `ParsedPaymentRequestV2` type, not
+  // necessarily one this build parsed.
   const chain = chainByCaip2(request.chain);
   if (chain === undefined || chain.family !== 'evm') {
     return refused('wrong_chain');
@@ -204,11 +210,14 @@ export async function verifyTempoPayment(
   }
   try {
     await assertEvmChain(client, chain);
-  } catch (error) {
-    // A wrong chain is a wrong request; an unreadable one is a failed look.
-    return error instanceof WrongEvmChainError
-      ? refused('wrong_chain')
-      : inconclusive('chain_unreadable');
+  } catch {
+    // Neither branch is a statement about the PAYMENT. An endpoint that names
+    // another chain is misconfigured - an operator who moved `EVM_RPC_URL`,
+    // or a multi-chain gateway failing over for one call - and terminally
+    // refusing every in-flight job on that answer is the same mistake as
+    // reading a broken receipt as evidence. The request's OWN chain is still
+    // refused terminally above: that one is immutable.
+    return inconclusive('chain_unreadable');
   }
 
   const feeAmount = request.fee_amount === undefined ? 0n : BigInt(request.fee_amount);

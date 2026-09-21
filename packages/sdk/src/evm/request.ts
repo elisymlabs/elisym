@@ -159,7 +159,12 @@ export async function createTempoPaymentRequest(
       ? {}
       : { fee_address: feeAddress, fee_amount: feeAmount.toString() }),
     memo: randomMemo(),
-    created_at: options.nowSecs ?? Math.floor(Date.now() / 1000),
+    // The CHAIN's clock, which is the one every deadline is judged on: the
+    // verifier reads a block timestamp, never a wall clock. A provider whose
+    // machine is behind chain time by more than the window would otherwise
+    // issue requests born expired, and the first verify pass would answer
+    // `none` before the customer could pay.
+    created_at: options.nowSecs ?? finalized.timestamp,
     expiry_secs: expirySecs,
   });
   return { request, fromBlock: finalized.number };
