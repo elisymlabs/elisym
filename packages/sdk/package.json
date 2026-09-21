@@ -93,6 +93,16 @@
         "types": "./dist/llm-health.d.cts",
         "default": "./dist/llm-health.cjs"
       }
+    },
+    "./evm": {
+      "import": {
+        "types": "./dist/evm.d.ts",
+        "default": "./dist/evm.js"
+      },
+      "require": {
+        "types": "./dist/evm.d.cts",
+        "default": "./dist/evm.cjs"
+      }
     }
   },
   "scripts": {

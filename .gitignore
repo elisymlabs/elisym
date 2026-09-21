@@ -60,3 +60,7 @@ test-ledger/
 # Keypairs (NEVER commit)
 *-keypair.json
 !programs/**/id-*.json.example
+
+# Foundry build output (contracts/)
+contracts/*/out/
+contracts/*/cache/
