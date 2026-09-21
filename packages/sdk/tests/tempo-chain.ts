@@ -19,6 +19,8 @@ export interface FakeLog {
   blockNumber: number;
   transactionHash: string;
   logIndex: number;
+  /** Overrides the block hash this chain would answer - a log from elsewhere. */
+  blockHash?: string;
   removed?: boolean;
 }
 
@@ -78,7 +80,7 @@ function matchesTopics(log: FakeLog, topics: (string | null)[] | undefined): boo
   );
 }
 
-export function wireLog(log: FakeLog): Record<string, unknown> {
+export function wireLog(log: FakeLog, options: FakeChainOptions = {}): Record<string, unknown> {
   return {
     address: log.address,
     topics: log.topics,
@@ -86,10 +88,21 @@ export function wireLog(log: FakeLog): Record<string, unknown> {
     blockNumber: quantity(log.blockNumber),
     transactionHash: log.transactionHash,
     logIndex: quantity(log.logIndex),
-    blockHash: `0x${'ab'.repeat(32)}`,
+    // A node sends the hash of the block the log is in, and it is the same
+    // value that block answers. A fake inventing a constant here cannot
+    // express a log served by a backend on another chain - which is the only
+    // thing that tells the two Tempo networks apart.
+    blockHash: log.blockHash ?? blockHashAt(log.blockNumber, options),
     transactionIndex: '0x0',
     removed: log.removed ?? false,
   };
+}
+
+/** The hash this chain answers for a block, receipts included. */
+function blockHashAt(number: number, options: FakeChainOptions): string {
+  return (
+    options.blockHashes?.[number] ?? receiptBlockHash(number, options) ?? `0x${'cd'.repeat(32)}`
+  );
 }
 
 export function fakeTempoChain(options: FakeChainOptions = {}): FakeChain {
@@ -147,7 +160,7 @@ export function fakeTempoChain(options: FakeChainOptions = {}): FakeChain {
         if (options.maxResults !== undefined && matched.length > options.maxResults) {
           throw resultCapError();
         }
-        return matched.map(wireLog);
+        return matched.map((log) => wireLog(log, options));
       }
       throw new Error(`the test chain was asked for ${method}`);
     },
@@ -163,8 +176,7 @@ function block(number: number, options: FakeChainOptions): unknown {
   return {
     number: quantity(number),
     timestamp: quantity(timestamp),
-    hash:
-      options.blockHashes?.[number] ?? receiptBlockHash(number, options) ?? `0x${'cd'.repeat(32)}`,
+    hash: blockHashAt(number, options),
   };
 }
 
@@ -231,5 +243,6 @@ export function receiptLogs(receipt: Record<string, unknown>): FakeLog[] {
     blockNumber: Number(BigInt(String(log.blockNumber))),
     transactionHash: String(log.transactionHash),
     logIndex: Number(BigInt(String(log.logIndex))),
+    ...(typeof log.blockHash === 'string' ? { blockHash: log.blockHash } : {}),
   }));
 }

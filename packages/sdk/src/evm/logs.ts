@@ -59,6 +59,13 @@ const EVENT_TOPIC_COUNT: Record<TempoTransferEvent, number> = {
 export interface TempoTransferLog {
   /** The token that emitted it, in wire form. */
   token: string;
+  /**
+   * The hash of the block this log claims to be in. Every node sends it, and
+   * it is the only field on a log that names a CHAIN: a scan answered by a
+   * backend on the other Tempo network is otherwise indistinguishable, because
+   * the token, the guard and the registry are at the same addresses on both.
+   */
+  blockHash: string;
   from: string;
   to: string;
   amount: bigint;
@@ -117,6 +124,7 @@ interface LogHeader {
   transactionHash: string;
   logIndex: number;
   blockNumber: number;
+  blockHash: string;
 }
 
 /**
@@ -135,13 +143,15 @@ function readLogHeader(entry: unknown): LogHeader | null {
   const transactionHash = readTxHash(readField(entry, 'transactionHash'));
   const logIndex = readBlockNumber(readField(entry, 'logIndex'));
   const blockNumber = readBlockNumber(readField(entry, 'blockNumber'));
+  const blockHash = readTxHash(readField(entry, 'blockHash'));
   if (
     address === null ||
     !Array.isArray(rawTopics) ||
     typeof data !== 'string' ||
     transactionHash === null ||
     logIndex === null ||
-    blockNumber === null
+    blockNumber === null ||
+    blockHash === null
   ) {
     return null;
   }
@@ -153,7 +163,7 @@ function readLogHeader(entry: unknown): LogHeader | null {
     }
     topics.push(word);
   }
-  return { address, topics, data, transactionHash, logIndex, blockNumber };
+  return { address, topics, data, transactionHash, logIndex, blockNumber, blockHash };
 }
 
 /** The single 32-byte word of a transfer log's data, or `null`. */
@@ -200,6 +210,7 @@ export function decodeTempoTransferLog(
     kind: 'log',
     log: {
       token: header.address,
+      blockHash: header.blockHash,
       from,
       to,
       amount,

@@ -132,6 +132,10 @@ describe('decodeTempoTransferLog', () => {
     ['no transaction hash', 'transactionHash'],
     ['no log index', 'logIndex'],
     ['no block number', 'blockNumber'],
+    // The only field on a log that names a CHAIN. Without it the entry says
+    // nothing about which network served it, and the two Tempo networks carry
+    // the same token at the same address.
+    ['no block hash', 'blockHash'],
   ])('refuses an entry with %s', (_label, field) => {
     const entry = wireLog(memoLog());
     delete entry[field];

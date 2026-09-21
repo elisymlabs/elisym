@@ -189,6 +189,26 @@ function outranks(candidate: TempoVerifyResult, incumbent: TempoVerifyResult): b
   return incumbent.outcome === 'refused' && candidate.outcome === 'inconclusive';
 }
 
+/**
+ * Is this read from the chain we are reading? A receipt and a log each name the
+ * block they are in, and that block's hash is the only value either of them
+ * carries that a DIFFERENT chain could not also produce: the two Tempo
+ * networks share the token, the guard and the registry addresses, and their
+ * heights overlap. So the claim is checked against the block this endpoint
+ * holds at that height.
+ */
+async function onThisChain(
+  context: VerifyContext,
+  blockNumber: number,
+  claimed: string | null,
+): Promise<boolean> {
+  const ownBlock = await readBlockByNumber(context.client, blockNumber);
+  // A read that names NO block is not on this chain either: `null` equals no
+  // block hash a node ever answers, so the comparison settles both cases and
+  // there is no second rule to keep in step with the first.
+  return ownBlock !== null && ownBlock.hash === claimed;
+}
+
 function refused(code: TempoRefusalCode): TempoVerifyResult {
   return { outcome: 'refused', code };
 }
@@ -307,10 +327,11 @@ export async function verifyTempoPayment(
   // money is one `eth_getLogs` away and a refusal is terminal, so it is not a
   // refusal until the memo has been looked for too.
   const byMemo = await verifyWithoutHash(context);
-  if (byMemo.outcome === 'verified') {
-    return byMemo;
-  }
-  if (byMemo.outcome === 'refused') {
+  // Both of the answers that END here pay for the chain confirmation, and they
+  // pay for it at the same return: a credit and a refusal are equally terminal
+  // and equally read off this endpoint. Splitting them is what let the one
+  // exit a customer can choose skip the confirmation the other two make.
+  if (byMemo.outcome === 'verified' || byMemo.outcome === 'refused') {
     return confirmedOnChain(client, chain, byMemo, options.signal);
   }
   // And an unknown must never be buried under a refusal - the same rule the
@@ -408,9 +429,7 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
   // networks share the token address, and a customer chooses the hash it
   // reports, so a transfer of free testnet coin carrying this request's memo
   // is one routed `eth_getTransactionReceipt` away from being credited.
-  const claimedBlock = readTxHash(readField(receipt, 'blockHash'));
-  const ownBlock = await readBlockByNumber(context.client, blockNumber);
-  if (ownBlock === null || claimedBlock === null || ownBlock.hash !== claimedBlock) {
+  if (!(await onThisChain(context, blockNumber, readTxHash(readField(receipt, 'blockHash'))))) {
     return inconclusive('chain_unreadable');
   }
 
@@ -575,6 +594,15 @@ async function verifyFeeLegElsewhere(
   });
   const feeLeg = scan.candidates.find((log) => isFeeLeg(context, log));
   if (feeLeg !== undefined) {
+    // This leg has been through no receipt: it is one entry from one
+    // `eth_getLogs`, and it is about to complete a payment. Bind it to the
+    // chain the way the provider leg already is - the block it claims must be
+    // the block this endpoint holds at that height. A backend serving the
+    // other Tempo network answers the same token at the same address, so
+    // without this the fee leg can be paid in free testnet coin.
+    if (!(await onThisChain(context, feeLeg.blockNumber, feeLeg.blockHash))) {
+      return inconclusive('chain_unreadable');
+    }
     return {
       outcome: 'verified',
       settlementId: tempoSettlementId(context.request, hash),

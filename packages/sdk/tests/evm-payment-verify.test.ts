@@ -100,11 +100,15 @@ function chainWith(options: FakeChainOptions = {}) {
     ...options,
     // Merged, never replaced: a receipt is bound to the block it names, and a
     // real node always has that block. A row overriding the head's clock must
-    // not accidentally take the receipt's own block away with it.
+    // not accidentally take the receipt's own block away with it. The same
+    // goes for every block a LOG sits in, now that a log is bound to its block
+    // too - a node that serves the log and not its block does not exist, and a
+    // row that wants one says so by naming the block `undefined`.
     timestamps: {
       40_000_000: NOW,
       [BATCH_BLOCK]: NOW,
       [SINGLE_BLOCK]: NOW,
+      ...Object.fromEntries((options.logs ?? []).map((log) => [log.blockNumber, NOW])),
       ...options.timestamps,
     },
   });
@@ -1167,6 +1171,31 @@ describe('verifyTempoPayment - the fee leg', () => {
     expect(result.outcome === 'verified' && result.feeLeg?.transactionHash).toBe(feeHash);
   });
 
+  it('will not credit a fee leg whose BLOCK this chain does not have', async () => {
+    // The provider leg goes through a receipt and, since round 10, through its
+    // block. The fee leg is one `eth_getLogs` entry and it completes a
+    // payment: a backend serving the other Tempo network answers the same
+    // token at the same address, so the fee could be paid in free testnet coin.
+    const logs = receiptLogs(BATCH);
+    const providerLogs = logs.filter((log) => log.topics[2]?.endsWith(RECIPIENT.slice(2)));
+    const feeLogs = logs.filter((log) => log.topics[2]?.endsWith(TREASURY.slice(2)));
+    const feeHash = `0x${'fe'.repeat(32)}`;
+    const chain = chainWith({
+      receipts: { [BATCH_HASH]: { ...BATCH, logs: providerLogs.map(wire) } },
+      logs: feeLogs.map((log) => ({
+        ...log,
+        transactionHash: feeHash,
+        // The same height, a block this chain never had.
+        blockHash: `0x${'9e'.repeat(32)}`,
+      })),
+    });
+    const result = await verifyTempoPayment(chain.client, feeRequest, {
+      txSignature: BATCH_HASH,
+      fromBlock: BATCH_BLOCK - 100,
+    });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
+  });
+
   it('refuses a fee leg that never arrived, once the window has closed', async () => {
     const providerLogs = receiptLogs(BATCH).filter((log) =>
       log.topics[2]?.endsWith(RECIPIENT.slice(2)),
@@ -1605,6 +1634,36 @@ describe('verifyTempoPayment - guards the fee leg and the ordering owe', () => {
     expect(result).toEqual({ outcome: 'refused', code: 'fee_leg_missing' });
   });
 
+  it('confirms the chain before crediting a payment found by MEMO after a bad hash', async () => {
+    // Three exits can credit, and this is the one the CUSTOMER chooses: report
+    // a hash the node has never seen and the verify falls through to the memo
+    // scan. If that credit skips the closing chain ask, reporting a bundle id
+    // becomes strictly BETTER than reporting nothing - the inversion of the
+    // reason the second look exists at all.
+    let answered = 0;
+    const settled = settledChain(SINGLE_BLOCK - 100, {
+      receipts: { [SINGLE_HASH]: SINGLE },
+      logs: receiptLogs(SINGLE),
+    });
+    const moving = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        if (args.method === 'eth_chainId') {
+          answered += 1;
+          // Tempo mainnet first; by the second ask the endpoint is Moderato.
+          return answered === 1 ? '0x1079' : '0xa5bf';
+        }
+        return settled.client.request(args);
+      },
+    };
+    const result = await verifyTempoPayment(moving, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: `0x${'aa'.repeat(32)}`,
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
+    expect(answered).toBe(2);
+  });
+
   it('settles on the EARLIEST transaction when two carry one memo', async () => {
     // Two real transactions can share a (recipient, memo) pair - a customer who
     // double-sends produces exactly that - and which one settles the request
@@ -1935,6 +1994,9 @@ function wire(log: FakeLog): Record<string, unknown> {
     blockNumber: `0x${log.blockNumber.toString(16)}`,
     transactionHash: log.transactionHash,
     logIndex: `0x${log.logIndex.toString(16)}`,
+    // Every log a node sends names its block, and the receipts built from
+    // these are all copies of the recorded batch, so that is the block.
+    blockHash: log.blockHash ?? String(BATCH.blockHash),
     removed: false,
   };
 }
