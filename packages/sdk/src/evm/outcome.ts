@@ -70,6 +70,9 @@ function sameAddress(left: string, right: string): boolean {
 }
 
 function matchesLeg(log: TempoTransferLog, leg: TempoLegExpectation): boolean {
+  // The token comparison is dead on both call paths - the decoder is handed
+  // `leg.token` and answers `other` for any other emitter, and the scan filters
+  // by address - and is kept so the predicate is true on its own terms.
   if (!sameAddress(log.token, leg.token) || !sameAddress(log.to, leg.to)) {
     return false;
   }

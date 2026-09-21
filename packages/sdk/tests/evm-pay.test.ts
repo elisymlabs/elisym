@@ -11,7 +11,11 @@ import {
   TRANSFER_WITH_MEMO_TOPIC,
 } from '../src/evm/constants';
 import { resolveTempoTransferOutcome, type TempoLegExpectation } from '../src/evm/outcome';
-import { checkTempoReceivePolicies, validateTempoPaymentRequest } from '../src/evm/validate';
+import {
+  checkTempoReceivePolicies,
+  MIN_PAY_WINDOW_SECS,
+  validateTempoPaymentRequest,
+} from '../src/evm/validate';
 import { PATHUSD_TEMPO, USDCE_TEMPO_MAINNET } from '../src/payment/assets';
 import { CHAINS } from '../src/payment/chains';
 import {
@@ -168,6 +172,43 @@ describe('validateTempoPaymentRequest', () => {
       typeof validateTempoPaymentRequest
     >[1];
     expect(validateTempoPaymentRequest(requestJson(), castPastTheType)?.code).toBe('invalid_asset');
+  });
+
+  it('accepts the CHECKSUMMED addresses a wallet hands it', () => {
+    // `getAddresses()` returns EIP-55, and `isEvmWireAddress` requires
+    // lowercase - so without the normalisation the payer's own address is
+    // refused as "not an address this rail can pay from". The card recipient
+    // and the treasury arrive checksummed from the same kinds of place.
+    const checksum = (address: string) => `0x${address.slice(2).toUpperCase()}`;
+    const problem = validateTempoPaymentRequest(
+      requestJson({ fee_address: TREASURY, fee_amount: '250' }),
+      bounds({
+        payer: checksum(PAYER),
+        treasury: checksum(TREASURY),
+        protocolFeeBps: 250,
+        card: {
+          recipient: checksum(RECIPIENT),
+          asset: USDCE_TEMPO_MAINNET,
+          jobPriceSubunits: 10_000n,
+        },
+      }),
+    );
+    expect(problem).toBeNull();
+  });
+
+  it('refuses a fee rate above the contract’s own ceiling', () => {
+    // The config read caps at 1000 bps, and this function is exported: its
+    // doc says "the fee the chain says is due", and a caller that read it
+    // somewhere else is still a caller.
+    const request = requestJson({ fee_address: TREASURY, fee_amount: '9999' });
+    expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps: 9999 }))?.code).toBe(
+      'invalid_fee_params',
+    );
+  });
+
+  it('refuses a request dated exactly one second past the future window', () => {
+    const request = requestJson({ created_at: NOW + MIN_PAY_WINDOW_SECS + 1 });
+    expect(validateTempoPaymentRequest(request, bounds())?.code).toBe('future_timestamp');
   });
 
   it('refuses a recipient the card never named', () => {
@@ -889,6 +930,10 @@ describe('resolveTempoTransferOutcome', () => {
   it.each([
     ['not a number', Number.NaN],
     ['absent', undefined],
+    // `timestamp < -Infinity` is false, so this one passes the gate and
+    // reaches `unsent` on a transaction with no deadline at all.
+    ['negative infinity', Number.NEGATIVE_INFINITY],
+    ['infinity', Number.POSITIVE_INFINITY],
   ])('refuses a deadline that is %s rather than reading one', async (_label, validBefore) => {
     // Each of these compares FALSE against a block timestamp, which would pass
     // the deadline gate and reach `unsent` on a live transaction.
@@ -1028,6 +1073,69 @@ describe('resolveTempoTransferOutcome', () => {
       validBefore: NOW + 60,
     });
     expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('says PENDING when the finalized block comes back as nothing', async () => {
+    // Not an error - an answer of the wrong shape, which is what an endpoint
+    // that does not serve the `finalized` tag returns. Reading it as a number
+    // throws inside the scan instead of answering.
+    const chain = chainWith({ receipts: {}, finalized: null });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW - 600,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('says PENDING for a receipt whose logs are not a list', async () => {
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs: null } } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('stops on an aborted signal rather than scanning the chain twice over', async () => {
+    // Every read here takes the caller's signal. Without them an abandoned
+    // resolve keeps issuing up to 512 log queries per leg plus the control's.
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+      signal: AbortSignal.abort(),
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+    // And it stops at the FIRST read: the verdict is the same either way, so
+    // the only thing that says the signal was honoured is the work not done.
+    // The scan bails on an aborted signal before asking anything, so counting
+    // log queries would not notice - the block read after the receipt would.
+    expect(chain.calls.map((call) => call.method)).toEqual(['eth_getTransactionReceipt']);
+  });
+
+  it('reads a guard log that parked MORE than the leg asked for as ours', async () => {
+    // The rule is "covers the leg", not "equals it". An overpaid transfer
+    // bounced by the receiver's policy is still our money with the guard, and
+    // calling it unsent would send it a second time.
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ ...BLOCKED_LEG, amount: 24_999_999n }],
+      { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome).toMatchObject({ state: 'blocked' });
   });
 
   it('says PENDING when the receipt read itself failed', async () => {

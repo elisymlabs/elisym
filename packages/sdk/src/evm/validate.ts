@@ -24,6 +24,7 @@ import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { PaymentValidationError } from '../types';
 import type { Eip1193Client } from './client';
+import { MAX_EVM_FEE_BPS } from './config';
 import {
   TEMPO_POLICY_REGISTRY,
   TEMPO_UNPAYABLE_ADDRESSES,
@@ -269,7 +270,11 @@ function checkFee(
   // Read before it is used: the fee arithmetic THROWS on a rate that is not a
   // whole number of basis points, and this function's whole contract is that
   // it returns a refusal instead of throwing.
-  if (!Number.isInteger(bounds.protocolFeeBps) || bounds.protocolFeeBps < 0) {
+  if (
+    !Number.isInteger(bounds.protocolFeeBps) ||
+    bounds.protocolFeeBps < 0 ||
+    bounds.protocolFeeBps > MAX_EVM_FEE_BPS
+  ) {
     return refuse(
       'invalid_fee_params',
       `The chain answered a protocol fee of ${bounds.protocolFeeBps} bps, which is not a fee.`,
