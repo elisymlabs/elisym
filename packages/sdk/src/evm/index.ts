@@ -48,6 +48,7 @@ export {
   checkTempoReceivePolicies,
   MIN_PAY_WINDOW_SECS,
   type TempoPaymentBounds,
+  type TempoPaymentCard,
   type ReceivePolicyCheck,
   type ReceivePolicyVerdict,
 } from './validate';

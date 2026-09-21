@@ -105,6 +105,14 @@ export async function resolveTempoTransferOutcome(
   if (hash === null) {
     throw new Error(`resolveTempoTransferOutcome needs a transaction hash, not ${options.hash}.`);
   }
+  // The deadline decides the money verdict, so it is refused the same way the
+  // hash is. `NaN`, `null` and `undefined` all compare FALSE against a block
+  // timestamp, which would pass the gate below and reach `unsent` - the one
+  // answer that tells the caller to send the money again - on a transaction
+  // that can still land.
+  if (!Number.isFinite(options.validBefore)) {
+    throw new Error(`resolveTempoTransferOutcome needs a deadline, not ${options.validBefore}.`);
+  }
   const receipt = await withAbort(
     client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
     options.signal,
