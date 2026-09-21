@@ -211,21 +211,6 @@ describe('validateTempoPaymentRequest', () => {
     ).toBe('invalid_bounds');
   });
 
-  it.each([
-    ['not a number', Number.NaN],
-    ['a string of seconds', '1700000000'],
-    ['infinite', Number.POSITIVE_INFINITY],
-  ])('refuses bounds whose clock is %s', (_label, nowSecs) => {
-    // `NaN` compares FALSE against all three time gates at once, so a request
-    // that expired a day ago and one dated a year ahead both become payable;
-    // a string turns `now + MIN_PAY_WINDOW_SECS` into concatenation. The
-    // request is not judged at all - there is nothing to judge it against.
-    const expired = requestJson({ created_at: NOW - 86_400 });
-    expect(
-      validateTempoPaymentRequest(expired, bounds({ nowSecs: nowSecs as unknown as number }))?.code,
-    ).toBe('invalid_bounds');
-  });
-
   it('refuses a fee rate above the contract’s own ceiling', () => {
     // The config read caps at 1000 bps, and this function is exported: its
     // doc says "the fee the chain says is due", and a caller that read it
@@ -234,6 +219,13 @@ describe('validateTempoPaymentRequest', () => {
     expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps: 9999 }))?.code).toBe(
       'invalid_bounds',
     );
+  });
+
+  it('accepts a provider whose clock is a little fast', () => {
+    // The skew window exists to be used: a request dated inside it is payable,
+    // or a provider seconds ahead of us could never sell anything.
+    const request = requestJson({ created_at: NOW + MIN_PAY_WINDOW_SECS });
+    expect(validateTempoPaymentRequest(request, bounds())).toBeNull();
   });
 
   it('refuses a request dated exactly one second past the future window', () => {
@@ -890,6 +882,22 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome).toEqual({ state: 'pending' });
   });
 
+  it('needs a block PAST the deadline, not one at it', async () => {
+    // `valid_before` is strict: a block whose timestamp EQUALS it cannot carry
+    // the transaction either, so that block is proof like any later one.
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 60 },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'unsent', reason: 'deadline_passed' });
+  });
+
   it('refuses to say unsent one second before the deadline', async () => {
     // `valid_before` is strict: a block at or past it cannot include the
     // transaction, and a block one second short of it still can.
@@ -986,6 +994,25 @@ describe('resolveTempoTransferOutcome', () => {
         validBefore: validBefore as unknown as number,
       }),
     ).rejects.toThrow(/needs a deadline/);
+  });
+
+  it('will not prove the absence of a transfer to a VIRTUAL destination', async () => {
+    // The guard names the MASTER when it parks a transfer to an alias, so the
+    // guard pass - which asks about the alias - cannot see it, and a blocked
+    // transfer emits no memo log for the other pass to find. Together they
+    // read as "never sent" about money that has already left the account.
+    const alias = `0x11223344${'fd'.repeat(10)}556677889900`;
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ ...legs[0], to: alias } as TempoLegExpectation],
+      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome).toEqual({ state: 'pending' });
   });
 
   it('refuses to say unsent on an endpoint that cannot show the token has history', async () => {

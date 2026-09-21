@@ -16,6 +16,7 @@
  * behind the same load balancer as the one that accepted the broadcast.
  */
 
+import { isVirtualEvmAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
 import { TEMPO_FEE_SINK } from './constants';
@@ -256,6 +257,16 @@ async function provenUnsent(
     return { state: 'pending' };
   }
   for (const leg of expected) {
+    // TIP-1022: a blocked transfer to an ALIAS emits a `TransferBlocked`
+    // naming the master, so the guard pass below - which asks about the alias
+    // - cannot see it, while the transfer pass finds nothing because a blocked
+    // transfer emits no memo log at all. The two together would read as "never
+    // sent" on money already parked with the guard. The transfer pass is sound
+    // here (the memo log's `to` is the alias as passed); it is the ABSENCE of
+    // guard evidence that is unreadable, and `unsent` rests on it.
+    if (isVirtualEvmAddress(leg.to)) {
+      return { state: 'pending' };
+    }
     const scan = await listTempoLogs(client, {
       token: leg.token,
       event: leg.memo === undefined ? 'Transfer' : 'TransferWithMemo',
