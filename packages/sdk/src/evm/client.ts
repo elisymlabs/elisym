@@ -57,9 +57,12 @@ export function createJsonRpcClient(url: string, options?: JsonRpcClientOptions)
 }
 
 /**
- * A JSON-RPC error object, kept WHOLE: a node's errors are told apart by `code`
- * and `data`, never by `message` (four different Tempo errors share one code, and
- * a message is a debug string).
+ * A JSON-RPC error object, kept WHOLE. `code` and `data` are the structured
+ * part, and the node's own `message` is kept beside them in `rpcMessage`
+ * because on Tempo it is the ONLY thing that separates four `eth_getLogs`
+ * failures sharing one code - two of which mean "ask for less" and two of
+ * which must never be retried. It is read by the scan (`logs.ts`), and it is
+ * never interpolated into an error a user sees.
  */
 export class EvmRpcError extends Error {
   readonly code: number | undefined;

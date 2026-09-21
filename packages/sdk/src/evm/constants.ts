@@ -13,6 +13,9 @@ export const TEMPO_TRANSFER_GUARD = '0xb10c000000000000000000000000000000000000'
 /** `receivePolicy(address)` on the registry: exactly 192 bytes back. */
 export const RECEIVE_POLICY_SELECTOR = '0xe111e611';
 
+/** `validateReceivePolicy(token, sender, receiver)` - the registry's own verdict, 64 bytes. */
+export const VALIDATE_RECEIVE_POLICY_SELECTOR = '0xb72b0c59';
+
 /** `Transfer(address indexed from, address indexed to, uint256 value)`. */
 export const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 /**

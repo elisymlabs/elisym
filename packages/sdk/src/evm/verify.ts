@@ -22,6 +22,7 @@ import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
+import { monotonicNow } from './clock';
 import { assertEvmChain, WrongEvmChainError } from './config';
 import {
   EVM_LATE_PAYMENT_GRACE_SECS,
@@ -116,6 +117,34 @@ const ABOUT_ONE_TRANSACTION = new Set<TempoRefusalCode>([
   'unreadable_receipt',
 ]);
 
+/**
+ * What is worth ASKING again is not the same question as which answer outranks
+ * which. A guard log inside one named receipt says that transaction's leg was
+ * bounced - structurally the same statement as `reverted`, and no statement at
+ * all about another transaction, so it earns a second look. It is NOT in the
+ * set above, because the same code coming back from a RANGE scan is evidence
+ * that found something, and that is what the tie-break is about.
+ */
+const WORTH_A_SECOND_LOOK = new Set<TempoRefusalCode>([
+  ...ABOUT_ONE_TRANSACTION,
+  'provider_leg_blocked',
+]);
+
+/** Which of two non-verified answers about different candidates says more. */
+function outranks(candidate: TempoVerifyResult, incumbent: TempoVerifyResult): boolean {
+  if (incumbent.outcome !== 'refused') {
+    return false;
+  }
+  if (candidate.outcome === 'inconclusive') {
+    return true;
+  }
+  return (
+    candidate.outcome === 'refused' &&
+    ABOUT_ONE_TRANSACTION.has(incumbent.code) &&
+    !ABOUT_ONE_TRANSACTION.has(candidate.code)
+  );
+}
+
 function refused(code: TempoRefusalCode): TempoVerifyResult {
   return { outcome: 'refused', code };
 }
@@ -202,7 +231,16 @@ export async function verifyTempoPayment(
     return verifyWithPolling(context, options);
   }
   const byHash = await verifyByHash(context, hash);
-  if (byHash.outcome !== 'refused' || !ABOUT_ONE_TRANSACTION.has(byHash.code)) {
+  // A hash the node has never seen is an unknown about ONE transaction, and
+  // the reported value may not be a transaction hash at all: a bundle id and a
+  // user-operation hash are both 32 bytes and both answer `null` here. Without
+  // the second look, reporting one of those is strictly worse than reporting
+  // nothing at all - the same chain, with no hash given, verifies.
+  const worthASecondLook =
+    byHash.outcome === 'refused'
+      ? WORTH_A_SECOND_LOOK.has(byHash.code)
+      : byHash.outcome === 'inconclusive' && byHash.reason === 'no_receipt';
+  if (!worthASecondLook) {
     return byHash;
   }
   // The named transaction did not pay this request, which proves nothing about
@@ -225,13 +263,16 @@ export async function verifyTempoPayment(
   if (byMemo.outcome === 'inconclusive') {
     return byMemo;
   }
-  // Both refused. The scan that FOUND something - a transfer the guard bounced,
-  // a fee leg that never came - says where the money went; "that hash is not
-  // this payment" says only that somebody named the wrong transaction.
+  // The scan that FOUND something - a transfer the guard bounced, a fee leg
+  // that never came - says where the money went; "that hash is not this
+  // payment" says only that somebody named the wrong transaction.
   if (byMemo.outcome === 'refused' && !ABOUT_ONE_TRANSACTION.has(byMemo.code)) {
     return byMemo;
   }
-  return byHash;
+  // A REFUSAL by hash is evidence and stands. An unknown by hash is not: a
+  // complete look that found nothing outranks "I have never seen that hash",
+  // or reporting a bundle id would be worse than reporting nothing at all.
+  return byHash.outcome === 'refused' ? byHash : byMemo;
 }
 
 async function verifyWithPolling(
@@ -240,10 +281,13 @@ async function verifyWithPolling(
 ): Promise<TempoVerifyResult> {
   const budget = options.pollBudgetMs ?? TEMPO_LIVE_NOHASH_BUDGET_MS;
   const interval = options.pollIntervalMs ?? TEMPO_LIVE_POLL_INTERVAL_MS;
-  const deadline = Date.now() + budget;
+  // A duration, on the monotonic clock: a backward wall-clock step would
+  // otherwise extend this loop by the size of the step, and the bound exists
+  // precisely so that one unpaid job cannot pin a provider slot.
+  const deadline = monotonicNow() + budget;
   let result = await verifyWithoutHash(context);
   while (result.outcome === 'inconclusive') {
-    if (context.signal?.aborted || Date.now() + interval >= deadline) {
+    if (context.signal?.aborted || monotonicNow() + interval >= deadline) {
       return result;
     }
     await sleep(interval, context.signal);
@@ -555,12 +599,25 @@ async function verifyWithoutHash(context: VerifyContext): Promise<TempoVerifyRes
     if (!isProviderLeg(context, candidate)) {
       continue;
     }
-    const result = await verifyByHash(context, candidate.transactionHash);
-    if (result.outcome === 'verified') {
-      return result;
+    const read = await verifyByHash(context, candidate.transactionHash);
+    if (read.outcome === 'verified') {
+      return read;
     }
-    // Never let a refusal over one candidate bury an unknown over another.
-    if (best === null || (best.outcome === 'refused' && result.outcome === 'inconclusive')) {
+    // This candidate was DECODED by the scan: the registry token, our
+    // recipient, our memo, at or above the price, in a finalized block. A
+    // receipt read that then cannot see it is a failed READ and nothing else -
+    // a reverted transaction emits no logs, and a finalized log cannot vanish.
+    // Reading it as evidence makes one bad answer from one backend a terminal
+    // refusal of money that is on chain.
+    const result: TempoVerifyResult =
+      read.outcome === 'refused' && ABOUT_ONE_TRANSACTION.has(read.code)
+        ? inconclusive('no_receipt')
+        : read;
+    // Never let a refusal over one candidate bury an unknown over another -
+    // and among refusals, the one that FOUND something (a bounced transfer, a
+    // fee leg that never came) says more than "not in this transaction". The
+    // same two rules the top level applies between the two looks.
+    if (best === null || outranks(result, best)) {
       best = result;
     }
   }

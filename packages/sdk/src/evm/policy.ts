@@ -14,31 +14,32 @@
 
 import { isEvmWireAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
-import { RECEIVE_POLICY_SELECTOR, TEMPO_POLICY_REGISTRY } from './constants';
+import {
+  RECEIVE_POLICY_SELECTOR,
+  TEMPO_POLICY_REGISTRY,
+  VALIDATE_RECEIVE_POLICY_SELECTOR,
+} from './constants';
 import { readAddressWord, readUint256, readWords } from './rpc-read';
 
 /** `(hasReceivePolicy, senderPolicyId, senderPolicyType, tokenFilterId, tokenFilterType, recoveryAuthority)`. */
 const POLICY_WORDS = 6;
-/** Built-in policy 0 is reject-all, 1 is allow-all. */
-const POLICY_ALLOW_ALL = 1n;
-/**
- * The `type` word beside each id, and half of what an id means. Read live: the
- * one configured-and-open account on Moderato answers ids 1 and 1 with types 1
- * and 1, while the account with real filters answers ids 1251837 and 1251838
- * with types 0 and 0 - a per-chain counter of custom lists. So `(id 1, type 0)`
- * is list number one, not "everyone", and quoting a price against it would hand
- * the customer's money to the guard. Both words are required.
- */
-const POLICY_TYPE_BUILT_IN = 1n;
-
 export interface TempoReceivePolicy {
   /** False when the account has no policy at all: every transfer is accepted. */
   configured: boolean;
+  /**
+   * The four filter words, verbatim. NOTHING here decides deliverability: read
+   * across 2164 accounts on both networks, an id of 1245557 appears with a
+   * `type` of 1 and an id of 1 with a `type` of 0, so neither word is a
+   * namespace flag; and 518 accounts whose `senderPolicy` reads `(0, 0)` -
+   * which the registry's own docs call reject-all - receive transfers every
+   * day. Deliverability is per `(token, sender, receiver)` and only
+   * `canReceiveFrom` answers it.
+   */
   senderPolicyId: bigint;
+  senderPolicyType: bigint;
   tokenFilterId: bigint;
+  tokenFilterType: bigint;
   recoveryAuthority: string;
-  /** No policy, or both filters are the BUILT-IN allow-all. */
-  open: boolean;
 }
 
 /**
@@ -89,15 +90,65 @@ export async function readTempoReceivePolicy(
   ) {
     return null;
   }
-  const allowsEveryone =
-    senderPolicyId === POLICY_ALLOW_ALL && senderPolicyType === POLICY_TYPE_BUILT_IN;
-  const allowsEveryCoin =
-    tokenFilterId === POLICY_ALLOW_ALL && tokenFilterType === POLICY_TYPE_BUILT_IN;
   return {
     configured: configured === 1n,
     senderPolicyId,
+    senderPolicyType,
     tokenFilterId,
+    tokenFilterType,
     recoveryAuthority,
-    open: configured === 0n || (allowsEveryone && allowsEveryCoin),
   };
+}
+
+/** Exactly 64 bytes, and only `(1, 0)` is a yes. `null` means unreadable. */
+export async function canReceiveFrom(
+  client: Eip1193Client,
+  check: { token: string; sender: string; recipient: string },
+): Promise<boolean | null> {
+  const argument = (address: string): string =>
+    `${'0'.repeat(24)}${address.slice(2).toLowerCase()}`;
+  const raw = await client
+    .request({
+      method: 'eth_call',
+      params: [
+        {
+          to: TEMPO_POLICY_REGISTRY,
+          data:
+            VALIDATE_RECEIVE_POLICY_SELECTOR +
+            argument(check.token) +
+            argument(check.sender) +
+            argument(check.recipient),
+        },
+        // A policy a reorg could take back is not one to quote a price against.
+        'finalized',
+      ],
+    })
+    .catch(() => null);
+  const words = readWords(raw, 2);
+  const authorized = readUint256(words?.[0]);
+  const reason = readUint256(words?.[1]);
+  if (authorized === null || reason === null) {
+    return null;
+  }
+  return authorized === 1n && reason === 0n;
+}
+
+/**
+ * Can an arbitrary customer pay this address in this coin?
+ *
+ * That is the ISSUER's question, and it is not the same as "does this address
+ * have a policy": most configured accounts on Moderato accept transfers from
+ * their own senders and refuse a stranger, which is exactly the case a
+ * broadcast card must not quote. The probe sender is RANDOM, so a policy
+ * cannot be written to allow the question and refuse the answer.
+ */
+export async function canStrangerReceive(
+  client: Eip1193Client,
+  token: string,
+  recipient: string,
+): Promise<boolean | null> {
+  const probe = new Uint8Array(20);
+  globalThis.crypto.getRandomValues(probe);
+  const sender = `0x${Array.from(probe, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+  return await canReceiveFrom(client, { token, sender, recipient });
 }
