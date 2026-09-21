@@ -400,6 +400,28 @@ export async function checkTempoReceivePolicies(
   // answers plausibly on either, so asking the wrong one is not an error the
   // read itself can report: measured, a receiver that refuses on its own chain
   // answers `(1, 0)` - open - on the other.
+  // This function's contract is to return a verdict, never to throw: every
+  // address below is spliced into a calldata template, which throws on
+  // anything that is not a string. Its synchronous sibling refuses the same
+  // class with `invalid_bounds` and has a named test for it.
+  const asked = [
+    check.token,
+    check.payer,
+    check.recipient,
+    // The only optional one. Absent means there is no fee leg to ask about;
+    // present and not an address is the same error as the other three, and
+    // exempting `undefined` wholesale is what the round-8 bounds guard got
+    // wrong one file over.
+    ...(check.feeAddress === undefined ? [] : [check.feeAddress]),
+  ];
+  if (asked.some((address) => !isEvmWireAddress(address))) {
+    return {
+      ok: false,
+      leg: 'provider',
+      reason: 'unreadable',
+      message: 'This policy check was handed something that is not an address.',
+    };
+  }
   const onThisChain = await checkEvmChain(client, check.chain).catch(() => null);
   if (onThisChain === null) {
     return {

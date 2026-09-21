@@ -120,6 +120,12 @@ async function stillOnThisChain(
   return chainId !== null;
 }
 
+/**
+ * Twenty bytes and nothing else. Anything shorter is not an address a log can
+ * carry, so a leg built on one is `pending` for ever rather than refused -
+ * which is the whole reason this guard exists. Case-insensitive on purpose: a
+ * wallet's `getAddresses()` answers EIP-55 and that is a legitimate caller.
+ */
 function isAddressLike(value: unknown): boolean {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
 }
