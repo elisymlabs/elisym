@@ -357,6 +357,25 @@ describe('verifyTempoPayment - a hash that names the wrong transaction', () => {
     expect(result.outcome === 'verified' && result.providerLeg.transactionHash).toBe(SINGLE_HASH);
   });
 
+  it('looks past a REVERTED transaction to money that IS on chain', async () => {
+    // A customer whose first attempt reverted pays again and reports the hash
+    // it has. The reverted one says nothing about the second transaction, and
+    // the memo is one `eth_getLogs` away.
+    const reverted = `0x${'7d'.repeat(32)}`;
+    const chain = chainWith({
+      receipts: {
+        [reverted]: { ...SINGLE, transactionHash: reverted, status: '0x0', logs: [] },
+        [SINGLE_HASH]: SINGLE,
+      },
+      logs: receiptLogs(SINGLE),
+    });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: reverted,
+      fromBlock: SINGLE_BLOCK - 100,
+    });
+    expect(result.outcome).toBe('verified');
+  });
+
   it('looks past a REVERTED transaction too, and keeps the refusal if nothing paid', async () => {
     const reverted = `0x${'7d'.repeat(32)}`;
     const chain = settledChain(SINGLE_BLOCK - 100, {
@@ -421,6 +440,31 @@ describe('verifyTempoPayment - a hash that names the wrong transaction', () => {
       pollBudgetMs: 0,
     });
     expect(result).toEqual({ outcome: 'refused', code: 'no_provider_leg' });
+  });
+
+  it('does not bury an unknown under a refusal BETWEEN CANDIDATES either', async () => {
+    // One (recipient, memo) pair, two transactions - the reviewer found a live
+    // pair spread over 32. The earlier one's receipt comes back with no logs,
+    // which is a terminal refusal; the later one is unreadable right now. The
+    // unknown has to win, or the job dies while the money is still readable.
+    const later = `0x${'6b'.repeat(32)}`;
+    const memoLog = receiptLogs(SINGLE).filter((log) => log.topics[0] === TRANSFER_WITH_MEMO_TOPIC);
+    const chain = chainWith({
+      receipts: { [SINGLE_HASH]: { ...SINGLE, logs: [] } },
+      logs: [
+        ...memoLog,
+        ...memoLog.map((log) => ({
+          ...log,
+          transactionHash: later,
+          blockNumber: log.blockNumber + 1,
+        })),
+      ],
+    });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'no_receipt' });
   });
 
   it('does not look past a refusal that stands on its own evidence', async () => {
@@ -760,6 +804,22 @@ describe('verifyTempoPayment - a leg the recipient blocked', () => {
       expiry_secs: 600,
     });
 
+  /**
+   * Rewrite one 32-byte word of a log's data. The guard's claim receipt must
+   * agree with its own topics or the log decodes as unreadable - so a row that
+   * moves a topic has to move the body word beside it, or it tests the decoder
+   * instead of the rule it names.
+   */
+  function withDataWord(log: Record<string, unknown>, index: number, word: string) {
+    const data = String(log.data);
+    return {
+      ...log,
+      data: `${data.slice(0, 2 + index * 64)}${word}${data.slice(2 + (index + 1) * 64)}`,
+    };
+  }
+  const BLOCKED_RECIPIENT_WORD = 8;
+  const BLOCKED_MEMO_WORD = 13;
+
   function moderato(options: FakeChainOptions = {}) {
     return fakeTempoChain({
       chainId: '0xa5bf',
@@ -858,6 +918,29 @@ describe('verifyTempoPayment - a leg the recipient blocked', () => {
     expect(result).toEqual({ outcome: 'refused', code: 'provider_leg_blocked' });
   });
 
+  it('ignores a guard log for another RECEIVER that carries our memo', async () => {
+    // Inside a receipt nothing is topic-filtered, so this is the only thing
+    // that binds a guard log to the leg it is read as. Without it a job whose
+    // provider leg is already paid reads as blocked.
+    const stranger = `${'0'.repeat(24)}${'cd'.repeat(20)}`;
+    const elsewhere = (BLOCKED.logs as Record<string, unknown>[]).map((log) => {
+      const topics = log.topics as string[];
+      if (topics[0] !== TRANSFER_BLOCKED_TOPIC) {
+        return log;
+      }
+      const moved = withDataWord(log, BLOCKED_RECIPIENT_WORD, stranger);
+      return { ...moved, topics: [topics[0], topics[1], `0x${stranger}`, topics[3]] };
+    });
+    const chain = settledModerato({
+      receipts: { [BLOCKED_HASH]: { ...BLOCKED, logs: elsewhere } },
+    });
+    const result = await verifyTempoPayment(chain.client, blockedRequest(), {
+      txSignature: BLOCKED_HASH,
+      fromBlock: BLOCKED_BLOCK - 100,
+    });
+    expect(result).toEqual({ outcome: 'refused', code: 'no_provider_leg' });
+  });
+
   it('ignores a guard log for another token that carries OUR memo', async () => {
     // Same receipt, same receiver, the same memo - and a different coin. Only
     // the token tells them apart, and reading it as ours would report money as
@@ -892,7 +975,20 @@ describe('verifyTempoPayment - a leg the recipient blocked', () => {
     const logs = [...(BLOCKED.logs as unknown[])].filter(
       (log) => (log as { topics: string[] }).topics[0] !== TRANSFER_BLOCKED_TOPIC,
     );
-    const receipt = { ...BLOCKED, logs: [...logs, ...(other.logs as unknown[])] };
+    // Spliced onto THIS receipt's transaction and block, or the receipt bound
+    // throws them out before the token is ever compared - and then this row
+    // would be the transaction-bound row above under another name.
+    const spliced = (other.logs as Record<string, unknown>[]).map((log) => {
+      const bound = {
+        ...log,
+        transactionHash: BLOCKED.transactionHash,
+        blockNumber: BLOCKED.blockNumber,
+      };
+      return (log.topics as string[])[0] === TRANSFER_BLOCKED_TOPIC
+        ? withDataWord(bound, BLOCKED_MEMO_WORD, BLOCKED_MEMO.slice(2))
+        : bound;
+    });
+    const receipt = { ...BLOCKED, logs: [...logs, ...spliced] };
     const chain = settledModerato({ receipts: { [BLOCKED_HASH]: receipt } });
     const result = await verifyTempoPayment(chain.client, blockedRequest(), {
       txSignature: BLOCKED_HASH,
@@ -1304,10 +1400,15 @@ describe('createTempoPaymentRequest', () => {
   const OPEN_POLICY = `0x${'0'.repeat(64 * 6)}`;
   const CLOSED_POLICY = `0x${'1'.padStart(64, '0')}${'0'.repeat(64 * 5)}`;
 
-  /** A CONFIGURED policy: word 0 set, a sender list in word 1, a token filter in word 3. */
-  function configuredPolicy(senderPolicyId: number, tokenFilterId: number): string {
+  /** A CONFIGURED policy: `(set, senderId, senderType, tokenId, tokenType, recovery)`. */
+  function configuredPolicy(
+    senderPolicyId: number,
+    tokenFilterId: number,
+    senderPolicyType = 1,
+    tokenFilterType = 1,
+  ): string {
     const word = (value: number) => value.toString(16).padStart(64, '0');
-    return `0x${word(1)}${word(senderPolicyId)}${word(0)}${word(tokenFilterId)}${word(0)}${word(0)}`;
+    return `0x${word(1)}${word(senderPolicyId)}${word(senderPolicyType)}${word(tokenFilterId)}${word(tokenFilterType)}${word(0)}`;
   }
 
   function issuer(options: { fee?: number; policy?: (address: string) => string } = {}) {
@@ -1377,19 +1478,26 @@ describe('createTempoPaymentRequest', () => {
   });
 
   it.each([
-    ['a sender list that lets us in, and a token filter that does not', 1, 7],
-    ['a token filter that lets this coin in, and a sender list that does not', 7, 1],
-    ['neither filter open', 7, 9],
+    ['a sender list that lets us in, and a token filter that does not', 1, 7, 1, 1],
+    ['a token filter that lets this coin in, and a sender list that does not', 7, 1, 1, 1],
+    ['neither filter open', 7, 9, 1, 1],
+    // Read live: a custom list answers its id with a TYPE of 0, and the ids
+    // are a per-chain counter - so list number one wears the same id as the
+    // built-in allow-all and means the opposite.
+    ['the allow-all id under a custom-LIST type, on the sender axis', 1, 1, 0, 1],
+    ['the same on the token axis', 1, 1, 1, 0],
   ])(
     'refuses to quote a policy that is open on one axis only: %s',
-    async (_label, senderPolicyId, tokenFilterId) => {
+    async (_label, senderPolicyId, tokenFilterId, senderPolicyType, tokenFilterType) => {
       // A recipient is only safe to quote when BOTH filters are allow-all. The
       // realistic policy is the first row - a receiver that takes anyone's
       // money but not this coin - and reading it as open quotes a price whose
       // payment the guard will park out of reach of both sides.
       const chain = issuer({
         policy: (address) =>
-          address === RECIPIENT ? configuredPolicy(senderPolicyId, tokenFilterId) : OPEN_POLICY,
+          address === RECIPIENT
+            ? configuredPolicy(senderPolicyId, tokenFilterId, senderPolicyType, tokenFilterType)
+            : OPEN_POLICY,
       });
       await expect(
         createTempoPaymentRequest(chain.client, MODERATO, {

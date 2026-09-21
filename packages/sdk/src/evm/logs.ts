@@ -349,12 +349,19 @@ function isTooMuchError(error: unknown): boolean {
   // exported for a browser wallet's own provider, which throws its own error
   // shape, and a client whose cap errors go unrecognized never halves -
   // it skips whole chunks and calls the pass incomplete for good.
-  const rpcMessage = error instanceof EvmRpcError ? error.rpcMessage : undefined;
-  const nested = readField(readField(error, 'data'), 'message');
-  const message = [rpcMessage, readField(error, 'message'), nested]
-    .filter((part) => typeof part === 'string')
-    .join(' ');
-  return /exceeds max results/i.test(message) || /exceeds max block range/i.test(message);
+  // Each place the words could be is tested ON ITS OWN: joined together, half
+  // a phrase in one field and half in another would match a sentence neither
+  // of them says.
+  const places = [
+    error instanceof EvmRpcError ? error.rpcMessage : undefined,
+    readField(error, 'message'),
+    readField(readField(error, 'data'), 'message'),
+  ];
+  return places.some(
+    (place) =>
+      typeof place === 'string' &&
+      (/exceeds max results/i.test(place) || /exceeds max block range/i.test(place)),
+  );
 }
 
 interface ScanRequest {

@@ -21,6 +21,15 @@ import { readAddressWord, readUint256, readWords } from './rpc-read';
 const POLICY_WORDS = 6;
 /** Built-in policy 0 is reject-all, 1 is allow-all. */
 const POLICY_ALLOW_ALL = 1n;
+/**
+ * The `type` word beside each id, and half of what an id means. Read live: the
+ * one configured-and-open account on Moderato answers ids 1 and 1 with types 1
+ * and 1, while the account with real filters answers ids 1251837 and 1251838
+ * with types 0 and 0 - a per-chain counter of custom lists. So `(id 1, type 0)`
+ * is list number one, not "everyone", and quoting a price against it would hand
+ * the customer's money to the guard. Both words are required.
+ */
+const POLICY_TYPE_BUILT_IN = 1n;
 
 export interface TempoReceivePolicy {
   /** False when the account has no policy at all: every transfer is accepted. */
@@ -28,7 +37,7 @@ export interface TempoReceivePolicy {
   senderPolicyId: bigint;
   tokenFilterId: bigint;
   recoveryAuthority: string;
-  /** No policy, or both filters are the built-in allow-all. */
+  /** No policy, or both filters are the BUILT-IN allow-all. */
   open: boolean;
 }
 
@@ -65,24 +74,30 @@ export async function readTempoReceivePolicy(
   const words = readWords(raw, POLICY_WORDS);
   const configured = readUint256(words?.[0]);
   const senderPolicyId = readUint256(words?.[1]);
+  const senderPolicyType = readUint256(words?.[2]);
   const tokenFilterId = readUint256(words?.[3]);
+  const tokenFilterType = readUint256(words?.[4]);
   const recoveryAuthority = readAddressWord(words?.[5]);
   if (
     configured === null ||
     senderPolicyId === null ||
+    senderPolicyType === null ||
     tokenFilterId === null ||
+    tokenFilterType === null ||
     recoveryAuthority === null ||
     configured > 1n
   ) {
     return null;
   }
+  const allowsEveryone =
+    senderPolicyId === POLICY_ALLOW_ALL && senderPolicyType === POLICY_TYPE_BUILT_IN;
+  const allowsEveryCoin =
+    tokenFilterId === POLICY_ALLOW_ALL && tokenFilterType === POLICY_TYPE_BUILT_IN;
   return {
     configured: configured === 1n,
     senderPolicyId,
     tokenFilterId,
     recoveryAuthority,
-    open:
-      configured === 0n ||
-      (senderPolicyId === POLICY_ALLOW_ALL && tokenFilterId === POLICY_ALLOW_ALL),
+    open: configured === 0n || (allowsEveryone && allowsEveryCoin),
   };
 }

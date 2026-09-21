@@ -421,6 +421,35 @@ describe('listTempoLogs', () => {
     expect(scan.complete).toBe(true);
   });
 
+  it('halves a cap error whose words are in `message`, the way ethers throws it', async () => {
+    const plain = new Error('query exceeds max results 20000, retry with the range 1-2');
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      logs: [memoLog({ blockNumber: 850 })],
+      onGetLogs: (call) => (call.toBlock - call.fromBlock > 50 ? plain : undefined),
+    });
+    const scan = await listTempoLogs(chain.client, { ...base, fromBlock: 800 });
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.complete).toBe(true);
+  });
+
+  it('gives up on a single block the node will not serve, and walks ON', async () => {
+    // A chunk that cannot be halved any further is a FAILED chunk, not a
+    // question to ask again: without that, one block the node refuses eats the
+    // whole request budget and the money further along is never looked for.
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      logs: [memoLog({ blockNumber: 950 })],
+      onGetLogs: (call) =>
+        call.fromBlock <= 800 && call.toBlock >= 800 ? resultCapError() : undefined,
+    });
+    const scan = await listTempoLogs(chain.client, { ...base, fromBlock: 800 });
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.complete).toBe(false);
+  });
+
   it('halves on a range the node calls too wide as well', async () => {
     const chain = fakeTempoChain({
       finalized: 1_000,
