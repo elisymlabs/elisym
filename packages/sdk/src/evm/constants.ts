@@ -10,8 +10,16 @@
 export const TEMPO_POLICY_REGISTRY = '0x403c000000000000000000000000000000000000';
 /** The guard that holds a blocked transfer's funds and emits `TransferBlocked`. */
 export const TEMPO_TRANSFER_GUARD = '0xb10c000000000000000000000000000000000000';
+/**
+ * The network's fee sink. Every Tempo receipt ends with a transfer to it, on a
+ * reverted transaction too - so a sender matching its own legs must never count
+ * one.
+ */
+export const TEMPO_FEE_SINK = '0xfeec000000000000000000000000000000000000';
 /** `receivePolicy(address)` on the registry: exactly 192 bytes back. */
 export const RECEIVE_POLICY_SELECTOR = '0xe111e611';
+/** `validateReceivePolicy(address,address,address)` on the registry: exactly 64 bytes back. */
+export const VALIDATE_RECEIVE_POLICY_SELECTOR = '0xb72b0c59';
 
 /** `Transfer(address indexed from, address indexed to, uint256 value)`. */
 export const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';

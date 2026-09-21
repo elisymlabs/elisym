@@ -44,6 +44,20 @@ export {
 } from './logs';
 export { readTempoReceivePolicy, type TempoReceivePolicy } from './policy';
 export {
+  validateTempoPaymentRequest,
+  checkTempoReceivePolicies,
+  MIN_PAY_WINDOW_SECS,
+  type TempoPaymentBounds,
+  type ReceivePolicyCheck,
+  type ReceivePolicyVerdict,
+} from './validate';
+export {
+  resolveTempoTransferOutcome,
+  type TempoLegExpectation,
+  type TempoTransferOutcome,
+  type ResolveTempoTransferOptions,
+} from './outcome';
+export {
   EVM_LATE_PAYMENT_GRACE_SECS,
   TEMPO_LIVE_NOHASH_BUDGET_MS,
   MAX_LOG_BLOCK_RANGE,

@@ -75,6 +75,11 @@ export interface TempoBlockedLog {
   /** The account whose receive policy refused it (topic 2). */
   receiver: string;
   amount: bigint;
+  /**
+   * Who may claim the parked funds. The ZERO address means the originator may -
+   * which is the only way a sender ever gets a blocked transfer back.
+   */
+  recoveryAuthority: string;
   originator: string;
   /** The recipient inside the claim receipt; equals `receiver` or the log is unreadable. */
   recipient: string;
@@ -219,6 +224,7 @@ const BLOCKED_WORDS = {
   receiptLength: 3,
   claimVersion: 4,
   token: 5,
+  recoveryAuthority: 6,
   originator: 7,
   recipient: 8,
   kind: 12,
@@ -264,6 +270,7 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
   const claimVersion = readUint256(words[BLOCKED_WORDS.claimVersion]);
   const kind = readUint256(words[BLOCKED_WORDS.kind]);
   const receiptToken = readAddressWord(words[BLOCKED_WORDS.token]);
+  const recoveryAuthority = readAddressWord(words[BLOCKED_WORDS.recoveryAuthority]);
   const originator = readAddressWord(words[BLOCKED_WORDS.originator]);
   const recipient = readAddressWord(words[BLOCKED_WORDS.recipient]);
   const memo = words[BLOCKED_WORDS.memo];
@@ -275,6 +282,7 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
     claimVersion !== CLAIM_RECEIPT_V1 ||
     kind !== CLAIM_KIND_TRANSFER ||
     receiptToken === null ||
+    recoveryAuthority === null ||
     originator === null ||
     recipient === null ||
     memo === undefined
@@ -290,6 +298,7 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
       token,
       receiver,
       amount,
+      recoveryAuthority,
       originator,
       recipient,
       memo: `0x${memo}`,

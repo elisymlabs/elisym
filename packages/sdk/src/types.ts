@@ -537,7 +537,9 @@ export type PaymentValidationCode =
   | 'degenerate_reference'
   | 'unsupported_version'
   | 'unsupported_chain'
-  | 'chain_mismatch';
+  | 'chain_mismatch'
+  /** The request pays the customer's own address, which settles nothing. */
+  | 'self_payment';
 
 export interface PaymentValidationError {
   code: PaymentValidationCode;
