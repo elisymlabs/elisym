@@ -130,6 +130,11 @@ function isAddressLike(value: unknown): boolean {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
 }
 
+/** Thirty-two bytes of hex, in either case - the shape a topic word has. */
+function isMemoWord(value: unknown): boolean {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{64}$/.test(value);
+}
+
 /**
  * Two 32-byte words are the same word whatever case they are spelled in.
  *
@@ -216,6 +221,18 @@ export async function resolveTempoTransferOutcome(
   // all, so the leg is `pending` for ever rather than refused.
   if (expected.some((leg) => !isAddressLike(leg.token) || !isAddressLike(leg.to))) {
     throw new Error('resolveTempoTransferOutcome needs every leg to name a token and a receiver.');
+  }
+  // A MEMO is the only thing binding a transfer to a request, and it was the
+  // one leg field with no shape guard while seven others had one. A value that
+  // is not a 32-byte word matches no log and no receipt: `unsent` on the
+  // absence path - pay it again, for money that is on chain - and `pending`
+  // for ever on the receipt path, which has no absence proof to fall through
+  // to. (Measured: `''`, `'0x'`, `'0xdeadbeef'`, a 31-byte word and a
+  // prefix-less 64-hex word all reached `unsent` on this project's own fake.
+  // Live they land on `pending` instead, because Tempo's rpc refuses four of
+  // the five as `-32602` - that is one vendor's parser, not a guard.)
+  if (expected.some((leg) => leg.memo !== undefined && !isMemoWord(leg.memo))) {
+    throw new Error('resolveTempoTransferOutcome needs a leg memo to be a 32-byte word.');
   }
   // `from` binds a memo-LESS leg to its sender, in the transfer pass and in
   // the guard pass both; a memo leg is by design paid by anyone.

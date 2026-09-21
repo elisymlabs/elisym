@@ -908,6 +908,53 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome).toEqual({ state: 'pending' });
   });
 
+  it('will not prove an absence with the memo spelled as the CALLER holds it', async () => {
+    // The scan filters on a topic, and the comparison inside it is exact. A
+    // caller holding its own memo upper-cased would filter on a word no log
+    // carries, find nothing, and call the window complete and empty - `unsent`
+    // on a payment that is on chain. The memo goes into the filter lowercased.
+    const memoLog = receiptLogs(BATCH).find(
+      (log) => log.topics[0] === TRANSFER_WITH_MEMO_TOPIC && log.topics[3] === BATCH_MEMO,
+    );
+    const chain = chainWith({
+      receipts: {},
+      logs: [
+        ...history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+        ...(memoLog === undefined ? [] : [memoLog]),
+      ],
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const shouting = BATCH_MEMO.toUpperCase().replace('0X', '0x');
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ ...legs[0], memo: shouting }],
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
+    );
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('does not credit a memo leg that agrees on only PART of the word', async () => {
+    // Comparing the first four bytes, or the last four, survives every other
+    // row: a memo is 32 bytes and all of them bind.
+    const first = `${BATCH_MEMO.slice(0, 10)}${'0'.repeat(56)}`;
+    const last = `0x${'0'.repeat(56)}${BATCH_MEMO.slice(-8)}`;
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    for (const memo of [first, last]) {
+      const outcome = await resolveTempoTransferOutcome(chain.client, [{ ...legs[0], memo }], {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      });
+      expect(outcome).toEqual({ state: 'pending' });
+    }
+  });
+
   it('calls the recorded batch DELIVERED when the caller holds its memo in UPPER case', async () => {
     // Every address on a leg goes through `sameAddress`; the memo was the one
     // binding compared raw. A caller that stored its own memo checksummed or
@@ -1379,6 +1426,30 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome).toEqual({ state: 'pending' });
   });
 
+  it('finds money PARKED with the guard when the caller holds its memo in UPPER case', async () => {
+    // Round 11 made both memo comparisons case-insensitive and only the
+    // transfer one got a row. Reverting this branch alone leaves the whole
+    // suite green and turns 25000000 subunits parked with the guard into
+    // `unsent` - the money is stopped AND sent a second time.
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    const shouting = {
+      ...BLOCKED_LEG,
+      memo: BLOCKED_LEG.memo?.toUpperCase().replace('0X', '0x'),
+    } as TempoLegExpectation;
+    const outcome = await resolveTempoTransferOutcome(chain.client, [shouting], {
+      chain: CHAINS.TEMPO_DEVNET,
+      hash: BLOCKED_HASH,
+      floor: BLOCKED_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toMatchObject({ state: 'blocked' });
+  });
+
   it('names the guard log’s own originator when nobody may recover the funds', async () => {
     // Both recorded fixtures carry a recovery authority, so this branch - the
     // one where the sender gets its money back - was never entered. The leg's
@@ -1652,6 +1723,33 @@ describe('resolveTempoTransferOutcome', () => {
         },
       ),
     ).rejects.toThrow(/name a token and a receiver/);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['a bare prefix', '0x'],
+    ['four bytes', '0xdeadbeef'],
+    ['thirty-one bytes', `0x${'ab'.repeat(31)}`],
+    ['sixty-four hex with no prefix', 'ab'.repeat(32)],
+    ['not a string at all', 42],
+  ])('refuses a leg memo that is %s', async (_label, memo) => {
+    // The memo is the only thing binding a transfer to a request, and it was
+    // the one leg field with no shape guard while seven others had one. A
+    // value that matches no log is `unsent` on the absence path - pay it again
+    // for money that is on chain - and `pending` for ever on the receipt path.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    await expect(
+      resolveTempoTransferOutcome(
+        chain.client,
+        [{ ...legs[0], memo } as unknown as TempoLegExpectation],
+        {
+          chain: CHAINS.TEMPO_MAINNET,
+          hash: BATCH_HASH,
+          floor: BATCH_BLOCK - 100,
+          validBefore: NOW + 60,
+        },
+      ),
+    ).rejects.toThrow(/32-byte word/);
   });
 
   it('refuses a memo-LESS leg whose sender is not an address', async () => {
