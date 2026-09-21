@@ -130,19 +130,17 @@ const WORTH_A_SECOND_LOOK = new Set<TempoRefusalCode>([
   'provider_leg_blocked',
 ]);
 
-/** Which of two non-verified answers about different candidates says more. */
+/**
+ * Which of two non-verified answers about different candidates says more.
+ *
+ * Only one rule, because only one can fire: by the time a candidate's answer
+ * reaches here, every refusal that contradicts the scan has become an unknown,
+ * so the refusals left are the fee-leg ones and no ranking among them is
+ * possible. An unknown over one candidate is never buried by a refusal over
+ * another - that is the whole rule.
+ */
 function outranks(candidate: TempoVerifyResult, incumbent: TempoVerifyResult): boolean {
-  if (incumbent.outcome !== 'refused') {
-    return false;
-  }
-  if (candidate.outcome === 'inconclusive') {
-    return true;
-  }
-  return (
-    candidate.outcome === 'refused' &&
-    ABOUT_ONE_TRANSACTION.has(incumbent.code) &&
-    !ABOUT_ONE_TRANSACTION.has(candidate.code)
-  );
+  return incumbent.outcome === 'refused' && candidate.outcome === 'inconclusive';
 }
 
 function refused(code: TempoRefusalCode): TempoVerifyResult {
@@ -266,7 +264,9 @@ export async function verifyTempoPayment(
   // The scan that FOUND something - a transfer the guard bounced, a fee leg
   // that never came - says where the money went; "that hash is not this
   // payment" says only that somebody named the wrong transaction.
-  if (byMemo.outcome === 'refused' && !ABOUT_ONE_TRANSACTION.has(byMemo.code)) {
+  // Every refusal the scan can reach is found-something evidence: the codes
+  // that mean "not in this transaction" are converted to unknowns inside it.
+  if (byMemo.outcome === 'refused') {
     return byMemo;
   }
   // A REFUSAL by hash is evidence and stands. An unknown by hash is not: a
@@ -388,12 +388,21 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
       feeLeg,
     };
   }
-  if (blockedInReceipt(context, bound, context.feeAddress, context.feeAmount)) {
+  // The legs may have been paid by two transactions (a wallet that cannot
+  // batch), so a receipt without the fee leg is not yet an answer - and a
+  // guard log in THIS receipt is not one either until that look has happened.
+  // A fee leg this transaction had bounced and another transaction then paid
+  // is a PAID job; asking the guard first made it a terminal refusal, with the
+  // provider's own leg already in the provider's account. The guard log may
+  // only RENAME a refusal the scan has already reached, never reach one.
+  const elsewhere = await verifyFeeLegElsewhere(context, hash, providerLeg, finalized.number);
+  if (
+    elsewhere.outcome === 'refused' &&
+    blockedInReceipt(context, bound, context.feeAddress, context.feeAmount)
+  ) {
     return refused('fee_leg_blocked');
   }
-  // The legs may have been paid by two transactions (a wallet that cannot
-  // batch), so a receipt without the fee leg is not yet an answer.
-  return verifyFeeLegElsewhere(context, hash, providerLeg, finalized.number);
+  return elsewhere;
 }
 
 function isProviderLeg(context: VerifyContext, log: TempoTransferLog): boolean {
@@ -609,8 +618,13 @@ async function verifyWithoutHash(context: VerifyContext): Promise<TempoVerifyRes
     // a reverted transaction emits no logs, and a finalized log cannot vanish.
     // Reading it as evidence makes one bad answer from one backend a terminal
     // refusal of money that is on chain.
+    // Every code in the second-look set says "the provider leg is not in this
+    // transaction", which is precisely what the scan just proved false. The
+    // fee-leg codes are NOT in it and must not be converted: they agree with
+    // the scan about the provider leg and disagree about the fee, which is a
+    // real verdict and the commonest one this path reaches.
     const result: TempoVerifyResult =
-      read.outcome === 'refused' && ABOUT_ONE_TRANSACTION.has(read.code)
+      read.outcome === 'refused' && WORTH_A_SECOND_LOOK.has(read.code)
         ? inconclusive('no_receipt')
         : read;
     // Never let a refusal over one candidate bury an unknown over another -

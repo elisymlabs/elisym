@@ -779,6 +779,143 @@ describe('verifyTempoPayment - guards the receipt path owes', () => {
 describe('verifyTempoPayment - the fee leg', () => {
   const feeRequest = requestOf({ amount: '20000', fee_address: TREASURY, fee_amount: '10000' });
 
+  /** The recorded batch, split: the provider leg here, the fee leg over there. */
+  function splitBatch(feeHash: string) {
+    const logs = receiptLogs(BATCH);
+    return {
+      providerLogs: logs.filter((log) => log.topics[2]?.endsWith(RECIPIENT.slice(2))),
+      feeLogs: logs
+        .filter((log) => log.topics[2]?.endsWith(TREASURY.slice(2)))
+        .map((log) => ({ ...log, transactionHash: feeHash })),
+    };
+  }
+
+  /** The guard's `TransferBlocked`, re-pointed at OUR token, treasury and memo. */
+  function bouncedFeeLeg(transactionHash: string, blockNumber: number): FakeLog[] {
+    const word = (value: string) => `${'0'.repeat(24)}${value.slice(2)}`;
+    return receiptLogs(BLOCKED)
+      .filter((log) => log.topics[0] === TRANSFER_BLOCKED_TOPIC)
+      .map((log) => {
+        const body = log.data;
+        const withToken = `${body.slice(0, 2 + 5 * 64)}${word(USDCE)}${body.slice(2 + 6 * 64)}`;
+        const withRecipient = `${withToken.slice(0, 2 + 8 * 64)}${word(TREASURY)}${withToken.slice(2 + 9 * 64)}`;
+        const withMemo = `${withRecipient.slice(0, 2 + 13 * 64)}${BATCH_MEMO.slice(2)}${withRecipient.slice(2 + 14 * 64)}`;
+        return {
+          ...log,
+          topics: [log.topics[0], `0x${word(USDCE)}`, `0x${word(TREASURY)}`, log.topics[3]],
+          data: withMemo,
+          transactionHash,
+          blockNumber,
+        } as FakeLog;
+      });
+  }
+
+  it('credits a fee leg this transaction BOUNCED and another one paid', async () => {
+    // The receipt carries a real guard log for the fee leg, and the fee was
+    // then paid by a second transaction. Asking the guard before looking is
+    // how a fully paid job became a terminal refusal - with the provider's own
+    // leg already in the provider's account, and with NO hash reported either.
+    const feeHash = `0x${'fe'.repeat(32)}`;
+    const { providerLogs, feeLogs } = splitBatch(feeHash);
+    const bounced = bouncedFeeLeg(BATCH_HASH, BATCH_BLOCK);
+    const chain = chainWith({
+      receipts: {
+        [BATCH_HASH]: { ...BATCH, logs: [...providerLogs.map(wire), ...bounced.map(wire)] },
+        [feeHash]: { ...BATCH, transactionHash: feeHash, logs: feeLogs.map(wire) },
+      },
+      logs: [...providerLogs, ...feeLogs, ...bounced],
+    });
+    for (const txSignature of [BATCH_HASH, undefined]) {
+      const result = await verifyTempoPayment(chain.client, feeRequest, {
+        ...(txSignature === undefined ? {} : { txSignature }),
+        fromBlock: BATCH_BLOCK - 100,
+        pollBudgetMs: 0,
+      });
+      expect(result.outcome).toBe('verified');
+    }
+  });
+
+  it('says the fee leg was BLOCKED when nothing else paid it', async () => {
+    // The other half of the same rule: once the look has happened and found
+    // nothing, the guard log in this receipt says where the money went.
+    const bounced = bouncedFeeLeg(BATCH_HASH, BATCH_BLOCK);
+    const { providerLogs } = splitBatch(`0x${'fe'.repeat(32)}`);
+    // The guard log is in the RECEIPT only - if it were in the log store too,
+    // the range scan would reach `fee_leg_blocked` on its own and this row
+    // would not be about the receipt at all.
+    const chain = settledChain(BATCH_BLOCK - 100, {
+      receipts: {
+        [BATCH_HASH]: { ...BATCH, logs: [...providerLogs.map(wire), ...bounced.map(wire)] },
+      },
+      logs: providerLogs,
+    });
+    const result = await verifyTempoPayment(chain.client, feeRequest, {
+      txSignature: BATCH_HASH,
+      fromBlock: BATCH_BLOCK - 100,
+    });
+    expect(result).toEqual({ outcome: 'refused', code: 'fee_leg_blocked' });
+  });
+
+  it('says the fee leg was BLOCKED from a guard log found by the RANGE scan', async () => {
+    // The guard log is not in the named receipt at all - a second transaction
+    // tried to pay the fee and the treasury bounced it.
+    const bouncedHash = `0x${'bb'.repeat(32)}`;
+    const bounced = bouncedFeeLeg(bouncedHash, BATCH_BLOCK + 1);
+    const { providerLogs } = splitBatch(`0x${'fe'.repeat(32)}`);
+    const chain = settledChain(BATCH_BLOCK - 100, {
+      receipts: { [BATCH_HASH]: { ...BATCH, logs: providerLogs.map(wire) } },
+      logs: [...providerLogs, ...bounced],
+    });
+    const result = await verifyTempoPayment(chain.client, feeRequest, {
+      txSignature: BATCH_HASH,
+      fromBlock: BATCH_BLOCK - 100,
+    });
+    expect(result).toEqual({ outcome: 'refused', code: 'fee_leg_blocked' });
+  });
+
+  it('does not read a guard log as a blocked PROVIDER leg the scan just found', async () => {
+    // The scan decoded the provider leg in this transaction, and its receipt
+    // comes back with a guard log instead - the two cannot both be true, so
+    // the receipt is the one that is wrong. It is an unknown, like every other
+    // way a receipt can contradict a decoded leg.
+    const { providerLogs } = splitBatch(`0x${'fe'.repeat(32)}`);
+    const guardOnly = bouncedFeeLeg(BATCH_HASH, BATCH_BLOCK).map((log) => ({
+      ...log,
+      topics: [
+        log.topics[0],
+        log.topics[1],
+        `0x${'0'.repeat(24)}${RECIPIENT.slice(2)}`,
+        log.topics[3],
+      ],
+      data: `${log.data.slice(0, 2 + 8 * 64)}${'0'.repeat(24)}${RECIPIENT.slice(2)}${log.data.slice(2 + 9 * 64)}`,
+    }));
+    const chain = settledChain(BATCH_BLOCK - 100, {
+      receipts: { [BATCH_HASH]: { ...BATCH, logs: guardOnly.map(wire) } },
+      logs: providerLogs,
+    });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: BATCH_MEMO }), {
+      fromBlock: BATCH_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result.outcome).toBe('inconclusive');
+  });
+
+  it('says the fee leg is MISSING with no hash at all, once the window has closed', async () => {
+    // The commonest fee-path answer, and the one the no-hash path has to be
+    // able to reach: the provider leg is on chain, the fee leg never came, and
+    // the deadline has passed. It is terminal, not "ask again".
+    const { providerLogs } = splitBatch(`0x${'fe'.repeat(32)}`);
+    const chain = settledChain(BATCH_BLOCK - 100, {
+      receipts: { [BATCH_HASH]: { ...BATCH, logs: providerLogs.map(wire) } },
+      logs: providerLogs,
+    });
+    const result = await verifyTempoPayment(chain.client, feeRequest, {
+      fromBlock: BATCH_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toEqual({ outcome: 'refused', code: 'fee_leg_missing' });
+  });
+
   it('credits a batch SPLIT into two transactions, finding the fee leg by lookup', async () => {
     // What a wallet that cannot batch does (D15): the provider leg lands, then
     // the fee leg a moment later, in its own transaction.

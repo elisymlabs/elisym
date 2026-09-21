@@ -42,7 +42,12 @@ export {
   type TempoTransferEvent,
   type TempoTransferLog,
 } from './logs';
-export { readTempoReceivePolicy, type TempoReceivePolicy } from './policy';
+export {
+  canReceiveFrom,
+  canStrangerReceive,
+  readTempoReceivePolicy,
+  type TempoReceivePolicy,
+} from './policy';
 export {
   EVM_LATE_PAYMENT_GRACE_SECS,
   TEMPO_LIVE_NOHASH_BUDGET_MS,
