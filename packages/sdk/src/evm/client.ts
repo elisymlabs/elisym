@@ -64,6 +64,14 @@ export function createJsonRpcClient(url: string, options?: JsonRpcClientOptions)
 export class EvmRpcError extends Error {
   readonly code: number | undefined;
   readonly data: unknown;
+  /**
+   * The node's own `message`, kept apart from ours. Tempo answers four different
+   * `eth_getLogs` failures with ONE code and no `data`, and telling "the range was
+   * too wide" (retry smaller) from "these params are nonsense" (do not retry) is
+   * only possible from this string. It is never interpolated into `message`: a
+   * node is remote input, and elisym's own errors stay elisym's own words.
+   */
+  readonly rpcMessage: string | undefined;
 
   constructor(method: string, error: unknown) {
     const code =
@@ -78,6 +86,13 @@ export class EvmRpcError extends Error {
     this.code = code;
     this.data =
       typeof error === 'object' && error !== null && 'data' in error ? error.data : undefined;
+    this.rpcMessage =
+      typeof error === 'object' &&
+      error !== null &&
+      'message' in error &&
+      typeof error.message === 'string'
+        ? error.message
+        : undefined;
   }
 }
 

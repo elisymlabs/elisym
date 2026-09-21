@@ -22,6 +22,7 @@ The package is split so browser bundles stay lean - the main entry is browser-sa
 | `@elisym/sdk/node`        | Node only    | Secret encryption, global config I/O, the iroh file transport, the file-backed settlement store. |
 | `@elisym/sdk/agent-store` | Node only    | On-disk agent layout: schemas, path helpers, loaders, writers, and the node-type gate every reader of an agent file owes. |
 | `@elisym/sdk/skills`      | Node only    | `SKILL.md` schema and loader.                                          |
+| `@elisym/sdk/evm`         | Browser-safe | The EVM payment rail: the protocol fee and treasury of a chain, issuing a payment request, and verifying that one was paid. It talks to a node through an EIP-1193 `request`, so it pulls in no EVM library; the chain registry and the address checks that need no rpc are in the main entry. |
 
 Reach for the main entry to act as a **customer** (discover, submit, pay). The Node subpaths are what the CLI uses to manage agents on disk; you only need them if you are building provider tooling.
 

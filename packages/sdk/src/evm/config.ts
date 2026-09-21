@@ -149,6 +149,13 @@ export async function checkEvmChain(
   return chainId;
 }
 
+/** The same check for a caller that cannot proceed without a fresh, readable answer. */
+export async function assertEvmChain(client: Eip1193Client, chain: ChainConfig): Promise<void> {
+  if ((await checkEvmChain(client, chain)) === null) {
+    throw new Error(`eth_chainId was unreadable, so ${chain.caip2} could not be confirmed.`);
+  }
+}
+
 /**
  * Read the config, cached for 60 s per chain. On an rpc FAILURE the last good
  * snapshot is served (stale-while-error, as on Solana); with nothing cached it
