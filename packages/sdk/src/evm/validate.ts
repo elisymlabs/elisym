@@ -153,6 +153,27 @@ export function validateTempoPaymentRequest(
   }
   const request = parsed.data;
 
+  // The bounds' own SHAPE, before anything is read out of it. A caller that
+  // casts past the type reaches this function with `card: null` or no chain at
+  // all, and every one of those dies on a property read - this function's
+  // contract is to refuse, never to throw, and seventeen sibling shapes
+  // already do.
+  if (typeof bounds !== 'object' || bounds === null) {
+    return refuse('invalid_bounds', 'These bounds are not an object.');
+  }
+  if (typeof bounds.chain !== 'object' || bounds.chain === null) {
+    return refuse('invalid_bounds', 'These bounds name no chain to pay on.');
+  }
+  if (bounds.card !== undefined && (typeof bounds.card !== 'object' || bounds.card === null)) {
+    return refuse('invalid_bounds', 'These bounds carry a card that is not a card.');
+  }
+  if (
+    bounds.expectedAsset !== undefined &&
+    (typeof bounds.expectedAsset !== 'object' || bounds.expectedAsset === null)
+  ) {
+    return refuse('invalid_bounds', 'These bounds carry an asset that is not an asset.');
+  }
+
   // Every one of these is lowercased below, which THROWS on anything that is
   // not a string - and this function's contract is to refuse, never to throw.
   const addresses = [

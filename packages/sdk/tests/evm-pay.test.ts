@@ -263,6 +263,20 @@ describe('validateTempoPaymentRequest', () => {
     expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps: 1000 }))).toBeNull();
   });
 
+  it.each([
+    ['a card that is not a card', { card: null }],
+    ['no chain at all', { chain: undefined }],
+    ['a chain that is not a chain', { chain: null }],
+    ['an asset that is not an asset', { card: undefined, expectedAsset: null }],
+  ])('refuses bounds carrying %s rather than throwing', (_label, overrides) => {
+    // Seventeen sibling shapes refuse; these four died on a property read.
+    const problem = validateTempoPaymentRequest(
+      requestJson(),
+      bounds(overrides) as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
+    );
+    expect(problem?.code).toBe('invalid_bounds');
+  });
+
   it('refuses bounds that bound no AMOUNT at all, even cast past the type', () => {
     // Without a card there is no recipient bound and no price bound, so the cap
     // is the whole binding. Absent, every amount to every address is payable -
@@ -1450,6 +1464,27 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome).toMatchObject({ state: 'blocked' });
   });
 
+  it('finds the SECOND leg of a payment parked with the guard', async () => {
+    // `expected.find(matchesBlocked)` over a two-leg receipt: narrowing it to
+    // the first leg leaves 183 tests green while the treasury's leg, stopped
+    // by the guard, answers `pending` for ever - money parked and nobody told
+    // who may claim it.
+    const provider = { ...BLOCKED_LEG, to: RECIPIENT, memo: BATCH_MEMO };
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, [provider, BLOCKED_LEG], {
+      chain: CHAINS.TEMPO_DEVNET,
+      hash: BLOCKED_HASH,
+      floor: BLOCKED_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toMatchObject({ state: 'blocked', leg: BLOCKED_LEG });
+  });
+
   it('names the guard log’s own originator when nobody may recover the funds', async () => {
     // Both recorded fixtures carry a recovery authority, so this branch - the
     // one where the sender gets its money back - was never entered. The leg's
@@ -1750,6 +1785,31 @@ describe('resolveTempoTransferOutcome', () => {
         },
       ),
     ).rejects.toThrow(/32-byte word/);
+  });
+
+  it.each([
+    ['a memo that is not a word', { memo: '0xdeadbeef' }, /32-byte word/],
+    ['a receiver that is not an address', { to: 'the treasury' }, /name a token and a receiver/],
+    ['an amount that is not subunits', { amount: 10_000 }, /positive amount/],
+  ])('refuses %s on the SECOND leg of an atomic payment', async (_label, overrides, message) => {
+    // Every one of these guards reads `expected.some(...)`, and every other
+    // row hands it one leg - so a check narrowed to the first leg passes the
+    // whole suite. An atomic payment is two legs, and the fee leg is the one
+    // no row reached: a malformed second leg means `pending` for ever on money
+    // that arrived, which is exactly what these guards exist to prevent.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    await expect(
+      resolveTempoTransferOutcome(
+        chain.client,
+        [legs[0], { ...legs[1], ...overrides } as TempoLegExpectation],
+        {
+          chain: CHAINS.TEMPO_MAINNET,
+          hash: BATCH_HASH,
+          floor: BATCH_BLOCK - 100,
+          validBefore: NOW + 60,
+        },
+      ),
+    ).rejects.toThrow(message);
   });
 
   it('refuses a memo-LESS leg whose sender is not an address', async () => {
