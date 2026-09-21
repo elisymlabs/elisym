@@ -16,9 +16,11 @@
  * behind the same load balancer as the one that accepted the broadcast.
  */
 
+import type { ChainConfig } from '../payment/chains';
 import { isVirtualEvmAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
+import { checkEvmChain } from './config';
 import { TEMPO_FEE_SINK } from './constants';
 import type { TempoBlockedLog, TempoTransferLog } from './logs';
 import {
@@ -58,6 +60,14 @@ export type TempoTransferOutcome =
   | { state: 'pending' };
 
 export interface ResolveTempoTransferOptions {
+  /**
+   * The chain this transfer was sent on. Read, not assumed: a caller holding a
+   * browser wallet's provider does not control which network it is on, and
+   * pathUSD lives at the SAME address on both Tempo networks, so a Moderato
+   * transfer looked for on mainnet finds an endpoint that answers every
+   * question plausibly and nothing of ours - which is `unsent`.
+   */
+  chain: ChainConfig;
   hash: string;
   /** The finalized number the SENDER read before broadcasting: the floor of its own search. */
   floor: number;
@@ -116,6 +126,15 @@ export async function resolveTempoTransferOutcome(
   // that can still land.
   if (!Number.isFinite(options.validBefore)) {
     throw new Error(`resolveTempoTransferOutcome needs a deadline, not ${options.validBefore}.`);
+  }
+  // An endpoint that names another chain is a misconfiguration the caller has
+  // to fix, and the same class of caller error as a hash that is not a hash.
+  // One it cannot answer is an rpc failure like any other: `pending`.
+  const onThisChain = await checkEvmChain(client, options.chain).catch((error: unknown) => {
+    throw error;
+  });
+  if (onThisChain === null) {
+    return { state: 'pending' };
   }
   const receipt = await withAbort(
     client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
@@ -264,7 +283,10 @@ async function provenUnsent(
     // sent" on money already parked with the guard. The transfer pass is sound
     // here (the memo log's `to` is the alias as passed); it is the ABSENCE of
     // guard evidence that is unreadable, and `unsent` rests on it.
-    if (isVirtualEvmAddress(leg.to)) {
+    // ...and the same for a virtual SENDER on a memo-less leg, where the scan
+    // filters on a `from` topic no log can ever carry: the alias is resolved
+    // before the transfer is recorded, so the absence it proves is vacuous.
+    if (isVirtualEvmAddress(leg.to) || (leg.memo === undefined && isVirtualEvmAddress(leg.from))) {
       return { state: 'pending' };
     }
     const scan = await listTempoLogs(client, {

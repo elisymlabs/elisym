@@ -167,6 +167,31 @@ describe('validateTempoPaymentRequest', () => {
     );
   });
 
+  it.each([
+    [
+      'a card price',
+      {
+        card: {
+          recipient: RECIPIENT,
+          asset: USDCE_TEMPO_MAINNET,
+          jobPriceSubunits: 'ten thousand',
+        },
+      },
+    ],
+    ['a session cap', { maxAmountSubunits: 'ten thousand' }],
+  ])(
+    'refuses %s that is not a number of subunits, even cast past the type',
+    (_label, overrides) => {
+      // A bigint compared against a string that is not a number converts to
+      // nothing and the comparison is FALSE - so the bound would bound nothing.
+      const problem = validateTempoPaymentRequest(
+        requestJson({ amount: '999999999' }),
+        bounds(overrides) as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
+      );
+      expect(problem?.code).toBe('invalid_bounds');
+    },
+  );
+
   it('refuses bounds that name no asset at all, even cast past the type', () => {
     const castPastTheType = { ...bounds(), card: undefined } as unknown as Parameters<
       typeof validateTempoPaymentRequest
@@ -405,6 +430,7 @@ describe('checkTempoReceivePolicies', () => {
   it('passes when both destinations accept this token from this payer', async () => {
     const chain = answering({});
     const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: PAYER,
       recipient: RECIPIENT,
@@ -422,6 +448,7 @@ describe('checkTempoReceivePolicies', () => {
   ])('refuses when the recipient blocks it by %s', async (_label, answer) => {
     const chain = answering({ [RECIPIENT]: answer });
     const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: PAYER,
       recipient: RECIPIENT,
@@ -432,6 +459,7 @@ describe('checkTempoReceivePolicies', () => {
   it('refuses when the TREASURY blocks the fee leg', async () => {
     const chain = answering({ [TREASURY]: NO_SENDER });
     const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: PAYER,
       recipient: RECIPIENT,
@@ -449,6 +477,7 @@ describe('checkTempoReceivePolicies', () => {
     // never be allowed to decode as permission.
     const chain = answering({ [RECIPIENT]: answer });
     const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: PAYER,
       recipient: RECIPIENT,
@@ -463,6 +492,7 @@ describe('checkTempoReceivePolicies', () => {
       [RECIPIENT]: `0x${'1'.padStart(64, '0')}${'3'.padStart(64, '0')}`,
     });
     const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: PAYER,
       recipient: RECIPIENT,
@@ -474,6 +504,7 @@ describe('checkTempoReceivePolicies', () => {
     // A policy a reorg could take back is not one to pay against.
     const chain = answering({});
     await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: PAYER,
       recipient: RECIPIENT,
@@ -492,6 +523,7 @@ describe('checkTempoReceivePolicies', () => {
       },
     });
     const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: PAYER,
       recipient: RECIPIENT,
@@ -506,6 +538,7 @@ describe('checkTempoReceivePolicies', () => {
     // meaningless.
     const chain = answering({});
     const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: PAYER,
       recipient: `0x11223344${'fd'.repeat(10)}556677889900`,
@@ -514,9 +547,29 @@ describe('checkTempoReceivePolicies', () => {
     expect(chain.calls.filter((call) => call.method === 'eth_call')).toHaveLength(0);
   });
 
+  it.each([
+    ['names another chain', '0xa5bf'],
+    ['will not say which chain it is', 7],
+  ])('refuses to read a policy from an endpoint that %s', async (_label, chainId) => {
+    // The registry lives at the same system address on both Tempo networks and
+    // answers plausibly on either: measured live, a receiver that refuses on
+    // its own chain answers `(1, 0)` - open - on the other. So the endpoint
+    // has to identify itself before it is asked anything.
+    const chain = fakeTempoChain({ chainId, onCall: () => YES });
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+    });
+    expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
+    expect(chain.calls.filter((call) => call.method === 'eth_call')).toHaveLength(0);
+  });
+
   it('refuses a VIRTUAL payer without asking either', async () => {
     const chain = answering({});
     const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: `0x11223344${'fd'.repeat(10)}556677889900`,
       recipient: RECIPIENT,
@@ -534,6 +587,7 @@ describe('checkTempoReceivePolicies', () => {
       },
     });
     await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
       token: USDCE,
       payer: PAYER,
       recipient: RECIPIENT,
@@ -609,6 +663,7 @@ describe('resolveTempoTransferOutcome', () => {
   it('calls the recorded batch DELIVERED, from its own receipt', async () => {
     const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -625,7 +680,12 @@ describe('resolveTempoTransferOutcome', () => {
         ...legs,
         { token: USDCE, from: PAYER, to: `0x${'ab'.repeat(20)}`, amount: 1n, memo: BATCH_MEMO },
       ],
-      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome.state).toBe('pending');
   });
@@ -638,7 +698,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       [{ token: PATHUSD, from: PAYER, to: feeSink, amount: 1n }],
-      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome.state).toBe('pending');
   });
@@ -653,6 +718,7 @@ describe('resolveTempoTransferOutcome', () => {
       },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -667,6 +733,7 @@ describe('resolveTempoTransferOutcome', () => {
     }));
     const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs } } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -691,7 +758,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       [{ token: PATHUSD, from: PAYER, to: TEMPO_FEE_SINK, amount: 696n }],
-      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome.state).toBe('pending');
   });
@@ -703,7 +775,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       [{ token: PATHUSD, from: PAYER, to: GAS_RECIPIENT, amount: 695n }],
-      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome.state).toBe('pending');
   });
@@ -714,7 +791,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       [{ token: PATHUSD, from: PAYER, to: GAS_RECIPIENT, amount: 696n }],
-      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome.state).toBe('delivered');
   });
@@ -727,7 +809,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       legs.map((leg) => ({ ...leg, ...changes })),
-      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome.state).toBe('pending');
   });
@@ -737,7 +824,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       [{ token: PATHUSD, from: `0x${'ab'.repeat(20)}`, to: GAS_RECIPIENT, amount: 696n }],
-      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome.state).toBe('pending');
   });
@@ -749,6 +841,7 @@ describe('resolveTempoTransferOutcome', () => {
     }));
     const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs } } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -774,7 +867,12 @@ describe('resolveTempoTransferOutcome', () => {
           memo: BLOCKED_MEMO,
         },
       ],
-      { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_DEVNET,
+        hash: BLOCKED_HASH,
+        floor: BLOCKED_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome).toMatchObject({
       state: 'blocked',
@@ -796,7 +894,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       [{ ...BLOCKED_LEG, ...changes }],
-      { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_DEVNET,
+        hash: BLOCKED_HASH,
+        floor: BLOCKED_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome.state).not.toBe('blocked');
   });
@@ -815,6 +918,7 @@ describe('resolveTempoTransferOutcome', () => {
       receipts: { [BLOCKED_HASH]: { ...BLOCKED, logs } },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, [BLOCKED_LEG], {
+      chain: CHAINS.TEMPO_DEVNET,
       hash: BLOCKED_HASH,
       floor: BLOCKED_BLOCK - 100,
       validBefore: NOW + 60,
@@ -825,6 +929,7 @@ describe('resolveTempoTransferOutcome', () => {
   it('calls a REVERTED transaction unsent: it moved nothing and its hash is spent', async () => {
     const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, status: '0x0' } } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -838,6 +943,7 @@ describe('resolveTempoTransferOutcome', () => {
       logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -852,6 +958,7 @@ describe('resolveTempoTransferOutcome', () => {
       timestamps: { 40_000_000: NOW + 600 },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -875,6 +982,7 @@ describe('resolveTempoTransferOutcome', () => {
       onGetLogs: (call) => (call.toBlock - call.fromBlock >= 4_096 ? rangeCapError() : undefined),
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -891,6 +999,7 @@ describe('resolveTempoTransferOutcome', () => {
       timestamps: { 40_000_000: NOW + 60 },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -907,6 +1016,7 @@ describe('resolveTempoTransferOutcome', () => {
       timestamps: { 40_000_000: NOW + 59 },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -926,6 +1036,7 @@ describe('resolveTempoTransferOutcome', () => {
       timestamps: { 40_000_000: NOW + 600 },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -946,6 +1057,7 @@ describe('resolveTempoTransferOutcome', () => {
       logs: [...history(PATHUSD, BLOCKED_BLOCK - 100, 35_790_000), ...parkedInTheLastBlock],
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, [BLOCKED_LEG], {
+      chain: CHAINS.TEMPO_DEVNET,
       hash: BLOCKED_HASH,
       floor: BLOCKED_BLOCK - 100,
       validBefore: NOW + 60,
@@ -971,7 +1083,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       [{ ...BLOCKED_LEG, from: `0x${'ab'.repeat(20)}` }],
-      { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_DEVNET,
+        hash: BLOCKED_HASH,
+        floor: BLOCKED_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome).toMatchObject({ state: 'blocked', claimableBy: BLOCKED_LEG.from });
   });
@@ -989,11 +1106,77 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = chainWith({ receipts: {}, logs: [] });
     await expect(
       resolveTempoTransferOutcome(chain.client, legs, {
+        chain: CHAINS.TEMPO_MAINNET,
         hash: BATCH_HASH,
         floor: BATCH_BLOCK - 100,
         validBefore: validBefore as unknown as number,
       }),
     ).rejects.toThrow(/needs a deadline/);
+  });
+
+  it('will not prove the absence of a memo-less leg from a VIRTUAL sender', async () => {
+    // The alias is resolved before the transfer is recorded, so the scan's
+    // `from` topic names an address no log can carry and the absence it proves
+    // is vacuous.
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [
+        {
+          token: USDCE,
+          from: `0x11223344${'fd'.repeat(10)}556677889900`,
+          to: RECIPIENT,
+          amount: 1n,
+        },
+      ],
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
+    );
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('will not prove an absence on an endpoint that cannot say which chain it is', async () => {
+    // pathUSD lives at the SAME address on both Tempo networks, the guard and
+    // the registry are system addresses on both, and mainnet's head is higher
+    // than Moderato's - so a Moderato transfer looked for on mainnet finds an
+    // endpoint that answers every question plausibly and holds none of our
+    // money. That is `unsent`: send it again.
+    const chain = chainWith({
+      chainId: 7,
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('throws rather than read an endpoint that is ANOTHER chain', async () => {
+    // A misconfiguration the caller has to fix, and the same class of caller
+    // error as a hash that is not a hash: every answer would be about somebody
+    // else's chain.
+    const chain = chainWith({ chainId: '0xa5bf', receipts: {} });
+    await expect(
+      resolveTempoTransferOutcome(chain.client, legs, {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      }),
+    ).rejects.toThrow(/not chain 4217/);
   });
 
   it('will not prove the absence of a transfer to a VIRTUAL destination', async () => {
@@ -1010,7 +1193,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       [{ ...legs[0], to: alias } as TempoLegExpectation],
-      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome).toEqual({ state: 'pending' });
   });
@@ -1021,6 +1209,7 @@ describe('resolveTempoTransferOutcome', () => {
     // reading tells the caller to send the money a second time.
     const chain = chainWith({ receipts: {}, logs: [], timestamps: { 40_000_000: NOW + 600 } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -1045,6 +1234,7 @@ describe('resolveTempoTransferOutcome', () => {
       chain.client,
       [legs[1], legs[0]] as typeof legs,
       {
+        chain: CHAINS.TEMPO_MAINNET,
         hash: BATCH_HASH,
         floor: BATCH_BLOCK - 100,
         validBefore: NOW + 60,
@@ -1066,6 +1256,7 @@ describe('resolveTempoTransferOutcome', () => {
       logs: [...history(USDCE, BATCH_BLOCK - 100, 40_000_000), ...(options.logs ?? [])],
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -1092,7 +1283,12 @@ describe('resolveTempoTransferOutcome', () => {
           memo: BLOCKED_MEMO,
         },
       ],
-      { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_DEVNET,
+        hash: BLOCKED_HASH,
+        floor: BLOCKED_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome).toEqual({ state: 'pending' });
   });
@@ -1117,7 +1313,12 @@ describe('resolveTempoTransferOutcome', () => {
           memo: BLOCKED_MEMO,
         },
       ],
-      { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_DEVNET,
+        hash: BLOCKED_HASH,
+        floor: BLOCKED_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome).toEqual({ state: 'pending' });
   });
@@ -1136,6 +1337,7 @@ describe('resolveTempoTransferOutcome', () => {
       onGetLogs: (call) => (call.topics[0] === topic ? new Error('the node fell over') : undefined),
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -1164,6 +1366,7 @@ describe('resolveTempoTransferOutcome', () => {
       timestamps: { 40_000_000: NOW + 600 },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -1176,6 +1379,7 @@ describe('resolveTempoTransferOutcome', () => {
     // not success, on the sender's side as much as the receiver's.
     const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, status: 1 } } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -1197,7 +1401,12 @@ describe('resolveTempoTransferOutcome', () => {
         from: checksum(leg.from),
         to: checksum(leg.to),
       })),
-      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome.state).toBe('delivered');
   });
@@ -1225,6 +1434,7 @@ describe('resolveTempoTransferOutcome', () => {
       },
     };
     const outcome = await resolveTempoTransferOutcome(client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -1240,6 +1450,7 @@ describe('resolveTempoTransferOutcome', () => {
     // throws inside the scan instead of answering.
     const chain = chainWith({ receipts: {}, finalized: null });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW - 600,
@@ -1250,6 +1461,7 @@ describe('resolveTempoTransferOutcome', () => {
   it('says PENDING for a receipt whose logs are not a list', async () => {
     const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs: null } } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -1266,19 +1478,24 @@ describe('resolveTempoTransferOutcome', () => {
       timestamps: { 40_000_000: NOW + 600 },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
       signal: AbortSignal.abort(),
     });
     expect(outcome).toEqual({ state: 'pending' });
-    // And it stops at the FIRST read: the verdict is the same either way, so
-    // the only thing that says the signal was honoured is the work not done.
-    // The scan bails on an aborted signal before asking anything, so counting
-    // log queries would not notice - the block read after the receipt does.
-    // (This row pins the receipt read alone; the row above pins the four in
-    // the absence proof, by aborting once the receipt has answered.)
-    expect(chain.calls.map((call) => call.method)).toEqual(['eth_getTransactionReceipt']);
+    // And it stops at the first read AFTER the chain gate: the verdict is the
+    // same either way, so the only thing that says the signal was honoured is
+    // the work not done. The scan bails on an aborted signal before asking
+    // anything, so counting log queries would not notice - the block read
+    // after the receipt does. (This row pins the receipt read alone; the row
+    // above pins the four in the absence proof, by aborting once the receipt
+    // has answered.)
+    expect(chain.calls.map((call) => call.method)).toEqual([
+      'eth_chainId',
+      'eth_getTransactionReceipt',
+    ]);
   });
 
   it('reads a guard log that parked MORE than the leg asked for as ours', async () => {
@@ -1294,7 +1511,12 @@ describe('resolveTempoTransferOutcome', () => {
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
       [{ ...BLOCKED_LEG, amount: 24_999_999n }],
-      { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
+      {
+        chain: CHAINS.TEMPO_DEVNET,
+        hash: BLOCKED_HASH,
+        floor: BLOCKED_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
     );
     expect(outcome).toMatchObject({ state: 'blocked' });
   });
@@ -1310,6 +1532,7 @@ describe('resolveTempoTransferOutcome', () => {
       },
     };
     const outcome = await resolveTempoTransferOutcome(client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW - 600,
@@ -1323,6 +1546,7 @@ describe('resolveTempoTransferOutcome', () => {
     // proof - so the answer was `pending` for ever, on a payment that landed.
     const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
       hash: `0x${BATCH_HASH.slice(2).toUpperCase()}`,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
@@ -1345,6 +1569,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = chainWith({});
     await expect(
       resolveTempoTransferOutcome(chain.client, [], {
+        chain: CHAINS.TEMPO_MAINNET,
         hash: BATCH_HASH,
         floor: 1,
         validBefore: NOW,

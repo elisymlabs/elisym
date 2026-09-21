@@ -24,6 +24,7 @@ import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { PaymentValidationError } from '../types';
 import type { Eip1193Client } from './client';
+import { checkEvmChain } from './config';
 import { MAX_EVM_FEE_BPS } from './config';
 import {
   TEMPO_POLICY_REGISTRY,
@@ -252,6 +253,17 @@ export function validateTempoPaymentRequest(
   }
 
   const amount = BigInt(request.amount);
+  const cap = bounds.maxAmountSubunits;
+  const price = bounds.card?.jobPriceSubunits;
+  if (
+    (cap !== undefined && typeof cap !== 'bigint') ||
+    (price !== undefined && typeof price !== 'bigint')
+  ) {
+    // Cast past the type and `amount > priceBound` compares a bigint against a
+    // string, which is a relational comparison and false for every large
+    // amount - so the card's price would bound nothing at all.
+    return refuse('invalid_bounds', 'These bounds carry a price that is not a number of subunits.');
+  }
   if (bounds.card !== undefined) {
     // An absent price is a bound of ZERO, not the absence of a bound: a card
     // that never published a price cannot charge for anything.
@@ -321,6 +333,8 @@ function checkFee(
 }
 
 export interface ReceivePolicyCheck {
+  /** The chain the policies live on. Read before anything is asked of it. */
+  chain: ChainConfig;
   token: string;
   payer: string;
   recipient: string;
@@ -346,6 +360,19 @@ export async function checkTempoReceivePolicies(
   client: Eip1193Client,
   check: ReceivePolicyCheck,
 ): Promise<ReceivePolicyVerdict> {
+  // The registry lives at the same system address on both Tempo networks and
+  // answers plausibly on either, so asking the wrong one is not an error the
+  // read itself can report: measured, a receiver that refuses on its own chain
+  // answers `(1, 0)` - open - on the other.
+  const onThisChain = await checkEvmChain(client, check.chain).catch(() => null);
+  if (onThisChain === null) {
+    return {
+      ok: false,
+      leg: 'provider',
+      reason: 'unreadable',
+      message: `Could not confirm the endpoint is ${check.chain.caip2}; refusing to read a policy blind.`,
+    };
+  }
   if (isVirtualEvmAddress(check.payer)) {
     // The same TIP-1022 split as a virtual destination, on the sending side:
     // the registry would answer about the alias while the transfer is
