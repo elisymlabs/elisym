@@ -139,6 +139,22 @@ const WORTH_A_SECOND_LOOK = new Set<TempoRefusalCode>([
 const NEEDS_NO_ENDPOINT = new Set<TempoRefusalCode>(['wrong_chain', 'unknown_asset']);
 
 /**
+ * The unknowns that are about ONE transaction, and so earn the second look for
+ * the same reason the refusals in `ABOUT_ONE_TRANSACTION` do.
+ *
+ * `no_receipt` is the wallet reporting a bundle id. `chain_unreadable` from a
+ * by-hash read is the endpoint answering with a receipt from the OTHER Tempo
+ * network - which says nothing about whether the memo was paid on this one,
+ * and the customer chooses the hash, so leaving it out made reporting a real
+ * hash from the wrong chain worse than reporting a hash that exists nowhere.
+ * Every other unknown is about the whole look, not one transaction.
+ */
+const UNKNOWN_ABOUT_ONE_TRANSACTION = new Set<TempoInconclusiveReason>([
+  'no_receipt',
+  'chain_unreadable',
+]);
+
+/**
  * A terminal answer is checked against the chain a second time.
  *
  * The gate above runs once; a verify makes between five and a hundred calls
@@ -317,7 +333,7 @@ export async function verifyTempoPayment(
   const worthASecondLook =
     byHash.outcome === 'refused'
       ? WORTH_A_SECOND_LOOK.has(byHash.code)
-      : byHash.outcome === 'inconclusive' && byHash.reason === 'no_receipt';
+      : byHash.outcome === 'inconclusive' && UNKNOWN_ABOUT_ONE_TRANSACTION.has(byHash.reason);
   if (!worthASecondLook) {
     return confirmedOnChain(client, chain, byHash, options.signal);
   }

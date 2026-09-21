@@ -92,9 +92,19 @@ export interface TempoBlockedLog {
   blockNumber: number;
 }
 
-export interface TempoBlockRef {
+/**
+ * A block by height and clock. The finalized HEAD is read as one of these:
+ * nothing binds a read to the head's hash (every bind goes through
+ * `readBlockByNumber`), so requiring a field no caller reads would make every
+ * verify `chain_unreadable` on an endpoint that omits it.
+ */
+export interface TempoHeadRef {
   number: number;
   timestamp: number;
+}
+
+/** A block read BY NUMBER, which a receipt or a log can be bound to. */
+export interface TempoBlockRef extends TempoHeadRef {
   hash: string;
 }
 
@@ -278,13 +288,22 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
   const originator = readAddressWord(words[BLOCKED_WORDS.originator]);
   const recipient = readAddressWord(words[BLOCKED_WORDS.recipient]);
   const memo = words[BLOCKED_WORDS.memo];
+  // A claim of another KIND is somebody else's event, not a malformed one:
+  // the guard emits `TransferBlocked` for a bounced MINT too, and 28 of those
+  // are on Moderato today - one naming the registry coin and a receiver this
+  // suite uses. Unreadable would make the pass incomplete, and an incomplete
+  // guard pass is what stops `none` and `fee_leg_missing` from ever being
+  // reached. The "unreadable is not empty" rule is about FORGERIES; a real
+  // mint bounce is not one.
+  if (kind !== null && kind !== CLAIM_KIND_TRANSFER) {
+    return { kind: 'other' };
+  }
   if (
     amount === null ||
     receiptVersion !== CLAIM_RECEIPT_V1 ||
     receiptOffset !== CLAIM_RECEIPT_OFFSET ||
     receiptLength !== CLAIM_RECEIPT_LENGTH ||
     claimVersion !== CLAIM_RECEIPT_V1 ||
-    kind !== CLAIM_KIND_TRANSFER ||
     receiptToken === null ||
     originator === null ||
     recipient === null ||
@@ -318,17 +337,16 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
  * own older head without an error, while a number above its head is an explicit
  * one.
  */
-export async function readFinalizedBlock(client: Eip1193Client): Promise<TempoBlockRef | null> {
+export async function readFinalizedBlock(client: Eip1193Client): Promise<TempoHeadRef | null> {
   const block = await client
     .request({ method: 'eth_getBlockByNumber', params: ['finalized', false] })
     .catch(() => null);
   const number = readBlockNumber(readField(block, 'number'));
   const timestamp = readBlockNumber(readField(block, 'timestamp'));
-  const hash = readTxHash(readField(block, 'hash'));
-  if (number === null || timestamp === null || hash === null) {
+  if (number === null || timestamp === null) {
     return null;
   }
-  return { number, timestamp, hash };
+  return { number, timestamp };
 }
 
 /** A block by NUMBER, for reading the timestamp a scan actually reached. */

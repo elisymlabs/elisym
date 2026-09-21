@@ -333,7 +333,10 @@ describe('verifyTempoPayment - by hash, over recorded receipts', () => {
       txSignature: SINGLE_HASH,
       fromBlock: SINGLE_BLOCK - 100,
     });
-    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
+    // The window is still open and the memo scan found nothing, so the answer
+    // is the ordinary live unknown. What matters is that the receipt credited
+    // NOTHING: without the bind this row is `verified` on another chain's coin.
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'not_yet_due' });
   });
 
   it('credits nothing from a receipt that names no block at all', async () => {
@@ -343,7 +346,9 @@ describe('verifyTempoPayment - by hash, over recorded receipts', () => {
       txSignature: SINGLE_HASH,
       fromBlock: SINGLE_BLOCK - 100,
     });
-    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
+    // Nothing is credited off it, and the memo scan behind it found nothing
+    // while the window is open.
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'not_yet_due' });
   });
 
   it('says nothing about a payment when the ENDPOINT is another chain', async () => {
@@ -1171,6 +1176,42 @@ describe('verifyTempoPayment - the fee leg', () => {
     expect(result.outcome === 'verified' && result.feeLeg?.transactionHash).toBe(feeHash);
   });
 
+  it('credits a fee leg that landed in a LATER block than the provider leg', async () => {
+    // What a wallet that cannot batch actually produces: two transactions,
+    // seconds apart, in two different blocks. Every fee-leg row until now put
+    // both legs at one height, so the block the fee bind asks ABOUT was never
+    // under test - only the hash it compares.
+    const logs = receiptLogs(BATCH);
+    const providerLogs = logs.filter((log) => log.topics[2]?.endsWith(RECIPIENT.slice(2)));
+    const feeLogs = logs.filter((log) => log.topics[2]?.endsWith(TREASURY.slice(2)));
+    const feeHash = `0x${'fe'.repeat(32)}`;
+    const feeBlock = BATCH_BLOCK + 4;
+    const chain = chainWith({
+      receipts: {
+        [BATCH_HASH]: { ...BATCH, logs: providerLogs.map(wire) },
+        [feeHash]: {
+          ...BATCH,
+          transactionHash: feeHash,
+          blockNumber: `0x${feeBlock.toString(16)}`,
+          blockHash: `0x${'4b'.repeat(32)}`,
+          logs: feeLogs.map(wire),
+        },
+      },
+      logs: feeLogs.map((log) => ({
+        ...log,
+        transactionHash: feeHash,
+        blockNumber: feeBlock,
+        blockHash: `0x${'4b'.repeat(32)}`,
+      })),
+    });
+    const result = await verifyTempoPayment(chain.client, feeRequest, {
+      txSignature: BATCH_HASH,
+      fromBlock: BATCH_BLOCK - 100,
+    });
+    expect(result.outcome).toBe('verified');
+    expect(result.outcome === 'verified' && result.feeLeg?.transactionHash).toBe(feeHash);
+  });
+
   it('will not credit a fee leg whose BLOCK this chain does not have', async () => {
     // The provider leg goes through a receipt and, since round 10, through its
     // block. The fee leg is one `eth_getLogs` entry and it completes a
@@ -1193,7 +1234,9 @@ describe('verifyTempoPayment - the fee leg', () => {
       txSignature: BATCH_HASH,
       fromBlock: BATCH_BLOCK - 100,
     });
-    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
+    // The fee leg is not credited, and the second look cannot find one either.
+    expect(result.outcome).toBe('inconclusive');
+    expect(result.outcome === 'inconclusive' && result.reason).not.toBe('not_finalized');
   });
 
   it('refuses a fee leg that never arrived, once the window has closed', async () => {
@@ -1632,6 +1675,49 @@ describe('verifyTempoPayment - guards the fee leg and the ordering owe', () => {
       { txSignature: SINGLE_HASH, fromBlock: SINGLE_BLOCK - 100 },
     );
     expect(result).toEqual({ outcome: 'refused', code: 'fee_leg_missing' });
+  });
+
+  it('still credits a PAID job whose customer reported a hash from another chain', async () => {
+    // The endpoint answers a real receipt that belongs to the other Tempo
+    // network - a routing gateway does exactly this, and it was round 10's own
+    // actor. The bind refuses to credit off that receipt, and rightly; but the
+    // memo is on THIS chain and was paid. Without the second look this job
+    // never credits, for ever, because every re-ask reports the same hash -
+    // and reporting a hash that exists nowhere would have paid.
+    const elsewhere = `0x${'e1'.repeat(32)}`;
+    const settled = settledChain(SINGLE_BLOCK - 100, {
+      receipts: {
+        [SINGLE_HASH]: SINGLE,
+        // Same height, a block this chain never had.
+        [elsewhere]: { ...SINGLE, transactionHash: elsewhere, blockHash: `0x${'7c'.repeat(32)}` },
+      },
+      logs: receiptLogs(SINGLE),
+    });
+    const result = await verifyTempoPayment(settled.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: elsewhere,
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toMatchObject({ outcome: 'verified' });
+    expect(result.outcome === 'verified' && result.providerLeg.transactionHash).toBe(SINGLE_HASH);
+  });
+
+  it('credits nothing off a receipt whose block this endpoint cannot READ at all', async () => {
+    // The other half of the bind: not a block that disagrees, a block that is
+    // not there. Built by hand, because the suite's own chain helper gives
+    // every receipt's block a clock and so can never produce this.
+    const chain = fakeTempoChain({
+      chainId: '0x1079',
+      finalized: 40_000_000,
+      timestamps: { 40_000_000: NOW },
+      receipts: { [SINGLE_HASH]: SINGLE },
+    });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: SINGLE_HASH,
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result.outcome).not.toBe('verified');
   });
 
   it('confirms the chain before crediting a payment found by MEMO after a bad hash', async () => {

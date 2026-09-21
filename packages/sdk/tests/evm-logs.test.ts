@@ -189,11 +189,20 @@ describe('decodeTempoBlockedLog', () => {
     ['an offset that is not 0x60', 2],
     ['a length that is not 320', 3],
     ['a claim version this decoder does not know', 4],
-    ['a kind that is not a transfer', 12],
   ])('refuses a guard log with %s', (_label, wordIndex) => {
     expect(decodeTempoBlockedLog(mutatedWord(wordIndex, '9'.padStart(64, '0'))).kind).toBe(
       'unreadable',
     );
+  });
+
+  it('calls a guard log about another claim KIND somebody else’s, not unreadable', () => {
+    // The guard emits `TransferBlocked` for a bounced MINT as well, and 28 of
+    // those are live on Moderato - one naming the registry coin and the very
+    // receiver these rows use. Unreadable would make every pass over that
+    // window INCOMPLETE, and an incomplete guard pass is what stops `none` and
+    // `fee_leg_missing` from ever being reached. "Unreadable is not empty" is
+    // a rule about forgeries; a real mint bounce is not one.
+    expect(decodeTempoBlockedLog(mutatedWord(12, '1'.padStart(64, '0'))).kind).toBe('other');
   });
 
   it('refuses a guard log whose body names another token than its own topic', () => {
@@ -218,12 +227,35 @@ describe('decodeTempoBlockedLog', () => {
 });
 
 describe('readFinalizedBlock', () => {
-  it('reads the number, the timestamp and the hash together', async () => {
+  it('reads the number and the timestamp, and needs no hash', async () => {
+    // Nothing binds a read to the HEAD's hash - every bind goes through
+    // `readBlockByNumber` - so requiring a field no caller reads would make
+    // every verify `chain_unreadable` on an endpoint that omits it.
     const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1_700_000_000 } });
     expect(await readFinalizedBlock(chain.client)).toEqual({
       number: 1_000,
       timestamp: 1_700_000_000,
-      hash: `0x${'cd'.repeat(32)}`,
+    });
+  });
+
+  it('reads a head that answers no hash at all', async () => {
+    // Nothing binds a read to the head's hash, so refusing a head that omits
+    // it would make every verify on that endpoint `chain_unreadable` over a
+    // field no caller reads. The fake always answers one; this one does not.
+    const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1_700_000_000 } });
+    const headless = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        const answer = await chain.client.request(args);
+        if (args.method !== 'eth_getBlockByNumber' || answer === null) {
+          return answer;
+        }
+        const { hash: _dropped, ...rest } = answer as Record<string, unknown>;
+        return rest;
+      },
+    };
+    expect(await readFinalizedBlock(headless)).toEqual({
+      number: 1_000,
+      timestamp: 1_700_000_000,
     });
   });
 
