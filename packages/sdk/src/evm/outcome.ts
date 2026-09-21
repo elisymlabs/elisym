@@ -100,6 +100,10 @@ export async function resolveTempoTransferOutcome(
     client.request({ method: 'eth_getTransactionReceipt', params: [options.hash] }),
     options.signal,
   ).catch(() => undefined);
+  // No test can kill this line and none should be written for it: a failed
+  // read falls through `fromReceipt` to the same `pending` anyway. It says in
+  // one place what that path only implies - a read that did not happen is not
+  // evidence of anything.
   if (receipt === undefined) {
     return { state: 'pending' };
   }
@@ -116,6 +120,14 @@ function fromReceipt(
   expected: readonly TempoLegExpectation[],
   hash: string,
 ): TempoTransferOutcome {
+  // The receipt has to be THIS transaction's before anything is read out of
+  // it - the revert branch included. A backend that answers with somebody
+  // else's failed receipt would otherwise say `unsent`, which is the one
+  // verdict that tells the caller it may send a replacement, while ours is
+  // still pending: both could land, and that is twice the money.
+  if (readTxHash(readField(receipt, 'transactionHash')) !== hash) {
+    return { state: 'pending' };
+  }
   const status = readQuantity(readField(receipt, 'status'));
   if (status === 0n) {
     // A reverted transaction moved nothing, and its hash can never be reused.
@@ -123,12 +135,7 @@ function fromReceipt(
   }
   const blockNumber = readBlockNumber(readField(receipt, 'blockNumber'));
   const logs = readField(receipt, 'logs');
-  if (
-    status !== 1n ||
-    readTxHash(readField(receipt, 'transactionHash')) !== hash ||
-    blockNumber === null ||
-    !Array.isArray(logs)
-  ) {
+  if (status !== 1n || blockNumber === null || !Array.isArray(logs)) {
     return { state: 'pending' };
   }
 

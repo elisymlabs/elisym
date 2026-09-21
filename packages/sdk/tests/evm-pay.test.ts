@@ -3,7 +3,12 @@
  * moves, and what the sender may conclude about a transaction it sent.
  */
 import { describe, expect, it } from 'vitest';
-import { TEMPO_POLICY_REGISTRY } from '../src/evm/constants';
+import {
+  TEMPO_FEE_SINK,
+  TEMPO_POLICY_REGISTRY,
+  TRANSFER_BLOCKED_TOPIC,
+  TRANSFER_WITH_MEMO_TOPIC,
+} from '../src/evm/constants';
 import { resolveTempoTransferOutcome, type TempoLegExpectation } from '../src/evm/outcome';
 import { checkTempoReceivePolicies, validateTempoPaymentRequest } from '../src/evm/validate';
 import { PATHUSD_TEMPO, USDCE_TEMPO_MAINNET } from '../src/payment/assets';
@@ -154,6 +159,13 @@ describe('validateTempoPaymentRequest', () => {
   ])('refuses a request that is %s', (_label, createdAt) => {
     const request = requestJson({ created_at: createdAt });
     expect(validateTempoPaymentRequest(request, bounds())?.code).toBe('expired');
+  });
+
+  it('says a request EXPIRED, not that it is short of time, once it has', () => {
+    // Both refusals carry the `expired` code; only the message tells the
+    // operator whether the customer had a window at all.
+    const problem = validateTempoPaymentRequest(requestJson({ created_at: NOW - 700 }), bounds());
+    expect(problem?.message).toMatch(/expired 100 seconds ago/);
   });
 
   it('refuses a fee leg when the chain says there is no fee', () => {
@@ -310,6 +322,21 @@ describe('checkTempoReceivePolicies', () => {
     expect(verdict).toMatchObject({ ok: false, reason: 'blocked' });
   });
 
+  it('asks the registry at the FINALIZED head, never at the pending one', async () => {
+    // A policy a reorg could take back is not one to pay against.
+    const chain = answering({});
+    await checkTempoReceivePolicies(chain.client, {
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      feeAddress: TREASURY,
+    });
+    const tags = chain.calls
+      .filter((call) => call.method === 'eth_call')
+      .map((call) => call.params?.[1]);
+    expect(tags).toEqual(['finalized', 'finalized']);
+  });
+
   it('does not ask about a fee leg there is none of', async () => {
     const asked: string[] = [];
     const chain = fakeTempoChain({
@@ -385,6 +412,82 @@ describe('resolveTempoTransferOutcome', () => {
       { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
     );
     expect(outcome.state).toBe('pending');
+  });
+
+  it('will not read a receipt that is not the transaction it asked about', async () => {
+    // A load balancer answering from another backend hands back a stranger's
+    // receipt. Reading its REVERTED status as ours would free this hash for a
+    // replacement while ours is still in flight - both could land.
+    const chain = chainWith({
+      receipts: {
+        [BATCH_HASH]: { ...BATCH, transactionHash: `0x${'99'.repeat(32)}`, status: '0x0' },
+      },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('ignores a receipt log that claims a block the receipt is not in', async () => {
+    const logs = (BATCH.logs as Record<string, unknown>[]).map((log) => ({
+      ...log,
+      blockNumber: '0x1',
+    }));
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs } } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  /** Log 5 of the recorded batch: the gas leg. No memo, the customer as sender. */
+  const GAS_LOG = (BATCH.logs as Record<string, unknown>[])[5] as Record<string, unknown>;
+  const GAS_RECIPIENT = `0x${String((GAS_LOG.topics as string[])[2]).slice(26)}`;
+
+  it('never counts a transfer to the fee sink as a memo-less leg of ours', async () => {
+    // Every Tempo transaction ends with one of these, on a reverted one too.
+    // A withdrawal expectation that matched it would report as delivered money
+    // that the network took.
+    const topics = GAS_LOG.topics as string[];
+    const toFeeSink = {
+      ...GAS_LOG,
+      topics: [topics[0], topics[1], `0x${'0'.repeat(24)}${TEMPO_FEE_SINK.slice(2)}`],
+    };
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs: [toFeeSink] } } });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ token: PATHUSD, from: PAYER, to: TEMPO_FEE_SINK, amount: 696n }],
+      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome.state).toBe('pending');
+  });
+
+  it('holds a memo-less leg to its EXACT amount, having nothing else to bind it', async () => {
+    // A withdrawal carries no memo: the sender, the destination and the size
+    // are the whole binding, so a transfer one subunit off is another one.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs: [GAS_LOG] } } });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ token: PATHUSD, from: PAYER, to: GAS_RECIPIENT, amount: 695n }],
+      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome.state).toBe('pending');
+  });
+
+  it('does count the same memo-less leg at its exact amount', async () => {
+    // The mirror: without this the row above would pass on a decode failure.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs: [GAS_LOG] } } });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ token: PATHUSD, from: PAYER, to: GAS_RECIPIENT, amount: 696n }],
+      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome.state).toBe('delivered');
   });
 
   it('reads a blocked leg out of the receipt, and who may claim it', async () => {
@@ -481,6 +584,51 @@ describe('resolveTempoTransferOutcome', () => {
       ],
       { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
     );
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('does not read a guard log for LESS than our leg as ours', async () => {
+    // The parked amount has to cover what we sent, or it is somebody else's
+    // blocked transfer to the same receiver.
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [
+        {
+          token: PATHUSD,
+          from: '0x90f79bf6eb2c4f870365e785982e1f101e93b906',
+          to: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8',
+          amount: 25_000_001n,
+          memo: BLOCKED_MEMO,
+        },
+      ],
+      { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it.each([
+    ['the transfer pass', TRANSFER_WITH_MEMO_TOPIC],
+    ['the guard pass', TRANSFER_BLOCKED_TOPIC],
+  ])('refuses to say unsent when %s alone could not finish', async (_label, topic) => {
+    // Two separate scans, and each of them has to be complete on its own:
+    // "nothing is on chain" must never rest on a pass that did not run.
+    const chain = chainWith({
+      receipts: {},
+      logs: [],
+      timestamps: { 40_000_000: NOW + 600 },
+      onGetLogs: (call) => (call.topics[0] === topic ? new Error('the node fell over') : undefined),
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
     expect(outcome).toEqual({ state: 'pending' });
   });
 

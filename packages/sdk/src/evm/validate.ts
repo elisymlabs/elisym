@@ -16,9 +16,9 @@
  */
 
 import type { Asset } from '../payment/assets';
-import { assetKey, assetsFor } from '../payment/assets';
+import { assetKey } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
-import { chainByCaip2, isEvmWireAddress, isVirtualEvmAddress } from '../payment/chains';
+import { isEvmWireAddress, isVirtualEvmAddress } from '../payment/chains';
 import { calculateProtocolFeeSubunits } from '../payment/fee-subunits';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
@@ -111,6 +111,8 @@ export function validateTempoPaymentRequest(
   requestJson: string,
   bounds: TempoPaymentBounds,
 ): PaymentValidationError | null {
+  // The session cap is enforced HERE, by the parse gate, for both versions -
+  // there is no second check below, and adding one would be unreachable.
   const parsed = parseAnyPaymentRequest(requestJson, {
     ...(bounds.maxAmountSubunits === undefined
       ? {}
@@ -127,11 +129,9 @@ export function validateTempoPaymentRequest(
   }
   const request = parsed.data;
 
-  // The chain gate FIRST, before any money check.
-  const requestChain = chainByCaip2(request.chain);
-  if (requestChain === undefined) {
-    return refuse('unsupported_chain', `This SDK does not know the chain ${request.chain}.`);
-  }
+  // The chain gate FIRST, before any money check. A chain the registry does
+  // not carry never reaches here - the v2 schema refuses it, and
+  // `parseFailureCode` gives that refusal its `unsupported_chain` code.
   if (request.chain !== bounds.chain.caip2) {
     return refuse(
       'chain_mismatch',
@@ -147,21 +147,14 @@ export function validateTempoPaymentRequest(
       `The request names ${request.asset}, which is not a coin this SDK knows on that chain.`,
     );
   }
+  // A resolved asset is a coin of THIS environment by construction: the
+  // resolver looks it up through the request chain's own environment, and the
+  // gate above has already settled that the request chain is this one.
   const agreed = bounds.card?.asset ?? bounds.expectedAsset;
   if (agreed !== undefined && assetKey(agreed) !== assetKey(asset)) {
     return refuse(
       'asset_mismatch',
       `Asset mismatch: agreed to pay ${agreed.token}, but the request debits ${asset.token}.`,
-    );
-  }
-  // An asset that does not exist on this environment resolves fine above and
-  // would fail only after the customer signed.
-  if (
-    !assetsFor(bounds.chain.slug, bounds.chain.network).some((known) => known.mint === asset.mint)
-  ) {
-    return refuse(
-      'invalid_asset',
-      `${asset.token} is not a coin of ${bounds.chain.caip2} on ${bounds.chain.network}.`,
     );
   }
 
@@ -223,13 +216,6 @@ export function validateTempoPaymentRequest(
         `The request asks for ${request.amount}, above the ${priceBound} this card published.`,
       );
     }
-  }
-  if (bounds.maxAmountSubunits !== undefined && amount > bounds.maxAmountSubunits) {
-    return refuse(
-      'invalid_amount',
-      `The request asks for ${request.amount}, above this session's cap of ` +
-        `${bounds.maxAmountSubunits}.`,
-    );
   }
   return null;
 }
