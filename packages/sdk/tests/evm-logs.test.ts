@@ -212,9 +212,24 @@ describe('decodeTempoBlockedLog', () => {
     expect(decodeTempoBlockedLog(mutatedWord(5, otherToken)).kind).toBe('unreadable');
   });
 
-  it('refuses a guard log whose body names another recipient than its own topic', () => {
-    const otherRecipient = `${'0'.repeat(24)}${'cd'.repeat(20)}`;
-    expect(decodeTempoBlockedLog(mutatedWord(8, otherRecipient)).kind).toBe('unreadable');
+  it('calls a guard log whose body names ANOTHER recipient somebody else’s, not unreadable', () => {
+    // The two legitimately differ: a transfer to a TIP-1022 alias is resolved
+    // to its MASTER before the guard records it, so the topic holds the master
+    // and the body holds the alias the sender wrote. Measured over the whole
+    // chain, 92 of Moderato's 2298 guard logs are exactly that shape - every
+    // one on this rail's own coin and naming the receiver these rows use.
+    // Unreadable would make every pass over such a window incomplete, and an
+    // incomplete guard pass is what stops `none` from ever being reached.
+    const alias = `${'0'.repeat(24)}b385a519fdfdfdfdfdfdfdfdfdfd000000000001`;
+    expect(decodeTempoBlockedLog(mutatedWord(8, alias)).kind).toBe('other');
+  });
+
+  it('still refuses a guard log whose body names another TOKEN than its topic', () => {
+    // The token half stays strict: the topic is what the scan filtered on, so
+    // a body naming another coin is the node answering something else. No
+    // counter-example exists on either chain - 0 of 2298.
+    const otherToken = `${'0'.repeat(24)}${'cd'.repeat(20)}`;
+    expect(decodeTempoBlockedLog(mutatedWord(5, otherToken)).kind).toBe('unreadable');
   });
 
   it.each([
@@ -672,6 +687,50 @@ describe('listTempoBlockedLogs', () => {
     });
     expect(scan.complete).toBe(true);
     expect(scan.candidates).toHaveLength(0);
+  });
+
+  it('stays COMPLETE over a guard log whose body names an ALIAS recipient', async () => {
+    // The production path, which is the only one that matters: round 12 fixed
+    // the decoder for the claim KIND and the scan folded the answer back, and
+    // this is the same rule one field over. Measured live at the time: the
+    // same unpaid request answered `incomplete_scan` with the floor below one
+    // such log and `none` with the floor two blocks above it.
+    const aliasBody = blocked.map((log) => ({
+      ...log,
+      data: `${log.data.slice(0, 2 + 8 * 64)}${'0'.repeat(24)}b385a519fdfdfdfdfdfdfdfdfdfd000000000001${log.data.slice(2 + 9 * 64)}`,
+    }));
+    const chain = fakeTempoChain({
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: 1 },
+      logs: aliasBody,
+    });
+    const scan = await listTempoBlockedLogs(chain.client, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.complete).toBe(true);
+    expect(scan.candidates).toHaveLength(0);
+  });
+
+  it('calls a guard log from ANOTHER emitter unreadable, not somebody else’s', async () => {
+    // The scan asked the guard's address under one topic. Anything else in the
+    // answer is the node answering a question it was not asked - the same
+    // shape the transfer scan calls unreadable - and must not be quietly
+    // dropped the way a claim this rail does not handle is.
+    const chain = fakeTempoChain({ finalized: 35_790_000, timestamps: { 35_790_000: 1 } });
+    const elsewhere = {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getLogs'
+          ? blocked.map((log) => wireLog({ ...log, address: PATHUSD }))
+          : chain.client.request(args),
+    };
+    const scan = await listTempoBlockedLogs(elsewhere, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.complete).toBe(false);
   });
 
   it('calls a guard log from OUTSIDE the range it asked for unreadable', async () => {

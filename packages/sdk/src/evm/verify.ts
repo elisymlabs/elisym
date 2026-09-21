@@ -172,26 +172,23 @@ async function confirmedOnChain(
   if (result.outcome === 'inconclusive') {
     return result;
   }
-  // A CREDIT is already bound to this chain twice over - the receipt's own
-  // `blockHash` against the block this endpoint holds, and the fee leg's - so
-  // an endpoint that merely will not say which chain it is does not discard
-  // it: throwing away a complete look because the last call was rate-limited
-  // costs the job, and a mismatch still discards it.
+  // Every terminal answer needs the chain NAMED, not merely not-contradicted,
+  // and that includes a credit.
   //
-  // A NEGATIVE has no such binding. `none` and every refusal rest on EMPTY
-  // `eth_getLogs` answers, which carry no chain identity at all, and the
-  // history control that vouches for them passes equally on the other network
-  // - the token, the guard and the registry are at the same addresses on both.
-  // So a negative needs the chain NAMED, not merely not-contradicted:
-  // discarding one costs a retry, keeping a wrong one costs the payment.
-  const CONTRADICTED = 'contradicted';
-  const named = await withAbort(checkEvmChain(client, chain), signal).catch(() => CONTRADICTED);
-  if (named === CONTRADICTED) {
-    // An endpoint that NAMES another chain discards every answer, credit
-    // included: the reads behind it came from somewhere else.
-    return inconclusive('chain_unreadable');
-  }
-  if (named === null && result.outcome !== 'verified') {
+  // The receipt bind and the fee-leg bind are answered by the SAME endpoint as
+  // the reads they check, so they prove internal consistency and never chain
+  // identity - `eth_chainId` is the only read that names a chain, and pathUSD
+  // is one address on both Tempo networks. A negative is worse still: `none`
+  // and every refusal rest on EMPTY `eth_getLogs` answers, which carry no
+  // identity at all, and the history control that vouches for them passes
+  // equally on the other network.
+  //
+  // Both directions cost something and only one is unbounded: discarding an
+  // answer yields `inconclusive`, which means ask again, and the evidence is
+  // still there for the next pass - one retry. Keeping a wrong credit costs
+  // the provider a job's work paid in another network's coin.
+  const named = await withAbort(checkEvmChain(client, chain), signal).catch(() => null);
+  if (named === null) {
     return inconclusive('chain_unreadable');
   }
   return result;

@@ -298,10 +298,11 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
   if (kind !== CLAIM_KIND_TRANSFER) {
     return { kind: 'other' };
   }
-  // `amount` and `memo` below cannot be absent once `readWords` has answered
-  // fourteen words, and no test can kill either check: they narrow the types
-  // the rest of this function is written against, and saying so here is more
-  // honest than a row that pretends to hold them.
+  // Two checks below cannot fire once `readWords` has answered fourteen words,
+  // and no test can kill either. They are not the same kind of thing, and the
+  // difference is worth writing down: `amount === null` is a TYPE narrowing -
+  // remove it and the compiler refuses - while `memo === undefined` compiles
+  // clean without it and is simply unreachable. Neither gets a row.
   if (
     amount === null ||
     receiptVersion !== CLAIM_RECEIPT_V1 ||
@@ -315,8 +316,19 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
   ) {
     return { kind: 'unreadable' };
   }
-  if (!sameAddress(receiptToken, token) || !sameAddress(recipient, receiver)) {
+  if (!sameAddress(receiptToken, token)) {
+    // The body and the topic must agree about the TOKEN - the topic is what
+    // the scan filtered on, so a body naming another coin is the node
+    // answering something else. No counter-example on either chain: 0 of 2298.
     return { kind: 'unreadable' };
+  }
+  if (!sameAddress(recipient, receiver)) {
+    // The RECIPIENT legitimately differs: a transfer to a TIP-1022 alias is
+    // resolved to its master before the guard records it, so the topic holds
+    // the master and the body holds the alias the sender wrote. Somebody
+    // else's shape, not a forgery - 92 such logs on Moderato, all on this
+    // rail's own coin and all naming the receiver these rows use.
+    return { kind: 'other' };
   }
   return {
     kind: 'log',
@@ -628,6 +640,16 @@ export async function listTempoBlockedLogs(
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     },
     (entry) => {
+      // What the scan ASKED for. An answer outside it is the node answering
+      // something else, whatever the body then says.
+      const header = readLogHeader(entry);
+      if (
+        header === null ||
+        !sameAddress(header.address, TEMPO_TRANSFER_GUARD) ||
+        header.topics[0] !== TRANSFER_BLOCKED_TOPIC
+      ) {
+        return 'unreadable';
+      }
       const decoded = decodeTempoBlockedLog(entry);
       if (decoded.kind === 'other') {
         // Not ours, and honestly so: the filter names the event, the token and

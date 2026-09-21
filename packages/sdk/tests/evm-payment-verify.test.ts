@@ -327,13 +327,14 @@ describe('verifyTempoPayment - by hash, over recorded receipts', () => {
     expect(quiet.state.asked).toBe(2);
   });
 
-  it('KEEPS a credit when the last chain read cannot answer', async () => {
-    // The other half of the same rule, and the reason it is not symmetric: a
-    // credit is bound to this chain twice over already - the receipt's own
-    // block hash against the block this endpoint holds, and the fee leg's - so
-    // throwing it away because the last of twenty calls was rate-limited costs
-    // the job for nothing. A MISMATCH still discards it; the row above this
-    // one is that.
+  it('will not CREDIT either when the last chain read cannot answer', async () => {
+    // Round 13 kept a credit here, reasoning that it is bound to the chain
+    // twice over by the receipt's block hash and the fee leg's. It is not:
+    // both binds are answered by the SAME endpoint, so they prove internal
+    // consistency and never chain identity, and pathUSD is one address on both
+    // Tempo networks. `eth_chainId` is the only read that names a chain.
+    // Discarding costs a retry - the receipt is still there next pass - and
+    // keeping a wrong credit costs the provider a job paid in testnet coin.
     const quiet = goesQuiet(
       settledChain(SINGLE_BLOCK - 100, {
         receipts: { [SINGLE_HASH]: SINGLE },
@@ -345,7 +346,7 @@ describe('verifyTempoPayment - by hash, over recorded receipts', () => {
       fromBlock: SINGLE_BLOCK - 100,
       pollBudgetMs: 0,
     });
-    expect(result).toMatchObject({ outcome: 'verified' });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
     expect(quiet.state.asked).toBe(2);
   });
 
