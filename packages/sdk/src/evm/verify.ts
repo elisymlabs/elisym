@@ -24,7 +24,7 @@ import { resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
 import { monotonicNow } from './clock';
-import { assertEvmChain } from './config';
+import { assertEvmChain, checkEvmChain } from './config';
 import {
   EVM_LATE_PAYMENT_GRACE_SECS,
   TEMPO_LIVE_NOHASH_BUDGET_MS,
@@ -155,15 +155,21 @@ async function confirmedOnChain(
   client: Eip1193Client,
   chain: ChainConfig,
   result: TempoVerifyResult,
+  signal?: AbortSignal,
 ): Promise<TempoVerifyResult> {
   const restsOnReads =
     result.outcome === 'none' ||
+    result.outcome === 'verified' ||
     (result.outcome === 'refused' && !NEEDS_NO_ENDPOINT.has(result.code));
   if (!restsOnReads) {
     return result;
   }
   try {
-    await assertEvmChain(client, chain);
+    // `checkEvmChain`, not `assertEvmChain`: a MISMATCH discards the answer,
+    // and an endpoint that merely will not say which chain it is does not.
+    // The gate at the top already had a readable answer, and throwing away a
+    // complete look because the last call was rate-limited costs the job.
+    await withAbort(checkEvmChain(client, chain), signal);
   } catch {
     return inconclusive('chain_unreadable');
   }
@@ -275,7 +281,12 @@ export async function verifyTempoPayment(
   const hash = options.txSignature === undefined ? null : readTxHash(options.txSignature);
   if (hash === null) {
     // No hash, or something that was never one: the memo is the only handle.
-    return confirmedOnChain(client, chain, await verifyWithPolling(context, options));
+    return confirmedOnChain(
+      client,
+      chain,
+      await verifyWithPolling(context, options),
+      options.signal,
+    );
   }
   const byHash = await verifyByHash(context, hash);
   // A hash the node has never seen is an unknown about ONE transaction, and
@@ -288,7 +299,7 @@ export async function verifyTempoPayment(
       ? WORTH_A_SECOND_LOOK.has(byHash.code)
       : byHash.outcome === 'inconclusive' && byHash.reason === 'no_receipt';
   if (!worthASecondLook) {
-    return confirmedOnChain(client, chain, byHash);
+    return confirmedOnChain(client, chain, byHash, options.signal);
   }
   // The named transaction did not pay this request, which proves nothing about
   // whether another one did: a wallet reports a bundle id, an approve, or the
@@ -300,7 +311,7 @@ export async function verifyTempoPayment(
     return byMemo;
   }
   if (byMemo.outcome === 'refused') {
-    return confirmedOnChain(client, chain, byMemo);
+    return confirmedOnChain(client, chain, byMemo, options.signal);
   }
   // And an unknown must never be buried under a refusal - the same rule the
   // candidate loop applies one level down, and the rule the no-hash path is
@@ -320,7 +331,12 @@ export async function verifyTempoPayment(
   // A REFUSAL by hash is evidence and stands. An unknown by hash is not: a
   // complete look that found nothing outranks "I have never seen that hash",
   // or reporting a bundle id would be worse than reporting nothing at all.
-  return confirmedOnChain(client, chain, byHash.outcome === 'refused' ? byHash : byMemo);
+  return confirmedOnChain(
+    client,
+    chain,
+    byHash.outcome === 'refused' ? byHash : byMemo,
+    options.signal,
+  );
 }
 
 async function verifyWithPolling(
@@ -384,6 +400,18 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
   }
   if (blockNumber > finalized.number) {
     return inconclusive('not_finalized');
+  }
+  // The receipt is the only thing here that arrives whole from one call, and
+  // every check above reads it against ITSELF. Bind it to the chain: the block
+  // it claims to be in must be the block this endpoint has at that height.
+  // Nothing else can catch a receipt from another chain - the two Tempo
+  // networks share the token address, and a customer chooses the hash it
+  // reports, so a transfer of free testnet coin carrying this request's memo
+  // is one routed `eth_getTransactionReceipt` away from being credited.
+  const claimedBlock = readTxHash(readField(receipt, 'blockHash'));
+  const ownBlock = await readBlockByNumber(context.client, blockNumber);
+  if (ownBlock === null || claimedBlock === null || ownBlock.hash !== claimedBlock) {
+    return inconclusive('chain_unreadable');
   }
 
   // Rule 3: only this transaction's logs, from the REGISTRY token, of the memo

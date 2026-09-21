@@ -599,10 +599,18 @@ export async function listTempoBlockedLogs(
       if (decoded.kind !== 'log') {
         return 'unreadable';
       }
+      const log = decoded.log;
       if (
         !sameAddress(decoded.log.token, options.token) ||
         !sameAddress(decoded.log.receiver, options.receiver)
       ) {
+        return 'unreadable';
+      }
+      // The block range is a filter dimension like any other here too: an
+      // entry outside the chunk asked for is the node answering something
+      // else, and this scan's empty-and-complete answer is what lets a caller
+      // say money was NOT parked with the guard.
+      if (log.blockNumber < options.fromBlock || log.blockNumber > (options.toBlock ?? head)) {
         return 'unreadable';
       }
       candidates.push(decoded.log);

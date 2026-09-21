@@ -613,6 +613,26 @@ describe('listTempoBlockedLogs', () => {
     ]);
   });
 
+  it('calls a guard log from OUTSIDE the range it asked for unreadable', async () => {
+    // The blocked scan's empty-and-complete answer is what lets a caller say
+    // money was never parked with the guard, so its range is a filter like
+    // any other - the transfer scan has bounded both ends since round 4.
+    const chain = fakeTempoChain({ finalized: 35_790_000, timestamps: { 35_790_000: 1 } });
+    const client = {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getLogs'
+          ? blocked.map((log) => wireLog({ ...log, blockNumber: 35_795_000 }))
+          : chain.client.request(args),
+    };
+    const scan = await listTempoBlockedLogs(client, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.candidates).toEqual([]);
+    expect(scan.complete).toBe(false);
+  });
+
   it('calls a guard log for another TOKEN unreadable, not merely uninteresting', async () => {
     // A filtered scan is answered only with what it asked for, so an entry for
     // another token is the node answering something else: incomplete, never

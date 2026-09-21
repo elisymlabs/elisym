@@ -38,6 +38,13 @@ export interface FakeChainOptions {
   logs?: FakeLog[];
   /** Receipts by transaction hash. A hash that is absent answers `null`. */
   receipts?: Record<string, unknown>;
+  /**
+   * Block hashes by number, for the rows that need one to DISAGREE with a
+   * receipt. Left alone, a block answers the `blockHash` of a receipt it
+   * holds at that height - which is what a real node does, and what binds a
+   * receipt to the chain it came from.
+   */
+  blockHashes?: Record<number, string>;
   /** Beyond this many matches, a chunk answers the result-cap error. */
   maxResults?: number;
   /** Fail a chunk: return an error to throw, or `undefined` to answer normally. */
@@ -156,8 +163,40 @@ function block(number: number, options: FakeChainOptions): unknown {
   return {
     number: quantity(number),
     timestamp: quantity(timestamp),
-    hash: `0x${'cd'.repeat(32)}`,
+    hash:
+      options.blockHashes?.[number] ?? receiptBlockHash(number, options) ?? `0x${'cd'.repeat(32)}`,
   };
+}
+
+/**
+ * The `blockHash` of a receipt this chain holds at that height. A real node's
+ * block hash and its receipts' `blockHash` are the same value; a fake that
+ * invented one would make every receipt look like it came from another chain.
+ */
+function receiptBlockHash(number: number, options: FakeChainOptions): string | undefined {
+  for (const receipt of Object.values(options.receipts ?? {})) {
+    const at = readNumber(receipt, 'blockNumber');
+    const hash = readString(receipt, 'blockHash');
+    if (at === number && hash !== undefined) {
+      return hash;
+    }
+  }
+  return undefined;
+}
+
+function readNumber(value: unknown, key: string): number | undefined {
+  const raw = readString(value, key);
+  // A row may hold a receipt whose `blockNumber` is deliberately unreadable;
+  // the fake has to answer that the way a node would, not throw.
+  return raw !== undefined && /^0x[0-9a-f]+$/i.test(raw) ? Number(BigInt(raw)) : undefined;
+}
+
+function readString(value: unknown, key: string): string | undefined {
+  if (typeof value !== 'object' || value === null || !(key in value)) {
+    return undefined;
+  }
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === 'string' ? field : undefined;
 }
 
 /** The node's own words: four different failures share `-32602`, and only this one halves. */

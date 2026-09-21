@@ -97,8 +97,16 @@ function requestOf(fields: RequestFields) {
 function chainWith(options: FakeChainOptions = {}) {
   return fakeTempoChain({
     finalized: 40_000_000,
-    timestamps: { 40_000_000: NOW, [BATCH_BLOCK]: NOW, [SINGLE_BLOCK]: NOW },
     ...options,
+    // Merged, never replaced: a receipt is bound to the block it names, and a
+    // real node always has that block. A row overriding the head's clock must
+    // not accidentally take the receipt's own block away with it.
+    timestamps: {
+      40_000_000: NOW,
+      [BATCH_BLOCK]: NOW,
+      [SINGLE_BLOCK]: NOW,
+      ...options.timestamps,
+    },
   });
 }
 
@@ -261,13 +269,77 @@ describe('verifyTempoPayment - by hash, over recorded receipts', () => {
   });
 
   it('does NOT pay for a second chain read when the answer is not terminal', async () => {
-    // Only `none` and a refusal that rested on a read buy the extra call.
-    const chain = chainWith({ receipts: { [SINGLE_HASH]: SINGLE } });
-    await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+    // An unknown is not an answer, so it buys nothing. A credit does: it is
+    // the one verdict that hands over the provider's work, and a whole
+    // endpoint on the other network would otherwise verify a free testnet
+    // transfer carrying this request's memo.
+    const unknown = chainWith({ receipts: {}, logs: [] });
+    const waiting = await verifyTempoPayment(unknown.client, requestOf({ memo: SINGLE_MEMO }), {
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(waiting.outcome).toBe('inconclusive');
+    expect(unknown.calls.filter((call) => call.method === 'eth_chainId')).toHaveLength(1);
+
+    const credited = chainWith({ receipts: { [SINGLE_HASH]: SINGLE } });
+    const result = await verifyTempoPayment(credited.client, requestOf({ memo: SINGLE_MEMO }), {
       txSignature: SINGLE_HASH,
       fromBlock: SINGLE_BLOCK - 100,
     });
-    expect(chain.calls.filter((call) => call.method === 'eth_chainId')).toHaveLength(1);
+    expect(result.outcome).toBe('verified');
+    expect(credited.calls.filter((call) => call.method === 'eth_chainId')).toHaveLength(2);
+  });
+
+  it('keeps a complete look when the last chain read cannot answer', async () => {
+    // The closing confirmation asks whether the endpoint MOVED. An endpoint
+    // that will not say which chain it is has not moved - and throwing away a
+    // complete look because the last of twenty calls was rate-limited costs
+    // the job for nothing.
+    let answered = 0;
+    const base = settledChain(SINGLE_BLOCK - 100, { receipts: {} });
+    const quiet = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        if (args.method === 'eth_chainId') {
+          answered += 1;
+          return answered === 1 ? '0x1079' : null;
+        }
+        return base.client.request(args);
+      },
+    };
+    const result = await verifyTempoPayment(quiet, requestOf({ memo: SINGLE_MEMO }), {
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toEqual({ outcome: 'none' });
+    expect(answered).toBe(2);
+  });
+
+  it('credits nothing from a receipt whose BLOCK this chain does not have', async () => {
+    // The receipt is the only thing here that arrives whole from one call, and
+    // every other check reads it against itself. A gateway that answers
+    // `eth_chainId` for one network and `eth_getTransactionReceipt` for
+    // another would otherwise credit a transfer of free testnet coin - the
+    // token address is the same on both - carrying this request's memo, which
+    // the customer has and the customer chooses which hash to report.
+    const chain = chainWith({
+      receipts: { [SINGLE_HASH]: SINGLE },
+      blockHashes: { [SINGLE_BLOCK]: `0x${'7c'.repeat(32)}` },
+    });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: SINGLE_HASH,
+      fromBlock: SINGLE_BLOCK - 100,
+    });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
+  });
+
+  it('credits nothing from a receipt that names no block at all', async () => {
+    const { blockHash: _dropped, ...noBlockHash } = SINGLE as Record<string, unknown>;
+    const chain = chainWith({ receipts: { [SINGLE_HASH]: noBlockHash } });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: SINGLE_HASH,
+      fromBlock: SINGLE_BLOCK - 100,
+    });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
   });
 
   it('says nothing about a payment when the ENDPOINT is another chain', async () => {
@@ -1019,9 +1091,12 @@ describe('verifyTempoPayment - the fee leg', () => {
 
   /** The finalized TAG answers; the same block asked for by NUMBER does not. */
   function headByNumberUnreadable(chain: { client: { request: (args: never) => unknown } }) {
+    // Only the HEAD by number: the receipt's own block still reads, or the
+    // receipt's chain bind would answer first and this row would be about it.
+    const head = `0x${(40_000_000).toString(16)}`;
     return {
       request: async (args: { method: string; params?: readonly unknown[] }) =>
-        args.method === 'eth_getBlockByNumber' && args.params?.[0] !== 'finalized'
+        args.method === 'eth_getBlockByNumber' && args.params?.[0] === head
           ? null
           : chain.client.request(args as never),
     };
@@ -1215,8 +1290,8 @@ describe('verifyTempoPayment - a leg the recipient blocked', () => {
     return fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       ...options,
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW, ...options.timestamps },
     });
   }
 
@@ -1535,20 +1610,35 @@ describe('verifyTempoPayment - guards the fee leg and the ordering owe', () => {
     // double-sends produces exactly that - and which one settles the request
     // must not depend on the node's ordering or on which chunk failed.
     const later = `0x${'ab'.repeat(32)}`;
-    const laterLog = { ...memoLog, transactionHash: later, blockNumber: '0x25d1e00' };
+    // A block of its own, with a block hash of its own: a receipt that named
+    // one block while its log sat in another would be refused by the chain
+    // bind before the ordering was ever reached, and the row would pass for a
+    // reason that has nothing to do with order.
+    const laterBlock = SINGLE_BLOCK + 328;
+    const laterLog = {
+      ...memoLog,
+      transactionHash: later,
+      blockNumber: `0x${laterBlock.toString(16)}`,
+    };
     const chain = chainWith({
       receipts: {
         [SINGLE_HASH]: SINGLE,
-        [later]: { ...SINGLE, transactionHash: later, blockNumber: '0x25d1e00', logs: [laterLog] },
+        [later]: {
+          ...SINGLE,
+          transactionHash: later,
+          blockNumber: `0x${laterBlock.toString(16)}`,
+          blockHash: `0x${'ef'.repeat(32)}`,
+          logs: [laterLog],
+        },
       },
-      timestamps: { 40_000_000: NOW, [SINGLE_BLOCK]: NOW, 39_657_984: NOW },
+      timestamps: { 40_000_000: NOW, [SINGLE_BLOCK]: NOW, [laterBlock]: NOW },
       // The node lists the later one first.
       logs: [
         {
           address: USDCE,
           topics: laterLog.topics as string[],
           data: String(laterLog.data),
-          blockNumber: 39_657_984,
+          blockNumber: laterBlock,
           transactionHash: later,
           logIndex: 0,
         },
