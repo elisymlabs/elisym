@@ -172,10 +172,8 @@ export async function getEvmProtocolConfig(
   const key = cacheKey(chain.caip2, contract);
   let raw: unknown;
   let generation = 0;
-  // Stamped when the chain is ASKED, not when the answer is written: otherwise
-  // the reported age is short by a whole round trip, and the age is the lever a
-  // caller has for imposing its own bound on staleness.
-  let askedAt = monotonicNow();
+  // Never read before it is stamped below; every write is downstream of that.
+  let askedAt = Number.NaN;
   try {
     // BEFORE the cache is served. A snapshot is a snapshot of THIS chain, and a
     // client pointed somewhere else must not be served from it - the cache is
@@ -197,6 +195,10 @@ export async function getEvmProtocolConfig(
       throw new Error('eth_chainId was unreadable');
     }
     generation = ++writes;
+    // Stamped when the chain is ASKED, not when the answer comes back: otherwise
+    // the reported age is short by a whole round trip and the effective TTL is
+    // the TTL plus it - and that age is the lever a caller has for bounding
+    // staleness itself, since stale-while-error deliberately has none.
     askedAt = monotonicNow();
     raw = await withAbort(
       client.request({

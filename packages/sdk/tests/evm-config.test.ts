@@ -480,12 +480,31 @@ describe('getEvmProtocolConfig', () => {
   });
 
   it('measures the age from when the chain was ASKED, not from when it answered', async () => {
-    // Otherwise the reported age is short by a whole round trip - and the age
-    // is the lever a caller has for imposing its own bound on staleness.
+    // The round trip that separates the two stamps is the eth_call's, not the
+    // chain id's: a test that delays the chain id would pass either way.
+    const slowCall = {
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') {
+          return '0xa5bf';
+        }
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return answer(250);
+      },
+    } as unknown as Eip1193Client;
+    await getEvmProtocolConfig(slowCall, CHAINS.TEMPO_DEVNET);
+    const cached = await getEvmProtocolConfig(
+      clientAnswering(answer(999)).client,
+      CHAINS.TEMPO_DEVNET,
+    );
+    expect(cached.source).toBe('cache');
+    expect(cached.cachedAgeMs ?? -1).toBeGreaterThanOrEqual(55);
+  });
+
+  it('does not count the chain-id read as age: the ticket is taken after it', async () => {
     const slowChainId = {
       request: async ({ method }: { method: string }) => {
         if (method === 'eth_chainId') {
-          await new Promise((resolve) => setTimeout(resolve, 40));
+          await new Promise((resolve) => setTimeout(resolve, 60));
           return '0xa5bf';
         }
         return answer(250);
@@ -496,7 +515,6 @@ describe('getEvmProtocolConfig', () => {
       clientAnswering(answer(999)).client,
       CHAINS.TEMPO_DEVNET,
     );
-    expect(cached.source).toBe('cache');
     expect(cached.cachedAgeMs ?? Number.MAX_SAFE_INTEGER).toBeLessThan(30);
   });
 
