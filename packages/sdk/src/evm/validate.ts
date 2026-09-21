@@ -135,25 +135,11 @@ export function validateTempoPaymentRequest(
   requestJson: string,
   bounds: TempoPaymentBounds,
 ): PaymentValidationError | null {
-  // The session cap is enforced HERE, by the parse gate, for both versions -
-  // there is no second check below, and adding one would be unreachable.
-  const parsed = parseAnyPaymentRequest(requestJson, {
-    ...(bounds.maxAmountSubunits === undefined
-      ? {}
-      : { maxAmountSubunits: bounds.maxAmountSubunits }),
-  });
-  if (!parsed.ok) {
-    return refuse(parseFailureCode(parsed.error), parsed.error.message);
-  }
-  if (parsed.version !== 2) {
-    return refuse(
-      'unsupported_version',
-      `This is a version ${parsed.version} payment request; a Tempo payment is version 2.`,
-    );
-  }
-  const request = parsed.data;
-
-  // The bounds' own SHAPE, before anything is read out of it. A caller that
+  // The bounds' own SHAPE, before anything is read out of it - and that has
+  // to mean BEFORE the parse below, which reads `maxAmountSubunits` off
+  // them. Round 13 put these guards after it, so `bounds` of `null` still
+  // threw on the very first read and the guard written for exactly that
+  // case could only ever fire for a primitive. A caller that
   // casts past the type reaches this function with `card: null` or no chain at
   // all, and every one of those dies on a property read - this function's
   // contract is to refuse, never to throw, and seventeen sibling shapes
@@ -173,6 +159,24 @@ export function validateTempoPaymentRequest(
   ) {
     return refuse('invalid_bounds', 'These bounds carry an asset that is not an asset.');
   }
+
+  // The session cap is enforced HERE, by the parse gate, for both versions -
+  // there is no second check below, and adding one would be unreachable.
+  const parsed = parseAnyPaymentRequest(requestJson, {
+    ...(bounds.maxAmountSubunits === undefined
+      ? {}
+      : { maxAmountSubunits: bounds.maxAmountSubunits }),
+  });
+  if (!parsed.ok) {
+    return refuse(parseFailureCode(parsed.error), parsed.error.message);
+  }
+  if (parsed.version !== 2) {
+    return refuse(
+      'unsupported_version',
+      `This is a version ${parsed.version} payment request; a Tempo payment is version 2.`,
+    );
+  }
+  const request = parsed.data;
 
   // Every one of these is lowercased below, which THROWS on anything that is
   // not a string - and this function's contract is to refuse, never to throw.

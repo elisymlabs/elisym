@@ -263,6 +263,17 @@ describe('validateTempoPaymentRequest', () => {
     expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps: 1000 }))).toBeNull();
   });
 
+  it('refuses bounds that are not an object at all, before reading anything off them', () => {
+    // The guard for this ran AFTER the parse, which reads `maxAmountSubunits`
+    // off the bounds - so `null` threw on the first read and the guard written
+    // for it could only ever fire for a primitive.
+    const problem = validateTempoPaymentRequest(
+      requestJson(),
+      null as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
+    );
+    expect(problem?.code).toBe('invalid_bounds');
+  });
+
   it.each([
     ['a card that is not a card', { card: null }],
     ['no chain at all', { chain: undefined }],
@@ -873,6 +884,18 @@ describe('resolveTempoTransferOutcome', () => {
     return `0x${'0'.repeat(24)}${address.slice(2).toLowerCase()}`;
   }
 
+  /** One `TransferWithMemo` to `to`, as a node would list it. */
+  function memoLogOf(to: string, memo: string, amount: bigint, blockNumber: number): FakeLog {
+    return {
+      address: USDCE,
+      topics: [TRANSFER_WITH_MEMO_TOPIC, topicWord(PAYER), topicWord(to), memo],
+      data: `0x${amount.toString(16).padStart(64, '0')}`,
+      blockNumber,
+      transactionHash: `0x${'e7'.repeat(32)}`,
+      logIndex: 0,
+    };
+  }
+
   function history(token: string, ...edges: number[]) {
     return edges.map((edge, index) => ({
       address: token,
@@ -1294,6 +1317,30 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome).toEqual({ state: 'unsent', reason: 'deadline_passed' });
   });
 
+  it('still says UNSENT with a stranger’s memo and a SMALLER transfer in the window', async () => {
+    // Two decoys the scan must not count, both to our own destinations. One
+    // carries somebody else's memo - the memo is what binds a transfer to this
+    // request, and the filter is what enforces that. One carries OUR memo at
+    // less than the amount - a transfer below `minAmount` is DROPPED, and a
+    // drop leaves the pass complete, so `unsent` still stands. (The plan used
+    // to claim any transfer could only turn `unsent` into `pending`; round 13
+    // measured otherwise and the sentence was corrected.)
+    const theirs = memoLogOf(RECIPIENT, `0x${'7a'.repeat(32)}`, 10_000n, BATCH_BLOCK - 40);
+    const tooSmall = memoLogOf(RECIPIENT, BATCH_MEMO, 9_999n, BATCH_BLOCK - 30);
+    const chain = chainWith({
+      receipts: {},
+      logs: [...history(USDCE, BATCH_BLOCK - 100, 40_000_000), theirs, tooSmall],
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'unsent', reason: 'deadline_passed' });
+  });
+
   it.each([
     ['the floor of the scan', 40_000_000],
     ['its head', BATCH_BLOCK - 100],
@@ -1532,6 +1579,36 @@ describe('resolveTempoTransferOutcome', () => {
         validBefore: validBefore as unknown as number,
       }),
     ).rejects.toThrow(/needs a deadline/);
+  });
+
+  it('will not prove the absence of a WITHDRAWAL to a virtual destination', async () => {
+    // The sibling half of this line has its own row and this one did not. A
+    // withdrawal to a TIP-1022 alias whose transfer the MASTER's policy
+    // blocked: the guard files `TransferBlocked` under the master, so a guard
+    // pass filtered on the alias finds nothing; a blocked transfer emits no
+    // `Transfer`, so that pass is complete and empty; the history control
+    // passes. Everything lines up for `unsent` - send it again - on 25000000
+    // subunits already parked with the guard and recoverable only by the
+    // master's recovery authority.
+    // Four bytes, then the ten 0xfd TIP-1022 marks, then six. This one is
+    // real: the 2b-i census found 92 guard logs naming it on Moderato.
+    const alias = '0xb385a519fdfdfdfdfdfdfdfdfdfd000000000001';
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ token: USDCE, from: PAYER, to: alias, amount: 25_000_000n }],
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
+    );
+    expect(outcome).toEqual({ state: 'pending' });
   });
 
   it('will not prove the absence of a memo-less leg from a VIRTUAL sender', async () => {
