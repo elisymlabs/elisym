@@ -1,0 +1,114 @@
+/**
+ * Structural rules of the EVM rail, enforced over the source tree:
+ * - an EVM library (viem) may be imported under `src/evm/` and nowhere else;
+ * - nothing outside `src/evm/` imports from it, so the root bundle - and every
+ *   client that only discovers and verifies - never pulls the rail in.
+ */
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { CHAINS, isEvmWireAddress } from '../src/payment/chains';
+
+const SRC = join(__dirname, '..', 'src');
+
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory).flatMap((name) => {
+    const path = join(directory, name);
+    if (statSync(path).isDirectory()) {
+      return sourceFiles(path);
+    }
+    return path.endsWith('.ts') ? [path] : [];
+  });
+}
+
+const outsideEvm = sourceFiles(SRC).filter((path) => !relative(SRC, path).startsWith(`evm${sep}`));
+
+/**
+ * Every form that pulls a module in: a static `from`, a bare side-effect
+ * `import`, a dynamic `import()`, and `require()`. Matching only `from` left
+ * three doors open, and the dynamic one is the door that matters - esbuild
+ * inlines it, so the rail would reach the root bundle with the test still green.
+ */
+const IMPORT_FORMS = String.raw`(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)`;
+const VIEM_REFERENCE = new RegExp(IMPORT_FORMS + String.raw`['"]viem(?:/[^'"]*)?['"]`);
+const RAIL_REFERENCE = new RegExp(
+  IMPORT_FORMS + String.raw`['"](?:(?:\.\.?/)+(?:[\w-]+/)*evm(?:/[^'"]*)?|@elisym/sdk/evm)['"]`,
+);
+/** A sentence only the rail carries, for looking inside a built bundle. */
+const RAIL_MARKER = 'No elisym config contract is registered for';
+
+describe('the EVM rail stays in its own entry point', () => {
+  it('finds source files to check', () => {
+    expect(outsideEvm.length).toBeGreaterThan(50);
+  });
+
+  // The rules above are two regular expressions, and a regular expression that
+  // quietly matches nothing is a test that quietly proves nothing. These are the
+  // forms they exist to catch, and the ones they must not fire on.
+  it.each([
+    ["import { getAddress } from 'viem';", true],
+    ["import type { Hex } from 'viem';", true],
+    ["import 'viem';", true],
+    ["const lib = await import('viem');", true],
+    ["const lib = require('viem');", true],
+    ["import { toHex } from 'viem/utils';", true],
+    ['// viem is deliberately not imported here', false],
+    ["import { x } from 'viemlike';", false],
+  ])('recognises %s as an EVM-library import: %s', (line, caught) => {
+    expect(VIEM_REFERENCE.test(line)).toBe(caught);
+  });
+
+  it.each([
+    ["import { getEvmProtocolConfig } from '../evm/config';", true],
+    ["import { x } from './evm';", true],
+    ["const rail = await import('../evm/config');", true],
+    ["const rail = require('../../payment/evm/config');", true],
+    ["import { x } from '@elisym/sdk/evm';", true],
+    ["import { x } from '../payment/chains';", false],
+    ["import { x } from './evmish';", false],
+  ])('recognises %s as a rail import: %s', (line, caught) => {
+    expect(RAIL_REFERENCE.test(line)).toBe(caught);
+  });
+
+  it('imports an EVM library only under src/evm', () => {
+    const offenders = outsideEvm.filter((path) => VIEM_REFERENCE.test(readFileSync(path, 'utf8')));
+    expect(offenders.map((path) => relative(SRC, path))).toEqual([]);
+  });
+
+  it('is imported by nothing outside src/evm', () => {
+    const offenders = outsideEvm.filter((path) => RAIL_REFERENCE.test(readFileSync(path, 'utf8')));
+    expect(offenders.map((path) => relative(SRC, path))).toEqual([]);
+  });
+
+  // The regexes above read SOURCE, and a bundler is what actually decides. With
+  // `splitting: false` a dynamic `import()` is inlined, so a form the source
+  // rules missed would land in the root bundle without a word. This asserts the
+  // artefact itself whenever there is one to assert.
+  it('keeps the rail out of the built root bundle', () => {
+    const bundles = ['dist/index.js', 'dist/index.cjs']
+      .map((name) => join(__dirname, '..', name))
+      .filter((path) => existsSync(path));
+    if (bundles.length === 0) {
+      return;
+    }
+    for (const bundle of bundles) {
+      const built = readFileSync(bundle, 'utf8');
+      expect(built).not.toContain(RAIL_MARKER);
+      expect(built).not.toContain('viem');
+    }
+  });
+});
+
+describe('the chain registry', () => {
+  it('names every config contract in wire form', () => {
+    // The address goes verbatim into `eth_call`'s `to` and out again as
+    // `EvmProtocolConfig.contract`; a checksummed one would work on the wire
+    // and silently fail every equality downstream.
+    for (const chain of Object.values(CHAINS)) {
+      const address = 'protocolConfig' in chain ? chain.protocolConfig.address : undefined;
+      if (address !== undefined) {
+        expect(isEvmWireAddress(address)).toBe(true);
+      }
+    }
+  });
+});

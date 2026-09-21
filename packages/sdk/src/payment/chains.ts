@@ -30,6 +30,12 @@ export interface ChainConfig {
   rpcUrls: readonly string[];
   /** Explorer link for a transaction; `{tx}` is replaced by its id. */
   explorerTx: string;
+  /**
+   * EVM chains: the `ElisymConfig` contract clients read the fee and the treasury
+   * from. Absent means elisym has no config on that chain yet, and nothing can be
+   * priced there. The address comes from HERE only, never from a card or a request.
+   */
+  protocolConfig?: { address: string };
 }
 
 export const CHAINS = {
@@ -67,6 +73,9 @@ export const CHAINS = {
     evmChainId: 42431,
     rpcUrls: ['https://rpc.moderato.tempo.xyz'],
     explorerTx: 'https://explore.testnet.tempo.xyz/tx/{tx}',
+    // Deployed 2026-09-20, tx 0x722e6cf1...a462; runtime code keccak256
+    // 0x85c2c8ec...4520. See contracts/elisym-config-evm/DEPLOYMENTS.md.
+    protocolConfig: { address: '0x5fbde74a7ddc8133123e824ffbe161a909342b3d' },
   },
 } as const satisfies Record<string, ChainConfig>;
 
