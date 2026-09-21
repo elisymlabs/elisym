@@ -592,13 +592,25 @@ describe('verifyTempoPayment - a hash that names the wrong transaction', () => {
     expect(passes).toBe(1);
   });
 
-  it('keeps the blocked verdict when the second look finds nothing either', async () => {
+  it.each([
+    ['WAITS while the window is open', NOW, { outcome: 'inconclusive', reason: 'not_yet_due' }],
+    [
+      'keeps the blocked verdict once it has closed',
+      PAST_DEADLINE,
+      { outcome: 'refused', code: 'provider_leg_blocked' },
+    ],
+  ])('when the second look finds only the bounce, it %s', async (_label, clock, expected) => {
+    // A bounced transfer means the customer's money LEFT and parked with the
+    // guard - which is a reason to wait, not to stop. The receiver opens its
+    // policy (this verdict is what tells the provider to ask), the customer
+    // sends again, and the retry lands inside the same window. Refusing on the
+    // first bounce closes the job minutes before the money arrives.
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
+      timestamps: { 35_790_000: clock, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: BLOCKED },
-      logs: receiptLogs(BLOCKED),
+      logs: [...controlTraffic(BLOCKED_BLOCK - 150, 35_789_900, PATHUSD), ...receiptLogs(BLOCKED)],
     });
     const result = await verifyTempoPayment(
       chain.client,
@@ -612,9 +624,9 @@ describe('verifyTempoPayment - a hash that names the wrong transaction', () => {
         created_at: NOW - 60,
         expiry_secs: 600,
       }),
-      { txSignature: BLOCKED_HASH, fromBlock: BLOCKED_BLOCK - 100 },
+      { txSignature: BLOCKED_HASH, fromBlock: BLOCKED_BLOCK - 100, pollBudgetMs: 0 },
     );
-    expect(result).toEqual({ outcome: 'refused', code: 'provider_leg_blocked' });
+    expect(result).toEqual(expected);
   });
 
   it('ignores a guard log in the receipt that names ANOTHER transaction', async () => {
@@ -855,6 +867,42 @@ describe('verifyTempoPayment - the fee leg', () => {
     });
     expect(result).toEqual({ outcome: 'refused', code: 'fee_leg_blocked' });
   });
+
+  it.each([
+    [
+      'the look could not finish',
+      {
+        onGetLogs: (call: { topics: (string | null)[] }) =>
+          call.topics[0] === TRANSFER_WITH_MEMO_TOPIC && call.topics[2]?.endsWith(TREASURY.slice(2))
+            ? new Error('the node fell over')
+            : undefined,
+      },
+      { outcome: 'inconclusive', reason: 'incomplete_scan' },
+    ],
+    ['the window is still open', {}, { outcome: 'inconclusive', reason: 'not_yet_due' }],
+  ])(
+    'does not let the receipt’s guard log REACH a refusal when %s',
+    async (_label, options, expected) => {
+      // The rename gate has to be as strong as its name: a guard log may turn
+      // a refusal the scan reached into a more specific one, and may not turn
+      // an unknown into a refusal at all. One node fault would otherwise be
+      // round 6's defect again.
+      const bounced = bouncedFeeLeg(BATCH_HASH, BATCH_BLOCK);
+      const { providerLogs } = splitBatch(`0x${'fe'.repeat(32)}`);
+      const chain = chainWith({
+        receipts: {
+          [BATCH_HASH]: { ...BATCH, logs: [...providerLogs.map(wire), ...bounced.map(wire)] },
+        },
+        logs: providerLogs,
+        ...options,
+      });
+      const result = await verifyTempoPayment(chain.client, feeRequest, {
+        txSignature: BATCH_HASH,
+        fromBlock: BATCH_BLOCK - 100,
+      });
+      expect(result).toEqual(expected);
+    },
+  );
 
   it('says the fee leg was BLOCKED from a guard log found by the RANGE scan', async () => {
     // The guard log is not in the named receipt at all - a second transaction

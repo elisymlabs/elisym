@@ -513,6 +513,19 @@ async function verifyFeeLegElsewhere(
   if (!scan.complete || scan.toBlock === null || scan.toBlock < providerLeg.blockNumber) {
     return inconclusive('incomplete_scan');
   }
+  // The DEADLINE first, and it gates the blocked verdict as much as the
+  // missing one. A bounced leg means the customer's money left and parked with
+  // the guard - which is a reason to wait, not to stop: the receiver opens its
+  // policy (this verdict is what tells the provider to), the customer sends
+  // again, and the second attempt lands inside the same window. Refusing on
+  // the first bounce closes the job minutes before the money arrives.
+  const edge = await readBlockByNumber(context.client, scan.toBlock);
+  if (edge === null) {
+    return inconclusive('chain_unreadable');
+  }
+  if (!isPastLateDeadline(context.request, edge.timestamp)) {
+    return inconclusive('not_yet_due');
+  }
   const blocked = await findBlockedLeg(
     context,
     context.feeAddress,
@@ -524,13 +537,6 @@ async function verifyFeeLegElsewhere(
   }
   if (blocked === 'unknown') {
     return inconclusive('incomplete_scan');
-  }
-  const edge = await readBlockByNumber(context.client, scan.toBlock);
-  if (edge === null) {
-    return inconclusive('chain_unreadable');
-  }
-  if (!isPastLateDeadline(context.request, edge.timestamp)) {
-    return inconclusive('not_yet_due');
   }
   // The same claim as `none` - "it is not on chain" - so the same proof. A node
   // that under-serves this window answers an empty list with no error, and
@@ -642,8 +648,21 @@ async function verifyWithoutHash(context: VerifyContext): Promise<TempoVerifyRes
     return inconclusive('incomplete_scan');
   }
 
-  // Nothing found, and the look was complete. Rule 10 before rule 9: a transfer
-  // the recipient's own policy refused is not a transfer that never happened.
+  // Nothing found, and the look was complete - but nothing is TERMINAL before
+  // the window closes, a bounced transfer least of all: it means the money
+  // left the customer and parked with the guard, the receiver opens its policy
+  // (this verdict is what tells it to), and the retry lands inside the same
+  // window. So the deadline gates this answer exactly as it gates `none`.
+  const edge = await readBlockByNumber(context.client, scan.toBlock);
+  if (edge === null) {
+    return inconclusive('chain_unreadable');
+  }
+  if (!isPastLateDeadline(context.request, edge.timestamp)) {
+    return inconclusive('not_yet_due');
+  }
+
+  // Rule 10 before rule 9: a transfer the recipient's own policy refused is
+  // not a transfer that never happened.
   const blocked = await findBlockedLeg(
     context,
     context.request.recipient,
@@ -655,14 +674,6 @@ async function verifyWithoutHash(context: VerifyContext): Promise<TempoVerifyRes
   }
   if (blocked === 'unknown') {
     return inconclusive('incomplete_scan');
-  }
-
-  const edge = await readBlockByNumber(context.client, scan.toBlock);
-  if (edge === null) {
-    return inconclusive('chain_unreadable');
-  }
-  if (!isPastLateDeadline(context.request, edge.timestamp)) {
-    return inconclusive('not_yet_due');
   }
   // Both edges of the scan, AFTER the scan.
   if (!(await vouchedFor(context, scan.toBlock))) {
