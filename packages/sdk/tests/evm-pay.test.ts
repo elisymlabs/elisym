@@ -88,6 +88,18 @@ describe('validateTempoPaymentRequest', () => {
     expect(validateTempoPaymentRequest(blob, bounds())?.code).toBe(code);
   });
 
+  it.each([
+    ['asset', { asset: 'not-a-caip19' }, 'invalid_asset'],
+    ['recipient', { recipient: 'not-an-address' }, 'invalid_recipient_address'],
+    ['fee_address', { fee_address: 'not-an-address', fee_amount: '250' }, 'fee_address_mismatch'],
+    ['fee_amount', { fee_address: TREASURY, fee_amount: 250 }, 'fee_amount_mismatch'],
+  ])('maps a schema failure on %s to a code that names the field', (_label, fields, code) => {
+    // The deviation this validator claims over the Solana one is that a
+    // caller switching on the code never has to read English. Four of the
+    // five mappings had no row, so four fifths of that claim was untested.
+    expect(validateTempoPaymentRequest(requestJson(fields), bounds())?.code).toBe(code);
+  });
+
   it('refuses a chain this SDK does not know', () => {
     const request = requestJson({ chain: 'eip155:999', asset: `eip155:999/erc20:${USDCE}` });
     expect(validateTempoPaymentRequest(request, bounds())?.code).toBe('unsupported_chain');
@@ -232,6 +244,59 @@ describe('validateTempoPaymentRequest', () => {
   it('accepts a fee rate exactly AT the contract ceiling', () => {
     const request = requestJson({ fee_address: TREASURY, fee_amount: '1000' });
     expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps: 1000 }))).toBeNull();
+  });
+
+  it('refuses bounds that bound no AMOUNT at all, even cast past the type', () => {
+    // Without a card there is no recipient bound and no price bound, so the cap
+    // is the whole binding. Absent, every amount to every address is payable -
+    // the one shape the union's own comment says this function must never be
+    // handed, and the sibling half already refuses its own version of it.
+    const problem = validateTempoPaymentRequest(
+      requestJson({ amount: '10000000000000' }),
+      bounds({
+        card: undefined,
+        expectedAsset: USDCE_TEMPO_MAINNET,
+        maxAmountSubunits: undefined,
+      }) as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
+    );
+    expect(problem?.code).toBe('invalid_bounds');
+  });
+
+  it('refuses bounds whose card and session asset name DIFFERENT coins', () => {
+    // The union allows both together and `??` takes the card's, dropping the
+    // one the session agreed to without saying so.
+    const problem = validateTempoPaymentRequest(
+      requestJson(),
+      bounds({
+        card: { recipient: RECIPIENT, asset: USDCE_TEMPO_MAINNET, jobPriceSubunits: 10_000n },
+        expectedAsset: PATHUSD_TEMPO,
+      }),
+    );
+    expect(problem?.code).toBe('invalid_bounds');
+  });
+
+  it('accepts bounds whose card and session asset name the SAME coin', () => {
+    expect(
+      validateTempoPaymentRequest(
+        requestJson(),
+        bounds({
+          card: { recipient: RECIPIENT, asset: USDCE_TEMPO_MAINNET, jobPriceSubunits: 10_000n },
+          expectedAsset: USDCE_TEMPO_MAINNET,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('falls back to this machine’s clock when the caller names none', () => {
+    // `nowSecs` is optional and every other row passes it, so the default was
+    // exercised by nothing. A request created a year ago must be expired
+    // against the real clock, not accepted because nobody looked.
+    const yearAgo = Math.floor(Date.now() / 1000) - 365 * 24 * 3600;
+    const problem = validateTempoPaymentRequest(
+      requestJson({ created_at: yearAgo }),
+      bounds({ nowSecs: undefined }),
+    );
+    expect(problem?.code).toBe('expired');
   });
 
   it('refuses bounds that name no asset at all, even cast past the type', () => {
@@ -1349,6 +1414,92 @@ describe('resolveTempoTransferOutcome', () => {
         validBefore: NOW + 60,
       },
     );
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it.each([
+    ['no legs at all', []],
+    ['legs that are not a list', 'legs'],
+  ])('refuses %s, which nothing can fail to satisfy', async (_label, expected) => {
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    await expect(
+      resolveTempoTransferOutcome(chain.client, expected as unknown as TempoLegExpectation[], {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      }),
+    ).rejects.toThrow(/at least one expected leg/);
+  });
+
+  it.each([
+    ['a token', { token: 'pathusd' }],
+    ['a receiver', { to: 'the provider' }],
+  ])('refuses a leg naming %s that is not an address', async (_label, overrides) => {
+    // Every address is matched by lowercasing it and comparing; one that is not
+    // an address matches no log, so the leg is `pending` for ever.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    await expect(
+      resolveTempoTransferOutcome(
+        chain.client,
+        [{ ...legs[0], ...overrides } as TempoLegExpectation],
+        {
+          chain: CHAINS.TEMPO_MAINNET,
+          hash: BATCH_HASH,
+          floor: BATCH_BLOCK - 100,
+          validBefore: NOW + 60,
+        },
+      ),
+    ).rejects.toThrow(/name a token and a receiver/);
+  });
+
+  it('refuses a memo-LESS leg whose sender is not an address', async () => {
+    // A memo leg is paid by anyone, so its `from` binds nothing; a withdrawal
+    // is bound by its sender in the transfer pass and in the guard pass both.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    await expect(
+      resolveTempoTransferOutcome(
+        chain.client,
+        [{ token: USDCE, from: 'me', to: RECIPIENT, amount: 10_000n } as TempoLegExpectation],
+        {
+          chain: CHAINS.TEMPO_MAINNET,
+          hash: BATCH_HASH,
+          floor: BATCH_BLOCK - 100,
+          validBefore: NOW + 60,
+        },
+      ),
+    ).rejects.toThrow(/name its sender/);
+  });
+
+  it('finds a WITHDRAWAL parked with the guard, which carries no memo to find it by', async () => {
+    // A memo leg is recognised in the guard's log by its memo. A withdrawal has
+    // none, so the only thing binding that log to this leg is the originator -
+    // a different branch of the same function, and the money at stake is the
+    // whole withdrawal: without it the answer is `unsent`, which means send it
+    // again.
+    const parked = guardLogsOf(BLOCKED).map((log) => ({ ...log, blockNumber: 35_789_900 }));
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW + 600 },
+      receipts: {},
+      // A blocked transfer emits no memo log, so the transfer pass finds
+      // nothing and the guard pass is the only thing standing between this
+      // withdrawal and a second one.
+      logs: [...history(PATHUSD, BLOCKED_BLOCK - 100, 35_790_000), ...parked],
+    });
+    const withdrawal = {
+      token: BLOCKED_LEG.token,
+      from: BLOCKED_LEG.from,
+      to: BLOCKED_LEG.to,
+      amount: BLOCKED_LEG.amount,
+    };
+    const outcome = await resolveTempoTransferOutcome(chain.client, [withdrawal], {
+      chain: CHAINS.TEMPO_DEVNET,
+      hash: BLOCKED_HASH,
+      floor: BLOCKED_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
     expect(outcome).toEqual({ state: 'pending' });
   });
 

@@ -120,6 +120,10 @@ async function stillOnThisChain(
   return chainId !== null;
 }
 
+function isAddressLike(value: unknown): boolean {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+
 function sameAddress(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
 }
@@ -152,7 +156,11 @@ export async function resolveTempoTransferOutcome(
   expected: readonly TempoLegExpectation[],
   options: ResolveTempoTransferOptions,
 ): Promise<TempoTransferOutcome> {
-  if (expected.length === 0) {
+  // Nothing to satisfy is satisfied by anything: an empty list makes `every`
+  // true and would call a receipt `delivered` for money nobody expected. A
+  // value that is not a list at all throws out of `.some` a few lines down,
+  // which is this function's own error told in somebody else's words.
+  if (!Array.isArray(expected) || expected.length === 0) {
     throw new Error('resolveTempoTransferOutcome needs at least one expected leg.');
   }
   // Lowercased ONCE, here. Every hash read off the chain is lowercase, so an
@@ -179,6 +187,17 @@ export async function resolveTempoTransferOutcome(
     options.validBefore > LATEST_TEMPO_SECONDS
   ) {
     throw new Error(`resolveTempoTransferOutcome needs a deadline, not ${options.validBefore}.`);
+  }
+  // Every address on the leg is matched against a log by `sameAddress`, which
+  // lowercases what it is given: one that is not a string matches nothing at
+  // all, so the leg is `pending` for ever rather than refused.
+  if (expected.some((leg) => !isAddressLike(leg.token) || !isAddressLike(leg.to))) {
+    throw new Error('resolveTempoTransferOutcome needs every leg to name a token and a receiver.');
+  }
+  // `from` binds a memo-LESS leg to its sender, in the transfer pass and in
+  // the guard pass both; a memo leg is by design paid by anyone.
+  if (expected.some((leg) => leg.memo === undefined && !isAddressLike(leg.from))) {
+    throw new Error('resolveTempoTransferOutcome needs a leg with no memo to name its sender.');
   }
   // A leg of nothing is satisfied by a log that moved nothing, and those are
   // free to forge: `transferFromWithMemo` of zero succeeds from any caller.

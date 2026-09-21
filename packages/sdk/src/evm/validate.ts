@@ -10,9 +10,13 @@
  * money with the guard and leaving the job unpaid, so both destinations are
  * asked before the customer signs anything.
  *
- * Order matters and is fixed: the chain gate comes before any money check, the
+ * Order matters and is fixed: the chain gate comes before any money check that
+ * is about THIS request - the fee arithmetic, the card's price, the clock - the
  * way the Solana validator puts the network gate first. A request settling
- * somewhere else must never reach the fee arithmetic.
+ * somewhere else must never reach the fee arithmetic. The session cap is the
+ * one exception, and it is not one in substance: the parser enforces it while
+ * reading the amount, before anything at all has been decided, and the code
+ * that enforced it a second time down here was removed as unreachable.
  */
 
 import type { Asset } from '../payment/assets';
@@ -181,6 +185,20 @@ export function validateTempoPaymentRequest(
   // A resolved asset is a coin of THIS environment by construction: the
   // resolver looks it up through the request chain's own environment, and the
   // gate above has already settled that the request chain is this one.
+  if (
+    bounds.card !== undefined &&
+    bounds.expectedAsset !== undefined &&
+    assetKey(bounds.card.asset) !== assetKey(bounds.expectedAsset)
+  ) {
+    // The union allows both, and `??` takes the card's - silently dropping the
+    // asset the session agreed to. Two bounds that name different coins are
+    // not a bound at all; which one wins should not be decided here.
+    return refuse(
+      'invalid_bounds',
+      `These bounds disagree about the coin: the card pays ${bounds.card.asset.token} and ` +
+        `the session agreed ${bounds.expectedAsset.token}.`,
+    );
+  }
   const agreed = bounds.card?.asset ?? bounds.expectedAsset;
   if (agreed === undefined) {
     // Unreachable for a caller that typechecks - the bounds union requires one
@@ -273,6 +291,14 @@ export function validateTempoPaymentRequest(
     // string, which is a relational comparison and false for every large
     // amount - so the card's price would bound nothing at all.
     return refuse('invalid_bounds', 'These bounds carry a price that is not a number of subunits.');
+  }
+  if (bounds.card === undefined && cap === undefined) {
+    // Unreachable for a caller that typechecks - without a card the union
+    // requires the cap - and the same refusal the asset half already makes for
+    // one that casts. Neither half of the binding is present here: no card to
+    // fix the recipient, no cap to fix the amount, so every address and every
+    // amount would be acceptable.
+    return refuse('invalid_bounds', 'These bounds bound no amount, so nothing may be paid.');
   }
   if (bounds.card !== undefined) {
     // An absent price is a bound of ZERO, not the absence of a bound: a card
