@@ -106,13 +106,14 @@ interface VerifyContext {
  * prove nothing about whether another one paid. Everything else is evidence
  * that stands on its own, and looking again costs a second scan for nothing.
  */
-const ABOUT_ONE_TRANSACTION = new Set<TempoRefusalCode>(['no_provider_leg', 'reverted']);
-
-/** The reasons that mean "I could not look", as opposed to "I looked and it is not due yet". */
-const COULD_NOT_LOOK = new Set<TempoInconclusiveReason>([
-  'incomplete_scan',
-  'chain_unreadable',
-  'control_failed',
+const ABOUT_ONE_TRANSACTION = new Set<TempoRefusalCode>([
+  'no_provider_leg',
+  'reverted',
+  // "I could not read that receipt" is a statement about the receipt. An
+  // endpoint that rewrites `status` into a JSON number makes every payment
+  // through it unreadable, and the memo the customer paid with is still on
+  // chain, where the scan can find it.
+  'unreadable_receipt',
 ]);
 
 function refused(code: TempoRefusalCode): TempoVerifyResult {
@@ -213,10 +214,21 @@ export async function verifyTempoPayment(
   if (byMemo.outcome === 'verified') {
     return byMemo;
   }
-  // And a look that could not happen is not a look that found nothing. The same
-  // rule the candidate loop applies one level down: never let a refusal bury an
-  // unknown. (`not_yet_due` is not that - it means the look was complete.)
-  if (byMemo.outcome === 'inconclusive' && COULD_NOT_LOOK.has(byMemo.reason)) {
+  // And an unknown must never be buried under a refusal - the same rule the
+  // candidate loop applies one level down, and the rule the no-hash path is
+  // already built on, where every inconclusive is polled again. "Not due yet"
+  // is one of them: the customer whose wallet cannot batch sends the fee leg
+  // and the provider leg seconds apart and reports the first hash, and that
+  // hash alone says `no_provider_leg` while the second is in flight. Nothing
+  // is lost by waiting - once the window closes the scan answers `none`, and
+  // the refusal below stands.
+  if (byMemo.outcome === 'inconclusive') {
+    return byMemo;
+  }
+  // Both refused. The scan that FOUND something - a transfer the guard bounced,
+  // a fee leg that never came - says where the money went; "that hash is not
+  // this payment" says only that somebody named the wrong transaction.
+  if (byMemo.outcome === 'refused' && !ABOUT_ONE_TRANSACTION.has(byMemo.code)) {
     return byMemo;
   }
   return byHash;
@@ -297,9 +309,10 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
     }
   }
 
+  const bound: ReceiptBound = { logs, hash, blockNumber };
   const providerLeg = transfers.find((log) => isProviderLeg(context, log));
   if (providerLeg === undefined) {
-    return blockedInReceipt(context, logs, hash, context.request.recipient, context.providerMin)
+    return blockedInReceipt(context, bound, context.request.recipient, context.providerMin)
       ? refused('provider_leg_blocked')
       : refused('no_provider_leg');
   }
@@ -312,6 +325,10 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
     };
   }
 
+  // One log may not answer for both legs. No test kills this today and none
+  // can: `fee_address !== recipient` is a v2 schema invariant, so a log cannot
+  // satisfy `isProviderLeg` and `isFeeLeg` at once. It stands as the guard for
+  // the day that invariant moves.
   const feeLeg = transfers.find(
     (log) =>
       isFeeLeg(context, log) &&
@@ -327,7 +344,7 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
       feeLeg,
     };
   }
-  if (blockedInReceipt(context, logs, hash, context.feeAddress, context.feeAmount)) {
+  if (blockedInReceipt(context, bound, context.feeAddress, context.feeAmount)) {
     return refused('fee_leg_blocked');
   }
   // The legs may have been paid by two transactions (a wallet that cannot
@@ -354,25 +371,33 @@ function isFeeLeg(context: VerifyContext, log: TempoTransferLog): boolean {
   );
 }
 
+/** One receipt's logs, and the two values every entry of them must carry. */
+interface ReceiptBound {
+  logs: readonly unknown[];
+  hash: string;
+  blockNumber: number;
+}
+
 /**
  * A guard log in THIS receipt saying that a leg to `recipient` was refused.
  *
- * Rule 3's transaction bound applies here exactly as it does to transfer logs:
- * an entry naming another transaction is not this receipt's evidence, and
- * reading it as such lets one crafted log flip a paid job to a terminal refusal.
+ * Rule 3's bound applies here exactly as it does to transfer logs, on BOTH
+ * values: an entry naming another transaction, or another block, is not this
+ * receipt's evidence, and reading it as such lets one crafted log flip a paid
+ * job to a terminal refusal.
  */
 function blockedInReceipt(
   context: VerifyContext,
-  logs: readonly unknown[],
-  hash: string,
+  receipt: ReceiptBound,
   recipient: string,
   minAmount: bigint,
 ): boolean {
-  for (const entry of logs) {
+  for (const entry of receipt.logs) {
     const decoded = decodeTempoBlockedLog(entry);
     if (
       decoded.kind === 'log' &&
-      decoded.log.transactionHash === hash &&
+      decoded.log.transactionHash === receipt.hash &&
+      decoded.log.blockNumber === receipt.blockNumber &&
       matchesBlockedLeg(context, decoded.log, recipient, minAmount)
     ) {
       return true;
@@ -428,6 +453,10 @@ async function verifyFeeLegElsewhere(
       feeLeg,
     };
   }
+  // The `toBlock` comparison has no killer and can have none on this path: the
+  // scan is handed the same finalized number the provider leg was checked
+  // against, so it cannot end below it. It guards the day this is called with
+  // a head from somewhere else.
   if (!scan.complete || scan.toBlock === null || scan.toBlock < providerLeg.blockNumber) {
     return inconclusive('incomplete_scan');
   }

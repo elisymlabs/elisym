@@ -103,6 +103,10 @@ export async function createTempoPaymentRequest(
     if (feeAddress === undefined || !isEvmWireAddress(feeAddress)) {
       throw new Error('The protocol config names a treasury that is not an address.');
     }
+    // No test can kill this, and it is kept for its message: the v2 schema refuses
+    // the same request two lines below, so the only thing this changes is
+    // whether the provider is told WHY its own treasury cannot be its payout
+    // address.
     if (feeAddress === recipient) {
       throw new Error(
         "The treasury is this provider's own payment address; the fee leg would be a self-transfer.",

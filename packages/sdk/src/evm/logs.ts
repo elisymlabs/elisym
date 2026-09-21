@@ -345,10 +345,15 @@ export async function readBlockByNumber(
  * loop on them would be an infinite one.
  */
 function isTooMuchError(error: unknown): boolean {
-  if (!(error instanceof EvmRpcError)) {
-    return false;
-  }
-  const message = error.rpcMessage ?? '';
+  // Read the words off whatever was thrown, not off one class: this module is
+  // exported for a browser wallet's own provider, which throws its own error
+  // shape, and a client whose cap errors go unrecognized never halves -
+  // it skips whole chunks and calls the pass incomplete for good.
+  const rpcMessage = error instanceof EvmRpcError ? error.rpcMessage : undefined;
+  const nested = readField(readField(error, 'data'), 'message');
+  const message = [rpcMessage, readField(error, 'message'), nested]
+    .filter((part) => typeof part === 'string')
+    .join(' ');
   return /exceeds max results/i.test(message) || /exceeds max block range/i.test(message);
 }
 
@@ -512,10 +517,15 @@ export async function listTempoLogs(
       if (log.blockNumber < options.fromBlock || log.blockNumber > (options.toBlock ?? head)) {
         return 'unreadable';
       }
-      // A plain `Transfer` carries no memo at all, so a memo can only be
-      // re-checked on the event that has one - checking it on the other would
-      // make every entry unreadable and the pass permanently incomplete.
-      if (options.event === 'TransferWithMemo' && log.memo !== options.memo) {
+      // A memo can only be re-checked when one was ASKED for: a plain
+      // `Transfer` carries none to compare, and a memo scan run WITHOUT a memo
+      // never named one in the filter either. Re-checking in either case calls
+      // every entry unreadable and leaves the pass permanently incomplete.
+      if (
+        options.event === 'TransferWithMemo' &&
+        options.memo !== undefined &&
+        log.memo !== options.memo
+      ) {
         return 'unreadable';
       }
       if (options.from !== undefined && !sameAddress(log.from, options.from)) {

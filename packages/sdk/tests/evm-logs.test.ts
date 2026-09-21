@@ -15,6 +15,7 @@ import {
   listTempoBlockedLogs,
   listTempoLogs,
   passesHistoryControl,
+  readBlockByNumber,
   readFinalizedBlock,
 } from '../src/evm/logs';
 import type { FakeLog } from './tempo-chain';
@@ -256,6 +257,38 @@ describe('listTempoLogs', () => {
     });
   });
 
+  it('lists every memo log to this recipient when NO memo was asked for', async () => {
+    // The memo is optional on the exported scan - reconciliation asks "what
+    // came in at all". Re-checking a memo nobody asked for called every entry
+    // unreadable and left the pass permanently incomplete.
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      logs: [
+        memoLog(),
+        memoLog({
+          logIndex: 1,
+          topics: [
+            TRANSFER_WITH_MEMO_TOPIC,
+            topicOf(PAYER),
+            topicOf(RECIPIENT),
+            `0x${'99'.repeat(32)}`,
+          ],
+        }),
+      ],
+    });
+    const scan = await listTempoLogs(chain.client, {
+      token: TOKEN,
+      event: 'TransferWithMemo',
+      to: RECIPIENT,
+      minAmount: 10_000n,
+      fromBlock: 800,
+    });
+    expect(scan.complete).toBe(true);
+    expect(scan.candidates).toHaveLength(2);
+    expect(chain.getLogsCalls[0]?.topics[3]).toBeNull();
+  });
+
   it('filters by the SENDER only when one was asked for', async () => {
     const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 }, logs: [memoLog()] });
     await listTempoLogs(chain.client, { ...base, from: PAYER });
@@ -368,6 +401,26 @@ describe('listTempoLogs', () => {
     expect(scan.complete).toBe(true);
   });
 
+  it('halves a cap error thrown by a client that is not this SDK’s', async () => {
+    // `@elisym/sdk/evm` is exported for a browser wallet's own provider, which
+    // throws its own error shape carrying the node's words. A client whose cap
+    // errors go unrecognized never halves: it skips whole chunks and calls
+    // every pass incomplete, for ever.
+    const walletError = Object.assign(new Error('Internal JSON-RPC error.'), {
+      code: -32602,
+      data: { message: 'query exceeds max results 20000, retry with the range 1-2' },
+    });
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      logs: [memoLog({ blockNumber: 850 })],
+      onGetLogs: (call) => (call.toBlock - call.fromBlock > 50 ? walletError : undefined),
+    });
+    const scan = await listTempoLogs(chain.client, { ...base, fromBlock: 800 });
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.complete).toBe(true);
+  });
+
   it('halves on a range the node calls too wide as well', async () => {
     const chain = fakeTempoChain({
       finalized: 1_000,
@@ -445,17 +498,35 @@ describe('listTempoLogs', () => {
     expect(chain.getLogsCalls.length).toBeLessThanOrEqual(512);
   });
 
-  it('makes the pass INCOMPLETE on a log from OUTSIDE the range it asked for', async () => {
+  it.each([
+    ['below its floor', 1],
+    ['above the head it reached', 1_001],
+  ])('makes the pass INCOMPLETE on a log from %s', async (_label, blockNumber) => {
+    // The block range is a filter dimension like any other, and BOTH ends of
+    // it are the node answering something else when they are crossed.
     const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 } });
     const client = {
       request: async (args: { method: string; params?: readonly unknown[] }) =>
         args.method === 'eth_getLogs'
-          ? [wireLog(memoLog({ blockNumber: 1 }))]
+          ? [wireLog(memoLog({ blockNumber }))]
           : chain.client.request(args),
     };
     const scan = await listTempoLogs(client, base);
     expect(scan.candidates).toEqual([]);
     expect(scan.complete).toBe(false);
+  });
+
+  it('finds the leg when the address was asked for in another CASE', async () => {
+    // Addresses arrive checksummed from wallets and explorers. The topic is
+    // built lowercase and every comparison is case-insensitive, or the same
+    // address in another case finds nothing and a paid job reads as unpaid.
+    const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 }, logs: [memoLog()] });
+    const scan = await listTempoLogs(chain.client, {
+      ...base,
+      to: `0x${RECIPIENT.slice(2).toUpperCase()}`,
+    });
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.complete).toBe(true);
   });
 
   it('reads a memo-less leg by sender and recipient, with no memo to match', async () => {
@@ -513,6 +584,25 @@ describe('listTempoBlockedLogs', () => {
     ]);
   });
 
+  it('calls a guard log for another TOKEN unreadable, not merely uninteresting', async () => {
+    // A filtered scan is answered only with what it asked for, so an entry for
+    // another token is the node answering something else: incomplete, never
+    // empty. An empty-and-complete pass here is what lets a caller conclude
+    // the money was not parked with the guard.
+    const chain = fakeTempoChain({ finalized: 35_790_000, timestamps: { 35_790_000: 1 } });
+    const client = {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getLogs' ? blocked.map(wireLog) : chain.client.request(args),
+    };
+    const scan = await listTempoBlockedLogs(client, {
+      token: TOKEN,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.candidates).toEqual([]);
+    expect(scan.complete).toBe(false);
+  });
+
   it('is incomplete when a chunk fails, never empty', async () => {
     const chain = fakeTempoChain({
       finalized: 35_790_000,
@@ -526,6 +616,22 @@ describe('listTempoBlockedLogs', () => {
       fromBlock: 35_780_000,
     });
     expect(scan.complete).toBe(false);
+  });
+});
+
+describe('readBlockByNumber', () => {
+  it('refuses a block that is not the one it asked for', async () => {
+    // The deadline that makes an absence final is read off this timestamp, so
+    // a backend answering another block would date the scan by another clock.
+    const client = {
+      request: async () => ({ number: '0x2', timestamp: '0x5', hash: `0x${'ab'.repeat(32)}` }),
+    };
+    expect(await readBlockByNumber(client, 1)).toBeNull();
+    expect(await readBlockByNumber(client, 2)).toEqual({
+      number: 2,
+      timestamp: 5,
+      hash: `0x${'ab'.repeat(32)}`,
+    });
   });
 });
 
