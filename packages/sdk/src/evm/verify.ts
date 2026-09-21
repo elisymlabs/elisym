@@ -38,7 +38,7 @@ import {
   readBlockByNumber,
   readFinalizedBlock,
 } from './logs';
-import { readBlockNumber, readField, readTxHash } from './rpc-read';
+import { readBlockNumber, readField, readQuantity, readTxHash } from './rpc-read';
 
 export type TempoInconclusiveReason =
   | 'no_receipt'
@@ -100,6 +100,20 @@ interface VerifyContext {
   fromBlock: number;
   signal?: AbortSignal;
 }
+
+/**
+ * Refusals that are about ONE transaction - the one somebody named - and that
+ * prove nothing about whether another one paid. Everything else is evidence
+ * that stands on its own, and looking again costs a second scan for nothing.
+ */
+const ABOUT_ONE_TRANSACTION = new Set<TempoRefusalCode>(['no_provider_leg', 'reverted']);
+
+/** The reasons that mean "I could not look", as opposed to "I looked and it is not due yet". */
+const COULD_NOT_LOOK = new Set<TempoInconclusiveReason>([
+  'incomplete_scan',
+  'chain_unreadable',
+  'control_failed',
+]);
 
 function refused(code: TempoRefusalCode): TempoVerifyResult {
   return { outcome: 'refused', code };
@@ -187,19 +201,25 @@ export async function verifyTempoPayment(
     return verifyWithPolling(context, options);
   }
   const byHash = await verifyByHash(context, hash);
-  if (byHash.outcome !== 'refused') {
+  if (byHash.outcome !== 'refused' || !ABOUT_ONE_TRANSACTION.has(byHash.code)) {
     return byHash;
   }
-  // Every refusal here is about ONE transaction - the one somebody named - and
-  // none of them proves that no OTHER transaction paid. A wallet reports a
-  // bundle id, an approve, or the first of two; a first attempt is blocked and
-  // a second one succeeds. The Solana rail races the two paths for the same
-  // reason. The money is one `eth_getLogs` away and a refusal is terminal, so
-  // it is not a refusal until the memo has been looked for too. The named
-  // transaction's verdict still stands when nothing else paid: it is the more
-  // specific answer, and the one the customer can act on.
+  // The named transaction did not pay this request, which proves nothing about
+  // whether another one did: a wallet reports a bundle id, an approve, or the
+  // first of two. The Solana rail races the two paths for the same reason. The
+  // money is one `eth_getLogs` away and a refusal is terminal, so it is not a
+  // refusal until the memo has been looked for too.
   const byMemo = await verifyWithoutHash(context);
-  return byMemo.outcome === 'verified' ? byMemo : byHash;
+  if (byMemo.outcome === 'verified') {
+    return byMemo;
+  }
+  // And a look that could not happen is not a look that found nothing. The same
+  // rule the candidate loop applies one level down: never let a refusal bury an
+  // unknown. (`not_yet_due` is not that - it means the look was complete.)
+  if (byMemo.outcome === 'inconclusive' && COULD_NOT_LOOK.has(byMemo.reason)) {
+    return byMemo;
+  }
+  return byHash;
 }
 
 async function verifyWithPolling(
@@ -236,14 +256,17 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
   if (receipt === undefined) {
     return inconclusive('chain_unreadable');
   }
-  const status = readField(receipt, 'status');
-  if (status === '0x0') {
+  // A quantity, read like every other value in this file: an endpoint that
+  // writes it as `0x01` is unusual, not hostile, and reading it as a raw string
+  // would turn every payment on that endpoint into a terminal refusal.
+  const status = readQuantity(readField(receipt, 'status'));
+  if (status === 0n) {
     return refused('reverted');
   }
   const blockNumber = readBlockNumber(readField(receipt, 'blockNumber'));
   const logs = readField(receipt, 'logs');
   if (
-    status !== '0x1' ||
+    status !== 1n ||
     readTxHash(readField(receipt, 'transactionHash')) !== hash ||
     blockNumber === null ||
     !Array.isArray(logs)
@@ -265,7 +288,11 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
   const transfers: TempoTransferLog[] = [];
   for (const entry of logs) {
     const decoded = decodeTempoTransferLog(entry, 'TransferWithMemo', context.token);
-    if (decoded.kind === 'log' && decoded.log.transactionHash === hash) {
+    if (
+      decoded.kind === 'log' &&
+      decoded.log.transactionHash === hash &&
+      decoded.log.blockNumber === blockNumber
+    ) {
       transfers.push(decoded.log);
     }
   }
@@ -484,10 +511,18 @@ async function verifyWithoutHash(context: VerifyContext): Promise<TempoVerifyRes
     ...(context.signal === undefined ? {} : { signal: context.signal }),
   });
 
+  // Chain order, not the order the node happened to list them: two real
+  // transactions can carry one (recipient, memo) pair - a customer who
+  // double-sends produces exactly that - and which one settles the request must
+  // not depend on a node's answer or on which chunk failed.
+  const ordered = [...scan.candidates].sort(
+    (left, right) => left.blockNumber - right.blockNumber || left.logIndex - right.logIndex,
+  );
+
   // A candidate is worth a full check whether or not the pass was complete:
   // incompleteness only ever blocks the "nothing was sent" verdict.
   let best: TempoVerifyResult | null = null;
-  for (const candidate of scan.candidates) {
+  for (const candidate of ordered) {
     if (!isProviderLeg(context, candidate)) {
       continue;
     }

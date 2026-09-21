@@ -14,13 +14,14 @@ import {
   TRANSFER_BLOCKED_TOPIC,
   TRANSFER_WITH_MEMO_TOPIC,
 } from '../src/evm/constants';
+import { readTempoReceivePolicy } from '../src/evm/policy';
 import { createTempoPaymentRequest } from '../src/evm/request';
 import { verifyTempoPayment } from '../src/evm/verify';
 import { ALL_ASSETS, PATHUSD_TEMPO, USDCE_TEMPO_MAINNET } from '../src/payment/assets';
 import { CHAINS } from '../src/payment/chains';
 import { PaymentRequestV2Schema } from '../src/payment/schema-v2';
 import type { FakeChainOptions, FakeLog } from './tempo-chain';
-import { fakeTempoChain, recordedReceipt, receiptLogs } from './tempo-chain';
+import { fakeTempoChain, rangeCapError, recordedReceipt, receiptLogs } from './tempo-chain';
 
 const USDCE = '0x20c000000000000000000000b9537d11c60e8b50';
 const PATHUSD = '0x20c0000000000000000000000000000000000000';
@@ -313,6 +314,69 @@ describe('verifyTempoPayment - a hash that names the wrong transaction', () => {
       fromBlock: SINGLE_BLOCK - 100,
     });
     expect(result).toEqual({ outcome: 'refused', code: 'reverted' });
+  });
+
+  it('does NOT bury an unknown under a refusal: a look that could not happen wins', async () => {
+    // A wallet reports the wrong hash AND one eth_getLogs fails. The money is
+    // on chain; a terminal refusal here fails the job for good. The same rule
+    // the candidate loop applies one level down.
+    const other = `0x${'7e'.repeat(32)}`;
+    const chain = chainWith({
+      receipts: {
+        [other]: { ...SINGLE, transactionHash: other, logs: [] },
+        [SINGLE_HASH]: SINGLE,
+      },
+      logs: receiptLogs(SINGLE),
+      onGetLogs: () => new Error('the node fell over'),
+    });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: other,
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'incomplete_scan' });
+  });
+
+  it('keeps the refusal when the second look was COMPLETE and found nothing', async () => {
+    // `not_yet_due` is not "I could not look" - it is "I looked". The named
+    // transaction's verdict is then the more specific answer, and the one the
+    // customer can act on.
+    const other = `0x${'7f'.repeat(32)}`;
+    const chain = chainWith({
+      receipts: { [other]: { ...SINGLE, transactionHash: other, logs: [] } },
+      logs: [],
+    });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: other,
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toEqual({ outcome: 'refused', code: 'no_provider_leg' });
+  });
+
+  it('does not look past a refusal that stands on its own evidence', async () => {
+    // A missing fee leg is about the REQUEST, not about one transaction, and
+    // the second scan would only repeat the work the first one just did.
+    const providerLogs = receiptLogs(BATCH).filter((log) =>
+      log.topics[2]?.endsWith(RECIPIENT.slice(2)),
+    );
+    const chain = chainWith({
+      timestamps: { 40_000_000: PAST_DEADLINE },
+      receipts: { [BATCH_HASH]: { ...BATCH, logs: providerLogs.map(wire) } },
+      logs: controlTraffic(BATCH_BLOCK - 150, 39_999_900),
+    });
+    const result = await verifyTempoPayment(
+      chain.client,
+      requestOf({ amount: '20000', fee_address: TREASURY, fee_amount: '10000' }),
+      { txSignature: BATCH_HASH, fromBlock: BATCH_BLOCK - 100 },
+    );
+    expect(result).toEqual({ outcome: 'refused', code: 'fee_leg_missing' });
+    // One pass. The memo scan reads the finalized head; the by-hash path reads
+    // it once, and the fee-leg lookup is handed a number instead.
+    const passes = chain.calls.filter(
+      (call) => call.method === 'eth_getBlockByNumber' && call.params?.[0] === 'finalized',
+    ).length;
+    expect(passes).toBe(1);
   });
 
   it('keeps the blocked verdict when the second look finds nothing either', async () => {
@@ -708,6 +772,122 @@ describe('verifyTempoPayment - a leg the recipient blocked', () => {
   });
 });
 
+describe('verifyTempoPayment - guards the fee leg and the ordering owe', () => {
+  const memoLog = (SINGLE.logs as Record<string, unknown>[]).find(
+    (log) => (log.topics as string[])[0] === TRANSFER_WITH_MEMO_TOPIC,
+  ) as Record<string, unknown>;
+
+  it('does not take another payment to the same treasury as this request fee leg', async () => {
+    // The treasury is shared by every provider on the chain, so without the
+    // memo any transfer to it at or above the fee would answer for ours.
+    const topics = memoLog.topics as string[];
+    const strangersFee = {
+      ...memoLog,
+      topics: [
+        topics[0],
+        topics[1],
+        `0x${'0'.repeat(24)}${TREASURY.slice(2)}`,
+        `0x${'99'.repeat(32)}`,
+      ],
+      logIndex: '0x9',
+    };
+    const chain = chainWith({
+      timestamps: { 40_000_000: PAST_DEADLINE },
+      receipts: { [SINGLE_HASH]: { ...SINGLE, logs: [memoLog, strangersFee] } },
+      logs: controlTraffic(SINGLE_BLOCK - 150, 39_999_900),
+    });
+    const result = await verifyTempoPayment(
+      chain.client,
+      requestOf({
+        memo: SINGLE_MEMO,
+        amount: '20000',
+        fee_address: TREASURY,
+        fee_amount: '10000',
+      }),
+      { txSignature: SINGLE_HASH, fromBlock: SINGLE_BLOCK - 100 },
+    );
+    expect(result).toEqual({ outcome: 'refused', code: 'fee_leg_missing' });
+  });
+
+  it('settles on the EARLIEST transaction when two carry one memo', async () => {
+    // Two real transactions can share a (recipient, memo) pair - a customer who
+    // double-sends produces exactly that - and which one settles the request
+    // must not depend on the node's ordering or on which chunk failed.
+    const later = `0x${'ab'.repeat(32)}`;
+    const laterLog = { ...memoLog, transactionHash: later, blockNumber: '0x25d1e00' };
+    const chain = chainWith({
+      receipts: {
+        [SINGLE_HASH]: SINGLE,
+        [later]: { ...SINGLE, transactionHash: later, blockNumber: '0x25d1e00', logs: [laterLog] },
+      },
+      timestamps: { 40_000_000: NOW, [SINGLE_BLOCK]: NOW, 39_657_984: NOW },
+      // The node lists the later one first.
+      logs: [
+        {
+          address: USDCE,
+          topics: laterLog.topics as string[],
+          data: String(laterLog.data),
+          blockNumber: 39_657_984,
+          transactionHash: later,
+          logIndex: 0,
+        },
+        ...receiptLogs(SINGLE),
+      ],
+    });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result.outcome === 'verified' && result.providerLeg.transactionHash).toBe(SINGLE_HASH);
+  });
+
+  it('ignores a receipt log that claims a block the receipt is not in', async () => {
+    const elsewhere = { ...memoLog, blockNumber: '0x25d1e00' };
+    const chain = chainWith({ receipts: { [SINGLE_HASH]: { ...SINGLE, logs: [elsewhere] } } });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: SINGLE_HASH,
+      fromBlock: SINGLE_BLOCK - 100,
+    });
+    expect(result).toEqual({ outcome: 'refused', code: 'no_provider_leg' });
+  });
+
+  it.each([
+    ['a non-canonical success', '0x01', 'verified'],
+    ['a non-canonical failure', '0x00', 'refused'],
+  ])('reads %s status as a quantity, not as a string', async (_label, status, outcome) => {
+    // Reading it as a raw string turns every payment on such an endpoint into a
+    // terminal refusal - on the hash path AND on the memo path, which credits
+    // only through this one.
+    const chain = chainWith({ receipts: { [SINGLE_HASH]: { ...SINGLE, status } } });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: SINGLE_HASH,
+      fromBlock: SINGLE_BLOCK - 100,
+    });
+    expect(result.outcome).toBe(outcome);
+  });
+
+  it('vouches for the HEAD edge of the fee-leg scan, not the floor twice', async () => {
+    const providerLogs = receiptLogs(BATCH).filter((log) =>
+      log.topics[2]?.endsWith(RECIPIENT.slice(2)),
+    );
+    const chain = chainWith({
+      timestamps: { 40_000_000: PAST_DEADLINE },
+      receipts: { [BATCH_HASH]: { ...BATCH, logs: providerLogs.map(wire) } },
+      // History at the FLOOR only, and a node that will not serve a window wide
+      // enough for the head's control to reach back to it: vouching for the
+      // floor twice would pass, vouching for the head cannot.
+      logs: controlTraffic(BATCH_BLOCK - 150, BATCH_BLOCK - 151),
+      onGetLogs: (call) => (call.toBlock - call.fromBlock >= 4_096 ? rangeCapError() : undefined),
+    });
+    const result = await verifyTempoPayment(
+      chain.client,
+      requestOf({ amount: '20000', fee_address: TREASURY, fee_amount: '10000' }),
+      { txSignature: BATCH_HASH, fromBlock: BATCH_BLOCK - 100 },
+    );
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'control_failed' });
+  });
+});
+
 describe('verifyTempoPayment - without a hash', () => {
   function chainWithPayment(options: FakeChainOptions = {}) {
     return chainWith({
@@ -759,6 +939,19 @@ describe('verifyTempoPayment - without a hash', () => {
       pollBudgetMs: 0,
     });
     expect(result).toEqual({ outcome: 'inconclusive', reason: 'not_yet_due' });
+  });
+
+  it('refuses to say NOT PAID when only the FLOOR edge is vouched for', async () => {
+    const chain = chainWith({
+      timestamps: { 40_000_000: PAST_DEADLINE },
+      logs: controlTraffic(SINGLE_BLOCK - 150, SINGLE_BLOCK - 151),
+      onGetLogs: (call) => (call.toBlock - call.fromBlock >= 4_096 ? rangeCapError() : undefined),
+    });
+    const result = await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'control_failed' });
   });
 
   it('refuses to say NOT PAID when only the HEAD edge of the scan is vouched for', async () => {
@@ -930,6 +1123,33 @@ function wire(log: FakeLog): Record<string, unknown> {
     removed: false,
   };
 }
+
+describe('readTempoReceivePolicy', () => {
+  it('reads the policy at the FINALIZED tag, not one a reorg could take back', async () => {
+    // A lagging backend resolving `latest` to a stale "open" would have the
+    // provider quote a price the chain will block.
+    const asked: string[] = [];
+    const chain = fakeTempoChain({ chainId: '0xa5bf' });
+    const client = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        if (args.method === 'eth_call') {
+          asked.push(String(args.params?.[1]));
+          return `0x${'0'.repeat(64 * 6)}`;
+        }
+        return chain.client.request(args);
+      },
+    };
+    await readTempoReceivePolicy(client, RECIPIENT);
+    expect(asked).toEqual(['finalized']);
+  });
+
+  it('refuses an address that is not one, rather than asking about nonsense', async () => {
+    const chain = fakeTempoChain({ chainId: '0xa5bf' });
+    await expect(readTempoReceivePolicy(chain.client, 'the-provider')).rejects.toThrow(
+      /Not an address a receive policy can be read for/,
+    );
+  });
+});
 
 describe('createTempoPaymentRequest', () => {
   const MODERATO = CHAINS.TEMPO_DEVNET;

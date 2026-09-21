@@ -580,6 +580,30 @@ describe('passesHistoryControl', () => {
     expect(await passesHistoryControl(chain.client, { token: TOKEN, edgeBlock: 1_000 })).toBe(true);
   });
 
+  it('slides the window back rather than re-asking a width the node refuses', async () => {
+    // Past the node's range cap, widening only re-asks a question it has
+    // already answered: refuse, halve, empty, widen, refuse. A token quieter
+    // than one log per cap-width at an edge would never be vouched for, and
+    // "nobody paid" would be unreachable for ever.
+    const chain = fakeTempoChain({
+      logs: [memoLog({ blockNumber: 800_000 })],
+      onGetLogs: (call) => (call.toBlock - call.fromBlock >= 65_536 ? rangeCapError() : undefined),
+    });
+    expect(await passesHistoryControl(chain.client, { token: TOKEN, edgeBlock: 1_000_000 })).toBe(
+      true,
+    );
+  });
+
+  it('leaves the caller’s options untouched while the window walks', async () => {
+    const options = { token: TOKEN, edgeBlock: 1_000_000 };
+    const chain = fakeTempoChain({
+      logs: [memoLog({ blockNumber: 800_000 })],
+      onGetLogs: (call) => (call.toBlock - call.fromBlock >= 65_536 ? rangeCapError() : undefined),
+    });
+    await passesHistoryControl(chain.client, options);
+    expect(options.edgeBlock).toBe(1_000_000);
+  });
+
   it('fails on an aborted signal', async () => {
     const chain = fakeTempoChain({ logs: [memoLog({ blockNumber: 995 })] });
     expect(

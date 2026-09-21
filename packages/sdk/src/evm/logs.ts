@@ -624,11 +624,19 @@ export async function passesHistoryControl(
     return false;
   }
   let width = HISTORY_CONTROL_START_BLOCKS;
+  // A width the node has already called too big is a ceiling, not something to
+  // walk back into: without it, widening past the range cap oscillates - refuse,
+  // halve, empty, widen, refuse - and spends every iteration without reaching
+  // further back. A token quieter than one log per cap-width at an edge would
+  // then never be vouched for, and `none` would be unreachable for ever.
+  let ceiling = Number.MAX_SAFE_INTEGER;
+  // The caller's options are the caller's; the window walks on a copy.
+  let edge = options.edgeBlock;
   for (let iteration = 0; iteration < MAX_HISTORY_CONTROL_ITERATIONS; iteration += 1) {
     if (options.signal?.aborted) {
       return false;
     }
-    const from = Math.max(0, options.edgeBlock - width + 1);
+    const from = Math.max(0, edge - width + 1);
     let result: unknown;
     try {
       result = await client.request({
@@ -637,7 +645,7 @@ export async function passesHistoryControl(
           {
             address: options.token,
             fromBlock: toQuantity(from),
-            toBlock: toQuantity(options.edgeBlock),
+            toBlock: toQuantity(edge),
           },
         ],
       });
@@ -650,6 +658,7 @@ export async function passesHistoryControl(
       if (width <= 1) {
         return true;
       }
+      ceiling = width;
       width = Math.max(1, Math.floor(width / 2));
       continue;
     }
@@ -661,6 +670,13 @@ export async function passesHistoryControl(
     }
     if (from === 0) {
       return false;
+    }
+    if (width * 4 >= ceiling) {
+      // Widening further only re-asks a question the node has already refused,
+      // so the window SLIDES back instead, at the widest size this endpoint
+      // will serve.
+      edge = Math.max(0, edge - width);
+      continue;
     }
     width *= 4;
   }
