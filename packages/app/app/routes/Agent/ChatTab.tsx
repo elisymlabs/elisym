@@ -1,5 +1,4 @@
 import { type CapabilityCard, toDTag } from '@elisym/sdk';
-import { useWallet } from '@solana/wallet-adapter-react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useLocation, useSearch } from 'wouter';
 import { useBuy } from '~/contexts/BuyContext';
@@ -118,37 +117,35 @@ export function ChatTab({
 
   useChatReconcile(agentPubkey);
 
-  // The connected Solana wallet's job history holds the payment tx per job, so
-  // a rating can carry the payment proof for the future indexer (the entry's
-  // own txHash is NOT used - a reverted tx must never ride a rating as proof).
-  const { publicKey: walletPublicKey } = useWallet();
-  const wallet = walletPublicKey?.toBase58() ?? '';
-  const { jobs: walletJobs } = useJobHistory({ wallet });
+  // This identity's job history holds the payment tx per job, so a rating can
+  // carry the payment proof for the future indexer (the entry's own txHash is
+  // NOT used - a reverted tx must never ride a rating as proof).
+  const { owner: jobsOwner, jobs: ownJobs } = useJobHistory();
 
   // The unseen-badge's second clear site: viewing this agent's Chat tab
   // clears its rows' flags on mount and while mounted AND visible - the
   // result toast's "View" action lands here, and without this the badge
   // would stay lit after the user has read the result. The visibility gate
   // keeps a background tab left on this Chat tab from eating flags stamped
-  // by the active tab (storage events land here too). Keyed on (wallet,
+  // by the active tab (storage events land here too). Keyed on (identity,
   // store version, visibility); the store's no-op-write guard breaks the
   // version self-loop.
   const chatTabVisible = usePageVisible();
   const jobHistoryStoreVersion = useSyncExternalStore(subscribeJobHistory, jobHistoryVersion);
   useEffect(() => {
-    if (wallet && chatTabVisible) {
-      clearUnseen(wallet, agentPubkey);
+    if (jobsOwner && chatTabVisible) {
+      clearUnseen(jobsOwner, agentPubkey);
     }
-  }, [wallet, agentPubkey, jobHistoryStoreVersion, chatTabVisible]);
+  }, [jobsOwner, agentPubkey, jobHistoryStoreVersion, chatTabVisible]);
   const txHashByJobId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const job of walletJobs) {
+    for (const job of ownJobs) {
       if (job.txHash) {
         map.set(job.jobEventId, job.txHash);
       }
     }
     return map;
-  }, [walletJobs]);
+  }, [ownJobs]);
 
   // Rated-state single source of truth: the `rated:<jobId>` kv flags (they
   // survive the logout purge by design; the thread entries do not).

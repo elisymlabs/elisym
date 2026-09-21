@@ -10,6 +10,7 @@ import {
   createJobHistoryStore,
   isTerminalJobStatus,
   JOB_HISTORY_KEY_PREFIX,
+  JOB_HISTORY_MIGRATED_PREFIX,
   localJobNetwork,
   type JobHistoryStorageAdapter,
   type StoredJob,
@@ -25,6 +26,10 @@ function memoryStorage(seed: Record<string, string> = {}): JobHistoryStorageAdap
     getItem: (key) => data.get(key) ?? null,
     setItem: (key, value) => {
       data.set(key, value);
+    },
+    keys: () => [...data.keys()],
+    removeItem: (key) => {
+      data.delete(key);
     },
     raw: (key) => data.get(key) ?? null,
   };
@@ -310,5 +315,148 @@ describe('jobHistory store', () => {
     expect(localJobNetwork(job())).toBe('devnet');
     expect(localJobNetwork(job({ network: 'devnet' }))).toBe('devnet');
     expect(localJobNetwork(job({ network: 'mainnet' }))).toBe('mainnet');
+  });
+});
+
+describe('the one-time move off the wallet-keyed store', () => {
+  const IDENTITY = 'a'.repeat(64);
+  const OTHER_IDENTITY = 'b'.repeat(64);
+  const LEGACY = `${JOB_HISTORY_KEY_PREFIX}SoLanaWa11etAddress`;
+
+  function legacySeed(jobs: StoredJob[], key = LEGACY): Record<string, string> {
+    return { [key]: JSON.stringify(jobs) };
+  }
+
+  it('copies a legacy wallet store onto the identity, and leaves the original alone', () => {
+    // Left in place on purpose: it is a few kilobytes, it holds the only local
+    // record of what was paid, and an older tab or a rolled-back deploy keeps
+    // reading it.
+    const storage = memoryStorage(legacySeed([job({ jobEventId: 'old-1' })]));
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(store.readJobs(IDENTITY).map((entry) => entry.jobEventId)).toEqual(['old-1']);
+    expect(storage.raw(LEGACY)).not.toBeNull();
+  });
+
+  it('does not copy again after the history has been cleared', () => {
+    const storage = memoryStorage(legacySeed([job({ jobEventId: 'old-1' })]));
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    store.purgeJobHistory(IDENTITY);
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(store.readJobs(IDENTITY)).toEqual([]);
+  });
+
+  it('never overwrites a history the identity already has', () => {
+    const storage = memoryStorage({
+      ...legacySeed([job({ jobEventId: 'old-1' })]),
+      [`${JOB_HISTORY_KEY_PREFIX}${IDENTITY}`]: JSON.stringify([job({ jobEventId: 'mine' })]),
+    });
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(store.readJobs(IDENTITY).map((entry) => entry.jobEventId)).toEqual(['mine']);
+  });
+
+  it('takes the most recently used store when several wallets left one', () => {
+    // There is no honest way to attribute the others, and merging strangers'
+    // rows into one list would be worse than leaving them where they are.
+    const storage = memoryStorage({
+      [`${JOB_HISTORY_KEY_PREFIX}WalletOne`]: JSON.stringify([
+        job({ jobEventId: 'older', createdAt: 1000 }),
+      ]),
+      [`${JOB_HISTORY_KEY_PREFIX}WalletTwo`]: JSON.stringify([
+        job({ jobEventId: 'newer', createdAt: 9000 }),
+      ]),
+    });
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(store.readJobs(IDENTITY).map((entry) => entry.jobEventId)).toEqual(['newer']);
+  });
+
+  it('never copies ANOTHER identity’s history', () => {
+    // The two shapes are both written by us, so this rule is total: a Solana
+    // address is base58 and never 64 lowercase hex characters.
+    const storage = memoryStorage({
+      [`${JOB_HISTORY_KEY_PREFIX}${OTHER_IDENTITY}`]: JSON.stringify([
+        job({ jobEventId: 'someone-else' }),
+      ]),
+    });
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(store.readJobs(IDENTITY)).toEqual([]);
+  });
+
+  it('marks the identity even when there was nothing to copy', () => {
+    const storage = memoryStorage();
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(storage.raw(`${JOB_HISTORY_MIGRATED_PREFIX}${IDENTITY}`)).not.toBeNull();
+  });
+
+  it('ignores an empty legacy store', () => {
+    const storage = memoryStorage({ [LEGACY]: JSON.stringify([]) });
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(storage.raw(`${JOB_HISTORY_KEY_PREFIX}${IDENTITY}`)).toBeNull();
+  });
+
+  it('does nothing without an identity', () => {
+    const storage = memoryStorage(legacySeed([job()]));
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory('');
+    expect(storage.raw(`${JOB_HISTORY_KEY_PREFIX}`)).toBeNull();
+  });
+});
+
+describe('purgeJobHistory (logout)', () => {
+  const IDENTITY = 'a'.repeat(64);
+  const OTHER_IDENTITY = 'b'.repeat(64);
+
+  it('deletes that identity’s rows and nobody else’s', () => {
+    const storage = memoryStorage();
+    const store = createJobHistoryStore(storage);
+    store.saveJob(IDENTITY, job({ jobEventId: 'mine' }));
+    store.saveJob(OTHER_IDENTITY, job({ jobEventId: 'theirs' }));
+    store.purgeJobHistory(IDENTITY);
+    expect(storage.raw(`${JOB_HISTORY_KEY_PREFIX}${IDENTITY}`)).toBeNull();
+    expect(store.readJobs(IDENTITY)).toEqual([]);
+    expect(store.readJobs(OTHER_IDENTITY).map((entry) => entry.jobEventId)).toEqual(['theirs']);
+  });
+
+  it('keeps the migration marker, so logging back in does not resurrect the rows', () => {
+    const storage = memoryStorage({
+      [`${JOB_HISTORY_KEY_PREFIX}SoLanaWa11etAddress`]: JSON.stringify([
+        job({ jobEventId: 'old' }),
+      ]),
+    });
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    store.purgeJobHistory(IDENTITY);
+    expect(storage.raw(`${JOB_HISTORY_MIGRATED_PREFIX}${IDENTITY}`)).not.toBeNull();
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(store.readJobs(IDENTITY)).toEqual([]);
+  });
+
+  it('tells subscribers, so the badge goes dark at once', () => {
+    const storage = memoryStorage();
+    const store = createJobHistoryStore(storage);
+    store.saveJob(IDENTITY, job({ jobEventId: 'mine', unseen: true }));
+    let notified = 0;
+    store.subscribe(() => {
+      notified += 1;
+    });
+    store.purgeJobHistory(IDENTITY);
+    expect(notified).toBe(1);
+    expect(store.unseenCount(IDENTITY, 'devnet')).toBe(0);
+  });
+
+  it('does not write when there is nothing to delete', () => {
+    const store = createJobHistoryStore(memoryStorage());
+    let notified = 0;
+    store.subscribe(() => {
+      notified += 1;
+    });
+    store.purgeJobHistory(IDENTITY);
+    expect(notified).toBe(0);
   });
 });

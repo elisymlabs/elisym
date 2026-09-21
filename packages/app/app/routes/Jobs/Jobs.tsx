@@ -10,12 +10,12 @@ import { useJobsMerge } from './useJobsMerge';
 const PAGE_SIZE = 50;
 
 export default function JobsPage() {
-  const { rows, wallet, merged, isFetching, isError, refetch } = useJobsMerge();
+  const { rows, owner, merged, isFetching, isError, refetch } = useJobsMerge();
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   // Decision 4 clear site (a): every `unseen` flag is cleared on mount and
-  // kept clear while the page stays VISIBLE - keyed on (wallet, store
-  // version, visibility) so a poller flip landing mid-visit, a wallet
+  // kept clear while the page stays VISIBLE - keyed on (identity, store
+  // version, visibility) so a poller flip landing mid-visit, an identity
   // switch, or a return to a background tab is covered. The visibility
   // gate matters: a background tab parked here receives the active tab's
   // writes as storage events and would otherwise clear flags nobody saw.
@@ -24,21 +24,21 @@ export default function JobsPage() {
   // tint survives the visit instead of vanishing one frame after paint.
   const pageVisible = usePageVisible();
   // One flat set for the mount's lifetime: job event ids are globally unique
-  // nostr event ids, so entries surviving a wallet switch cannot mis-tint
-  // another wallet's rows.
+  // nostr event ids, so entries surviving an identity switch cannot mis-tint
+  // another identity's rows.
   const highlightedIdsRef = useRef<Set<string>>(new Set());
   const storeVersion = useSyncExternalStore(subscribeJobHistory, jobHistoryVersion);
   useEffect(() => {
-    if (!wallet || !pageVisible) {
+    if (!owner || !pageVisible) {
       return;
     }
-    for (const job of readJobs(wallet)) {
+    for (const job of readJobs(owner)) {
       if (job.unseen === true) {
         highlightedIdsRef.current.add(job.jobEventId);
       }
     }
-    clearUnseen(wallet);
-  }, [wallet, storeVersion, pageVisible]);
+    clearUnseen(owner);
+  }, [owner, storeVersion, pageVisible]);
 
   let syncLabel = 'Synced from relays - older events may have expired.';
   if (isFetching) {

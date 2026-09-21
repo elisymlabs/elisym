@@ -1,7 +1,15 @@
 /**
- * Wallet-keyed job history (`elisym:job-history:<wallet>`) as a shared module
- * store behind the readCursors listener/version idiom, so BuyContext's writes
- * reach every subscriber (nav badge, /jobs page, Chat tab) reactively.
+ * Identity-keyed job history (`elisym:job-history:<nostr pubkey>`) as a shared
+ * module store behind the readCursors listener/version idiom, so BuyContext's
+ * writes reach every subscriber (nav badge, /jobs page, Chat tab) reactively.
+ *
+ * Keyed by the NOSTR key, not the Solana wallet it used to be: what binds a job
+ * to a person is the key that signed the request - the relay knows nothing
+ * about the payer's wallet, and the relay half of /jobs already queries by it.
+ * A customer paying from an EVM wallet has no Solana address at all, and one
+ * paying from two wallets is one customer with one history. A legacy per-wallet
+ * store migrates once, to the identity active at the time (see
+ * `migrateLegacyJobHistory`).
  *
  * Writes are read-modify-write PATCHES against localStorage keyed by
  * `jobEventId`, never a persist of a caller's whole in-memory array: under two
@@ -23,6 +31,11 @@
 import type { SolanaCluster } from './cluster';
 
 export const JOB_HISTORY_KEY_PREFIX = 'elisym:job-history:';
+/** One marker per identity, so a deleted history is not restored on the next load. */
+export const JOB_HISTORY_MIGRATED_PREFIX = 'elisym:job-history-migrated:';
+
+/** A Nostr public key as this app stores it: 32 bytes of lowercase hex. */
+const IDENTITY_KEY_RE = /^[0-9a-f]{64}$/;
 
 /**
  * The instant the elisym mainnet config PDA was initialized:
@@ -74,20 +87,25 @@ export interface StoredJob {
 export interface JobHistoryStorageAdapter {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  /** Every key present, for the one-time migration off the wallet-keyed store. */
+  keys(): string[];
+  removeItem(key: string): void;
 }
 
 export interface JobHistoryStore {
-  readJobs(wallet: string): StoredJob[];
-  saveJob(wallet: string, job: StoredJob): void;
-  updateJob(wallet: string, jobEventId: string, patch: Partial<StoredJob>): void;
+  readJobs(owner: string): StoredJob[];
+  migrateLegacyJobHistory(owner: string): void;
+  purgeJobHistory(owner: string): void;
+  saveJob(owner: string, job: StoredJob): void;
+  updateJob(owner: string, jobEventId: string, patch: Partial<StoredJob>): void;
   flipTerminal(
-    wallet: string,
+    owner: string,
     jobEventId: string,
     patch: Partial<StoredJob>,
     opts: { stampUnseen: boolean },
   ): void;
-  clearUnseen(wallet: string, agentPubkey?: string): void;
-  unseenCount(wallet: string, network: SolanaCluster): number;
+  clearUnseen(owner: string, agentPubkey?: string): void;
+  unseenCount(owner: string, network: SolanaCluster): number;
   handleExternalChange(key: string): void;
   subscribe(listener: () => void): () => void;
   version(): number;
@@ -108,12 +126,26 @@ const browserStorage: JobHistoryStorageAdapter = {
       // Quota/private-mode failures degrade to per-tab state - harmless.
     }
   },
+  keys: () => {
+    try {
+      return Object.keys(localStorage);
+    } catch {
+      return [];
+    }
+  },
+  removeItem: (key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Same degradation as setItem: a purge that cannot write is a no-op.
+    }
+  },
 };
 
 const EMPTY_JOBS: StoredJob[] = [];
 
-function storageKey(wallet: string): string {
-  return `${JOB_HISTORY_KEY_PREFIX}${wallet}`;
+function storageKey(owner: string): string {
+  return `${JOB_HISTORY_KEY_PREFIX}${owner}`;
 }
 
 /** Tolerant parse (the readCursors idiom): a corrupt value reads as empty. */
@@ -153,7 +185,7 @@ export function createJobHistoryStore(
 ): JobHistoryStore {
   const listeners = new Set<() => void>();
   let storeVersion = 0;
-  /** getSnapshot stability: one cached array per wallet, invalidated by version. */
+  /** getSnapshot stability: one cached array per identity, invalidated by version. */
   const snapshots = new Map<string, { version: number; jobs: StoredJob[] }>();
 
   function notify(): void {
@@ -163,41 +195,41 @@ export function createJobHistoryStore(
     }
   }
 
-  function readRaw(wallet: string): StoredJob[] {
-    return parseJobs(storage.getItem(storageKey(wallet)));
+  function readRaw(owner: string): StoredJob[] {
+    return parseJobs(storage.getItem(storageKey(owner)));
   }
 
-  function persist(wallet: string, jobs: StoredJob[]): void {
-    storage.setItem(storageKey(wallet), JSON.stringify(jobs));
+  function persist(owner: string, jobs: StoredJob[]): void {
+    storage.setItem(storageKey(owner), JSON.stringify(jobs));
     notify();
   }
 
-  function readJobs(wallet: string): StoredJob[] {
-    if (!wallet) {
+  function readJobs(owner: string): StoredJob[] {
+    if (!owner) {
       return EMPTY_JOBS;
     }
-    const cached = snapshots.get(wallet);
+    const cached = snapshots.get(owner);
     if (cached && cached.version === storeVersion) {
       return cached.jobs;
     }
-    const jobs = readRaw(wallet);
-    snapshots.set(wallet, { version: storeVersion, jobs });
+    const jobs = readRaw(owner);
+    snapshots.set(owner, { version: storeVersion, jobs });
     return jobs;
   }
 
-  function saveJob(wallet: string, job: StoredJob): void {
-    if (!wallet) {
+  function saveJob(owner: string, job: StoredJob): void {
+    if (!owner) {
       return;
     }
-    const current = readRaw(wallet);
-    persist(wallet, [job, ...current.filter((existing) => existing.jobEventId !== job.jobEventId)]);
+    const current = readRaw(owner);
+    persist(owner, [job, ...current.filter((existing) => existing.jobEventId !== job.jobEventId)]);
   }
 
-  function updateJob(wallet: string, jobEventId: string, patch: Partial<StoredJob>): void {
-    if (!wallet) {
+  function updateJob(owner: string, jobEventId: string, patch: Partial<StoredJob>): void {
+    if (!owner) {
       return;
     }
-    const current = readRaw(wallet);
+    const current = readRaw(owner);
     const row = current.find((existing) => existing.jobEventId === jobEventId);
     if (!row) {
       // Never create an absent row, and a no-op must not bump the version.
@@ -218,7 +250,7 @@ export function createJobHistoryStore(
       return;
     }
     persist(
-      wallet,
+      owner,
       current.map((existing) =>
         existing.jobEventId === jobEventId ? { ...existing, ...effectivePatch } : existing,
       ),
@@ -226,15 +258,15 @@ export function createJobHistoryStore(
   }
 
   function flipTerminal(
-    wallet: string,
+    owner: string,
     jobEventId: string,
     patch: Partial<StoredJob>,
     opts: { stampUnseen: boolean },
   ): void {
-    if (!wallet) {
+    if (!owner) {
       return;
     }
-    const current = readRaw(wallet);
+    const current = readRaw(owner);
     const row = current.find((existing) => existing.jobEventId === jobEventId);
     // Decided against the freshly-read row: if another tab (or an earlier
     // path) already flipped this job, re-applying the flip would resurrect
@@ -243,7 +275,7 @@ export function createJobHistoryStore(
       return;
     }
     persist(
-      wallet,
+      owner,
       current.map((existing) =>
         existing.jobEventId === jobEventId
           ? {
@@ -257,11 +289,11 @@ export function createJobHistoryStore(
     );
   }
 
-  function clearUnseen(wallet: string, agentPubkey?: string): void {
-    if (!wallet) {
+  function clearUnseen(owner: string, agentPubkey?: string): void {
+    if (!owner) {
       return;
     }
-    const current = readRaw(wallet);
+    const current = readRaw(owner);
     const matches = (job: StoredJob): boolean =>
       job.unseen === true && (agentPubkey === undefined || job.agentPubkey === agentPubkey);
     if (!current.some(matches)) {
@@ -270,7 +302,7 @@ export function createJobHistoryStore(
       return;
     }
     persist(
-      wallet,
+      owner,
       current.map((job) => (matches(job) ? { ...job, unseen: undefined } : job)),
     );
   }
@@ -278,9 +310,9 @@ export function createJobHistoryStore(
   // The badge counts only entries visible on the current network (D13): a
   // legacy devnet flip must not light the badge on the mainnet domain for a
   // row the /jobs page will never show.
-  function unseenCount(wallet: string, network: SolanaCluster): number {
+  function unseenCount(owner: string, network: SolanaCluster): number {
     let count = 0;
-    for (const job of readJobs(wallet)) {
+    for (const job of readJobs(owner)) {
       if (job.unseen === true && localJobNetwork(job) === network) {
         count += 1;
       }
@@ -301,12 +333,76 @@ export function createJobHistoryStore(
     };
   }
 
+  /**
+   * Copy a legacy wallet-keyed history onto `owner`, ONCE.
+   *
+   * Runs only when the identity has no history of its own and has not been
+   * migrated before - so a user who cleared their jobs does not get them back
+   * on the next load. The legacy key is left in place: it is a few kilobytes,
+   * and an older tab or a rolled-back deploy keeps working.
+   *
+   * With several legacy stores there is no honest way to attribute the others,
+   * and merging strangers' rows into one list would be worse than leaving them,
+   * so the most recently USED one wins - the same "the identity active at first
+   * load" rule, applied to the other side.
+   */
+  function migrateLegacyJobHistory(owner: string): void {
+    if (!owner || storage.getItem(`${JOB_HISTORY_MIGRATED_PREFIX}${owner}`) !== null) {
+      return;
+    }
+    storage.setItem(`${JOB_HISTORY_MIGRATED_PREFIX}${owner}`, String(Date.now()));
+    if (storage.getItem(storageKey(owner)) !== null) {
+      return;
+    }
+    let best: { jobs: StoredJob[]; newest: number } | null = null;
+    for (const key of storage.keys()) {
+      if (!key.startsWith(JOB_HISTORY_KEY_PREFIX)) {
+        continue;
+      }
+      const suffix = key.slice(JOB_HISTORY_KEY_PREFIX.length);
+      // Both shapes are written by us, so this tells them apart exactly: a
+      // Solana address is base58 and never 64 lowercase hex characters.
+      if (suffix === '' || IDENTITY_KEY_RE.test(suffix)) {
+        continue;
+      }
+      const jobs = parseJobs(storage.getItem(key));
+      if (jobs.length === 0) {
+        continue;
+      }
+      const newest = Math.max(...jobs.map((job) => job.createdAt));
+      if (best === null || newest > best.newest) {
+        best = { jobs, newest };
+      }
+    }
+    if (best !== null) {
+      persist(owner, best.jobs);
+    }
+  }
+
+  /**
+   * Delete one identity's history, for logout.
+   *
+   * The MIGRATION MARKER deliberately stays: without it, logging the same key
+   * back in would copy the legacy wallet-keyed store over again and resurrect
+   * exactly what this just deleted.
+   */
+  function purgeJobHistory(owner: string): void {
+    if (!owner || storage.getItem(storageKey(owner)) === null) {
+      return;
+    }
+    storage.removeItem(storageKey(owner));
+    snapshots.delete(owner);
+    notify();
+  }
+
   function version(): number {
     return storeVersion;
   }
 
   return {
     readJobs,
+    migrateLegacyJobHistory,
+    purgeJobHistory,
     saveJob,
     updateJob,
     flipTerminal,
@@ -331,6 +427,8 @@ if (typeof window !== 'undefined') {
 }
 
 export const readJobs = defaultStore.readJobs;
+export const migrateLegacyJobHistory = defaultStore.migrateLegacyJobHistory;
+export const purgeJobHistory = defaultStore.purgeJobHistory;
 export const saveJob = defaultStore.saveJob;
 export const updateJob = defaultStore.updateJob;
 export const flipTerminal = defaultStore.flipTerminal;
