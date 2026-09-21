@@ -24,8 +24,7 @@ import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { PaymentValidationError } from '../types';
 import type { Eip1193Client } from './client';
-import { checkEvmChain } from './config';
-import { MAX_EVM_FEE_BPS } from './config';
+import { checkEvmChain, MAX_EVM_FEE_BPS } from './config';
 import {
   TEMPO_POLICY_REGISTRY,
   TEMPO_UNPAYABLE_ADDRESSES,
@@ -149,6 +148,13 @@ export function validateTempoPaymentRequest(
     );
   }
   const request = parsed.data;
+
+  // Every one of these is lowercased below, which THROWS on anything that is
+  // not a string - and this function's contract is to refuse, never to throw.
+  const addresses = [bounds.payer, bounds.treasury, bounds.card?.recipient];
+  if (addresses.some((address) => address !== undefined && typeof address !== 'string')) {
+    return refuse('invalid_bounds', 'These bounds carry an address that is not a string.');
+  }
 
   // The chain gate FIRST, before any money check. A chain the registry does
   // not carry never reaches here - the v2 schema refuses it, and
@@ -420,6 +426,19 @@ export async function checkTempoReceivePolicies(
           `chain and the money would sit with the guard, out of reach of both of you.`,
       };
     }
+  }
+  // Every answer above came from an endpoint that named this chain before the
+  // first read. `ok` is permission to move money, so it is asked once more -
+  // the registry lives at the same address on both networks and answers
+  // plausibly on either, which is exactly how a mid-call network switch would
+  // turn a refusal into a yes.
+  if ((await checkEvmChain(client, check.chain).catch(() => null)) === null) {
+    return {
+      ok: false,
+      leg: 'provider',
+      reason: 'unreadable',
+      message: `${check.chain.caip2} could not be confirmed after the reads; refusing to pay blind.`,
+    };
   }
   return { ok: true };
 }

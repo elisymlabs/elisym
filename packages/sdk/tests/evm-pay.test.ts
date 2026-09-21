@@ -192,6 +192,45 @@ describe('validateTempoPaymentRequest', () => {
     },
   );
 
+  it.each([
+    ['the payer', { payer: 42 }],
+    ['the treasury', { treasury: 42 }],
+    ['the card recipient', { card: { recipient: 42, asset: USDCE_TEMPO_MAINNET } }],
+  ])('refuses %s given as something that is not a string', (_label, overrides) => {
+    // All three are lowercased before any guard sees them, and this function's
+    // contract is to refuse, never to throw.
+    const problem = validateTempoPaymentRequest(
+      requestJson({ fee_address: TREASURY, fee_amount: '250' }),
+      bounds({ protocolFeeBps: 250, ...overrides }) as unknown as Parameters<
+        typeof validateTempoPaymentRequest
+      >[1],
+    );
+    expect(problem?.code).toBe('invalid_bounds');
+  });
+
+  it('refuses a price bound given as a plain NUMBER, which money never crosses', () => {
+    // 1e30 and 10n**30n are not the same value, and only one of them is money.
+    const problem = validateTempoPaymentRequest(
+      requestJson(),
+      bounds({
+        card: { recipient: RECIPIENT, asset: USDCE_TEMPO_MAINNET, jobPriceSubunits: 10_000 },
+      }) as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
+    );
+    expect(problem?.code).toBe('invalid_bounds');
+  });
+
+  it('refuses a fee rate one basis point over the contract ceiling', () => {
+    const request = requestJson({ fee_address: TREASURY, fee_amount: '1001' });
+    expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps: 1001 }))?.code).toBe(
+      'invalid_bounds',
+    );
+  });
+
+  it('accepts a fee rate exactly AT the contract ceiling', () => {
+    const request = requestJson({ fee_address: TREASURY, fee_amount: '1000' });
+    expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps: 1000 }))).toBeNull();
+  });
+
   it('refuses bounds that name no asset at all, even cast past the type', () => {
     const castPastTheType = { ...bounds(), card: undefined } as unknown as Parameters<
       typeof validateTempoPaymentRequest
@@ -564,6 +603,31 @@ describe('checkTempoReceivePolicies', () => {
     });
     expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
     expect(chain.calls.filter((call) => call.method === 'eth_call')).toHaveLength(0);
+  });
+
+  it('asks again which chain it is on before saying YES', async () => {
+    // The registry lives at the same address on both networks and answers
+    // plausibly on either, so a network switch between the gate and the last
+    // read turns a refusal into permission to move money.
+    let answered = 0;
+    const chain = answering({});
+    const switching = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        if (args.method === 'eth_chainId') {
+          answered += 1;
+          return answered === 1 ? '0x1079' : 7;
+        }
+        return chain.client.request(args);
+      },
+    };
+    const verdict = await checkTempoReceivePolicies(switching, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+    });
+    expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
+    expect(answered).toBe(2);
   });
 
   it('refuses a VIRTUAL payer without asking either', async () => {
@@ -1143,6 +1207,98 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome).toEqual({ state: 'pending' });
   });
 
+  it('asks again which chain it is on before saying UNSENT', async () => {
+    // A browser wallet's user clicking "switch network" mid-call is not a
+    // fault, it is Tuesday - and everything the absence proof read came from
+    // the endpoint as it was. `unsent` is the answer that spends the money a
+    // second time, so the endpoint is asked once more.
+    let answered = 0;
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const switching = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        if (args.method === 'eth_chainId') {
+          answered += 1;
+          // The first answer is this chain; by the second the user has moved.
+          return answered === 1 ? '0x1079' : 7;
+        }
+        return chain.client.request(args);
+      },
+    };
+    const outcome = await resolveTempoTransferOutcome(switching, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+    expect(answered).toBe(2);
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['a second in 1970', 1],
+    ['a small counter', 12_345],
+  ])('refuses a deadline of %s, which is a number but not a time', async (_label, validBefore) => {
+    // `finalized.timestamp >= validBefore` is true on the first read for any
+    // of these, so a complete empty scan would answer `unsent` at once about a
+    // transaction still in the mempool.
+    const chain = chainWith({ receipts: {} });
+    await expect(
+      resolveTempoTransferOutcome(chain.client, legs, {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore,
+      }),
+    ).rejects.toThrow(/needs a deadline/);
+  });
+
+  it('refuses a leg that expects nothing, which any forged log satisfies', async () => {
+    // A zero-amount `transferFromWithMemo` succeeds from any caller, so a leg
+    // of nothing is `delivered` by a log that moved nothing.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    await expect(
+      resolveTempoTransferOutcome(
+        chain.client,
+        [{ ...legs[0], amount: 0n } as TempoLegExpectation],
+        {
+          chain: CHAINS.TEMPO_MAINNET,
+          hash: BATCH_HASH,
+          floor: BATCH_BLOCK - 100,
+          validBefore: NOW + 60,
+        },
+      ),
+    ).rejects.toThrow(/positive amount/);
+  });
+
+  it('proves nothing about a blocked WITHDRAWAL either, when the guard pass fails', async () => {
+    // The only absence-proof guard row used a memo leg; a withdrawal has none,
+    // and its guard pass is a different branch of the same scan.
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+      onGetLogs: (call) =>
+        call.topics[0] === TRANSFER_BLOCKED_TOPIC ? new Error('the node fell over') : undefined,
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ token: USDCE, from: PAYER, to: RECIPIENT, amount: 10_000n }],
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
+    );
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
   it('will not prove an absence on an endpoint that cannot say which chain it is', async () => {
     // pathUSD lives at the SAME address on both Tempo networks, the guard and
     // the registry are system addresses on both, and mainnet's head is higher
@@ -1411,6 +1567,40 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome.state).toBe('delivered');
   });
 
+  it('stops on a signal that fires after the CHAIN GATE', async () => {
+    // Between the gate and the receipt read, which is the next thing that
+    // takes the signal. The verdict is `pending` either way; what says the
+    // signal was honoured is that the absence proof never starts.
+    const controller = new AbortController();
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const client = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        // Set before the receipt read is awaited, so the gate above has
+        // already settled and this is the first read the signal reaches.
+        if (args.method === 'eth_getTransactionReceipt') {
+          controller.abort();
+        }
+        return chain.client.request(args);
+      },
+    };
+    const outcome = await resolveTempoTransferOutcome(client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+      signal: controller.signal,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+    expect(chain.calls.map((call) => call.method)).toEqual([
+      'eth_chainId',
+      'eth_getTransactionReceipt',
+    ]);
+  });
+
   it('stops on a signal that fires AFTER the receipt read', async () => {
     // The receipt is not the only read that takes the signal: the absence
     // proof is four more, and each of them is a scan that would otherwise
@@ -1492,10 +1682,9 @@ describe('resolveTempoTransferOutcome', () => {
     // after the receipt does. (This row pins the receipt read alone; the row
     // above pins the four in the absence proof, by aborting once the receipt
     // has answered.)
-    expect(chain.calls.map((call) => call.method)).toEqual([
-      'eth_chainId',
-      'eth_getTransactionReceipt',
-    ]);
+    // The chain gate is the first read and takes the signal like every other,
+    // so an already-aborted caller stops there.
+    expect(chain.calls.map((call) => call.method)).toEqual(['eth_chainId']);
   });
 
   it('reads a guard log that parked MORE than the leg asked for as ours', async () => {

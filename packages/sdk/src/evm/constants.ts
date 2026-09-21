@@ -62,6 +62,15 @@ export const MAX_LOG_BLOCK_RANGE = 100_000;
  * passed on top of the expiry.
  */
 export const EVM_LATE_PAYMENT_GRACE_SECS = 1800;
+
+/**
+ * A floor under anything claiming to be a Tempo deadline, in epoch seconds.
+ * September 2020 - comfortably before the chain existed and comfortably above
+ * the values a mistake produces (`0`, a `Number('')`, a small counter, a value
+ * in milliseconds is far ABOVE it and caught by the chain's own clock). It
+ * separates "a number" from "a time", and claims nothing more.
+ */
+export const EARLIEST_TEMPO_SECONDS = 1_600_000_000;
 /** The first width of a history-control window, in blocks. */
 export const HISTORY_CONTROL_START_BLOCKS = 256;
 /** Widening x4 and halving cannot fight each other for longer than this. */

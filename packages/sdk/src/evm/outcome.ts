@@ -20,8 +20,8 @@ import type { ChainConfig } from '../payment/chains';
 import { isVirtualEvmAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
-import { checkEvmChain } from './config';
-import { TEMPO_FEE_SINK } from './constants';
+import { checkEvmChain, WrongEvmChainError } from './config';
+import { EARLIEST_TEMPO_SECONDS, TEMPO_FEE_SINK } from './constants';
 import type { TempoBlockedLog, TempoTransferLog } from './logs';
 import {
   decodeTempoBlockedLog,
@@ -76,6 +76,34 @@ export interface ResolveTempoTransferOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Is this endpoint NOT the chain the caller named?
+ *
+ * A mismatch throws out of `checkEvmChain` - a misconfiguration the caller has
+ * to fix, the same class of error as a hash that is not a hash. An endpoint
+ * that will not say answers `true` here, and the caller gets `pending`.
+ *
+ * Asked again before the verdict that costs money, because an EIP-1193
+ * provider is free to change network between the two: a browser wallet's user
+ * clicking "switch network" mid-call is not a fault, it is Tuesday.
+ */
+async function notOnThisChain(
+  client: Eip1193Client,
+  options: ResolveTempoTransferOptions,
+): Promise<boolean> {
+  const chainId = await withAbort(checkEvmChain(client, options.chain), options.signal).catch(
+    (error: unknown) => {
+      // A MISMATCH is the caller's to fix and is never swallowed. Anything
+      // else - an abandoned call, a dead endpoint - is "could not confirm".
+      if (error instanceof WrongEvmChainError) {
+        throw error;
+      }
+      return null;
+    },
+  );
+  return chainId === null;
+}
+
 function sameAddress(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
 }
@@ -124,16 +152,23 @@ export async function resolveTempoTransferOutcome(
   // timestamp, which would pass the gate below and reach `unsent` - the one
   // answer that tells the caller to send the money again - on a transaction
   // that can still land.
-  if (!Number.isFinite(options.validBefore)) {
+  // A deadline is a TIME, not merely a number: `0`, a negative, or any past
+  // epoch second makes the gate below true on the first read, so a complete
+  // empty scan answers `unsent` at once about a transaction still in the
+  // mempool. (A caller passing a smaller deadline than the one it signed with
+  // is beyond reach from here - that is the caller's own record to keep.)
+  if (!Number.isFinite(options.validBefore) || options.validBefore < EARLIEST_TEMPO_SECONDS) {
     throw new Error(`resolveTempoTransferOutcome needs a deadline, not ${options.validBefore}.`);
+  }
+  // A leg of nothing is satisfied by a log that moved nothing, and those are
+  // free to forge: `transferFromWithMemo` of zero succeeds from any caller.
+  if (expected.some((leg) => leg.amount <= 0n)) {
+    throw new Error('resolveTempoTransferOutcome needs every leg to expect a positive amount.');
   }
   // An endpoint that names another chain is a misconfiguration the caller has
   // to fix, and the same class of caller error as a hash that is not a hash.
   // One it cannot answer is an rpc failure like any other: `pending`.
-  const onThisChain = await checkEvmChain(client, options.chain).catch((error: unknown) => {
-    throw error;
-  });
-  if (onThisChain === null) {
+  if (await notOnThisChain(client, options)) {
     return { state: 'pending' };
   }
   const receipt = await withAbort(
@@ -340,6 +375,12 @@ async function provenUnsent(
     if (!vouched) {
       return { state: 'pending' };
     }
+  }
+  // Everything above was read from an endpoint that named this chain when we
+  // started. `unsent` is the answer that spends money a second time, so the
+  // endpoint is asked once more that it is still the same chain.
+  if (await notOnThisChain(client, options)) {
+    return { state: 'pending' };
   }
   return { state: 'unsent', reason: 'deadline_passed' };
 }
