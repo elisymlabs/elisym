@@ -542,7 +542,8 @@ export type PaymentValidationCode =
   | 'self_payment'
   /**
    * The CALLER's own bounds are unusable - a clock that is not a number, a fee
-   * rate that is not a rate. Not a statement about the request: nothing about
+   * rate that is not a rate, an address that is not a string, a price that is
+   * not a number of subunits. Not a statement about the request: nothing about
    * it was judged, because there was nothing to judge it against.
    */
   | 'invalid_bounds';

@@ -71,6 +71,15 @@ export const EVM_LATE_PAYMENT_GRACE_SECS = 1800;
  * separates "a number" from "a time", and claims nothing more.
  */
 export const EARLIEST_TEMPO_SECONDS = 1_600_000_000;
+
+/**
+ * And a ceiling, for the likeliest slip of all: `Date.now()` where seconds
+ * were meant. A millisecond value clears the floor by three orders of
+ * magnitude and is then caught only by the chain's own clock - which never
+ * reaches it, so the answer is `pending` for ever and says nothing about why.
+ * The year 2200 in seconds.
+ */
+export const LATEST_TEMPO_SECONDS = 7_258_118_400;
 /** The first width of a history-control window, in blocks. */
 export const HISTORY_CONTROL_START_BLOCKS = 256;
 /** Widening x4 and halving cannot fight each other for longer than this. */

@@ -151,8 +151,12 @@ export function validateTempoPaymentRequest(
 
   // Every one of these is lowercased below, which THROWS on anything that is
   // not a string - and this function's contract is to refuse, never to throw.
-  const addresses = [bounds.payer, bounds.treasury, bounds.card?.recipient];
-  if (addresses.some((address) => address !== undefined && typeof address !== 'string')) {
+  const addresses = [
+    bounds.payer,
+    bounds.treasury,
+    ...(bounds.card === undefined ? [] : [bounds.card.recipient]),
+  ];
+  if (addresses.some((address) => typeof address !== 'string')) {
     return refuse('invalid_bounds', 'These bounds carry an address that is not a string.');
   }
 

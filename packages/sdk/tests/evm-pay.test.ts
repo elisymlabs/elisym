@@ -196,6 +196,9 @@ describe('validateTempoPaymentRequest', () => {
     ['the payer', { payer: 42 }],
     ['the treasury', { treasury: 42 }],
     ['the card recipient', { card: { recipient: 42, asset: USDCE_TEMPO_MAINNET } }],
+    ['the payer, absent', { payer: undefined }],
+    ['the treasury, absent', { treasury: undefined }],
+    ['the card recipient, absent', { card: { asset: USDCE_TEMPO_MAINNET } }],
   ])('refuses %s given as something that is not a string', (_label, overrides) => {
     // All three are lowercased before any guard sees them, and this function's
     // contract is to refuse, never to throw.
@@ -1212,30 +1215,50 @@ describe('resolveTempoTransferOutcome', () => {
     // fault, it is Tuesday - and everything the absence proof read came from
     // the endpoint as it was. `unsent` is the answer that spends the money a
     // second time, so the endpoint is asked once more.
-    let answered = 0;
-    const chain = chainWith({
-      receipts: {},
-      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
-      timestamps: { 40_000_000: NOW + 600 },
-    });
-    const switching = {
-      request: async (args: { method: string; params?: readonly unknown[] }) => {
-        if (args.method === 'eth_chainId') {
-          answered += 1;
-          // The first answer is this chain; by the second the user has moved.
-          return answered === 1 ? '0x1079' : 7;
-        }
-        return chain.client.request(args);
-      },
-    };
-    const outcome = await resolveTempoTransferOutcome(switching, legs, {
-      chain: CHAINS.TEMPO_MAINNET,
-      hash: BATCH_HASH,
-      floor: BATCH_BLOCK - 100,
-      validBefore: NOW + 60,
-    });
-    expect(outcome).toEqual({ state: 'pending' });
-    expect(answered).toBe(2);
+    for (const moved of ['0xa5bf', 7, null]) {
+      let answered = 0;
+      const chain = chainWith({
+        receipts: {},
+        logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+        timestamps: { 40_000_000: NOW + 600 },
+      });
+      const switching = {
+        request: async (args: { method: string; params?: readonly unknown[] }) => {
+          if (args.method === 'eth_chainId') {
+            answered += 1;
+            // The first answer is this chain; by the second the user has moved
+            // - to a NAMED other chain, to one this SDK cannot read, or to an
+            // endpoint that will not say. None of the three is a fault to
+            // throw at a polling loop, and none of them is `unsent`.
+            return answered === 1 ? '0x1079' : moved;
+          }
+          return chain.client.request(args);
+        },
+      };
+      const outcome = await resolveTempoTransferOutcome(switching, legs, {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      });
+      expect(outcome).toEqual({ state: 'pending' });
+      expect(answered).toBe(2);
+    }
+  });
+
+  it('refuses a chain this rail cannot read at all, loudly', async () => {
+    // One identifier away from right in a dual-rail SDK. Swallowing it would
+    // poll `pending` for ever with no rpc traffic to notice it by.
+    const chain = chainWith({ receipts: {} });
+    await expect(
+      resolveTempoTransferOutcome(chain.client, legs, {
+        chain: CHAINS.SOLANA_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      }),
+    ).rejects.toThrow(/cannot read solana/);
+    expect(chain.calls).toEqual([]);
   });
 
   it.each([
@@ -1243,6 +1266,10 @@ describe('resolveTempoTransferOutcome', () => {
     ['negative', -1],
     ['a second in 1970', 1],
     ['a small counter', 12_345],
+    // The likeliest slip of all: `Date.now()` where seconds were meant. It
+    // clears the floor by three orders of magnitude and the chain's clock
+    // never reaches it, so the answer would be `pending` for ever.
+    ['in milliseconds', 1_700_000_060_000],
   ])('refuses a deadline of %s, which is a number but not a time', async (_label, validBefore) => {
     // `finalized.timestamp >= validBefore` is true on the first read for any
     // of these, so a complete empty scan would answer `unsent` at once about a
@@ -1256,6 +1283,32 @@ describe('resolveTempoTransferOutcome', () => {
         validBefore,
       }),
     ).rejects.toThrow(/needs a deadline/);
+  });
+
+  it.each([
+    ['expects nothing', [{ amount: 0n }]],
+    ['expects a plain number of subunits', [{ amount: 10_000 }]],
+    ['is the SECOND of two and expects nothing', [{}, { amount: 0n }]],
+  ])('refuses a leg that %s', async (_label, changes) => {
+    // A zero-amount `transferFromWithMemo` succeeds from any caller, so a leg
+    // of nothing is `delivered` by a log that moved nothing; and a `number`
+    // amount equals no bigint, so such a leg is `pending` for ever.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    await expect(
+      resolveTempoTransferOutcome(
+        chain.client,
+        changes.map((change, index) => ({
+          ...legs[index % legs.length],
+          ...change,
+        })) as TempoLegExpectation[],
+        {
+          chain: CHAINS.TEMPO_MAINNET,
+          hash: BATCH_HASH,
+          floor: BATCH_BLOCK - 100,
+          validBefore: NOW + 60,
+        },
+      ),
+    ).rejects.toThrow(/positive amount of subunits/);
   });
 
   it('refuses a leg that expects nothing, which any forged log satisfies', async () => {

@@ -55,14 +55,18 @@ const forced = await getEvmProtocolConfig(client, chain, { forceRefresh: true })
 console.log('forced ', JSON.stringify(forced));
 
 clearEvmProtocolConfigCache();
-const otherChain = chain.network === 'mainnet' ? CHAINS.TEMPO_DEVNET : CHAINS.TEMPO_MAINNET;
-if (otherChain.protocolConfig !== undefined) {
-  const wrong = await getEvmProtocolConfig(client, otherChain).catch((error: unknown) => error);
-  console.log(
-    '\nwrong chain ->',
-    wrong instanceof WrongEvmChainError ? `refused: ${wrong.message}` : `NOT REFUSED: ${wrong}`,
-  );
-}
+// The OTHER Tempo network, with this one's config contract attached: mainnet
+// carries none yet, so asking about it directly would refuse for the wrong
+// reason and print nothing about the chain id at all.
+const otherChain = {
+  ...(chain.network === 'mainnet' ? CHAINS.TEMPO_DEVNET : CHAINS.TEMPO_MAINNET),
+  protocolConfig: chain.protocolConfig,
+};
+const wrong = await getEvmProtocolConfig(client, otherChain).catch((error: unknown) => error);
+console.log(
+  '\nwrong chain ->',
+  wrong instanceof WrongEvmChainError ? `refused: ${wrong.message}` : `NOT REFUSED: ${wrong}`,
+);
 
 clearEvmProtocolConfigCache();
 const noContract = { ...chain, protocolConfig: { address: `0x${'ab'.repeat(20)}` } };

@@ -21,7 +21,7 @@ import { isVirtualEvmAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
 import { checkEvmChain, WrongEvmChainError } from './config';
-import { EARLIEST_TEMPO_SECONDS, TEMPO_FEE_SINK } from './constants';
+import { EARLIEST_TEMPO_SECONDS, LATEST_TEMPO_SECONDS, TEMPO_FEE_SINK } from './constants';
 import type { TempoBlockedLog, TempoTransferLog } from './logs';
 import {
   decodeTempoBlockedLog,
@@ -83,9 +83,10 @@ export interface ResolveTempoTransferOptions {
  * to fix, the same class of error as a hash that is not a hash. An endpoint
  * that will not say answers `true` here, and the caller gets `pending`.
  *
- * Asked again before the verdict that costs money, because an EIP-1193
- * provider is free to change network between the two: a browser wallet's user
- * clicking "switch network" mid-call is not a fault, it is Tuesday.
+ * This is the gate BEFORE the reads, where another chain is a
+ * misconfiguration the caller has to fix. `stillOnThisChain` is the one after
+ * them, where the same answer means a user switched networks mid-call - not a
+ * fault, and not something to throw at a polling loop.
  */
 async function notOnThisChain(
   client: Eip1193Client,
@@ -102,6 +103,21 @@ async function notOnThisChain(
     },
   );
   return chainId === null;
+}
+
+/**
+ * The closing ask, where ANY answer but "still this chain" means the reads
+ * above cannot be trusted - and none of them is worth throwing over, because
+ * a network switch mid-call is the ordinary case this exists to catch.
+ */
+async function stillOnThisChain(
+  client: Eip1193Client,
+  options: ResolveTempoTransferOptions,
+): Promise<boolean> {
+  const chainId = await withAbort(checkEvmChain(client, options.chain), options.signal).catch(
+    () => null,
+  );
+  return chainId !== null;
 }
 
 function sameAddress(left: string, right: string): boolean {
@@ -157,13 +173,28 @@ export async function resolveTempoTransferOutcome(
   // empty scan answers `unsent` at once about a transaction still in the
   // mempool. (A caller passing a smaller deadline than the one it signed with
   // is beyond reach from here - that is the caller's own record to keep.)
-  if (!Number.isFinite(options.validBefore) || options.validBefore < EARLIEST_TEMPO_SECONDS) {
+  if (
+    !Number.isFinite(options.validBefore) ||
+    options.validBefore < EARLIEST_TEMPO_SECONDS ||
+    options.validBefore > LATEST_TEMPO_SECONDS
+  ) {
     throw new Error(`resolveTempoTransferOutcome needs a deadline, not ${options.validBefore}.`);
   }
   // A leg of nothing is satisfied by a log that moved nothing, and those are
   // free to forge: `transferFromWithMemo` of zero succeeds from any caller.
-  if (expected.some((leg) => leg.amount <= 0n)) {
-    throw new Error('resolveTempoTransferOutcome needs every leg to expect a positive amount.');
+  if (expected.some((leg) => typeof leg.amount !== 'bigint' || leg.amount <= 0n)) {
+    // A leg of nothing is satisfied by a log that moved nothing, and a leg
+    // whose amount is a `number` matches nothing at all: `log.amount === 5`
+    // is false for every bigint, so such a leg is `pending` for ever.
+    throw new Error(
+      'resolveTempoTransferOutcome needs every leg to expect a positive amount of subunits.',
+    );
+  }
+  // Not an rpc failure and not transient: a chain this rail cannot read is the
+  // caller naming the wrong one, one identifier away in a dual-rail SDK, and
+  // it would otherwise poll `pending` for ever with no traffic to notice.
+  if (options.chain.family !== 'evm' || options.chain.evmChainId === undefined) {
+    throw new Error(`resolveTempoTransferOutcome cannot read ${options.chain.caip2}.`);
   }
   // An endpoint that names another chain is a misconfiguration the caller has
   // to fix, and the same class of caller error as a hash that is not a hash.
@@ -379,7 +410,7 @@ async function provenUnsent(
   // Everything above was read from an endpoint that named this chain when we
   // started. `unsent` is the answer that spends money a second time, so the
   // endpoint is asked once more that it is still the same chain.
-  if (await notOnThisChain(client, options)) {
+  if (!(await stillOnThisChain(client, options))) {
     return { state: 'pending' };
   }
   return { state: 'unsent', reason: 'deadline_passed' };
