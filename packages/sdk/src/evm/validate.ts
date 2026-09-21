@@ -24,30 +24,32 @@ import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { PaymentValidationError } from '../types';
 import type { Eip1193Client } from './client';
-import { TEMPO_POLICY_REGISTRY, VALIDATE_RECEIVE_POLICY_SELECTOR } from './constants';
+import {
+  TEMPO_POLICY_REGISTRY,
+  TEMPO_UNPAYABLE_ADDRESSES,
+  VALIDATE_RECEIVE_POLICY_SELECTOR,
+} from './constants';
 import { readUint256, readWords } from './rpc-read';
 
 /** How long a request may sit unpaid before its window is too short to be worth starting. */
 export const MIN_PAY_WINDOW_SECS = 120;
 
-export interface TempoPaymentBounds {
-  /** The chain this customer is willing to pay on - its own environment's. */
+export interface TempoPaymentCard {
+  recipient: string;
+  asset: Asset;
+  /** The card's own price. ABSENT means a bound of zero, never "no bound". */
+  jobPriceSubunits?: bigint;
+}
+
+interface TempoPaymentLimits {
+  /**
+   * The chain this customer is willing to pay on - its own environment's. It
+   * must be a REGISTRY entry: the asset check below rests on the registry
+   * holding the request's coin for this chain and network.
+   */
   chain: ChainConfig;
   /** The payer's own address. It can be neither destination: such a leg proves nothing. */
   payer: string;
-  /**
-   * The card the price came from. Absent for a bare `send_payment`, where the
-   * asset the caller agreed to is the whole binding and the session cap is the
-   * only price bound.
-   */
-  card?: {
-    recipient: string;
-    asset: Asset;
-    /** The card's own price. ABSENT means a bound of zero, never "no bound". */
-    jobPriceSubunits?: bigint;
-  };
-  /** Without a card: the asset the caller agreed to pay. */
-  expectedAsset?: Asset;
   /** The session cap, in the asset's subunits. */
   maxAmountSubunits?: bigint;
   /** The fee the chain says is due, read from the config contract. */
@@ -56,6 +58,23 @@ export interface TempoPaymentBounds {
   treasury: string;
   nowSecs?: number;
 }
+
+/**
+ * What the request is checked AGAINST - and it is a union on purpose. A bounds
+ * value with neither a card nor an agreed asset and cap binds nothing at all:
+ * every recipient and every amount would be acceptable, which is the one shape
+ * this function must never be handed. It does not typecheck.
+ */
+export type TempoPaymentBounds = TempoPaymentLimits &
+  (
+    | { card: TempoPaymentCard; expectedAsset?: Asset }
+    | {
+        card?: undefined;
+        /** Without a card, the asset and the cap ARE the binding, so both are required. */
+        expectedAsset: Asset;
+        maxAmountSubunits: bigint;
+      }
+  );
 
 function refuse(code: PaymentValidationError['code'], message: string): PaymentValidationError {
   return { code, message };
@@ -151,7 +170,12 @@ export function validateTempoPaymentRequest(
   // resolver looks it up through the request chain's own environment, and the
   // gate above has already settled that the request chain is this one.
   const agreed = bounds.card?.asset ?? bounds.expectedAsset;
-  if (agreed !== undefined && assetKey(agreed) !== assetKey(asset)) {
+  if (agreed === undefined) {
+    // Unreachable for a caller that typechecks - the bounds union requires one
+    // of the two - and a refusal rather than a silent pass for one that casts.
+    return refuse('invalid_asset', 'These bounds name no asset to pay, so nothing may be paid.');
+  }
+  if (assetKey(agreed) !== assetKey(asset)) {
     return refuse(
       'asset_mismatch',
       `Asset mismatch: agreed to pay ${agreed.token}, but the request debits ${asset.token}.`,
@@ -163,6 +187,19 @@ export function validateTempoPaymentRequest(
       'recipient_mismatch',
       `Recipient mismatch: the card names ${bounds.card.recipient}, the request pays ` +
         `${request.recipient}.`,
+    );
+  }
+  // Three protocol system accounts and the burn address. Money sent to any of
+  // them is gone, and the fee sink is excluded from every leg match by name -
+  // a payment there could never be read back as delivered.
+  const destinations = [request.recipient, request.fee_address];
+  const unpayable = destinations.find(
+    (destination) => destination !== undefined && TEMPO_UNPAYABLE_ADDRESSES.includes(destination),
+  );
+  if (unpayable !== undefined) {
+    return refuse(
+      'invalid_recipient_address',
+      `${unpayable} is a protocol address; a payment to it is not a payment.`,
     );
   }
   const payer = bounds.payer.toLowerCase();
@@ -229,7 +266,15 @@ function checkFee(
   request: ParsedPaymentRequestV2,
   bounds: TempoPaymentBounds,
 ): PaymentValidationError | null {
-  const expected = calculateProtocolFeeSubunits(BigInt(request.amount), bounds.protocolFeeBps);
+  // Read before it is used: the fee arithmetic THROWS on a rate that is not a
+  // whole number of basis points, and this function's whole contract is that
+  // it returns a refusal instead of throwing.
+  if (!Number.isInteger(bounds.protocolFeeBps) || bounds.protocolFeeBps < 0) {
+    return refuse(
+      'invalid_fee_params',
+      `The chain answered a protocol fee of ${bounds.protocolFeeBps} bps, which is not a fee.`,
+    );
+  }
   if (bounds.protocolFeeBps === 0) {
     if (request.fee_address !== undefined || request.fee_amount !== undefined) {
       return refuse(
@@ -245,6 +290,7 @@ function checkFee(
       `The chain charges ${bounds.protocolFeeBps} bps and the request carries no fee leg.`,
     );
   }
+  const expected = calculateProtocolFeeSubunits(BigInt(request.amount), bounds.protocolFeeBps);
   if (request.fee_address !== bounds.treasury.toLowerCase()) {
     return refuse(
       'fee_address_mismatch',
@@ -292,6 +338,18 @@ export async function checkTempoReceivePolicies(
     ...(check.feeAddress === undefined ? [] : [{ leg: 'fee' as const, to: check.feeAddress }]),
   ];
   for (const { leg, to } of legs) {
+    if (isVirtualEvmAddress(to)) {
+      // TIP-1022: the registry answers for the ALIAS, which can never carry a
+      // policy, while the transfer is resolved to its master and the master's
+      // policy is what blocks it. The one read this function exists to make is
+      // meaningless here, so it is not made.
+      return {
+        ok: false,
+        leg,
+        reason: 'unreadable',
+        message: `${to} is a virtual address; its receive policy is its master's, which cannot be read.`,
+      };
+    }
     const allowed = await readValidateReceivePolicy(client, check.token, check.payer, to);
     if (allowed === null) {
       return {

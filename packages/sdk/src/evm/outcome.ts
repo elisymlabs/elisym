@@ -25,6 +25,7 @@ import {
   decodeTempoTransferLog,
   listTempoBlockedLogs,
   listTempoLogs,
+  passesHistoryControl,
   readFinalizedBlock,
 } from './logs';
 import { readBlockNumber, readField, readQuantity, readTxHash } from './rpc-read';
@@ -96,8 +97,16 @@ export async function resolveTempoTransferOutcome(
   if (expected.length === 0) {
     throw new Error('resolveTempoTransferOutcome needs at least one expected leg.');
   }
+  // Lowercased ONCE, here. Every hash read off the chain is lowercase, so an
+  // uppercase one from a wallet would match no receipt and no log, and a
+  // non-null receipt can never reach the absence proof: the answer would be
+  // `pending` for ever, for a payment that landed.
+  const hash = readTxHash(options.hash);
+  if (hash === null) {
+    throw new Error(`resolveTempoTransferOutcome needs a transaction hash, not ${options.hash}.`);
+  }
   const receipt = await withAbort(
-    client.request({ method: 'eth_getTransactionReceipt', params: [options.hash] }),
+    client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
     options.signal,
   ).catch(() => undefined);
   // No test can kill this line and none should be written for it: a failed
@@ -108,7 +117,7 @@ export async function resolveTempoTransferOutcome(
     return { state: 'pending' };
   }
   if (receipt !== null) {
-    return fromReceipt(receipt, expected, options.hash);
+    return fromReceipt(receipt, expected, hash);
   }
   // No receipt here proves nothing about the chain - only that THIS backend has
   // not seen it. The deadline and a complete log pass are what prove absence.
@@ -185,7 +194,7 @@ function blockedLeg(
     }
     const leg = expected.find((candidate) => matchesBlocked(decoded.log, candidate));
     if (leg !== undefined) {
-      return { state: 'blocked', leg, claimableBy: claimantOf(decoded.log, leg) };
+      return { state: 'blocked', leg, claimableBy: claimantOf(decoded.log) };
     }
   }
   return null;
@@ -207,10 +216,14 @@ const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
 
 /**
  * Blocked funds are claimable by the receiver's recovery authority, or - when
- * that is the zero address - by whoever sent them.
+ * that is the zero address - by whoever sent them. Both values come off the
+ * guard's own log: a memo leg may have been paid by a relayer, so the leg's
+ * `from` is what we EXPECTED to send it, not necessarily who did.
  */
-function claimantOf(blocked: TempoBlockedLog, leg: TempoLegExpectation): string {
-  return blocked.recoveryAuthority === ZERO_ADDRESS ? leg.from : blocked.recoveryAuthority;
+function claimantOf(blocked: TempoBlockedLog): string {
+  return blocked.recoveryAuthority === ZERO_ADDRESS
+    ? blocked.originator
+    : blocked.recoveryAuthority;
 }
 
 /**
@@ -256,6 +269,25 @@ async function provenUnsent(
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
     if (!guard.complete || guard.candidates.some((log) => matchesBlocked(log, leg))) {
+      return { state: 'pending' };
+    }
+    // An empty window is what a node with pruned logs answers, with no error -
+    // and it is also what "nothing was sent" looks like. The receiver's side
+    // refuses to say `none` without this control, and `unsent` is the more
+    // expensive verdict of the two: it tells the caller to send the money
+    // again.
+    const vouched =
+      (await passesHistoryControl(client, {
+        token: leg.token,
+        edgeBlock: options.floor,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      })) &&
+      (await passesHistoryControl(client, {
+        token: leg.token,
+        edgeBlock: finalized.number,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      }));
+    if (!vouched) {
       return { state: 'pending' };
     }
   }

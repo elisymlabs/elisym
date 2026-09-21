@@ -16,6 +16,19 @@ export const TEMPO_TRANSFER_GUARD = '0xb10c000000000000000000000000000000000000'
  * one.
  */
 export const TEMPO_FEE_SINK = '0xfeec000000000000000000000000000000000000';
+
+/**
+ * Addresses no payment of ours may name. Three are the protocol's own system
+ * accounts and the fourth is the burn address: money sent to any of them is
+ * gone, and nothing this SDK can read would ever report it as delivered - the
+ * fee sink is excluded from every leg match by name.
+ */
+export const TEMPO_UNPAYABLE_ADDRESSES: readonly string[] = [
+  `0x${'0'.repeat(40)}`,
+  TEMPO_POLICY_REGISTRY,
+  TEMPO_TRANSFER_GUARD,
+  TEMPO_FEE_SINK,
+];
 /** `receivePolicy(address)` on the registry: exactly 192 bytes back. */
 export const RECEIVE_POLICY_SELECTOR = '0xe111e611';
 /** `validateReceivePolicy(address,address,address)` on the registry: exactly 64 bytes back. */

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   TEMPO_FEE_SINK,
   TEMPO_POLICY_REGISTRY,
+  TEMPO_TRANSFER_GUARD,
   TRANSFER_BLOCKED_TOPIC,
   TRANSFER_WITH_MEMO_TOPIC,
 } from '../src/evm/constants';
@@ -118,6 +119,34 @@ describe('validateTempoPaymentRequest', () => {
     expect(validateTempoPaymentRequest(request, bounds())?.code).toBe('asset_mismatch');
   });
 
+  it.each([
+    ['the burn address', `0x${'0'.repeat(40)}`],
+    ['the policy registry', TEMPO_POLICY_REGISTRY],
+    ['the transfer guard', TEMPO_TRANSFER_GUARD],
+    ['the network fee sink', TEMPO_FEE_SINK],
+  ])('refuses a payment to %s, which nothing could ever confirm', (_label, recipient) => {
+    const problem = validateTempoPaymentRequest(
+      requestJson({ recipient }),
+      bounds({ card: { recipient, asset: USDCE_TEMPO_MAINNET, jobPriceSubunits: 10_000n } }),
+    );
+    expect(problem?.code).toBe('invalid_recipient_address');
+  });
+
+  it('refuses a fee rate that is not a whole number of basis points', () => {
+    // The fee arithmetic throws on one; this function's contract is to refuse.
+    const request = requestJson({ fee_address: TREASURY, fee_amount: '250' });
+    expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps: -1 }))?.code).toBe(
+      'invalid_fee_params',
+    );
+  });
+
+  it('refuses bounds that name no asset at all, even cast past the type', () => {
+    const castPastTheType = { ...bounds(), card: undefined } as unknown as Parameters<
+      typeof validateTempoPaymentRequest
+    >[1];
+    expect(validateTempoPaymentRequest(requestJson(), castPastTheType)?.code).toBe('invalid_asset');
+  });
+
   it('refuses a recipient the card never named', () => {
     const request = requestJson({ recipient: `0x${'cd'.repeat(20)}` });
     expect(validateTempoPaymentRequest(request, bounds())?.code).toBe('recipient_mismatch');
@@ -197,6 +226,22 @@ describe('validateTempoPaymentRequest', () => {
     );
   });
 
+  it('computes the fee from THIS request amount, at any amount', () => {
+    // Every other fee row pays 10000 at 250 bps, where the fee is 250 - which
+    // a constant would satisfy just as well as the arithmetic.
+    const card = { recipient: RECIPIENT, asset: USDCE_TEMPO_MAINNET, jobPriceSubunits: 999_999n };
+    const at = (amount: string, feeAmount: string) =>
+      validateTempoPaymentRequest(
+        requestJson({ amount, fee_address: TREASURY, fee_amount: feeAmount }),
+        bounds({ protocolFeeBps: 250, card }),
+      );
+    expect(at('400000', '10000')).toBeNull();
+    expect(at('400000', '250')?.code).toBe('fee_amount_mismatch');
+    // And the rounding is UP: 250 bps of 9999 is 249.975.
+    expect(at('9999', '250')).toBeNull();
+    expect(at('9999', '249')?.code).toBe('fee_amount_mismatch');
+  });
+
   it.each([
     ['100000', 99n],
     ['9', 10n],
@@ -245,17 +290,31 @@ describe('validateTempoPaymentRequest', () => {
 });
 
 describe('checkTempoReceivePolicies', () => {
+  /**
+   * Answers the registry's question, and only the RIGHT question: an argument
+   * in the wrong slot turns a refusing destination into permission, so a fake
+   * that keys on the recipient alone would not notice one.
+   */
   function answering(answers: Record<string, string>) {
     return fakeTempoChain({
-      onCall: (to, data) =>
-        to.toLowerCase() === TEMPO_POLICY_REGISTRY
-          ? (answers[`0x${data.slice(-40)}`] ?? YES)
-          : '0x',
+      onCall: (to, data) => {
+        if (to.toLowerCase() !== TEMPO_POLICY_REGISTRY) {
+          return '0x';
+        }
+        const words = data.slice(10).match(/.{64}/g) ?? [];
+        const [token, payer, recipient] = words.map((word) => `0x${word.slice(24)}`);
+        if (words.length !== 3 || token !== USDCE || payer !== PAYER) {
+          return ASKED_THE_WRONG_QUESTION;
+        }
+        return answers[String(recipient)] ?? YES;
+      },
     });
   }
   const YES = `0x${'0'.repeat(63)}1${'0'.repeat(64)}`;
   const NO_SENDER = `0x${'0'.repeat(64)}${'2'.padStart(64, '0')}`;
   const NO_TOKEN = `0x${'0'.repeat(64)}${'1'.padStart(64, '0')}`;
+  /** What a registry asked about some other triple would say: never a yes. */
+  const ASKED_THE_WRONG_QUESTION = `0x${'0'.repeat(64)}${'9'.padStart(64, '0')}`;
 
   it('passes when both destinations accept this token from this payer', async () => {
     const chain = answering({});
@@ -337,6 +396,35 @@ describe('checkTempoReceivePolicies', () => {
     expect(tags).toEqual(['finalized', 'finalized']);
   });
 
+  it('refuses to pay blind when the registry read itself fails', async () => {
+    const chain = fakeTempoChain({
+      onCall: () => {
+        throw new Error('rpc exploded');
+      },
+    });
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+    });
+    expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
+  });
+
+  it('refuses a VIRTUAL destination rather than reading the alias policy', async () => {
+    // TIP-1022: the registry answers for the alias, which can never carry a
+    // policy, while the transfer is resolved to the master and the MASTER's
+    // policy is what blocks it. The answer here is always "open" and always
+    // meaningless.
+    const chain = answering({});
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      token: USDCE,
+      payer: PAYER,
+      recipient: `0x11223344${'fd'.repeat(10)}556677889900`,
+    });
+    expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
+    expect(chain.calls.filter((call) => call.method === 'eth_call')).toHaveLength(0);
+  });
+
   it('does not ask about a fee leg there is none of', async () => {
     const asked: string[] = [];
     const chain = fakeTempoChain({
@@ -364,6 +452,15 @@ describe('resolveTempoTransferOutcome', () => {
   const BLOCKED_BLOCK = Number(BigInt(String(BLOCKED.blockNumber)));
   const BLOCKED_MEMO = '0x626c6f636b65642073656e646572000000000000000000000000000000000000';
 
+  /** The Moderato receipt's blocked leg, as the sender expected to send it. */
+  const BLOCKED_LEG: TempoLegExpectation = {
+    token: PATHUSD,
+    from: '0x90f79bf6eb2c4f870365e785982e1f101e93b906',
+    to: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8',
+    amount: 25_000_000n,
+    memo: BLOCKED_MEMO,
+  };
+
   const legs: TempoLegExpectation[] = [
     { token: USDCE, from: PAYER, to: RECIPIENT, amount: 10_000n, memo: BATCH_MEMO },
     { token: USDCE, from: PAYER, to: TREASURY, amount: 10_000n, memo: BATCH_MEMO },
@@ -375,6 +472,23 @@ describe('resolveTempoTransferOutcome', () => {
       timestamps: { 40_000_000: NOW },
       ...options,
     });
+  }
+
+  /**
+   * Ordinary traffic on the token just below each edge of the scan. Without it
+   * the endpoint cannot be shown to hold this token's history, and `unsent` -
+   * the verdict that tells a caller to send the money again - may not be
+   * reached from an empty window.
+   */
+  function history(token: string, ...edges: number[]) {
+    return edges.map((edge, index) => ({
+      address: token,
+      topics: [`0x${'55'.repeat(32)}`],
+      data: '0x',
+      blockNumber: edge - 50,
+      transactionHash: `0x${String(index + 4).repeat(64)}`,
+      logIndex: 0,
+    }));
   }
 
   it('calls the recorded batch DELIVERED, from its own receipt', async () => {
@@ -490,6 +604,43 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome.state).toBe('delivered');
   });
 
+  it.each([
+    ['one subunit more than the log carries', { amount: 10_001n }],
+    ['another memo', { memo: `0x${'ab'.repeat(32)}` }],
+  ])('does not credit a memo leg that asked for %s', async (_label, changes) => {
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      legs.map((leg) => ({ ...leg, ...changes })),
+      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome.state).toBe('pending');
+  });
+
+  it('does not credit a memo-less leg to a transfer from someone else', async () => {
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs: [GAS_LOG] } } });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ token: PATHUSD, from: `0x${'ab'.repeat(20)}`, to: GAS_RECIPIENT, amount: 696n }],
+      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome.state).toBe('pending');
+  });
+
+  it('ignores a receipt log that names another TRANSACTION', async () => {
+    const logs = (BATCH.logs as Record<string, unknown>[]).map((log) => ({
+      ...log,
+      transactionHash: `0x${'77'.repeat(32)}`,
+    }));
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs } } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
   it('reads a blocked leg out of the receipt, and who may claim it', async () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
@@ -516,6 +667,46 @@ describe('resolveTempoTransferOutcome', () => {
     });
   });
 
+  it.each([
+    ['another receiver', { to: `0x${'cd'.repeat(20)}` }],
+    ['another token', { token: USDCE }],
+    ['another memo', { memo: `0x${'ab'.repeat(32)}` }],
+  ])('does not read a guard log for %s as our blocked leg', async (_label, changes) => {
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ ...BLOCKED_LEG, ...changes }],
+      { hash: BLOCKED_HASH, floor: BLOCKED_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome.state).not.toBe('blocked');
+  });
+
+  it.each([
+    ['another transaction', { transactionHash: `0x${'77'.repeat(32)}` }],
+    ['another block', { blockNumber: '0x1' }],
+  ])('ignores a guard log in the receipt that claims %s', async (_label, changes) => {
+    const logs = (BLOCKED.logs as Record<string, unknown>[]).map((log) =>
+      (log.topics as string[])[0] === TRANSFER_BLOCKED_TOPIC ? { ...log, ...changes } : log,
+    );
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW },
+      receipts: { [BLOCKED_HASH]: { ...BLOCKED, logs } },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, [BLOCKED_LEG], {
+      hash: BLOCKED_HASH,
+      floor: BLOCKED_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome.state).not.toBe('blocked');
+  });
+
   it('calls a REVERTED transaction unsent: it moved nothing and its hash is spent', async () => {
     const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, status: '0x0' } } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
@@ -527,7 +718,10 @@ describe('resolveTempoTransferOutcome', () => {
   });
 
   it('says PENDING while the deadline has not passed, however empty the chain looks', async () => {
-    const chain = chainWith({ receipts: {}, logs: [] });
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+    });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
@@ -537,13 +731,55 @@ describe('resolveTempoTransferOutcome', () => {
   });
 
   it('says UNSENT once the deadline passed and a complete pass finds nothing', async () => {
-    const chain = chainWith({ receipts: {}, logs: [], timestamps: { 40_000_000: NOW + 600 } });
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
     });
     expect(outcome).toEqual({ state: 'unsent', reason: 'deadline_passed' });
+  });
+
+  it('refuses to say unsent on an endpoint that cannot show the token has history', async () => {
+    // A node with pruned logs answers an empty list with no error, which is
+    // exactly what "the transaction never landed" looks like - and here that
+    // reading tells the caller to send the money a second time.
+    const chain = chainWith({ receipts: {}, logs: [], timestamps: { 40_000_000: NOW + 600 } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('will not say unsent while only the SECOND leg is unaccounted for', async () => {
+    // Every expected leg is scanned. A two-transaction payment whose fee leg
+    // landed and whose provider leg did not is not "unsent" - replacing it
+    // would pay the fee twice.
+    const providerLeg = receiptLogs(BATCH).filter(
+      (log) =>
+        log.topics[0] === TRANSFER_WITH_MEMO_TOPIC && log.topics[2]?.endsWith(RECIPIENT.slice(2)),
+    );
+    const chain = chainWith({
+      receipts: {},
+      logs: [...history(USDCE, BATCH_BLOCK - 100, 40_000_000), ...providerLeg],
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [legs[1], legs[0]] as typeof legs,
+      {
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
+    );
+    expect(outcome).toEqual({ state: 'pending' });
   });
 
   it.each([
@@ -554,6 +790,9 @@ describe('resolveTempoTransferOutcome', () => {
       receipts: {},
       timestamps: { 40_000_000: NOW + 600 },
       ...options,
+      // Merged, never replaced: without history at both edges every row below
+      // would answer `pending` for the control's reason instead of its own.
+      logs: [...history(USDCE, BATCH_BLOCK - 100, 40_000_000), ...(options.logs ?? [])],
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
       hash: BATCH_HASH,
@@ -569,7 +808,7 @@ describe('resolveTempoTransferOutcome', () => {
       finalized: 35_790_000,
       timestamps: { 35_790_000: NOW + 600 },
       receipts: {},
-      logs: receiptLogs(BLOCKED),
+      logs: [...history(PATHUSD, BLOCKED_BLOCK - 100, 35_790_000), ...receiptLogs(BLOCKED)],
     });
     const outcome = await resolveTempoTransferOutcome(
       chain.client,
@@ -617,10 +856,11 @@ describe('resolveTempoTransferOutcome', () => {
     ['the guard pass', TRANSFER_BLOCKED_TOPIC],
   ])('refuses to say unsent when %s alone could not finish', async (_label, topic) => {
     // Two separate scans, and each of them has to be complete on its own:
-    // "nothing is on chain" must never rest on a pass that did not run.
+    // "nothing is on chain" must never rest on a pass that did not run. The
+    // history control asks UNFILTERED, so it still answers here.
     const chain = chainWith({
       receipts: {},
-      logs: [],
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
       timestamps: { 40_000_000: NOW + 600 },
       onGetLogs: (call) => (call.topics[0] === topic ? new Error('the node fell over') : undefined),
     });
@@ -648,6 +888,30 @@ describe('resolveTempoTransferOutcome', () => {
       validBefore: NOW - 600,
     });
     expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('reads the hash a wallet reports in ANY case', async () => {
+    // Every hash off the chain is lowercase. An uppercase one matched no
+    // receipt and no log, and a non-null receipt can never reach the absence
+    // proof - so the answer was `pending` for ever, on a payment that landed.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: `0x${BATCH_HASH.slice(2).toUpperCase()}`,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome.state).toBe('delivered');
+  });
+
+  it('refuses something that was never a transaction hash', async () => {
+    const chain = chainWith({});
+    await expect(
+      resolveTempoTransferOutcome(chain.client, legs, {
+        hash: 'the-transaction',
+        floor: 1,
+        validBefore: NOW,
+      }),
+    ).rejects.toThrow(/needs a transaction hash/);
   });
 
   it('refuses to resolve nothing at all', async () => {
