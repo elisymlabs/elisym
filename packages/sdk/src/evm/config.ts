@@ -70,8 +70,10 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-/** Ticket numbers, in the order reads START. Monotonic for the life of the module. */
+/** Ticket numbers, in the order reads ASK THE CHAIN. Monotonic for the life of the module. */
 let writes = 0;
+/** No ticket below this may write: what a `clear` leaves behind for chains it had no entry for. */
+let floor = 0;
 
 /**
  * A monotonic clock, so that a backward system clock cannot make a snapshot
@@ -82,20 +84,33 @@ function monotonicNow(): number {
   return typeof performance === 'undefined' ? Date.now() : performance.now();
 }
 
-/** Replace the entry only from a read that started later than the one there. */
-function writeEntry(caip2: string, entry: CacheEntry): void {
-  const existing = cache.get(caip2);
+/** Replace the entry only from a read that asked the chain later than the one there. */
+function writeEntry(key: string, entry: CacheEntry): void {
+  if (entry.generation < floor) {
+    return;
+  }
+  const existing = cache.get(key);
   if (existing === undefined || existing.generation < entry.generation) {
-    cache.set(caip2, entry);
+    cache.set(key, entry);
   }
 }
 
+/**
+ * One entry per chain AND contract. The module reasons about the endpoint being
+ * the right chain; the contract is the other half of what a snapshot is OF, and
+ * "a new version is a new address" is exactly how this contract is replaced.
+ */
+function cacheKey(caip2: string, contract: string): string {
+  return `${caip2}|${contract}`;
+}
+
 export function clearEvmProtocolConfigCache(): void {
-  // Tombstones rather than a bare clear: a read already in flight holds an
-  // older ticket and must not repopulate a cache the caller just emptied.
-  for (const caip2 of [...cache.keys()]) {
-    cache.set(caip2, { cachedAt: monotonicNow(), generation: ++writes });
-  }
+  // A floor rather than a bare clear: a read already in flight holds an older
+  // ticket and must not repopulate a cache the caller just emptied - including
+  // for a chain this process had no entry for yet, which a per-entry tombstone
+  // could not express.
+  floor = ++writes;
+  cache.clear();
 }
 
 /**
@@ -154,8 +169,13 @@ export async function getEvmProtocolConfig(
     throw new Error(`No elisym config contract is registered for ${chain.caip2}.`);
   }
   const ttlMs = options?.ttlMs ?? CACHE_TTL_MS;
+  const key = cacheKey(chain.caip2, contract);
   let raw: unknown;
   let generation = 0;
+  // Stamped when the chain is ASKED, not when the answer is written: otherwise
+  // the reported age is short by a whole round trip, and the age is the lever a
+  // caller has for imposing its own bound on staleness.
+  let askedAt = monotonicNow();
   try {
     // BEFORE the cache is served. A snapshot is a snapshot of THIS chain, and a
     // client pointed somewhere else must not be served from it - the cache is
@@ -165,7 +185,7 @@ export async function getEvmProtocolConfig(
     const chainId = await withAbort(checkEvmChain(client, chain), options?.signal);
     // Read the map HERE, not before the await: a refusal may have landed while
     // this read was waiting, and a reference taken earlier would not see it.
-    const cached = cache.get(chain.caip2);
+    const cached = cache.get(key);
     if (
       options?.forceRefresh !== true &&
       cached?.config &&
@@ -177,6 +197,7 @@ export async function getEvmProtocolConfig(
       throw new Error('eth_chainId was unreadable');
     }
     generation = ++writes;
+    askedAt = monotonicNow();
     raw = await withAbort(
       client.request({
         method: 'eth_call',
@@ -196,7 +217,7 @@ export async function getEvmProtocolConfig(
     // Stale-while-error covers the TRANSPORT only - and reads the map at the
     // moment it needs it, so a snapshot another read established since this one
     // started is served, and one a refusal removed is not.
-    const fallback = cache.get(chain.caip2);
+    const fallback = cache.get(key);
     if (fallback?.config) {
       return snapshotOf(fallback.config, fallback.cachedAt);
     }
@@ -216,12 +237,12 @@ export async function getEvmProtocolConfig(
     const config = parseConfig(raw, chain.caip2, contract);
     // `ttlMs` is a per-CALL leniency and is never written into the entry, so
     // one caller's long TTL cannot pin the snapshot every other caller reads.
-    writeEntry(chain.caip2, { config, cachedAt: monotonicNow(), generation });
+    writeEntry(key, { config, cachedAt: askedAt, generation });
     // A copy: the cached object is this module's, and a caller that edited the
     // returned one in place would change the fee every other caller reads.
     return { ...config };
   } catch (error) {
-    writeEntry(chain.caip2, { cachedAt: monotonicNow(), generation });
+    writeEntry(key, { cachedAt: askedAt, generation });
     throw new Error(
       `Refusing the elisym config at ${contract} on ${chain.caip2}: ` +
         `${error instanceof Error ? error.message : String(error)}`,

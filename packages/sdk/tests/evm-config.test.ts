@@ -14,6 +14,14 @@ import {
 import { CHAINS } from '../src/payment/chains';
 
 const TREASURY = '716ebf6bef1c3f27ea5c315ecfc60527d97041a2';
+
+/** A second EVM chain with a contract of its own, for the per-chain rules. */
+const SECOND_CHAIN = {
+  ...CHAINS.TEMPO_DEVNET,
+  caip2: 'eip155:31337',
+  evmChainId: 31337,
+  protocolConfig: { address: `0x${'ab'.repeat(20)}` },
+};
 const VIRTUAL = '11223344fdfdfdfdfdfdfdfdfdfd556677889900';
 
 function word(hex: string): string {
@@ -363,24 +371,69 @@ describe('getEvmProtocolConfig', () => {
   });
 
   it('does not let one chain read block another chain from caching', async () => {
+    // A second EVM chain that really has a contract - `TEMPO_MAINNET` has none,
+    // so a test built on it never reaches the client at all.
     const slowOther = {
       request: async ({ method }: { method: string }) => {
         if (method === 'eth_chainId') {
           await new Promise((resolve) => setTimeout(resolve, 20));
-          return '0x1079';
+          return '0x7a69';
         }
         return answer(250);
       },
     } as unknown as Eip1193Client;
-    const other = getEvmProtocolConfig(slowOther, CHAINS.TEMPO_MAINNET).catch(() => undefined);
+    const other = getEvmProtocolConfig(slowOther, SECOND_CHAIN);
     await getEvmProtocolConfig(clientAnswering(answer(250)).client, CHAINS.TEMPO_DEVNET);
-    await other;
+    expect((await other).feeBps).toBe(250);
     const cached = await getEvmProtocolConfig(
       clientAnswering(answer(999)).client,
       CHAINS.TEMPO_DEVNET,
     );
     expect(cached.source).toBe('cache');
     expect(cached.feeBps).toBe(250);
+  });
+
+  it('keeps one chain snapshot out of another chain answer', async () => {
+    await getEvmProtocolConfig(clientAnswering(answer(250)).client, CHAINS.TEMPO_DEVNET);
+    const second = await getEvmProtocolConfig(
+      clientAnswering(answer(300), '0x7a69').client,
+      SECOND_CHAIN,
+    );
+    expect(second.feeBps).toBe(300);
+    expect(second.chain).toBe('eip155:31337');
+  });
+
+  it('does not serve one CONTRACT snapshot for another on the same chain', async () => {
+    // "A new version is a new address" is how this contract is replaced, and a
+    // snapshot is of a chain AND a contract.
+    await getEvmProtocolConfig(clientAnswering(answer(250)).client, CHAINS.TEMPO_DEVNET);
+    const movedContract = {
+      ...CHAINS.TEMPO_DEVNET,
+      protocolConfig: { address: `0x${'cd'.repeat(20)}` },
+    };
+    const fresh = await getEvmProtocolConfig(clientAnswering(answer(300)).client, movedContract);
+    expect(fresh.feeBps).toBe(300);
+    expect(fresh.source).toBe('onchain');
+  });
+
+  it('a clear bars an in-flight read even for a chain it had no entry for', async () => {
+    const slow = {
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') {
+          return '0xa5bf';
+        }
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return answer(250);
+      },
+    } as unknown as Eip1193Client;
+    const inFlight = getEvmProtocolConfig(slow, CHAINS.TEMPO_DEVNET);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    clearEvmProtocolConfigCache();
+    await inFlight;
+    const failing = clientAnswering(new Error('rpc exploded'));
+    await expect(getEvmProtocolConfig(failing.client, CHAINS.TEMPO_DEVNET)).rejects.toThrow(
+      /no cached value exists/,
+    );
   });
 
   it('a cleared cache is not repopulated by a read that was already in flight', async () => {
@@ -426,12 +479,35 @@ describe('getEvmProtocolConfig', () => {
     expect(cached.feeBps).toBe(250);
   });
 
+  it('measures the age from when the chain was ASKED, not from when it answered', async () => {
+    // Otherwise the reported age is short by a whole round trip - and the age
+    // is the lever a caller has for imposing its own bound on staleness.
+    const slowChainId = {
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          return '0xa5bf';
+        }
+        return answer(250);
+      },
+    } as unknown as Eip1193Client;
+    await getEvmProtocolConfig(slowChainId, CHAINS.TEMPO_DEVNET);
+    const cached = await getEvmProtocolConfig(
+      clientAnswering(answer(999)).client,
+      CHAINS.TEMPO_DEVNET,
+    );
+    expect(cached.source).toBe('cache');
+    expect(cached.cachedAgeMs ?? Number.MAX_SAFE_INTEGER).toBeLessThan(30);
+  });
+
   it('reports a real age, and never a negative one', async () => {
     const { client } = clientAnswering(answer(250));
     await getEvmProtocolConfig(client, CHAINS.TEMPO_DEVNET);
     await new Promise((resolve) => setTimeout(resolve, 25));
     const cached = await getEvmProtocolConfig(client, CHAINS.TEMPO_DEVNET);
     expect(cached.cachedAgeMs ?? -1).toBeGreaterThan(15);
+    // And from above: a wall-clock value here would be about 1.79e12.
+    expect(cached.cachedAgeMs ?? Number.MAX_SAFE_INTEGER).toBeLessThan(5_000);
   });
 
   it('a REFUSAL is not undone by a slower good read that was already in flight', async () => {

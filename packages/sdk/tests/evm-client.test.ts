@@ -73,8 +73,18 @@ describe('createJsonRpcClient', () => {
     await expect(client.request({ method: 'eth_chainId' })).rejects.toThrow(message);
   });
 
-  it('tolerates a node that omits the id, as some do on an error', async () => {
-    respond({ jsonrpc: '2.0', result: '0xa5bf' });
+  it.each([
+    ['omits the id, as some do on an error', { jsonrpc: '2.0', result: '0xa5bf' }],
+    // Two deliberate leniencies: a node that stringifies its ids, or one that
+    // sends a null `error` beside a real result, is odd but not hostile - and
+    // refusing it would be an outage, not a safeguard.
+    ['stringifies the id', { jsonrpc: '2.0', id: '1', result: '0xa5bf' }],
+    [
+      'sends a null error beside the result',
+      { jsonrpc: '2.0', id: 1, error: null, result: '0xa5bf' },
+    ],
+  ])('tolerates a node that %s', async (_label, body) => {
+    respond(body);
     const client = createJsonRpcClient(URL);
     expect(await client.request({ method: 'eth_chainId' })).toBe('0xa5bf');
   });
