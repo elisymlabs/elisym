@@ -539,7 +539,13 @@ export type PaymentValidationCode =
   | 'unsupported_chain'
   | 'chain_mismatch'
   /** The request pays the customer's own address, which settles nothing. */
-  | 'self_payment';
+  | 'self_payment'
+  /**
+   * The CALLER's own bounds are unusable - a clock that is not a number, a fee
+   * rate that is not a rate. Not a statement about the request: nothing about
+   * it was judged, because there was nothing to judge it against.
+   */
+  | 'invalid_bounds';
 
 export interface PaymentValidationError {
   code: PaymentValidationCode;

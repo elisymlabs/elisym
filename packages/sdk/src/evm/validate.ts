@@ -219,7 +219,15 @@ export function validateTempoPaymentRequest(
     );
   }
 
+  // `NaN` compares FALSE against every one of the three time gates below, so
+  // an unusable clock would open all of them at once - a request that expired
+  // a day ago and one dated a year ahead both become payable. `Number.isFinite`
+  // does not coerce, so it also catches a string of seconds, which would turn
+  // `now + MIN_PAY_WINDOW_SECS` into string concatenation.
   const now = bounds.nowSecs ?? Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(now)) {
+    return refuse('invalid_bounds', `These bounds carry no usable clock: ${bounds.nowSecs}.`);
+  }
   if (request.created_at > now + MIN_PAY_WINDOW_SECS) {
     return refuse(
       'future_timestamp',
@@ -276,7 +284,7 @@ function checkFee(
     bounds.protocolFeeBps > MAX_EVM_FEE_BPS
   ) {
     return refuse(
-      'invalid_fee_params',
+      'invalid_bounds',
       `The chain answered a protocol fee of ${bounds.protocolFeeBps} bps, which is not a fee.`,
     );
   }
@@ -338,6 +346,17 @@ export async function checkTempoReceivePolicies(
   client: Eip1193Client,
   check: ReceivePolicyCheck,
 ): Promise<ReceivePolicyVerdict> {
+  if (isVirtualEvmAddress(check.payer)) {
+    // The same TIP-1022 split as a virtual destination, on the sending side:
+    // the registry would answer about the alias while the transfer is
+    // evaluated against its master.
+    return {
+      ok: false,
+      leg: 'provider',
+      reason: 'unreadable',
+      message: `${check.payer} is a virtual address; the policy that applies is its master's.`,
+    };
+  }
   const legs: { leg: 'provider' | 'fee'; to: string }[] = [
     { leg: 'provider', to: check.recipient },
     ...(check.feeAddress === undefined ? [] : [{ leg: 'fee' as const, to: check.feeAddress }]),

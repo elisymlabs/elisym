@@ -266,6 +266,12 @@ async function provenUnsent(
       ...(leg.memo === undefined ? { from: leg.from } : { memo: leg.memo }),
       minAmount: leg.amount,
       fromBlock: options.floor,
+      // Ending AT the finalized number is enough only because `valid_before`
+      // is STRICT: a block whose timestamp is at or past it cannot include the
+      // transaction, and the gate above has established that this one is.
+      // Block timestamps do repeat from one block to the next on both
+      // networks, so a relaxed rule would leave blocks above this ceiling
+      // that could still carry the transaction.
       toBlock: finalized.number,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });

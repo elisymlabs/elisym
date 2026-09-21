@@ -163,7 +163,7 @@ describe('validateTempoPaymentRequest', () => {
     // the guard and a fraction by the other, so both halves need a row.
     const request = requestJson({ fee_address: TREASURY, fee_amount: '250' });
     expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps }))?.code).toBe(
-      'invalid_fee_params',
+      'invalid_bounds',
     );
   });
 
@@ -196,13 +196,43 @@ describe('validateTempoPaymentRequest', () => {
     expect(problem).toBeNull();
   });
 
+  it.each([
+    ['not a number', Number.NaN],
+    ['a string of seconds', '1700000000'],
+    ['infinite', Number.POSITIVE_INFINITY],
+  ])('refuses bounds whose clock is %s', (_label, nowSecs) => {
+    // `NaN` compares FALSE against all three time gates at once, so a request
+    // that expired a day ago and one dated a year ahead both become payable;
+    // a string turns `now + MIN_PAY_WINDOW_SECS` into concatenation. The
+    // request is not judged at all - there is nothing to judge it against.
+    const expired = requestJson({ created_at: NOW - 86_400 });
+    expect(
+      validateTempoPaymentRequest(expired, bounds({ nowSecs: nowSecs as unknown as number }))?.code,
+    ).toBe('invalid_bounds');
+  });
+
+  it.each([
+    ['not a number', Number.NaN],
+    ['a string of seconds', '1700000000'],
+    ['infinite', Number.POSITIVE_INFINITY],
+  ])('refuses bounds whose clock is %s', (_label, nowSecs) => {
+    // `NaN` compares FALSE against all three time gates at once, so a request
+    // that expired a day ago and one dated a year ahead both become payable;
+    // a string turns `now + MIN_PAY_WINDOW_SECS` into concatenation. The
+    // request is not judged at all - there is nothing to judge it against.
+    const expired = requestJson({ created_at: NOW - 86_400 });
+    expect(
+      validateTempoPaymentRequest(expired, bounds({ nowSecs: nowSecs as unknown as number }))?.code,
+    ).toBe('invalid_bounds');
+  });
+
   it('refuses a fee rate above the contract’s own ceiling', () => {
     // The config read caps at 1000 bps, and this function is exported: its
     // doc says "the fee the chain says is due", and a caller that read it
     // somewhere else is still a caller.
     const request = requestJson({ fee_address: TREASURY, fee_amount: '9999' });
     expect(validateTempoPaymentRequest(request, bounds({ protocolFeeBps: 9999 }))?.code).toBe(
-      'invalid_fee_params',
+      'invalid_bounds',
     );
   });
 
@@ -487,6 +517,17 @@ describe('checkTempoReceivePolicies', () => {
       token: USDCE,
       payer: PAYER,
       recipient: `0x11223344${'fd'.repeat(10)}556677889900`,
+    });
+    expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
+    expect(chain.calls.filter((call) => call.method === 'eth_call')).toHaveLength(0);
+  });
+
+  it('refuses a VIRTUAL payer without asking either', async () => {
+    const chain = answering({});
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      token: USDCE,
+      payer: `0x11223344${'fd'.repeat(10)}556677889900`,
+      recipient: RECIPIENT,
     });
     expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
     expect(chain.calls.filter((call) => call.method === 'eth_call')).toHaveLength(0);
@@ -1075,6 +1116,97 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome).toEqual({ state: 'pending' });
   });
 
+  it('counts a memo leg PAID BY ANYONE when proving one was never sent', async () => {
+    // A leg found by memo counts as done whoever paid it - a relayer, a
+    // batcher, a friend. Binding the absence scan to the sender we expected
+    // would answer `unsent` on money that is on chain, and send it again.
+    const paidByAnother = receiptLogs(BATCH)
+      .filter((log) => log.topics[0] === TRANSFER_WITH_MEMO_TOPIC)
+      .map((log) => ({
+        ...log,
+        topics: [
+          log.topics[0],
+          `0x${'0'.repeat(24)}${'ab'.repeat(20)}`,
+          log.topics[2],
+          log.topics[3],
+        ],
+      }));
+    const chain = chainWith({
+      receipts: {},
+      logs: [...history(USDCE, BATCH_BLOCK - 100, 40_000_000), ...paidByAnother],
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('does not call a receipt DELIVERED when its success could not be read', async () => {
+    // `status` as the JSON number 1 is a real endpoint shape. Unreadable is
+    // not success, on the sender's side as much as the receiver's.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, status: 1 } } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('reads legs given in CHECKSUMMED form off its own receipt', async () => {
+    // The legs are caller-built and normalised nowhere. 5b-ii builds them from
+    // a browser wallet, whose addresses are EIP-55 - and a leg that matches
+    // nothing answers `pending` for ever on a payment that landed.
+    const checksum = (address: string) => `0x${address.slice(2).toUpperCase()}`;
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      legs.map((leg) => ({
+        ...leg,
+        token: checksum(leg.token),
+        from: checksum(leg.from),
+        to: checksum(leg.to),
+      })),
+      { hash: BATCH_HASH, floor: BATCH_BLOCK - 100, validBefore: NOW + 60 },
+    );
+    expect(outcome.state).toBe('delivered');
+  });
+
+  it('stops on a signal that fires AFTER the receipt read', async () => {
+    // The receipt is not the only read that takes the signal: the absence
+    // proof is four more, and each of them is a scan that would otherwise
+    // keep asking.
+    const controller = new AbortController();
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    // Aborting on the BLOCK read, not the receipt: an abort during the receipt
+    // read is caught by that read's own wrapper and never reaches the scans,
+    // which are the four this row is about.
+    const client = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        const answer = await chain.client.request(args);
+        if (args.method === 'eth_getBlockByNumber') {
+          controller.abort();
+        }
+        return answer;
+      },
+    };
+    const outcome = await resolveTempoTransferOutcome(client, legs, {
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+      signal: controller.signal,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+    expect(chain.getLogsCalls).toEqual([]);
+  });
+
   it('says PENDING when the finalized block comes back as nothing', async () => {
     // Not an error - an answer of the wrong shape, which is what an endpoint
     // that does not serve the `finalized` tag returns. Reading it as a number
@@ -1116,7 +1248,9 @@ describe('resolveTempoTransferOutcome', () => {
     // And it stops at the FIRST read: the verdict is the same either way, so
     // the only thing that says the signal was honoured is the work not done.
     // The scan bails on an aborted signal before asking anything, so counting
-    // log queries would not notice - the block read after the receipt would.
+    // log queries would not notice - the block read after the receipt does.
+    // (This row pins the receipt read alone; the row above pins the four in
+    // the absence proof, by aborting once the receipt has answered.)
     expect(chain.calls.map((call) => call.method)).toEqual(['eth_getTransactionReceipt']);
   });
 
