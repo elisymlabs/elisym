@@ -649,6 +649,31 @@ describe('listTempoBlockedLogs', () => {
     ]);
   });
 
+  it('stays COMPLETE over a guard log about somebody else’s claim kind', async () => {
+    // The production path, which is what the rule is for: round 12 fixed the
+    // decoder and this caller folded `other` straight back into `unreadable`,
+    // so the pass stayed incomplete and `none` and `fee_leg_missing` remained
+    // unreachable for ever. Measured live at the time: the same unpaid request
+    // answered `incomplete_scan` with the floor below one such log and `none`
+    // with the floor one block above it.
+    const mintBounce = blocked.map((log) => ({
+      ...log,
+      data: `${log.data.slice(0, 2 + 12 * 64)}${'1'.padStart(64, '0')}${log.data.slice(2 + 13 * 64)}`,
+    }));
+    const chain = fakeTempoChain({
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: 1 },
+      logs: mintBounce,
+    });
+    const scan = await listTempoBlockedLogs(chain.client, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.complete).toBe(true);
+    expect(scan.candidates).toHaveLength(0);
+  });
+
   it('calls a guard log from OUTSIDE the range it asked for unreadable', async () => {
     // The blocked scan's empty-and-complete answer is what lets a caller say
     // money was never parked with the guard, so its range is a filter like

@@ -295,9 +295,13 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
   // guard pass is what stops `none` and `fee_leg_missing` from ever being
   // reached. The "unreadable is not empty" rule is about FORGERIES; a real
   // mint bounce is not one.
-  if (kind !== null && kind !== CLAIM_KIND_TRANSFER) {
+  if (kind !== CLAIM_KIND_TRANSFER) {
     return { kind: 'other' };
   }
+  // `amount` and `memo` below cannot be absent once `readWords` has answered
+  // fourteen words, and no test can kill either check: they narrow the types
+  // the rest of this function is written against, and saying so here is more
+  // honest than a row that pretends to hold them.
   if (
     amount === null ||
     receiptVersion !== CLAIM_RECEIPT_V1 ||
@@ -625,6 +629,16 @@ export async function listTempoBlockedLogs(
     },
     (entry) => {
       const decoded = decodeTempoBlockedLog(entry);
+      if (decoded.kind === 'other') {
+        // Not ours, and honestly so: the filter names the event, the token and
+        // the receiver, and the claim KIND is in the data where no filter can
+        // reach. The guard bounces mints too, and 28 of those are live on
+        // Moderato - six of them naming this rail's own coin and a receiver
+        // these rows use. "Unreadable is not empty" is a rule about FORGERIES;
+        // a real mint bounce is not one, and treating it as one makes every
+        // terminal-negative verdict unreachable for ever.
+        return 'drop';
+      }
       if (decoded.kind !== 'log') {
         return 'unreadable';
       }

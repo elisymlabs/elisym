@@ -132,13 +132,6 @@ const WORTH_A_SECOND_LOOK = new Set<TempoRefusalCode>([
 ]);
 
 /**
- * Refusals that rest on nothing the endpoint said: the request's own chain and
- * its own coin. Every other terminal answer rests on reads, and a read is only
- * evidence if it came from the chain the request names.
- */
-const NEEDS_NO_ENDPOINT = new Set<TempoRefusalCode>(['wrong_chain', 'unknown_asset']);
-
-/**
  * The unknowns that are about ONE transaction, and so earn the second look for
  * the same reason the refusals in `ABOUT_ONE_TRANSACTION` do.
  *
@@ -173,20 +166,32 @@ async function confirmedOnChain(
   result: TempoVerifyResult,
   signal?: AbortSignal,
 ): Promise<TempoVerifyResult> {
-  const restsOnReads =
-    result.outcome === 'none' ||
-    result.outcome === 'verified' ||
-    (result.outcome === 'refused' && !NEEDS_NO_ENDPOINT.has(result.code));
-  if (!restsOnReads) {
+  // Every answer that reaches here rests on reads. The two refusals that do
+  // not - `wrong_chain` and `unknown_asset`, about the request's own chain and
+  // its own coin - are returned above, before this function is in play.
+  if (result.outcome === 'inconclusive') {
     return result;
   }
-  try {
-    // `checkEvmChain`, not `assertEvmChain`: a MISMATCH discards the answer,
-    // and an endpoint that merely will not say which chain it is does not.
-    // The gate at the top already had a readable answer, and throwing away a
-    // complete look because the last call was rate-limited costs the job.
-    await withAbort(checkEvmChain(client, chain), signal);
-  } catch {
+  // A CREDIT is already bound to this chain twice over - the receipt's own
+  // `blockHash` against the block this endpoint holds, and the fee leg's - so
+  // an endpoint that merely will not say which chain it is does not discard
+  // it: throwing away a complete look because the last call was rate-limited
+  // costs the job, and a mismatch still discards it.
+  //
+  // A NEGATIVE has no such binding. `none` and every refusal rest on EMPTY
+  // `eth_getLogs` answers, which carry no chain identity at all, and the
+  // history control that vouches for them passes equally on the other network
+  // - the token, the guard and the registry are at the same addresses on both.
+  // So a negative needs the chain NAMED, not merely not-contradicted:
+  // discarding one costs a retry, keeping a wrong one costs the payment.
+  const CONTRADICTED = 'contradicted';
+  const named = await withAbort(checkEvmChain(client, chain), signal).catch(() => CONTRADICTED);
+  if (named === CONTRADICTED) {
+    // An endpoint that NAMES another chain discards every answer, credit
+    // included: the reads behind it came from somewhere else.
+    return inconclusive('chain_unreadable');
+  }
+  if (named === null && result.outcome !== 'verified') {
     return inconclusive('chain_unreadable');
   }
   return result;

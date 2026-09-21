@@ -294,28 +294,59 @@ describe('verifyTempoPayment - by hash, over recorded receipts', () => {
     expect(credited.calls.filter((call) => call.method === 'eth_chainId')).toHaveLength(2);
   });
 
-  it('keeps a complete look when the last chain read cannot answer', async () => {
-    // The closing confirmation asks whether the endpoint MOVED. An endpoint
-    // that will not say which chain it is has not moved - and throwing away a
-    // complete look because the last of twenty calls was rate-limited costs
-    // the job for nothing.
-    let answered = 0;
-    const base = settledChain(SINGLE_BLOCK - 100, { receipts: {} });
-    const quiet = {
-      request: async (args: { method: string; params?: readonly unknown[] }) => {
-        if (args.method === 'eth_chainId') {
-          answered += 1;
-          return answered === 1 ? '0x1079' : null;
-        }
-        return base.client.request(args);
+  /** An endpoint that names this chain once and then will not say at all. */
+  function goesQuiet(base: { client: Eip1193Client }) {
+    const state = { asked: 0 };
+    return {
+      state,
+      client: {
+        request: async (args: { method: string; params?: readonly unknown[] }) => {
+          if (args.method === 'eth_chainId') {
+            state.asked += 1;
+            return state.asked === 1 ? '0x1079' : null;
+          }
+          return base.client.request(args);
+        },
       },
     };
-    const result = await verifyTempoPayment(quiet, requestOf({ memo: SINGLE_MEMO }), {
+  }
+
+  it('will not say NOT PAID when the last chain read cannot answer', async () => {
+    // `none` rests on EMPTY `eth_getLogs` answers, and an empty answer carries
+    // no chain identity at all - the history control that vouches for it
+    // passes equally on the other network, because the token, the guard and
+    // the registry are at the same addresses on both. So the chain has to be
+    // NAMED for a negative, not merely not-contradicted: discarding one costs
+    // a retry, keeping a wrong one costs the customer's payment.
+    const quiet = goesQuiet(settledChain(SINGLE_BLOCK - 100, { receipts: {} }));
+    const result = await verifyTempoPayment(quiet.client, requestOf({ memo: SINGLE_MEMO }), {
       fromBlock: SINGLE_BLOCK - 100,
       pollBudgetMs: 0,
     });
-    expect(result).toEqual({ outcome: 'none' });
-    expect(answered).toBe(2);
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
+    expect(quiet.state.asked).toBe(2);
+  });
+
+  it('KEEPS a credit when the last chain read cannot answer', async () => {
+    // The other half of the same rule, and the reason it is not symmetric: a
+    // credit is bound to this chain twice over already - the receipt's own
+    // block hash against the block this endpoint holds, and the fee leg's - so
+    // throwing it away because the last of twenty calls was rate-limited costs
+    // the job for nothing. A MISMATCH still discards it; the row above this
+    // one is that.
+    const quiet = goesQuiet(
+      settledChain(SINGLE_BLOCK - 100, {
+        receipts: { [SINGLE_HASH]: SINGLE },
+        logs: receiptLogs(SINGLE),
+      }),
+    );
+    const result = await verifyTempoPayment(quiet.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: SINGLE_HASH,
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toMatchObject({ outcome: 'verified' });
+    expect(quiet.state.asked).toBe(2);
   });
 
   it('credits nothing from a receipt whose BLOCK this chain does not have', async () => {

@@ -38,6 +38,7 @@ export {
   type TempoBlockedLog,
   type TempoBlockedScan,
   type TempoBlockRef,
+  type TempoHeadRef,
   type TempoLogScan,
   type TempoTransferEvent,
   type TempoTransferLog,
