@@ -31,8 +31,15 @@
 import type { SolanaCluster } from './cluster';
 
 export const JOB_HISTORY_KEY_PREFIX = 'elisym:job-history:';
-/** One marker per identity, so a deleted history is not restored on the next load. */
-export const JOB_HISTORY_MIGRATED_PREFIX = 'elisym:job-history-migrated:';
+/**
+ * ONE marker for the browser, not one per identity: the copy happens for the
+ * first identity after the update and for nobody else. Per identity, the legacy
+ * wallet store would be re-read by every key that ever became active here -
+ * including a provider key pasted on a shared machine, which would inherit a
+ * stranger's purchases, amounts and payment hashes. It also stops a deleted
+ * history from being restored on the next load.
+ */
+export const JOB_HISTORY_MIGRATED_KEY = 'elisym:job-history-migrated';
 
 /** A Nostr public key as this app stores it: 32 bytes of lowercase hex. */
 const IDENTITY_KEY_RE = /^[0-9a-f]{64}$/;
@@ -178,6 +185,40 @@ export function isTerminalJobStatus(status: string): boolean {
 /** Unstamped local entries predate the mainnet flip and are devnet (D13). */
 export function localJobNetwork(job: StoredJob): SolanaCluster {
   return job.network ?? 'devnet';
+}
+
+/**
+ * The legacy wallet-keyed store that was used most recently, or `null`.
+ *
+ * With several of them there is no honest way to attribute the others, and
+ * merging strangers' rows into one list would be worse than leaving them where
+ * they are. A row whose `createdAt` is missing or not a number carries no
+ * evidence of recency and is not counted: `Math.max` over one of those yields
+ * `NaN`, which then loses to nothing and wins for ever.
+ */
+function newestLegacyStore(storage: JobHistoryStorageAdapter): StoredJob[] | null {
+  let best: { jobs: StoredJob[]; newest: number } | null = null;
+  for (const key of storage.keys()) {
+    if (!key.startsWith(JOB_HISTORY_KEY_PREFIX)) {
+      continue;
+    }
+    // Both shapes are written by us, so this tells them apart exactly: a Solana
+    // address base58-encodes to 32-44 characters and is never 64 hex ones.
+    const suffix = key.slice(JOB_HISTORY_KEY_PREFIX.length);
+    if (suffix === '' || IDENTITY_KEY_RE.test(suffix)) {
+      continue;
+    }
+    const jobs = parseJobs(storage.getItem(key));
+    const newest = jobs.reduce(
+      (latest, job) =>
+        Number.isFinite(job.createdAt) && job.createdAt > latest ? job.createdAt : latest,
+      0,
+    );
+    if (newest > 0 && (best === null || newest > best.newest)) {
+      best = { jobs, newest };
+    }
+  }
+  return best === null ? null : best.jobs;
 }
 
 export function createJobHistoryStore(
@@ -347,36 +388,20 @@ export function createJobHistoryStore(
    * load" rule, applied to the other side.
    */
   function migrateLegacyJobHistory(owner: string): void {
-    if (!owner || storage.getItem(`${JOB_HISTORY_MIGRATED_PREFIX}${owner}`) !== null) {
+    if (!owner || storage.getItem(JOB_HISTORY_MIGRATED_KEY) !== null) {
       return;
     }
-    storage.setItem(`${JOB_HISTORY_MIGRATED_PREFIX}${owner}`, String(Date.now()));
-    if (storage.getItem(storageKey(owner)) !== null) {
-      return;
-    }
-    let best: { jobs: StoredJob[]; newest: number } | null = null;
-    for (const key of storage.keys()) {
-      if (!key.startsWith(JOB_HISTORY_KEY_PREFIX)) {
-        continue;
-      }
-      const suffix = key.slice(JOB_HISTORY_KEY_PREFIX.length);
-      // Both shapes are written by us, so this tells them apart exactly: a
-      // Solana address is base58 and never 64 lowercase hex characters.
-      if (suffix === '' || IDENTITY_KEY_RE.test(suffix)) {
-        continue;
-      }
-      const jobs = parseJobs(storage.getItem(key));
-      if (jobs.length === 0) {
-        continue;
-      }
-      const newest = Math.max(...jobs.map((job) => job.createdAt));
-      if (best === null || newest > best.newest) {
-        best = { jobs, newest };
+    if (storage.getItem(storageKey(owner)) === null) {
+      const legacy = newestLegacyStore(storage);
+      if (legacy !== null) {
+        persist(owner, legacy);
       }
     }
-    if (best !== null) {
-      persist(owner, best.jobs);
-    }
+    // LAST, and only once the copy is on disk. `setItem` swallows a quota
+    // failure by design, so a marker written first could record as done a copy
+    // that never landed - and the ledger, which holds the only local record of
+    // what was paid, would be gone for good with no retry.
+    storage.setItem(JOB_HISTORY_MIGRATED_KEY, String(Date.now()));
   }
 
   /**
@@ -391,7 +416,6 @@ export function createJobHistoryStore(
       return;
     }
     storage.removeItem(storageKey(owner));
-    snapshots.delete(owner);
     notify();
   }
 

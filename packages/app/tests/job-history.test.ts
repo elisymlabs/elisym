@@ -10,7 +10,7 @@ import {
   createJobHistoryStore,
   isTerminalJobStatus,
   JOB_HISTORY_KEY_PREFIX,
-  JOB_HISTORY_MIGRATED_PREFIX,
+  JOB_HISTORY_MIGRATED_KEY,
   localJobNetwork,
   type JobHistoryStorageAdapter,
   type StoredJob,
@@ -347,6 +347,46 @@ describe('the one-time move off the wallet-keyed store', () => {
     expect(store.readJobs(IDENTITY)).toEqual([]);
   });
 
+  it('copies to the FIRST identity only - never to a second one', () => {
+    // The legacy store is left on disk, so a per-identity marker would let
+    // every key that ever became active here inherit a stranger's purchases,
+    // with their amounts, agents and payment hashes. A provider key pasted on
+    // a shared machine is exactly that case.
+    const storage = memoryStorage(legacySeed([job({ jobEventId: 'alice-1' })]));
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    store.migrateLegacyJobHistory(OTHER_IDENTITY);
+    expect(store.readJobs(OTHER_IDENTITY)).toEqual([]);
+  });
+
+  it('retries the copy when the write did not land', () => {
+    // `setItem` swallows a quota failure by design. A marker written first
+    // would record as done a copy that never happened, and the ledger - the
+    // only local record of what was paid - would be gone with no retry.
+    const storage = memoryStorage(legacySeed([job({ jobEventId: 'old-1' })]));
+    const full = { ...storage, setItem: () => undefined };
+    createJobHistoryStore(full).migrateLegacyJobHistory(IDENTITY);
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(store.readJobs(IDENTITY).map((entry) => entry.jobEventId)).toEqual(['old-1']);
+  });
+
+  it('does not let a row with no timestamp beat one that has them', () => {
+    // `Math.max` over a missing `createdAt` is NaN, which loses to nothing and
+    // therefore wins for ever - and the wrong wallet's history is copied.
+    const storage = memoryStorage({
+      [`${JOB_HISTORY_KEY_PREFIX}WalletOne`]: JSON.stringify([
+        { jobEventId: 'undated', agentPubkey: 'a', agentName: 'A', capability: 'c', status: 's' },
+      ]),
+      [`${JOB_HISTORY_KEY_PREFIX}WalletTwo`]: JSON.stringify([
+        job({ jobEventId: 'dated', createdAt: 9000 }),
+      ]),
+    });
+    const store = createJobHistoryStore(storage);
+    store.migrateLegacyJobHistory(IDENTITY);
+    expect(store.readJobs(IDENTITY).map((entry) => entry.jobEventId)).toEqual(['dated']);
+  });
+
   it('never overwrites a history the identity already has', () => {
     const storage = memoryStorage({
       ...legacySeed([job({ jobEventId: 'old-1' })]),
@@ -386,11 +426,11 @@ describe('the one-time move off the wallet-keyed store', () => {
     expect(store.readJobs(IDENTITY)).toEqual([]);
   });
 
-  it('marks the identity even when there was nothing to copy', () => {
+  it('marks the browser even when there was nothing to copy', () => {
     const storage = memoryStorage();
     const store = createJobHistoryStore(storage);
     store.migrateLegacyJobHistory(IDENTITY);
-    expect(storage.raw(`${JOB_HISTORY_MIGRATED_PREFIX}${IDENTITY}`)).not.toBeNull();
+    expect(storage.raw(JOB_HISTORY_MIGRATED_KEY)).not.toBeNull();
   });
 
   it('ignores an empty legacy store', () => {
@@ -432,7 +472,7 @@ describe('purgeJobHistory (logout)', () => {
     const store = createJobHistoryStore(storage);
     store.migrateLegacyJobHistory(IDENTITY);
     store.purgeJobHistory(IDENTITY);
-    expect(storage.raw(`${JOB_HISTORY_MIGRATED_PREFIX}${IDENTITY}`)).not.toBeNull();
+    expect(storage.raw(JOB_HISTORY_MIGRATED_KEY)).not.toBeNull();
     store.migrateLegacyJobHistory(IDENTITY);
     expect(store.readJobs(IDENTITY)).toEqual([]);
   });

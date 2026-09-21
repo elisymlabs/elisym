@@ -20,10 +20,15 @@ export type { StoredJob } from '~/lib/jobHistory';
  * it triggers re-enters the render it was called from. Idempotent and marked,
  * so it runs once per identity however many components mount.
  */
-function useJobHistoryMigration(owner: string): void {
+function useJobHistoryMigration(owner: string, providerSession: boolean): void {
   useEffect(() => {
-    migrateLegacyJobHistory(owner);
-  }, [owner]);
+    // A pasted provider key is somebody else's identity on this machine; it has
+    // no claim on what this browser's customer bought. The copy waits for a key
+    // this browser generated - and the marker is written only when it happens.
+    if (!providerSession) {
+      migrateLegacyJobHistory(owner);
+    }
+  }, [owner, providerSession]);
 }
 
 /**
@@ -36,8 +41,8 @@ function useJobHistoryMigration(owner: string): void {
  * the wallet-keyed version gave, now about the thing that actually owns the job.
  */
 export function useJobHistory() {
-  const { publicKey: owner } = useIdentity();
-  useJobHistoryMigration(owner);
+  const { publicKey: owner, providerSession } = useIdentity();
+  useJobHistoryMigration(owner, providerSession);
   const jobs = useSyncExternalStore(subscribeJobHistory, () => readJobs(owner));
 
   const saveJob = useCallback((job: StoredJob) => storeSaveJob(owner, job), [owner]);
@@ -59,7 +64,7 @@ export function useJobHistory() {
 
 /** Live `unseen` badge count for the header (number snapshots are stable). */
 export function useUnseenJobsCount(): number {
-  const { publicKey: owner } = useIdentity();
-  useJobHistoryMigration(owner);
+  const { publicKey: owner, providerSession } = useIdentity();
+  useJobHistoryMigration(owner, providerSession);
   return useSyncExternalStore(subscribeJobHistory, () => unseenJobsCount(owner, SOLANA_CLUSTER));
 }
