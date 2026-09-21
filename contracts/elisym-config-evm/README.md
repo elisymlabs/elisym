@@ -13,6 +13,13 @@ proxy - a new version is a new address in the SDK registry (`CHAINS` in
 - `proposeOwner` / `acceptOwner` / `cancelPendingOwner` - a two-step handover, so the
   successor proves it can sign before it owns anything.
 
+**A published address is permanent for every client already published.** "A new version
+is a new address" means new CLIENTS; a released SDK reads the address it shipped with and
+follows nothing. So while the owner key lives, `setTreasury` on an old contract still
+redirects those clients, and if the key is lost they read a frozen fee and treasury for
+ever with no on-chain way to change it. That is the trade for having no proxy, and it is
+why the registry gains an address only after the read-back in `DEPLOYMENTS.md`.
+
 ## Build and test
 
 [Foundry](https://getfoundry.sh). No dependencies are installed: the tests declare the

@@ -18,6 +18,11 @@ const CONFIG_SELECTOR = '0x79502c55';
 export const MAX_EVM_FEE_BPS = 1000;
 const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
 
+/** The cached object is never handed out, and it says how old it is. */
+function snapshotOf(entry: CacheEntry): EvmProtocolConfig {
+  return { ...entry.config, source: 'cache', cachedAgeMs: Date.now() - entry.cachedAt };
+}
+
 export interface EvmProtocolConfig {
   /** CAIP-2 id of the chain the config was read on. */
   chain: string;
@@ -26,6 +31,12 @@ export interface EvmProtocolConfig {
   /** Lowercase. Meaningful only when `feeBps` is above zero. */
   treasury: string;
   source: 'onchain' | 'cache';
+  /**
+   * How old the snapshot is, on the `cache` path only. Stale-while-error has no
+   * age bound on purpose - a fee that cannot be re-read is better than no fee at
+   * all - so a caller that wants one enforces it from here.
+   */
+  cachedAgeMs?: number;
 }
 
 export interface GetEvmProtocolConfigOptions {
@@ -37,13 +48,24 @@ export interface GetEvmProtocolConfigOptions {
 
 interface CacheEntry {
   config: EvmProtocolConfig;
-  expires: number;
+  cachedAt: number;
 }
 
 const cache = new Map<string, CacheEntry>();
 
+/**
+ * Every read that is about to write takes a number; only the LATEST one may
+ * write, and a refusal takes a number of its own so that nothing older can undo
+ * it. Without this, a refusal and a slower good read racing each other decide
+ * by arrival order: the refusal deletes the snapshot, the older read puts it
+ * back, and the process keeps quoting a fee the chain no longer has while a
+ * process without the overlap refuses outright.
+ */
+let writes = 0;
+
 export function clearEvmProtocolConfigCache(): void {
   cache.clear();
+  writes += 1;
 }
 
 /** Thrown when the endpoint is not the chain it was asked about. Never served from cache. */
@@ -91,36 +113,43 @@ export async function getEvmProtocolConfig(
   if (chain.family !== 'evm' || chain.evmChainId === undefined || contract === undefined) {
     throw new Error(`No elisym config contract is registered for ${chain.caip2}.`);
   }
-  // BEFORE the cache is even looked at. A snapshot is a snapshot of THIS chain,
-  // and a client pointed somewhere else must not be served from it - the cache
-  // is keyed by the chain, not by the endpoint, so nothing else would notice.
-  const chainId = await withAbort(checkEvmChain(client, chain), options?.signal);
-
   const cached = cache.get(chain.caip2);
-  if (options?.forceRefresh !== true && cached && Date.now() < cached.expires) {
-    return { ...cached.config, source: 'cache' };
-  }
-
+  const ttlMs = options?.ttlMs ?? CACHE_TTL_MS;
   let raw: unknown;
+  let generation = 0;
   try {
+    // BEFORE the cache is served. A snapshot is a snapshot of THIS chain, and a
+    // client pointed somewhere else must not be served from it - the cache is
+    // keyed by the chain, not by the endpoint, so nothing else would notice.
+    // Inside the try, so that a caller's deadline during THIS read falls back to
+    // the snapshot exactly as a deadline during the call below does.
+    const chainId = await withAbort(checkEvmChain(client, chain), options?.signal);
+    if (options?.forceRefresh !== true && cached && Date.now() - cached.cachedAt < ttlMs) {
+      return snapshotOf(cached);
+    }
     if (chainId === null) {
       throw new Error('eth_chainId was unreadable');
     }
+    generation = ++writes;
     raw = await withAbort(
       client.request({
         method: 'eth_call',
-        // The NUMBER-versus-tag rule of a log scan, applied here: a lagging
-        // backend resolves a tag to its own older head with no error. On Tempo
-        // `finalized` equals `latest`, so this costs nothing and cannot read a
-        // fee change that a reorg then takes back.
+        // A tag, deliberately, and the conservative one: `finalized` cannot be
+        // reorged away, and on Tempo it equals `latest`. (The scan rule that
+        // forbids a tag is about a RANGE, where a lagging backend silently
+        // narrows the window it searched.)
         params: [{ to: contract, data: CONFIG_SELECTOR }, 'finalized'],
       }),
       options?.signal,
     );
   } catch (error) {
+    // The wrong chain is never stale data - it is the wrong money.
+    if (error instanceof WrongEvmChainError) {
+      throw error;
+    }
     // Stale-while-error covers the TRANSPORT only.
     if (cached) {
-      return { ...cached.config, source: 'cache' };
+      return snapshotOf(cached);
     }
     throw new Error(
       `Failed to read the elisym config contract ${contract} on ${chain.caip2} and no cached value exists. ` +
@@ -135,11 +164,18 @@ export async function getEvmProtocolConfig(
   // has, split by how long each process had been running.
   try {
     const config = parseConfig(raw, chain.caip2, contract);
-    cache.set(chain.caip2, { config, expires: Date.now() + (options?.ttlMs ?? CACHE_TTL_MS) });
+    // A read that another one overtook does not get to write: its answer is the
+    // older of the two. `ttlMs` is a per-CALL leniency and never writes a global
+    // one, so one caller's long TTL cannot pin the snapshot every other caller
+    // in the process reads.
+    if (generation === writes) {
+      cache.set(chain.caip2, { config, cachedAt: Date.now() });
+    }
     // A copy: the cached object is this module's, and a caller that edited the
     // returned one in place would change the fee every other caller reads.
     return { ...config };
   } catch (error) {
+    writes += 1;
     cache.delete(chain.caip2);
     throw new Error(
       `Refusing the elisym config at ${contract} on ${chain.caip2}: ` +

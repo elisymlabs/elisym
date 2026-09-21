@@ -85,13 +85,17 @@ describe('the EVM rail stays in its own entry point', () => {
   // rules missed would land in the root bundle without a word. This asserts the
   // artefact itself whenever there is one to assert.
   it('keeps the rail out of the built root bundle', () => {
-    const bundles = ['dist/index.js', 'dist/index.cjs']
-      .map((name) => join(__dirname, '..', name))
-      .filter((path) => existsSync(path));
-    if (bundles.length === 0) {
-      return;
-    }
-    for (const bundle of bundles) {
+    // A stale bundle is worse than none: it would assert whatever the last build
+    // happened to hold. `bun qa` builds before it tests, so inside the pipeline
+    // this always runs against fresh output.
+    const newestSource = Math.max(...outsideEvm.map((path) => statSync(path).mtimeMs));
+    for (const name of ['dist/index.js', 'dist/index.cjs']) {
+      const bundle = join(__dirname, '..', name);
+      expect(existsSync(bundle), `${name} is missing - run the build before this test`).toBe(true);
+      expect(
+        statSync(bundle).mtimeMs,
+        `${name} is older than src - run the build before this test`,
+      ).toBeGreaterThan(newestSource);
       const built = readFileSync(bundle, 'utf8');
       expect(built).not.toContain(RAIL_MARKER);
       expect(built).not.toContain('viem');

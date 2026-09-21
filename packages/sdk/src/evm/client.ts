@@ -89,6 +89,14 @@ export class EvmRpcError extends Error {
  * its own rejection handler so that losing the race never surfaces as an
  * unhandled one.
  */
+function abandoned(): Error {
+  const error = new Error('The rpc request was abandoned before it answered.');
+  // What every `AbortSignal` consumer looks for, so a caller can tell a deadline
+  // from a node that answered badly.
+  error.name = 'AbortError';
+  return error;
+}
+
 export function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (signal === undefined) {
     return promise;
@@ -96,12 +104,22 @@ export function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise
   promise.catch(() => undefined);
   return new Promise<T>((resolve, reject) => {
     if (signal.aborted) {
-      reject(new Error('The rpc request was abandoned before it answered.'));
+      reject(abandoned());
       return;
     }
-    const onAbort = (): void =>
-      reject(new Error('The rpc request was abandoned before it answered.'));
+    const onAbort = (): void => reject(abandoned());
     signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    // Dropped BEFORE settling, not in a `finally`: one request-scoped signal
+    // outlives many reads, and a listener that is only removed a microtask later
+    // is one a caller can still observe piling up.
+    const onSettled = (value: T): void => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const onFailed = (error: unknown): void => {
+      signal.removeEventListener('abort', onAbort);
+      reject(error);
+    };
+    promise.then(onSettled, onFailed);
   });
 }

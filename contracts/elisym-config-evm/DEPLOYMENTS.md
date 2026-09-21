@@ -15,6 +15,8 @@ in `foundry.toml`, so the same source gives the same bytes).
 | Runtime code keccak256   | `0x85c2c8ec7b81dab08f32be4c4d834e7b45f6d6be5262de88a3118210529d4520`   |
 | `owner()`                | `0x716EBf6Bef1C3f27ea5c315eCfc60527d97041A2` (the devnet deployer key) |
 | `treasury()`             | `0x716EBf6Bef1C3f27ea5c315eCfc60527d97041A2`                           |
+| `pendingOwner()`         | `0x0000000000000000000000000000000000000000` (no handover in flight)   |
+| `MAX_FEE_BPS()`          | 1000                                                                   |
 | `feeBps()` at deployment | 0                                                                      |
 
 The steady-state fee on Moderato is 0: MetaMask does not batch there, so a fee would make
@@ -25,6 +27,8 @@ To check it yourself:
 
 ```bash
 cast call 0x5fbde74a7ddc8133123e824ffbe161a909342b3d "config()(uint16,address)" \
+  --rpc-url https://rpc.moderato.tempo.xyz
+cast call 0x5fbde74a7ddc8133123e824ffbe161a909342b3d "pendingOwner()(address)" \
   --rpc-url https://rpc.moderato.tempo.xyz
 cast keccak "$(cast code 0x5fbde74a7ddc8133123e824ffbe161a909342b3d --rpc-url https://rpc.moderato.tempo.xyz)"
 ```

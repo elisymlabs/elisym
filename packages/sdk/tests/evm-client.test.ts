@@ -121,4 +121,43 @@ describe('withAbort', () => {
       /abandoned before it answered/,
     );
   });
+
+  it('calls it an AbortError, so a caller can tell a deadline from a bad answer', async () => {
+    const error = await withAbort(Promise.resolve(1), AbortSignal.abort()).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect((error as Error).name).toBe('AbortError');
+  });
+
+  it('leaves NO unhandled rejection when the request fails after we stopped waiting', async () => {
+    // The early-abort branch returns before the promise is ever awaited, so
+    // without its own handler the later rejection crashes the process.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    const failing = new Promise<number>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('the node answered far too late')), 10);
+    });
+    await expect(withAbort(failing, AbortSignal.abort())).rejects.toThrow(/abandoned/);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    process.off('unhandledRejection', onUnhandled);
+    expect(unhandled).toEqual([]);
+  });
+
+  it('lets go of its abort listener once the request has settled', async () => {
+    // One request-scoped signal outlives many reads; a listener per read would
+    // pile up until Node starts warning about a leak.
+    const controller = new AbortController();
+    const removals: string[] = [];
+    const signal = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: (name: string) => removals.push(name),
+    } as unknown as AbortSignal;
+    await withAbort(Promise.resolve(1), signal);
+    expect(removals).toEqual(['abort']);
+    controller.abort();
+  });
 });

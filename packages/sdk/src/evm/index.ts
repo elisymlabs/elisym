@@ -5,10 +5,11 @@
  * none are in the root entry (`payment/chains`). The rpc is an EIP-1193
  * `request`, so reading and verifying pull in no EVM library.
  */
-export { createJsonRpcClient, EvmRpcError } from './client';
-export type { Eip1193Client } from './client';
+export { createJsonRpcClient, DEFAULT_RPC_TIMEOUT_MS, EvmRpcError, withAbort } from './client';
+export type { Eip1193Client, JsonRpcClientOptions } from './client';
 export {
   getEvmProtocolConfig,
+  checkEvmChain,
   clearEvmProtocolConfigCache,
   WrongEvmChainError,
   MAX_EVM_FEE_BPS,
