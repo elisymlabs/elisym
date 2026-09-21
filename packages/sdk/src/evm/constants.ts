@@ -44,6 +44,19 @@ export const MAX_LOG_BLOCK_RANGE = 100_000;
  * passed on top of the expiry.
  */
 export const EVM_LATE_PAYMENT_GRACE_SECS = 1800;
+
+/**
+ * How far the chain's clock and the issuer's own may differ before a quote is
+ * refused. Stamping `created_at` from the chain makes the verifier's window
+ * self-consistent under a constant rpc lag - both stamps are chain time, so
+ * the lag cancels - but it removes the only local anchor: an endpoint whose
+ * `finalized` tag lags by more than the window would mint requests already
+ * past their late deadline, and one answering a future timestamp would mint
+ * requests no verdict can ever terminate. Comparing the two catches either,
+ * and neither alone would. Fifteen minutes is far above real finality lag on
+ * Tempo (measured: zero to one second) and far below the 600 s window.
+ */
+export const MAX_ISSUER_CLOCK_SKEW_SECS = 900;
 /** The first width of a history-control window, in blocks. */
 export const HISTORY_CONTROL_START_BLOCKS = 256;
 /** Widening x4 and halving cannot fight each other for longer than this. */

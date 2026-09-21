@@ -17,6 +17,7 @@
  * does. A relayer, a batcher or a friend may have sent it.
  */
 
+import type { ChainConfig } from '../payment/chains';
 import { chainByCaip2 } from '../payment/chains';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
@@ -131,6 +132,45 @@ const WORTH_A_SECOND_LOOK = new Set<TempoRefusalCode>([
 ]);
 
 /**
+ * Refusals that rest on nothing the endpoint said: the request's own chain and
+ * its own coin. Every other terminal answer rests on reads, and a read is only
+ * evidence if it came from the chain the request names.
+ */
+const NEEDS_NO_ENDPOINT = new Set<TempoRefusalCode>(['wrong_chain', 'unknown_asset']);
+
+/**
+ * A terminal answer is checked against the chain a second time.
+ *
+ * The gate above runs once; a verify makes between five and a hundred calls
+ * after it, and an endpoint is free to move between them - a multi-chain
+ * gateway failing over, a browser wallet's user switching network. Measured
+ * live: a Moderato payment whose reads drift to mainnet answers `none` in 45
+ * seconds, terminally, about money sitting on the chain the request names.
+ * The two Tempo networks share the token, the guard and the registry
+ * addresses, so `eth_chainId` is the only thing that tells them apart.
+ *
+ * Only `none` and a refusal that rested on a read pay for the extra call.
+ */
+async function confirmedOnChain(
+  client: Eip1193Client,
+  chain: ChainConfig,
+  result: TempoVerifyResult,
+): Promise<TempoVerifyResult> {
+  const restsOnReads =
+    result.outcome === 'none' ||
+    (result.outcome === 'refused' && !NEEDS_NO_ENDPOINT.has(result.code));
+  if (!restsOnReads) {
+    return result;
+  }
+  try {
+    await assertEvmChain(client, chain);
+  } catch {
+    return inconclusive('chain_unreadable');
+  }
+  return result;
+}
+
+/**
  * Which of two non-verified answers about different candidates says more.
  *
  * Only one rule, because only one can fire: by the time a candidate's answer
@@ -235,7 +275,7 @@ export async function verifyTempoPayment(
   const hash = options.txSignature === undefined ? null : readTxHash(options.txSignature);
   if (hash === null) {
     // No hash, or something that was never one: the memo is the only handle.
-    return verifyWithPolling(context, options);
+    return confirmedOnChain(client, chain, await verifyWithPolling(context, options));
   }
   const byHash = await verifyByHash(context, hash);
   // A hash the node has never seen is an unknown about ONE transaction, and
@@ -248,7 +288,7 @@ export async function verifyTempoPayment(
       ? WORTH_A_SECOND_LOOK.has(byHash.code)
       : byHash.outcome === 'inconclusive' && byHash.reason === 'no_receipt';
   if (!worthASecondLook) {
-    return byHash;
+    return confirmedOnChain(client, chain, byHash);
   }
   // The named transaction did not pay this request, which proves nothing about
   // whether another one did: a wallet reports a bundle id, an approve, or the
@@ -258,6 +298,9 @@ export async function verifyTempoPayment(
   const byMemo = await verifyWithoutHash(context);
   if (byMemo.outcome === 'verified') {
     return byMemo;
+  }
+  if (byMemo.outcome === 'refused') {
+    return confirmedOnChain(client, chain, byMemo);
   }
   // And an unknown must never be buried under a refusal - the same rule the
   // candidate loop applies one level down, and the rule the no-hash path is
@@ -273,15 +316,11 @@ export async function verifyTempoPayment(
   // The scan that FOUND something - a transfer the guard bounced, a fee leg
   // that never came - says where the money went; "that hash is not this
   // payment" says only that somebody named the wrong transaction.
-  // Every refusal the scan can reach is found-something evidence: the codes
-  // that mean "not in this transaction" are converted to unknowns inside it.
-  if (byMemo.outcome === 'refused') {
-    return byMemo;
-  }
+
   // A REFUSAL by hash is evidence and stands. An unknown by hash is not: a
   // complete look that found nothing outranks "I have never seen that hash",
   // or reporting a bundle id would be worse than reporting nothing at all.
-  return byHash.outcome === 'refused' ? byHash : byMemo;
+  return confirmedOnChain(client, chain, byHash.outcome === 'refused' ? byHash : byMemo);
 }
 
 async function verifyWithPolling(

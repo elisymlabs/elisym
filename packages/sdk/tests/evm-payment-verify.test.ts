@@ -14,6 +14,7 @@ import {
   TRANSFER_BLOCKED_TOPIC,
   TRANSFER_WITH_MEMO_TOPIC,
 } from '../src/evm/constants';
+import { MAX_ISSUER_CLOCK_SKEW_SECS } from '../src/evm/constants';
 import { readTempoReceivePolicy } from '../src/evm/policy';
 import { createTempoPaymentRequest } from '../src/evm/request';
 import { verifyTempoPayment } from '../src/evm/verify';
@@ -229,6 +230,44 @@ describe('verifyTempoPayment - by hash, over recorded receipts', () => {
       { txSignature: SINGLE_HASH, fromBlock: SINGLE_BLOCK - 100 },
     );
     expect(result).toEqual({ outcome: 'refused', code: 'unknown_asset' });
+  });
+
+  it.each([
+    ['none', {}],
+    ['a refusal that rested on reads', { [SINGLE_HASH]: { ...SINGLE, status: '0x0' } }],
+  ])('asks the chain again before answering %s', async (label, receipts) => {
+    // The gate runs once and a verify makes five to a hundred calls after it.
+    // An endpoint free to move between them - a gateway failing over, a wallet
+    // switching network - would otherwise answer TERMINALLY about money
+    // sitting on the chain the request names. Measured live at 45 seconds.
+    let answered = 0;
+    const base = settledChain(SINGLE_BLOCK - 100, { receipts });
+    const drifting = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        if (args.method === 'eth_chainId') {
+          answered += 1;
+          return answered === 1 ? '0x1079' : '0xa5bf';
+        }
+        return base.client.request(args);
+      },
+    };
+    const result = await verifyTempoPayment(drifting, requestOf({ memo: SINGLE_MEMO }), {
+      ...(label === 'none' ? {} : { txSignature: SINGLE_HASH }),
+      fromBlock: SINGLE_BLOCK - 100,
+      pollBudgetMs: 0,
+    });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'chain_unreadable' });
+    expect(answered).toBe(2);
+  });
+
+  it('does NOT pay for a second chain read when the answer is not terminal', async () => {
+    // Only `none` and a refusal that rested on a read buy the extra call.
+    const chain = chainWith({ receipts: { [SINGLE_HASH]: SINGLE } });
+    await verifyTempoPayment(chain.client, requestOf({ memo: SINGLE_MEMO }), {
+      txSignature: SINGLE_HASH,
+      fromBlock: SINGLE_BLOCK - 100,
+    });
+    expect(chain.calls.filter((call) => call.method === 'eth_chainId')).toHaveLength(1);
   });
 
   it('says nothing about a payment when the ENDPOINT is another chain', async () => {
@@ -1861,6 +1900,11 @@ describe('readTempoReceivePolicy', () => {
 });
 
 describe('createTempoPaymentRequest', () => {
+  // The issuer compares the chain's clock against its own, so this fixture's
+  // chain runs on real time rather than the fixed `NOW` the verifier rows use
+  // - and five minutes behind it, so that "stamped from the chain" and
+  // "stamped from the machine" are different numbers.
+  const ISSUED_AT = Math.floor(Date.now() / 1000) - 300;
   const MODERATO = CHAINS.TEMPO_DEVNET;
   const asset = PATHUSD_TEMPO;
   const ACCEPTS = `0x${'1'.padStart(64, '0')}${'0'.repeat(64)}`;
@@ -1880,7 +1924,7 @@ describe('createTempoPaymentRequest', () => {
     return fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 36_200_000,
-      timestamps: { 36_200_000: NOW },
+      timestamps: { 36_200_000: ISSUED_AT },
       onCall: (to, data) => {
         if (to.toLowerCase() === MODERATO.protocolConfig.address) {
           return `0x${feeWord}${'0'.repeat(24)}${TREASURY.slice(2)}`;
@@ -1920,6 +1964,30 @@ describe('createTempoPaymentRequest', () => {
     expect(second.request.memo).not.toBe(first.request.memo);
   });
 
+  it.each([
+    ['behind', -MAX_ISSUER_CLOCK_SKEW_SECS - 1],
+    ['ahead of', MAX_ISSUER_CLOCK_SKEW_SECS + 1],
+  ])('refuses to quote when the endpoint clock is far %s this machine', async (_label, drift) => {
+    // Stamping from the chain makes the window self-consistent under a
+    // constant lag, and removes the only local anchor: an endpoint lagging by
+    // more than the window mints requests already past their deadline, and one
+    // answering a future timestamp mints requests no verdict can terminate.
+    // Only the other clock can say the first one is implausible.
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 36_200_000,
+      timestamps: { 36_200_000: Math.floor(Date.now() / 1000) + drift },
+      onCall: () => `0x${'1'.padStart(64, '0')}${'0'.repeat(64)}`,
+    });
+    await expect(
+      createTempoPaymentRequest(chain.client, MODERATO, {
+        recipient: RECIPIENT,
+        amount: 1_000_000n,
+        asset,
+      }),
+    ).rejects.toThrow(/seconds from this machine's clock/);
+  });
+
   it('stamps the request with the chain clock, not the machine it runs on', async () => {
     // Every deadline downstream is judged against a block timestamp, and the
     // issuer has already read one. A provider whose machine is behind chain
@@ -1930,7 +1998,7 @@ describe('createTempoPaymentRequest', () => {
       amount: 1_000_000n,
       asset,
     });
-    expect(request.created_at).toBe(NOW);
+    expect(request.created_at).toBe(ISSUED_AT);
   });
 
   it('carries the fee legs when the chain says there is a fee', async () => {
@@ -2151,7 +2219,7 @@ describe('createTempoPaymentRequest', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 36_200_000,
-      timestamps: { 36_200_000: NOW },
+      timestamps: { 36_200_000: ISSUED_AT },
       onCall: () => '0x',
     });
     await expect(

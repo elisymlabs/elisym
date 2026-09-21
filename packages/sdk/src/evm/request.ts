@@ -22,6 +22,7 @@ import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { caip19ForAsset, PaymentRequestV2Schema } from '../payment/schema-v2';
 import type { Eip1193Client } from './client';
 import { assertEvmChain, getEvmProtocolConfig } from './config';
+import { MAX_ISSUER_CLOCK_SKEW_SECS } from './constants';
 import { readFinalizedBlock } from './logs';
 import { canStrangerReceive } from './policy';
 
@@ -95,6 +96,16 @@ export async function createTempoPaymentRequest(
   const finalized = await readFinalizedBlock(client);
   if (finalized === null) {
     throw new Error(`Could not read the finalized block of ${chain.caip2}.`);
+  }
+  // Two clocks, either of which can be wrong on its own: the request is
+  // stamped from the chain's, and only this machine's can say whether that one
+  // is plausible.
+  const skew = Math.abs(finalized.timestamp - Math.floor(Date.now() / 1000));
+  if (skew > MAX_ISSUER_CLOCK_SKEW_SECS) {
+    throw new Error(
+      `The endpoint's finalized block is ${skew} seconds from this machine's clock; ` +
+        `one of the two is wrong, and every deadline on this request would inherit it.`,
+    );
   }
 
   const config = await getEvmProtocolConfig(client, chain);
