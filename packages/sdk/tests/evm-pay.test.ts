@@ -964,8 +964,18 @@ describe('resolveTempoTransferOutcome', () => {
   function chainWith(options: FakeChainOptions = {}) {
     return fakeTempoChain({
       finalized: 40_000_000,
-      timestamps: { 40_000_000: NOW },
       ...options,
+      // The blocks the recorded receipts sit in are readable by default, the
+      // way a real endpoint holding them would answer: a receipt is bound to
+      // the block this chain holds at its height before any verdict rests on
+      // it, so a row that wants the default path must be able to show it. A
+      // row that passes its own timestamp still wins - the spread is last.
+      timestamps: {
+        40_000_000: NOW,
+        [BATCH_BLOCK]: NOW,
+        [BLOCKED_BLOCK]: NOW,
+        ...options.timestamps,
+      },
     });
   }
 
@@ -1274,6 +1284,48 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome.state).toBe('pending');
   });
 
+  it.each([
+    ['a block this endpoint cannot show', undefined],
+    ['a block whose hash is another chain’s', `0x${'ad'.repeat(32)}`],
+  ])('credits nothing off a receipt bound to %s', async (_label, blockHash) => {
+    // A hash binds a receipt to a transaction, not to a network. The two Tempo
+    // chains share the token, the guard and the registry addresses and their
+    // heights overlap, so a split endpoint can answer with a receipt that is
+    // perfectly real somewhere else. `verify.ts` has bound its reads this way
+    // since 2b-i; the sender's side is the more expensive one to get wrong,
+    // because its terminal verdict is what invites a replacement.
+    const chain = chainWith({
+      receipts: { [BATCH_HASH]: BATCH },
+      ...(blockHash === undefined
+        ? { timestamps: { 40_000_000: NOW, [BATCH_BLOCK]: undefined } }
+        : { blockHashes: { [BATCH_BLOCK]: blockHash } }),
+    } as unknown as FakeChainOptions);
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('will not call a REVERTED receipt unsent until it is bound to this chain', async () => {
+    // The revert branch is terminal too, and it is the one that says a
+    // replacement is safe: somebody else's failed receipt, answered by a split
+    // endpoint, would send the money twice.
+    const chain = chainWith({
+      receipts: { [BATCH_HASH]: { ...BATCH, status: '0x0' } },
+      blockHashes: { [BATCH_BLOCK]: `0x${'ad'.repeat(32)}` },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
   it('does not credit a memo log whose sender IS its destination', async () => {
     // `from == to` proves nothing: an infinite allowance is never decremented,
     // so `transferFromWithMemo(from = X, to = X)` is a free full-amount memo
@@ -1381,7 +1433,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW },
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: BLOCKED },
     });
     const outcome = await resolveTempoTransferOutcome(
@@ -1416,7 +1468,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW },
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: BLOCKED },
     });
     const outcome = await resolveTempoTransferOutcome(
@@ -1442,7 +1494,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW },
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: { ...BLOCKED, logs } },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, [BLOCKED_LEG], {
@@ -1738,7 +1790,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW },
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: { ...BLOCKED, logs: dirty } },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, [BLOCKED_LEG], {
@@ -1758,7 +1810,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW },
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: BLOCKED },
     });
     const shouting = {
@@ -1783,7 +1835,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW },
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: BLOCKED },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, [provider, BLOCKED_LEG], {
@@ -1807,7 +1859,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW },
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: { ...BLOCKED, logs: relayed } },
     });
     const outcome = await resolveTempoTransferOutcome(
@@ -2414,7 +2466,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW },
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: BLOCKED },
     });
     const outcome = await resolveTempoTransferOutcome(
@@ -2653,7 +2705,7 @@ describe('resolveTempoTransferOutcome', () => {
     const chain = fakeTempoChain({
       chainId: '0xa5bf',
       finalized: 35_790_000,
-      timestamps: { 35_790_000: NOW },
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
       receipts: { [BLOCKED_HASH]: BLOCKED },
     });
     const outcome = await resolveTempoTransferOutcome(

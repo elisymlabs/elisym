@@ -34,6 +34,7 @@ import type { TempoBlockedLog, TempoTransferLog } from './logs';
 import {
   decodeTempoBlockedLog,
   decodeTempoTransferLog,
+  isOnThisChain,
   listTempoBlockedLogs,
   listTempoLogs,
   passesHistoryControl,
@@ -208,23 +209,16 @@ function outranks(candidate: TempoVerifyResult, incumbent: TempoVerifyResult): b
 }
 
 /**
- * Is this read from the chain we are reading? A receipt and a log each name the
- * block they are in, and that block's hash is the only value either of them
- * carries that a DIFFERENT chain could not also produce: the two Tempo
- * networks share the token, the guard and the registry addresses, and their
- * heights overlap. So the claim is checked against the block this endpoint
- * holds at that height.
+ * Is this read from the chain we are reading? The rule itself lives in
+ * `logs.ts`, because the sender's resolver binds its own receipt with it too -
+ * one rule, two sides of the rail, one place to fix it.
  */
 async function onThisChain(
   context: VerifyContext,
   blockNumber: number,
   claimed: string | null,
 ): Promise<boolean> {
-  const ownBlock = await readBlockByNumber(context.client, blockNumber);
-  // A read that names NO block is not on this chain either: `null` equals no
-  // block hash a node ever answers, so the comparison settles both cases and
-  // there is no second rule to keep in step with the first.
-  return ownBlock !== null && ownBlock.hash === claimed;
+  return await isOnThisChain(context.client, blockNumber, claimed);
 }
 
 function refused(code: TempoRefusalCode): TempoVerifyResult {

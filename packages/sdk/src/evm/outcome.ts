@@ -26,6 +26,7 @@ import type { TempoBlockedLog, TempoTransferLog } from './logs';
 import {
   decodeTempoBlockedLog,
   decodeTempoTransferLog,
+  isOnThisChain,
   listTempoBlockedLogs,
   listTempoLogs,
   passesHistoryControl,
@@ -285,18 +286,19 @@ export async function resolveTempoTransferOutcome(
     return { state: 'pending' };
   }
   if (receipt !== null) {
-    return fromReceipt(receipt, expected, hash);
+    return await fromReceipt(client, receipt, expected, hash);
   }
   // No receipt here proves nothing about the chain - only that THIS backend has
   // not seen it. The deadline and a complete log pass are what prove absence.
   return await provenUnsent(client, expected, options);
 }
 
-function fromReceipt(
+async function fromReceipt(
+  client: Eip1193Client,
   receipt: unknown,
   expected: readonly TempoLegExpectation[],
   hash: string,
-): TempoTransferOutcome {
+): Promise<TempoTransferOutcome> {
   // The receipt has to be THIS transaction's before anything is read out of
   // it - the revert branch included. A backend that answers with somebody
   // else's failed receipt would otherwise say `unsent`, which is the one
@@ -305,14 +307,29 @@ function fromReceipt(
   if (readTxHash(readField(receipt, 'transactionHash')) !== hash) {
     return { state: 'pending' };
   }
+  const blockNumber = readBlockNumber(readField(receipt, 'blockNumber'));
+  // ...and it has to be a receipt from THIS chain, before any verdict rests on
+  // it - the revert included, for the same reason. A hash binds a receipt to a
+  // transaction but not to a network: the two Tempo chains share the token,
+  // the guard and the registry addresses, and their heights overlap, so a
+  // split endpoint can answer with a receipt that is perfectly real somewhere
+  // else. The provider's verifier has bound its reads this way since 2b-i;
+  // this is the sender's side of the same rule, and it is the more expensive
+  // side to get wrong, because the sender's terminal verdict is what invites
+  // a replacement. A block this endpoint cannot show is not evidence either.
+  if (
+    blockNumber === null ||
+    !(await isOnThisChain(client, blockNumber, readTxHash(readField(receipt, 'blockHash'))))
+  ) {
+    return { state: 'pending' };
+  }
   const status = readQuantity(readField(receipt, 'status'));
   if (status === 0n) {
     // A reverted transaction moved nothing, and its hash can never be reused.
     return { state: 'unsent', reason: 'reverted' };
   }
-  const blockNumber = readBlockNumber(readField(receipt, 'blockNumber'));
   const logs = readField(receipt, 'logs');
-  if (status !== 1n || blockNumber === null || !Array.isArray(logs)) {
+  if (status !== 1n || !Array.isArray(logs)) {
     return { state: 'pending' };
   }
 

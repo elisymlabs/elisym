@@ -395,6 +395,30 @@ export async function readBlockByNumber(
 }
 
 /**
+ * Is this read from the chain we are reading?
+ *
+ * A receipt and a log each name the block they are in, and that block's hash is
+ * the only value either of them carries that a DIFFERENT chain could not also
+ * produce: the two Tempo networks share the token, the guard and the registry
+ * addresses, and their heights overlap. So the claim is checked against the
+ * block this endpoint holds at that height.
+ *
+ * Both sides of the rail read this one rule: the provider's verifier binds
+ * every receipt and log it credits, and the sender binds its own receipt before
+ * any terminal verdict. A read that names NO block is not on this chain either:
+ * `null` equals no block hash a node ever answers, so the comparison settles
+ * both cases and there is no second rule to keep in step with the first.
+ */
+export async function isOnThisChain(
+  client: Eip1193Client,
+  blockNumber: number,
+  claimed: string | null,
+): Promise<boolean> {
+  const ownBlock = await readBlockByNumber(client, blockNumber);
+  return ownBlock !== null && ownBlock.hash === claimed;
+}
+
+/**
  * Tempo answers FOUR different `eth_getLogs` failures with `-32602` and no
  * `data`, so they are told apart by the node's own message and nothing else.
  * Only the two that mean "you asked for too much" are worth retrying smaller;
