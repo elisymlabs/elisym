@@ -156,7 +156,16 @@ describe('verifyTempoPayment - by hash, over recorded receipts', () => {
       outcome: 'verified',
       settlementId: `eip155:4217:${BATCH_HASH}:${BATCH_MEMO}`,
     });
+    // Both legs of the recorded batch carry 10000, so an amount alone cannot
+    // tell them apart - swapping the two survived the entire suite until this
+    // row named the destination each one went to.
+    expect(result.outcome === 'verified' && result.providerLeg.to).toBe(RECIPIENT);
+    expect(result.outcome === 'verified' && result.providerLeg.amount).toBe(10_000n);
+    expect(result.outcome === 'verified' && result.feeLeg?.to).toBe(TREASURY);
     expect(result.outcome === 'verified' && result.feeLeg?.amount).toBe(10_000n);
+    expect(
+      result.outcome === 'verified' && result.providerLeg.logIndex !== result.feeLeg?.logIndex,
+    ).toBe(true);
   });
 
   it.each([
@@ -1286,6 +1295,29 @@ describe('verifyTempoPayment - the fee leg', () => {
       fromBlock: BATCH_BLOCK - 100,
     });
     expect(result).toEqual({ outcome: 'refused', code: 'fee_leg_missing' });
+  });
+
+  it('will not refuse a fee leg when the GUARD lookup could not finish', async () => {
+    // The token lookup's twin, and the one nothing held. `fee_leg_missing` is
+    // terminal and the provider leg is already in the provider's account, so
+    // refusing on an unfinished guard pass fails a paid job over money that
+    // may be parked with the guard rather than missing. The existing row fails
+    // only the TOKEN lookup, so the two could not cover for each other.
+    const providerLogs = receiptLogs(BATCH).filter((log) =>
+      log.topics[2]?.endsWith(RECIPIENT.slice(2)),
+    );
+    const chain = chainWith({
+      timestamps: { 40_000_000: PAST_DEADLINE },
+      receipts: { [BATCH_HASH]: { ...BATCH, logs: providerLogs.map(wire) } },
+      logs: controlTraffic(BATCH_BLOCK - 150, 39_999_900),
+      onGetLogs: (call) =>
+        call.topics[0] === TRANSFER_BLOCKED_TOPIC ? new Error('the node fell over') : undefined,
+    });
+    const result = await verifyTempoPayment(chain.client, feeRequest, {
+      txSignature: BATCH_HASH,
+      fromBlock: BATCH_BLOCK - 100,
+    });
+    expect(result).toEqual({ outcome: 'inconclusive', reason: 'incomplete_scan' });
   });
 
   it('does NOT refuse a fee leg that is merely late: the provider leg is already paid', async () => {

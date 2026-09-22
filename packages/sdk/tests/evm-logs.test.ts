@@ -4,10 +4,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_ISSUER_CLOCK_SKEW_SECS,
+  RECEIVE_POLICY_SELECTOR,
+  TEMPO_POLICY_REGISTRY,
+  TEMPO_TRANSFER_GUARD,
   TRANSFER_BLOCKED_TOPIC,
   TRANSFER_TOPIC,
   TRANSFER_WITH_MEMO_TOPIC,
-  TEMPO_TRANSFER_GUARD,
+  VALIDATE_RECEIVE_POLICY_SELECTOR,
 } from '../src/evm/constants';
 import {
   decodeTempoBlockedLog,
@@ -238,6 +242,29 @@ describe('decodeTempoBlockedLog', () => {
   ])('refuses a guard log %s than 448 bytes', (_label, mutate) => {
     const sized = { ...blockedLogs[0], data: mutate(blockedLogs[0].data) };
     expect(decodeTempoBlockedLog(wireLog(sized)).kind).toBe('unreadable');
+  });
+});
+
+describe('the protocol constants', () => {
+  it('holds the values the chain actually answers to', () => {
+    // Four of these moved with their own rows: every test that touches them
+    // derives its input FROM them, so the comparison was the constant against
+    // itself. Spelled out, a typo in any dies. The two selectors were verified
+    // read-only against the live registry - 0xe111e611 answers 192 bytes,
+    // 0xb72b0c59 answers 64, and a one-nibble change of either reverts - and
+    // `TRANSFER_TOPIC` is keccak("Transfer(address,address,uint256)").
+    expect(TEMPO_POLICY_REGISTRY).toBe('0x403c000000000000000000000000000000000000');
+    expect(RECEIVE_POLICY_SELECTOR).toBe('0xe111e611');
+    expect(VALIDATE_RECEIVE_POLICY_SELECTOR).toBe('0xb72b0c59');
+    expect(TRANSFER_TOPIC).toBe(
+      '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+    );
+  });
+
+  it('bounds the issuer clock skew at fifteen minutes', () => {
+    // Every row that uses it writes `-MAX_ISSUER_CLOCK_SKEW_SECS - 1`, so the
+    // input moves with the constant and 900 could become 900000 unnoticed.
+    expect(MAX_ISSUER_CLOCK_SKEW_SECS).toBe(900);
   });
 });
 
@@ -556,6 +583,36 @@ describe('listTempoLogs', () => {
     const scan = await listTempoLogs(chain.client, { ...base, fromBlock });
     expect(scan.complete).toBe(false);
     expect(scan.candidates).toEqual([]);
+    expect(chain.getLogsCalls).toEqual([]);
+  });
+
+  it.each([
+    ['NaN', Number.NaN],
+    ['absent', undefined],
+  ])('refuses a floor of %s WITHOUT walking, and stays incomplete', async (_label, floor) => {
+    // The case the safe-integer guard is really for, and the one a row nearly
+    // failed to hold. `NaN <= toBlock` is false, so without the guard the walk
+    // runs zero times and `complete` is never cleared: an empty list marked
+    // COMPLETE, which is the shape that licenses "nothing was ever sent". The
+    // negative and fractional floors are refused by the node instead, which is
+    // an accident of `toQuantity` and not a guard.
+    const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 }, logs: [memoLog()] });
+    const scan = await listTempoLogs(chain.client, {
+      ...base,
+      fromBlock: floor as unknown as number,
+    });
+    expect(scan).toEqual({ candidates: [], complete: false, toBlock: 1_000 });
+    expect(chain.getLogsCalls).toEqual([]);
+  });
+
+  it('refuses a GUARD scan floor of NaN the same way', async () => {
+    const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 } });
+    const scan = await listTempoBlockedLogs(chain.client, {
+      token: TOKEN,
+      receiver: RECIPIENT,
+      fromBlock: Number.NaN,
+    });
+    expect(scan).toEqual({ candidates: [], complete: false, toBlock: 1_000 });
     expect(chain.getLogsCalls).toEqual([]);
   });
 

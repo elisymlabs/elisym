@@ -532,11 +532,15 @@ export async function listTempoLogs(
   if (head === null) {
     return { candidates: [], complete: false, toBlock: null };
   }
-  // No test can kill this one, and none should pretend to: a floor of -1 or
-  // 1.5 makes `toQuantity` throw before the client is called at all, so the
-  // scan is incomplete and silent either way. It stays because it says the
-  // rule where the rule belongs, rather than resting on where an encoder
-  // happens to throw. The guard BELOW it is the one a row holds.
+  // A floor that is not a block number is not a floor, and this is the guard
+  // P32 names as the protection. `NaN` is the case that matters and the one
+  // that nearly went without a row: `NaN <= toBlock` is false, so the walk runs ZERO
+  // times and `complete` is never cleared - an empty list marked complete,
+  // which is the shape that licenses "nothing was ever sent". (Round 15's
+  // comment claimed `toQuantity` throws first and no test could kill this.
+  // Measured: `toQuantity(-1)` is `"0x-1"` and `toQuantity(NaN)` is `"0xNaN"`
+  // - neither throws, and the node refuses those two for us by accident. NaN
+  // and `undefined` never reach it at all.)
   if (!Number.isSafeInteger(options.fromBlock) || options.fromBlock < 0) {
     return { candidates: [], complete: false, toBlock: head };
   }
