@@ -85,7 +85,11 @@ export async function getProtocolConfig(
       source: 'onchain',
     };
     cache.set(key, { config, expires: Date.now() + ttl });
-    return config;
+    // A COPY. The cached object is this module's, and the two paths that serve
+    // it already spread; returning it aliased from the fresh path let a caller
+    // that edited the result in place change the fee every other caller in the
+    // process reads for the rest of the TTL.
+    return { ...config };
   } catch (error) {
     if (cached) {
       return { ...cached.config, source: 'cache' };

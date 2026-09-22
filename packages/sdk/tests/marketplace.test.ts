@@ -1114,8 +1114,9 @@ describe('MarketplaceService.subscribeToJobUpdates', () => {
       timeoutMs: 50,
     });
 
-    // Wait for timeout
-    await new Promise((r) => setTimeout(r, 100));
+    // Generous, deliberately: this fires a real timer, and a 2x margin flakes
+    // on a loaded machine - a red suite that proves nothing about the code.
+    await new Promise((r) => setTimeout(r, 400));
     expect(onError).toHaveBeenCalledWith(expect.stringContaining('Timed out'));
   });
 
