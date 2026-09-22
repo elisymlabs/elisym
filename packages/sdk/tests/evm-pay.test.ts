@@ -796,6 +796,22 @@ describe('checkTempoReceivePolicies', () => {
     }
   });
 
+  it('refuses a policy answer whose first word is neither 0 nor 1', async () => {
+    // The word is a flag and only `1` is permission. Pinned against zero only,
+    // a registry answering 2 - a future flag, a different contract at the same
+    // address - would read as a yes and the money would move.
+    const chain = answering({
+      [RECIPIENT]: `0x${'2'.padStart(64, '0')}${'0'.repeat(64)}`,
+    });
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+    });
+    expect(verdict).toMatchObject({ ok: false });
+  });
+
   it('refuses a VIRTUAL payer without asking either', async () => {
     const chain = answering({});
     const verdict = await checkTempoReceivePolicies(chain.client, {
@@ -990,6 +1006,37 @@ describe('resolveTempoTransferOutcome', () => {
       });
       expect(outcome).toEqual({ state: 'pending' });
     }
+  });
+
+  it('credits a memo leg PAID BY A STRANGER, and for MORE than it asked', async () => {
+    // Two deliberate leniencies, both rules this rail states out loud and
+    // neither held by anything: a leg found by memo counts as done whoever
+    // paid it (a relayer, a batcher, a friend), and a transfer that covers the
+    // amount covers it. Making either strict passed the whole suite.
+    const stranger = `0x${'5c'.repeat(20)}`;
+    const generous = (BATCH.logs as Record<string, unknown>[]).map((log) =>
+      (log.topics as string[])[0] === TRANSFER_WITH_MEMO_TOPIC &&
+      (log.topics as string[])[3] === BATCH_MEMO
+        ? {
+            ...log,
+            topics: [
+              (log.topics as string[])[0],
+              topicWord(stranger),
+              (log.topics as string[])[2],
+              (log.topics as string[])[3],
+            ],
+            data: `0x${25_000n.toString(16).padStart(64, '0')}`,
+          }
+        : log,
+    );
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs: generous } } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, [legs[0]], {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toMatchObject({ state: 'delivered' });
   });
 
   it('calls the recorded batch DELIVERED when the caller holds its memo in UPPER case', async () => {
@@ -1316,6 +1363,71 @@ describe('resolveTempoTransferOutcome', () => {
     });
     expect(outcome).toEqual({ state: 'unsent', reason: 'deadline_passed' });
   });
+
+  it.each([
+    ['the transfer pass', TRANSFER_WITH_MEMO_TOPIC],
+    ['the guard pass', TRANSFER_BLOCKED_TOPIC],
+  ])(
+    'proves the absence up to the block it READ, not one a second read answers, on %s',
+    async (_label, topic) => {
+      // `provenUnsent` reads `finalized` once and hands that number to both
+      // passes as their ceiling. Both scans take `toBlock` as optional and
+      // default it to "the finalized number read now", so dropping either line
+      // reads as redundant - and costs the customer the payment. A second read
+      // can land on a lagging backend behind the same load balancer that
+      // accepted the broadcast, which is the actor this file's own header
+      // names. Then the pass never looks at the blocks between the two heads,
+      // comes back complete and empty, and answers `unsent`: send it again.
+      const lagging = 39_999_000;
+      const inTheGap = 39_999_500;
+      const parked = guardLogsOf(BLOCKED).map((log) => ({
+        ...log,
+        blockNumber: inTheGap,
+        topics: [
+          TRANSFER_BLOCKED_TOPIC,
+          topicWord(USDCE),
+          topicWord(RECIPIENT),
+          ...(log.topics as string[]).slice(3),
+        ],
+      }));
+      const evidence =
+        topic === TRANSFER_WITH_MEMO_TOPIC
+          ? [memoLogOf(RECIPIENT, BATCH_MEMO, 10_000n, inTheGap)]
+          : parked;
+      const base = chainWith({
+        receipts: {},
+        logs: [...history(USDCE, BATCH_BLOCK - 100, 40_000_000), ...evidence],
+        timestamps: { 40_000_000: NOW + 600, [lagging]: NOW + 600 },
+      });
+      let heads = 0;
+      const drifting = {
+        request: async (args: { method: string; params?: readonly unknown[] }) => {
+          if (args.method === 'eth_getBlockByNumber' && args.params?.[0] === 'finalized') {
+            heads += 1;
+            if (heads > 1) {
+              // A well-formed head, just an older one - otherwise the scan
+              // answers "incomplete" and the ceiling is never under test.
+              return {
+                number: `0x${lagging.toString(16)}`,
+                timestamp: `0x${(NOW + 600).toString(16)}`,
+                hash: `0x${'5a'.repeat(32)}`,
+              };
+            }
+          }
+          return base.client.request(args);
+        },
+      };
+      const outcome = await resolveTempoTransferOutcome(drifting, [legs[0]], {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      });
+      expect(outcome).toEqual({ state: 'pending' });
+      // One read, handed to both passes: a second would be a second answer.
+      expect(heads).toBe(1);
+    },
+  );
 
   it('still says UNSENT with a stranger’s memo and a SMALLER transfer in the window', async () => {
     // Two decoys the scan must not count, both to our own destinations. One
