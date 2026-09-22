@@ -9,6 +9,7 @@ import { checkBuyAffordability, checkSelfPayment } from '~/lib/balanceCheck';
 import { resolvePaymentAsset } from '~/lib/cardAsset';
 import { SOLANA_CLUSTER } from '~/lib/cluster';
 import { formatCardPriceLabel } from '~/lib/formatPrice';
+import { offSolanaTip, paysOffSolana as paysOffSolanaChain } from '~/lib/webPayable';
 
 interface Args {
   card: CapabilityCard;
@@ -29,6 +30,8 @@ interface Args {
 export interface JobGate {
   isDisabled: boolean;
   tip: string | null;
+  /** The card is priced on a chain this app cannot pay yet: nothing here clears it. */
+  paysOffSolana: boolean;
   isFree: boolean;
   isStatic: boolean;
   isOwn: boolean;
@@ -90,6 +93,9 @@ export function useJobGating({
   const effectiveInput = fileOnly ? '' : input;
   const price = card.payment?.job_price ?? 0;
   const isFree = price === 0;
+  // One rule for every send surface, in `lib/webPayable` - see it for why the
+  // chain is a gate at all and why its name is never interpolated.
+  const paysOffSolana = paysOffSolanaChain(card);
   // The provider rejects a file input on a zero-price skill before payment, so a
   // free + file-input card is unusable from the web - block it (gate on presence).
   const freeFileBlocked = isFree && needsFileInput;
@@ -141,6 +147,7 @@ export function useJobGating({
 
   const isDisabled =
     buying ||
+    paysOffSolana ||
     freeFileBlocked ||
     !relaysConnected ||
     // Text cards require text; file cards require a file (text is an optional note,
@@ -158,7 +165,12 @@ export function useJobGating({
 
   let tip: string | null = null;
   if (!buying) {
-    if (freeFileBlocked) {
+    // First, because it is the one gate nothing on this screen can clear:
+    // connecting a wallet, waiting for the agent or shortening the input
+    // changes none of it.
+    if (paysOffSolana) {
+      tip = offSolanaTip(card);
+    } else if (freeFileBlocked) {
       tip = 'File inputs require a paid capability - this one is free.';
     } else if (!relaysConnected) {
       tip = 'Connecting to relays…';
@@ -180,6 +192,7 @@ export function useJobGating({
   return {
     isDisabled,
     tip,
+    paysOffSolana,
     isFree,
     isStatic,
     isOwn,
@@ -194,6 +207,9 @@ export function useJobGating({
     inputTooLarge,
     priceLabel,
     gasFeeLamports,
-    needsWalletConnect: !isFree && !publicKey,
+    // A wallet cannot be the ask when connecting one would change nothing:
+    // the button must keep saying why it is dead, not offer a step that leads
+    // back to the same refusal.
+    needsWalletConnect: !isFree && !publicKey && !paysOffSolana,
   };
 }
