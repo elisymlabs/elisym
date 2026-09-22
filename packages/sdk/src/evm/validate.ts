@@ -46,7 +46,7 @@ export const MIN_PAY_WINDOW_SECS = 120;
  *
  * `assetKey` interpolates the mint verbatim, which is right for a base58 mint
  * and wrong for a hex one. A card or a session asset built from an explorer
- * value or from `getAddress()` carries a CHECKSUMMED mint, and comparing it
+ * value or from `getAddress()` carries a mint in EIP-55, and comparing that
  * verbatim refuses a perfectly good request with a message that says the two
  * coins differ while spelling the same one twice. A mint this rail cannot read
  * as an address is left exactly as it came.
@@ -602,4 +602,3 @@ export async function checkTempoReceivePolicies(
   }
   return { ok: true };
 }
-
