@@ -713,6 +713,34 @@ describe('listTempoBlockedLogs', () => {
     expect(scan.candidates).toHaveLength(0);
   });
 
+  it.each([
+    ['an entry that is not a log at all', () => ({ nonsense: true })],
+    [
+      'an entry under ANOTHER topic',
+      (log: FakeLog) =>
+        wireLog({ ...log, topics: [`0x${'11'.repeat(32)}`, ...log.topics.slice(1)] }),
+    ],
+  ])('calls %s unreadable, not somebody else’s', async (_label, mangle) => {
+    // Round 14 settled the emitter and the topic in the SCAN, before the
+    // decode, so that `other` means exactly one thing. Only the emitter clause
+    // got a row; these are its two siblings, and the rule is the same - the
+    // scan asked for one address under one topic, so anything else in the
+    // answer is the node answering a question it was not asked.
+    const chain = fakeTempoChain({ finalized: 35_790_000, timestamps: { 35_790_000: 1 } });
+    const answering = {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getLogs'
+          ? blocked.map((log) => mangle(log))
+          : chain.client.request(args),
+    };
+    const scan = await listTempoBlockedLogs(answering, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.complete).toBe(false);
+  });
+
   it('calls a guard log from ANOTHER emitter unreadable, not somebody else’s', async () => {
     // The scan asked the guard's address under one topic. Anything else in the
     // answer is the node answering a question it was not asked - the same

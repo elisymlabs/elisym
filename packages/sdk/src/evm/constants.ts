@@ -54,7 +54,12 @@ export const EVM_LATE_PAYMENT_GRACE_SECS = 1800;
  * past their late deadline, and one answering a future timestamp would mint
  * requests no verdict can ever terminate. Comparing the two catches either,
  * and neither alone would. Fifteen minutes is far above real finality lag on
- * Tempo (measured: zero to one second) and far below the 600 s window.
+ * Tempo (measured: zero to one second). It is NOT below the payment window -
+ * `DEFAULTS.PAYMENT_EXPIRY_SECS` is 600 s, so this is one and a half times it -
+ * and that is survivable only because nothing downstream orders the two: the
+ * verifier's own lateness is covered by the 1800 s grace, and a request minted
+ * against a skewed clock is refused on the CUSTOMER's side by the expiry gate
+ * before any money moves.
  */
 export const MAX_ISSUER_CLOCK_SKEW_SECS = 900;
 /** The first width of a history-control window, in blocks. */

@@ -289,12 +289,15 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
   const recipient = readAddressWord(words[BLOCKED_WORDS.recipient]);
   const memo = words[BLOCKED_WORDS.memo];
   // A claim of another KIND is somebody else's event, not a malformed one:
-  // the guard emits `TransferBlocked` for a bounced MINT too, and 28 of those
-  // are on Moderato today - one naming the registry coin and a receiver this
-  // suite uses. Unreadable would make the pass incomplete, and an incomplete
-  // guard pass is what stops `none` and `fee_leg_missing` from ever being
-  // reached. The "unreadable is not empty" rule is about FORGERIES; a real
-  // mint bounce is not one.
+  // the guard emits `TransferBlocked` for a bounced MINT too, and over the
+  // whole Moderato chain 1057 of its 2298 guard logs are exactly that - 231 of
+  // them on the registry coin to a receiver this suite uses. Unreadable would
+  // make the pass incomplete, and an incomplete guard pass is what stops
+  // `none` and `fee_leg_missing` from ever being reached. The "unreadable is
+  // not empty" rule is about FORGERIES; a real mint bounce is not one. Every
+  // one of those 1057 carries a ZERO memo word, which is the second and
+  // independent reason dropping them can never hide a leg: a leg is bound to
+  // its request by a random memo, and these carry none.
   if (kind !== CLAIM_KIND_TRANSFER) {
     return { kind: 'other' };
   }
@@ -529,6 +532,11 @@ export async function listTempoLogs(
   if (head === null) {
     return { candidates: [], complete: false, toBlock: null };
   }
+  // No test can kill this one, and none should pretend to: a floor of -1 or
+  // 1.5 makes `toQuantity` throw before the client is called at all, so the
+  // scan is incomplete and silent either way. It stays because it says the
+  // rule where the rule belongs, rather than resting on where an encoder
+  // happens to throw. The guard BELOW it is the one a row holds.
   if (!Number.isSafeInteger(options.fromBlock) || options.fromBlock < 0) {
     return { candidates: [], complete: false, toBlock: head };
   }
@@ -653,11 +661,12 @@ export async function listTempoBlockedLogs(
       const decoded = decodeTempoBlockedLog(entry);
       if (decoded.kind === 'other') {
         // Not ours, and honestly so: the filter names the event, the token and
-        // the receiver, and the claim KIND is in the data where no filter can
-        // reach. The guard bounces mints too, and 28 of those are live on
-        // Moderato - six of them naming this rail's own coin and a receiver
-        // these rows use. "Unreadable is not empty" is a rule about FORGERIES;
-        // a real mint bounce is not one, and treating it as one makes every
+        // the receiver, and neither the claim KIND nor the body's recipient is
+        // reachable by a filter - both are in the data. Over the whole Moderato
+        // chain 1057 of 2298 guard logs are bounced MINTS and 92 name a
+        // TIP-1022 alias the master resolves; all of them carry a zero memo
+        // word. "Unreadable is not empty" is a rule about FORGERIES; neither of
+        // these is one, and treating them as forgeries makes every
         // terminal-negative verdict unreachable for ever.
         return 'drop';
       }
