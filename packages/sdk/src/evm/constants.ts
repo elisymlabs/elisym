@@ -17,6 +17,9 @@ export const TEMPO_TRANSFER_GUARD = '0xb10c000000000000000000000000000000000000'
  */
 export const TEMPO_FEE_SINK = '0xfeec000000000000000000000000000000000000';
 
+/** Twenty zero bytes: the burn address, and the `recoveryAuthority` that means "the originator". */
+export const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
+
 /** The TIP-1022 address registry precompile, live on mainnet. */
 export const TEMPO_ADDRESS_REGISTRY = '0xfdc0000000000000000000000000000000000000';
 
@@ -28,7 +31,7 @@ export const TEMPO_ADDRESS_REGISTRY = '0xfdc000000000000000000000000000000000000
  * delivered - the fee sink is excluded from every leg match by name.
  */
 export const TEMPO_UNPAYABLE_ADDRESSES: readonly string[] = [
-  `0x${'0'.repeat(40)}`,
+  ZERO_ADDRESS,
   TEMPO_POLICY_REGISTRY,
   TEMPO_TRANSFER_GUARD,
   TEMPO_FEE_SINK,

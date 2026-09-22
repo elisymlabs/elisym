@@ -21,7 +21,12 @@ import { isVirtualEvmAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
 import { checkEvmChain, WrongEvmChainError } from './config';
-import { EARLIEST_TEMPO_SECONDS, LATEST_TEMPO_SECONDS, TEMPO_FEE_SINK } from './constants';
+import {
+  EARLIEST_TEMPO_SECONDS,
+  LATEST_TEMPO_SECONDS,
+  TEMPO_FEE_SINK,
+  ZERO_ADDRESS,
+} from './constants';
 import type { TempoBlockedLog, TempoTransferLog } from './logs';
 import {
   decodeTempoBlockedLog,
@@ -447,8 +452,6 @@ function matchesBlocked(blocked: TempoBlockedLog, leg: TempoLegExpectation): boo
     ? sameAddress(blocked.originator, leg.from)
     : sameWord(blocked.memo, leg.memo);
 }
-
-const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
 
 /**
  * Blocked funds are claimable by the receiver's recovery authority, or - when

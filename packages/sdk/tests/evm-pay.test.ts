@@ -517,6 +517,18 @@ describe('validateTempoPaymentRequest', () => {
     expect(problem?.code).toBe('asset_mismatch');
   });
 
+  it('refuses a card whose asset names a FOREIGN mint on the agreed coin', () => {
+    // Every card asset in this file comes from the registry, where the token
+    // slug already determines the mint - so the mint half of the comparison
+    // never decided anything and could be dropped from the key entirely.
+    const impostor = { ...USDCE_TEMPO_MAINNET, mint: `0x20c0${'ab'.repeat(18)}` };
+    const problem = validateTempoPaymentRequest(
+      requestJson(),
+      bounds({ card: { recipient: RECIPIENT, asset: impostor, jobPriceSubunits: 10_000n } }),
+    );
+    expect(problem?.code).toBe('asset_mismatch');
+  });
+
   it('accepts a card whose mint is spelled in another case', () => {
     // The last address comparison in this file that was case-sensitive. A card
     // built from an explorer value or `getAddress()` carries a checksummed
@@ -529,6 +541,15 @@ describe('validateTempoPaymentRequest', () => {
         bounds({ card: { recipient: RECIPIENT, asset: shouted, jobPriceSubunits: 10_000n } }),
       ),
     ).toBeNull();
+  });
+
+  it('refuses a payer spelled 0X, the way the policy check does', () => {
+    // The two halves of this gate must accept the same spellings. Lowercasing
+    // here while the other side anchors on a literal `0x` let such a payer
+    // clear the validator and then fail the policy check for ever.
+    expect(
+      validateTempoPaymentRequest(requestJson(), bounds({ payer: `0X${PAYER.slice(2)}` }))?.code,
+    ).toBe('invalid_bounds');
   });
 
   it.each([
@@ -769,7 +790,9 @@ describe('checkTempoReceivePolicies', () => {
       reason: 'unreadable',
       message: 'This policy check was handed something that is not an address.',
     });
-    expect(chain.calls.filter((call) => call.method === 'eth_call')).toHaveLength(0);
+    // "Before any read" means all of them: the gate runs ahead of the chain
+    // confirmation too, so the client is never touched.
+    expect(chain.calls).toEqual([]);
   });
 
   it('refuses an unpayable destination spelled in another case', async () => {
@@ -1576,7 +1599,26 @@ describe('resolveTempoTransferOutcome', () => {
         validBefore: NOW + 60,
       },
     );
-    expect(outcome.state).not.toBe('blocked');
+    expect(outcome.state).toBe('pending');
+    // The control its two siblings carry: the unmodified guard log on the same
+    // chain object IS read as ours, so `pending` above is the rule refusing a
+    // stranger's log and not a receipt path that read nothing.
+    const pristine = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    expect(
+      (
+        await resolveTempoTransferOutcome(pristine.client, [BLOCKED_LEG], {
+          chain: CHAINS.TEMPO_DEVNET,
+          hash: BLOCKED_HASH,
+          floor: BLOCKED_BLOCK - 100,
+          validBefore: NOW + 60,
+        })
+      ).state,
+    ).toBe('blocked');
   });
 
   it('does not read a GUARD log from another block as our blocked leg', async () => {
@@ -1900,6 +1942,29 @@ describe('resolveTempoTransferOutcome', () => {
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
     });
+    expect(outcome).toEqual({ state: 'unsent', reason: 'deadline_passed' });
+  });
+
+  it('proves a WITHDRAWAL never went out, not only a payment', async () => {
+    // Every other `unsent` row uses the two memo legs, so the memo-LESS half
+    // of the virtual-address guard could be widened from `&&` to `||` and the
+    // suite stayed green - which would make every withdrawal `pending` for
+    // ever, and 4a could never tell its user the money never left.
+    const chain = chainWith({
+      receipts: {},
+      logs: history(PATHUSD, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ token: PATHUSD, from: PAYER, to: RECIPIENT, amount: 696n }],
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
+    );
     expect(outcome).toEqual({ state: 'unsent', reason: 'deadline_passed' });
   });
 
@@ -3000,6 +3065,40 @@ describe('resolveTempoTransferOutcome', () => {
     });
     expect(outcome).toEqual({ state: 'pending' });
     expect(chain.getLogsCalls).toEqual([]);
+  });
+
+  it('stops after the first scan chunk when the signal fires during it', async () => {
+    // The sibling above aborts before any scan runs; this one aborts DURING
+    // the first chunk, so it pins that the scan itself takes the signal rather
+    // than only the reads before it. The guard pass and the two history
+    // controls take it too, but an abort can never be observed there: the
+    // scan that aborted returns incomplete and `provenUnsent` answers
+    // `pending` before the next read starts (recorded as P55).
+    const controller = new AbortController();
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const client = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        const answer = await chain.client.request(args);
+        if (args.method === 'eth_getLogs') {
+          controller.abort();
+        }
+        return answer;
+      },
+    };
+    const outcome = await resolveTempoTransferOutcome(client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+      signal: controller.signal,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+    // One chunk, and then nothing: no guard pass, no control, no second leg.
+    expect(chain.getLogsCalls).toHaveLength(1);
   });
 
   it('says PENDING when the finalized block comes back as nothing', async () => {

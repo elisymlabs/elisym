@@ -21,7 +21,7 @@
 
 import type { Asset } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
-import { isEvmWireAddress, isVirtualEvmAddress, normalizeEvmAddress } from '../payment/chains';
+import { isVirtualEvmAddress, normalizeEvmAddress } from '../payment/chains';
 import { calculateProtocolFeeSubunits } from '../payment/fee-subunits';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
@@ -298,8 +298,13 @@ export function validateTempoPaymentRequest(
       `${unpayable} is a protocol address; a payment to it is not a payment.`,
     );
   }
-  const payer = bounds.payer.toLowerCase();
-  if (!isEvmWireAddress(payer) || isVirtualEvmAddress(payer)) {
+  // Normalized through the same helper the async half uses, so the two halves
+  // of this gate accept exactly the same spellings: lowercasing here while the
+  // other side anchors on a literal `0x` let a `0X` payer clear the validator
+  // and then fail the policy check for ever - a refusal either way, but one
+  // the customer could never act on.
+  const payer = normalizeEvmAddress(bounds.payer) ?? '';
+  if (payer === '' || isVirtualEvmAddress(payer)) {
     // The CALLER's own address, so the caller's own code: telling a customer
     // whose wallet address is malformed that the PROVIDER named a bad
     // recipient is a lie about which address is wrong, and it sends them
