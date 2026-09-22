@@ -17,12 +17,14 @@
  * does. A relayer, a batcher or a friend may have sent it.
  */
 
+import type { ChainConfig } from '../payment/chains';
 import { chainByCaip2 } from '../payment/chains';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
-import { assertEvmChain, WrongEvmChainError } from './config';
+import { monotonicNow } from './clock';
+import { assertEvmChain, checkEvmChain } from './config';
 import {
   EVM_LATE_PAYMENT_GRACE_SECS,
   TEMPO_LIVE_NOHASH_BUDGET_MS,
@@ -106,14 +108,124 @@ interface VerifyContext {
  * prove nothing about whether another one paid. Everything else is evidence
  * that stands on its own, and looking again costs a second scan for nothing.
  */
-const ABOUT_ONE_TRANSACTION = new Set<TempoRefusalCode>(['no_provider_leg', 'reverted']);
-
-/** The reasons that mean "I could not look", as opposed to "I looked and it is not due yet". */
-const COULD_NOT_LOOK = new Set<TempoInconclusiveReason>([
-  'incomplete_scan',
-  'chain_unreadable',
-  'control_failed',
+const ABOUT_ONE_TRANSACTION = new Set<TempoRefusalCode>([
+  'no_provider_leg',
+  'reverted',
+  // "I could not read that receipt" is a statement about the receipt. An
+  // endpoint that rewrites `status` into a JSON number makes every payment
+  // through it unreadable, and the memo the customer paid with is still on
+  // chain, where the scan can find it.
+  'unreadable_receipt',
 ]);
+
+/**
+ * What is worth ASKING again is not the same question as which answer outranks
+ * which. A guard log inside one named receipt says that transaction's leg was
+ * bounced - structurally the same statement as `reverted`, and no statement at
+ * all about another transaction, so it earns a second look. It is NOT in the
+ * set above, because the same code coming back from a RANGE scan is evidence
+ * that found something, and that is what the tie-break is about.
+ */
+const WORTH_A_SECOND_LOOK = new Set<TempoRefusalCode>([
+  ...ABOUT_ONE_TRANSACTION,
+  'provider_leg_blocked',
+]);
+
+/**
+ * The unknowns that are about ONE transaction, and so earn the second look for
+ * the same reason the refusals in `ABOUT_ONE_TRANSACTION` do.
+ *
+ * `no_receipt` is the wallet reporting a bundle id. `chain_unreadable` from a
+ * by-hash read is the endpoint answering with a receipt from the OTHER Tempo
+ * network - which says nothing about whether the memo was paid on this one,
+ * and the customer chooses the hash, so leaving it out made reporting a real
+ * hash from the wrong chain worse than reporting a hash that exists nowhere.
+ * Every other unknown is about the whole look, not one transaction.
+ */
+const UNKNOWN_ABOUT_ONE_TRANSACTION = new Set<TempoInconclusiveReason>([
+  'no_receipt',
+  'chain_unreadable',
+]);
+
+/**
+ * A terminal answer is checked against the chain a second time.
+ *
+ * The gate above runs once; a verify makes between five and a hundred calls
+ * after it, and an endpoint is free to move between them - a multi-chain
+ * gateway failing over, a browser wallet's user switching network. Measured
+ * live: a Moderato payment whose reads drift to mainnet answers `none` in 45
+ * seconds, terminally, about money sitting on the chain the request names.
+ * The two Tempo networks share the token, the guard and the registry
+ * addresses, so `eth_chainId` is the only thing that tells them apart.
+ *
+ * Only `none` and a refusal that rested on a read pay for the extra call.
+ */
+async function confirmedOnChain(
+  client: Eip1193Client,
+  chain: ChainConfig,
+  result: TempoVerifyResult,
+  signal?: AbortSignal,
+): Promise<TempoVerifyResult> {
+  // Every answer that reaches here rests on reads. The two refusals that do
+  // not - `wrong_chain` and `unknown_asset`, about the request's own chain and
+  // its own coin - are returned above, before this function is in play.
+  if (result.outcome === 'inconclusive') {
+    return result;
+  }
+  // Every terminal answer needs the chain NAMED, not merely not-contradicted,
+  // and that includes a credit.
+  //
+  // The receipt bind and the fee-leg bind are answered by the SAME endpoint as
+  // the reads they check, so they prove internal consistency and never chain
+  // identity - `eth_chainId` is the only read that names a chain, and pathUSD
+  // is one address on both Tempo networks. A negative is worse still: `none`
+  // and every refusal rest on EMPTY `eth_getLogs` answers, which carry no
+  // identity at all, and the history control that vouches for them passes
+  // equally on the other network.
+  //
+  // Both directions cost something and only one is unbounded: discarding an
+  // answer yields `inconclusive`, which means ask again, and the evidence is
+  // still there for the next pass - one retry. Keeping a wrong credit costs
+  // the provider a job's work paid in another network's coin.
+  const named = await withAbort(checkEvmChain(client, chain), signal).catch(() => null);
+  if (named === null) {
+    return inconclusive('chain_unreadable');
+  }
+  return result;
+}
+
+/**
+ * Which of two non-verified answers about different candidates says more.
+ *
+ * Only one rule, because only one can fire: by the time a candidate's answer
+ * reaches here, every refusal that contradicts the scan has become an unknown,
+ * so the refusals left are the fee-leg ones and no ranking among them is
+ * possible. An unknown over one candidate is never buried by a refusal over
+ * another - that is the whole rule.
+ */
+function outranks(candidate: TempoVerifyResult, incumbent: TempoVerifyResult): boolean {
+  return incumbent.outcome === 'refused' && candidate.outcome === 'inconclusive';
+}
+
+/**
+ * Is this read from the chain we are reading? A receipt and a log each name the
+ * block they are in, and that block's hash is the only value either of them
+ * carries that a DIFFERENT chain could not also produce: the two Tempo
+ * networks share the token, the guard and the registry addresses, and their
+ * heights overlap. So the claim is checked against the block this endpoint
+ * holds at that height.
+ */
+async function onThisChain(
+  context: VerifyContext,
+  blockNumber: number,
+  claimed: string | null,
+): Promise<boolean> {
+  const ownBlock = await readBlockByNumber(context.client, blockNumber);
+  // A read that names NO block is not on this chain either: `null` equals no
+  // block hash a node ever answers, so the comparison settles both cases and
+  // there is no second rule to keep in step with the first.
+  return ownBlock !== null && ownBlock.hash === claimed;
+}
 
 function refused(code: TempoRefusalCode): TempoVerifyResult {
   return { outcome: 'refused', code };
@@ -165,6 +277,12 @@ export async function verifyTempoPayment(
   request: ParsedPaymentRequestV2,
   options: VerifyTempoPaymentOptions,
 ): Promise<TempoVerifyResult> {
+  // The immutable half of "wrong chain", and the only one that stays terminal:
+  // no endpoint answers for a chain the registry does not carry, so nothing
+  // about such a request can ever become verifiable. No test kills this and
+  // none can - the v2 schema refuses the same request first - but it guards an
+  // exported function whose input is a `ParsedPaymentRequestV2` type, not
+  // necessarily one this build parsed.
   const chain = chainByCaip2(request.chain);
   if (chain === undefined || chain.family !== 'evm') {
     return refused('wrong_chain');
@@ -176,11 +294,14 @@ export async function verifyTempoPayment(
   }
   try {
     await assertEvmChain(client, chain);
-  } catch (error) {
-    // A wrong chain is a wrong request; an unreadable one is a failed look.
-    return error instanceof WrongEvmChainError
-      ? refused('wrong_chain')
-      : inconclusive('chain_unreadable');
+  } catch {
+    // Neither branch is a statement about the PAYMENT. An endpoint that names
+    // another chain is misconfigured - an operator who moved `EVM_RPC_URL`,
+    // or a multi-chain gateway failing over for one call - and terminally
+    // refusing every in-flight job on that answer is the same mistake as
+    // reading a broken receipt as evidence. The request's OWN chain is still
+    // refused terminally above: that one is immutable.
+    return inconclusive('chain_unreadable');
   }
 
   const feeAmount = request.fee_amount === undefined ? 0n : BigInt(request.fee_amount);
@@ -198,11 +319,25 @@ export async function verifyTempoPayment(
   const hash = options.txSignature === undefined ? null : readTxHash(options.txSignature);
   if (hash === null) {
     // No hash, or something that was never one: the memo is the only handle.
-    return verifyWithPolling(context, options);
+    return confirmedOnChain(
+      client,
+      chain,
+      await verifyWithPolling(context, options),
+      options.signal,
+    );
   }
   const byHash = await verifyByHash(context, hash);
-  if (byHash.outcome !== 'refused' || !ABOUT_ONE_TRANSACTION.has(byHash.code)) {
-    return byHash;
+  // A hash the node has never seen is an unknown about ONE transaction, and
+  // the reported value may not be a transaction hash at all: a bundle id and a
+  // user-operation hash are both 32 bytes and both answer `null` here. Without
+  // the second look, reporting one of those is strictly worse than reporting
+  // nothing at all - the same chain, with no hash given, verifies.
+  const worthASecondLook =
+    byHash.outcome === 'refused'
+      ? WORTH_A_SECOND_LOOK.has(byHash.code)
+      : byHash.outcome === 'inconclusive' && UNKNOWN_ABOUT_ONE_TRANSACTION.has(byHash.reason);
+  if (!worthASecondLook) {
+    return confirmedOnChain(client, chain, byHash, options.signal);
   }
   // The named transaction did not pay this request, which proves nothing about
   // whether another one did: a wallet reports a bundle id, an approve, or the
@@ -210,16 +345,37 @@ export async function verifyTempoPayment(
   // money is one `eth_getLogs` away and a refusal is terminal, so it is not a
   // refusal until the memo has been looked for too.
   const byMemo = await verifyWithoutHash(context);
-  if (byMemo.outcome === 'verified') {
+  // Both of the answers that END here pay for the chain confirmation, and they
+  // pay for it at the same return: a credit and a refusal are equally terminal
+  // and equally read off this endpoint. Splitting them is what let the one
+  // exit a customer can choose skip the confirmation the other two make.
+  if (byMemo.outcome === 'verified' || byMemo.outcome === 'refused') {
+    return confirmedOnChain(client, chain, byMemo, options.signal);
+  }
+  // And an unknown must never be buried under a refusal - the same rule the
+  // candidate loop applies one level down, and the rule the no-hash path is
+  // already built on, where every inconclusive is polled again. "Not due yet"
+  // is one of them: the customer whose wallet cannot batch sends the fee leg
+  // and the provider leg seconds apart and reports the first hash, and that
+  // hash alone says `no_provider_leg` while the second is in flight. Nothing
+  // is lost by waiting - once the window closes the scan answers `none`, and
+  // the refusal below stands.
+  if (byMemo.outcome === 'inconclusive') {
     return byMemo;
   }
-  // And a look that could not happen is not a look that found nothing. The same
-  // rule the candidate loop applies one level down: never let a refusal bury an
-  // unknown. (`not_yet_due` is not that - it means the look was complete.)
-  if (byMemo.outcome === 'inconclusive' && COULD_NOT_LOOK.has(byMemo.reason)) {
-    return byMemo;
-  }
-  return byHash;
+  // The scan that FOUND something - a transfer the guard bounced, a fee leg
+  // that never came - says where the money went; "that hash is not this
+  // payment" says only that somebody named the wrong transaction.
+
+  // A REFUSAL by hash is evidence and stands. An unknown by hash is not: a
+  // complete look that found nothing outranks "I have never seen that hash",
+  // or reporting a bundle id would be worse than reporting nothing at all.
+  return confirmedOnChain(
+    client,
+    chain,
+    byHash.outcome === 'refused' ? byHash : byMemo,
+    options.signal,
+  );
 }
 
 async function verifyWithPolling(
@@ -228,10 +384,13 @@ async function verifyWithPolling(
 ): Promise<TempoVerifyResult> {
   const budget = options.pollBudgetMs ?? TEMPO_LIVE_NOHASH_BUDGET_MS;
   const interval = options.pollIntervalMs ?? TEMPO_LIVE_POLL_INTERVAL_MS;
-  const deadline = Date.now() + budget;
+  // A duration, on the monotonic clock: a backward wall-clock step would
+  // otherwise extend this loop by the size of the step, and the bound exists
+  // precisely so that one unpaid job cannot pin a provider slot.
+  const deadline = monotonicNow() + budget;
   let result = await verifyWithoutHash(context);
   while (result.outcome === 'inconclusive') {
-    if (context.signal?.aborted || Date.now() + interval >= deadline) {
+    if (context.signal?.aborted || monotonicNow() + interval >= deadline) {
       return result;
     }
     await sleep(interval, context.signal);
@@ -281,6 +440,16 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
   if (blockNumber > finalized.number) {
     return inconclusive('not_finalized');
   }
+  // The receipt is the only thing here that arrives whole from one call, and
+  // every check above reads it against ITSELF. Bind it to the chain: the block
+  // it claims to be in must be the block this endpoint has at that height.
+  // Nothing else can catch a receipt from another chain - the two Tempo
+  // networks share the token address, and a customer chooses the hash it
+  // reports, so a transfer of free testnet coin carrying this request's memo
+  // is one routed `eth_getTransactionReceipt` away from being credited.
+  if (!(await onThisChain(context, blockNumber, readTxHash(readField(receipt, 'blockHash'))))) {
+    return inconclusive('chain_unreadable');
+  }
 
   // Rule 3: only this transaction's logs, from the REGISTRY token, of the memo
   // event, whole. Anything else is not counted - it can cost a refusal, never a
@@ -297,9 +466,10 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
     }
   }
 
+  const bound: ReceiptBound = { logs, hash, blockNumber };
   const providerLeg = transfers.find((log) => isProviderLeg(context, log));
   if (providerLeg === undefined) {
-    return blockedInReceipt(context, logs, hash, context.request.recipient, context.providerMin)
+    return blockedInReceipt(context, bound, context.request.recipient, context.providerMin)
       ? refused('provider_leg_blocked')
       : refused('no_provider_leg');
   }
@@ -312,6 +482,10 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
     };
   }
 
+  // One log may not answer for both legs. No test kills this today and none
+  // can: `fee_address !== recipient` is a v2 schema invariant, so a log cannot
+  // satisfy `isProviderLeg` and `isFeeLeg` at once. It stands as the guard for
+  // the day that invariant moves.
   const feeLeg = transfers.find(
     (log) =>
       isFeeLeg(context, log) &&
@@ -327,12 +501,21 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
       feeLeg,
     };
   }
-  if (blockedInReceipt(context, logs, hash, context.feeAddress, context.feeAmount)) {
+  // The legs may have been paid by two transactions (a wallet that cannot
+  // batch), so a receipt without the fee leg is not yet an answer - and a
+  // guard log in THIS receipt is not one either until that look has happened.
+  // A fee leg this transaction had bounced and another transaction then paid
+  // is a PAID job; asking the guard first made it a terminal refusal, with the
+  // provider's own leg already in the provider's account. The guard log may
+  // only RENAME a refusal the scan has already reached, never reach one.
+  const elsewhere = await verifyFeeLegElsewhere(context, hash, providerLeg, finalized.number);
+  if (
+    elsewhere.outcome === 'refused' &&
+    blockedInReceipt(context, bound, context.feeAddress, context.feeAmount)
+  ) {
     return refused('fee_leg_blocked');
   }
-  // The legs may have been paid by two transactions (a wallet that cannot
-  // batch), so a receipt without the fee leg is not yet an answer.
-  return verifyFeeLegElsewhere(context, hash, providerLeg, finalized.number);
+  return elsewhere;
 }
 
 function isProviderLeg(context: VerifyContext, log: TempoTransferLog): boolean {
@@ -354,25 +537,33 @@ function isFeeLeg(context: VerifyContext, log: TempoTransferLog): boolean {
   );
 }
 
+/** One receipt's logs, and the two values every entry of them must carry. */
+interface ReceiptBound {
+  logs: readonly unknown[];
+  hash: string;
+  blockNumber: number;
+}
+
 /**
  * A guard log in THIS receipt saying that a leg to `recipient` was refused.
  *
- * Rule 3's transaction bound applies here exactly as it does to transfer logs:
- * an entry naming another transaction is not this receipt's evidence, and
- * reading it as such lets one crafted log flip a paid job to a terminal refusal.
+ * Rule 3's bound applies here exactly as it does to transfer logs, on BOTH
+ * values: an entry naming another transaction, or another block, is not this
+ * receipt's evidence, and reading it as such lets one crafted log flip a paid
+ * job to a terminal refusal.
  */
 function blockedInReceipt(
   context: VerifyContext,
-  logs: readonly unknown[],
-  hash: string,
+  receipt: ReceiptBound,
   recipient: string,
   minAmount: bigint,
 ): boolean {
-  for (const entry of logs) {
+  for (const entry of receipt.logs) {
     const decoded = decodeTempoBlockedLog(entry);
     if (
       decoded.kind === 'log' &&
-      decoded.log.transactionHash === hash &&
+      decoded.log.transactionHash === receipt.hash &&
+      decoded.log.blockNumber === receipt.blockNumber &&
       matchesBlockedLeg(context, decoded.log, recipient, minAmount)
     ) {
       return true;
@@ -421,6 +612,15 @@ async function verifyFeeLegElsewhere(
   });
   const feeLeg = scan.candidates.find((log) => isFeeLeg(context, log));
   if (feeLeg !== undefined) {
+    // This leg has been through no receipt: it is one entry from one
+    // `eth_getLogs`, and it is about to complete a payment. Bind it to the
+    // chain the way the provider leg already is - the block it claims must be
+    // the block this endpoint holds at that height. A backend serving the
+    // other Tempo network answers the same token at the same address, so
+    // without this the fee leg can be paid in free testnet coin.
+    if (!(await onThisChain(context, feeLeg.blockNumber, feeLeg.blockHash))) {
+      return inconclusive('chain_unreadable');
+    }
     return {
       outcome: 'verified',
       settlementId: tempoSettlementId(context.request, hash),
@@ -428,8 +628,25 @@ async function verifyFeeLegElsewhere(
       feeLeg,
     };
   }
+  // The `toBlock` comparison has no killer and can have none on this path: the
+  // scan is handed the same finalized number the provider leg was checked
+  // against, so it cannot end below it. It guards the day this is called with
+  // a head from somewhere else.
   if (!scan.complete || scan.toBlock === null || scan.toBlock < providerLeg.blockNumber) {
     return inconclusive('incomplete_scan');
+  }
+  // The DEADLINE first, and it gates the blocked verdict as much as the
+  // missing one. A bounced leg means the customer's money left and parked with
+  // the guard - which is a reason to wait, not to stop: the receiver opens its
+  // policy (this verdict is what tells the provider to), the customer sends
+  // again, and the second attempt lands inside the same window. Refusing on
+  // the first bounce closes the job minutes before the money arrives.
+  const edge = await readBlockByNumber(context.client, scan.toBlock);
+  if (edge === null) {
+    return inconclusive('chain_unreadable');
+  }
+  if (!isPastLateDeadline(context.request, edge.timestamp)) {
+    return inconclusive('not_yet_due');
   }
   const blocked = await findBlockedLeg(
     context,
@@ -442,13 +659,6 @@ async function verifyFeeLegElsewhere(
   }
   if (blocked === 'unknown') {
     return inconclusive('incomplete_scan');
-  }
-  const edge = await readBlockByNumber(context.client, scan.toBlock);
-  if (edge === null) {
-    return inconclusive('chain_unreadable');
-  }
-  if (!isPastLateDeadline(context.request, edge.timestamp)) {
-    return inconclusive('not_yet_due');
   }
   // The same claim as `none` - "it is not on chain" - so the same proof. A node
   // that under-serves this window answers an empty list with no error, and
@@ -526,12 +736,30 @@ async function verifyWithoutHash(context: VerifyContext): Promise<TempoVerifyRes
     if (!isProviderLeg(context, candidate)) {
       continue;
     }
-    const result = await verifyByHash(context, candidate.transactionHash);
-    if (result.outcome === 'verified') {
-      return result;
+    const read = await verifyByHash(context, candidate.transactionHash);
+    if (read.outcome === 'verified') {
+      return read;
     }
-    // Never let a refusal over one candidate bury an unknown over another.
-    if (best === null || (best.outcome === 'refused' && result.outcome === 'inconclusive')) {
+    // This candidate was DECODED by the scan: the registry token, our
+    // recipient, our memo, at or above the price, in a finalized block. A
+    // receipt read that then cannot see it is a failed READ and nothing else -
+    // a reverted transaction emits no logs, and a finalized log cannot vanish.
+    // Reading it as evidence makes one bad answer from one backend a terminal
+    // refusal of money that is on chain.
+    // Every code in the second-look set says "the provider leg is not in this
+    // transaction", which is precisely what the scan just proved false. The
+    // fee-leg codes are NOT in it and must not be converted: they agree with
+    // the scan about the provider leg and disagree about the fee, which is a
+    // real verdict and the commonest one this path reaches.
+    const result: TempoVerifyResult =
+      read.outcome === 'refused' && WORTH_A_SECOND_LOOK.has(read.code)
+        ? inconclusive('no_receipt')
+        : read;
+    // Never let a refusal over one candidate bury an unknown over another -
+    // and among refusals, the one that FOUND something (a bounced transfer, a
+    // fee leg that never came) says more than "not in this transaction". The
+    // same two rules the top level applies between the two looks.
+    if (best === null || outranks(result, best)) {
       best = result;
     }
   }
@@ -542,8 +770,21 @@ async function verifyWithoutHash(context: VerifyContext): Promise<TempoVerifyRes
     return inconclusive('incomplete_scan');
   }
 
-  // Nothing found, and the look was complete. Rule 10 before rule 9: a transfer
-  // the recipient's own policy refused is not a transfer that never happened.
+  // Nothing found, and the look was complete - but nothing is TERMINAL before
+  // the window closes, a bounced transfer least of all: it means the money
+  // left the customer and parked with the guard, the receiver opens its policy
+  // (this verdict is what tells it to), and the retry lands inside the same
+  // window. So the deadline gates this answer exactly as it gates `none`.
+  const edge = await readBlockByNumber(context.client, scan.toBlock);
+  if (edge === null) {
+    return inconclusive('chain_unreadable');
+  }
+  if (!isPastLateDeadline(context.request, edge.timestamp)) {
+    return inconclusive('not_yet_due');
+  }
+
+  // Rule 10 before rule 9: a transfer the recipient's own policy refused is
+  // not a transfer that never happened.
   const blocked = await findBlockedLeg(
     context,
     context.request.recipient,
@@ -555,14 +796,6 @@ async function verifyWithoutHash(context: VerifyContext): Promise<TempoVerifyRes
   }
   if (blocked === 'unknown') {
     return inconclusive('incomplete_scan');
-  }
-
-  const edge = await readBlockByNumber(context.client, scan.toBlock);
-  if (edge === null) {
-    return inconclusive('chain_unreadable');
-  }
-  if (!isPastLateDeadline(context.request, edge.timestamp)) {
-    return inconclusive('not_yet_due');
   }
   // Both edges of the scan, AFTER the scan.
   if (!(await vouchedFor(context, scan.toBlock))) {

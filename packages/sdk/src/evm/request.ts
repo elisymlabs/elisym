@@ -22,8 +22,9 @@ import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { caip19ForAsset, PaymentRequestV2Schema } from '../payment/schema-v2';
 import type { Eip1193Client } from './client';
 import { assertEvmChain, getEvmProtocolConfig } from './config';
+import { MAX_ISSUER_CLOCK_SKEW_SECS } from './constants';
 import { readFinalizedBlock } from './logs';
-import { readTempoReceivePolicy } from './policy';
+import { canStrangerReceive } from './policy';
 
 const MEMO_BYTES = 32;
 /** The v2 schema's own ceiling; named here so the failure says which rule it is. */
@@ -80,12 +81,13 @@ export async function createTempoPaymentRequest(
   if (!Number.isInteger(expirySecs) || expirySecs <= 0 || expirySecs > MAX_EXPIRY_SECS) {
     throw new Error(`Invalid expiry: ${expirySecs}. Must be an integer 1-${MAX_EXPIRY_SECS}.`);
   }
-  const known = assetsFor(chain.slug, chain.network).some(
+  const coin = assetsFor(chain.slug, chain.network).find(
     (candidate) => candidate.mint === options.asset.mint && candidate.token === options.asset.token,
   );
-  if (!known) {
+  if (coin?.mint === undefined) {
     throw new Error(`${options.asset.token} is not a coin of ${chain.caip2}.`);
   }
+  const token = coin.mint;
 
   // Fresh, and first: everything below reads state whose meaning depends on
   // WHICH chain answered.
@@ -95,6 +97,16 @@ export async function createTempoPaymentRequest(
   if (finalized === null) {
     throw new Error(`Could not read the finalized block of ${chain.caip2}.`);
   }
+  // Two clocks, either of which can be wrong on its own: the request is
+  // stamped from the chain's, and only this machine's can say whether that one
+  // is plausible.
+  const skew = Math.abs(finalized.timestamp - Math.floor(Date.now() / 1000));
+  if (skew > MAX_ISSUER_CLOCK_SKEW_SECS) {
+    throw new Error(
+      `The endpoint's finalized block is ${skew} seconds from this machine's clock; ` +
+        `one of the two is wrong, and every deadline on this request would inherit it.`,
+    );
+  }
 
   const config = await getEvmProtocolConfig(client, chain);
   const feeAmount = calculateProtocolFeeSubunits(options.amount, config.feeBps);
@@ -103,6 +115,10 @@ export async function createTempoPaymentRequest(
     if (feeAddress === undefined || !isEvmWireAddress(feeAddress)) {
       throw new Error('The protocol config names a treasury that is not an address.');
     }
+    // No test can kill this, and it is kept for its message: the v2 schema refuses
+    // the same request two lines below, so the only thing this changes is
+    // whether the provider is told WHY its own treasury cannot be its payout
+    // address.
     if (feeAddress === recipient) {
       throw new Error(
         "The treasury is this provider's own payment address; the fee leg would be a self-transfer.",
@@ -115,21 +131,27 @@ export async function createTempoPaymentRequest(
     }
   }
 
-  const recipientPolicy = await readTempoReceivePolicy(client, recipient);
-  if (recipientPolicy === null) {
+  // Can an ARBITRARY customer pay this, in this coin? A card is quoted before
+  // any customer is known, so that is the only question the issuer can ask -
+  // and the registry answers it directly. Deriving an answer from the policy's
+  // own filter words is not possible: read across both networks, neither the
+  // ids nor the types are a namespace, and accounts whose sender policy reads
+  // "reject-all" receive transfers every day.
+  const recipientOpen = await canStrangerReceive(client, token, recipient);
+  if (recipientOpen === null) {
     throw new Error(`Could not read the receive policy of ${recipient}.`);
   }
-  if (!recipientPolicy.open) {
+  if (!recipientOpen) {
     throw new Error(
       `${recipient} does not accept incoming transfers: its TIP-403 receive policy would block this payment.`,
     );
   }
   if (feeAddress !== undefined) {
-    const treasuryPolicy = await readTempoReceivePolicy(client, feeAddress);
-    if (treasuryPolicy === null) {
+    const treasuryOpen = await canStrangerReceive(client, token, feeAddress);
+    if (treasuryOpen === null) {
       throw new Error(`Could not read the receive policy of the treasury ${feeAddress}.`);
     }
-    if (!treasuryPolicy.open) {
+    if (!treasuryOpen) {
       throw new Error(
         `The treasury ${feeAddress} does not accept incoming transfers, so the fee leg would be blocked.`,
       );
@@ -148,7 +170,12 @@ export async function createTempoPaymentRequest(
       ? {}
       : { fee_address: feeAddress, fee_amount: feeAmount.toString() }),
     memo: randomMemo(),
-    created_at: options.nowSecs ?? Math.floor(Date.now() / 1000),
+    // The CHAIN's clock, which is the one every deadline is judged on: the
+    // verifier reads a block timestamp, never a wall clock. A provider whose
+    // machine is behind chain time by more than the window would otherwise
+    // issue requests born expired, and the first verify pass would answer
+    // `none` before the customer could pay.
+    created_at: options.nowSecs ?? finalized.timestamp,
     expiry_secs: expirySecs,
   });
   return { request, fromBlock: finalized.number };

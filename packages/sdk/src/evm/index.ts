@@ -38,11 +38,17 @@ export {
   type TempoBlockedLog,
   type TempoBlockedScan,
   type TempoBlockRef,
+  type TempoHeadRef,
   type TempoLogScan,
   type TempoTransferEvent,
   type TempoTransferLog,
 } from './logs';
-export { readTempoReceivePolicy, type TempoReceivePolicy } from './policy';
+export {
+  canReceiveFrom,
+  canStrangerReceive,
+  readTempoReceivePolicy,
+  type TempoReceivePolicy,
+} from './policy';
 export {
   validateTempoPaymentRequest,
   checkTempoReceivePolicies,
@@ -61,5 +67,6 @@ export {
 export {
   EVM_LATE_PAYMENT_GRACE_SECS,
   TEMPO_LIVE_NOHASH_BUDGET_MS,
+  MAX_ISSUER_CLOCK_SKEW_SECS,
   MAX_LOG_BLOCK_RANGE,
 } from './constants';

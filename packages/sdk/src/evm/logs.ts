@@ -59,6 +59,13 @@ const EVENT_TOPIC_COUNT: Record<TempoTransferEvent, number> = {
 export interface TempoTransferLog {
   /** The token that emitted it, in wire form. */
   token: string;
+  /**
+   * The hash of the block this log claims to be in. Every node sends it, and
+   * it is the only field on a log that names a CHAIN: a scan answered by a
+   * backend on the other Tempo network is otherwise indistinguishable, because
+   * the token, the guard and the registry are at the same addresses on both.
+   */
+  blockHash: string;
   from: string;
   to: string;
   amount: bigint;
@@ -90,9 +97,19 @@ export interface TempoBlockedLog {
   blockNumber: number;
 }
 
-export interface TempoBlockRef {
+/**
+ * A block by height and clock. The finalized HEAD is read as one of these:
+ * nothing binds a read to the head's hash (every bind goes through
+ * `readBlockByNumber`), so requiring a field no caller reads would make every
+ * verify `chain_unreadable` on an endpoint that omits it.
+ */
+export interface TempoHeadRef {
   number: number;
   timestamp: number;
+}
+
+/** A block read BY NUMBER, which a receipt or a log can be bound to. */
+export interface TempoBlockRef extends TempoHeadRef {
   hash: string;
 }
 
@@ -122,6 +139,7 @@ interface LogHeader {
   transactionHash: string;
   logIndex: number;
   blockNumber: number;
+  blockHash: string;
 }
 
 /**
@@ -140,13 +158,15 @@ function readLogHeader(entry: unknown): LogHeader | null {
   const transactionHash = readTxHash(readField(entry, 'transactionHash'));
   const logIndex = readBlockNumber(readField(entry, 'logIndex'));
   const blockNumber = readBlockNumber(readField(entry, 'blockNumber'));
+  const blockHash = readTxHash(readField(entry, 'blockHash'));
   if (
     address === null ||
     !Array.isArray(rawTopics) ||
     typeof data !== 'string' ||
     transactionHash === null ||
     logIndex === null ||
-    blockNumber === null
+    blockNumber === null ||
+    blockHash === null
   ) {
     return null;
   }
@@ -158,7 +178,7 @@ function readLogHeader(entry: unknown): LogHeader | null {
     }
     topics.push(word);
   }
-  return { address, topics, data, transactionHash, logIndex, blockNumber };
+  return { address, topics, data, transactionHash, logIndex, blockNumber, blockHash };
 }
 
 /** The single 32-byte word of a transfer log's data, or `null`. */
@@ -205,6 +225,7 @@ export function decodeTempoTransferLog(
     kind: 'log',
     log: {
       token: header.address,
+      blockHash: header.blockHash,
       from,
       to,
       amount,
@@ -274,13 +295,30 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
   const originator = readAddressWord(words[BLOCKED_WORDS.originator]);
   const recipient = readAddressWord(words[BLOCKED_WORDS.recipient]);
   const memo = words[BLOCKED_WORDS.memo];
+  // A claim of another KIND is somebody else's event, not a malformed one:
+  // the guard emits `TransferBlocked` for a bounced MINT too, and over the
+  // whole Moderato chain 1057 of its 2298 guard logs are exactly that - 231 of
+  // them on the registry coin to a receiver this suite uses. Unreadable would
+  // make the pass incomplete, and an incomplete guard pass is what stops
+  // `none` and `fee_leg_missing` from ever being reached. The "unreadable is
+  // not empty" rule is about FORGERIES; a real mint bounce is not one. Every
+  // one of those 1057 carries a ZERO memo word, which is the second and
+  // independent reason dropping them can never hide a leg: a leg is bound to
+  // its request by a random memo, and these carry none.
+  if (kind !== CLAIM_KIND_TRANSFER) {
+    return { kind: 'other' };
+  }
+  // Two checks below cannot fire once `readWords` has answered fourteen words,
+  // and no test can kill either. They are not the same kind of thing, and the
+  // difference is worth writing down: `amount === null` is a TYPE narrowing -
+  // remove it and the compiler refuses - while `memo === undefined` compiles
+  // clean without it and is simply unreachable. Neither gets a row.
   if (
     amount === null ||
     receiptVersion !== CLAIM_RECEIPT_V1 ||
     receiptOffset !== CLAIM_RECEIPT_OFFSET ||
     receiptLength !== CLAIM_RECEIPT_LENGTH ||
     claimVersion !== CLAIM_RECEIPT_V1 ||
-    kind !== CLAIM_KIND_TRANSFER ||
     receiptToken === null ||
     recoveryAuthority === null ||
     originator === null ||
@@ -289,8 +327,19 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
   ) {
     return { kind: 'unreadable' };
   }
-  if (!sameAddress(receiptToken, token) || !sameAddress(recipient, receiver)) {
+  if (!sameAddress(receiptToken, token)) {
+    // The body and the topic must agree about the TOKEN - the topic is what
+    // the scan filtered on, so a body naming another coin is the node
+    // answering something else. No counter-example on either chain: 0 of 2298.
     return { kind: 'unreadable' };
+  }
+  if (!sameAddress(recipient, receiver)) {
+    // The RECIPIENT legitimately differs: a transfer to a TIP-1022 alias is
+    // resolved to its master before the guard records it, so the topic holds
+    // the master and the body holds the alias the sender wrote. Somebody
+    // else's shape, not a forgery - 92 such logs on Moderato, all on this
+    // rail's own coin and all naming the receiver these rows use.
+    return { kind: 'other' };
   }
   return {
     kind: 'log',
@@ -316,17 +365,16 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
  * own older head without an error, while a number above its head is an explicit
  * one.
  */
-export async function readFinalizedBlock(client: Eip1193Client): Promise<TempoBlockRef | null> {
+export async function readFinalizedBlock(client: Eip1193Client): Promise<TempoHeadRef | null> {
   const block = await client
     .request({ method: 'eth_getBlockByNumber', params: ['finalized', false] })
     .catch(() => null);
   const number = readBlockNumber(readField(block, 'number'));
   const timestamp = readBlockNumber(readField(block, 'timestamp'));
-  const hash = readTxHash(readField(block, 'hash'));
-  if (number === null || timestamp === null || hash === null) {
+  if (number === null || timestamp === null) {
     return null;
   }
-  return { number, timestamp, hash };
+  return { number, timestamp };
 }
 
 /** A block by NUMBER, for reading the timestamp a scan actually reached. */
@@ -354,11 +402,23 @@ export async function readBlockByNumber(
  * loop on them would be an infinite one.
  */
 function isTooMuchError(error: unknown): boolean {
-  if (!(error instanceof EvmRpcError)) {
-    return false;
-  }
-  const message = error.rpcMessage ?? '';
-  return /exceeds max results/i.test(message) || /exceeds max block range/i.test(message);
+  // Read the words off whatever was thrown, not off one class: this module is
+  // exported for a browser wallet's own provider, which throws its own error
+  // shape, and a client whose cap errors go unrecognized never halves -
+  // it skips whole chunks and calls the pass incomplete for good.
+  // Each place the words could be is tested ON ITS OWN: joined together, half
+  // a phrase in one field and half in another would match a sentence neither
+  // of them says.
+  const places = [
+    error instanceof EvmRpcError ? error.rpcMessage : undefined,
+    readField(error, 'message'),
+    readField(readField(error, 'data'), 'message'),
+  ];
+  return places.some(
+    (place) =>
+      typeof place === 'string' &&
+      (/exceeds max results/i.test(place) || /exceeds max block range/i.test(place)),
+  );
 }
 
 interface ScanRequest {
@@ -481,6 +541,15 @@ export async function listTempoLogs(
   if (head === null) {
     return { candidates: [], complete: false, toBlock: null };
   }
+  // A floor that is not a block number is not a floor, and this is the guard
+  // P32 names as the protection. `NaN` is the case that matters and the one
+  // that nearly went without a row: `NaN <= toBlock` is false, so the walk runs ZERO
+  // times and `complete` is never cleared - an empty list marked complete,
+  // which is the shape that licenses "nothing was ever sent". (Round 15's
+  // comment claimed `toQuantity` throws first and no test could kill this.
+  // Measured: `toQuantity(-1)` is `"0x-1"` and `toQuantity(NaN)` is `"0xNaN"`
+  // - neither throws, and the node refuses those two for us by accident. NaN
+  // and `undefined` never reach it at all.)
   if (!Number.isSafeInteger(options.fromBlock) || options.fromBlock < 0) {
     return { candidates: [], complete: false, toBlock: head };
   }
@@ -521,10 +590,15 @@ export async function listTempoLogs(
       if (log.blockNumber < options.fromBlock || log.blockNumber > (options.toBlock ?? head)) {
         return 'unreadable';
       }
-      // A plain `Transfer` carries no memo at all, so a memo can only be
-      // re-checked on the event that has one - checking it on the other would
-      // make every entry unreadable and the pass permanently incomplete.
-      if (options.event === 'TransferWithMemo' && log.memo !== options.memo) {
+      // A memo can only be re-checked when one was ASKED for: a plain
+      // `Transfer` carries none to compare, and a memo scan run WITHOUT a memo
+      // never named one in the filter either. Re-checking in either case calls
+      // every entry unreadable and leaves the pass permanently incomplete.
+      if (
+        options.event === 'TransferWithMemo' &&
+        options.memo !== undefined &&
+        log.memo !== options.memo
+      ) {
         return 'unreadable';
       }
       if (options.from !== undefined && !sameAddress(log.from, options.from)) {
@@ -587,14 +661,43 @@ export async function listTempoBlockedLogs(
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     },
     (entry) => {
+      // What the scan ASKED for. An answer outside it is the node answering
+      // something else, whatever the body then says.
+      const header = readLogHeader(entry);
+      if (
+        header === null ||
+        !sameAddress(header.address, TEMPO_TRANSFER_GUARD) ||
+        header.topics[0] !== TRANSFER_BLOCKED_TOPIC
+      ) {
+        return 'unreadable';
+      }
       const decoded = decodeTempoBlockedLog(entry);
+      if (decoded.kind === 'other') {
+        // Not ours, and honestly so: the filter names the event, the token and
+        // the receiver, and neither the claim KIND nor the body's recipient is
+        // reachable by a filter - both are in the data. Over the whole Moderato
+        // chain 1057 of 2298 guard logs are bounced MINTS and 92 name a
+        // TIP-1022 alias the master resolves; all of them carry a zero memo
+        // word. "Unreadable is not empty" is a rule about FORGERIES; neither of
+        // these is one, and treating them as forgeries makes every
+        // terminal-negative verdict unreachable for ever.
+        return 'drop';
+      }
       if (decoded.kind !== 'log') {
         return 'unreadable';
       }
+      const log = decoded.log;
       if (
         !sameAddress(decoded.log.token, options.token) ||
         !sameAddress(decoded.log.receiver, options.receiver)
       ) {
+        return 'unreadable';
+      }
+      // The block range is a filter dimension like any other here too: an
+      // entry outside the chunk asked for is the node answering something
+      // else, and this scan's empty-and-complete answer is what lets a caller
+      // say money was NOT parked with the guard.
+      if (log.blockNumber < options.fromBlock || log.blockNumber > (options.toBlock ?? head)) {
         return 'unreadable';
       }
       candidates.push(decoded.log);

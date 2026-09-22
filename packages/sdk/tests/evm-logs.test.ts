@@ -4,10 +4,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_ISSUER_CLOCK_SKEW_SECS,
+  RECEIVE_POLICY_SELECTOR,
+  TEMPO_POLICY_REGISTRY,
+  TEMPO_TRANSFER_GUARD,
   TRANSFER_BLOCKED_TOPIC,
   TRANSFER_TOPIC,
   TRANSFER_WITH_MEMO_TOPIC,
-  TEMPO_TRANSFER_GUARD,
+  VALIDATE_RECEIVE_POLICY_SELECTOR,
 } from '../src/evm/constants';
 import {
   decodeTempoBlockedLog,
@@ -15,6 +19,7 @@ import {
   listTempoBlockedLogs,
   listTempoLogs,
   passesHistoryControl,
+  readBlockByNumber,
   readFinalizedBlock,
 } from '../src/evm/logs';
 import type { FakeLog } from './tempo-chain';
@@ -131,6 +136,10 @@ describe('decodeTempoTransferLog', () => {
     ['no transaction hash', 'transactionHash'],
     ['no log index', 'logIndex'],
     ['no block number', 'blockNumber'],
+    // The only field on a log that names a CHAIN. Without it the entry says
+    // nothing about which network served it, and the two Tempo networks carry
+    // the same token at the same address.
+    ['no block hash', 'blockHash'],
   ])('refuses an entry with %s', (_label, field) => {
     const entry = wireLog(memoLog());
     delete entry[field];
@@ -184,11 +193,20 @@ describe('decodeTempoBlockedLog', () => {
     ['an offset that is not 0x60', 2],
     ['a length that is not 320', 3],
     ['a claim version this decoder does not know', 4],
-    ['a kind that is not a transfer', 12],
   ])('refuses a guard log with %s', (_label, wordIndex) => {
     expect(decodeTempoBlockedLog(mutatedWord(wordIndex, '9'.padStart(64, '0'))).kind).toBe(
       'unreadable',
     );
+  });
+
+  it('calls a guard log about another claim KIND somebody else’s, not unreadable', () => {
+    // The guard emits `TransferBlocked` for a bounced MINT as well, and 28 of
+    // those are live on Moderato - one naming the registry coin and the very
+    // receiver these rows use. Unreadable would make every pass over that
+    // window INCOMPLETE, and an incomplete guard pass is what stops `none` and
+    // `fee_leg_missing` from ever being reached. "Unreadable is not empty" is
+    // a rule about forgeries; a real mint bounce is not one.
+    expect(decodeTempoBlockedLog(mutatedWord(12, '1'.padStart(64, '0'))).kind).toBe('other');
   });
 
   it('refuses a guard log whose body names another token than its own topic', () => {
@@ -198,9 +216,24 @@ describe('decodeTempoBlockedLog', () => {
     expect(decodeTempoBlockedLog(mutatedWord(5, otherToken)).kind).toBe('unreadable');
   });
 
-  it('refuses a guard log whose body names another recipient than its own topic', () => {
-    const otherRecipient = `${'0'.repeat(24)}${'cd'.repeat(20)}`;
-    expect(decodeTempoBlockedLog(mutatedWord(8, otherRecipient)).kind).toBe('unreadable');
+  it('calls a guard log whose body names ANOTHER recipient somebody else’s, not unreadable', () => {
+    // The two legitimately differ: a transfer to a TIP-1022 alias is resolved
+    // to its MASTER before the guard records it, so the topic holds the master
+    // and the body holds the alias the sender wrote. Measured over the whole
+    // chain, 92 of Moderato's 2298 guard logs are exactly that shape - every
+    // one on this rail's own coin and naming the receiver these rows use.
+    // Unreadable would make every pass over such a window incomplete, and an
+    // incomplete guard pass is what stops `none` from ever being reached.
+    const alias = `${'0'.repeat(24)}b385a519fdfdfdfdfdfdfdfdfdfd000000000001`;
+    expect(decodeTempoBlockedLog(mutatedWord(8, alias)).kind).toBe('other');
+  });
+
+  it('still refuses a guard log whose body names another TOKEN than its topic', () => {
+    // The token half stays strict: the topic is what the scan filtered on, so
+    // a body naming another coin is the node answering something else. No
+    // counter-example exists on either chain - 0 of 2298.
+    const otherToken = `${'0'.repeat(24)}${'cd'.repeat(20)}`;
+    expect(decodeTempoBlockedLog(mutatedWord(5, otherToken)).kind).toBe('unreadable');
   });
 
   it.each([
@@ -212,13 +245,59 @@ describe('decodeTempoBlockedLog', () => {
   });
 });
 
+describe('the protocol constants', () => {
+  it('holds the values the chain actually answers to', () => {
+    // Four of these moved with their own rows: every test that touches them
+    // derives its input FROM them, so the comparison was the constant against
+    // itself. Spelled out, a typo in any dies. The two selectors were verified
+    // read-only against the live registry - 0xe111e611 answers 192 bytes,
+    // 0xb72b0c59 answers 64, and a one-nibble change of either reverts - and
+    // `TRANSFER_TOPIC` is keccak("Transfer(address,address,uint256)").
+    expect(TEMPO_POLICY_REGISTRY).toBe('0x403c000000000000000000000000000000000000');
+    expect(RECEIVE_POLICY_SELECTOR).toBe('0xe111e611');
+    expect(VALIDATE_RECEIVE_POLICY_SELECTOR).toBe('0xb72b0c59');
+    expect(TRANSFER_TOPIC).toBe(
+      '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+    );
+  });
+
+  it('bounds the issuer clock skew at fifteen minutes', () => {
+    // Every row that uses it writes `-MAX_ISSUER_CLOCK_SKEW_SECS - 1`, so the
+    // input moves with the constant and 900 could become 900000 unnoticed.
+    expect(MAX_ISSUER_CLOCK_SKEW_SECS).toBe(900);
+  });
+});
+
 describe('readFinalizedBlock', () => {
-  it('reads the number, the timestamp and the hash together', async () => {
+  it('reads the number and the timestamp, and needs no hash', async () => {
+    // Nothing binds a read to the HEAD's hash - every bind goes through
+    // `readBlockByNumber` - so requiring a field no caller reads would make
+    // every verify `chain_unreadable` on an endpoint that omits it.
     const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1_700_000_000 } });
     expect(await readFinalizedBlock(chain.client)).toEqual({
       number: 1_000,
       timestamp: 1_700_000_000,
-      hash: `0x${'cd'.repeat(32)}`,
+    });
+  });
+
+  it('reads a head that answers no hash at all', async () => {
+    // Nothing binds a read to the head's hash, so refusing a head that omits
+    // it would make every verify on that endpoint `chain_unreadable` over a
+    // field no caller reads. The fake always answers one; this one does not.
+    const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1_700_000_000 } });
+    const headless = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        const answer = await chain.client.request(args);
+        if (args.method !== 'eth_getBlockByNumber' || answer === null) {
+          return answer;
+        }
+        const { hash: _dropped, ...rest } = answer as Record<string, unknown>;
+        return rest;
+      },
+    };
+    expect(await readFinalizedBlock(headless)).toEqual({
+      number: 1_000,
+      timestamp: 1_700_000_000,
     });
   });
 
@@ -254,6 +333,38 @@ describe('listTempoLogs', () => {
       fromBlock: 800,
       toBlock: 1_000,
     });
+  });
+
+  it('lists every memo log to this recipient when NO memo was asked for', async () => {
+    // The memo is optional on the exported scan - reconciliation asks "what
+    // came in at all". Re-checking a memo nobody asked for called every entry
+    // unreadable and left the pass permanently incomplete.
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      logs: [
+        memoLog(),
+        memoLog({
+          logIndex: 1,
+          topics: [
+            TRANSFER_WITH_MEMO_TOPIC,
+            topicOf(PAYER),
+            topicOf(RECIPIENT),
+            `0x${'99'.repeat(32)}`,
+          ],
+        }),
+      ],
+    });
+    const scan = await listTempoLogs(chain.client, {
+      token: TOKEN,
+      event: 'TransferWithMemo',
+      to: RECIPIENT,
+      minAmount: 10_000n,
+      fromBlock: 800,
+    });
+    expect(scan.complete).toBe(true);
+    expect(scan.candidates).toHaveLength(2);
+    expect(chain.getLogsCalls[0]?.topics[3]).toBeNull();
   });
 
   it('filters by the SENDER only when one was asked for', async () => {
@@ -368,6 +479,55 @@ describe('listTempoLogs', () => {
     expect(scan.complete).toBe(true);
   });
 
+  it('halves a cap error thrown by a client that is not this SDK’s', async () => {
+    // `@elisym/sdk/evm` is exported for a browser wallet's own provider, which
+    // throws its own error shape carrying the node's words. A client whose cap
+    // errors go unrecognized never halves: it skips whole chunks and calls
+    // every pass incomplete, for ever.
+    const walletError = Object.assign(new Error('Internal JSON-RPC error.'), {
+      code: -32602,
+      data: { message: 'query exceeds max results 20000, retry with the range 1-2' },
+    });
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      logs: [memoLog({ blockNumber: 850 })],
+      onGetLogs: (call) => (call.toBlock - call.fromBlock > 50 ? walletError : undefined),
+    });
+    const scan = await listTempoLogs(chain.client, { ...base, fromBlock: 800 });
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.complete).toBe(true);
+  });
+
+  it('halves a cap error whose words are in `message`, the way ethers throws it', async () => {
+    const plain = new Error('query exceeds max results 20000, retry with the range 1-2');
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      logs: [memoLog({ blockNumber: 850 })],
+      onGetLogs: (call) => (call.toBlock - call.fromBlock > 50 ? plain : undefined),
+    });
+    const scan = await listTempoLogs(chain.client, { ...base, fromBlock: 800 });
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.complete).toBe(true);
+  });
+
+  it('gives up on a single block the node will not serve, and walks ON', async () => {
+    // A chunk that cannot be halved any further is a FAILED chunk, not a
+    // question to ask again: without that, one block the node refuses eats the
+    // whole request budget and the money further along is never looked for.
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      logs: [memoLog({ blockNumber: 950 })],
+      onGetLogs: (call) =>
+        call.fromBlock <= 800 && call.toBlock >= 800 ? resultCapError() : undefined,
+    });
+    const scan = await listTempoLogs(chain.client, { ...base, fromBlock: 800 });
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.complete).toBe(false);
+  });
+
   it('halves on a range the node calls too wide as well', async () => {
     const chain = fakeTempoChain({
       finalized: 1_000,
@@ -426,6 +586,36 @@ describe('listTempoLogs', () => {
     expect(chain.getLogsCalls).toEqual([]);
   });
 
+  it.each([
+    ['NaN', Number.NaN],
+    ['absent', undefined],
+  ])('refuses a floor of %s WITHOUT walking, and stays incomplete', async (_label, floor) => {
+    // The case the safe-integer guard is really for, and the one a row nearly
+    // failed to hold. `NaN <= toBlock` is false, so without the guard the walk
+    // runs zero times and `complete` is never cleared: an empty list marked
+    // COMPLETE, which is the shape that licenses "nothing was ever sent". The
+    // negative and fractional floors are refused by the node instead, which is
+    // an accident of `toQuantity` and not a guard.
+    const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 }, logs: [memoLog()] });
+    const scan = await listTempoLogs(chain.client, {
+      ...base,
+      fromBlock: floor as unknown as number,
+    });
+    expect(scan).toEqual({ candidates: [], complete: false, toBlock: 1_000 });
+    expect(chain.getLogsCalls).toEqual([]);
+  });
+
+  it('refuses a GUARD scan floor of NaN the same way', async () => {
+    const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 } });
+    const scan = await listTempoBlockedLogs(chain.client, {
+      token: TOKEN,
+      receiver: RECIPIENT,
+      fromBlock: Number.NaN,
+    });
+    expect(scan).toEqual({ candidates: [], complete: false, toBlock: 1_000 });
+    expect(chain.getLogsCalls).toEqual([]);
+  });
+
   it('is incomplete, not empty, when the finalized block cannot be read', async () => {
     const chain = fakeTempoChain({ finalized: null });
     const scan = await listTempoLogs(chain.client, base);
@@ -445,17 +635,35 @@ describe('listTempoLogs', () => {
     expect(chain.getLogsCalls.length).toBeLessThanOrEqual(512);
   });
 
-  it('makes the pass INCOMPLETE on a log from OUTSIDE the range it asked for', async () => {
+  it.each([
+    ['below its floor', 1],
+    ['above the head it reached', 1_001],
+  ])('makes the pass INCOMPLETE on a log from %s', async (_label, blockNumber) => {
+    // The block range is a filter dimension like any other, and BOTH ends of
+    // it are the node answering something else when they are crossed.
     const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 } });
     const client = {
       request: async (args: { method: string; params?: readonly unknown[] }) =>
         args.method === 'eth_getLogs'
-          ? [wireLog(memoLog({ blockNumber: 1 }))]
+          ? [wireLog(memoLog({ blockNumber }))]
           : chain.client.request(args),
     };
     const scan = await listTempoLogs(client, base);
     expect(scan.candidates).toEqual([]);
     expect(scan.complete).toBe(false);
+  });
+
+  it('finds the leg when the address was asked for in another CASE', async () => {
+    // Addresses arrive checksummed from wallets and explorers. The topic is
+    // built lowercase and every comparison is case-insensitive, or the same
+    // address in another case finds nothing and a paid job reads as unpaid.
+    const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 }, logs: [memoLog()] });
+    const scan = await listTempoLogs(chain.client, {
+      ...base,
+      to: `0x${RECIPIENT.slice(2).toUpperCase()}`,
+    });
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.complete).toBe(true);
   });
 
   it('reads a memo-less leg by sender and recipient, with no memo to match', async () => {
@@ -513,6 +721,142 @@ describe('listTempoBlockedLogs', () => {
     ]);
   });
 
+  it('stays COMPLETE over a guard log about somebody else’s claim kind', async () => {
+    // The production path, which is what the rule is for: round 12 fixed the
+    // decoder and this caller folded `other` straight back into `unreadable`,
+    // so the pass stayed incomplete and `none` and `fee_leg_missing` remained
+    // unreachable for ever. Measured live at the time: the same unpaid request
+    // answered `incomplete_scan` with the floor below one such log and `none`
+    // with the floor one block above it.
+    const mintBounce = blocked.map((log) => ({
+      ...log,
+      data: `${log.data.slice(0, 2 + 12 * 64)}${'1'.padStart(64, '0')}${log.data.slice(2 + 13 * 64)}`,
+    }));
+    const chain = fakeTempoChain({
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: 1 },
+      logs: mintBounce,
+    });
+    const scan = await listTempoBlockedLogs(chain.client, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.complete).toBe(true);
+    expect(scan.candidates).toHaveLength(0);
+  });
+
+  it('stays COMPLETE over a guard log whose body names an ALIAS recipient', async () => {
+    // The production path, which is the only one that matters: round 12 fixed
+    // the decoder for the claim KIND and the scan folded the answer back, and
+    // this is the same rule one field over. Measured live at the time: the
+    // same unpaid request answered `incomplete_scan` with the floor below one
+    // such log and `none` with the floor two blocks above it.
+    const aliasBody = blocked.map((log) => ({
+      ...log,
+      data: `${log.data.slice(0, 2 + 8 * 64)}${'0'.repeat(24)}b385a519fdfdfdfdfdfdfdfdfdfd000000000001${log.data.slice(2 + 9 * 64)}`,
+    }));
+    const chain = fakeTempoChain({
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: 1 },
+      logs: aliasBody,
+    });
+    const scan = await listTempoBlockedLogs(chain.client, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.complete).toBe(true);
+    expect(scan.candidates).toHaveLength(0);
+  });
+
+  it.each([
+    ['an entry that is not a log at all', () => ({ nonsense: true })],
+    [
+      'an entry under ANOTHER topic',
+      (log: FakeLog) =>
+        wireLog({ ...log, topics: [`0x${'11'.repeat(32)}`, ...log.topics.slice(1)] }),
+    ],
+  ])('calls %s unreadable, not somebody else’s', async (_label, mangle) => {
+    // Round 14 settled the emitter and the topic in the SCAN, before the
+    // decode, so that `other` means exactly one thing. Only the emitter clause
+    // got a row; these are its two siblings, and the rule is the same - the
+    // scan asked for one address under one topic, so anything else in the
+    // answer is the node answering a question it was not asked.
+    const chain = fakeTempoChain({ finalized: 35_790_000, timestamps: { 35_790_000: 1 } });
+    const answering = {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getLogs'
+          ? blocked.map((log) => mangle(log))
+          : chain.client.request(args),
+    };
+    const scan = await listTempoBlockedLogs(answering, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.complete).toBe(false);
+  });
+
+  it('calls a guard log from ANOTHER emitter unreadable, not somebody else’s', async () => {
+    // The scan asked the guard's address under one topic. Anything else in the
+    // answer is the node answering a question it was not asked - the same
+    // shape the transfer scan calls unreadable - and must not be quietly
+    // dropped the way a claim this rail does not handle is.
+    const chain = fakeTempoChain({ finalized: 35_790_000, timestamps: { 35_790_000: 1 } });
+    const elsewhere = {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getLogs'
+          ? blocked.map((log) => wireLog({ ...log, address: PATHUSD }))
+          : chain.client.request(args),
+    };
+    const scan = await listTempoBlockedLogs(elsewhere, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.complete).toBe(false);
+  });
+
+  it('calls a guard log from OUTSIDE the range it asked for unreadable', async () => {
+    // The blocked scan's empty-and-complete answer is what lets a caller say
+    // money was never parked with the guard, so its range is a filter like
+    // any other - the transfer scan has bounded both ends since round 4.
+    const chain = fakeTempoChain({ finalized: 35_790_000, timestamps: { 35_790_000: 1 } });
+    const client = {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getLogs'
+          ? blocked.map((log) => wireLog({ ...log, blockNumber: 35_795_000 }))
+          : chain.client.request(args),
+    };
+    const scan = await listTempoBlockedLogs(client, {
+      token: PATHUSD,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.candidates).toEqual([]);
+    expect(scan.complete).toBe(false);
+  });
+
+  it('calls a guard log for another TOKEN unreadable, not merely uninteresting', async () => {
+    // A filtered scan is answered only with what it asked for, so an entry for
+    // another token is the node answering something else: incomplete, never
+    // empty. An empty-and-complete pass here is what lets a caller conclude
+    // the money was not parked with the guard.
+    const chain = fakeTempoChain({ finalized: 35_790_000, timestamps: { 35_790_000: 1 } });
+    const client = {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getLogs' ? blocked.map(wireLog) : chain.client.request(args),
+    };
+    const scan = await listTempoBlockedLogs(client, {
+      token: TOKEN,
+      receiver: BLOCKED_RECEIVER,
+      fromBlock: 35_780_000,
+    });
+    expect(scan.candidates).toEqual([]);
+    expect(scan.complete).toBe(false);
+  });
+
   it('is incomplete when a chunk fails, never empty', async () => {
     const chain = fakeTempoChain({
       finalized: 35_790_000,
@@ -526,6 +870,22 @@ describe('listTempoBlockedLogs', () => {
       fromBlock: 35_780_000,
     });
     expect(scan.complete).toBe(false);
+  });
+});
+
+describe('readBlockByNumber', () => {
+  it('refuses a block that is not the one it asked for', async () => {
+    // The deadline that makes an absence final is read off this timestamp, so
+    // a backend answering another block would date the scan by another clock.
+    const client = {
+      request: async () => ({ number: '0x2', timestamp: '0x5', hash: `0x${'ab'.repeat(32)}` }),
+    };
+    expect(await readBlockByNumber(client, 1)).toBeNull();
+    expect(await readBlockByNumber(client, 2)).toEqual({
+      number: 2,
+      timestamp: 5,
+      hash: `0x${'ab'.repeat(32)}`,
+    });
   });
 });
 
