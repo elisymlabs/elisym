@@ -105,6 +105,17 @@ export interface OnchainCallFacts {
    */
   unattributed: string[];
   /**
+   * The members of `unattributed` that changed HANDS in the call: a token account
+   * that is not the signer's own with another owner or mint, a new delegate, a
+   * larger delegated amount, a new close authority or a freeze; or a MINT whose mint
+   * or freeze authority changed. No honest route does that, and it is what a
+   * takeover of funds held for the signer - or of a token the signer issued - looks
+   * like. So a client with no human in the loop refuses on THIS list by default, and
+   * shows the wider one as a notice. Optional only for facts built by an older SDK;
+   * this SDK always sets it.
+   */
+  unattributedAuthority?: string[];
+  /**
    * Untrusted provider text. A client that shows it must put it beside the
    * derived facts and never instead of them; omitting it entirely is also a
    * valid choice, and the MCP client makes it.

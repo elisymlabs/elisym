@@ -187,6 +187,83 @@ export function decodeTokenAccount(
   };
 }
 
+/**
+ * SPL Token `Mint`, 82 bytes:
+ *   0..4    mint_authority COption tag
+ *   4..36   mint_authority
+ *   36..44  supply (u64 LE)
+ *   44      decimals
+ *   45      is_initialized
+ *   46..50  freeze_authority COption tag
+ *   50..82  freeze_authority
+ *
+ * A Token-2022 mint with extensions is longer: the same 82 bytes, zero padding
+ * up to the ACCOUNT layout's length, the type tag, the extensions.
+ */
+const MINT_LEN = 82;
+const TOKEN_2022_TYPE_MINT = 1;
+
+export interface MintState {
+  /** Who may mint more. Absent when minting was given up for good. */
+  mintAuthority?: string;
+  /** Who may freeze any account of this mint. */
+  freezeAuthority?: string;
+  isInitialized: boolean;
+}
+
+/**
+ * Decode a mint's base layout, or `null` for anything that is not provably one.
+ * Works on the verifier's sliced pre-state read too: the slice is longer than a
+ * mint's base layout, and for a Token-2022 mint it still holds the zero padding
+ * that a token account - whose state byte sits inside that range - cannot have.
+ */
+export function decodeMint(
+  data: Uint8Array,
+  options: DecodeTokenAccountOptions = {},
+): MintState | null {
+  if (data.length < MINT_LEN) {
+    return null;
+  }
+  const length = options.length !== undefined && options.length > 0 ? options.length : data.length;
+  if (length !== MINT_LEN && !isExtendedMint(data, length, options.program)) {
+    return null;
+  }
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const authorityTag = readU32(view, 0);
+  const freezeTag = readU32(view, 46);
+  const initialized = data[45];
+  if (authorityTag > COPTION_SOME || freezeTag > COPTION_SOME) {
+    return null;
+  }
+  if (initialized !== 0 && initialized !== 1) {
+    return null;
+  }
+  return {
+    ...(authorityTag === COPTION_SOME ? { mintAuthority: readAddress(data, 4) } : {}),
+    ...(freezeTag === COPTION_SOME ? { freezeAuthority: readAddress(data, 50) } : {}),
+    isInitialized: initialized === 1,
+  };
+}
+
+function isExtendedMint(data: Uint8Array, length: number, program: string | undefined): boolean {
+  if (
+    program !== TOKEN_2022_PROGRAM_ADDRESS_STR ||
+    length <= TOKEN_ACCOUNT_LEN ||
+    data.length < TOKEN_ACCOUNT_LEN
+  ) {
+    return false;
+  }
+  for (let offset = MINT_LEN; offset < TOKEN_ACCOUNT_LEN; offset += 1) {
+    if (data[offset] !== 0) {
+      return false;
+    }
+  }
+  return (
+    data.length <= TOKEN_ACCOUNT_LEN ||
+    data[TOKEN_2022_ACCOUNT_TYPE_OFFSET] === TOKEN_2022_TYPE_MINT
+  );
+}
+
 /** Token-2022 extension discriminator for `ConfidentialTransferAccount`. */
 const EXTENSION_CONFIDENTIAL_TRANSFER_ACCOUNT = 5;
 /** Base layout plus the one-byte account-type tag: where the TLV list starts. */

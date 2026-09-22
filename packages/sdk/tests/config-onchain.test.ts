@@ -60,6 +60,19 @@ describe('getProtocolConfig', () => {
     expect(config.source).toBe('onchain');
   });
 
+  it('hands back a COPY, so a caller cannot rewrite the fee other callers read', async () => {
+    // The fresh path returned the cached object itself while the two
+    // cache-serving paths spread it - so one caller editing its result in
+    // place changed the fee every other caller in the process computed
+    // `ceil(amount * bps)` from, for the rest of the TTL.
+    fetchConfigMock.mockResolvedValueOnce(makeAccount({ feeBps: 250 }));
+    const first = await getProtocolConfig(makeRpc(), PROGRAM_ID, 'devnet');
+    first.feeBps = 0;
+    const second = await getProtocolConfig(makeRpc(), PROGRAM_ID, 'devnet');
+    expect(second.feeBps).toBe(250);
+    expect(fetchConfigMock).toHaveBeenCalledTimes(1);
+  });
+
   it('serves from cache on second call within TTL', async () => {
     fetchConfigMock.mockResolvedValueOnce(makeAccount());
     const first = await getProtocolConfig(makeRpc(), PROGRAM_ID, 'devnet');
