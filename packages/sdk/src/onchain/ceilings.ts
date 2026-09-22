@@ -31,7 +31,13 @@ import { SYSTEM_PROGRAM_ADDRESS_STR } from './constants';
 import { refuse } from './errors';
 import type { OnchainDescriptor } from './schema';
 import type { AccountSnapshot } from './simulate';
-import { decodeTokenAccount, isTokenProgram, type TokenAccountState } from './token-account';
+import {
+  decodeMint,
+  decodeTokenAccount,
+  isTokenProgram,
+  type MintState,
+  type TokenAccountState,
+} from './token-account';
 import type { OnchainAssetDelta, OnchainAuthorityGrant, OnchainCeilings } from './types';
 
 /** Native SOL is keyed by this sentinel in the per-asset delta map. */
@@ -48,6 +54,12 @@ export interface StateChange {
    * does to these, which is exactly why they are surfaced.
    */
   unattributed: string[];
+  /**
+   * The members of `unattributed` that are foreign TOKEN accounts, readable on
+   * both sides, whose AUTHORITY changed - see `changesAuthority`. Always a subset
+   * of `unattributed`, never a second source.
+   */
+  unattributedAuthority: string[];
 }
 
 interface AnalyzeArgs {
@@ -76,6 +88,7 @@ export function analyzeStateChange(args: AnalyzeArgs): StateChange {
   const byAsset = new Map<string, bigint>();
   const grants: OnchainAuthorityGrant[] = [];
   const unattributed: string[] = [];
+  const unattributedAuthority: string[] = [];
 
   const signerPre = pre.get(signer);
   const signerPost = post.get(signer);
@@ -128,6 +141,12 @@ export function analyzeStateChange(args: AnalyzeArgs): StateChange {
     if (!wasOurs && !isOurs) {
       if (writable.has(address) && !isSelfEvident(preAccount, postAccount, preToken, postToken)) {
         unattributed.push(address);
+        if (
+          changesAuthority(preToken, postToken) ||
+          changesMintAuthority(mintStateOf(preAccount), mintStateOf(postAccount))
+        ) {
+          unattributedAuthority.push(address);
+        }
       }
       continue;
     }
@@ -299,7 +318,72 @@ export function analyzeStateChange(args: AnalyzeArgs): StateChange {
     }
     deltas.push(key === NATIVE_KEY ? { subunits } : { mint: key, subunits });
   }
-  return { deltas, grants, unattributed };
+  return { deltas, grants, unattributed, unattributedAuthority };
+}
+
+/**
+ * A foreign token account, READABLE on both sides, whose authority changed:
+ * another owner, another mint, a new delegate, a larger delegated amount, a new
+ * close authority, or a state it was not in before and that is not `initialized`
+ * (a freeze).
+ *
+ * The pre-state may be FROZEN: a program holding the mint's freeze authority can
+ * thaw a vault, hand it over and freeze it again inside one call, and a guard
+ * that only looked at accounts that started `initialized` let exactly that
+ * through. A plain thaw is not a loss of anything and is not reported here.
+ *
+ * This is the narrow class a client with no human in the loop refuses by default.
+ * The wide one - `unattributed` - cannot be: a swap drains a pool vault and writes
+ * pool state elisym cannot read, so that list is non-empty on practically every
+ * routed swap, and a refusal that always fires had turned its override into a
+ * reflex. An authority change is different in kind. It is what both CRITICAL
+ * findings of this verifier's review looked like - `SetAuthority` on the vault
+ * holding the customer's deposit, a standing `Approve` to a stranger over it -
+ * and no honest route does it: none of 485 accounts reported in a replay of 900
+ * live mainnet transactions was one.
+ *
+ * It does NOT relax `isSelfEvident`, and it must never be used to: it only names
+ * a subset of what that predicate already reports. A foreign account that merely
+ * LOST value is deliberately not here - to this code a pool vault and an escrow
+ * holding the customer's deposit look the same, and the first loses value in
+ * every swap - so it stays a notice, and the notice says so.
+ *
+ * The confidential-balance case is not here either: it is only knowable on the
+ * post side (the pre read is sliced to the base layout), so it cannot be told
+ * apart from a vault that was always confidential. It stays in the wide list.
+ */
+function changesAuthority(
+  preToken: TokenAccountState | null,
+  postToken: TokenAccountState | null,
+): boolean {
+  if (preToken === null || postToken === null || preToken.state === 'uninitialized') {
+    return false;
+  }
+  return (
+    postToken.owner !== preToken.owner ||
+    postToken.mint !== preToken.mint ||
+    (postToken.state !== 'initialized' && postToken.state !== preToken.state) ||
+    (postToken.delegate !== undefined && postToken.delegate !== preToken.delegate) ||
+    postToken.delegatedAmount > preToken.delegatedAmount ||
+    (postToken.closeAuthority !== undefined && postToken.closeAuthority !== preToken.closeAuthority)
+  );
+}
+
+/**
+ * A MINT, readable on both sides, whose mint or freeze authority changed. The
+ * customer's own signature reaches a mint they are the authority of by CPI, where
+ * the static gate sees nothing; handing that authority to a stranger is the
+ * customer's lost right in its plainest form, and no swap route does it. Giving
+ * an authority UP counts too: it cannot be taken back.
+ */
+function changesMintAuthority(preMint: MintState | null, postMint: MintState | null): boolean {
+  if (preMint === null || postMint === null || !preMint.isInitialized) {
+    return false;
+  }
+  return (
+    postMint.mintAuthority !== preMint.mintAuthority ||
+    postMint.freezeAuthority !== preMint.freezeAuthority
+  );
 }
 
 /**
@@ -510,6 +594,13 @@ function assertSpend(
       }`,
     );
   }
+}
+
+function mintStateOf(account: AccountSnapshot | undefined): MintState | null {
+  if (!account?.exists || !isTokenProgram(account.owner)) {
+    return null;
+  }
+  return decodeMint(account.data, { length: account.space, program: account.owner });
 }
 
 function tokenStateOf(account: AccountSnapshot | undefined): TokenAccountState | null {

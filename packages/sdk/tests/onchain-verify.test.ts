@@ -207,6 +207,46 @@ function tokenAccountFixture(fields: TokenAccountFields, lamports = 2_039_280n):
   };
 }
 
+interface MintFields {
+  mintAuthority?: Address;
+  freezeAuthority?: Address;
+  supply?: bigint;
+  isInitialized?: boolean;
+  /** A Token-2022 mint with extensions: padded to the account layout, tagged `Mint`. */
+  extended?: boolean;
+  /** Override the Token-2022 type tag at offset 165 (1 = Mint). */
+  accountType?: number;
+  /** The owning program, when it is NOT a token program. */
+  program?: string;
+}
+
+/** Encode the 82-byte SPL mint layout, or a padded Token-2022 one. */
+function mintFixture(fields: MintFields, lamports = 1_461_600n): RawAccountFixture {
+  const length = fields.extended ? 234 : 82;
+  const data = new Uint8Array(length);
+  const view = new DataView(data.buffer);
+  if (fields.mintAuthority) {
+    view.setUint32(0, 1, true);
+    data.set(base58Bytes(fields.mintAuthority), 4);
+  }
+  view.setBigUint64(36, fields.supply ?? 1_000_000n, true);
+  data[44] = 6;
+  data[45] = fields.isInitialized === false ? 0 : 1;
+  if (fields.freezeAuthority) {
+    view.setUint32(46, 1, true);
+    data.set(base58Bytes(fields.freezeAuthority), 50);
+  }
+  if (fields.extended) {
+    data[165] = fields.accountType ?? 1;
+  }
+  return {
+    lamports,
+    owner: fields.program ?? (fields.extended ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM),
+    data: [getBase64Decoder().decode(data), 'base64'],
+    space: length,
+  };
+}
+
 /**
  * An SPL Multisig (355 bytes) whose body has been ground so its first 165 bytes
  * decode as a token account owned by the signer. Every byte after offset 3 is
@@ -459,7 +499,14 @@ function sliceAccountData(entry: RawAccountFixture, length: number | undefined):
   if (bytes.length <= length) {
     return entry;
   }
-  return { ...entry, data: [getBase64Decoder().decode(bytes.subarray(0, length)), 'base64'] };
+  // COPIED, not viewed: kit's base64 decoder encodes the whole backing buffer
+  // and ignores a subarray's offset and length, so a fixture that "sliced" this
+  // way was never sliced at all - and the 165-byte pre-read, which is the shape
+  // production ALWAYS has, went unexercised in every test that used one.
+  return {
+    ...entry,
+    data: [getBase64Decoder().decode(new Uint8Array(bytes.subarray(0, length))), 'base64'],
+  };
 }
 
 /**
@@ -1545,6 +1592,303 @@ describe('verifyOnchainCall - accounts the verifier cannot attribute', () => {
   it('does not report programs or read-only accounts as unattributed', async () => {
     const result = await verify();
     expect(result.ok && result.facts.unattributed).not.toContain(TOKEN_PROGRAM);
+  });
+
+  // --- the NARROW list: what a client with no human in the loop refuses on ---
+  //
+  // `unattributed` is non-empty on practically every routed swap (a pool vault
+  // drained, pool state written), so refusing on it made its override a reflex.
+  // `unattributedAuthority` is the subset no honest route produces: somebody
+  // else's token account, readable on both sides, changing HANDS.
+
+  async function listsFor(preFields: TokenAccountFields, postFields: TokenAccountFields) {
+    const state = positionState();
+    const result = await verify({
+      envelope: envelopeOf(wireOf([lendingCall()])),
+      rpc: fakeRpc({
+        pre: { ...state.pre, [DESTINATION_ATA]: tokenAccountFixture(preFields) },
+        post: { ...state.pre, [DESTINATION_ATA]: tokenAccountFixture(postFields) },
+      }),
+    });
+    if (!result.ok) {
+      throw new Error(`the fixture was refused: ${result.reason}`);
+    }
+    return { wide: result.facts.unattributed, narrow: result.facts.unattributedAuthority ?? [] };
+  }
+
+  const HELD = { owner: OTHER_WALLET, amount: 100_000n * USDC };
+
+  it.each([
+    [
+      'a new owner (SetAuthority on the vault holding the deposit)',
+      HELD,
+      { ...HELD, owner: SIGNER_ATA },
+    ],
+    ['another mint at the same address', HELD, { ...HELD, mint: OTHER_MINT }],
+    ['a new delegate', HELD, { ...HELD, delegate: SIGNER_ATA, delegatedAmount: 1n }],
+    [
+      'a larger delegated amount for the same delegate',
+      { ...HELD, delegate: SIGNER_ATA, delegatedAmount: 1n },
+      { ...HELD, delegate: SIGNER_ATA, delegatedAmount: 100_000n * USDC },
+    ],
+    [
+      'a DIFFERENT delegate for the same delegated amount',
+      { ...HELD, delegate: SIGNER_ATA, delegatedAmount: 5n },
+      { ...HELD, delegate: LENDING_PROGRAM, delegatedAmount: 5n },
+    ],
+    ['a new close authority', HELD, { ...HELD, closeAuthority: SIGNER_ATA }],
+    ['a freeze', HELD, { ...HELD, state: 2 }],
+  ] as const)(
+    'puts a foreign token account with %s on the narrow list',
+    async (_label, pre, post) => {
+      const lists = await listsFor(pre, post);
+      expect(lists.narrow).toContain(DESTINATION_ATA);
+      // A subset, never a second source.
+      expect(lists.wide).toContain(DESTINATION_ATA);
+    },
+  );
+
+  it.each([
+    ['only LOST value - what every swap does to a pool vault', HELD, { ...HELD, amount: 1n }],
+    ['lost its delegate', { ...HELD, delegate: SIGNER_ATA, delegatedAmount: 5n }, HELD],
+    ['lost its close authority', { ...HELD, closeAuthority: SIGNER_ATA }, HELD],
+  ] as const)(
+    'keeps a foreign token account that %s OFF the narrow list',
+    async (_label, pre, post) => {
+      const lists = await listsFor(pre, post);
+      expect(lists.narrow).not.toContain(DESTINATION_ATA);
+      expect(lists.wide).toContain(DESTINATION_ATA);
+    },
+  );
+
+  // A vault that was FROZEN before the call. A program holding the mint's freeze
+  // authority can thaw it, hand it over and freeze it again inside one call, so
+  // "it was not initialized before" is no reason to stop comparing.
+  const FROZEN = { ...HELD, state: 2 };
+
+  it.each([
+    ['a new owner, left thawed', FROZEN, { ...HELD, owner: SIGNER_ATA }],
+    ['a new owner, frozen again', FROZEN, { ...FROZEN, owner: SIGNER_ATA }],
+    [
+      'a new delegate, frozen again',
+      FROZEN,
+      { ...FROZEN, delegate: SIGNER_ATA, delegatedAmount: 100_000n * USDC },
+    ],
+    ['a new close authority, frozen again', FROZEN, { ...FROZEN, closeAuthority: SIGNER_ATA }],
+  ] as const)(
+    'puts a token account that was FROZEN before the call and gets %s on the narrow list',
+    async (_label, pre, post) => {
+      const lists = await listsFor(pre, post);
+      expect(lists.narrow).toContain(DESTINATION_ATA);
+      expect(lists.wide).toContain(DESTINATION_ATA);
+    },
+  );
+
+  it.each([
+    // Each also LOSES value, so that the account is reported at all: a thaw
+    // alone is self-evident, and a row about it would never reach the rule.
+    ['is THAWED and loses value', FROZEN, { ...HELD, amount: 1n }],
+    ['stays frozen and only loses value', FROZEN, { ...FROZEN, amount: 1n }],
+  ] as const)(
+    'keeps a frozen foreign token account that %s OFF the narrow list',
+    async (_label, pre, post) => {
+      const lists = await listsFor(pre, post);
+      expect(lists.wide).toContain(DESTINATION_ATA);
+      expect(lists.narrow).not.toContain(DESTINATION_ATA);
+    },
+  );
+
+  // --- a MINT: the customer's own signature reaches one by CPI ---
+
+  async function mintListsFor(preFields: MintFields | null, postFields: MintFields) {
+    const state = positionState();
+    const result = await verify({
+      envelope: envelopeOf(wireOf([lendingCall()])),
+      rpc: fakeRpc({
+        pre: {
+          ...state.pre,
+          [DESTINATION_ATA]: preFields === null ? null : mintFixture(preFields),
+        },
+        post: { ...state.pre, [DESTINATION_ATA]: mintFixture(postFields) },
+      }),
+    });
+    if (!result.ok) {
+      throw new Error(`the fixture was refused: ${result.reason}`);
+    }
+    return { wide: result.facts.unattributed, narrow: result.facts.unattributedAuthority ?? [] };
+  }
+
+  const MINT = { mintAuthority: SIGNER, freezeAuthority: SIGNER };
+
+  it.each([
+    ['a new mint authority', MINT, { ...MINT, mintAuthority: OTHER_WALLET }],
+    ['a new freeze authority', MINT, { ...MINT, freezeAuthority: OTHER_WALLET }],
+    ['its mint authority given up for good', MINT, { freezeAuthority: SIGNER }],
+    ['a freeze authority where there was none', { mintAuthority: SIGNER }, MINT],
+    [
+      'a new mint authority on a Token-2022 mint with extensions',
+      { ...MINT, extended: true },
+      { ...MINT, extended: true, mintAuthority: OTHER_WALLET },
+    ],
+  ] as const)('puts a mint with %s on the narrow list', async (_label, pre, post) => {
+    const lists = await mintListsFor(pre, post);
+    expect(lists.narrow).toContain(DESTINATION_ATA);
+    expect(lists.wide).toContain(DESTINATION_ATA);
+  });
+
+  it('keeps a mint whose SUPPLY alone changed off the narrow list - what an LP mint does', async () => {
+    const lists = await mintListsFor(MINT, { ...MINT, supply: 5n });
+    expect(lists.narrow).not.toContain(DESTINATION_ATA);
+    expect(lists.wide).toContain(DESTINATION_ATA);
+  });
+
+  it('keeps a mint the call CREATES off the narrow list', async () => {
+    const lists = await mintListsFor(null, { ...MINT, mintAuthority: OTHER_WALLET });
+    expect(lists.narrow).not.toContain(DESTINATION_ATA);
+  });
+
+  it('keeps a mint that was not initialized before off the narrow list', async () => {
+    const lists = await mintListsFor(
+      { isInitialized: false },
+      { ...MINT, mintAuthority: OTHER_WALLET },
+    );
+    expect(lists.narrow).not.toContain(DESTINATION_ATA);
+  });
+
+  it('does not read a mint-shaped record of some OTHER program as a mint', async () => {
+    // 82 bytes of pool state can look like a mint, and its bytes change in every
+    // swap: read as one, an honest route would be refused by default.
+    const lists = await mintListsFor(
+      { ...MINT, program: LENDING_PROGRAM },
+      { ...MINT, program: LENDING_PROGRAM, mintAuthority: OTHER_WALLET },
+    );
+    expect(lists.wide).toContain(DESTINATION_ATA);
+    expect(lists.narrow).not.toContain(DESTINATION_ATA);
+  });
+
+  it('does not read a Token-2022 ACCOUNT-tagged body as a mint', async () => {
+    // Same bytes as the extended-mint row, but the type tag says `Account`: the
+    // post side holds the tag, and a body that is not provably a mint is unknown.
+    const lists = await mintListsFor(
+      { ...MINT, extended: true },
+      { ...MINT, extended: true, mintAuthority: OTHER_WALLET, accountType: 2 },
+    );
+    expect(lists.narrow).not.toContain(DESTINATION_ATA);
+  });
+
+  it('keeps an account the call INITIALIZES off the narrow list', async () => {
+    // A pre-state that exists but is not yet a live token account has no
+    // authority to compare: the "owner" bytes of an uninitialized account are
+    // whatever the allocator left there.
+    const lists = await listsFor({ ...HELD, state: 0 }, { ...HELD, owner: SIGNER_ATA });
+    expect(lists.narrow).not.toContain(DESTINATION_ATA);
+  });
+
+  it('keeps a CLOSED foreign account off the narrow list', async () => {
+    // A closed account comes back zeroed and system-owned, so it does not decode
+    // as a token account at all - and a close needs a zero balance, so there was
+    // nothing left in it to take. It stays a notice, like any write this diff
+    // cannot describe.
+    const state = positionState();
+    const result = await verify({
+      envelope: envelopeOf(wireOf([lendingCall()])),
+      rpc: fakeRpc({
+        pre: { ...state.pre, [DESTINATION_ATA]: tokenAccountFixture(HELD) },
+        post: { ...state.pre, [DESTINATION_ATA]: null },
+      }),
+    });
+    expect(result.ok && result.facts.unattributedAuthority).toEqual([]);
+  });
+
+  it('reports a READ-ONLY account on neither list, whatever its authority does', async () => {
+    // The narrow list is a SUBSET of the wide one by construction - it is filled
+    // inside the same gate. An account the call cannot write cannot change on
+    // chain, so a fixture where it does is only a way of pinning that gate.
+    const state = positionState();
+    const result = await verify({
+      envelope: envelopeOf(
+        wireOf([
+          {
+            programAddress: LENDING_PROGRAM,
+            accounts: [
+              { address: LENDING_STATE, role: 1 },
+              { address: DESTINATION_ATA, role: 0 },
+              { address: SIGNER, role: 3 },
+            ],
+            data: new Uint8Array([7, 0, 0, 0]),
+          } as unknown as Instruction,
+        ]),
+      ),
+      rpc: fakeRpc({
+        pre: { ...state.pre, [DESTINATION_ATA]: tokenAccountFixture(HELD) },
+        post: {
+          ...state.pre,
+          [DESTINATION_ATA]: tokenAccountFixture({ ...HELD, owner: SIGNER_ATA }),
+        },
+      }),
+    });
+    expect(result.ok && result.facts.unattributed).not.toContain(DESTINATION_ATA);
+    expect(result.ok && result.facts.unattributedAuthority).toEqual([]);
+  });
+
+  it('reports a LOWERED delegation on neither list: nothing was taken or handed over', async () => {
+    const lists = await listsFor(
+      { ...HELD, delegate: SIGNER_ATA, delegatedAmount: 5n },
+      { ...HELD, delegate: SIGNER_ATA, delegatedAmount: 1n },
+    );
+    expect(lists.wide).not.toContain(DESTINATION_ATA);
+    expect(lists.narrow).not.toContain(DESTINATION_ATA);
+  });
+
+  it('keeps an account that was NOT a token account before off the narrow list', async () => {
+    // Unreadable before means there is no authority to compare. It stays on the
+    // wide list - the existing predicate reports it - and that is a notice.
+    const state = positionState();
+    const result = await verify({
+      envelope: envelopeOf(wireOf([lendingCall()])),
+      rpc: fakeRpc({
+        pre: { ...state.pre, [DESTINATION_ATA]: programOwnedAccount(LENDING_PROGRAM, 10_000_000n) },
+        post: {
+          ...state.pre,
+          [DESTINATION_ATA]: tokenAccountFixture({ owner: OTHER_WALLET, amount: 0n }, 10_000_000n),
+        },
+      }),
+    });
+    expect(result.ok && result.facts.unattributed).toContain(DESTINATION_ATA);
+    expect(result.ok && result.facts.unattributedAuthority).toEqual([]);
+  });
+
+  it('keeps an account the call CREATES off the narrow list, whatever it carries', async () => {
+    // A fresh account cannot hold a deposit that existed before the call.
+    const state = positionState();
+    const result = await verify({
+      envelope: envelopeOf(wireOf([lendingCall()])),
+      rpc: fakeRpc({
+        pre: { ...state.pre, [DESTINATION_ATA]: null },
+        post: {
+          ...state.pre,
+          [DESTINATION_ATA]: tokenAccountFixture({
+            owner: OTHER_WALLET,
+            amount: 500n * USDC,
+            delegate: SIGNER_ATA,
+            delegatedAmount: 500n * USDC,
+          }),
+        },
+      }),
+    });
+    expect(result.ok && result.facts.unattributed).toContain(DESTINATION_ATA);
+    expect(result.ok && result.facts.unattributedAuthority).toEqual([]);
+  });
+
+  it('names unreadable program state on the wide list only', async () => {
+    // The position record itself: program-owned data elisym cannot read.
+    const state = positionState();
+    const result = await verify({
+      envelope: envelopeOf(wireOf([lendingCall()])),
+      rpc: fakeRpc({ pre: state.pre, post: state.post }),
+    });
+    expect(result.ok && result.facts.unattributed).toContain(LENDING_STATE);
+    expect(result.ok && result.facts.unattributedAuthority).toEqual([]);
   });
 });
 

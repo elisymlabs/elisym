@@ -108,6 +108,23 @@ describe('toCallView', () => {
     expect(view.unattributed).toEqual(['5rWZFsmzGkVpS8N7hBhKrnBEEbLKWUYUCiTeXPQVCVCv']);
   });
 
+  it('lists apart the accounts that change HANDS, and nothing for facts that carry no such list', () => {
+    const vault = '4ARYGgibfQDcERcBj8E8pjcoE5SmeHXsAHe2HhQmKxYV';
+    const changed = toCallView(
+      facts({
+        unattributed: ['5rWZFsmzGkVpS8N7hBhKrnBEEbLKWUYUCiTeXPQVCVCv', vault],
+        unattributedAuthority: [vault],
+      }),
+      descriptor,
+    );
+    expect(changed.authorityChanged).toEqual([vault]);
+    const ordinary = toCallView(
+      facts({ unattributed: ['5rWZFsmzGkVpS8N7hBhKrnBEEbLKWUYUCiTeXPQVCVCv'] }),
+      descriptor,
+    );
+    expect(ordinary.authorityChanged).toEqual([]);
+  });
+
   it('spells out a standing approval, with who gets it and for how much', () => {
     const view = toCallView(
       facts({

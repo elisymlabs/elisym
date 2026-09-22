@@ -14,7 +14,7 @@
     "clean": "rm -rf build dist"
   },
   "dependencies": {
-    "@elisym/sdk": "~0.38.0",
+    "@elisym/sdk": "~0.39.0",
     "@solana-program/memo": "~0.11.0",
     "@solana-program/token": "~0.14.0",
     "@solana/kit": "~6.8.0",
