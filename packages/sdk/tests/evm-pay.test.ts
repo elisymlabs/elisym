@@ -1058,6 +1058,19 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome).toMatchObject({ state: 'delivered' });
   });
 
+  it('holds the protocol addresses the chain actually uses', () => {
+    // Both constants survived a one-nibble mutation because every row that
+    // touches them imports them - so the rows compared a value with itself.
+    // Spelled out here, and checked against a RECORDED receipt where one of
+    // them appears on the wire, a typo in either dies.
+    expect(TEMPO_FEE_SINK).toBe('0xfeec000000000000000000000000000000000000');
+    expect(TEMPO_POLICY_REGISTRY).toBe('0x403c000000000000000000000000000000000000');
+    const gasLog = receiptLogs(BATCH).find(
+      (log) => log.topics[0] === TRANSFER_TOPIC && log.topics[2]?.endsWith(TEMPO_FEE_SINK.slice(2)),
+    );
+    expect(gasLog).toBeDefined();
+  });
+
   it('calls the recorded batch DELIVERED, from its own receipt', async () => {
     const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
@@ -1067,7 +1080,22 @@ describe('resolveTempoTransferOutcome', () => {
       validBefore: NOW + 60,
     });
     expect(outcome.state).toBe('delivered');
-    expect(outcome.state === 'delivered' && outcome.legs).toHaveLength(2);
+    // What the verdict CARRIES, not only how many of them. Rewriting every
+    // credited amount to zero passed this row while it counted alone, and 3b
+    // reports these legs to a customer: the amount, the destination and the
+    // memo are the answer to "what did I actually pay for".
+    const credited = outcome.state === 'delivered' ? outcome.legs : [];
+    expect(credited).toHaveLength(2);
+    expect(credited.map((leg) => [leg.to, leg.amount, leg.memo])).toEqual([
+      [RECIPIENT, 10_000n, BATCH_MEMO],
+      [TREASURY, 10_000n, BATCH_MEMO],
+    ]);
+    // Each leg comes off a DISTINCT log of the transaction, never one log
+    // answering twice - the shape P44 records for a caller-built leg set.
+    expect(new Set(credited.map((leg) => leg.logIndex)).size).toBe(2);
+    for (const leg of credited) {
+      expect(leg.transactionHash).toBe(BATCH_HASH);
+    }
   });
 
   it('will not call a transaction delivered on a leg that is not in it', async () => {
