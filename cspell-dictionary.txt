@@ -97,6 +97,7 @@ napi
 netrc
 nevent
 njump
+nohash
 nostr
 nosystem
 npub

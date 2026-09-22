@@ -16,3 +16,42 @@ export {
 } from './config';
 export type { EvmProtocolConfig, GetEvmProtocolConfigOptions } from './config';
 export { readHexData, readQuantity, readWords, readUint256, readAddressWord } from './rpc-read';
+export {
+  createTempoPaymentRequest,
+  type CreateTempoPaymentRequestOptions,
+  type TempoPaymentRequestCreation,
+} from './request';
+export {
+  verifyTempoPayment,
+  tempoSettlementId,
+  type TempoVerifyResult,
+  type TempoInconclusiveReason,
+  type TempoRefusalCode,
+  type VerifyTempoPaymentOptions,
+} from './verify';
+export {
+  listTempoLogs,
+  listTempoBlockedLogs,
+  readFinalizedBlock,
+  type ListBlockedLogsOptions,
+  type ListTempoLogsOptions,
+  type TempoBlockedLog,
+  type TempoBlockedScan,
+  type TempoBlockRef,
+  type TempoHeadRef,
+  type TempoLogScan,
+  type TempoTransferEvent,
+  type TempoTransferLog,
+} from './logs';
+export {
+  canReceiveFrom,
+  canStrangerReceive,
+  readTempoReceivePolicy,
+  type TempoReceivePolicy,
+} from './policy';
+export {
+  EVM_LATE_PAYMENT_GRACE_SECS,
+  TEMPO_LIVE_NOHASH_BUDGET_MS,
+  MAX_ISSUER_CLOCK_SKEW_SECS,
+  MAX_LOG_BLOCK_RANGE,
+} from './constants';

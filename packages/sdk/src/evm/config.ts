@@ -9,6 +9,7 @@ import type { ChainConfig } from '../payment/chains';
 import { isVirtualEvmAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
+import { monotonicNow } from './clock';
 import { readAddressWord, readQuantity, readUint256, readWords } from './rpc-read';
 
 const CACHE_TTL_MS = 60_000;
@@ -75,15 +76,6 @@ let writes = 0;
 /** No ticket below this may write: what a `clear` leaves behind for chains it had no entry for. */
 let floor = 0;
 
-/**
- * A monotonic clock, so that a backward system clock cannot make a snapshot
- * look fresh for ever, nor report a negative age to a caller imposing its own
- * bound on staleness.
- */
-function monotonicNow(): number {
-  return typeof performance === 'undefined' ? Date.now() : performance.now();
-}
-
 /** Replace the entry only from a read that asked the chain later than the one there. */
 function writeEntry(key: string, entry: CacheEntry): void {
   if (entry.generation < floor) {
@@ -147,6 +139,13 @@ export async function checkEvmChain(
     throw new WrongEvmChainError(chain.evmChainId, `0x${chainId.toString(16)}`);
   }
   return chainId;
+}
+
+/** The same check for a caller that cannot proceed without a fresh, readable answer. */
+export async function assertEvmChain(client: Eip1193Client, chain: ChainConfig): Promise<void> {
+  if ((await checkEvmChain(client, chain)) === null) {
+    throw new Error(`eth_chainId was unreadable, so ${chain.caip2} could not be confirmed.`);
+  }
 }
 
 /**
