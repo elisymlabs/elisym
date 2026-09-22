@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  TEMPO_ADDRESS_REGISTRY,
   TEMPO_FEE_SINK,
   TEMPO_POLICY_REGISTRY,
   TEMPO_TRANSFER_GUARD,
@@ -463,6 +464,42 @@ describe('validateTempoPaymentRequest', () => {
     expect(problem?.code).toBe('invalid_bounds');
   });
 
+  it('refuses a payment to the TIP-1022 address registry', () => {
+    // The fifth system address. It is not a virtual address, so the schema
+    // does not catch it, and a transfer there is gone like any other payment
+    // to a precompile.
+    const problem = validateTempoPaymentRequest(
+      requestJson({ recipient: TEMPO_ADDRESS_REGISTRY }),
+      bounds({
+        card: {
+          recipient: TEMPO_ADDRESS_REGISTRY,
+          asset: USDCE_TEMPO_MAINNET,
+          jobPriceSubunits: 10_000n,
+        },
+      }),
+    );
+    expect(problem?.code).toBe('invalid_recipient_address');
+  });
+
+  it.each([
+    ['its chain', { chain: Symbol('chain') }],
+    ['its token', { token: Symbol('token') }],
+  ])('refuses a card whose asset has a non-string %s, rather than throwing', (_label, over) => {
+    // `assetKey` interpolates all three fields, so all three are read as
+    // strings first - the same "cast past the type" class the mint row covers.
+    const problem = validateTempoPaymentRequest(
+      requestJson(),
+      bounds({
+        card: {
+          recipient: RECIPIENT,
+          asset: { ...USDCE_TEMPO_MAINNET, ...over },
+          jobPriceSubunits: 10_000n,
+        },
+      }) as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
+    );
+    expect(problem?.code).toBe('asset_mismatch');
+  });
+
   it('refuses a card whose mint is not a string, rather than throwing', () => {
     // `assetKey` builds a template string, so a symbol or a null-prototype
     // object there throws - out of a function whose contract is to refuse. An
@@ -704,6 +741,27 @@ describe('checkTempoReceivePolicies', () => {
       feeAddress: TEMPO_FEE_SINK,
     });
     expect(verdict).toMatchObject({ ok: false, leg: 'fee', reason: 'unreadable' });
+  });
+
+  it.each([
+    ['a virtual recipient', { recipient: `0X11111111${'fd'.repeat(10)}222222222222` }],
+    ['a virtual payer', { payer: `0X11111111${'fd'.repeat(10)}222222222222` }],
+    ['an unpayable recipient', { recipient: `0X${TEMPO_FEE_SINK.slice(2)}` }],
+  ])('does not let a 0X spelling walk %s past the guards behind it', async (_label, over) => {
+    // `isEvmAddressFormat` anchors on a lowercase prefix and so does
+    // `isVirtualEvmAddress`. A gate that ACCEPTED `0X...` and then carried the
+    // raw string would answer `false` from the alias guard for the very same
+    // value - and this is the one function whose `ok` is permission to move
+    // money. So the spelling is normalised at the gate and forgotten.
+    const chain = answering({});
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      ...over,
+    });
+    expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
   });
 
   it('refuses an unpayable destination spelled in another case', async () => {
@@ -1471,6 +1529,60 @@ describe('resolveTempoTransferOutcome', () => {
     ).rejects.toThrow(/move between two addresses/);
   });
 
+  it('does not read a GUARD log from another block as our blocked leg', async () => {
+    // The guard pass decides the more expensive verdict - `blocked` tells the
+    // sender its money is parked, and 4a's withdraw reports that as not sent -
+    // and it runs BEFORE the delivered match, so an unbound guard log wins
+    // over a receipt that really did deliver. Height alone is a value the two
+    // Tempo networks share.
+    const guardElsewhere = (BLOCKED.logs as Record<string, unknown>[])
+      .filter((log) => (log.topics as string[])[0] === TRANSFER_BLOCKED_TOPIC)
+      .map((log) => ({
+        ...log,
+        transactionHash: BLOCKED_HASH,
+        blockHash: `0x${'ad'.repeat(32)}`,
+      }));
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
+      receipts: { [BLOCKED_HASH]: { ...BLOCKED, logs: guardElsewhere } },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, [BLOCKED_LEG], {
+      chain: CHAINS.TEMPO_DEVNET,
+      hash: BLOCKED_HASH,
+      floor: BLOCKED_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome.state).toBe('pending');
+  });
+
+  it.each([
+    ['eth_getTransactionReceipt', 'eth_getTransactionReceipt'],
+    ['eth_getBlockByNumber', 'eth_getBlockByNumber'],
+  ])('answers pending when the provider throws SYNCHRONOUSLY from %s', async (_label, method) => {
+    // A `.catch` on the promise never sees a provider that validates its
+    // params first - a browser wallet, a proxy - and this function's header
+    // promises that every rpc failure is `pending`, not a rejection the caller
+    // has to know about.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    const throwing = {
+      request(args: { method: string }) {
+        if (args.method === method) {
+          throw new Error('provider rejected the call synchronously');
+        }
+        return chain.client.request(args as Parameters<typeof chain.client.request>[0]);
+      },
+    } as unknown as typeof chain.client;
+    const outcome = await resolveTempoTransferOutcome(throwing, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
   it('will not call a REVERTED receipt unsent until it is bound to this chain', async () => {
     // The revert branch is terminal too, and it is the one that says a
     // replacement is safe: somebody else's failed receipt, answered by a split
@@ -1643,7 +1755,7 @@ describe('resolveTempoTransferOutcome', () => {
         validBefore: NOW + 60,
       },
     );
-    expect(outcome.state).not.toBe('blocked');
+    expect(outcome.state).toBe('pending');
     // A control on the same chain object, because `pending` is also what a
     // receipt that was never read answers: without it this row would stay
     // green if the receipt path broke entirely. The unmodified leg is blocked
@@ -1679,7 +1791,7 @@ describe('resolveTempoTransferOutcome', () => {
       floor: BLOCKED_BLOCK - 100,
       validBefore: NOW + 60,
     });
-    expect(outcome.state).not.toBe('blocked');
+    expect(outcome.state).toBe('pending');
     // The same control, against the untouched receipt: a guard log this rail
     // DOES read as ours, on a chain built the same way. `pending` here would
     // otherwise be indistinguishable from a receipt path that read nothing.

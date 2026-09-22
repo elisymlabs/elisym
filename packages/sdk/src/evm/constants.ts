@@ -17,17 +17,22 @@ export const TEMPO_TRANSFER_GUARD = '0xb10c000000000000000000000000000000000000'
  */
 export const TEMPO_FEE_SINK = '0xfeec000000000000000000000000000000000000';
 
+/** The TIP-1022 address registry precompile, live on mainnet. */
+export const TEMPO_ADDRESS_REGISTRY = '0xfdc0000000000000000000000000000000000000';
+
 /**
- * Addresses no payment of ours may name. Three are the protocol's own system
- * accounts and the fourth is the burn address: money sent to any of them is
- * gone, and nothing this SDK can read would ever report it as delivered - the
- * fee sink is excluded from every leg match by name.
+ * Addresses no payment of ours may name. Four are the protocol's own system
+ * accounts - the policy registry, the transfer guard, the fee sink and the
+ * address registry - and the fifth is the burn address: money sent to any of
+ * them is gone, and nothing this SDK can read would ever report it as
+ * delivered - the fee sink is excluded from every leg match by name.
  */
 export const TEMPO_UNPAYABLE_ADDRESSES: readonly string[] = [
   `0x${'0'.repeat(40)}`,
   TEMPO_POLICY_REGISTRY,
   TEMPO_TRANSFER_GUARD,
   TEMPO_FEE_SINK,
+  TEMPO_ADDRESS_REGISTRY,
 ];
 /** `receivePolicy(address)` on the registry: exactly 192 bytes back. */
 export const RECEIVE_POLICY_SELECTOR = '0xe111e611';

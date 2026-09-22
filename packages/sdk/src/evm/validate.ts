@@ -20,7 +20,6 @@
  */
 
 import type { Asset } from '../payment/assets';
-import { assetKey } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
 import {
   isEvmAddressFormat,
@@ -52,14 +51,20 @@ export const MIN_PAY_WINDOW_SECS = 120;
  * as an address is left exactly as it came.
  */
 function coinKey(asset: Pick<Asset, 'chain' | 'token' | 'mint'>): string {
-  // A mint that is not a string is treated as absent rather than interpolated:
-  // `assetKey` builds a template string, and a symbol or a null-prototype
-  // object throws there - in a file that guards seven other "cast past the
-  // type" shapes and whose contract is to refuse, never to throw.
-  if (typeof asset.mint !== 'string') {
-    return assetKey({ ...asset, mint: undefined });
-  }
-  return assetKey({ ...asset, mint: normalizeEvmAddress(asset.mint) ?? asset.mint });
+  // Every field `assetKey` interpolates is read as a string first, because it
+  // builds a template and a symbol or a null-prototype object throws there -
+  // in a file that guards a dozen other "cast past the type" shapes and whose
+  // contract is to refuse, never to throw. A field that is not a string
+  // becomes the empty key part it already is to a comparison: two assets that
+  // differ in it still differ.
+  const chain = typeof asset.chain === 'string' ? asset.chain : '';
+  const token = typeof asset.token === 'string' ? asset.token : '';
+  const mint =
+    typeof asset.mint === 'string' ? (normalizeEvmAddress(asset.mint) ?? asset.mint) : undefined;
+  // `assetKey` types `chain` as a `ChainSlug`, and the whole point here is the
+  // value that is NOT one, so the key is built the way that function builds it
+  // rather than through it.
+  return mint === undefined ? `${chain}:${token}` : `${chain}:${token}:${mint}`;
 }
 
 export interface TempoPaymentCard {
@@ -507,15 +512,18 @@ export async function checkTempoReceivePolicies(
     // wrong one file over.
     ...(check.feeAddress === undefined ? [] : [check.feeAddress]),
   ];
-  // Case-insensitive, like the sync half: these are the CALLER's own values,
-  // and a wallet answering `0X...` would otherwise pass one gate and fail the
-  // other. `isEvmAddressFormat` anchors on a lowercase prefix, so the spelling
-  // is settled here, once, before it is asked.
-  if (
-    asked.some(
-      (address) => typeof address !== 'string' || !isEvmAddressFormat(address.toLowerCase()),
-    )
-  ) {
+  // NORMALIZED once, here, and every gate below reads the normalized value.
+  //
+  // Accepting a spelling is not the same as carrying it: a gate that took
+  // `0X...` while `isVirtualEvmAddress` (which anchors on a lowercase prefix)
+  // answered `false` for the very same string would wave an alias past the two
+  // TIP-1022 guards - and this is the one function whose `ok` is permission to
+  // move money. So the spelling a wallet hands us is accepted and then
+  // forgotten; `null` here is "not an address", exactly as before.
+  const normalized = asked.map((address) =>
+    typeof address === 'string' ? normalizeEvmAddress(address) : null,
+  );
+  if (normalized.some((address) => address === null || !isEvmAddressFormat(address))) {
     return {
       ok: false,
       leg: 'provider',
@@ -523,6 +531,7 @@ export async function checkTempoReceivePolicies(
       message: 'This policy check was handed something that is not an address.',
     };
   }
+  const [token, payer, recipient, feeAddress] = normalized as string[];
   const onThisChain = await checkEvmChain(client, check.chain).catch(() => null);
   if (onThisChain === null) {
     return {
@@ -532,7 +541,7 @@ export async function checkTempoReceivePolicies(
       message: `Could not confirm the endpoint is ${check.chain.caip2}; refusing to read a policy blind.`,
     };
   }
-  if (isVirtualEvmAddress(check.payer)) {
+  if (isVirtualEvmAddress(payer)) {
     // The same TIP-1022 split as a virtual destination, on the sending side:
     // the registry would answer about the alias while the transfer is
     // evaluated against its master.
@@ -540,12 +549,12 @@ export async function checkTempoReceivePolicies(
       ok: false,
       leg: 'provider',
       reason: 'unreadable',
-      message: `${check.payer} is a virtual address; the policy that applies is its master's.`,
+      message: `${payer} is a virtual address; the policy that applies is its master's.`,
     };
   }
   const legs: { leg: 'provider' | 'fee'; to: string }[] = [
-    { leg: 'provider', to: check.recipient },
-    ...(check.feeAddress === undefined ? [] : [{ leg: 'fee' as const, to: check.feeAddress }]),
+    { leg: 'provider', to: recipient },
+    ...(feeAddress === undefined ? [] : [{ leg: 'fee' as const, to: feeAddress }]),
   ];
   // The four addresses the sync half refuses outright, refused here too. This
   // half is the last gate before signing and the only one that PERMITS money
@@ -553,7 +562,7 @@ export async function checkTempoReceivePolicies(
   // `(1, 0)`, open, and the read alone would wave the burn address through.
   // `unreadable` rather than `blocked`: "ask that destination to open its
   // policy" is not advice anyone can act on about the fee sink.
-  const unpayable = legs.find(({ to }) => TEMPO_UNPAYABLE_ADDRESSES.includes(to.toLowerCase()));
+  const unpayable = legs.find(({ to }) => TEMPO_UNPAYABLE_ADDRESSES.includes(to));
   if (unpayable !== undefined) {
     return {
       ok: false,
@@ -575,17 +584,13 @@ export async function checkTempoReceivePolicies(
         message: `${to} is a virtual address; its receive policy is its master's, which cannot be read.`,
       };
     }
-    const allowed = await canReceiveFrom(client, {
-      token: check.token,
-      sender: check.payer,
-      recipient: to,
-    });
+    const allowed = await canReceiveFrom(client, { token, sender: payer, recipient: to });
     if (allowed === null) {
       return {
         ok: false,
         leg,
         reason: 'unreadable',
-        message: `Could not read whether ${to} accepts ${check.token}; refusing to pay blind.`,
+        message: `Could not read whether ${to} accepts ${token}; refusing to pay blind.`,
       };
     }
     if (!allowed) {

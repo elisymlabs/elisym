@@ -286,10 +286,20 @@ export async function resolveTempoTransferOutcome(
   if (await notOnThisChain(client, options)) {
     return { state: 'pending' };
   }
-  const receipt = await withAbort(
-    client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
-    options.signal,
-  ).catch(() => undefined);
+  // The call is INSIDE the try, not only the promise it returns: a provider
+  // that validates its params synchronously throws before `withAbort` is
+  // handed anything to attach a handler to, and this function's header
+  // promises that every rpc failure is `pending`.
+  const receipt = await (async () => {
+    try {
+      return await withAbort(
+        client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
+        options.signal,
+      );
+    } catch {
+      return undefined;
+    }
+  })();
   // No test can kill this line and none should be written for it: a failed
   // read falls through `fromReceipt` to the same `pending` anyway. It says in
   // one place what that path only implies - a read that did not happen is not
@@ -345,13 +355,13 @@ async function fromReceipt(
     return { state: 'pending' };
   }
 
-  const blocked = blockedLeg(logs, expected, hash, blockNumber);
+  const blockHash = readTxHash(readField(receipt, 'blockHash'));
+  const blocked = blockedLeg(logs, expected, hash, blockNumber, blockHash);
   if (blocked !== null) {
     return blocked;
   }
 
   const found: TempoTransferLog[] = [];
-  const blockHash = readTxHash(readField(receipt, 'blockHash'));
   for (const leg of expected) {
     const event = leg.memo === undefined ? 'Transfer' : 'TransferWithMemo';
     const match = logs
@@ -386,13 +396,20 @@ function blockedLeg(
   expected: readonly TempoLegExpectation[],
   hash: string,
   blockNumber: number,
+  blockHash: string | null,
 ): TempoTransferOutcome | null {
   for (const entry of logs) {
     const decoded = decodeTempoBlockedLog(entry);
     if (
       decoded.kind !== 'log' ||
       decoded.log.transactionHash !== hash ||
-      decoded.log.blockNumber !== blockNumber
+      decoded.log.blockNumber !== blockNumber ||
+      // ...and the same BLOCK by hash, as the transfer pass does. A guard log
+      // decides the more expensive of the two verdicts - `blocked` tells the
+      // sender its money is parked, and a caller that re-sends on that reading
+      // pays twice - and it is read FIRST, so an unbound one wins over a
+      // delivered match. Height alone is a value the two networks share.
+      decoded.log.blockHash !== blockHash
     ) {
       continue;
     }

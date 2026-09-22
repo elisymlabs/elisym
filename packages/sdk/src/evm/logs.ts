@@ -95,6 +95,13 @@ export interface TempoBlockedLog {
   transactionHash: string;
   logIndex: number;
   blockNumber: number;
+  /**
+   * The block this log was read in, by hash. Its twin on `TempoTransferLog`
+   * exists so a reader can bind a log to the chain it came from, and a guard
+   * log decides the more expensive verdict of the two: `blocked` tells a
+   * sender its money is parked.
+   */
+  blockHash: string;
 }
 
 /**
@@ -354,8 +361,26 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
       transactionHash: header.transactionHash,
       logIndex: header.logIndex,
       blockNumber: header.blockNumber,
+      blockHash: header.blockHash,
     },
   };
+}
+
+/**
+ * One block read, or `null`.
+ *
+ * The `.catch` has to cover the CALL, not only the promise it should return: a
+ * provider that validates its params synchronously - a browser wallet, a proxy
+ * - throws before there is a promise to attach a handler to, and the throw
+ * then escapes two helpers whose whole contract is "or `null`". Both readers
+ * below go through here, and both sides of the rail read them.
+ */
+async function requestBlockOrNull(client: Eip1193Client, tag: string): Promise<unknown> {
+  try {
+    return await client.request({ method: 'eth_getBlockByNumber', params: [tag, false] });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -366,9 +391,7 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
  * one.
  */
 export async function readFinalizedBlock(client: Eip1193Client): Promise<TempoHeadRef | null> {
-  const block = await client
-    .request({ method: 'eth_getBlockByNumber', params: ['finalized', false] })
-    .catch(() => null);
+  const block = await requestBlockOrNull(client, 'finalized');
   const number = readBlockNumber(readField(block, 'number'));
   const timestamp = readBlockNumber(readField(block, 'timestamp'));
   if (number === null || timestamp === null) {
@@ -382,9 +405,7 @@ export async function readBlockByNumber(
   client: Eip1193Client,
   blockNumber: number,
 ): Promise<TempoBlockRef | null> {
-  const block = await client
-    .request({ method: 'eth_getBlockByNumber', params: [toQuantity(blockNumber), false] })
-    .catch(() => null);
+  const block = await requestBlockOrNull(client, toQuantity(blockNumber));
   const number = readBlockNumber(readField(block, 'number'));
   const timestamp = readBlockNumber(readField(block, 'timestamp'));
   const hash = readTxHash(readField(block, 'hash'));
