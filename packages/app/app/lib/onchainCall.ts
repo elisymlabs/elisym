@@ -89,6 +89,13 @@ export interface CallView {
    * never describe such a call as moving nothing.
    */
   unattributed: string[];
+  /**
+   * The subset of `unattributed` that changes HANDS: somebody else's token
+   * account gets a new owner, delegate or close authority, or is frozen. No
+   * ordinary swap does that, so the sheet says it in stronger words and lists
+   * these accounts apart from the rest.
+   */
+  authorityChanged: string[];
 }
 
 /**
@@ -180,6 +187,7 @@ export function toCallView(
     fee: compactZeros(displayAmount(facts.feeLamports ?? 0n, NATIVE_SOL.decimals)),
     movesNothing: movements.length === 0,
     unattributed: facts.unattributed ?? [],
+    authorityChanged: facts.unattributedAuthority ?? [],
   };
 }
 
