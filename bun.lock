@@ -14,9 +14,9 @@
     },
     "packages/app": {
       "name": "@elisym/app",
-      "version": "0.17.1",
+      "version": "0.17.2",
       "dependencies": {
-        "@elisym/sdk": "~0.38.0",
+        "@elisym/sdk": "~0.39.0",
         "@solana-program/memo": "~0.11.0",
         "@solana-program/token": "~0.14.0",
         "@solana/kit": "~6.8.0",
@@ -56,12 +56,12 @@
     },
     "packages/cli": {
       "name": "@elisym/cli",
-      "version": "0.33.0",
+      "version": "0.33.1",
       "bin": {
         "elisym": "./dist/index.js",
       },
       "dependencies": {
-        "@elisym/sdk": "~0.38.0",
+        "@elisym/sdk": "~0.39.0",
         "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",
         "@solana-program/token": "~0.14.0",
@@ -112,7 +112,7 @@
         "waku": "1.0.0-beta.1",
       },
       "devDependencies": {
-        "@elisym/sdk": "~0.38.0",
+        "@elisym/sdk": "~0.39.0",
         "@types/react": "~19.2.0",
         "@types/react-dom": "~19.2.0",
         "typescript": "~5.7.0",
@@ -120,12 +120,12 @@
     },
     "packages/mcp": {
       "name": "@elisym/mcp",
-      "version": "0.28.0",
+      "version": "0.29.0",
       "bin": {
         "elisym-mcp": "./dist/index.js",
       },
       "dependencies": {
-        "@elisym/sdk": "~0.38.0",
+        "@elisym/sdk": "~0.39.0",
         "@modelcontextprotocol/sdk": "~1.28.0",
         "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",
@@ -147,7 +147,7 @@
     },
     "packages/sdk": {
       "name": "@elisym/sdk",
-      "version": "0.38.0",
+      "version": "0.39.0",
       "dependencies": {
         "yaml": "~2.8.3",
         "zod": "~3.25.0",

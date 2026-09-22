@@ -19,6 +19,7 @@ import {
   MAX_CALL_BASE64_CHARS,
   MAX_EXPLAIN_ENTRIES,
   MAX_EXPLAIN_TEXT_CHARS,
+  ONCHAIN_AUTHORITY_CHANGE_NOTICE,
   ONCHAIN_DISCLAIMER,
   ONCHAIN_UNATTRIBUTED_NOTICE,
   USDC_SOLANA_DEVNET,
@@ -59,6 +60,7 @@ import {
   nativeOutflowOf,
   onchainTools,
   outflowOf,
+  refusedAccounts,
   refusesUnattributed,
   settledOutcome,
   unattributedRefusal,
@@ -482,7 +484,7 @@ describe('sign_onchain_call - what the SOL session cap must see', () => {
 });
 
 describe('sign_onchain_call - accounts outside the ceilings', () => {
-  it('refuses by default, because nothing bounds what a call does to them', () => {
+  it('refuses by default on a non-empty list of accounts that change hands', () => {
     expect(refusesUnattributed(['5rWZFsmzGkVpS8N7hBhKrnBEEbLKWUYUCiTeXPQVCVCv'], undefined)).toBe(
       true,
     );
@@ -848,6 +850,70 @@ describe('previewTrailing - what elisym says in its own voice before signing', (
       nonceId: 'nonce-1',
     }).join('\n');
     expect(trailing).toContain('cannot be armed for it');
+  });
+});
+
+describe('sign_onchain_call - WHICH accounts it refuses on by default (D18)', () => {
+  const POOL_STATE = '5rWZFsmzGkVpS8N7hBhKrnBEEbLKWUYUCiTeXPQVCVCv';
+  const VAULT = '4ARYGgibfQDcERcBj8E8pjcoE5SmeHXsAHe2HhQmKxYV';
+  const baseFacts = {
+    programs: [],
+    innerPrograms: [],
+    instructionCount: 1,
+    deltas: [],
+    grants: [],
+    feeLamports: 5_000n,
+  };
+
+  it('does NOT refuse a call that only writes to accounts it cannot attribute', () => {
+    // A routed swap: a pool vault drained, pool state written. The wide list is
+    // non-empty on practically every one, so refusing on it made the override a
+    // reflex - and a warning that always sounds says nothing.
+    const facts = { ...baseFacts, unattributed: [POOL_STATE, VAULT], unattributedAuthority: [] };
+    expect(refusedAccounts(facts)).toEqual([]);
+    expect(refusesUnattributed(refusedAccounts(facts), undefined)).toBe(false);
+  });
+
+  it('refuses when a foreign token account changes hands, and names only those accounts', () => {
+    const facts = {
+      ...baseFacts,
+      unattributed: [POOL_STATE, VAULT],
+      unattributedAuthority: [VAULT],
+    };
+    expect(refusedAccounts(facts)).toEqual([VAULT]);
+    expect(refusesUnattributed(refusedAccounts(facts), undefined)).toBe(true);
+    expect(refusesUnattributed(refusedAccounts(facts), true)).toBe(false);
+  });
+
+  it('fails CLOSED on facts that carry no narrow list: the wide one is refused on, as before', () => {
+    const facts = { ...baseFacts, unattributed: [POOL_STATE] };
+    expect(refusedAccounts(facts)).toEqual([POOL_STATE]);
+    expect(refusesUnattributed(refusedAccounts(facts), undefined)).toBe(true);
+  });
+
+  it('says in the refusal that the account changes HANDS, in elisym’s own voice', () => {
+    const text = String(unattributedRefusal([VAULT]).content[0]?.text);
+    const end = text.indexOf('UNTRUSTED EXTERNAL CONTENT END');
+    expect(text.indexOf(VAULT)).toBeLessThan(end);
+    expect(text.indexOf(ONCHAIN_AUTHORITY_CHANGE_NOTICE)).toBeGreaterThan(end);
+  });
+
+  it('puts the stronger notice FIRST in a preview the caller reached by accepting it', () => {
+    const args = {
+      asset: USDC_SOLANA_DEVNET,
+      descriptor,
+      applied: { spendSubunits: 1n, authoritySubunits: 0n, incidentalLamports: 1n },
+      hasUnattributed: true,
+      claimable: true,
+      nonceId: 'nonce',
+    };
+    const accepted = previewTrailing({ ...args, hasAuthorityChange: true });
+    expect(accepted[0]).toBe(ONCHAIN_AUTHORITY_CHANGE_NOTICE);
+    expect(accepted).toContain(ONCHAIN_UNATTRIBUTED_NOTICE);
+    // An ordinary swap: the notice, and NOT the stronger words.
+    const ordinary = previewTrailing(args);
+    expect(ordinary).not.toContain(ONCHAIN_AUTHORITY_CHANGE_NOTICE);
+    expect(ordinary).toContain(ONCHAIN_UNATTRIBUTED_NOTICE);
   });
 });
 

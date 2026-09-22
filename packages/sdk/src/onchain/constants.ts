@@ -150,6 +150,19 @@ export const ONCHAIN_UNATTRIBUTED_NOTICE =
   'cover what this call does to them.';
 
 /**
+ * The stronger words, for the narrow list: a token account that is not the
+ * signer's own, or a mint, changed HANDS in this call. A swap never does that to a
+ * pool vault or to a mint, and it is what a takeover of funds a program holds for
+ * the customer - or of a token the customer issued - looks like. So a client with
+ * no human in the loop refuses on it by default.
+ */
+export const ONCHAIN_AUTHORITY_CHANGE_NOTICE =
+  "This call changes who controls a token account that is not your wallet's own - a new " +
+  'owner, a new delegate or close authority, a freeze - or who may mint or freeze a token. ' +
+  'An ordinary swap never does that. If the account holds funds on your behalf, or the token ' +
+  'is one you issued, this hands it to someone else.';
+
+/**
  * Human wording for every refusal, shared by both clients so the same rejection
  * reads identically wherever a customer meets it. The verifier's `detail`
  * carries the specifics; this is the headline.
