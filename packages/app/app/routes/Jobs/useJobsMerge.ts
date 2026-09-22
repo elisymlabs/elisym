@@ -1,5 +1,4 @@
 import type { ElisymClient, ElisymIdentity } from '@elisym/sdk';
-import { useWallet } from '@solana/wallet-adapter-react';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo } from 'react';
 import { useElisymClient } from '~/hooks/useElisymClient';
@@ -33,11 +32,7 @@ interface RelaySide {
  * fresh (non-reactively) here - the id set depends on them, but the query
  * must not re-run on every store write.
  */
-async function fetchRelaySide(
-  client: ElisymClient,
-  identity: ElisymIdentity,
-  wallet: string,
-): Promise<RelaySide> {
+async function fetchRelaySide(client: ElisymClient, identity: ElisymIdentity): Promise<RelaySide> {
   const identityPubkey = identity.publicKey;
   const since = Math.floor(Date.now() / 1000) - RELAY_WINDOW_SECS;
   const fetched = await client.marketplace.fetchRecentJobs(
@@ -63,7 +58,7 @@ async function fetchRelaySide(
   const localCutoffMs = Date.now() - RELAY_WINDOW_SECS * 1000;
   const providerByRequest = new Map<string, string>();
   const resultIds: string[] = [];
-  for (const local of readJobs(wallet)) {
+  for (const local of readJobs(identityPubkey)) {
     // Wrong-network rows are hidden by the merge (D13) - do not spend result
     // queries flipping entries the page will never show.
     if (
@@ -98,21 +93,22 @@ async function fetchRelaySide(
 
 export function useJobsMerge(): {
   rows: JobRowData[];
-  wallet: string;
+  owner: string;
   merged: boolean;
   isFetching: boolean;
   isError: boolean;
   refetch: () => void;
 } {
-  const { publicKey } = useWallet();
-  const wallet = publicKey?.toBase58() ?? '';
   const idCtx = useIdentity();
   const identity = idCtx.identity;
   const { client } = useElisymClient();
-  const { jobs: localJobs, flipJob } = useJobHistory({ wallet });
+  const { owner, jobs: localJobs, flipJob } = useJobHistory();
 
   const query = useQuery({
-    queryKey: ['jobs-relay-merge', identity?.publicKey ?? '', wallet],
+    // Both halves of this page are the identity's now: the relay side always
+    // was (it queries by author), and the local side no longer depends on
+    // which wallet happens to be connected.
+    queryKey: ['jobs-relay-merge', owner],
     enabled: identity !== null,
     staleTime: 60_000,
     retry: 1,
@@ -120,7 +116,7 @@ export function useJobsMerge(): {
       if (identity === null) {
         throw new Error('Jobs merge queried without an identity.');
       }
-      return fetchRelaySide(client, identity, wallet);
+      return fetchRelaySide(client, identity);
     },
   });
 
@@ -135,10 +131,10 @@ export function useJobsMerge(): {
   const pageVisible = usePageVisible();
   const data = query.data;
   useEffect(() => {
-    if (!data || !wallet) {
+    if (!data || !owner) {
       return;
     }
-    for (const local of readJobs(wallet)) {
+    for (const local of readJobs(owner)) {
       if (isTerminalJobStatus(local.status)) {
         continue;
       }
@@ -152,7 +148,7 @@ export function useJobsMerge(): {
         { stampUnseen: !pageVisible },
       );
     }
-  }, [data, wallet, flipJob, pageVisible]);
+  }, [data, owner, flipJob, pageVisible]);
 
   const rows = useMemo(
     () => buildJobRows(localJobs, data?.jobs ?? [], SOLANA_CLUSTER),
@@ -161,7 +157,7 @@ export function useJobsMerge(): {
 
   return {
     rows,
-    wallet,
+    owner,
     merged: data !== undefined,
     isFetching: query.isFetching,
     isError: query.isError,

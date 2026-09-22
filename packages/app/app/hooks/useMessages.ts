@@ -6,6 +6,7 @@ import { useIdentity } from '~/hooks/useIdentity';
 import { useLocalQuery } from '~/hooks/useLocalQuery';
 import { purgeChatSessions } from '~/lib/chatSession';
 import { purgeIdentityThreadEntries } from '~/lib/chatThread';
+import { purgeJobHistory } from '~/lib/jobHistory';
 import { cacheDeleteWhere } from '~/lib/localCache';
 import { readCursors, readCursorsVersion, subscribeReadCursors } from '~/lib/readCursors';
 
@@ -29,10 +30,13 @@ export function threadQueryKey(identityPubkey: string, counterpartPubkey: string
  * caches once - their writes were removed with the Chat tab (they were
  * write-only dead weight) and this clears historical residue.
  *
- * Deliberately NOT covered: the wallet-keyed `elisym:job-history:<wallet>`
- * payment ledger (scoped to the Solana wallet, not the Nostr identity - it
- * exists for tx-proof lookups and is disconnected from identity logout);
- * `rated:<jobId>` flags and `elisym:unseen-artifacts` id lists (content-free
+ * The job ledger (`elisym:job-history:<identity>`) IS covered, since it became
+ * identity-keyed: a provider key pasted on a shared machine must not leave a
+ * list of what it bought - with amounts, agents and payment hashes - behind it.
+ * Its migration marker stays, or logging the same key back in would copy the
+ * legacy wallet-keyed store over again and resurrect what was just deleted.
+ *
+ * Deliberately NOT covered: `rated:<jobId>` flags and `elisym:unseen-artifacts` id lists (content-free
  * booleans/ids - the unseen reader intersects with the identity's rendered
  * entries, so foreign ids are inert); the pre-feature `elisym:artifacts:*`
  * localStorage keys (untouched on disk by design - no import, no deletion);
@@ -55,6 +59,9 @@ export async function purgeIdentityCaches(
         query.queryKey[0] === 'chat-thread-hydration') &&
       query.queryKey[2] === identityPubkey,
   });
+  // Synchronous and first: the nav badge reads this store, and leaving it lit
+  // through the awaits below would count a logged-out identity's results.
+  purgeJobHistory(identityPubkey);
   // Thread entries and chat-session keys go through the store modules' own
   // purge primitives (entry-level, lock-held - thread keys are agent-keyed
   // with per-identity values inside; a key-level sweep cannot express that).
