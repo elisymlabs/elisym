@@ -127,7 +127,13 @@ export async function canReceiveFrom(
   const words = readWords(raw, 2);
   const authorized = readUint256(words?.[0]);
   const reason = readUint256(words?.[1]);
-  if (authorized === null || reason === null) {
+  // A first word that is neither 0 nor 1 is not a verdict this code knows how
+  // to read - a future flag, or a different contract at the same address - and
+  // calling it `blocked` hands the caller an actionable but wrong instruction
+  // ("ask that destination to open its policy") about an answer we could not
+  // parse. `readTempoReceivePolicy` refuses `configured > 1n` for exactly this
+  // reason; unreadable, like every other answer that is not the shape.
+  if (authorized === null || reason === null || authorized > 1n) {
     return null;
   }
   return authorized === 1n && reason === 0n;

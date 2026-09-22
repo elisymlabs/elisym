@@ -94,7 +94,8 @@ describe('validateTempoPaymentRequest', () => {
     ['recipient', { recipient: 'not-an-address' }, 'invalid_recipient_address'],
     ['fee_address', { fee_address: 'not-an-address', fee_amount: '250' }, 'fee_address_mismatch'],
     ['fee_amount', { fee_address: TREASURY, fee_amount: 250 }, 'fee_amount_mismatch'],
-    ['a field with no code of its own', { expiry_secs: -1 }, 'invalid_amount'],
+    ['a field with no code of its own', { expiry_secs: -1 }, 'invalid_json'],
+    ['the amount itself', { amount: -1 }, 'invalid_amount'],
     ['a version this rail does not speak', { v: 3 }, 'unsupported_version'],
   ])('maps a schema failure on %s to a code that names the field', (_label, fields, code) => {
     // The deviation this validator claims over the Solana one is that a
@@ -428,12 +429,44 @@ describe('validateTempoPaymentRequest', () => {
     expect(problem?.code).toBe('self_payment');
   });
 
+  it('refuses a card whose asset is not an asset, rather than throwing', () => {
+    // A discovered card gets its asset from `resolveKnownAsset`, which answers
+    // `undefined` for a coin the registry does not carry. With an
+    // `expectedAsset` beside it the `??` never fires, so the coin comparison
+    // reads `.mint` off nothing - and this function's contract is to refuse.
+    const problem = validateTempoPaymentRequest(
+      requestJson(),
+      bounds({
+        card: { recipient: RECIPIENT, jobPriceSubunits: 10_000n },
+        expectedAsset: USDCE_TEMPO_MAINNET,
+      }) as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
+    );
+    expect(problem?.code).toBe('invalid_bounds');
+  });
+
+  it('accepts a card whose mint is spelled in another case', () => {
+    // The last address comparison in this file that was case-sensitive. A card
+    // built from an explorer value or `getAddress()` carries a checksummed
+    // mint, and refusing it said "agreed to pay usdce, but the request debits
+    // usdce" - the same coin, spelled twice.
+    const shouted = { ...USDCE_TEMPO_MAINNET, mint: `0x${USDCE.slice(2).toUpperCase()}` };
+    expect(
+      validateTempoPaymentRequest(
+        requestJson(),
+        bounds({ card: { recipient: RECIPIENT, asset: shouted, jobPriceSubunits: 10_000n } }),
+      ),
+    ).toBeNull();
+  });
+
   it.each([
     ['not an address at all', 'the-customer'],
     ['a virtual address', `0x11223344${'fd'.repeat(10)}556677889900`],
   ])('refuses to pay from %s', (_label, payer) => {
+    // The CALLER's own address, so the caller's own code. Telling a customer
+    // that the PROVIDER named a bad recipient sends them to another provider
+    // for ever, over their own malformed wallet address.
     expect(validateTempoPaymentRequest(requestJson(), bounds({ payer }))?.code).toBe(
-      'invalid_recipient_address',
+      'invalid_bounds',
     );
   });
 
@@ -586,6 +619,53 @@ describe('checkTempoReceivePolicies', () => {
       feeAddress: TREASURY,
     });
     expect(verdict).toEqual({ ok: true });
+  });
+
+  it.each([
+    ['is not an object at all', null],
+    ['names no chain to read policies on', { token: USDCE, payer: PAYER, recipient: RECIPIENT }],
+  ])('returns a verdict for a check that %s, rather than throwing', async (_label, check) => {
+    // The sync half guards its bounds; this half read `check.token` straight
+    // into a calldata template and `check.chain.caip2` into a message, so a
+    // dropped record or a chain not yet chosen died on a property read in the
+    // gate that stands between the customer and a signature.
+    const chain = answering({});
+    const verdict = await checkTempoReceivePolicies(
+      chain.client,
+      check as unknown as Parameters<typeof checkTempoReceivePolicies>[1],
+    );
+    expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
+  });
+
+  it.each([
+    ['the burn address', `0x${'0'.repeat(40)}`],
+    ['the transfer guard', TEMPO_TRANSFER_GUARD],
+  ])('refuses %s, which the registry itself calls open', async (_label, destination) => {
+    // A protocol address carries no policy, so the registry answers `(1, 0)`
+    // for it like any open destination. The sync half refuses these four by
+    // name; this half PERMITS money to move and enforced nothing.
+    const chain = answering({});
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: destination,
+    });
+    expect(verdict).toMatchObject({ ok: false, leg: 'provider', reason: 'unreadable' });
+  });
+
+  it('reads a first word that is neither 0 nor 1 as unreadable, not as a refusal', async () => {
+    // A future flag, or another contract at this address. Calling it `blocked`
+    // tells the operator to ask that destination to open its policy - an
+    // actionable instruction about an answer nobody could parse.
+    const chain = answering({ [RECIPIENT]: `0x${'2'.padStart(64, '0')}${'0'.repeat(64)}` });
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+    });
+    expect(verdict).toMatchObject({ ok: false, leg: 'provider', reason: 'unreadable' });
   });
 
   it.each([

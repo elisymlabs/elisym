@@ -22,22 +22,41 @@
 import type { Asset } from '../payment/assets';
 import { assetKey } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
-import { isEvmAddressFormat, isEvmWireAddress, isVirtualEvmAddress } from '../payment/chains';
+import {
+  isEvmAddressFormat,
+  isEvmWireAddress,
+  isVirtualEvmAddress,
+  normalizeEvmAddress,
+} from '../payment/chains';
 import { calculateProtocolFeeSubunits } from '../payment/fee-subunits';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { PaymentValidationError } from '../types';
 import type { Eip1193Client } from './client';
 import { checkEvmChain, MAX_EVM_FEE_BPS } from './config';
-import {
-  TEMPO_POLICY_REGISTRY,
-  TEMPO_UNPAYABLE_ADDRESSES,
-  VALIDATE_RECEIVE_POLICY_SELECTOR,
-} from './constants';
-import { readUint256, readWords } from './rpc-read';
+import { TEMPO_UNPAYABLE_ADDRESSES } from './constants';
+import { canReceiveFrom } from './policy';
 
 /** How long a request may sit unpaid before its window is too short to be worth starting. */
 export const MIN_PAY_WINDOW_SECS = 120;
+
+/**
+ * An asset's full key, with the mint read the way every other address on this
+ * rail is read: case-insensitively.
+ *
+ * `assetKey` interpolates the mint verbatim, which is right for a base58 mint
+ * and wrong for a hex one. A card or a session asset built from an explorer
+ * value or from `getAddress()` carries a CHECKSUMMED mint, and comparing it
+ * verbatim refuses a perfectly good request with a message that says the two
+ * coins differ while spelling the same one twice. A mint this rail cannot read
+ * as an address is left exactly as it came.
+ */
+function coinKey(asset: Pick<Asset, 'chain' | 'token' | 'mint'>): string {
+  if (asset.mint === undefined) {
+    return assetKey(asset);
+  }
+  return assetKey({ ...asset, mint: normalizeEvmAddress(asset.mint) ?? asset.mint });
+}
 
 export interface TempoPaymentCard {
   recipient: string;
@@ -118,7 +137,14 @@ function parseFailureCode(error: {
     if (/\bfee_amount\b/.test(error.message)) {
       return 'fee_amount_mismatch';
     }
-    return 'invalid_amount';
+    if (/\bamount\b/.test(error.message)) {
+      return 'invalid_amount';
+    }
+    // A schema failure naming none of the fields above is a malformed request,
+    // not an amount problem: `memo`, `created_at`, `expiry_secs`, `v` and a
+    // root-level failure all used to report as `invalid_amount`, which is the
+    // wrong code for a caller that switches on it rather than reading English.
+    return 'invalid_json';
   }
   return 'invalid_json';
 }
@@ -152,6 +178,17 @@ export function validateTempoPaymentRequest(
   }
   if (bounds.card !== undefined && (typeof bounds.card !== 'object' || bounds.card === null)) {
     return refuse('invalid_bounds', 'These bounds carry a card that is not a card.');
+  }
+  // The card's ASSET has its own guard, because the coin comparison below
+  // reads `.mint` off it. A discovered card gets its asset from
+  // `resolveKnownAsset`, which answers `undefined` for a coin the registry does
+  // not carry - and with an `expectedAsset` present beside it, the `??` never
+  // fires and the read is reached. Refuse, as every sibling shape does.
+  if (
+    bounds.card !== undefined &&
+    (typeof bounds.card.asset !== 'object' || bounds.card.asset === null)
+  ) {
+    return refuse('invalid_bounds', 'These bounds carry a card whose asset is not an asset.');
   }
   if (
     bounds.expectedAsset !== undefined &&
@@ -213,7 +250,7 @@ export function validateTempoPaymentRequest(
   if (
     bounds.card !== undefined &&
     bounds.expectedAsset !== undefined &&
-    assetKey(bounds.card.asset) !== assetKey(bounds.expectedAsset)
+    coinKey(bounds.card.asset) !== coinKey(bounds.expectedAsset)
   ) {
     // The union allows both, and `??` takes the card's - silently dropping the
     // asset the session agreed to. Two bounds that name different coins are
@@ -230,7 +267,7 @@ export function validateTempoPaymentRequest(
     // of the two - and a refusal rather than a silent pass for one that casts.
     return refuse('invalid_asset', 'These bounds name no asset to pay, so nothing may be paid.');
   }
-  if (assetKey(agreed) !== assetKey(asset)) {
+  if (coinKey(agreed) !== coinKey(asset)) {
     return refuse(
       'asset_mismatch',
       `Asset mismatch: agreed to pay ${agreed.token}, but the request debits ${asset.token}.`,
@@ -259,10 +296,11 @@ export function validateTempoPaymentRequest(
   }
   const payer = bounds.payer.toLowerCase();
   if (!isEvmWireAddress(payer) || isVirtualEvmAddress(payer)) {
-    return refuse(
-      'invalid_recipient_address',
-      `Not an address this rail can pay from: ${bounds.payer}.`,
-    );
+    // The CALLER's own address, so the caller's own code: telling a customer
+    // whose wallet address is malformed that the PROVIDER named a bad
+    // recipient is a lie about which address is wrong, and it sends them
+    // looking for another provider for ever.
+    return refuse('invalid_bounds', `Not an address this rail can pay from: ${bounds.payer}.`);
   }
   // A leg whose sides are equal moves nothing and counts for nothing, so a
   // request pointed back at the payer can only ever waste the gas.
@@ -421,6 +459,26 @@ export async function checkTempoReceivePolicies(
   client: Eip1193Client,
   check: ReceivePolicyCheck,
 ): Promise<ReceivePolicyVerdict> {
+  // The check's own SHAPE first, as the sync half does with its bounds. This
+  // function's contract is to return a verdict, never to throw, and both
+  // `check.token` and `check.chain.caip2` are read below - the chain inside a
+  // message template, which throws only AFTER the reads have been made.
+  if (typeof check !== 'object' || check === null) {
+    return {
+      ok: false,
+      leg: 'provider',
+      reason: 'unreadable',
+      message: 'This policy check is not an object.',
+    };
+  }
+  if (typeof check.chain !== 'object' || check.chain === null) {
+    return {
+      ok: false,
+      leg: 'provider',
+      reason: 'unreadable',
+      message: 'This policy check names no chain to read policies on.',
+    };
+  }
   // The registry lives at the same system address on both Tempo networks and
   // answers plausibly on either, so asking the wrong one is not an error the
   // read itself can report: measured, a receiver that refuses on its own chain
@@ -477,6 +535,21 @@ export async function checkTempoReceivePolicies(
     { leg: 'provider', to: check.recipient },
     ...(check.feeAddress === undefined ? [] : [{ leg: 'fee' as const, to: check.feeAddress }]),
   ];
+  // The four addresses the sync half refuses outright, refused here too. This
+  // half is the last gate before signing and the only one that PERMITS money
+  // to move, and a system address carries no policy - so the registry answers
+  // `(1, 0)`, open, and the read alone would wave the burn address through.
+  // `unreadable` rather than `blocked`: "ask that destination to open its
+  // policy" is not advice anyone can act on about the fee sink.
+  const unpayable = legs.find(({ to }) => TEMPO_UNPAYABLE_ADDRESSES.includes(to.toLowerCase()));
+  if (unpayable !== undefined) {
+    return {
+      ok: false,
+      leg: unpayable.leg,
+      reason: 'unreadable',
+      message: `${unpayable.to} is a protocol address; a payment to it is not a payment.`,
+    };
+  }
   for (const { leg, to } of legs) {
     if (isVirtualEvmAddress(to)) {
       // TIP-1022: the registry answers for the ALIAS, which can never carry a
@@ -490,7 +563,11 @@ export async function checkTempoReceivePolicies(
         message: `${to} is a virtual address; its receive policy is its master's, which cannot be read.`,
       };
     }
-    const allowed = await readValidateReceivePolicy(client, check.token, check.payer, to);
+    const allowed = await canReceiveFrom(client, {
+      token: check.token,
+      sender: check.payer,
+      recipient: to,
+    });
     if (allowed === null) {
       return {
         ok: false,
@@ -526,32 +603,3 @@ export async function checkTempoReceivePolicies(
   return { ok: true };
 }
 
-/** Exactly 64 bytes, and only `(1, 0)` is a yes. `null` means unreadable. */
-async function readValidateReceivePolicy(
-  client: Eip1193Client,
-  token: string,
-  payer: string,
-  recipient: string,
-): Promise<boolean | null> {
-  const argument = (address: string): string =>
-    `${'0'.repeat(24)}${address.slice(2).toLowerCase()}`;
-  const raw = await client
-    .request({
-      method: 'eth_call',
-      params: [
-        {
-          to: TEMPO_POLICY_REGISTRY,
-          data: `${VALIDATE_RECEIVE_POLICY_SELECTOR}${argument(token)}${argument(payer)}${argument(recipient)}`,
-        },
-        'finalized',
-      ],
-    })
-    .catch(() => null);
-  const words = readWords(raw, 2);
-  const authorized = readUint256(words?.[0]);
-  const reason = readUint256(words?.[1]);
-  if (authorized === null || reason === null) {
-    return null;
-  }
-  return authorized === 1n && reason === 0n;
-}
