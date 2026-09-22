@@ -252,6 +252,18 @@ export async function resolveTempoTransferOutcome(
   if (expected.some((leg) => leg.memo === undefined && !isAddressLike(leg.from))) {
     throw new Error('resolveTempoTransferOutcome needs a leg with no memo to name its sender.');
   }
+  // A leg pointed back at its own sender moves nothing, and the two halves of
+  // this rail read it differently: the scan DROPS a `from == to` log
+  // (`logs.ts`), while a receipt would carry it - so the same self-transfer
+  // reads `delivered` from its receipt and `unsent` from the absence proof,
+  // and `unsent` is the verdict that invites a replacement. Refused here
+  // rather than in `matchesLeg`, because a rule in the branch would leave the
+  // receipt path `pending` for ever instead of telling the caller its leg is
+  // the problem. The customer's gate refuses the same shape as
+  // `self_payment`.
+  if (expected.some((leg) => typeof leg.from === 'string' && sameAddress(leg.from, leg.to))) {
+    throw new Error('resolveTempoTransferOutcome needs every leg to move between two addresses.');
+  }
   // A leg of nothing is satisfied by a log that moved nothing, and those are
   // free to forge: `transferFromWithMemo` of zero succeeds from any caller.
   if (expected.some((leg) => typeof leg.amount !== 'bigint' || leg.amount <= 0n)) {
@@ -339,6 +351,7 @@ async function fromReceipt(
   }
 
   const found: TempoTransferLog[] = [];
+  const blockHash = readTxHash(readField(receipt, 'blockHash'));
   for (const leg of expected) {
     const event = leg.memo === undefined ? 'Transfer' : 'TransferWithMemo';
     const match = logs
@@ -348,6 +361,12 @@ async function fromReceipt(
           decoded.kind === 'log' &&
           decoded.log.transactionHash === hash &&
           decoded.log.blockNumber === blockNumber &&
+          // ...and to the same BLOCK, by hash, not only by height. The receipt
+          // above is bound to the chain; its logs arrive in the same object
+          // and are bound to it by number alone, which two chains can share.
+          // `verify.ts` binds a scanned leg's `blockHash` through the same
+          // helper, so this is the third reader of one rule.
+          decoded.log.blockHash === blockHash &&
           !sameAddress(decoded.log.to, TEMPO_FEE_SINK) &&
           matchesLeg(decoded.log, leg),
       );

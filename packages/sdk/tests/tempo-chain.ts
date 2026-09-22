@@ -35,8 +35,13 @@ export interface FakeChainOptions {
   chainId?: unknown;
   /** `null` makes the finalized block unreadable. */
   finalized?: number | null;
-  /** Block timestamps, by number. Anything missing reads as unreadable. */
-  timestamps?: Record<number, number>;
+  /**
+   * Block timestamps, by number. Anything missing reads as unreadable, and a
+   * row can name a block explicitly `undefined` to take back one the default
+   * set provides - which is how "this endpoint cannot show that block" is
+   * written without casting the whole options object.
+   */
+  timestamps?: Record<number, number | undefined>;
   logs?: FakeLog[];
   /** Receipts by transaction hash. A hash that is absent answers `null`. */
   receipts?: Record<string, unknown>;

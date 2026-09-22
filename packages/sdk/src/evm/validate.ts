@@ -52,8 +52,12 @@ export const MIN_PAY_WINDOW_SECS = 120;
  * as an address is left exactly as it came.
  */
 function coinKey(asset: Pick<Asset, 'chain' | 'token' | 'mint'>): string {
-  if (asset.mint === undefined) {
-    return assetKey(asset);
+  // A mint that is not a string is treated as absent rather than interpolated:
+  // `assetKey` builds a template string, and a symbol or a null-prototype
+  // object throws there - in a file that guards seven other "cast past the
+  // type" shapes and whose contract is to refuse, never to throw.
+  if (typeof asset.mint !== 'string') {
+    return assetKey({ ...asset, mint: undefined });
   }
   return assetKey({ ...asset, mint: normalizeEvmAddress(asset.mint) ?? asset.mint });
 }
@@ -270,7 +274,7 @@ export function validateTempoPaymentRequest(
   if (coinKey(agreed) !== coinKey(asset)) {
     return refuse(
       'asset_mismatch',
-      `Asset mismatch: agreed to pay ${agreed.token}, but the request debits ${asset.token}.`,
+      `Asset mismatch: agreed to pay ${coinKey(agreed)}, but the request debits ${coinKey(asset)}.`,
     );
   }
 
@@ -503,7 +507,15 @@ export async function checkTempoReceivePolicies(
     // wrong one file over.
     ...(check.feeAddress === undefined ? [] : [check.feeAddress]),
   ];
-  if (asked.some((address) => !isEvmAddressFormat(address))) {
+  // Case-insensitive, like the sync half: these are the CALLER's own values,
+  // and a wallet answering `0X...` would otherwise pass one gate and fail the
+  // other. `isEvmAddressFormat` anchors on a lowercase prefix, so the spelling
+  // is settled here, once, before it is asked.
+  if (
+    asked.some(
+      (address) => typeof address !== 'string' || !isEvmAddressFormat(address.toLowerCase()),
+    )
+  ) {
     return {
       ok: false,
       leg: 'provider',

@@ -429,6 +429,25 @@ describe('validateTempoPaymentRequest', () => {
     expect(problem?.code).toBe('self_payment');
   });
 
+  it('holds MIN_PAY_WINDOW_SECS at the value the gate is written around', () => {
+    // Every window row derives its input from the constant, so the comparison
+    // was the constant against itself: 119 and 121 both survived. Spelled out,
+    // a typo dies - the same reasoning as the protocol-constants row in the
+    // logs suite.
+    expect(MIN_PAY_WINDOW_SECS).toBe(120);
+  });
+
+  it('accepts a request with EXACTLY the minimum window left', () => {
+    // The boundary itself: `<` and `<=` both passed the suite, because no row
+    // sat on it. A request with exactly the minimum left is payable.
+    expect(
+      validateTempoPaymentRequest(
+        requestJson({ created_at: NOW - (600 - MIN_PAY_WINDOW_SECS) }),
+        bounds(),
+      ),
+    ).toBeNull();
+  });
+
   it('refuses a card whose asset is not an asset, rather than throwing', () => {
     // A discovered card gets its asset from `resolveKnownAsset`, which answers
     // `undefined` for a coin the registry does not carry. With an
@@ -442,6 +461,23 @@ describe('validateTempoPaymentRequest', () => {
       }) as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
     );
     expect(problem?.code).toBe('invalid_bounds');
+  });
+
+  it('refuses a card whose mint is not a string, rather than throwing', () => {
+    // `assetKey` builds a template string, so a symbol or a null-prototype
+    // object there throws - out of a function whose contract is to refuse. An
+    // unreadable mint is treated as absent, and the coins then differ.
+    const problem = validateTempoPaymentRequest(
+      requestJson(),
+      bounds({
+        card: {
+          recipient: RECIPIENT,
+          asset: { ...USDCE_TEMPO_MAINNET, mint: Symbol('mint') },
+          jobPriceSubunits: 10_000n,
+        },
+      }) as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
+    );
+    expect(problem?.code).toBe('asset_mismatch');
   });
 
   it('accepts a card whose mint is spelled in another case', () => {
@@ -652,6 +688,73 @@ describe('checkTempoReceivePolicies', () => {
       recipient: destination,
     });
     expect(verdict).toMatchObject({ ok: false, leg: 'provider', reason: 'unreadable' });
+  });
+
+  it('refuses an unpayable FEE address, and names the fee leg', async () => {
+    // The gate was pinned on the provider leg only: applying it to `legs[0]`
+    // alone survived the whole suite, and so did labelling every unreadable
+    // verdict `provider`. A treasury misconfigured to the fee sink is the
+    // shape this half exists to catch before a signature.
+    const chain = answering({});
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      feeAddress: TEMPO_FEE_SINK,
+    });
+    expect(verdict).toMatchObject({ ok: false, leg: 'fee', reason: 'unreadable' });
+  });
+
+  it('refuses an unpayable destination spelled in another case', async () => {
+    // This half takes the CALLER's own values, and a wallet answers EIP-55 -
+    // there is a row for that. So the gate's own lowercasing is load-bearing
+    // here in a way it is not in the sync half, where the schema has already
+    // forced the spelling.
+    const chain = answering({});
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: `0x${TEMPO_TRANSFER_GUARD.slice(2).toUpperCase()}`,
+    });
+    expect(verdict).toMatchObject({ ok: false, leg: 'provider', reason: 'unreadable' });
+  });
+
+  it('names the FEE leg when the fee leg is the one that cannot be read', async () => {
+    // The loop's own `leg` label was unpinned too: replacing it with the
+    // constant `provider` survived.
+    const chain = answering({ [TREASURY]: '0x' });
+    const verdict = await checkTempoReceivePolicies(chain.client, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      feeAddress: TREASURY,
+    });
+    expect(verdict).toMatchObject({ ok: false, leg: 'fee', reason: 'unreadable' });
+  });
+
+  it('returns a verdict when the provider throws SYNCHRONOUSLY, rather than rejecting', async () => {
+    // A `.catch` on the promise never sees a provider that validates params
+    // before there is a promise - a browser wallet or a proxy - and the throw
+    // escaped a function whose whole contract is to answer with a verdict.
+    const chain = answering({});
+    const throwing = {
+      request(args: { method: string }) {
+        if (args.method === 'eth_call') {
+          throw new Error('provider rejected the call synchronously');
+        }
+        return chain.client.request(args as Parameters<typeof chain.client.request>[0]);
+      },
+    } as unknown as typeof chain.client;
+    const verdict = await checkTempoReceivePolicies(throwing, {
+      chain: CHAINS.TEMPO_MAINNET,
+      token: USDCE,
+      payer: PAYER,
+      recipient: RECIPIENT,
+    });
+    expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
   });
 
   it('reads a first word that is neither 0 nor 1 as unreadable, not as a refusal', async () => {
@@ -1180,8 +1283,11 @@ describe('resolveTempoTransferOutcome', () => {
       [RECIPIENT, 10_000n, BATCH_MEMO],
       [TREASURY, 10_000n, BATCH_MEMO],
     ]);
-    // Each leg comes off a DISTINCT log of the transaction, never one log
-    // answering twice - the shape P44 records for a caller-built leg set.
+    // Each leg comes off a distinct log HERE, because the two name different
+    // destinations and no source change could make them share one. It does NOT
+    // pin the rule P44 records - two legs to ONE destination are still both
+    // satisfied by a single log - and claiming it did was the row saying more
+    // than it holds. P44 is triaged to 2b-ii-b with the leg set it needs.
     expect(new Set(credited.map((leg) => leg.logIndex)).size).toBe(2);
     for (const leg of credited) {
       expect(leg.transactionHash).toBe(BATCH_HASH);
@@ -1299,7 +1405,7 @@ describe('resolveTempoTransferOutcome', () => {
       ...(blockHash === undefined
         ? { timestamps: { 40_000_000: NOW, [BATCH_BLOCK]: undefined } }
         : { blockHashes: { [BATCH_BLOCK]: blockHash } }),
-    } as unknown as FakeChainOptions);
+    });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
       chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
@@ -1307,6 +1413,62 @@ describe('resolveTempoTransferOutcome', () => {
       validBefore: NOW + 60,
     });
     expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('credits nothing off a receipt whose LOGS name another block', async () => {
+    // The receipt is bound to the chain; its logs arrive inside it and were
+    // bound only by block NUMBER, which two chains can share. `verify.ts`
+    // compares a scanned leg's `blockHash`, so this is the third reader of one
+    // rule - and it was the reader without it.
+    const foreignLogs = (BATCH.logs as Record<string, unknown>[]).map((log) => ({
+      ...log,
+      blockHash: `0x${'ad'.repeat(32)}`,
+    }));
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs: foreignLogs } } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('does not call a receipt DELIVERED when its BLOCK could not be read', async () => {
+    // The sibling of the unreadable-`status` row, on the field the chain bind
+    // now leans on: a number where the wire says hex is a shape a real backend
+    // answers, and it is not evidence of anything.
+    const chain = chainWith({
+      receipts: { [BATCH_HASH]: { ...BATCH, blockNumber: 'not-a-block' } },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('refuses a leg pointed back at its own sender, rather than reading one', async () => {
+    // `from == to` moves nothing, and the two halves of this rail read such a
+    // log differently: the scan drops it, a receipt carries it. Left to the
+    // verdicts, the same self-transfer would be `delivered` from its receipt
+    // and `unsent` from the absence proof - and `unsent` invites a
+    // replacement. So it is refused where the caller can see it.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    await expect(
+      resolveTempoTransferOutcome(
+        chain.client,
+        [{ token: USDCE, from: PAYER, to: PAYER, amount: 10_000n }],
+        {
+          chain: CHAINS.TEMPO_MAINNET,
+          hash: BATCH_HASH,
+          floor: BATCH_BLOCK - 100,
+          validBefore: NOW + 60,
+        },
+      ),
+    ).rejects.toThrow(/move between two addresses/);
   });
 
   it('will not call a REVERTED receipt unsent until it is bound to this chain', async () => {
@@ -1482,6 +1644,20 @@ describe('resolveTempoTransferOutcome', () => {
       },
     );
     expect(outcome.state).not.toBe('blocked');
+    // A control on the same chain object, because `pending` is also what a
+    // receipt that was never read answers: without it this row would stay
+    // green if the receipt path broke entirely. The unmodified leg is blocked
+    // here, so the setup is live and the difference is the rule under test.
+    expect(
+      (
+        await resolveTempoTransferOutcome(chain.client, [BLOCKED_LEG], {
+          chain: CHAINS.TEMPO_DEVNET,
+          hash: BLOCKED_HASH,
+          floor: BLOCKED_BLOCK - 100,
+          validBefore: NOW + 60,
+        })
+      ).state,
+    ).toBe('blocked');
   });
 
   it.each([
@@ -1504,6 +1680,25 @@ describe('resolveTempoTransferOutcome', () => {
       validBefore: NOW + 60,
     });
     expect(outcome.state).not.toBe('blocked');
+    // The same control, against the untouched receipt: a guard log this rail
+    // DOES read as ours, on a chain built the same way. `pending` here would
+    // otherwise be indistinguishable from a receipt path that read nothing.
+    const pristine = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    expect(
+      (
+        await resolveTempoTransferOutcome(pristine.client, [BLOCKED_LEG], {
+          chain: CHAINS.TEMPO_DEVNET,
+          hash: BLOCKED_HASH,
+          floor: BLOCKED_BLOCK - 100,
+          validBefore: NOW + 60,
+        })
+      ).state,
+    ).toBe('blocked');
   });
 
   it('calls a REVERTED transaction unsent: it moved nothing and its hash is spent', async () => {
@@ -2671,8 +2866,10 @@ describe('resolveTempoTransferOutcome', () => {
   });
 
   it('stops on an aborted signal rather than scanning the chain twice over', async () => {
-    // Every read here takes the caller's signal. Without them an abandoned
-    // resolve keeps issuing up to 512 log queries per leg plus the control's.
+    // Every read on THIS path takes the caller's signal. Without them an
+    // abandoned resolve keeps issuing up to 512 log queries per leg plus the
+    // control's. The receipt path's chain bind does not take one - it goes
+    // through `readBlockByNumber`, which P16 already names as unwrapped.
     const chain = chainWith({
       receipts: {},
       logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
