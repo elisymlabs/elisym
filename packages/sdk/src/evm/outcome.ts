@@ -169,7 +169,19 @@ function matchesLeg(log: TempoTransferLog, leg: TempoLegExpectation): boolean {
   // for `TransferWithMemo`, so a log without one is `other` and never arrives.
   // The narrowing is for the compiler; no test can kill it, and none should be
   // written to pretend otherwise.
-  return log.memo !== undefined && sameWord(log.memo, leg.memo) && log.amount >= leg.amount;
+  //
+  // `from == to` proves nothing and is refused here as it is everywhere else
+  // this log class is read: an infinite allowance is never decremented, so
+  // `transferFromWithMemo(from = X, to = X)` is a free full-amount memo log for
+  // anyone holding X's allowance. The scan drops such an entry (`logs.ts`) and
+  // the provider refuses it (`verify.ts`); the receipt path held the rule
+  // nowhere, which is the one-site-of-two shape this rail keeps finding.
+  return (
+    log.memo !== undefined &&
+    !sameAddress(log.from, log.to) &&
+    sameWord(log.memo, leg.memo) &&
+    log.amount >= leg.amount
+  );
 }
 
 /**
@@ -397,7 +409,23 @@ async function provenUnsent(
   options: ResolveTempoTransferOptions,
 ): Promise<TempoTransferOutcome> {
   const finalized = await readFinalizedBlock(client);
-  if (finalized === null || finalized.timestamp < options.validBefore) {
+  // The deadline was bounded when it arrived; the head it is compared against
+  // needs the CEILING of that same window, because one bounded operand is no
+  // comparison at all. Tempo's own consensus counts in milliseconds, so an rpc
+  // answering a millisecond `timestamp` is one translation away - and such a
+  // value clears every deadline by three orders of magnitude, which would call
+  // every transfer still sitting in the mempool `unsent`. That is the
+  // replacement that pays twice, decided by a number that was never a time.
+  //
+  // Only the ceiling is written, because only the ceiling is reachable: a head
+  // BELOW `EARLIEST_TEMPO_SECONDS` is below `validBefore` too - the deadline
+  // may not be smaller - so the comparison on the next line already answers
+  // `pending` for it, and a floor here could never be killed by a test.
+  if (
+    finalized === null ||
+    finalized.timestamp > LATEST_TEMPO_SECONDS ||
+    finalized.timestamp < options.validBefore
+  ) {
     return { state: 'pending' };
   }
   for (const leg of expected) {

@@ -1194,6 +1194,28 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome.state).toBe('pending');
   });
 
+  it('does not credit a memo log whose sender IS its destination', async () => {
+    // `from == to` proves nothing: an infinite allowance is never decremented,
+    // so `transferFromWithMemo(from = X, to = X)` is a free full-amount memo
+    // log for anyone holding X's allowance. The scan drops such an entry and
+    // the provider refuses it; the receipt path is the third reader of this
+    // log class, and it held the rule nowhere.
+    const selfAddressed = (BATCH.logs as Record<string, unknown>[]).map((log) => {
+      const topics = log.topics as string[];
+      return topics[0] === TRANSFER_WITH_MEMO_TOPIC
+        ? { ...log, topics: [topics[0], topics[2], topics[2], topics[3]] }
+        : log;
+    });
+    const chain = chainWith({ receipts: { [BATCH_HASH]: { ...BATCH, logs: selfAddressed } } });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome.state).toBe('pending');
+  });
+
   it('holds a memo-less leg to its EXACT amount, having nothing else to bind it', async () => {
     // A withdrawal carries no memo: the sender, the destination and the size
     // are the whole binding, so a transfer one subunit off is another one.
@@ -1529,6 +1551,27 @@ describe('resolveTempoTransferOutcome', () => {
       receipts: {},
       logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
       timestamps: { 40_000_000: NOW + 59 },
+    });
+    const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('refuses a HEAD that is a number but not a time, however far past the deadline', async () => {
+    // The mirror of "refuses a deadline of %s, which is a number but not a
+    // time", on the other operand. Tempo counts in milliseconds internally, so
+    // an endpoint answering a millisecond `timestamp` is one translation away
+    // - and it clears every deadline at once. The scan below is then honestly
+    // empty, because the transaction is still in the mempool, and calling that
+    // `unsent` invites the replacement that pays twice.
+    const chain = chainWith({
+      receipts: {},
+      logs: history(USDCE, BATCH_BLOCK - 100, 40_000_000),
+      timestamps: { 40_000_000: NOW * 1000 },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
       chain: CHAINS.TEMPO_MAINNET,
