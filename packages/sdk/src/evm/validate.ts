@@ -21,12 +21,7 @@
 
 import type { Asset } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
-import {
-  isEvmAddressFormat,
-  isEvmWireAddress,
-  isVirtualEvmAddress,
-  normalizeEvmAddress,
-} from '../payment/chains';
+import { isEvmWireAddress, isVirtualEvmAddress, normalizeEvmAddress } from '../payment/chains';
 import { calculateProtocolFeeSubunits } from '../payment/fee-subunits';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
@@ -290,7 +285,7 @@ export function validateTempoPaymentRequest(
         `${request.recipient}.`,
     );
   }
-  // Three protocol system accounts and the burn address. Money sent to any of
+  // Four protocol system accounts and the burn address. Money sent to any of
   // them is gone, and the fee sink is excluded from every leg match by name -
   // a payment there could never be read back as delivered.
   const destinations = [request.recipient, request.fee_address];
@@ -520,10 +515,13 @@ export async function checkTempoReceivePolicies(
   // TIP-1022 guards - and this is the one function whose `ok` is permission to
   // move money. So the spelling a wallet hands us is accepted and then
   // forgotten; `null` here is "not an address", exactly as before.
+  // `normalizeEvmAddress` answers `undefined` for exactly what
+  // `isEvmAddressFormat` refuses, and lowercasing never breaks the format - so
+  // re-running the format check here would be a guard no test could kill.
   const normalized = asked.map((address) =>
-    typeof address === 'string' ? normalizeEvmAddress(address) : null,
+    typeof address === 'string' ? normalizeEvmAddress(address) : undefined,
   );
-  if (normalized.some((address) => address === null || !isEvmAddressFormat(address))) {
+  if (normalized.some((address) => address === undefined)) {
     return {
       ok: false,
       leg: 'provider',
@@ -556,7 +554,7 @@ export async function checkTempoReceivePolicies(
     { leg: 'provider', to: recipient },
     ...(feeAddress === undefined ? [] : [{ leg: 'fee' as const, to: feeAddress }]),
   ];
-  // The four addresses the sync half refuses outright, refused here too. This
+  // The five addresses the sync half refuses outright, refused here too. This
   // half is the last gate before signing and the only one that PERMITS money
   // to move, and a system address carries no policy - so the registry answers
   // `(1, 0)`, open, and the read alone would wave the burn address through.

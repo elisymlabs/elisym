@@ -747,12 +747,14 @@ describe('checkTempoReceivePolicies', () => {
     ['a virtual recipient', { recipient: `0X11111111${'fd'.repeat(10)}222222222222` }],
     ['a virtual payer', { payer: `0X11111111${'fd'.repeat(10)}222222222222` }],
     ['an unpayable recipient', { recipient: `0X${TEMPO_FEE_SINK.slice(2)}` }],
-  ])('does not let a 0X spelling walk %s past the guards behind it', async (_label, over) => {
-    // `isEvmAddressFormat` anchors on a lowercase prefix and so does
-    // `isVirtualEvmAddress`. A gate that ACCEPTED `0X...` and then carried the
-    // raw string would answer `false` from the alias guard for the very same
-    // value - and this is the one function whose `ok` is permission to move
-    // money. So the spelling is normalised at the gate and forgotten.
+  ])('refuses a 0X spelling of %s at the shape gate, before any read', async (_label, over) => {
+    // These rows hold the SHAPE gate, and the exact message says so: `0X...`
+    // never reaches the alias guard or the unpayable list. That is the point.
+    // `isEvmAddressFormat` and `isVirtualEvmAddress` both anchor on a
+    // lowercase prefix, so a gate that ACCEPTED this spelling and then carried
+    // the raw string would answer `false` from the alias guard for the very
+    // same value - which is what the round before this one shipped. The
+    // normalization that prevents it is pinned by the row below, not by these.
     const chain = answering({});
     const verdict = await checkTempoReceivePolicies(chain.client, {
       chain: CHAINS.TEMPO_MAINNET,
@@ -761,7 +763,13 @@ describe('checkTempoReceivePolicies', () => {
       recipient: RECIPIENT,
       ...over,
     });
-    expect(verdict).toMatchObject({ ok: false, reason: 'unreadable' });
+    expect(verdict).toEqual({
+      ok: false,
+      leg: 'provider',
+      reason: 'unreadable',
+      message: 'This policy check was handed something that is not an address.',
+    });
+    expect(chain.calls.filter((call) => call.method === 'eth_call')).toHaveLength(0);
   });
 
   it('refuses an unpayable destination spelled in another case', async () => {
@@ -1107,6 +1115,7 @@ describe('resolveTempoTransferOutcome', () => {
     };
   }
   const BLOCKED_RECOVERY_WORD = 6;
+  const BLOCKED_ORIGINATOR_WORD = 7;
 
   /** The Moderato receipt's blocked leg, as the sender expected to send it. */
   const BLOCKED_LEG: TempoLegExpectation = {
@@ -1316,6 +1325,10 @@ describe('resolveTempoTransferOutcome', () => {
     // them appears on the wire, a typo in either dies.
     expect(TEMPO_FEE_SINK).toBe('0xfeec000000000000000000000000000000000000');
     expect(TEMPO_POLICY_REGISTRY).toBe('0x403c000000000000000000000000000000000000');
+    // The fifth unpayable address, added after the constant shipped with the
+    // same self-comparing shape: one nibble off and the TIP-1022 registry is
+    // payable again in both halves of the validator.
+    expect(TEMPO_ADDRESS_REGISTRY).toBe('0xfdc0000000000000000000000000000000000000');
     const gasLog = receiptLogs(BATCH).find(
       (log) => log.topics[0] === TRANSFER_TOPIC && log.topics[2]?.endsWith(TEMPO_FEE_SINK.slice(2)),
     );
@@ -1527,6 +1540,43 @@ describe('resolveTempoTransferOutcome', () => {
         },
       ),
     ).rejects.toThrow(/move between two addresses/);
+  });
+
+  it('does not read a stranger-originated guard log as OUR withdrawal', async () => {
+    // A memo-less leg has no memo to bind it, so the guard log's originator is
+    // the whole binding - and the rule was pinned in one direction only:
+    // forcing the comparison to `true` passed the suite. A stranger's block on
+    // the same token and receiver would then answer for our withdrawal, and
+    // the sender would sit at `pending` instead of reaching `unsent`.
+    const guardFromStranger = (BLOCKED.logs as Record<string, unknown>[]).map((log) =>
+      (log.topics as string[])[0] === TRANSFER_BLOCKED_TOPIC
+        ? withDataWord(log, BLOCKED_ORIGINATOR_WORD, `${'0'.repeat(24)}${'ab'.repeat(20)}`)
+        : log,
+    );
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
+      receipts: { [BLOCKED_HASH]: { ...BLOCKED, logs: guardFromStranger } },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [
+        {
+          token: PATHUSD,
+          from: BLOCKED_LEG.from,
+          to: BLOCKED_LEG.to,
+          amount: BLOCKED_LEG.amount,
+        },
+      ],
+      {
+        chain: CHAINS.TEMPO_DEVNET,
+        hash: BLOCKED_HASH,
+        floor: BLOCKED_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
+    );
+    expect(outcome.state).not.toBe('blocked');
   });
 
   it('does not read a GUARD log from another block as our blocked leg', async () => {

@@ -78,6 +78,30 @@ export interface ResolveTempoTransferOptions {
 }
 
 /**
+ * One receipt read, or `undefined`.
+ *
+ * Named, like `requestBlockOrNull` and `callRegistryOrNull`, so the
+ * synchronous-throw rule has ONE shape in the three places that need it: the
+ * call goes inside the `try`, because a provider that validates its params
+ * before returning a promise throws where a `.catch` cannot see it, and this
+ * function's header promises that every rpc failure is `pending`.
+ */
+async function requestReceiptOrUndefined(
+  client: Eip1193Client,
+  hash: string,
+  signal: AbortSignal | undefined,
+): Promise<unknown> {
+  try {
+    return await withAbort(
+      client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
+      signal,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Is this endpoint NOT the chain the caller named?
  *
  * A mismatch throws out of `checkEvmChain` - a misconfiguration the caller has
@@ -290,16 +314,7 @@ export async function resolveTempoTransferOutcome(
   // that validates its params synchronously throws before `withAbort` is
   // handed anything to attach a handler to, and this function's header
   // promises that every rpc failure is `pending`.
-  const receipt = await (async () => {
-    try {
-      return await withAbort(
-        client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
-        options.signal,
-      );
-    } catch {
-      return undefined;
-    }
-  })();
+  const receipt = await requestReceiptOrUndefined(client, hash, options.signal);
   // No test can kill this line and none should be written for it: a failed
   // read falls through `fromReceipt` to the same `pending` anyway. It says in
   // one place what that path only implies - a read that did not happen is not
