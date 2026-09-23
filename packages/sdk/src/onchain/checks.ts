@@ -9,7 +9,7 @@
  * reason a human can act on.
  */
 
-import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR } from '@elisym/pay-core/internal';
+import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR } from '@elisym/pay-core/shared';
 import { AccountRole, isSignerRole } from '@solana/kit';
 import {
   CALL_CLOCK_SKEW_SECS,

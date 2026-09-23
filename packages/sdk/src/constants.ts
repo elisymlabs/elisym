@@ -1,8 +1,9 @@
 // The protocol's identity and the payment bounds live in `@elisym/pay-core`,
 // which owns the money core; they are re-exported here so nothing that read
 // them from the SDK has to move, and spread into the aggregates below so each
-// number is written once.
-import { PAYMENT_DEFAULTS, PAYMENT_LIMITS } from '@elisym/pay-core/internal';
+// number is written once. Read through `./shared`, which pulls in no Solana
+// library: this file is loaded by entries (the agent store) that never pay.
+import { PAYMENT_DEFAULTS, PAYMENT_LIMITS } from '@elisym/pay-core/shared';
 
 export {
   ELISYM_PROTOCOL_TAG,
@@ -10,7 +11,7 @@ export {
   PROTOCOL_PROGRAM_ID_DEVNET,
   PROTOCOL_PROGRAM_ID_MAINNET,
   type ProtocolCluster,
-} from '@elisym/pay-core';
+} from '@elisym/pay-core/shared';
 
 export const RELAYS = [
   // Dedicated elisym relay (self-hosted) first, public relays as fallback.

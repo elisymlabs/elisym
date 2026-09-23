@@ -38,6 +38,16 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./shared": {
+      "import": {
+        "types": "./dist/shared.d.ts",
+        "default": "./dist/shared.js"
+      },
+      "require": {
+        "types": "./dist/shared.d.cts",
+        "default": "./dist/shared.cjs"
+      }
+    },
     "./internal": {
       "import": {
         "types": "./dist/internal.d.ts",

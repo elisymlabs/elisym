@@ -30,7 +30,10 @@ const outsideEvm = sourceFiles(SRC).filter((path) => !relative(SRC, path).starts
  * three doors open, and the dynamic one is the door that matters - esbuild
  * inlines it, so the rail would reach the root bundle with the test still green.
  */
-const IMPORT_FORMS = String.raw`(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)`;
+// A comment may sit between `import(` and its specifier - `import(/* x */ './evm')`
+// - and esbuild keeps it, so both the source and the bundle forms allow one.
+const COMMENTS = String.raw`(?:\/\*[\s\S]*?\*\/\s*|\/\/[^\n]*\n\s*)*`;
+const IMPORT_FORMS = String.raw`(?:\bfrom\s*|\bimport\s*\(?\s*${COMMENTS}|\brequire\s*\(\s*${COMMENTS})`;
 const VIEM_REFERENCE = new RegExp(IMPORT_FORMS + String.raw`['"]viem(?:/[^'"]*)?['"]`);
 const RAIL_REFERENCE = new RegExp(
   IMPORT_FORMS +
@@ -40,7 +43,7 @@ const RAIL_REFERENCE = new RegExp(
 const RAIL_MARKER = 'No elisym config contract is registered for';
 
 const DIST = join(__dirname, '..', 'dist');
-const RELATIVE_CHUNK = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"](\.\.?\/[^'"]+)['"]/g;
+const RELATIVE_CHUNK = new RegExp(IMPORT_FORMS + String.raw`['"](\.\.?\/[^'"]+)['"]`, 'g');
 
 /** A built entry and every file of this package it pulls in, transitively. */
 function reachableFiles(entry: string): string[] {
@@ -89,6 +92,9 @@ describe('the EVM rail stays in its own entry point', () => {
   it.each([
     ["import { getEvmProtocolConfig } from '../evm/config';", true],
     ["import { x } from './evm';", true],
+    ["const rail = () => import(/* rail */ './evm/index');", true],
+    ["const rail = () => import(\n  // rail\n  './evm');", true],
+    ["require(/* rail */ '../evm/verify');", true],
     ["const rail = await import('../evm/config');", true],
     ["const rail = require('../../payment/evm/config');", true],
     ["import { x } from '@elisym/sdk/evm';", true],

@@ -13,7 +13,10 @@ const DIST = join(__dirname, '..', 'dist');
 /** The one SDK file allowed to name the rail: the `@elisym/sdk/evm` re-export. */
 const EVM_SUBPATH = 'evm.ts';
 
-const IMPORT_FORMS = String.raw`(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)`;
+// A comment may sit between `import(` and its specifier - `import(/* x */ './evm')`
+// - and esbuild keeps it, so both the source and the bundle forms allow one.
+const COMMENTS = String.raw`(?:\/\*[\s\S]*?\*\/\s*|\/\/[^\n]*\n\s*)*`;
+const IMPORT_FORMS = String.raw`(?:\bfrom\s*|\bimport\s*\(?\s*${COMMENTS}|\brequire\s*\(\s*${COMMENTS})`;
 const RAIL_REFERENCE = new RegExp(
   IMPORT_FORMS +
     String.raw`['"](?:(?:\.\.?/)+(?:[\w-]+/)*evm(?:/[^'"]*)?|@elisym/(?:sdk|pay-core)/evm)['"]`,
@@ -56,6 +59,8 @@ describe('the SDK keeps the EVM rail behind @elisym/sdk/evm', () => {
       "const m = await import('@elisym/pay-core/evm');",
       "require('@elisym/sdk/evm');",
       "import { x } from '../evm';",
+      "const rail = () => import(/* rail */ '@elisym/pay-core/evm');",
+      "const rail = () => import(\n  // rail\n  '@elisym/pay-core/evm');",
     ]) {
       expect(RAIL_REFERENCE.test(line), line).toBe(true);
     }

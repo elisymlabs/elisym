@@ -5,6 +5,7 @@ export default defineConfig({
     index: 'src/index.ts',
     evm: 'src/evm/index.ts',
     internal: 'src/internal.ts',
+    shared: 'src/shared.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,

@@ -10,12 +10,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import {
-  MIN_SETTLEMENT_RETENTION_MS,
-  type SettlementClaim,
-  type SettlementStore,
-} from '@elisym/pay-core';
-import { isUsableSignature } from '@elisym/pay-core/internal';
+import type { SettlementClaim, SettlementStore } from '@elisym/pay-core';
+import { MIN_SETTLEMENT_RETENTION_MS, isUsableSignature } from '@elisym/pay-core/shared';
 import { isBlockingNodeSync } from './agent-store/node-type';
 
 /**

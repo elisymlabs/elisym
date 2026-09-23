@@ -15,7 +15,7 @@ import type { OnchainRefusalReason } from './types';
  * payment core: it decides a durable nonce, a bare wallet, a reassignment and a
  * closed account, and every copy of one magic string is a chance to disagree.
  */
-export { SYSTEM_PROGRAM_ADDRESS_STR } from '@elisym/pay-core/internal';
+export { SYSTEM_PROGRAM_ADDRESS_STR } from '@elisym/pay-core/shared';
 
 export const ONCHAIN_CALL_VERSION = 'v1';
 
