@@ -33,6 +33,14 @@ splAssetsForNetwork('mainnet'); // [USDC_SOLANA_MAINNET, LSM_SOLANA_MAINNET]
 
 ### Chains and EVM coins
 
+:::warning
+**Tempo is a preview.** The SDK reads and verifies Tempo payments today; it
+cannot yet create one. Nothing pays on Tempo end to end - the CLI, the MCP
+server and the web app are Solana-only, and a capability card priced on Tempo
+is hidden by the MCP and shown with a disabled Buy button in the web app.
+Follow the rail's progress in the repository rather than building a payer on it.
+:::
+
 A chain is named two ways. The **slug** (`solana`, `tempo`) is what a capability card and a `SKILL.md` carry; the **CAIP-2 id** (`eip155:4217`) is what a [v2 payment request](/protocol/payments#payment-request-v2-evm-chains) and the wire tags carry. `CHAINS` is the registry, one entry per chain and environment, and `network` (`mainnet` | `devnet`) stays the environment: Tempo's public testnet, Moderato, is `tempo` on `devnet`.
 
 ```ts twoslash
