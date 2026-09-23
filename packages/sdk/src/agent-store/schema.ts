@@ -25,7 +25,7 @@ export const AgentNameSchema = z
  * Agent wallet entry. One entry per (chain, network) - the address receives
  * every asset on that chain (SOL directly, SPL tokens via their ATA derived
  * from (address, mint)). Per-asset pricing lives in each skill's `SKILL.md`;
- * the canonical mint registry lives in `KNOWN_ASSETS` (payment/assets.ts).
+ * the canonical mint registry lives in `KNOWN_ASSETS` (`@elisym/pay-core`, payment/assets.ts).
  */
 export const PaymentSchema = z.object({
   chain: z.literal('solana'),
