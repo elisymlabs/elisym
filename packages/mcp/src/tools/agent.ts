@@ -25,8 +25,8 @@ import { defineTool, errorResult, textResult } from './types.js';
 const BASE58_ENCODER = getBase58Encoder();
 const BASE58_DECODER = getBase58Decoder();
 
-// Canonical implementation moved to the SDK (payment/wallet.ts) so the CLI can
-// share it; re-exported here because src/index.ts imports it from this module.
+// Canonical implementation lives in the payment core (`@elisym/pay-core`,
+// payment/wallet.ts; re-exported by the SDK) so the CLI can share it; re-exported here because src/index.ts imports it from this module.
 export { exportKeyPairBytes };
 
 const CreateAgentSchema = z.object({

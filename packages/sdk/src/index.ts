@@ -265,15 +265,14 @@ export {
   POLICY_D_TAG_PREFIX,
   POLICY_TYPE_REGEX,
   LAMPORTS_PER_SOL,
-  PROTOCOL_PROGRAM_ID_DEVNET,
-  PROTOCOL_PROGRAM_ID_MAINNET,
-  ELISYM_PROTOCOL_TAG,
-  getProtocolProgramId,
   DEFAULTS,
   LIMITS,
   utf8ByteLength,
 } from './constants';
-export type { ProtocolCluster } from './constants';
+// ELISYM_PROTOCOL_TAG, the program ids, getProtocolProgramId and ProtocolCluster
+// come from `export * from '@elisym/pay-core'` above. Named here through
+// `./constants` they would put `@elisym/pay-core/shared` into this entry's
+// types, which a `moduleResolution: node10` consumer cannot resolve.
 
 // --- Types ---
 export type {

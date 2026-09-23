@@ -201,8 +201,8 @@ export function payment(): SolanaPaymentStrategy {
 }
 
 /**
- * Financial retry/release guard - extracted to `@elisym/sdk`
- * (`payment/settlement.ts`); re-exported here so the wallet/customer tools keep
+ * Financial retry/release guard - extracted to the payment core
+ * (`@elisym/pay-core`, `payment/settlement.ts`, re-exported by `@elisym/sdk`); re-exported here so the wallet/customer tools keep
  * importing from './utils'.
  */
 export { isDefinitelyUnpaid } from '@elisym/sdk';

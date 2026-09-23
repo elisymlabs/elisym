@@ -20,13 +20,13 @@
  * refuse where a plain transport failure would have been served from cache.
  */
 
+import { CHAINS, type ChainConfig } from '@elisym/pay-core';
 import {
   clearEvmProtocolConfigCache,
   createJsonRpcClient,
   getEvmProtocolConfig,
   WrongEvmChainError,
-} from '@elisym/pay-core';
-import { CHAINS, type ChainConfig } from '@elisym/pay-core';
+} from '@elisym/pay-core/evm';
 
 const chain: ChainConfig =
   process.env.CHAIN === 'mainnet' ? CHAINS.TEMPO_MAINNET : CHAINS.TEMPO_DEVNET;
