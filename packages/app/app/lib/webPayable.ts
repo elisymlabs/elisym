@@ -9,8 +9,10 @@
  * shape, and it is one rule so every send surface - Products, chat composer,
  * retry - reads the same answer.
  *
- * A card with no payment block is free, and free is payable anywhere: an
- * absent chain reads as Solana, as it does in every other gate.
+ * A card with no payment block is free and stays payable: an absent chain reads
+ * as Solana, as it does in every other gate. A card that NAMES another chain is
+ * held even at a price of zero - the buy path it would take has never run on
+ * that rail.
  */
 
 import type { CapabilityCard } from '@elisym/sdk';

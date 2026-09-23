@@ -358,6 +358,12 @@ export function ChatComposer({
             </span>
           )}
         </div>
+        {gate.paysOffSolana && (
+          // Always visible, like the note below it: the tooltip beside the send
+          // button is `hidden sm:inline-block` and the button is `disabled`, so
+          // a phone or a keyboard would get a dead control and no reason.
+          <div className="px-16 pb-12 text-xs text-text-2">{gate.tip}</div>
+        )}
         {gate.freeFileBlocked && (
           <div className="px-16 pb-12 text-xs text-text-2">
             File inputs require a paid capability - this one is free.
