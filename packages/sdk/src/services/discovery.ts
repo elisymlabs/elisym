@@ -1,3 +1,11 @@
+import {
+  type Asset,
+  assetsFor,
+  chainFamilyOf,
+  isChainSlug,
+  isEvmWireAddress,
+  isVirtualEvmAddress,
+} from '@elisym/pay-core';
 import { nip19, finalizeEvent, verifyEvent, type Filter, type Event } from 'nostr-tools';
 import {
   KIND_APP_HANDLER,
@@ -19,14 +27,6 @@ import {
 import { parseDelegationDescriptor } from '../delegation';
 import { parseMeteredDescriptor } from '../metered';
 import { parseOnchainDescriptor } from '../onchain';
-import { assetsFor } from '@elisym/pay-core';
-import type { Asset } from '@elisym/pay-core';
-import {
-  chainFamilyOf,
-  isChainSlug,
-  isEvmWireAddress,
-  isVirtualEvmAddress,
-} from '@elisym/pay-core';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type {

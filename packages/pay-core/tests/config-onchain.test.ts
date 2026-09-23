@@ -1,6 +1,6 @@
 import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearProtocolConfigCache, getProtocolConfig } from '@elisym/pay-core';
+import { clearProtocolConfigCache, getProtocolConfig } from '../src/index';
 
 const PROGRAM_ID = 'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE' as Address;
 const SAMPLE_ADMIN = '11111111111111111111111111111111' as Address;

@@ -7,7 +7,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CHAINS, isEvmWireAddress } from '@elisym/pay-core';
+import { CHAINS, isEvmWireAddress } from '../src/payment/chains';
 import { CONFIG_CONTRACT_MODERATO } from './evm-deployment';
 
 const SRC = join(__dirname, '..', 'src');

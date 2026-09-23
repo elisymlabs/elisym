@@ -54,7 +54,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Dependency order: the SDK depends on pay-core, so pay-core goes first.
           PACKAGES=(
+            "pay-core:@elisym/pay-core"
             "sdk:@elisym/sdk"
             "mcp:@elisym/mcp"
             "cli:@elisym/cli"

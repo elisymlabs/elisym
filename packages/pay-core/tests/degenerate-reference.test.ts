@@ -18,15 +18,14 @@ import {
   USDC_SOLANA_DEVNET,
   getProtocolProgramId,
 } from '../src';
-import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR } from '../src/constants';
-import { SYSTEM_PROGRAM_ADDRESS_STR } from '../src/constants';
-import { TOKEN_2022_PROGRAM_ADDRESS_STR } from '@elisym/pay-core';
+import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR, SYSTEM_PROGRAM_ADDRESS_STR } from '../src/constants';
+import { TOKEN_2022_PROGRAM_ADDRESS_STR } from '../src/payment/assets';
 import {
   degenerateReference,
   degenerateReferenceSync,
   degenerateReferenceDerivations,
   resetDegenerateReferenceCache,
-} from '@elisym/pay-core';
+} from '../src/payment/degenerate-reference';
 import type { PaymentRequestData } from '../src/types';
 
 const ADDRESS_DECODER = getAddressDecoder();

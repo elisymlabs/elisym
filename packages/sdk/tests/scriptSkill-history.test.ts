@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
 import { NATIVE_SOL } from '@elisym/pay-core';
+import { describe, expect, it, vi } from 'vitest';
 import { ScriptSkill } from '../src/skills/scriptSkill';
 import type { ChatTurn, CompletionResult, LlmClient, ToolResult } from '../src/skills/types';
 

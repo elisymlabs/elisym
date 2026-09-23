@@ -10,13 +10,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { isBlockingNodeSync } from './agent-store/node-type';
 import {
   MIN_SETTLEMENT_RETENTION_MS,
   type SettlementClaim,
   type SettlementStore,
   isUsableSignature,
 } from '@elisym/pay-core';
+import { isBlockingNodeSync } from './agent-store/node-type';
 
 /**
  * How stale a temporary must be before the sweep removes it. Long enough that

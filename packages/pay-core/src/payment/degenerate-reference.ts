@@ -17,7 +17,6 @@ import {
   getProtocolProgramId,
   SYSTEM_PROGRAM_ADDRESS_STR,
 } from '../constants';
-
 import type { Network, PaymentRequestData } from '../types';
 import { TOKEN_2022_PROGRAM_ADDRESS_STR, resolveAssetFromPaymentRequest } from './assets';
 

@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
+import { NATIVE_SOL } from '@elisym/pay-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ScriptExecutionError } from '../src/llm-health';
 import type { SkillOnchainResolved } from '../src/onchain/types';
-import { NATIVE_SOL } from '@elisym/pay-core';
 import { isHostScratchError } from '../src/skills/host-fault';
 import { OnchainCallSkill } from '../src/skills/onchainCallSkill';
 import {

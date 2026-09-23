@@ -11,7 +11,7 @@
  * Wallet Standard chain id and NOT CAIP-2 - the two never mix.)
  *
  * This module is data and string checks only. Anything that needs keccak or an
- * rpc client lives under `@elisym/sdk/evm`.
+ * rpc client lives under `@elisym/pay-core/evm`.
  */
 
 import type { Network } from '../types';

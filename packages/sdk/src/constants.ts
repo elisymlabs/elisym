@@ -18,8 +18,6 @@ export {
   type ProtocolCluster,
 } from '@elisym/pay-core';
 
-import type { Address } from '@solana/kit';
-
 export const RELAYS = [
   // Dedicated elisym relay (self-hosted) first, public relays as fallback.
   'wss://relay.elisym.network',
@@ -100,10 +98,6 @@ export const DM_INBOX_MARKER_TAG = 'client';
 export const DM_INBOX_MARKER_VALUE = 'elisym';
 
 export const LAMPORTS_PER_SOL = 1_000_000_000;
-
-
-
-
 
 /** Default values for timeouts, retries, and batch sizes. */
 export const DEFAULTS = {

@@ -1,13 +1,13 @@
 import { getCompiledTransactionMessageDecoder } from '@solana/kit';
 import type { Rpc, Signature, SolanaRpcApi } from '@solana/kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearPriorityFeeCache } from '@elisym/pay-core';
+import { clearPriorityFeeCache } from '../src/payment/priorityFee';
 import {
   buildSignedPull,
   confirmPullToTerminal,
   isDefinitelyUnpaid,
   sendConfirmToTerminal,
-} from '@elisym/pay-core';
+} from '../src/payment/settlement';
 
 const SIG = 'x'.repeat(64) as Signature;
 
@@ -205,7 +205,7 @@ describe('buildSignedPull', () => {
     // Signing needs real signer plumbing; assert the phase-A contract shape by
     // checking the blockhash fetch drives `lastValidBlockHeight`. Uses a real
     // signer from the wallet helper.
-    const { generateSolanaWallet } = await import('@elisym/pay-core');
+    const { generateSolanaWallet } = await import('../src/payment/wallet');
     const { signer } = await generateSolanaWallet();
     const pull = await buildSignedPull(blockhashOnlyRpc(), signer, [], { network: 'devnet' });
     expect(pull.lastValidBlockHeight).toBe(4242n);
@@ -214,7 +214,7 @@ describe('buildSignedPull', () => {
   });
 
   it('bids a priority fee, so collection is not stuck at the base rate', async () => {
-    const { generateSolanaWallet } = await import('@elisym/pay-core');
+    const { generateSolanaWallet } = await import('../src/payment/wallet');
     const { signer } = await generateSolanaWallet();
     const pull = await buildSignedPull(blockhashOnlyRpc(), signer, [], {
       network: 'mainnet',
@@ -229,7 +229,7 @@ describe('buildSignedPull', () => {
   });
 
   it('consults the estimator for the pull network, and skips it when overridden', async () => {
-    const { generateSolanaWallet } = await import('@elisym/pay-core');
+    const { generateSolanaWallet } = await import('../src/payment/wallet');
     const { signer } = await generateSolanaWallet();
     const getRecentPrioritizationFees = vi.fn(() => ({
       send: async () => [{ slot: 1n, prioritizationFee: 4321n }],
@@ -257,7 +257,7 @@ describe('buildSignedPull', () => {
   it('still produces a signed pull when the fee estimate fails', async () => {
     // A pull at the base rate beats a pull that never goes out: an RPC that
     // cannot answer the fee query must not abort collection.
-    const { generateSolanaWallet } = await import('@elisym/pay-core');
+    const { generateSolanaWallet } = await import('../src/payment/wallet');
     const { signer } = await generateSolanaWallet();
     const pull = await buildSignedPull(blockhashOnlyRpc(), signer, [], { network: 'mainnet' });
     expect(pull.signature.length).toBeGreaterThan(0);

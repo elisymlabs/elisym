@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
-import { isBlockingNode } from '../agent-store/node-type';
 import type { Asset } from '@elisym/pay-core';
+import { isBlockingNode } from '../agent-store/node-type';
 import { resolveInsidePathReal } from './path-safety';
 import type {
   Skill,

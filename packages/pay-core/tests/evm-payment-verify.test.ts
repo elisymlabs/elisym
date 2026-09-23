@@ -7,20 +7,20 @@
  * the facts file beside the plan.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearEvmProtocolConfigCache } from '@elisym/pay-core';
+import { clearEvmProtocolConfigCache } from '../src/evm/config';
 import {
   TEMPO_POLICY_REGISTRY,
   TEMPO_TRANSFER_GUARD,
   TRANSFER_BLOCKED_TOPIC,
   TRANSFER_WITH_MEMO_TOPIC,
-} from '@elisym/pay-core';
-import { MAX_ISSUER_CLOCK_SKEW_SECS } from '@elisym/pay-core';
-import { readTempoReceivePolicy } from '@elisym/pay-core';
-import { createTempoPaymentRequest } from '@elisym/pay-core';
-import { verifyTempoPayment } from '@elisym/pay-core';
-import { ALL_ASSETS, PATHUSD_TEMPO, USDCE_TEMPO_MAINNET } from '@elisym/pay-core';
-import { CHAINS } from '@elisym/pay-core';
-import { PaymentRequestV2Schema } from '@elisym/pay-core';
+} from '../src/evm/constants';
+import { MAX_ISSUER_CLOCK_SKEW_SECS } from '../src/evm/constants';
+import { readTempoReceivePolicy } from '../src/evm/policy';
+import { createTempoPaymentRequest } from '../src/evm/request';
+import { verifyTempoPayment } from '../src/evm/verify';
+import { ALL_ASSETS, PATHUSD_TEMPO, USDCE_TEMPO_MAINNET } from '../src/payment/assets';
+import { CHAINS } from '../src/payment/chains';
+import { PaymentRequestV2Schema } from '../src/payment/schema-v2';
 import type { FakeChainOptions, FakeLog } from './tempo-chain';
 import { fakeTempoChain, rangeCapError, recordedReceipt, receiptLogs } from './tempo-chain';
 

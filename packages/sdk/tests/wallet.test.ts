@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
 import {
   encodeSecretKeyBase58,
   exportKeyPairBytes,
   generateSolanaWallet,
   signerFromSecretKeyBase58,
 } from '@elisym/pay-core';
+import { describe, expect, it } from 'vitest';
 
 describe('payment/wallet helpers', () => {
   it('round-trips a generated wallet through the base58 at-rest format', async () => {

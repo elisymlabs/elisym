@@ -85,8 +85,14 @@ function assertReference(reference: string): void {
 }
 
 function assertExpirySecs(expirySecs: number): void {
-  if (!Number.isInteger(expirySecs) || expirySecs <= 0 || expirySecs > PAYMENT_LIMITS.MAX_TIMEOUT_SECS) {
-    throw new Error(`Invalid expiry: ${expirySecs}. Must be integer 1-${PAYMENT_LIMITS.MAX_TIMEOUT_SECS}.`);
+  if (
+    !Number.isInteger(expirySecs) ||
+    expirySecs <= 0 ||
+    expirySecs > PAYMENT_LIMITS.MAX_TIMEOUT_SECS
+  ) {
+    throw new Error(
+      `Invalid expiry: ${expirySecs}. Must be integer 1-${PAYMENT_LIMITS.MAX_TIMEOUT_SECS}.`,
+    );
   }
 }
 

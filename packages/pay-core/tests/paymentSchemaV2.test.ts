@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { PATHUSD_TEMPO, USDCE_TEMPO_MAINNET, USDC_SOLANA_DEVNET } from '@elisym/pay-core';
-import { calculateProtocolFee } from '@elisym/pay-core';
-import { calculateProtocolFeeSubunits } from '@elisym/pay-core';
+import { PATHUSD_TEMPO, USDCE_TEMPO_MAINNET, USDC_SOLANA_DEVNET } from '../src/payment/assets';
+import { calculateProtocolFee } from '../src/payment/fee';
+import { calculateProtocolFeeSubunits } from '../src/payment/fee-subunits';
 import {
   PaymentRequestV2Schema,
   caip19ForAsset,
   parseAnyPaymentRequest,
   resolveAssetFromPaymentRequestV2,
-} from '@elisym/pay-core';
+} from '../src/payment/schema-v2';
 
 const RECIPIENT = '0x716ebf6bef1c3f27ea5c315ecfc60527d97041a2';
 const TREASURY = '0xbc9671bcbd897bf3abb27006433b95b2acd0d04b';

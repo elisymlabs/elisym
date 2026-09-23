@@ -1,5 +1,5 @@
 /**
- * `@elisym/sdk/evm` - the EVM payment rail.
+ * `@elisym/pay-core/evm` - the EVM payment rail (re-exported as `@elisym/sdk/evm`).
  *
  * What lives here needs an rpc; the shape checks and the registry that need
  * none are in the root entry (`payment/chains`). The rpc is an EIP-1193

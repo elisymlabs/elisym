@@ -93,6 +93,16 @@
         "types": "./dist/llm-health.d.cts",
         "default": "./dist/llm-health.cjs"
       }
+    },
+    "./evm": {
+      "import": {
+        "types": "./dist/evm.d.ts",
+        "default": "./dist/evm.js"
+      },
+      "require": {
+        "types": "./dist/evm.d.cts",
+        "default": "./dist/evm.cjs"
+      }
     }
   },
   "scripts": {
@@ -107,7 +117,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@elisym/pay-core": "workspace:*",
+    "@elisym/pay-core": "~0.1.0",
     "yaml": "~2.8.3",
     "zod": "~3.25.0"
   },

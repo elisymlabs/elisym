@@ -14,6 +14,7 @@ COPY --parents packages/*/package.json ./
 RUN bun install --frozen-lockfile --production
 
 # Copy built source
+COPY packages/pay-core/dist packages/pay-core/dist
 COPY packages/sdk/dist packages/sdk/dist
 COPY packages/cli/dist packages/cli/dist
 

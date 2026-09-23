@@ -1,6 +1,6 @@
+import { NATIVE_SOL } from '@elisym/pay-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED, ScriptBillingExhaustedError } from '../src/llm-health';
-import { NATIVE_SOL } from '@elisym/pay-core';
 import { StaticScriptSkill } from '../src/skills/staticScriptSkill';
 import {
   dynamicSkill,

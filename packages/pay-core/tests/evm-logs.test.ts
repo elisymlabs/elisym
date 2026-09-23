@@ -12,7 +12,7 @@ import {
   TRANSFER_TOPIC,
   TRANSFER_WITH_MEMO_TOPIC,
   VALIDATE_RECEIVE_POLICY_SELECTOR,
-} from '@elisym/pay-core';
+} from '../src/evm/constants';
 import {
   decodeTempoBlockedLog,
   decodeTempoTransferLog,
@@ -21,7 +21,7 @@ import {
   passesHistoryControl,
   readBlockByNumber,
   readFinalizedBlock,
-} from '@elisym/pay-core';
+} from '../src/evm/logs';
 import type { FakeLog } from './tempo-chain';
 import {
   fakeTempoChain,

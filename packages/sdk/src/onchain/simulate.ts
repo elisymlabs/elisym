@@ -28,6 +28,7 @@
  * back out of the fee payer's delta rather than letting it be counted twice.
  */
 
+import { estimatePriorityFeeMicroLamports } from '@elisym/pay-core';
 import {
   AccountRole,
   appendTransactionMessageInstructions,
@@ -45,7 +46,6 @@ import {
   type Rpc,
   type SolanaRpcApi,
 } from '@solana/kit';
-import { estimatePriorityFeeMicroLamports } from '@elisym/pay-core';
 import type { Network } from '../types';
 import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR, isProviderBudgetInstruction } from './checks';
 import {

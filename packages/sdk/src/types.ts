@@ -263,7 +263,6 @@ export interface Agent {
   identities?: AgentExternalIdentity[];
 }
 
-
 // --- Jobs ---
 
 /**
@@ -447,13 +446,6 @@ export interface ConversationSummary {
 }
 
 // --- Payment ---
-
-
-
-
-
-
-
 
 // --- Network Stats ---
 

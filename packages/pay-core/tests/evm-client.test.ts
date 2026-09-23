@@ -4,7 +4,7 @@
  * one that leaks through as a value would be read as chain state further up.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createJsonRpcClient, EvmRpcError, withAbort } from '@elisym/pay-core';
+import { createJsonRpcClient, EvmRpcError, withAbort } from '../src/evm/client';
 
 const URL = 'https://rpc.example/APIKEY-secret';
 
