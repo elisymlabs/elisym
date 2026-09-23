@@ -9,6 +9,7 @@ import {
 import { createSolanaRpc } from '@solana/kit';
 import { z } from 'zod';
 import { rpcUrlFor } from '../context.js';
+import { withPayableCards } from '../payable-cards.js';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
 import { type Contact, readContacts } from '../storage/contacts.js';
 import { MAX_CAPABILITIES, assetFromCardPayment, decodeNpub } from '../utils.js';
@@ -257,7 +258,7 @@ export const discoveryTools: ToolDefinition[] = [
         }
       }
 
-      const agents = await agent.client.discovery.fetchAgents(agent.network);
+      const agents = withPayableCards(await agent.client.discovery.fetchAgents(agent.network));
 
       // Apply the contacts filter BEFORE capability matching - it's the cheapest
       // filter and dramatically shrinks the candidate set.
@@ -646,7 +647,7 @@ export const discoveryTools: ToolDefinition[] = [
       // like search_agents so an injected loop can't amplify into relay traffic.
       ctx.toolRateLimiter.check();
       const agent = ctx.active();
-      const agents = await agent.client.discovery.fetchAgents(agent.network);
+      const agents = withPayableCards(await agent.client.discovery.fetchAgents(agent.network));
 
       const caps = new Set<string>();
       for (const a of agents) {

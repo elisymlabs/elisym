@@ -428,6 +428,15 @@ async function setSessionLimit(
   mint: string | undefined,
 ): Promise<void> {
   const asset = resolveAssetOrThrow(chain, token, mint);
+  // The override file names a chain with an enum that an OLDER binary also
+  // reads - an entry it does not know would fail its whole config load. Until
+  // that schema is widened together with the EVM wallet, a non-Solana coin
+  // keeps its built-in cap, and says so instead of writing the entry.
+  if (asset.chain !== 'solana') {
+    throw new Error(
+      `The session limit of ${asset.symbol} cannot be overridden yet: its built-in cap applies.`,
+    );
+  }
   // Validate the amount format strictly using the same integer math that
   // enforcement applies at runtime. parseAssetAmount rejects non-positive,
   // scientific-notation, and otherwise malformed inputs, so it is the sole

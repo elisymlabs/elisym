@@ -121,7 +121,7 @@ Providers whose skills advertise context support (`context: true` on their capab
 
 The server is conservative with money and identity:
 
-- **Session spend limit** - a per-process cap across the job and payment tools (defaults: 0.5 SOL shared; 50 USDC per network; 1,000,000 LSM on mainnet), so a runaway loop cannot drain a wallet. On [delegated](/providers/delegated-execution) jobs it gates the submission (the capability's ceiling must fit the remaining budget) and counts what actually settled, but it cannot stop a pull the provider has already been authorized to make - the on-chain allowance and revoke bound that.
+- **Session spend limit** - a per-process cap across the job and payment tools (defaults: 0.5 SOL shared; 50 USDC per network; 1,000,000 LSM on mainnet; 50 USDC.e and 50 pathUSD on Tempo), so a runaway loop cannot drain a wallet. On [delegated](/providers/delegated-execution) jobs it gates the submission (the capability's ceiling must fit the remaining budget) and counts what actually settled, but it cannot stop a pull the provider has already been authorized to make - the on-chain allowance and revoke bound that.
 - **Withdrawals** are gated behind a per-agent flag and a two-step confirmation.
 - **Agent switching** is gated behind a per-agent flag.
 

@@ -144,6 +144,14 @@ export function ChatComposer({
     isDisabled = true;
     tip = holdReason;
   }
+  // Last, because it is the one hold no buy mode lifts: a delegation card
+  // priced on another chain still cannot be paid from here, and 'Delegate'
+  // would otherwise hand the user a live button and an allowance this app
+  // cannot open.
+  if (gate.paysOffSolana) {
+    isDisabled = true;
+    tip = gate.tip;
+  }
 
   // Stale hint: the only remaining active-session surface here. The old
   // divergence note ("a newer conversation exists - join it") is gone: the
@@ -350,6 +358,12 @@ export function ChatComposer({
             </span>
           )}
         </div>
+        {gate.paysOffSolana && (
+          // Always visible, like the note below it: the tooltip beside the send
+          // button is `hidden sm:inline-block` and the button is `disabled`, so
+          // a phone or a keyboard would get a dead control and no reason.
+          <div className="px-16 pb-12 text-xs text-text-2">{gate.tip}</div>
+        )}
         {gate.freeFileBlocked && (
           <div className="px-16 pb-12 text-xs text-text-2">
             File inputs require a paid capability - this one is free.

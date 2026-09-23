@@ -66,6 +66,7 @@ import {
   type PreparedFileInput,
 } from '../job-input.js';
 import { logger } from '../logger.js';
+import { findAgentByNpub } from '../payable-cards.js';
 import {
   sanitizeUntrusted,
   sanitizeField,
@@ -1461,8 +1462,18 @@ async function executeSubmitAndPay(
 
   // resolve expected Solana recipient from the provider's capability card
   // BEFORE submitting the job. If the provider is unknown on-network, fail fast.
-  const providers = await agent.client.discovery.fetchAgents(agent.network);
-  const provider = providers.find((a) => a.npub === params.providerNpub);
+  const lookup = findAgentByNpub(
+    await agent.client.discovery.fetchAgents(agent.network),
+    params.providerNpub,
+  );
+  if (!lookup.found && lookup.reason === 'nothing-payable') {
+    return errorResult(
+      `Provider ${params.providerNpub} prices every capability on a chain this server cannot ` +
+        `pay (it pays on Solana). Ask for a Solana price, or pay from a client that supports ` +
+        `that chain.`,
+    );
+  }
+  const provider = lookup.found ? lookup.agent : undefined;
 
   // if the provider is not in the current discovery snapshot, refuse
   // to submit. Previously we fell through with `expectedRecipient = undefined`,
@@ -1785,8 +1796,18 @@ async function executeDelegatedJob(
     );
   }
 
-  const providers = await agent.client.discovery.fetchAgents(agent.network);
-  const provider = providers.find((candidate) => candidate.npub === params.providerNpub);
+  const lookup = findAgentByNpub(
+    await agent.client.discovery.fetchAgents(agent.network),
+    params.providerNpub,
+  );
+  if (!lookup.found && lookup.reason === 'nothing-payable') {
+    return errorResult(
+      `Provider ${params.providerNpub} prices every capability on a chain this server cannot ` +
+        `pay (it pays on Solana). Ask for a Solana price, or pay from a client that supports ` +
+        `that chain.`,
+    );
+  }
+  const provider = lookup.found ? lookup.agent : undefined;
   if (!provider) {
     return errorResult(
       `Provider ${params.providerNpub} not found on ${agent.network}. ` +
@@ -3042,11 +3063,20 @@ export const customerTools: ToolDefinition[] = [
       }
 
       // Look up provider.
-      const agents = await agent.client.discovery.fetchAgents(agent.network);
-      const provider = agents.find((a) => a.npub === input.provider_npub);
-      if (!provider) {
-        return errorResult(`Provider ${input.provider_npub} not found on the network.`);
+      const lookup = findAgentByNpub(
+        await agent.client.discovery.fetchAgents(agent.network),
+        input.provider_npub,
+      );
+      if (!lookup.found) {
+        return errorResult(
+          lookup.reason === 'nothing-payable'
+            ? `Provider ${input.provider_npub} prices every capability on a chain this server ` +
+                `cannot pay (it pays on Solana). Ask for a Solana price, or pay from a client ` +
+                `that supports that chain.`
+            : `Provider ${input.provider_npub} not found on the network.`,
+        );
       }
+      const provider = lookup.agent;
 
       // Select the SAME card submit_and_pay_job would: `paymentCardForCapability`
       // picks the first matching card that carries a Solana payment address, so both

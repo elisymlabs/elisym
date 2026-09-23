@@ -29,6 +29,27 @@ When a job is paid, the provider sends a `payment-required` [feedback](/protocol
 
 The customer validates it before signing: the recipient is a real pubkey, the `fee_address` matches the on-chain treasury, the `fee_amount` is exactly the on-chain rate of the total, `created_at` is not in the future, the request has not expired, and the `network` matches the customer's own. A request whose network differs is rejected before any transaction is built; a missing `network` is read as `devnet` (requests from pre-mainnet providers).
 
+## Payment request v2 (EVM chains)
+
+A payment on an EVM chain uses a separate, versioned shape. It is not a wider v1: a v1 request has no `v` key and every one of its defaults names Solana, so a client decides the version **first**: `parseAnyPaymentRequest` reads a blob with no `v` as v1 and one whose `v` is the number `2` as v2, and refuses any other `v` rather than reading it as v1.
+
+```json
+{
+  "v": 2,
+  "chain": "eip155:4217",
+  "asset": "eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50",
+  "recipient": "0x<provider address, lowercase>",
+  "amount": "50000",
+  "fee_address": "0x<treasury, lowercase>",
+  "fee_amount": "1500",
+  "memo": "0x<32 random bytes, lowercase hex>",
+  "created_at": 1730000000,
+  "expiry_secs": 600
+}
+```
+
+The schema is strict and nothing defaults. `chain` is the [CAIP-2 id](/reference/networks#chain-identifiers) of a chain the client knows and `asset` is a CAIP-19 id on that same chain; the coin's contract and decimals always come from the client's own registry, never from the request. Amounts are canonical integer **strings** of subunits (no leading zero, at most 30 digits) and `amount` is the total, as in v1. The fee fields come together or not at all, and a zero fee is written by omitting both. Addresses, the memo and hashes are lowercase hex, and a virtual address is refused. `memo` is 32 random bytes the provider picks per request - the counterpart of the Solana `reference`: the payment is found by it.
+
 ## The transaction
 
 The customer builds **one** transaction with two transfer instructions, so both legs succeed or fail together:

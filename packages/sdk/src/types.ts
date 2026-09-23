@@ -534,7 +534,19 @@ export type PaymentValidationCode =
   | 'invalid_fee_params'
   | 'invalid_asset'
   | 'asset_mismatch'
-  | 'degenerate_reference';
+  | 'degenerate_reference'
+  | 'unsupported_version'
+  | 'unsupported_chain'
+  | 'chain_mismatch'
+  /** The request pays the customer's own address, which settles nothing. */
+  | 'self_payment'
+  /**
+   * The CALLER's own bounds are unusable - a clock that is not a number, a fee
+   * rate that is not a rate, an address that is not a string, a price that is
+   * not a number of subunits. Not a statement about the request: nothing about
+   * it was judged, because there was nothing to judge it against.
+   */
+  | 'invalid_bounds';
 
 export interface PaymentValidationError {
   code: PaymentValidationCode;
