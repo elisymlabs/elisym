@@ -21,6 +21,7 @@ ciphertexts
 clap
 codama
 confusables
+cooldown
 COption
 crontabs
 crossterm
@@ -111,10 +112,12 @@ oxfmt
 oxlint
 pasteable
 pathusd
+payto
 permissionless
 pino
 pipefail
 pipx
+prehash
 pubkey
 pubkeys
 purplepag
@@ -127,6 +130,7 @@ rembg
 reqwest
 roleplay
 rpc
+scure
 Secp
 serde
 SERV
