@@ -5,9 +5,10 @@
 /**
  * A signature a settlement claim can be keyed on.
  *
- * `@elisym/cli` carries a second copy in its own ledger, deliberately: this one
- * is not part of the SDK's public API, so the CLI cannot import it. The two
- * are kept identical by hand, and they have to be - a gate spelled `!== undefined`
+ * `@elisym/cli` carries a second copy in its own ledger, deliberately: the CLI
+ * does not depend on `@elisym/pay-core`, and this one is not part of the SDK's
+ * public API (it is exported from `@elisym/pay-core/shared`, which the SDK does
+ * not re-export). The two are kept identical by hand, and they have to be - a gate spelled `!== undefined`
  * on one side of that line lets an empty string through where the other refuses.
  *
  * Written once per package and read everywhere rather than spelled out at each gate,

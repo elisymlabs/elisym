@@ -43,6 +43,7 @@ const RAIL_REFERENCE = new RegExp(
 const RAIL_MARKER = 'No elisym config contract is registered for';
 
 const DIST = join(__dirname, '..', 'dist');
+const EXTERNAL_IMPORT = new RegExp(IMPORT_FORMS + String.raw`['"]([^'"./][^'"]*)['"]`, 'g');
 const RELATIVE_CHUNK = new RegExp(IMPORT_FORMS + String.raw`['"](\.\.?\/[^'"]+)['"]`, 'g');
 
 /** A built entry and every file of this package it pulls in, transitively. */
@@ -141,6 +142,31 @@ describe('the EVM rail stays in its own entry point', () => {
         expect(built, relative(DIST, file)).not.toContain(RAIL_MARKER);
         expect(built, relative(DIST, file)).not.toContain('viem');
         expect(built, relative(DIST, file)).not.toMatch(/@elisym\/(?:sdk|pay-core)\/evm/);
+      }
+    }
+  });
+});
+
+describe('the shared entry', () => {
+  // `@elisym/sdk/agent-store` and `@elisym/sdk/node` read the core through
+  // `./shared` so they load no Solana library. The SDK's own test sees only its
+  // direct import; what `./shared` pulls in is decided here.
+  it('reaches no Solana library, statically or dynamically', () => {
+    for (const name of ['dist/shared.js', 'dist/shared.cjs']) {
+      const entry = join(__dirname, '..', name);
+      expect(
+        existsSync(entry),
+        `${name} is missing - run \`bun run build --filter=@elisym/pay-core\` before this test`,
+      ).toBe(true);
+      for (const file of reachableFiles(entry)) {
+        const imports = [...readFileSync(file, 'utf8').matchAll(EXTERNAL_IMPORT)].map(
+          (match) => match[1] ?? '',
+        );
+        const solana = imports.filter(
+          (specifier) =>
+            specifier.startsWith('@solana/') || specifier.startsWith('@solana-program/'),
+        );
+        expect(solana, relative(DIST, file)).toEqual([]);
       }
     }
   });

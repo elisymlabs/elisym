@@ -159,7 +159,6 @@
         "@solana/kit": "~6.8.0",
         "@types/node": "~25.5.0",
         "decimal.js-light": "~2.5.1",
-        "nostr-tools": "~2.23.0",
         "tsup": "~8.4.0",
         "typescript": "~5.7.0",
         "vitest": "~3.2.6",
@@ -174,7 +173,7 @@
     },
     "packages/sdk": {
       "name": "@elisym/sdk",
-      "version": "0.40.0",
+      "version": "0.40.1",
       "dependencies": {
         "@elisym/pay-core": "workspace:*",
         "yaml": "~2.8.3",
