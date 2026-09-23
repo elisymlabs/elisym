@@ -19,8 +19,11 @@ WORKDIR /app
 COPY package.json bun.lock turbo.json ./
 COPY --parents packages/*/package.json ./
 
-# Install production dependencies
-RUN bun install --frozen-lockfile --production
+# Production dependencies of the packages that run, and nothing else: the
+# workspace also holds the web app and the docs site, whose dependencies have
+# no business in this image (about 1 GB and 2,700 packages unfiltered).
+RUN bun install --frozen-lockfile --production \
+  --filter @elisym/mcp --filter @elisym/sdk --filter @elisym/pay-core
 
 # The built output of every package that runs at runtime
 COPY --from=build /app/packages/pay-core/dist packages/pay-core/dist
