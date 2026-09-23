@@ -1,16 +1,24 @@
-# The images build from source inside Docker (see packages/{cli,mcp}/Dockerfile):
-# nothing built or installed on the host belongs in the context, and neither do
-# secrets or local agent stores.
-.git
-**/node_modules
-**/dist
-**/.turbo
-target
-coverage
-.deepsec
-.elisym
-**/.elisym
-.env
-.env.*
-**/.env
-**/.env.*
+# The images build from source inside Docker (see packages/{cli,mcp}/Dockerfile).
+# An allowlist, not a denylist: the build stage copies the whole context, so
+# anything not named here - keypairs, registry tokens, env files, agent stores,
+# local tooling - never reaches it, whatever a future file is called.
+*
+!package.json
+!bun.lock
+!turbo.json
+!tsconfig.json
+!packages/
+
+# Inside packages/: nothing built or installed on the host, and nothing secret
+# or local (the same classes .gitignore keeps out of the repository).
+packages/**/node_modules
+packages/**/dist
+packages/**/.turbo
+packages/**/.vercel
+packages/**/.elisym
+packages/**/.claude
+packages/**/.env
+packages/**/.env.*
+packages/**/*-keypair.json
+packages/**/.mcpregistry_*
+packages/**/*.log
