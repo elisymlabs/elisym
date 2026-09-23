@@ -101,6 +101,17 @@ Customer Agent                  Provider Agent
 
 All communication over Nostr relays, payments settle on Solana.
 
+### Tempo (`@elisym/sdk/evm`) - preview
+
+The `/evm` subpath is published and **incomplete on purpose**: it reads a Tempo
+chain and verifies a payment on it (`verifyTempoPayment`,
+`resolveTempoTransferOutcome`, `validateTempoPaymentRequest`,
+`checkTempoReceivePolicies`, the chain registry and the v2 request schema), and
+it cannot build or sign one. Nothing in elisym pays on Tempo end to end yet -
+the CLI, the MCP server and the web app are Solana-only - so treat the subpath
+as a verifier to build against, not a rail to send money on. Its surface may
+change while the rest of the rail lands.
+
 ### Payment assets
 
 - **Native SOL** - default for back-compat. `PaymentRequestData.amount` is lamports (1 SOL = 1_000_000_000 lamports).
