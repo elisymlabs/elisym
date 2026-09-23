@@ -34,6 +34,7 @@ import type { TempoBlockedLog, TempoTransferLog } from './logs';
 import {
   decodeTempoBlockedLog,
   decodeTempoTransferLog,
+  isOnThisChain,
   listTempoBlockedLogs,
   listTempoLogs,
   passesHistoryControl,
@@ -208,23 +209,16 @@ function outranks(candidate: TempoVerifyResult, incumbent: TempoVerifyResult): b
 }
 
 /**
- * Is this read from the chain we are reading? A receipt and a log each name the
- * block they are in, and that block's hash is the only value either of them
- * carries that a DIFFERENT chain could not also produce: the two Tempo
- * networks share the token, the guard and the registry addresses, and their
- * heights overlap. So the claim is checked against the block this endpoint
- * holds at that height.
+ * Is this read from the chain we are reading? The rule itself lives in
+ * `logs.ts`, because the sender's resolver binds its own receipt with it too -
+ * one rule, two sides of the rail, one place to fix it.
  */
 async function onThisChain(
   context: VerifyContext,
   blockNumber: number,
   claimed: string | null,
 ): Promise<boolean> {
-  const ownBlock = await readBlockByNumber(context.client, blockNumber);
-  // A read that names NO block is not on this chain either: `null` equals no
-  // block hash a node ever answers, so the comparison settles both cases and
-  // there is no second rule to keep in step with the first.
-  return ownBlock !== null && ownBlock.hash === claimed;
+  return await isOnThisChain(context.client, blockNumber, claimed);
 }
 
 function refused(code: TempoRefusalCode): TempoVerifyResult {
@@ -404,10 +398,21 @@ async function verifyWithPolling(
 
 /** Rules 2-6: one receipt, by the hash somebody reported. */
 async function verifyByHash(context: VerifyContext, hash: string): Promise<TempoVerifyResult> {
-  const receipt = await withAbort(
-    context.client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
-    context.signal,
-  ).catch(() => undefined);
+  // The call sits INSIDE the try, not only the promise it returns: a provider
+  // that validates its params synchronously throws where a `.catch` on the
+  // promise cannot see it, and this verifier answers in four words - a
+  // rejection is not one of them. The same shape as `requestBlockOrNull`,
+  // `callRegistryOrNull` and the sender's own receipt read.
+  const receipt = await (async () => {
+    try {
+      return await withAbort(
+        context.client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
+        context.signal,
+      );
+    } catch {
+      return undefined;
+    }
+  })();
   if (receipt === null) {
     // The node knows the chain and has no such transaction: not seen YET.
     return inconclusive('no_receipt');
@@ -418,18 +423,21 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
   // A quantity, read like every other value in this file: an endpoint that
   // writes it as `0x01` is unusual, not hostile, and reading it as a raw string
   // would turn every payment on that endpoint into a terminal refusal.
+  // The receipt has to be the one we ASKED for before anything is read out of
+  // it, the revert branch included: a backend answering with somebody else's
+  // failed receipt would otherwise have this verifier say `reverted` about a
+  // transaction that is fine. The sender's resolver holds the same rule in the
+  // same order.
+  if (readTxHash(readField(receipt, 'transactionHash')) !== hash) {
+    return refused('unreadable_receipt');
+  }
   const status = readQuantity(readField(receipt, 'status'));
   if (status === 0n) {
     return refused('reverted');
   }
   const blockNumber = readBlockNumber(readField(receipt, 'blockNumber'));
   const logs = readField(receipt, 'logs');
-  if (
-    status !== 1n ||
-    readTxHash(readField(receipt, 'transactionHash')) !== hash ||
-    blockNumber === null ||
-    !Array.isArray(logs)
-  ) {
+  if (status !== 1n || blockNumber === null || !Array.isArray(logs)) {
     return refused('unreadable_receipt');
   }
 

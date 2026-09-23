@@ -82,6 +82,11 @@ export interface TempoBlockedLog {
   /** The account whose receive policy refused it (topic 2). */
   receiver: string;
   amount: bigint;
+  /**
+   * Who may claim the parked funds. The ZERO address means the originator may -
+   * which is the only way a sender ever gets a blocked transfer back.
+   */
+  recoveryAuthority: string;
   originator: string;
   /** The recipient inside the claim receipt; equals `receiver` or the log is unreadable. */
   recipient: string;
@@ -90,6 +95,13 @@ export interface TempoBlockedLog {
   transactionHash: string;
   logIndex: number;
   blockNumber: number;
+  /**
+   * The block this log was read in, by hash. Its twin on `TempoTransferLog`
+   * exists so a reader can bind a log to the chain it came from, and a guard
+   * log decides the more expensive verdict of the two: `blocked` tells a
+   * sender its money is parked.
+   */
+  blockHash: string;
 }
 
 /**
@@ -240,6 +252,7 @@ const BLOCKED_WORDS = {
   receiptLength: 3,
   claimVersion: 4,
   token: 5,
+  recoveryAuthority: 6,
   originator: 7,
   recipient: 8,
   kind: 12,
@@ -285,6 +298,7 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
   const claimVersion = readUint256(words[BLOCKED_WORDS.claimVersion]);
   const kind = readUint256(words[BLOCKED_WORDS.kind]);
   const receiptToken = readAddressWord(words[BLOCKED_WORDS.token]);
+  const recoveryAuthority = readAddressWord(words[BLOCKED_WORDS.recoveryAuthority]);
   const originator = readAddressWord(words[BLOCKED_WORDS.originator]);
   const recipient = readAddressWord(words[BLOCKED_WORDS.recipient]);
   const memo = words[BLOCKED_WORDS.memo];
@@ -313,6 +327,7 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
     receiptLength !== CLAIM_RECEIPT_LENGTH ||
     claimVersion !== CLAIM_RECEIPT_V1 ||
     receiptToken === null ||
+    recoveryAuthority === null ||
     originator === null ||
     recipient === null ||
     memo === undefined
@@ -339,14 +354,33 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
       token,
       receiver,
       amount,
+      recoveryAuthority,
       originator,
       recipient,
       memo: `0x${memo}`,
       transactionHash: header.transactionHash,
       logIndex: header.logIndex,
       blockNumber: header.blockNumber,
+      blockHash: header.blockHash,
     },
   };
+}
+
+/**
+ * One block read, or `null`.
+ *
+ * The `.catch` has to cover the CALL, not only the promise it should return: a
+ * provider that validates its params synchronously - a browser wallet, a proxy
+ * - throws before there is a promise to attach a handler to, and the throw
+ * then escapes two helpers whose whole contract is "or `null`". Both readers
+ * below go through here, and both sides of the rail read them.
+ */
+async function requestBlockOrNull(client: Eip1193Client, tag: string): Promise<unknown> {
+  try {
+    return await client.request({ method: 'eth_getBlockByNumber', params: [tag, false] });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -357,9 +391,7 @@ export function decodeTempoBlockedLog(entry: unknown): TempoLogDecode<TempoBlock
  * one.
  */
 export async function readFinalizedBlock(client: Eip1193Client): Promise<TempoHeadRef | null> {
-  const block = await client
-    .request({ method: 'eth_getBlockByNumber', params: ['finalized', false] })
-    .catch(() => null);
+  const block = await requestBlockOrNull(client, 'finalized');
   const number = readBlockNumber(readField(block, 'number'));
   const timestamp = readBlockNumber(readField(block, 'timestamp'));
   if (number === null || timestamp === null) {
@@ -373,9 +405,7 @@ export async function readBlockByNumber(
   client: Eip1193Client,
   blockNumber: number,
 ): Promise<TempoBlockRef | null> {
-  const block = await client
-    .request({ method: 'eth_getBlockByNumber', params: [toQuantity(blockNumber), false] })
-    .catch(() => null);
+  const block = await requestBlockOrNull(client, toQuantity(blockNumber));
   const number = readBlockNumber(readField(block, 'number'));
   const timestamp = readBlockNumber(readField(block, 'timestamp'));
   const hash = readTxHash(readField(block, 'hash'));
@@ -383,6 +413,30 @@ export async function readBlockByNumber(
     return null;
   }
   return { number, timestamp, hash };
+}
+
+/**
+ * Is this read from the chain we are reading?
+ *
+ * A receipt and a log each name the block they are in, and that block's hash is
+ * the only value either of them carries that a DIFFERENT chain could not also
+ * produce: the two Tempo networks share the token, the guard and the registry
+ * addresses, and their heights overlap. So the claim is checked against the
+ * block this endpoint holds at that height.
+ *
+ * Both sides of the rail read this one rule: the provider's verifier binds
+ * every receipt and log it credits, and the sender binds its own receipt before
+ * any terminal verdict. A read that names NO block is not on this chain either:
+ * `null` equals no block hash a node ever answers, so the comparison settles
+ * both cases and there is no second rule to keep in step with the first.
+ */
+export async function isOnThisChain(
+  client: Eip1193Client,
+  blockNumber: number,
+  claimed: string | null,
+): Promise<boolean> {
+  const ownBlock = await readBlockByNumber(client, blockNumber);
+  return ownBlock !== null && ownBlock.hash === claimed;
 }
 
 /**

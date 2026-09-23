@@ -51,6 +51,28 @@ export interface TempoReceivePolicy {
  * master's policy is enforced, but this read answers for the alias itself and
  * always says "open".
  */
+/**
+ * One `eth_call` at `finalized`, or `null`.
+ *
+ * The `.catch` has to cover the CALL, not only the promise it was meant to
+ * return: an EIP-1193 provider that validates params synchronously - a browser
+ * wallet, a proxy - throws before there is a promise to attach a handler to,
+ * and the throw then escapes a function whose contract is to answer `null` for
+ * anything it could not read. Both policy reads go through here, so neither
+ * can drift back to the promise-only shape.
+ */
+async function callRegistryOrNull(client: Eip1193Client, data: string): Promise<unknown> {
+  try {
+    return await client.request({
+      method: 'eth_call',
+      // A policy a reorg could take back is not one to quote a price against.
+      params: [{ to: TEMPO_POLICY_REGISTRY, data }, 'finalized'],
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function readTempoReceivePolicy(
   client: Eip1193Client,
   address: string,
@@ -58,20 +80,10 @@ export async function readTempoReceivePolicy(
   if (!isEvmWireAddress(address)) {
     throw new Error(`Not an address a receive policy can be read for: ${address}`);
   }
-  const raw = await client
-    .request({
-      method: 'eth_call',
-      params: [
-        {
-          to: TEMPO_POLICY_REGISTRY,
-          data: `${RECEIVE_POLICY_SELECTOR}${'0'.repeat(24)}${address.slice(2).toLowerCase()}`,
-        },
-        // The same tag the config read uses, and for the same reason: a policy
-        // that a reorg could take back is not one to quote a price against.
-        'finalized',
-      ],
-    })
-    .catch(() => null);
+  const raw = await callRegistryOrNull(
+    client,
+    `${RECEIVE_POLICY_SELECTOR}${'0'.repeat(24)}${address.slice(2).toLowerCase()}`,
+  );
   const words = readWords(raw, POLICY_WORDS);
   const configured = readUint256(words?.[0]);
   const senderPolicyId = readUint256(words?.[1]);
@@ -107,27 +119,23 @@ export async function canReceiveFrom(
 ): Promise<boolean | null> {
   const argument = (address: string): string =>
     `${'0'.repeat(24)}${address.slice(2).toLowerCase()}`;
-  const raw = await client
-    .request({
-      method: 'eth_call',
-      params: [
-        {
-          to: TEMPO_POLICY_REGISTRY,
-          data:
-            VALIDATE_RECEIVE_POLICY_SELECTOR +
-            argument(check.token) +
-            argument(check.sender) +
-            argument(check.recipient),
-        },
-        // A policy a reorg could take back is not one to quote a price against.
-        'finalized',
-      ],
-    })
-    .catch(() => null);
+  const raw = await callRegistryOrNull(
+    client,
+    VALIDATE_RECEIVE_POLICY_SELECTOR +
+      argument(check.token) +
+      argument(check.sender) +
+      argument(check.recipient),
+  );
   const words = readWords(raw, 2);
   const authorized = readUint256(words?.[0]);
   const reason = readUint256(words?.[1]);
-  if (authorized === null || reason === null) {
+  // A first word that is neither 0 nor 1 is not a verdict this code knows how
+  // to read - a future flag, or a different contract at the same address - and
+  // calling it `blocked` hands the caller an actionable but wrong instruction
+  // ("ask that destination to open its policy") about an answer we could not
+  // parse. `readTempoReceivePolicy` refuses `configured > 1n` for exactly this
+  // reason; unreadable, like every other answer that is not the shape.
+  if (authorized === null || reason === null || authorized > 1n) {
     return null;
   }
   return authorized === 1n && reason === 0n;

@@ -174,6 +174,18 @@ describe('decodeTempoBlockedLog', () => {
     expect(decoded.log.recipient).toBe(decoded.log.receiver);
   });
 
+  it('refuses a guard log that does not carry exactly four topics', () => {
+    // Its twin in `decodeTempoTransferLog` has a row; this one had none, so
+    // the count check could be deleted and the suite stayed green. The word
+    // map below is read by position, and a log with another topic count is
+    // not the event this layout describes.
+    const fiveTopics = {
+      ...blockedLogs[0],
+      topics: [...(blockedLogs[0].topics as string[]), `0x${'11'.repeat(32)}`],
+    };
+    expect(decodeTempoBlockedLog(wireLog(fiveTopics)).kind).toBe('unreadable');
+  });
+
   it('calls a log from anywhere but the guard OTHER', () => {
     const elsewhere = { ...blockedLogs[0], address: TOKEN };
     expect(decodeTempoBlockedLog(wireLog(elsewhere)).kind).toBe('other');
