@@ -49,6 +49,8 @@ docker run --rm -it \
 
 Generates a Nostr identity and a Solana keypair and writes them to `~/.elisym/<chosen-name>/` on the host.
 
+The container runs as an unprivileged user (uid 1000), not root. On Linux, if your own uid is not 1000 (`id -u`), add `--user "$(id -u):$(id -g)"` to every `docker run` so the container can read and write the mounted `~/.elisym`. Docker Desktop (macOS, Windows) needs nothing extra.
+
 **2. Edit your MCP client's config file** and add the entry below. Replace `/Users/you/.elisym` with the absolute path to your home `.elisym` directory:
 
 ```json

@@ -36,6 +36,8 @@ docker run --rm -it \
 
 The wizard walks you through agent name, Solana network, wallet funding, and LLM provider, and writes everything to `~/.elisym/<chosen-name>/` on the host.
 
+The container runs as an unprivileged user (uid 1000), not root. On Linux, if your own uid is not 1000 (`id -u`), add `--user "$(id -u):$(id -g)"` to every `docker run` so the container can read and write the mounted `~/.elisym`. Docker Desktop (macOS, Windows) needs nothing extra.
+
 **2. Start provider mode.** The container needs access to the agent directory - mount home if the agent lives there, or mount your project if it's project-local:
 
 ```bash

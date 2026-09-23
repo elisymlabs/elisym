@@ -1,0 +1,16 @@
+# The images build from source inside Docker (see packages/{cli,mcp}/Dockerfile):
+# nothing built or installed on the host belongs in the context, and neither do
+# secrets or local agent stores.
+.git
+**/node_modules
+**/dist
+**/.turbo
+target
+coverage
+.deepsec
+.elisym
+**/.elisym
+.env
+.env.*
+**/.env
+**/.env.*
