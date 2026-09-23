@@ -211,7 +211,11 @@ function JobInputInner({
     if (buying) {
       return 'Processing...';
     }
-    if (!isFree && !publicKey) {
+    // `gate.needsWalletConnect`, not a local recomputation: the hook turns it
+    // off for a card priced on a chain this app cannot pay, because connecting
+    // a wallet would lead straight back to the same refusal. The composer
+    // already reads the gate; this label was the half that did not.
+    if (gate.needsWalletConnect) {
       return (
         <>
           <span className="sm:hidden">Connect</span>
@@ -382,6 +386,13 @@ function JobInputInner({
           )}
         </div>
       </div>
+      {gate.paysOffSolana && (
+        // Always visible, not only on hover: the tooltip beside the button is
+        // `hidden sm:inline-block` and the button is `disabled`, so on a phone
+        // or with a keyboard the reason would never appear at all. This is the
+        // one gate nothing on this screen can clear.
+        <div className="px-20 pb-12 text-xs text-text-2">{gate.tip}</div>
+      )}
       {freeFileBlocked && (
         <div className="px-20 pb-12 text-xs text-text-2">
           File inputs require a paid capability - this one is free.

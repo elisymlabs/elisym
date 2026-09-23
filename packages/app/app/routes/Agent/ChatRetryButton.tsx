@@ -75,9 +75,12 @@ function ChatRetryButtonInner({
 
   const disabled = gate.isDisabled || gate.needsWalletConnect || blockedOnAllowance;
   let title = gate.tip ?? undefined;
+  // `title` already starts as `gate.tip`, so this branch assigns nothing new -
+  // what it does is keep the branches below from replacing the one reason that
+  // matters. They are unreachable for such a card anyway (the SDK clears
+  // `delegation` on a card that is not Solana), and this says why in one place
+  // rather than leaving the reader to prove it.
   if (gate.paysOffSolana) {
-    // First and last word: the chain is why, and no delegation or wallet step
-    // changes it. `gate.isDisabled` already carries the hold.
     title = gate.tip ?? undefined;
   } else if (gate.needsWalletConnect) {
     title = 'Connect your wallet to retry.';

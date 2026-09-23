@@ -9,7 +9,7 @@ import {
 import { createSolanaRpc } from '@solana/kit';
 import { z } from 'zod';
 import { rpcUrlFor } from '../context.js';
-import { withPayableCards } from '../payable-cards';
+import { withPayableCards } from '../payable-cards.js';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
 import { type Contact, readContacts } from '../storage/contacts.js';
 import { MAX_CAPABILITIES, assetFromCardPayment, decodeNpub } from '../utils.js';

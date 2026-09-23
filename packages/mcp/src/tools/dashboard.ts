@@ -1,7 +1,7 @@
 import { formatAssetAmount } from '@elisym/sdk';
 import type { Agent } from '@elisym/sdk';
 import { z } from 'zod';
-import { withPayableCards } from '../payable-cards';
+import { withPayableCards } from '../payable-cards.js';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
 import { assetFromCardPayment } from '../utils.js';
 import type { ToolDefinition } from './types.js';

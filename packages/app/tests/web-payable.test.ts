@@ -37,6 +37,16 @@ describe('paysOffSolana', () => {
     );
   });
 
+  it('holds a zero-priced card that names another chain', () => {
+    // Free is not a chain. A price of zero on a rail this app cannot pay is
+    // still a buy path that has never run here, and the docstring says so.
+    const free = {
+      ...(paidOn('tempo', EVM_WALLET).payment as NonNullable<CapabilityCard['payment']>),
+      job_price: 0,
+    };
+    expect(paysOffSolana({ payment: free })).toBe(true);
+  });
+
   it('lets a free card through, payment block and all', () => {
     // Free is payable anywhere, and an absent block names no chain.
     expect(paysOffSolana({})).toBe(false);
