@@ -75,7 +75,11 @@ function ChatRetryButtonInner({
 
   const disabled = gate.isDisabled || gate.needsWalletConnect || blockedOnAllowance;
   let title = gate.tip ?? undefined;
-  if (gate.needsWalletConnect) {
+  if (gate.paysOffSolana) {
+    // First and last word: the chain is why, and no delegation or wallet step
+    // changes it. `gate.isDisabled` already carries the hold.
+    title = gate.tip ?? undefined;
+  } else if (gate.needsWalletConnect) {
     title = 'Connect your wallet to retry.';
   } else if (buyMode === 'delegate') {
     title = 'Grant a delegated allowance in the Delegation tab to retry.';

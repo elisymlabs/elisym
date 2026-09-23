@@ -66,6 +66,7 @@ import {
   type PreparedFileInput,
 } from '../job-input.js';
 import { logger } from '../logger.js';
+import { withPayableCards } from '../payable-cards';
 import {
   sanitizeUntrusted,
   sanitizeField,
@@ -1461,7 +1462,7 @@ async function executeSubmitAndPay(
 
   // resolve expected Solana recipient from the provider's capability card
   // BEFORE submitting the job. If the provider is unknown on-network, fail fast.
-  const providers = await agent.client.discovery.fetchAgents(agent.network);
+  const providers = withPayableCards(await agent.client.discovery.fetchAgents(agent.network));
   const provider = providers.find((a) => a.npub === params.providerNpub);
 
   // if the provider is not in the current discovery snapshot, refuse
@@ -1785,7 +1786,7 @@ async function executeDelegatedJob(
     );
   }
 
-  const providers = await agent.client.discovery.fetchAgents(agent.network);
+  const providers = withPayableCards(await agent.client.discovery.fetchAgents(agent.network));
   const provider = providers.find((candidate) => candidate.npub === params.providerNpub);
   if (!provider) {
     return errorResult(
@@ -3042,7 +3043,7 @@ export const customerTools: ToolDefinition[] = [
       }
 
       // Look up provider.
-      const agents = await agent.client.discovery.fetchAgents(agent.network);
+      const agents = withPayableCards(await agent.client.discovery.fetchAgents(agent.network));
       const provider = agents.find((a) => a.npub === input.provider_npub);
       if (!provider) {
         return errorResult(`Provider ${input.provider_npub} not found on the network.`);

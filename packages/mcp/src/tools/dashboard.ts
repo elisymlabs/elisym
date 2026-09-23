@@ -1,6 +1,7 @@
 import { formatAssetAmount } from '@elisym/sdk';
 import type { Agent } from '@elisym/sdk';
 import { z } from 'zod';
+import { withPayableCards } from '../payable-cards';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
 import { assetFromCardPayment } from '../utils.js';
 import type { ToolDefinition } from './types.js';
@@ -50,9 +51,8 @@ export const dashboardTools: ToolDefinition[] = [
       // or unresponsive relay set cannot hang the tool call indefinitely.
       let agents: Agent[];
       try {
-        agents = await withTimeout(
-          agent.client.discovery.fetchAgents(network),
-          input.timeout_secs * 1000,
+        agents = withPayableCards(
+          await withTimeout(agent.client.discovery.fetchAgents(network), input.timeout_secs * 1000),
         );
       } catch (e) {
         return textResult(e instanceof Error ? e.message : String(e));

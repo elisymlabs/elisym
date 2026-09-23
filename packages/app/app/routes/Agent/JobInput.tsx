@@ -141,6 +141,14 @@ function JobInputInner({
     isDisabled = true;
     tip = holdReason;
   }
+  // Last, because it is the one hold no buy mode lifts: a delegation card
+  // priced on another chain still cannot be paid from here, and 'Delegate'
+  // would otherwise hand the user a live button and an allowance this app
+  // cannot open.
+  if (gate.paysOffSolana) {
+    isDisabled = true;
+    tip = gate.tip;
+  }
 
   async function handleBuy() {
     if (!isFree && !publicKey) {
