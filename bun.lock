@@ -14,7 +14,7 @@
     },
     "packages/app": {
       "name": "@elisym/app",
-      "version": "0.17.2",
+      "version": "0.19.0",
       "dependencies": {
         "@elisym/sdk": "~0.39.0",
         "@solana-program/memo": "~0.11.0",
@@ -56,7 +56,7 @@
     },
     "packages/cli": {
       "name": "@elisym/cli",
-      "version": "0.33.1",
+      "version": "0.33.2",
       "bin": {
         "elisym": "./dist/index.js",
       },
@@ -120,7 +120,7 @@
     },
     "packages/mcp": {
       "name": "@elisym/mcp",
-      "version": "0.29.0",
+      "version": "0.30.0",
       "bin": {
         "elisym-mcp": "./dist/index.js",
       },
@@ -145,10 +145,38 @@
         "vitest": "~3.2.6",
       },
     },
+    "packages/pay-core": {
+      "name": "@elisym/pay-core",
+      "version": "0.1.0",
+      "dependencies": {
+        "zod": "~3.25.0",
+      },
+      "devDependencies": {
+        "@elisym/config-client": "workspace:*",
+        "@solana-program/memo": "~0.11.0",
+        "@solana-program/system": "~0.12.0",
+        "@solana-program/token": "~0.14.0",
+        "@solana/kit": "~6.8.0",
+        "@types/node": "~25.5.0",
+        "decimal.js-light": "~2.5.1",
+        "nostr-tools": "~2.23.0",
+        "tsup": "~8.4.0",
+        "typescript": "~5.7.0",
+        "vitest": "~3.2.6",
+      },
+      "peerDependencies": {
+        "@solana-program/memo": "~0.11.0",
+        "@solana-program/system": "~0.12.0",
+        "@solana-program/token": "~0.14.0",
+        "@solana/kit": "~6.8.0",
+        "decimal.js-light": "~2.5.0",
+      },
+    },
     "packages/sdk": {
       "name": "@elisym/sdk",
-      "version": "0.39.0",
+      "version": "0.40.0",
       "dependencies": {
+        "@elisym/pay-core": "workspace:*",
         "yaml": "~2.8.3",
         "zod": "~3.25.0",
       },
@@ -418,6 +446,8 @@
     "@elisym/docs": ["@elisym/docs@workspace:packages/docs"],
 
     "@elisym/mcp": ["@elisym/mcp@workspace:packages/mcp"],
+
+    "@elisym/pay-core": ["@elisym/pay-core@workspace:packages/pay-core"],
 
     "@elisym/sdk": ["@elisym/sdk@workspace:packages/sdk"],
 
@@ -3299,6 +3329,8 @@
 
     "@elisym/docs/vite": ["vite@8.0.16", "", { "dependencies": { "lightningcss": "^1.32.0", "picomatch": "^4.0.4", "postcss": "^8.5.15", "rolldown": "1.0.3", "tinyglobby": "^0.2.17" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^20.19.0 || >=22.12.0", "@vitejs/devtools": "^0.1.18", "esbuild": "^0.27.0 || ^0.28.0", "jiti": ">=1.21.0", "less": "^4.0.0", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "@vitejs/devtools", "esbuild", "jiti", "less", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-h9bXPmJichP5fLmVQo3PyaGSDE2n3aPuomeAlVRm0JLmt4rY6zmPKd59HYI4LNW8oTK7tlTsuC7l/m7awx9Jcw=="],
 
+    "@elisym/pay-core/@types/node": ["@types/node@25.5.2", "", { "dependencies": { "undici-types": "~7.18.0" } }, "sha512-tO4ZIRKNC+MDWV4qKVZe3Ql/woTnmHDr5JD8UI5hn2pwBrHEwOEMZK7WlNb5RKB6EoJ02gwmQS9OrjuFnZYdpg=="],
+
     "@elisym/sdk/@types/node": ["@types/node@25.5.2", "", { "dependencies": { "undici-types": "~7.18.0" } }, "sha512-tO4ZIRKNC+MDWV4qKVZe3Ql/woTnmHDr5JD8UI5hn2pwBrHEwOEMZK7WlNb5RKB6EoJ02gwmQS9OrjuFnZYdpg=="],
 
     "@ethereumjs/common/@ethereumjs/util": ["@ethereumjs/util@10.1.1", "", { "dependencies": { "@ethereumjs/rlp": "^10.1.1", "@noble/curves": "^2.0.1", "@noble/hashes": "^2.0.1" } }, "sha512-r2EhaeEmLZXVs1dT2HJFQysAkr63ZWATu/9tgYSp1IlvjvwyC++DLg5kCDwMM49HBq3sOAhrPnXkoqf9DV2gbw=="],
@@ -3834,6 +3866,8 @@
     "@elisym/docs/vite/postcss": ["postcss@8.5.15", "", { "dependencies": { "nanoid": "^3.3.12", "picocolors": "^1.1.1", "source-map-js": "^1.2.1" } }, "sha512-FfR8sjd4em2T6fb3I2MwAJU7HWVMr9zba+enmQeeWFfCbm+UOC/0X4DS8XtpUTMwWMGbjKYP7xjfNekzyGmB3A=="],
 
     "@elisym/docs/vite/tinyglobby": ["tinyglobby@0.2.17", "", { "dependencies": { "fdir": "^6.5.0", "picomatch": "^4.0.4" } }, "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g=="],
+
+    "@elisym/pay-core/@types/node/undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
 
     "@elisym/sdk/@types/node/undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
 

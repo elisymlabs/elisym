@@ -4,14 +4,14 @@
  * build a payment the provider then refuses, or pay no fee at all.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Eip1193Client } from '../src/evm/client';
+import type { Eip1193Client } from '@elisym/pay-core';
 import {
   WrongEvmChainError,
   checkEvmChain,
   clearEvmProtocolConfigCache,
   getEvmProtocolConfig,
-} from '../src/evm/config';
-import { CHAINS } from '../src/payment/chains';
+} from '@elisym/pay-core';
+import { CHAINS } from '@elisym/pay-core';
 
 const TREASURY = '716ebf6bef1c3f27ea5c315ecfc60527d97041a2';
 

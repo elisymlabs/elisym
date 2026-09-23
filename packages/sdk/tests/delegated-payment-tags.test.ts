@@ -6,7 +6,7 @@ import {
   buildDelegationAuthProof,
   mintDelegationNonce,
 } from '../src/delegation/auth-proof';
-import { generateSolanaWallet } from '../src/payment/wallet';
+import { generateSolanaWallet } from '@elisym/pay-core';
 import { ElisymIdentity } from '../src/primitives/identity';
 import { MarketplaceService, parseDelegatedPayment } from '../src/services/marketplace';
 import type { NostrPool } from '../src/transport/pool';

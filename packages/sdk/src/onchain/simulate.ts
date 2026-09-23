@@ -45,7 +45,7 @@ import {
   type Rpc,
   type SolanaRpcApi,
 } from '@solana/kit';
-import { estimatePriorityFeeMicroLamports } from '../payment/priorityFee';
+import { estimatePriorityFeeMicroLamports } from '@elisym/pay-core';
 import type { Network } from '../types';
 import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR, isProviderBudgetInstruction } from './checks';
 import {

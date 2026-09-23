@@ -252,7 +252,7 @@ export interface Skill {
   /** Price in subunits of `asset` (lamports for SOL, 1e-6 USDC for USDC). */
   priceSubunits: bigint;
   /** Asset the price is denominated in (NATIVE_SOL or USDC_SOLANA_DEVNET, etc.). */
-  asset: import('../payment/assets').Asset;
+  asset: import('@elisym/pay-core').Asset;
   /** Execution mode. Default 'llm' for back-compat. */
   mode: SkillMode;
   /**

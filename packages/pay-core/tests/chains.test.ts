@@ -14,7 +14,7 @@ import {
   defaultStablecoin,
   resolveAssetFromPaymentRequest,
   resolveKnownAsset,
-} from '../src/payment/assets';
+} from '@elisym/pay-core';
 import {
   CHAINS,
   chainByCaip2,
@@ -28,7 +28,7 @@ import {
   isEvmWireTxHash,
   isVirtualEvmAddress,
   normalizeEvmAddress,
-} from '../src/payment/chains';
+} from '@elisym/pay-core';
 
 describe('the chain registry', () => {
   it('has one entry per (chain, environment) and a unique CAIP-2 id for each', () => {

@@ -1,10 +1,10 @@
 import { z } from 'zod';
-import { LIMITS } from '../constants';
+import { PAYMENT_LIMITS } from '../constants';
 
-const MAX_DESCRIPTION_LENGTH = LIMITS.MAX_DESCRIPTION_LENGTH;
+const MAX_DESCRIPTION_LENGTH = PAYMENT_LIMITS.MAX_DESCRIPTION_LENGTH;
 const MAX_SAFE_LAMPORTS = Number.MAX_SAFE_INTEGER;
 // Hard cap on the schema-level expiry. The create path enforces a tighter
-// LIMITS.MAX_TIMEOUT_SECS (10 min) but historical providers may have
+// PAYMENT_LIMITS.MAX_TIMEOUT_SECS (10 min) but historical providers may have
 // emitted longer expiries; we only refuse outright nonsense here.
 const MAX_EXPIRY_SECS_SCHEMA = 86_400;
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
@@ -58,7 +58,7 @@ const paymentAssetRefSchema = z.object({
  *
  * Stricter than the loose TypeScript interface: rejects negative amounts,
  * floats, NaN/Infinity, mistyped recipient/reference, and any expiry
- * outside `[1, LIMITS.MAX_TIMEOUT_SECS]`. The strategy applies semantic
+ * outside `[1, PAYMENT_LIMITS.MAX_TIMEOUT_SECS]`. The strategy applies semantic
  * checks (recipient match, fee amount, expiry-vs-now) on top of this.
  */
 export const PaymentRequestSchema = z.object({

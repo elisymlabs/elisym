@@ -50,7 +50,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from '@solana/kit';
-import { getProtocolConfig } from '../src/config/onchain';
+import { getProtocolConfig } from '@elisym/pay-core';
 import { getProtocolProgramId } from '../src/constants';
 import {
   buildApproveDelegate,
@@ -61,8 +61,8 @@ import {
   deriveOwnerDelegationAta,
   getDelegation,
 } from '../src/delegation';
-import { resolveUsdcAsset } from '../src/payment/assets';
-import { generateSolanaWallet, signerFromSecretKeyBase58 } from '../src/payment/wallet';
+import { resolveUsdcAsset } from '@elisym/pay-core';
+import { generateSolanaWallet, signerFromSecretKeyBase58 } from '@elisym/pay-core';
 import type { Network } from '../src/types';
 
 const NETWORK: Network = process.env.NETWORK === 'mainnet' ? 'mainnet' : 'devnet';

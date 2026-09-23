@@ -1,0 +1,98 @@
+{
+  "name": "@elisym/pay-core",
+  "version": "0.1.0",
+  "description": "Payment primitives for elisym: requests, fees, assets, and on-chain verification on Solana and Tempo.",
+  "license": "MIT",
+  "author": "elisym labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elisymlabs/elisym.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/elisymlabs/elisym",
+  "keywords": [
+    "ai-agents",
+    "discovery",
+    "marketplace",
+    "nip-89",
+    "nip-90",
+    "nostr",
+    "payments",
+    "solana",
+    "typescript"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./internal": {
+      "import": {
+        "types": "./dist/internal.d.ts",
+        "default": "./dist/internal.js"
+      },
+      "require": {
+        "types": "./dist/internal.d.cts",
+        "default": "./dist/internal.cjs"
+      }
+    },
+    "./evm": {
+      "import": {
+        "types": "./dist/evm.d.ts",
+        "default": "./dist/evm.js"
+      },
+      "require": {
+        "types": "./dist/evm.d.cts",
+        "default": "./dist/evm.cjs"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "zod": "~3.25.0"
+  },
+  "peerDependencies": {
+    "@solana-program/memo": "~0.11.0",
+    "@solana-program/system": "~0.12.0",
+    "@solana-program/token": "~0.14.0",
+    "@solana/kit": "~6.8.0",
+    "decimal.js-light": "~2.5.0"
+  },
+  "devDependencies": {
+    "@elisym/config-client": "workspace:*",
+    "@solana-program/memo": "~0.11.0",
+    "@solana-program/system": "~0.12.0",
+    "@solana-program/token": "~0.14.0",
+    "@solana/kit": "~6.8.0",
+    "@types/node": "~25.5.0",
+    "decimal.js-light": "~2.5.1",
+    "nostr-tools": "~2.23.0",
+    "tsup": "~8.4.0",
+    "typescript": "~5.7.0",
+    "vitest": "~3.2.6"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

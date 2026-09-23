@@ -64,7 +64,7 @@ import {
 // By path, not through the barrel: the barrel is the module's outward face and
 // deliberately exports no internal of the pipeline.
 import { PRICE_INSTRUCTION_BYTES } from '../src/onchain/simulate';
-import { clearPriorityFeeCache } from '../src/payment/priorityFee';
+import { clearPriorityFeeCache } from '@elisym/pay-core';
 
 const SIGNER = address('HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4YWrH');
 const OTHER_WALLET = address('9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin');

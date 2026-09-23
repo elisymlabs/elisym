@@ -9,7 +9,7 @@
 import { finalizeEvent, type Event, type Filter } from 'nostr-tools';
 import { describe, expect, it, vi } from 'vitest';
 import { KIND_JOB_FEEDBACK, KIND_JOB_REQUEST, KIND_JOB_RESULT } from '../src/constants';
-import { PATHUSD_TEMPO } from '../src/payment/assets';
+import { PATHUSD_TEMPO } from '@elisym/pay-core';
 import { ElisymIdentity } from '../src/primitives/identity';
 import { MarketplaceService } from '../src/services/marketplace';
 import type { NostrPool } from '../src/transport/pool';

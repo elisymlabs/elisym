@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
-import type { Asset } from '../payment/assets';
+import type { Asset } from '@elisym/pay-core';
 import { HostScratchError } from './host-fault';
 import { SCRIPT_REFUSAL_FILE_ENV, scriptOutput, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';

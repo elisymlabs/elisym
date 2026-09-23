@@ -7,7 +7,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CHAINS, isEvmWireAddress } from '../src/payment/chains';
+import { CHAINS, isEvmWireAddress } from '@elisym/pay-core';
 import { CONFIG_CONTRACT_MODERATO } from './evm-deployment';
 
 const SRC = join(__dirname, '..', 'src');
@@ -33,14 +33,19 @@ const outsideEvm = sourceFiles(SRC).filter((path) => !relative(SRC, path).starts
 const IMPORT_FORMS = String.raw`(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)`;
 const VIEM_REFERENCE = new RegExp(IMPORT_FORMS + String.raw`['"]viem(?:/[^'"]*)?['"]`);
 const RAIL_REFERENCE = new RegExp(
-  IMPORT_FORMS + String.raw`['"](?:(?:\.\.?/)+(?:[\w-]+/)*evm(?:/[^'"]*)?|@elisym/sdk/evm)['"]`,
+  IMPORT_FORMS +
+    String.raw`['"](?:(?:\.\.?/)+(?:[\w-]+/)*evm(?:/[^'"]*)?|@elisym/(?:sdk|pay-core)/evm)['"]`,
 );
 /** A sentence only the rail carries, for looking inside a built bundle. */
 const RAIL_MARKER = 'No elisym config contract is registered for';
 
 describe('the EVM rail stays in its own entry point', () => {
   it('finds source files to check', () => {
-    expect(outsideEvm.length).toBeGreaterThan(50);
+    // A sweep that finds nothing proves nothing. The number is a floor on this
+    // package's own tree, not a measurement of it: the core is about twenty
+    // files outside the rail, and it moved here from the SDK, where the same
+    // floor was fifty because the marketplace was counted too.
+    expect(outsideEvm.length).toBeGreaterThan(15);
   });
 
   // The rules above are two regular expressions, and a regular expression that
@@ -65,6 +70,7 @@ describe('the EVM rail stays in its own entry point', () => {
     ["const rail = await import('../evm/config');", true],
     ["const rail = require('../../payment/evm/config');", true],
     ["import { x } from '@elisym/sdk/evm';", true],
+    ["import { x } from '@elisym/pay-core/evm';", true],
     ["import { x } from '../payment/chains';", false],
     ["import { x } from './evmish';", false],
   ])('recognises %s as a rail import: %s', (line, caught) => {

@@ -56,7 +56,7 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { ELISYM_PROTOCOL_TAG } from '../src/constants';
-import { signerFromSecretKeyBase58 } from '../src/payment/wallet';
+import { signerFromSecretKeyBase58 } from '@elisym/pay-core';
 
 const RPC_URL = process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com';
 const WS_URL = process.env.SOLANA_WS_URL ?? 'wss://api.devnet.solana.com';

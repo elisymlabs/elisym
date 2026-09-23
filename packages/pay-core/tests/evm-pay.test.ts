@@ -14,15 +14,15 @@ import {
   TRANSFER_TOPIC,
   TRANSFER_WITH_MEMO_TOPIC,
   ZERO_ADDRESS,
-} from '../src/evm/constants';
-import { resolveTempoTransferOutcome, type TempoLegExpectation } from '../src/evm/outcome';
+} from '@elisym/pay-core';
+import { resolveTempoTransferOutcome, type TempoLegExpectation } from '@elisym/pay-core';
 import {
   checkTempoReceivePolicies,
   MIN_PAY_WINDOW_SECS,
   validateTempoPaymentRequest,
-} from '../src/evm/validate';
-import { PATHUSD_TEMPO, USDCE_TEMPO_MAINNET } from '../src/payment/assets';
-import { CHAINS } from '../src/payment/chains';
+} from '@elisym/pay-core';
+import { PATHUSD_TEMPO, USDCE_TEMPO_MAINNET } from '@elisym/pay-core';
+import { CHAINS } from '@elisym/pay-core';
 import {
   fakeTempoChain,
   rangeCapError,

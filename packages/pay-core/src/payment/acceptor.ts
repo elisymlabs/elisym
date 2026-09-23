@@ -1,5 +1,5 @@
 import { type Rpc, type SolanaRpcApi, address, isAddress } from '@solana/kit';
-import { DEFAULTS } from '../constants';
+import { PAYMENT_DEFAULTS } from '../constants';
 import type { PaymentRequestData, VerifyResult } from '../types';
 import { resolveAssetFromPaymentRequest } from './assets';
 import { degenerateReference } from './degenerate-reference';
@@ -573,7 +573,7 @@ export class ProviderPaymentAcceptor {
         try {
           const page = (await this.deps.rpc
             .getSignaturesForAddress(address(paymentRequest.reference), {
-              limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
+              limit: PAYMENT_DEFAULTS.VERIFY_SIGNATURE_LIMIT,
               commitment: 'confirmed',
             })
             .send()) as readonly { signature: string; err: unknown }[];
@@ -589,7 +589,7 @@ export class ProviderPaymentAcceptor {
           // empty into a poll that never terminates. The direction is the safe
           // one, which is why this is stated rather than guarded harder, and it
           // stays because a third-party strategy owes no such check.
-          windowFull = page.length >= DEFAULTS.VERIFY_SIGNATURE_LIMIT;
+          windowFull = page.length >= PAYMENT_DEFAULTS.VERIFY_SIGNATURE_LIMIT;
           candidates = page.filter((entry) => !entry.err).map((entry) => entry.signature);
           listed = true;
           break;

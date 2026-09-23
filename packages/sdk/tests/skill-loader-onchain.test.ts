@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '../src/payment/assets';
+import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/pay-core';
 import { validateSkillFrontmatter } from '../src/skills/loader';
 
 const KAMINO = 'KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD';

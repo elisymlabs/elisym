@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import type { Asset } from '../payment/assets';
+import type { Asset } from '@elisym/pay-core';
 import { SCRIPT_REFUSAL_FILE_ENV } from './refusal';
 import type {
   CompletionResult,

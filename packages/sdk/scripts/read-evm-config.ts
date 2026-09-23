@@ -25,8 +25,8 @@ import {
   createJsonRpcClient,
   getEvmProtocolConfig,
   WrongEvmChainError,
-} from '../src/evm/index';
-import { CHAINS, type ChainConfig } from '../src/payment/chains';
+} from '@elisym/pay-core';
+import { CHAINS, type ChainConfig } from '@elisym/pay-core';
 
 const chain: ChainConfig =
   process.env.CHAIN === 'mainnet' ? CHAINS.TEMPO_MAINNET : CHAINS.TEMPO_DEVNET;

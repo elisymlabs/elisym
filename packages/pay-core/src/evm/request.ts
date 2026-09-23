@@ -12,7 +12,7 @@
  * when it arrives, and it cannot make that promise blind.
  */
 
-import { DEFAULTS } from '../constants';
+import { PAYMENT_DEFAULTS } from '../constants';
 import type { Asset } from '../payment/assets';
 import { assetsFor } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
@@ -77,7 +77,7 @@ export async function createTempoPaymentRequest(
   if (options.amount <= 0n) {
     throw new Error('A payment request needs a positive amount.');
   }
-  const expirySecs = options.expirySecs ?? DEFAULTS.PAYMENT_EXPIRY_SECS;
+  const expirySecs = options.expirySecs ?? PAYMENT_DEFAULTS.PAYMENT_EXPIRY_SECS;
   if (!Number.isInteger(expirySecs) || expirySecs <= 0 || expirySecs > MAX_EXPIRY_SECS) {
     throw new Error(`Invalid expiry: ${expirySecs}. Must be an integer 1-${MAX_EXPIRY_SECS}.`);
   }

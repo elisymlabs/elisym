@@ -11,9 +11,13 @@ import {
   findAssociatedTokenPda,
 } from '@solana-program/token';
 import { type Address, address, isAddress } from '@solana/kit';
-import { ELISYM_PROTOCOL_TAG, getProtocolProgramId } from '../constants';
-import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR } from '../onchain/checks';
-import { SYSTEM_PROGRAM_ADDRESS_STR } from '../onchain/constants';
+import {
+  COMPUTE_BUDGET_PROGRAM_ADDRESS_STR,
+  ELISYM_PROTOCOL_TAG,
+  getProtocolProgramId,
+  SYSTEM_PROGRAM_ADDRESS_STR,
+} from '../constants';
+
 import type { Network, PaymentRequestData } from '../types';
 import { TOKEN_2022_PROGRAM_ADDRESS_STR, resolveAssetFromPaymentRequest } from './assets';
 

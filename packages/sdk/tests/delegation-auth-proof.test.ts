@@ -8,7 +8,7 @@ import {
   verifyDelegationAuthProof,
   type DelegationAuthFields,
 } from '../src/delegation/auth-proof';
-import { generateSolanaWallet } from '../src/payment/wallet';
+import { generateSolanaWallet } from '@elisym/pay-core';
 import { ElisymIdentity } from '../src/primitives/identity';
 
 async function proofFixture() {

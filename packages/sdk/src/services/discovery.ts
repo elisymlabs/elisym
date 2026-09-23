@@ -19,14 +19,14 @@ import {
 import { parseDelegationDescriptor } from '../delegation';
 import { parseMeteredDescriptor } from '../metered';
 import { parseOnchainDescriptor } from '../onchain';
-import { assetsFor } from '../payment/assets';
-import type { Asset } from '../payment/assets';
+import { assetsFor } from '@elisym/pay-core';
+import type { Asset } from '@elisym/pay-core';
 import {
   chainFamilyOf,
   isChainSlug,
   isEvmWireAddress,
   isVirtualEvmAddress,
-} from '../payment/chains';
+} from '@elisym/pay-core';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type {

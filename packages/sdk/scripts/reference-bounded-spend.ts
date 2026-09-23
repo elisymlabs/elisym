@@ -45,8 +45,8 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { buildDelegatedTransfer, deriveOwnerDelegationAta, getDelegation } from '../src/delegation';
-import { formatAssetAmount, parseAssetAmount, resolveUsdcAsset } from '../src/payment/assets';
-import { signerFromSecretKeyBase58 } from '../src/payment/wallet';
+import { formatAssetAmount, parseAssetAmount, resolveUsdcAsset } from '@elisym/pay-core';
+import { signerFromSecretKeyBase58 } from '@elisym/pay-core';
 import type { Network } from '../src/types';
 
 const NETWORK: Network = process.env.NETWORK === 'mainnet' ? 'mainnet' : 'devnet';

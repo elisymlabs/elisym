@@ -92,8 +92,8 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-const { createFileSettlementStore } = await import('../src/payment/fileSettlementStore');
-const { MIN_SETTLEMENT_RETENTION_MS } = await import('../src/payment/acceptor');
+const { createFileSettlementStore } = await import('../src/payment-file-store');
+const { MIN_SETTLEMENT_RETENTION_MS } = await import('@elisym/pay-core');
 
 const SIG_A = 'A'.repeat(88);
 const SIG_B = 'B'.repeat(88);

@@ -47,9 +47,9 @@ import {
   isAddress,
   unwrapOption,
 } from '@solana/kit';
-import { type Asset, KNOWN_ASSETS, formatAssetAmount, resolveUsdcAsset } from '../payment/assets';
-import { calculateProtocolFee } from '../payment/fee';
-import type { Signer } from '../payment/strategy';
+import { type Asset, KNOWN_ASSETS, formatAssetAmount, resolveUsdcAsset } from '@elisym/pay-core';
+import { calculateProtocolFee } from '@elisym/pay-core';
+import type { Signer } from '@elisym/pay-core';
 import type { Network } from '../types';
 
 /** u64 ceiling: SPL amounts are u64. */

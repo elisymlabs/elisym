@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, writeFileSync, chmodSync, rmSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { NATIVE_SOL } from '../src/payment/assets';
+import { NATIVE_SOL } from '@elisym/pay-core';
 import { DynamicScriptSkill } from '../src/skills/dynamicScriptSkill';
 
 interface ScriptFixture {

@@ -16,7 +16,7 @@ import {
   parseAssetAmount,
   formatAssetAmount,
   type Asset,
-} from '../src/payment/assets';
+} from '@elisym/pay-core';
 
 const SPL_FIXTURE: Asset = {
   chain: 'solana',

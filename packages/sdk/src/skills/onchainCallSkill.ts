@@ -15,7 +15,7 @@
 
 import { validateProviderCall } from '../onchain/provider';
 import type { SkillOnchainResolved } from '../onchain/types';
-import type { Asset } from '../payment/assets';
+import type { Asset } from '@elisym/pay-core';
 import type { Network } from '../types';
 import { DynamicScriptSkill } from './dynamicScriptSkill';
 import type {

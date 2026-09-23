@@ -25,7 +25,7 @@
  */
 
 import { getBase58Decoder } from '@solana/kit';
-import { TOKEN_2022_PROGRAM_ADDRESS_STR } from '../payment/assets';
+import { TOKEN_2022_PROGRAM_ADDRESS_STR } from '@elisym/pay-core';
 
 /** Classic SPL Token program. */
 export const TOKEN_PROGRAM_ADDRESS_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';

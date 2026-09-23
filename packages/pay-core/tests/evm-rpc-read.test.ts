@@ -5,7 +5,7 @@ import {
   readQuantity,
   readUint256,
   readWords,
-} from '../src/evm/rpc-read';
+} from '@elisym/pay-core';
 
 describe('rpc readers answer null, never a default', () => {
   it('reads hex data of whole bytes only', () => {

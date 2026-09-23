@@ -8,7 +8,6 @@ export default defineConfig({
     runtime: 'src/runtime/index.ts',
     skills: 'src/skills/index.ts',
     'llm-health': 'src/llm-health/index.ts',
-    evm: 'src/evm/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,

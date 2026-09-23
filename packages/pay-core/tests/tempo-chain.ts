@@ -9,8 +9,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Eip1193Client } from '../src/evm/client';
-import { EvmRpcError } from '../src/evm/client';
+import type { Eip1193Client } from '@elisym/pay-core';
+import { EvmRpcError } from '@elisym/pay-core';
 
 export interface FakeLog {
   address: string;

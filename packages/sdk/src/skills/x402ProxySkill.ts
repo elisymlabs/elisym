@@ -1,4 +1,4 @@
-import type { Asset } from '../payment/assets';
+import type { Asset } from '@elisym/pay-core';
 import type {
   Skill,
   SkillContext,

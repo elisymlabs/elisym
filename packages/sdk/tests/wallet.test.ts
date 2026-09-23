@@ -4,7 +4,7 @@ import {
   exportKeyPairBytes,
   generateSolanaWallet,
   signerFromSecretKeyBase58,
-} from '../src/payment/wallet';
+} from '@elisym/pay-core';
 
 describe('payment/wallet helpers', () => {
   it('round-trips a generated wallet through the base58 at-rest format', async () => {

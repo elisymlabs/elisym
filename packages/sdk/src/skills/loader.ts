@@ -17,7 +17,7 @@ import {
   resolveKnownAsset,
   resolveLsmAsset,
   resolveUsdcAsset,
-} from '../payment/assets';
+} from '@elisym/pay-core';
 import type { Network } from '../types';
 import { DynamicScriptSkill } from './dynamicScriptSkill';
 import { OnchainCallSkill } from './onchainCallSkill';
