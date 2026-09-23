@@ -348,7 +348,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const wallet = publicKey?.toBase58() ?? '';
-  const { jobs, saveJob, updateJob, flipJob } = useJobHistory({ wallet });
+  const { owner: jobsOwner, jobs, saveJob, updateJob, flipJob } = useJobHistory();
 
   const [session, setSession] = useState<ActiveBuySession | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -405,10 +405,11 @@ export function BuyProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Snapshot wallet-scoped history mutators at click time. If the user
-      // disconnects mid-job, useJobHistory({ wallet: '' }) flips to no-op
-      // saveJob/updateJob and we'd silently drop status writes; the closure
-      // here keeps writing to the wallet that was connected at click.
+      // Snapshot the identity-scoped history mutators at click time: if the
+      // user switches identity mid-job, the closure here keeps writing under
+      // the identity that bought it, which is whose job it is. (The ledger no
+      // longer depends on the wallet at all, so a disconnect mid-job can no
+      // longer silently drop every status write, as it used to.)
       const snapshotSaveJob = saveJob;
       const snapshotUpdateJob = updateJob;
       const snapshotFlipJob = flipJob;
@@ -1380,7 +1381,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
   // after a page reload. Found results update history and, if the job is still
   // the active session, flip it from pending to a result in the UI.
   useEffect(() => {
-    if (!wallet) {
+    if (!jobsOwner) {
       return;
     }
     const identity = idCtx.identity;
@@ -1481,7 +1482,7 @@ export function BuyProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [wallet, idCtx.identity, client, flipJob, queryClient]);
+  }, [jobsOwner, wallet, idCtx.identity, client, flipJob, queryClient]);
 
   const rate = useCallback(
     async (positive: boolean) => {

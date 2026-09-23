@@ -1,4 +1,3 @@
-import { useWallet } from '@solana/wallet-adapter-react';
 import { Link } from 'wouter';
 import { useUnseenJobsCount } from '~/hooks/useJobHistory';
 import { cn } from '~/lib/cn';
@@ -13,8 +12,7 @@ interface Props {
  * looking - from the shared job-history store.
  */
 export function JobsNavLink({ dark }: Props) {
-  const { publicKey } = useWallet();
-  const unseen = useUnseenJobsCount(publicKey?.toBase58() ?? '');
+  const unseen = useUnseenJobsCount();
 
   return (
     <Link

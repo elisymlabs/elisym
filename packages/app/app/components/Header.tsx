@@ -236,7 +236,7 @@ export function Header() {
                 session; unmounting also stops the live DM subscription for
                 signed-out visitors. The /jobs page itself stays reachable
                 by URL without a wallet - it just has no badge. */}
-            {(address || providerSession) && <JobsNavLink dark={dark} />}
+            <JobsNavLink dark={dark} />
             {(address || providerSession) && <MessagesNavLink dark={dark} />}
 
             {accountNode}
