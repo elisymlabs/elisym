@@ -1744,6 +1744,50 @@ describe('resolveTempoTransferOutcome', () => {
     expect(outcome).toEqual({ state: 'pending' });
   });
 
+  it.each([
+    ['blocked', 'blocked'],
+    ['reverted', 'unsent'],
+  ])('asks the chain again before a %s verdict too', async (label, expected) => {
+    // The ask is one state-agnostic condition, so narrowing it to `delivered`
+    // alone passed the suite. These two rows hold the other states it covers.
+    const receipt = label === 'reverted' ? { ...BLOCKED, status: '0x0' } : BLOCKED;
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: NOW, [BLOCKED_BLOCK]: NOW },
+      receipts: { [BLOCKED_HASH]: receipt },
+    });
+    let seenReceipt = false;
+    const switching = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        if (args.method === 'eth_chainId' && seenReceipt) {
+          return '0x1079';
+        }
+        const answer = await chain.client.request(
+          args as Parameters<typeof chain.client.request>[0],
+        );
+        if (args.method === 'eth_getTransactionReceipt') {
+          seenReceipt = true;
+        }
+        return answer;
+      },
+    } as unknown as typeof chain.client;
+    const options = {
+      chain: CHAINS.TEMPO_DEVNET,
+      hash: BLOCKED_HASH,
+      floor: BLOCKED_BLOCK - 100,
+      validBefore: NOW + 60,
+    };
+    // The control: on a chain that does not move, this receipt really does
+    // reach the terminal verdict this row is about.
+    expect((await resolveTempoTransferOutcome(chain.client, [BLOCKED_LEG], options)).state).toBe(
+      expected,
+    );
+    expect(await resolveTempoTransferOutcome(switching, [BLOCKED_LEG], options)).toEqual({
+      state: 'pending',
+    });
+  });
+
   it('asks the chain again before a verdict read off a receipt', async () => {
     // The absence path ends with this ask and the provider's verifier makes it
     // before every terminal answer; the receipt path made it only at the
@@ -2025,6 +2069,38 @@ describe('resolveTempoTransferOutcome', () => {
       floor: BATCH_BLOCK - 100,
       validBefore: NOW + 60,
     });
+    expect(outcome).toEqual({ state: 'unsent', reason: 'deadline_passed' });
+  });
+
+  it('proves a withdrawal absent about OUR sender, not anyone who paid that address', async () => {
+    // The memo-less scan filters on `from`, and that filter had no row: a
+    // memo leg is paid by anyone, a withdrawal is not. Somebody else's
+    // transfer to the same destination in the same window is not evidence
+    // about ours, and without the filter it would turn `unsent` into
+    // `pending` for ever.
+    const stranger = memoLogOf(RECIPIENT, `0x${'11'.repeat(32)}`, 696n, 39_999_950);
+    const chain = chainWith({
+      receipts: {},
+      logs: [
+        ...history(PATHUSD, BATCH_BLOCK - 100, 40_000_000),
+        {
+          ...stranger,
+          address: PATHUSD,
+          topics: [TRANSFER_TOPIC, topicWord(`0x${'ab'.repeat(20)}`), topicWord(RECIPIENT)],
+        },
+      ],
+      timestamps: { 40_000_000: NOW + 600 },
+    });
+    const outcome = await resolveTempoTransferOutcome(
+      chain.client,
+      [{ token: PATHUSD, from: PAYER, to: RECIPIENT, amount: 696n }],
+      {
+        chain: CHAINS.TEMPO_MAINNET,
+        hash: BATCH_HASH,
+        floor: BATCH_BLOCK - 100,
+        validBefore: NOW + 60,
+      },
+    );
     expect(outcome).toEqual({ state: 'unsent', reason: 'deadline_passed' });
   });
 
