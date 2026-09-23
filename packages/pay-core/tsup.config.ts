@@ -8,7 +8,9 @@ export default defineConfig({
   },
   format: ['esm', 'cjs'],
   dts: true,
-  splitting: false,
+  // One copy of every module across the entries: `./internal` resets the same
+  // caches the root entry reads.
+  splitting: true,
   sourcemap: true,
   clean: true,
   treeshake: true,

@@ -5,7 +5,7 @@
  *   client that only discovers and verifies - never pulls the rail in.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CHAINS, isEvmWireAddress } from '../src/payment/chains';
 import { CONFIG_CONTRACT_MODERATO } from './evm-deployment';
@@ -38,6 +38,28 @@ const RAIL_REFERENCE = new RegExp(
 );
 /** A sentence only the rail carries, for looking inside a built bundle. */
 const RAIL_MARKER = 'No elisym config contract is registered for';
+
+const DIST = join(__dirname, '..', 'dist');
+const RELATIVE_CHUNK = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"](\.\.?\/[^'"]+)['"]/g;
+
+/** A built entry and every file of this package it pulls in, transitively. */
+function reachableFiles(entry: string): string[] {
+  const seen = new Set<string>();
+  const pending = [entry];
+  for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+    if (seen.has(file) || !existsSync(file)) {
+      continue;
+    }
+    seen.add(file);
+    for (const match of readFileSync(file, 'utf8').matchAll(RELATIVE_CHUNK)) {
+      const specifier = match[1];
+      if (specifier) {
+        pending.push(join(dirname(file), specifier));
+      }
+    }
+  }
+  return [...seen];
+}
 
 describe('the EVM rail stays in its own entry point', () => {
   it('finds source files to check', () => {
@@ -87,10 +109,11 @@ describe('the EVM rail stays in its own entry point', () => {
     expect(offenders.map((path) => relative(SRC, path))).toEqual([]);
   });
 
-  // The regexes above read SOURCE, and a bundler is what actually decides. With
-  // `splitting: false` a dynamic `import()` is inlined, so a form the source
-  // rules missed would land in the root bundle without a word. This asserts the
-  // artefact itself whenever there is one to assert.
+  // The regexes above read SOURCE, and a bundler is what actually decides: a
+  // form the source rules missed would land in the root bundle without a word.
+  // This asserts the artefact itself. The package is built with code splitting,
+  // so the root entry is its file PLUS every chunk it reaches - statically or
+  // through a dynamic `import()` - and all of them are read.
   it('keeps the rail out of the built root bundle', () => {
     // The ORDER is structural, not asserted here: `turbo.json` makes this
     // package's `test` depend on its `build`, so inside `bun qa` this always
@@ -102,11 +125,17 @@ describe('the EVM rail stays in its own entry point', () => {
       const bundle = join(__dirname, '..', name);
       expect(
         existsSync(bundle),
-        `${name} is missing - run \`bun run build --filter=@elisym/sdk\` before this test`,
+        `${name} is missing - run \`bun run build --filter=@elisym/pay-core\` before this test`,
       ).toBe(true);
-      const built = readFileSync(bundle, 'utf8');
-      expect(built).not.toContain(RAIL_MARKER);
-      expect(built).not.toContain('viem');
+      const files = reachableFiles(bundle);
+      // Split into chunks: an entry that reached nothing would prove nothing.
+      expect(files.length, name).toBeGreaterThan(1);
+      for (const file of files) {
+        const built = readFileSync(file, 'utf8');
+        expect(built, relative(DIST, file)).not.toContain(RAIL_MARKER);
+        expect(built, relative(DIST, file)).not.toContain('viem');
+        expect(built, relative(DIST, file)).not.toMatch(/@elisym\/(?:sdk|pay-core)\/evm/);
+      }
     }
   });
 });

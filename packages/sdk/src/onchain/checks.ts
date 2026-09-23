@@ -9,6 +9,7 @@
  * reason a human can act on.
  */
 
+import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR } from '@elisym/pay-core/internal';
 import { AccountRole, isSignerRole } from '@solana/kit';
 import {
   CALL_CLOCK_SKEW_SECS,
@@ -29,7 +30,7 @@ import type { OnchainRefusalReason } from './types';
  * rest survive into the signed transaction, and are refused outright if they
  * carry account metas, which a real one never does.
  */
-export const COMPUTE_BUDGET_PROGRAM_ADDRESS_STR = 'ComputeBudget111111111111111111111111111111';
+export { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR };
 
 /**
  * The only ComputeBudget instructions the client passes through.

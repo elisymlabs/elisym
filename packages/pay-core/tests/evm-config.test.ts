@@ -501,10 +501,11 @@ describe('getEvmProtocolConfig', () => {
   });
 
   it('does not count the chain-id read as age: the ticket is taken after it', async () => {
+    const CHAIN_ID_DELAY_MS = 200;
     const slowChainId = {
       request: async ({ method }: { method: string }) => {
         if (method === 'eth_chainId') {
-          await new Promise((resolve) => setTimeout(resolve, 60));
+          await new Promise((resolve) => setTimeout(resolve, CHAIN_ID_DELAY_MS));
           return '0xa5bf';
         }
         return answer(250);
@@ -515,7 +516,10 @@ describe('getEvmProtocolConfig', () => {
       clientAnswering(answer(999)).client,
       CHAINS.TEMPO_DEVNET,
     );
-    expect(cached.cachedAgeMs ?? Number.MAX_SAFE_INTEGER).toBeLessThan(30);
+    // Counted from before the chain-id read, the age would be at least the whole
+    // delay. The bound leaves room for a loaded machine (the full `bun qa` runs
+    // every package's suite at once) without letting that bug through.
+    expect(cached.cachedAgeMs ?? Number.MAX_SAFE_INTEGER).toBeLessThan(CHAIN_ID_DELAY_MS - 50);
   });
 
   it('reports a real age, and never a negative one', async () => {

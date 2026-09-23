@@ -37,5 +37,4 @@ export default defineConfig({
     'node:os',
     'node:path',
   ],
-  noExternal: ['@elisym/config-client'],
 });

@@ -11,11 +11,11 @@ import type { OnchainRefusalReason } from './types';
 
 /** Envelope version. Bumped only for a breaking change to the wire shape. */
 /**
- * The System program, which four files here need to name. Defined once: it
- * decides a durable nonce, a bare wallet, a reassignment and a closed account,
- * and four copies of one magic string is four chances for them to disagree.
+ * The System program, which four files here need to name. Defined once, in the
+ * payment core: it decides a durable nonce, a bare wallet, a reassignment and a
+ * closed account, and every copy of one magic string is a chance to disagree.
  */
-export const SYSTEM_PROGRAM_ADDRESS_STR = '11111111111111111111111111111111';
+export { SYSTEM_PROGRAM_ADDRESS_STR } from '@elisym/pay-core/internal';
 
 export const ONCHAIN_CALL_VERSION = 'v1';
 

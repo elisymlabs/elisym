@@ -2,19 +2,13 @@
 // which owns the money core; they are re-exported here so nothing that read
 // them from the SDK has to move, and spread into the aggregates below so each
 // number is written once.
-import {
-  COMPUTE_BUDGET_PROGRAM_ADDRESS_STR,
-  PAYMENT_DEFAULTS,
-  PAYMENT_LIMITS,
-} from '@elisym/pay-core';
+import { PAYMENT_DEFAULTS, PAYMENT_LIMITS } from '@elisym/pay-core/internal';
 
 export {
-  COMPUTE_BUDGET_PROGRAM_ADDRESS_STR,
   ELISYM_PROTOCOL_TAG,
   getProtocolProgramId,
   PROTOCOL_PROGRAM_ID_DEVNET,
   PROTOCOL_PROGRAM_ID_MAINNET,
-  SYSTEM_PROGRAM_ADDRESS_STR,
   type ProtocolCluster,
 } from '@elisym/pay-core';
 

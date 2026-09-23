@@ -3,15 +3,13 @@
   "version": "0.1.0",
   "description": "Payment primitives for elisym: requests, fees, assets, and on-chain verification on Solana and Tempo.",
   "keywords": [
-    "ai-agents",
-    "discovery",
-    "marketplace",
-    "nip-89",
-    "nip-90",
-    "nostr",
+    "elisym",
+    "evm",
     "payments",
     "solana",
-    "typescript"
+    "tempo",
+    "typescript",
+    "usdc"
   ],
   "homepage": "https://github.com/elisymlabs/elisym",
   "license": "MIT",
@@ -80,7 +78,6 @@
     "@solana/kit": "~6.8.0",
     "@types/node": "~25.5.0",
     "decimal.js-light": "~2.5.1",
-    "nostr-tools": "~2.23.0",
     "tsup": "~8.4.0",
     "typescript": "~5.7.0",
     "vitest": "~3.2.6"

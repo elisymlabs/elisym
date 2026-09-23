@@ -109,8 +109,6 @@ export { MessagesService } from './services/messages';
 export { PingService } from './services/ping';
 export { PoliciesService } from './services/policies';
 
-// --- Payment ---
-
 // --- Delegated execution (spl-approve bounded spend) ---
 export {
   DELEGATION_MECHANISM,
@@ -211,8 +209,6 @@ export type {
   SkillOnchainResolved,
   VerifyOnchainCallArgs,
 } from './onchain';
-
-// --- On-chain protocol config ---
 
 // --- Global config (~/.elisym/config.yaml) schemas ---
 // Node-only loader/writer live in `@elisym/sdk/node`; the schemas stay here so

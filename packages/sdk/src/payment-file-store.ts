@@ -14,8 +14,8 @@ import {
   MIN_SETTLEMENT_RETENTION_MS,
   type SettlementClaim,
   type SettlementStore,
-  isUsableSignature,
 } from '@elisym/pay-core';
+import { isUsableSignature } from '@elisym/pay-core/internal';
 import { isBlockingNodeSync } from './agent-store/node-type';
 
 /**

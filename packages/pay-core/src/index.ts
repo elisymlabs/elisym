@@ -129,7 +129,6 @@ export {
 } from './payment/wallet';
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
 export type { GetProtocolConfigOptions, ProtocolConfig } from './config/onchain';
-export { isUsableSignature } from './payment/acceptor';
 export type {
   Network,
   PaymentValidationCode,
@@ -141,13 +140,9 @@ export type {
   VerifyResult,
 } from './types';
 export {
-  COMPUTE_BUDGET_PROGRAM_ADDRESS_STR,
   ELISYM_PROTOCOL_TAG,
   getProtocolProgramId,
-  PAYMENT_DEFAULTS,
-  PAYMENT_LIMITS,
   PROTOCOL_PROGRAM_ID_DEVNET,
   PROTOCOL_PROGRAM_ID_MAINNET,
-  SYSTEM_PROGRAM_ADDRESS_STR,
   type ProtocolCluster,
 } from './constants';
