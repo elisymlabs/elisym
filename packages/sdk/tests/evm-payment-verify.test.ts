@@ -835,6 +835,80 @@ describe('verifyTempoPayment - a hash that names the wrong transaction', () => {
 });
 
 describe('verifyTempoPayment - guards the receipt path owes', () => {
+  it('will not call a receipt REVERTED before it is the one that was asked for', async () => {
+    // The hash bind used to sit BELOW the revert branch, so a backend
+    // answering with somebody else's failed receipt made this verifier say
+    // `reverted` about a transaction that is fine. The sender's resolver holds
+    // the same rule in the same order.
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: PAST_DEADLINE, [BLOCKED_BLOCK]: NOW },
+      receipts: {
+        [BLOCKED_HASH]: {
+          ...BLOCKED,
+          status: '0x0',
+          transactionHash: `0x${'99'.repeat(32)}`,
+        },
+      },
+      logs: controlTraffic(BLOCKED_BLOCK - 150, 35_789_900, PATHUSD),
+    });
+    const result = await verifyTempoPayment(
+      chain.client,
+      PaymentRequestV2Schema.parse({
+        v: 2,
+        chain: 'eip155:42431',
+        asset: `eip155:42431/erc20:${PATHUSD}`,
+        recipient: BLOCKED_RECEIVER,
+        amount: '25000000',
+        memo: BLOCKED_MEMO,
+        created_at: NOW - 60,
+        expiry_secs: 600,
+      }),
+      { txSignature: BLOCKED_HASH, fromBlock: BLOCKED_BLOCK - 100 },
+    );
+    expect(result).not.toEqual({ outcome: 'refused', code: 'reverted' });
+  });
+
+  it('answers, rather than rejecting, when the provider throws SYNCHRONOUSLY', async () => {
+    // The last read whose `.catch` hung on the promise instead of covering the
+    // call. A wallet that validates its params first made this verifier throw,
+    // and a rejection is not one of the four words it is allowed to say.
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: PAST_DEADLINE, [BLOCKED_BLOCK]: NOW },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+      logs: controlTraffic(BLOCKED_BLOCK - 150, 35_789_900, PATHUSD),
+    });
+    const throwing = {
+      request(args: { method: string }) {
+        if (args.method === 'eth_getTransactionReceipt') {
+          throw new Error('provider rejected the call synchronously');
+        }
+        return chain.client.request(args as Parameters<typeof chain.client.request>[0]);
+      },
+    } as unknown as typeof chain.client;
+    // It ANSWERS: which of the four words it lands on depends on what the scan
+    // then finds (here nothing, so `none`); what this row holds is that the
+    // throw never leaves the function.
+    const result = await verifyTempoPayment(
+      throwing,
+      PaymentRequestV2Schema.parse({
+        v: 2,
+        chain: 'eip155:42431',
+        asset: `eip155:42431/erc20:${PATHUSD}`,
+        recipient: BLOCKED_RECEIVER,
+        amount: '25000000',
+        memo: BLOCKED_MEMO,
+        created_at: NOW - 60,
+        expiry_secs: 600,
+      }),
+      { txSignature: BLOCKED_HASH, fromBlock: BLOCKED_BLOCK - 100 },
+    );
+    expect(['verified', 'none', 'inconclusive', 'refused']).toContain(result.outcome);
+  });
+
   it('ignores a guard log in the receipt that claims another BLOCK', async () => {
     // The transaction bound is not the whole bound: a receipt names one block
     // too, and an entry that claims a different one is not this receipt's

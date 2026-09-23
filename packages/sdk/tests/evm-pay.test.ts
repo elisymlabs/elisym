@@ -546,6 +546,32 @@ describe('validateTempoPaymentRequest', () => {
     ).toBeNull();
   });
 
+  it.each([
+    ['a clock', { nowSecs: Symbol('now') }],
+    ['a protocol fee', { protocolFeeBps: Symbol('bps') }],
+    ['a session cap', { maxAmountSubunits: Symbol('cap') }],
+  ])('refuses %s that cannot even be printed, rather than throwing', (_label, over) => {
+    // The guard fired and then the MESSAGE threw: every refusal here
+    // interpolates what it refuses, and a symbol in a template is a
+    // `TypeError` out of a function whose contract is to refuse. The cap threw
+    // one layer further out, inside the parser's bigint comparison.
+    const problem = validateTempoPaymentRequest(
+      requestJson(),
+      bounds(over) as unknown as Parameters<typeof validateTempoPaymentRequest>[1],
+    );
+    expect(problem?.code).toBe('invalid_bounds');
+  });
+
+  it('refuses a treasury spelled 0X, the way the policy check does', () => {
+    // The last caller-supplied address this half read by hand.
+    expect(
+      validateTempoPaymentRequest(
+        requestJson({ fee_address: TREASURY, fee_amount: '250' }),
+        bounds({ protocolFeeBps: 250, treasury: `0X${TREASURY.slice(2)}` }),
+      )?.code,
+    ).toBe('fee_address_mismatch');
+  });
+
   it('refuses a card recipient spelled 0X, the way the policy check does', () => {
     // The other half of the same agreement: a card recipient in that spelling
     // used to clear this gate and then be `unreadable` in the policy check.
@@ -1710,6 +1736,37 @@ describe('resolveTempoTransferOutcome', () => {
       blockHashes: { [BATCH_BLOCK]: `0x${'ad'.repeat(32)}` },
     });
     const outcome = await resolveTempoTransferOutcome(chain.client, legs, {
+      chain: CHAINS.TEMPO_MAINNET,
+      hash: BATCH_HASH,
+      floor: BATCH_BLOCK - 100,
+      validBefore: NOW + 60,
+    });
+    expect(outcome).toEqual({ state: 'pending' });
+  });
+
+  it('asks the chain again before a verdict read off a receipt', async () => {
+    // The absence path ends with this ask and the provider's verifier makes it
+    // before every terminal answer; the receipt path made it only at the
+    // start. A gateway that fails over, or a wallet whose user switches
+    // network mid-call, would otherwise hand back a terminal verdict about
+    // another network's chain.
+    const chain = chainWith({ receipts: { [BATCH_HASH]: BATCH } });
+    let seenReceipt = false;
+    const switching = {
+      request: async (args: { method: string; params?: readonly unknown[] }) => {
+        if (args.method === 'eth_chainId' && seenReceipt) {
+          return '0xa5bf';
+        }
+        const answer = await chain.client.request(
+          args as Parameters<typeof chain.client.request>[0],
+        );
+        if (args.method === 'eth_getTransactionReceipt') {
+          seenReceipt = true;
+        }
+        return answer;
+      },
+    } as unknown as typeof chain.client;
+    const outcome = await resolveTempoTransferOutcome(switching, legs, {
       chain: CHAINS.TEMPO_MAINNET,
       hash: BATCH_HASH,
       floor: BATCH_BLOCK - 100,

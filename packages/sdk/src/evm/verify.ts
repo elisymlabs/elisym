@@ -423,18 +423,21 @@ async function verifyByHash(context: VerifyContext, hash: string): Promise<Tempo
   // A quantity, read like every other value in this file: an endpoint that
   // writes it as `0x01` is unusual, not hostile, and reading it as a raw string
   // would turn every payment on that endpoint into a terminal refusal.
+  // The receipt has to be the one we ASKED for before anything is read out of
+  // it, the revert branch included: a backend answering with somebody else's
+  // failed receipt would otherwise have this verifier say `reverted` about a
+  // transaction that is fine. The sender's resolver holds the same rule in the
+  // same order.
+  if (readTxHash(readField(receipt, 'transactionHash')) !== hash) {
+    return refused('unreadable_receipt');
+  }
   const status = readQuantity(readField(receipt, 'status'));
   if (status === 0n) {
     return refused('reverted');
   }
   const blockNumber = readBlockNumber(readField(receipt, 'blockNumber'));
   const logs = readField(receipt, 'logs');
-  if (
-    status !== 1n ||
-    readTxHash(readField(receipt, 'transactionHash')) !== hash ||
-    blockNumber === null ||
-    !Array.isArray(logs)
-  ) {
+  if (status !== 1n || blockNumber === null || !Array.isArray(logs)) {
     return refused('unreadable_receipt');
   }
 

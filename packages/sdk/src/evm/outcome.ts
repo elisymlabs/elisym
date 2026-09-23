@@ -328,7 +328,18 @@ export async function resolveTempoTransferOutcome(
     return { state: 'pending' };
   }
   if (receipt !== null) {
-    return await fromReceipt(client, receipt, expected, hash);
+    const outcome = await fromReceipt(client, receipt, expected, hash);
+    // Every terminal answer is checked against the chain a second time, as the
+    // absence path does below and as the provider's verifier does for all of
+    // its own. The receipt bind proves internal consistency - both reads go to
+    // the same endpoint - and `eth_chainId` is the only read that names a
+    // chain, so a gateway that failed over or a wallet whose user switched
+    // network mid-call would otherwise deliver a terminal verdict about
+    // somebody else's network.
+    if (outcome.state !== 'pending' && !(await stillOnThisChain(client, options))) {
+      return { state: 'pending' };
+    }
+    return outcome;
   }
   // No receipt here proves nothing about the chain - only that THIS backend has
   // not seen it. The deadline and a complete log pass are what prove absence.

@@ -104,6 +104,20 @@ export type TempoPaymentBounds = TempoPaymentLimits &
       }
   );
 
+/**
+ * A caller value as it can safely appear in a refusal message.
+ *
+ * Every message in this file interpolates what it refuses, and a symbol or a
+ * null-prototype object throws in a template - so the guard would fire and the
+ * MESSAGE would throw, out of a function whose contract is to refuse, never to
+ * throw. The shape is described rather than echoed.
+ */
+function shown(value: unknown): string {
+  return typeof value === 'symbol' || (typeof value === 'object' && value !== null)
+    ? `a ${typeof value}`
+    : String(value);
+}
+
 function refuse(code: PaymentValidationError['code'], message: string): PaymentValidationError {
   return { code, message };
 }
@@ -199,6 +213,13 @@ export function validateTempoPaymentRequest(
     (typeof bounds.expectedAsset !== 'object' || bounds.expectedAsset === null)
   ) {
     return refuse('invalid_bounds', 'These bounds carry an asset that is not an asset.');
+  }
+  // The cap reaches the PARSER, which compares it against a bigint - and a
+  // symbol there throws out of `parseAnyPaymentRequest` before this function
+  // can refuse anything. Its two siblings above guard the objects; this guards
+  // the one value that leaves the function before the guards below run.
+  if (bounds.maxAmountSubunits !== undefined && typeof bounds.maxAmountSubunits !== 'bigint') {
+    return refuse('invalid_bounds', 'These bounds carry a cap that is not a bigint.');
   }
 
   // The session cap is enforced HERE, by the parse gate, for both versions -
@@ -334,7 +355,10 @@ export function validateTempoPaymentRequest(
   // `now + MIN_PAY_WINDOW_SECS` into string concatenation.
   const now = bounds.nowSecs ?? Math.floor(Date.now() / 1000);
   if (!Number.isFinite(now)) {
-    return refuse('invalid_bounds', `These bounds carry no usable clock: ${bounds.nowSecs}.`);
+    return refuse(
+      'invalid_bounds',
+      `These bounds carry no usable clock: ${shown(bounds.nowSecs)}.`,
+    );
   }
   if (request.created_at > now + MIN_PAY_WINDOW_SECS) {
     return refuse(
@@ -412,7 +436,7 @@ function checkFee(
   ) {
     return refuse(
       'invalid_bounds',
-      `The chain answered a protocol fee of ${bounds.protocolFeeBps} bps, which is not a fee.`,
+      `The chain answered a protocol fee of ${shown(bounds.protocolFeeBps)} bps, which is not a fee.`,
     );
   }
   if (bounds.protocolFeeBps === 0) {
@@ -431,7 +455,11 @@ function checkFee(
     );
   }
   const expected = calculateProtocolFeeSubunits(BigInt(request.amount), bounds.protocolFeeBps);
-  if (request.fee_address !== bounds.treasury.toLowerCase()) {
+  // The last caller-supplied address read by hand. Normalized like the payer
+  // and the card recipient, so both halves of this gate take the same
+  // spellings - a `0X` treasury used to clear the validator and be
+  // `unreadable` in the policy check.
+  if (request.fee_address !== (normalizeEvmAddress(bounds.treasury) ?? '')) {
     return refuse(
       'fee_address_mismatch',
       `The fee leg pays ${request.fee_address}; the chain names ${bounds.treasury}.`,
