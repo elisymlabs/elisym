@@ -4,6 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  EARLIEST_TEMPO_SECONDS,
+  LATEST_TEMPO_SECONDS,
   TEMPO_ADDRESS_REGISTRY,
   TEMPO_FEE_SINK,
   TEMPO_POLICY_REGISTRY,
@@ -11,6 +13,7 @@ import {
   TRANSFER_BLOCKED_TOPIC,
   TRANSFER_TOPIC,
   TRANSFER_WITH_MEMO_TOPIC,
+  ZERO_ADDRESS,
 } from '../src/evm/constants';
 import { resolveTempoTransferOutcome, type TempoLegExpectation } from '../src/evm/outcome';
 import {
@@ -541,6 +544,23 @@ describe('validateTempoPaymentRequest', () => {
         bounds({ card: { recipient: RECIPIENT, asset: shouted, jobPriceSubunits: 10_000n } }),
       ),
     ).toBeNull();
+  });
+
+  it('refuses a card recipient spelled 0X, the way the policy check does', () => {
+    // The other half of the same agreement: a card recipient in that spelling
+    // used to clear this gate and then be `unreadable` in the policy check.
+    expect(
+      validateTempoPaymentRequest(
+        requestJson(),
+        bounds({
+          card: {
+            recipient: `0X${RECIPIENT.slice(2)}`,
+            asset: USDCE_TEMPO_MAINNET,
+            jobPriceSubunits: 10_000n,
+          },
+        }),
+      )?.code,
+    ).toBe('recipient_mismatch');
   });
 
   it('refuses a payer spelled 0X, the way the policy check does', () => {
@@ -1352,6 +1372,12 @@ describe('resolveTempoTransferOutcome', () => {
     // same self-comparing shape: one nibble off and the TIP-1022 registry is
     // payable again in both halves of the validator.
     expect(TEMPO_ADDRESS_REGISTRY).toBe('0xfdc0000000000000000000000000000000000000');
+    expect(ZERO_ADDRESS).toBe('0x0000000000000000000000000000000000000000');
+    // The deadline floor, by value: every row that feeds it derives its input
+    // from the constant, so dropping it ten-fold left the suite green while
+    // its twin ceiling was pinned by the milliseconds row.
+    expect(EARLIEST_TEMPO_SECONDS).toBe(1_600_000_000);
+    expect(LATEST_TEMPO_SECONDS).toBe(7_258_118_400);
     const gasLog = receiptLogs(BATCH).find(
       (log) => log.topics[0] === TRANSFER_TOPIC && log.topics[2]?.endsWith(TEMPO_FEE_SINK.slice(2)),
     );

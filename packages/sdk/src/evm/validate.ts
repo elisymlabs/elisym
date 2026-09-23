@@ -278,7 +278,14 @@ export function validateTempoPaymentRequest(
     );
   }
 
-  if (bounds.card !== undefined && request.recipient !== bounds.card.recipient.toLowerCase()) {
+  // Normalized through the same helper as the payer and as the async half, so
+  // every caller-supplied address on this rail is read one way. A card
+  // recipient that is not an address at all falls to the comparison below and
+  // refuses, as it did before.
+  if (
+    bounds.card !== undefined &&
+    request.recipient !== (normalizeEvmAddress(bounds.card.recipient) ?? '')
+  ) {
     return refuse(
       'recipient_mismatch',
       `Recipient mismatch: the card names ${bounds.card.recipient}, the request pays ` +

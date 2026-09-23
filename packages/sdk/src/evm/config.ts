@@ -10,6 +10,7 @@ import { isVirtualEvmAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
 import { monotonicNow } from './clock';
+import { ZERO_ADDRESS } from './constants';
 import { readAddressWord, readQuantity, readUint256, readWords } from './rpc-read';
 
 const CACHE_TTL_MS = 60_000;
@@ -17,7 +18,6 @@ const CACHE_TTL_MS = 60_000;
 const CONFIG_SELECTOR = '0x79502c55';
 /** The contract's own cap (`MAX_FEE_BPS`). A larger answer is not this contract. */
 export const MAX_EVM_FEE_BPS = 1000;
-const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
 
 /** The cached object is never handed out, and it says how old it is. */
 function snapshotOf(config: EvmProtocolConfig, cachedAt: number): EvmProtocolConfig {

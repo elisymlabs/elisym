@@ -398,10 +398,21 @@ async function verifyWithPolling(
 
 /** Rules 2-6: one receipt, by the hash somebody reported. */
 async function verifyByHash(context: VerifyContext, hash: string): Promise<TempoVerifyResult> {
-  const receipt = await withAbort(
-    context.client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
-    context.signal,
-  ).catch(() => undefined);
+  // The call sits INSIDE the try, not only the promise it returns: a provider
+  // that validates its params synchronously throws where a `.catch` on the
+  // promise cannot see it, and this verifier answers in four words - a
+  // rejection is not one of them. The same shape as `requestBlockOrNull`,
+  // `callRegistryOrNull` and the sender's own receipt read.
+  const receipt = await (async () => {
+    try {
+      return await withAbort(
+        context.client.request({ method: 'eth_getTransactionReceipt', params: [hash] }),
+        context.signal,
+      );
+    } catch {
+      return undefined;
+    }
+  })();
   if (receipt === null) {
     // The node knows the chain and has no such transaction: not seen YET.
     return inconclusive('no_receipt');
