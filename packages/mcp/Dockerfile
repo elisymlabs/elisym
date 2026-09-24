@@ -13,6 +13,13 @@ RUN bun install --frozen-lockfile && bun run build --filter=@elisym/mcp...
 FROM ${BUN_IMAGE} AS runtime
 WORKDIR /app
 
+# tini as PID 1: the kernel ignores a signal PID 1 has no handler for, and the
+# process installs its SIGTERM handler only once it is up - so without an init
+# a `docker stop` during startup waits out its timeout and ends in SIGKILL.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends tini \
+  && rm -rf /var/lib/apt/lists/*
+
 # Root manifests + every workspace package.json. `--parents` keeps the
 # packages/<name>/ layout and globs all members, so bun's frozen install always
 # sees the full workspace and a new package needs no Dockerfile edit.
@@ -42,5 +49,5 @@ ENV HOME=/root
 USER bun
 
 # `bun <file>` rather than `bun run <file>`: no script-runner shim between the
-# container's signals and the process.
-ENTRYPOINT ["bun", "packages/mcp/dist/index.js"]
+# container's signals and the process; tini forwards them.
+ENTRYPOINT ["/usr/bin/tini", "--", "bun", "packages/mcp/dist/index.js"]
