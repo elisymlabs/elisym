@@ -1,4 +1,5 @@
 import { type Asset, parseAssetAmount } from '@elisym/pay-core';
+import Decimal from 'decimal.js-light';
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import * as nip19 from 'nostr-tools/nip19';
 import { z } from 'zod';
@@ -65,7 +66,9 @@ const ProductInputSchema = z.object({
     currency: z.string().regex(CURRENCY_RE),
     frequency: z.enum(FREQUENCIES).optional(),
   }),
-  images: z.array(z.string().url().max(LIMITS.MAX_TAG_VALUE_LENGTH)).default([]),
+  images: z
+    .array(z.string().url().startsWith('https://').max(LIMITS.MAX_TAG_VALUE_LENGTH))
+    .default([]),
   topics: z.array(z.string().min(1).max(64)).default([]),
   visibility: z.string().min(1).max(32).default('on-sale'),
   delivery: z.enum(DELIVERY_METHODS).optional(),
@@ -177,7 +180,8 @@ export function parseProduct(
     title,
     description: event.content,
     price,
-    images: tagValues(tags, 'image'),
+    // Only `https:` images, as the builder writes: never a `javascript:` or `data:` URL to render.
+    images: tagValues(tags, 'image').filter((image) => image.startsWith('https://')),
     topics: tagValues(tags, 't'),
     visibility: tagValue(tags, 'visibility') ?? 'on-sale',
     listedOnElisym: tagValues(tags, 'network').includes(ELISYM_NETWORK_TAG),
@@ -255,5 +259,6 @@ export function priceInSubunits(price: ProductPrice, asset: Asset): bigint {
   if (price.currency !== 'USD' || !USD_STABLE_TOKENS.includes(asset.token)) {
     throw new Error(`A ${price.currency} price cannot be paid in ${asset.symbol} without a quote`);
   }
-  return parseAssetAmount(asset, price.amount);
+  // Trailing zeros past the asset's decimals (`49.0000000` in a 6-decimal coin) are the same price.
+  return parseAssetAmount(asset, new Decimal(price.amount).toFixed());
 }

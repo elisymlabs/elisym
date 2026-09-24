@@ -5,6 +5,21 @@ import { HEX_PUBKEY_RE } from './tags';
 const HOSTNAME_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const LOCAL_PART_RE = /^[a-z0-9._-]{1,64}$/;
 const MAX_HOSTNAME_LENGTH = 253;
+/** Names that resolve to this machine or a private network, never to a public host (RFC 6761 and kin). */
+const SPECIAL_USE_TOP_LEVELS: readonly string[] = [
+  'localhost',
+  'local',
+  'internal',
+  'arpa',
+  'test',
+  'invalid',
+  'onion',
+  'lan',
+  'home',
+  'corp',
+  'intranet',
+  'private',
+];
 const OWNER_NAME = 'owner';
 const TXT_PREFIX = 'v=elisym1';
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -14,6 +29,11 @@ const DNS_TYPE_TXT = 16;
 /** The keys a merchant's domain vouches for. */
 export interface DomainKeys {
   domain: string;
+  /**
+   * The NIP-05 name that was looked up (`_` for the domain itself). The answer
+   * vouches for that name only: a profile under another name cannot borrow it.
+   */
+  name: string;
   storePubkey?: string;
   ownerPubkey?: string;
   source: 'nostr.json' | 'dns';
@@ -35,8 +55,9 @@ export function isPublicHostname(hostname: string): boolean {
     return false;
   }
   const topLevel = labels[labels.length - 1] ?? '';
-  // A numeric top-level label is an IPv4 literal, never a public name.
-  return !/^\d+$/.test(topLevel) && hostname !== 'localhost';
+  // A URL parser reads a name whose last label is a number - decimal or `0x` hex -
+  // as an IPv4 literal (`127.0.0.0x1` is 127.0.0.1), never a public name.
+  return !/^(\d+|0x[0-9a-f]*)$/.test(topLevel) && !SPECIAL_USE_TOP_LEVELS.includes(topLevel);
 }
 
 /** Split `local@domain` (NIP-05; a bare domain means `_@domain`), lowercased, or `undefined`. */
@@ -102,7 +123,12 @@ export function readElisymTxt(record: string): Pick<DomainKeys, 'storePubkey' | 
   for (const part of parts.slice(1)) {
     const eq = part.indexOf('=');
     if (eq > 0) {
-      fields.set(part.slice(0, eq).trim(), part.slice(eq + 1).trim());
+      const name = part.slice(0, eq).trim();
+      // A key given twice vouches for nothing, as records that disagree do not.
+      if (fields.has(name)) {
+        return {};
+      }
+      fields.set(name, part.slice(eq + 1).trim());
     }
   }
   const keys: Pick<DomainKeys, 'storePubkey' | 'ownerPubkey'> = {};
@@ -162,13 +188,13 @@ function timeoutSignal(timeoutMs: number): AbortSignal {
   return AbortSignal.timeout(timeoutMs);
 }
 
-async function fetchNostrJsonKeys(
-  local: string,
+async function fetchNostrJson(
+  name: string,
   domain: string,
   fetchImpl: FetchLike,
   timeoutMs: number,
-): Promise<DomainKeys | undefined> {
-  const url = `https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(local)}`;
+): Promise<Pick<DomainKeys, 'storePubkey' | 'ownerPubkey'>> {
+  const url = `https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`;
   // NIP-05: a redirect must not be followed - it would let another host answer for this one.
   const response = await fetchImpl(url, {
     redirect: 'error',
@@ -176,32 +202,61 @@ async function fetchNostrJsonKeys(
     headers: { accept: 'application/json' },
   });
   if (!response.ok) {
+    await response.body?.cancel();
+    return {};
+  }
+  return readNostrJson(await readCappedJson(response), name);
+}
+
+async function fetchNostrJsonKeys(
+  local: string,
+  domain: string,
+  fetchImpl: FetchLike,
+  timeoutMs: number,
+): Promise<DomainKeys | undefined> {
+  const keys = await fetchNostrJson(local, domain, fetchImpl, timeoutMs);
+  // Without the store under the asked name this answer vouches for nothing:
+  // let the TXT record speak instead.
+  if (!keys.storePubkey) {
     return undefined;
   }
-  const keys = readNostrJson(await readCappedJson(response), local);
-  return keys.storePubkey || keys.ownerPubkey
-    ? { domain, source: 'nostr.json', ...keys }
-    : undefined;
+  // A server that answers only the name asked for never lists `owner` beside `_`.
+  if (!keys.ownerPubkey && local === '_') {
+    try {
+      const owner = await fetchNostrJson(OWNER_NAME, domain, fetchImpl, timeoutMs);
+      if (owner.ownerPubkey) {
+        keys.ownerPubkey = owner.ownerPubkey;
+      }
+    } catch {
+      // The store entry still stands without the owner.
+    }
+  }
+  return { domain, name: local, source: 'nostr.json', ...keys };
 }
 
 async function fetchTxtKeys(
   domain: string,
+  name: string,
   fetchImpl: FetchLike,
   timeoutMs: number,
   dohEndpoint: string,
 ): Promise<DomainKeys | undefined> {
-  const url = `${dohEndpoint}?name=${encodeURIComponent(`_elisym.${domain}`)}&type=TXT`;
-  const response = await fetchImpl(url, {
+  const url = new URL(dohEndpoint);
+  url.searchParams.set('name', `_elisym.${domain}`);
+  url.searchParams.set('type', 'TXT');
+  const response = await fetchImpl(url.toString(), {
     signal: timeoutSignal(timeoutMs),
     headers: { accept: 'application/dns-json' },
   });
   if (!response.ok) {
+    await response.body?.cancel();
     return undefined;
   }
   const answers = fieldOf(await readCappedJson(response), 'Answer');
   if (!Array.isArray(answers)) {
     return undefined;
   }
+  let found: Pick<DomainKeys, 'storePubkey' | 'ownerPubkey'> | undefined;
   for (const answer of answers) {
     const type = fieldOf(answer, 'type');
     const data = fieldOf(answer, 'data');
@@ -211,11 +266,20 @@ async function fetchTxtKeys(
     // DoH JSON quotes each character-string; a long record is split in several.
     const record = data.replace(/"\s*"/g, '').replace(/^"|"$/g, '');
     const keys = readElisymTxt(record);
-    if (keys.storePubkey || keys.ownerPubkey) {
-      return { domain, source: 'dns', ...keys };
+    if (!keys.storePubkey) {
+      continue;
     }
+    // Answer order is not guaranteed: records that disagree vouch for nothing,
+    // rather than for whichever one came first this time.
+    if (
+      found !== undefined &&
+      (found.storePubkey !== keys.storePubkey || found.ownerPubkey !== keys.ownerPubkey)
+    ) {
+      return undefined;
+    }
+    found = keys;
   }
-  return undefined;
+  return found === undefined ? undefined : { domain, name, source: 'dns', ...found };
 }
 
 export interface ResolveDomainOptions {
@@ -255,6 +319,7 @@ export async function resolveDomainKeys(
   try {
     return await fetchTxtKeys(
       parts.domain,
+      parts.local,
       fetchImpl,
       timeoutMs,
       options.dohEndpoint ?? DEFAULT_DOH_ENDPOINT,

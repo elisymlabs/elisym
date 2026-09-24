@@ -93,6 +93,25 @@ describe('order messages', () => {
     expect(() =>
       buildOrderMessage({ ...ORDER, items: [{ product: ITEM, quantity: 0 }] }),
     ).toThrow();
+    // A plain-JS caller is not held back by the types: the builder checks what the parser checks.
+    expect(() =>
+      buildOrderMessage(JSON.parse(JSON.stringify({ type: 'bogus', orderId: ORDER_ID }))),
+    ).toThrow(/Unknown order message type/);
+    const status = { type: 'status', buyerPubkey: BUYER, orderId: ORDER_ID };
+    expect(() =>
+      buildOrderMessage(JSON.parse(JSON.stringify({ ...status, status: 'shipped' }))),
+    ).toThrow();
+    expect(() =>
+      buildOrderMessage(
+        JSON.parse(
+          JSON.stringify({
+            ...status,
+            status: 'completed',
+            delivery: { method: 'fax', value: 'x' },
+          }),
+        ),
+      ),
+    ).toThrow();
   });
 
   it('reads nothing from another kind, an unknown type, or a missing order id', () => {
@@ -162,18 +181,55 @@ describe('gift wrap', () => {
     expect(unwrapOrderMessage(wrapped.recipientWrap, nostrKey().secretKey)).toBeUndefined();
   });
 
-  it('refuses a wrap whose outer signature was tampered with', () => {
+  it('refuses a wrap whose fields or outer signature were tampered with', () => {
     const store = nostrKey();
     const wrapped = wrapOrderMessage(
       buildOrderMessage(RECEIPT),
       nostrKey().secretKey,
       store.pubkey,
     );
-    const tampered: NostrEvent = {
+    const redated: NostrEvent = {
       ...wrapped.recipientWrap,
       created_at: wrapped.recipientWrap.created_at + 1,
     };
-    expect(unwrapOrderMessage(tampered, store.secretKey)).toBeUndefined();
+    const resigned: NostrEvent = {
+      ...wrapped.recipientWrap,
+      sig: wrapped.recipientWrap.sig.replace(/^./, (char) => (char === '0' ? '1' : '0')),
+    };
+    expect(unwrapOrderMessage(redated, store.secretKey)).toBeUndefined();
+    expect(unwrapOrderMessage(resigned, store.secretKey)).toBeUndefined();
+  });
+
+  it('refuses a seal with tags and a rumor that carries a signature (NIP-59)', () => {
+    const sender = generateSecretKey();
+    const store = nostrKey();
+    const sealOf = (rumor: object, tags: string[][]): NostrEvent =>
+      finalizeEvent(
+        {
+          kind: KIND_SEAL,
+          created_at: 1_750_000_000,
+          tags,
+          content: nip44.v2.encrypt(
+            JSON.stringify(rumor),
+            nip44.v2.utils.getConversationKey(sender, store.pubkey),
+          ),
+        },
+        sender,
+      );
+    const rumor = nip59.createRumor(buildOrderMessage(RECEIPT), sender);
+    expect(
+      unwrapOrderMessage(nip59.createWrap(sealOf(rumor, []), store.pubkey), store.secretKey),
+    ).toBeDefined();
+    expect(
+      unwrapOrderMessage(
+        nip59.createWrap(sealOf(rumor, [['p', store.pubkey]]), store.pubkey),
+        store.secretKey,
+      ),
+    ).toBeUndefined();
+    const signedRumor = { ...rumor, sig: 'f'.repeat(128) };
+    expect(
+      unwrapOrderMessage(nip59.createWrap(sealOf(signedRumor, []), store.pubkey), store.secretKey),
+    ).toBeUndefined();
   });
 
   it('refuses a rumor that claims someone other than the seal signer', () => {

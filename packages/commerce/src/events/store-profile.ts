@@ -1,17 +1,29 @@
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
-import { z } from 'zod';
 import { KIND_STORE_PROFILE, LIMITS } from '../constants';
 import { HEX_PUBKEY_RE, nowSecs, tagValue } from '../tags';
 
-const ProfileContentSchema = z
-  .object({
-    name: z.string().max(LIMITS.MAX_TAG_VALUE_LENGTH).optional(),
-    about: z.string().max(LIMITS.MAX_CONTENT_LENGTH).optional(),
-    picture: z.string().max(LIMITS.MAX_TAG_VALUE_LENGTH).optional(),
-    website: z.string().max(LIMITS.MAX_TAG_VALUE_LENGTH).optional(),
-    nip05: z.string().max(LIMITS.MAX_TAG_VALUE_LENGTH).optional(),
-  })
-  .passthrough();
+const PROFILE_FIELDS = ['name', 'about', 'picture', 'website', 'nip05'] as const;
+type ProfileField = (typeof PROFILE_FIELDS)[number];
+
+/** Rendered as links or images: `https:` only, never a `javascript:` or `data:` URL. */
+const URL_FIELDS: readonly ProfileField[] = ['picture', 'website'];
+
+/** Longest value kept per field. A kind 0 is shared with other clients, so a field past it is dropped, not the profile. */
+const PROFILE_FIELD_LIMITS: Record<ProfileField, number> = {
+  name: LIMITS.MAX_TAG_VALUE_LENGTH,
+  about: LIMITS.MAX_CONTENT_LENGTH,
+  picture: LIMITS.MAX_TAG_VALUE_LENGTH,
+  website: LIMITS.MAX_TAG_VALUE_LENGTH,
+  nip05: LIMITS.MAX_TAG_VALUE_LENGTH,
+};
+
+/** What `parseStoreProfile` keeps, and so all that `buildStoreProfileEvent` will write. */
+function isReadableField(key: ProfileField, value: string): boolean {
+  return (
+    value.length <= PROFILE_FIELD_LIMITS[key] &&
+    (!URL_FIELDS.includes(key) || value.startsWith('https://'))
+  );
+}
 
 export interface StoreProfile {
   name?: string;
@@ -34,11 +46,15 @@ export function buildStoreProfileEvent(input: StoreProfileInput): EventTemplate 
     throw new Error('ownerPubkey must be 64 lowercase hex characters');
   }
   const content: Record<string, string> = {};
-  for (const key of ['name', 'about', 'picture', 'website', 'nip05'] as const) {
+  for (const key of PROFILE_FIELDS) {
     const value = input[key];
-    if (value !== undefined) {
-      content[key] = value;
+    if (value === undefined) {
+      continue;
     }
+    if (!isReadableField(key, value)) {
+      throw new Error(`Profile ${key} is too long or, for a link, not https`);
+    }
+    content[key] = value;
   }
   return {
     kind: KIND_STORE_PROFILE,
@@ -48,7 +64,11 @@ export function buildStoreProfileEvent(input: StoreProfileInput): EventTemplate 
   };
 }
 
-/** Read a store's kind 0, or `undefined` when its content is not a profile object. */
+/**
+ * Read a store's kind 0, or `undefined` when its content is not a JSON object.
+ * A field of the wrong type or past its limit is dropped on its own: other
+ * clients edit the same kind 0, and one odd field is not a missing profile.
+ */
 export function parseStoreProfile(
   event: Pick<NostrEvent, 'content' | 'tags'>,
 ): StoreProfile | undefined {
@@ -58,15 +78,15 @@ export function parseStoreProfile(
   } catch {
     return undefined;
   }
-  const parsed = ProfileContentSchema.safeParse(raw);
-  if (!parsed.success) {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     return undefined;
   }
+  const fields: Record<string, unknown> = { ...raw };
   const owner = tagValue(event.tags, 'owner');
   const profile: StoreProfile = {};
-  for (const key of ['name', 'about', 'picture', 'website', 'nip05'] as const) {
-    const value = parsed.data[key];
-    if (value !== undefined) {
+  for (const key of PROFILE_FIELDS) {
+    const value = Object.hasOwn(fields, key) ? fields[key] : undefined;
+    if (typeof value === 'string' && isReadableField(key, value)) {
       profile[key] = value;
     }
   }

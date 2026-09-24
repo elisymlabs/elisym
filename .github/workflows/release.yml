@@ -55,6 +55,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Dependency order: pay-core first, everything else builds on it.
+          # commerce goes before mcp and cli: a failed publish stops the run
+          # before they are tagged, so a re-run still releases them and sets
+          # the outputs the docker and mcp-registry jobs wait for.
           PACKAGES=(
             "pay-core:@elisym/pay-core"
             "commerce:@elisym/commerce"

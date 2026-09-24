@@ -1,6 +1,6 @@
 import { PATHUSD_TEMPO, USDC_SOLANA_DEVNET } from '@elisym/pay-core';
 import { describe, expect, it } from 'vitest';
-import { parseCaip19 } from '../src/caip';
+import { hasValidEvmChecksum, parseCaip19 } from '../src/caip';
 import { KIND_PAYTO, KIND_PRODUCT, KIND_STORE_AUTH } from '../src/constants';
 import { buildPaytoEvent, parsePayto } from '../src/events/payto';
 import {
@@ -60,6 +60,7 @@ describe('kind 10133 payout addresses', () => {
     const event = sign(
       buildPaytoEvent({
         payto: [{ type: 'solana', authority: wallet.address }],
+        ownerPubkey: owner.pubkey,
         accept: [
           {
             caip19: USDC_DEVNET_CAIP19,
@@ -94,6 +95,29 @@ describe('kind 10133 payout addresses', () => {
     expect(replayed.rejected[0]?.reason).toBe('bad_proof');
   });
 
+  it('drops an address with a wrong proof in any copy, and counts a good proof in any copy', () => {
+    const wallet = solanaWallet();
+    const owner = 'a'.repeat(64);
+    const good = wallet.proveFor(owner, USDC_DEVNET_CAIP19);
+    const bad = wallet.proveFor('b'.repeat(64), USDC_DEVNET_CAIP19);
+    const wrongThenBare = parsePayto({
+      pubkey: owner,
+      tags: [
+        ['accept', USDC_DEVNET_CAIP19, wallet.address, bad],
+        ['accept', USDC_DEVNET_CAIP19, wallet.address],
+      ],
+    });
+    expect(wrongThenBare.targets).toEqual([]);
+    const bareThenSigned = parsePayto({
+      pubkey: owner,
+      tags: [
+        ['accept', USDC_DEVNET_CAIP19, wallet.address],
+        ['accept', USDC_DEVNET_CAIP19, wallet.address, good],
+      ],
+    });
+    expect(bareThenSigned.targets.map((target) => target.walletSigned)).toEqual([true]);
+  });
+
   it('keeps an unsigned target, marked unsigned', () => {
     const wallet = solanaWallet();
     const parsed = parsePayto({
@@ -118,12 +142,22 @@ describe('kind 10133 payout addresses', () => {
       tags: [
         ['accept', 'solana:unknown/token:abc', 'x'],
         ['accept', USDC_DEVNET_CAIP19, '0xnot-solana'],
+        // The zero key and the zero address: nobody can spend what lands there.
+        ['accept', USDC_DEVNET_CAIP19, '1'.repeat(32)],
+        ['accept', USDCE_TEMPO_CAIP19, `0x${'0'.repeat(40)}`],
+        // Base58 by alphabet and length, but not 32 bytes: 23 and 33.
+        ['accept', USDC_DEVNET_CAIP19, '2'.repeat(32)],
+        ['accept', USDC_DEVNET_CAIP19, 'z'.repeat(44)],
         ['accept', USDCE_TEMPO_CAIP19, `0x${'12'.repeat(4)}${'fd'.repeat(10)}${'00'.repeat(6)}`],
       ],
     });
     expect(parsed.targets).toEqual([]);
     expect(parsed.rejected.map((entry) => entry.reason)).toEqual([
       'unknown_asset',
+      'bad_address',
+      'bad_address',
+      'bad_address',
+      'bad_address',
       'bad_address',
       'bad_address',
     ]);
@@ -139,6 +173,36 @@ describe('kind 10133 payout addresses', () => {
       ],
     });
     expect(template.tags[0]?.[2]).toBe(EVM_VECTOR.address);
+    // A mixed-case address must carry a valid EIP-55 checksum: one wrong letter case is a typo.
+    const checksummed = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed';
+    const mistyped = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD';
+    expect(hasValidEvmChecksum(checksummed)).toBe(true);
+    expect(hasValidEvmChecksum(mistyped)).toBe(false);
+    expect(() =>
+      buildPaytoEvent({ accept: [{ caip19: USDCE_TEMPO_CAIP19, address: mistyped }] }),
+    ).toThrow(/checksum/);
+  });
+
+  it('refuses to build a wallet signature its readers would drop', () => {
+    const owner = 'a'.repeat(64);
+    const wallet = solanaWallet();
+    const accept = (signature: string) => [
+      { caip19: USDC_DEVNET_CAIP19, address: wallet.address, signature },
+    ];
+    const good = wallet.proveFor(owner, USDC_DEVNET_CAIP19);
+    expect(() => buildPaytoEvent({ accept: accept(good) })).toThrow(/ownerPubkey/);
+    const upper = owner.toUpperCase();
+    const upperProof = wallet.proveFor(upper, USDC_DEVNET_CAIP19);
+    expect(() =>
+      buildPaytoEvent({
+        ownerPubkey: upper,
+        accept: [{ caip19: USDC_DEVNET_CAIP19, address: wallet.address, signature: upperProof }],
+      }),
+    ).toThrow(/ownerPubkey/);
+    expect(() => buildPaytoEvent({ ownerPubkey: 'b'.repeat(64), accept: accept(good) })).toThrow(
+      /does not prove/,
+    );
+    expect(buildPaytoEvent({ ownerPubkey: owner, accept: accept(good) }).tags[0]?.[3]).toBe(good);
     expect(() => buildPaytoEvent({ accept: [{ caip19: 'x:y/token:z', address: 'a' }] })).toThrow();
   });
 });
@@ -160,6 +224,46 @@ describe('store authorization', () => {
       operator: 'elisym.network',
     });
     expect(readStoreAuth(event, store, 2_000)).toEqual({ status: 'expired' });
+  });
+
+  it('refuses to build an expiration its reader would call malformed', () => {
+    for (const expiresAt of [1_798_761_600_000, 1_798_761_600.5, 0, -1]) {
+      expect(() =>
+        buildStoreAuthEvent({ storePubkey: store, mode: 'self-host', expiresAt }),
+      ).toThrow();
+    }
+  });
+
+  it('is malformed with two modes or two expirations', () => {
+    const base = [
+      ['d', store],
+      ['p', store],
+    ];
+    const read = (extra: string[][]) =>
+      readStoreAuth({ kind: KIND_STORE_AUTH, tags: [...base, ...extra] }, store, 1_000);
+    expect(
+      read([
+        ['mode', 'hosted'],
+        ['mode', 'revoked'],
+      ]),
+    ).toEqual({ status: 'malformed' });
+    expect(
+      read([
+        ['mode', 'self-host'],
+        ['expiration', '2000'],
+        ['expiration', '500'],
+      ]),
+    ).toEqual({ status: 'malformed' });
+    // An expiration tag with no value is not "never expires".
+    expect(read([['mode', 'self-host'], ['expiration']])).toEqual({ status: 'malformed' });
+  });
+
+  it('refuses to build a mode other than self-host or hosted', () => {
+    for (const mode of ['revoked', 'Hosted']) {
+      expect(() =>
+        buildStoreAuthEvent(JSON.parse(JSON.stringify({ storePubkey: store, mode }))),
+      ).toThrow(/Invalid store mode/);
+    }
   });
 
   it('reads a revocation', () => {
@@ -228,6 +332,43 @@ describe('store profile', () => {
     });
   });
 
+  it('keeps picture and website only as https URLs', () => {
+    expect(
+      parseStoreProfile({
+        content: JSON.stringify({
+          website: "javascript:fetch('//x/'+document.cookie)",
+          picture: 'data:image/svg+xml,<svg/>',
+        }),
+        tags: [],
+      }),
+    ).toEqual({});
+    expect(
+      parseStoreProfile({
+        content: JSON.stringify({
+          website: 'https://shop.example',
+          picture: 'https://shop.example/logo.png',
+        }),
+        tags: [],
+      }),
+    ).toEqual({ website: 'https://shop.example', picture: 'https://shop.example/logo.png' });
+  });
+
+  it('refuses to build a field its own reader would drop', () => {
+    const base = { ownerPubkey: 'a'.repeat(64) };
+    expect(() => buildStoreProfileEvent({ ...base, website: 'http://shop.example' })).toThrow();
+    expect(() => buildStoreProfileEvent({ ...base, picture: 'HTTPS://x.example/a.png' })).toThrow();
+    expect(() => buildStoreProfileEvent({ ...base, name: 'x'.repeat(2000) })).toThrow();
+  });
+
+  it('drops one odd field, not the whole profile', () => {
+    expect(
+      parseStoreProfile({
+        content: JSON.stringify({ name: 'S', picture: null, about: 42, website: 'x'.repeat(2000) }),
+        tags: [],
+      }),
+    ).toEqual({ name: 'S' });
+  });
+
   it('is undefined for content that is not a profile, and ignores a malformed owner', () => {
     expect(parseStoreProfile({ content: 'nope', tags: [] })).toBeUndefined();
     expect(parseStoreProfile({ content: '[]', tags: [] })).toBeUndefined();
@@ -270,6 +411,25 @@ describe('product listing', () => {
     });
     expect(product && isPurchasable(product)).toBe(true);
     expect(product && productAddress(product)).toBe(`30402:${store.pubkey}:course-101`);
+  });
+
+  it('takes only https images, when building and when reading', () => {
+    expect(() => buildProductEvent({ ...input, images: ['javascript:alert(1)'] })).toThrow();
+    const product = parseProduct({
+      kind: KIND_PRODUCT,
+      pubkey: 'a'.repeat(64),
+      created_at: 1,
+      content: '',
+      tags: [
+        ['d', 'x'],
+        ['title', 'T'],
+        ['price', '1', 'USD'],
+        ['image', 'javascript:alert(1)'],
+        ['image', 'data:image/png;base64,AAAA'],
+        ['image', 'https://shop.example/a.png'],
+      ],
+    });
+    expect(product?.images).toEqual(['https://shop.example/a.png']);
   });
 
   it('reads a plain NIP-99 listing from another client', () => {
@@ -348,6 +508,9 @@ describe('product listing', () => {
       49_500_000n,
     );
     expect(priceInSubunits({ amount: '1', currency: 'USD' }, PATHUSD_TEMPO)).toBe(1_000_000n);
+    expect(priceInSubunits({ amount: '49.0000000', currency: 'USD' }, USDC_SOLANA_DEVNET)).toBe(
+      49_000_000n,
+    );
     expect(() => priceInSubunits({ amount: '1', currency: 'EUR' }, USDC_SOLANA_DEVNET)).toThrow();
     expect(() =>
       priceInSubunits({ amount: '1', currency: 'USD', frequency: 'month' }, USDC_SOLANA_DEVNET),

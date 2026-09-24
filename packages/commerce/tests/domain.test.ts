@@ -39,6 +39,14 @@ describe('hostnames and nip05', () => {
       'a..b',
       'shop.example:8080',
       '',
+      // A URL parser reads these as IPv4 literals: 127.0.0.1 and 10.0.0.1.
+      '127.0.0.0x1',
+      '10.0.0.0x1',
+      'shop.0x',
+      'foo.localhost',
+      'metadata.google.internal',
+      'printer.local',
+      'router.home.arpa',
     ]) {
       expect(isPublicHostname(bad)).toBe(false);
     }
@@ -75,6 +83,8 @@ describe('readElisymTxt', () => {
   it('ignores another version or a garbage key', () => {
     expect(readElisymTxt(`v=elisym2; store=${STORE}`)).toEqual({});
     expect(readElisymTxt('v=elisym1; store=npub1garbage')).toEqual({});
+    // A key given twice vouches for nothing.
+    expect(readElisymTxt(`v=elisym1; store=${STORE}; store=${OWNER}`)).toEqual({});
   });
 });
 
@@ -95,6 +105,7 @@ describe('resolveDomainKeys', () => {
     const keys = await resolveDomainKeys('_@shop.example', { fetch: fetchImpl });
     expect(keys).toEqual({
       domain: 'shop.example',
+      name: '_',
       storePubkey: STORE,
       ownerPubkey: OWNER,
       source: 'nostr.json',
@@ -119,10 +130,82 @@ describe('resolveDomainKeys', () => {
     });
     expect(keys).toEqual({
       domain: 'shop.example',
+      name: '_',
       storePubkey: STORE,
       ownerPubkey: OWNER,
       source: 'dns',
     });
+  });
+
+  it('asks the TXT record when nostr.json names only the owner', async () => {
+    const fetchImpl: FetchLike = async (url) =>
+      url.startsWith('https://shop.example/')
+        ? jsonResponse({ names: { owner: OWNER } })
+        : jsonResponse({
+            Answer: [{ type: 16, data: `"v=elisym1; owner=${OWNER}; store=${STORE}"` }],
+          });
+    const keys = await resolveDomainKeys('_@shop.example', { fetch: fetchImpl });
+    expect(keys?.source).toBe('dns');
+    expect(keys?.storePubkey).toBe(STORE);
+  });
+
+  it('asks for `owner` separately from a server that answers only the name asked', async () => {
+    const asked: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      asked.push(url);
+      return url.endsWith('name=owner')
+        ? jsonResponse({ names: { owner: OWNER } })
+        : jsonResponse({ names: { _: STORE } });
+    };
+    const keys = await resolveDomainKeys('_@shop.example', { fetch: fetchImpl });
+    expect(keys).toEqual({
+      domain: 'shop.example',
+      name: '_',
+      storePubkey: STORE,
+      ownerPubkey: OWNER,
+      source: 'nostr.json',
+    });
+    expect(asked).toEqual([
+      'https://shop.example/.well-known/nostr.json?name=_',
+      'https://shop.example/.well-known/nostr.json?name=owner',
+    ]);
+  });
+
+  it('keeps the query string a DoH endpoint already has', async () => {
+    const asked: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      asked.push(url);
+      return url.startsWith('https://shop.example/')
+        ? new Response('not found', { status: 404 })
+        : jsonResponse({ Answer: [{ type: 16, data: `"v=elisym1; store=${STORE}"` }] });
+    };
+    await resolveDomainKeys('_@shop.example', {
+      fetch: fetchImpl,
+      dohEndpoint: 'https://doh.example/q?ct=json',
+    });
+    expect(asked[1]).toBe('https://doh.example/q?ct=json&name=_elisym.shop.example&type=TXT');
+  });
+
+  it('takes nothing from TXT records that disagree, whatever their order', async () => {
+    const other = 'c'.repeat(64);
+    const fetchImpl: FetchLike = async (url) =>
+      url.startsWith('https://shop.example/')
+        ? new Response('not found', { status: 404 })
+        : jsonResponse({
+            Answer: [
+              { type: 16, data: `"v=elisym1; owner=${OWNER}; store=${STORE}"` },
+              { type: 16, data: `"v=elisym1; owner=${OWNER}; store=${other}"` },
+            ],
+          });
+    expect(await resolveDomainKeys('_@shop.example', { fetch: fetchImpl })).toBeUndefined();
+  });
+
+  it('takes nothing from a TXT record that names no store', async () => {
+    const fetchImpl: FetchLike = async (url) =>
+      url.startsWith('https://shop.example/')
+        ? new Response('not found', { status: 404 })
+        : jsonResponse({ Answer: [{ type: 16, data: `"v=elisym1; owner=${OWNER}"` }] });
+    expect(await resolveDomainKeys('_@shop.example', { fetch: fetchImpl })).toBeUndefined();
   });
 
   it('gives up on an oversized document instead of reading it all', async () => {

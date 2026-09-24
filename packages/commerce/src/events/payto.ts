@@ -1,7 +1,7 @@
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
-import { canonicalPayoutAddress, parseCaip19, type Caip19 } from '../caip';
+import { canonicalPayoutAddress, hasValidEvmChecksum, parseCaip19, type Caip19 } from '../caip';
 import { KIND_PAYTO } from '../constants';
-import { nowSecs, tagsNamed } from '../tags';
+import { HEX_PUBKEY_RE, nowSecs, tagsNamed } from '../tags';
 import { verifyPaytoProof } from '../wallet-proof';
 
 /** One payout address for one asset, as the owner published it. */
@@ -17,6 +17,12 @@ export interface PaytoInput {
   /** NIP-A3 `payto` entries, e.g. `{ type: 'solana', authority: '<address>' }`. */
   payto?: readonly { type: string; authority: string }[];
   accept: readonly { caip19: string; address: string; signature?: string }[];
+  /**
+   * The owner key that will sign the event. Required with any wallet signature:
+   * a proof made for another owner or asset is checked here, since every reader
+   * would drop that address.
+   */
+  ownerPubkey?: string;
   createdAt?: number;
 }
 
@@ -34,6 +40,25 @@ export function buildPaytoEvent(input: PaytoInput): EventTemplate {
     const address = canonicalPayoutAddress(caip19.chain, entry.address);
     if (!address) {
       throw new Error(`Not a ${caip19.chain.family} address: ${entry.address}`);
+    }
+    // The wire form is lowercase, so the checksum is checked here or never.
+    if (caip19.chain.family === 'evm' && !hasValidEvmChecksum(entry.address)) {
+      throw new Error(`EIP-55 checksum mismatch, likely a typo: ${entry.address}`);
+    }
+    if (entry.signature !== undefined) {
+      if (input.ownerPubkey === undefined || !HEX_PUBKEY_RE.test(input.ownerPubkey)) {
+        throw new Error('A wallet signature needs ownerPubkey as 64 lowercase hex characters');
+      }
+      const proven = verifyPaytoProof({
+        chain: caip19.chain,
+        address,
+        ownerPubkey: input.ownerPubkey,
+        caip19: caip19.id,
+        signature: entry.signature,
+      });
+      if (!proven) {
+        throw new Error(`The wallet signature does not prove ${address} for this owner and asset`);
+      }
     }
     tags.push(
       entry.signature === undefined
@@ -63,9 +88,9 @@ export interface ParsedPayto {
  * the owner.
  */
 export function parsePayto(event: Pick<NostrEvent, 'pubkey' | 'tags'>): ParsedPayto {
-  const targets: PayoutTarget[] = [];
+  const candidates = new Map<string, PayoutTarget>();
+  const badProof = new Set<string>();
   const rejected: ParsedPayto['rejected'] = [];
-  const seen = new Set<string>();
   for (const tag of tagsNamed(event.tags, 'accept')) {
     const [, caip19Id, rawAddress, signature] = tag;
     const caip19 = caip19Id === undefined ? undefined : parseCaip19(caip19Id);
@@ -79,6 +104,7 @@ export function parsePayto(event: Pick<NostrEvent, 'pubkey' | 'tags'>): ParsedPa
       rejected.push({ tag, reason: 'bad_address' });
       continue;
     }
+    const key = `${caip19.id}|${address}`;
     let walletSigned = false;
     if (signature !== undefined && signature !== '') {
       walletSigned = verifyPaytoProof({
@@ -90,15 +116,21 @@ export function parsePayto(event: Pick<NostrEvent, 'pubkey' | 'tags'>): ParsedPa
       });
       if (!walletSigned) {
         rejected.push({ tag, reason: 'bad_proof' });
+        badProof.add(key);
         continue;
       }
     }
-    const key = `${caip19.id}|${address}`;
-    if (seen.has(key)) {
-      continue;
+    // Repeats of one address count once: signed if any copy carries a good proof.
+    const earlier = candidates.get(key);
+    if (earlier === undefined) {
+      candidates.set(key, { caip19, address, walletSigned });
+    } else if (walletSigned) {
+      earlier.walletSigned = true;
     }
-    seen.add(key);
-    targets.push({ caip19, address, walletSigned });
   }
+  // A wrong proof anywhere condemns the address, whatever other copies say.
+  const targets = [...candidates.entries()]
+    .filter(([key]) => !badProof.has(key))
+    .map(([, target]) => target);
   return { targets, rejected };
 }

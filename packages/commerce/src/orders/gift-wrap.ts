@@ -1,7 +1,7 @@
-import { getEventHash, getPublicKey } from 'nostr-tools';
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import * as nip44 from 'nostr-tools/nip44';
 import * as nip59 from 'nostr-tools/nip59';
+import { getEventHash, getPublicKey } from 'nostr-tools/pure';
 import {
   KIND_GIFT_WRAP,
   KIND_ORDER_MESSAGE,
@@ -131,7 +131,8 @@ export function unwrapOrderMessage(
       return undefined;
     }
     const seal = parseEventJson(decrypt(wrap.content, recipientSecretKey, wrap.pubkey));
-    if (!seal || seal.kind !== KIND_SEAL || seal.sig === undefined) {
+    // NIP-59: a seal carries no tags.
+    if (!seal || seal.kind !== KIND_SEAL || seal.sig === undefined || seal.tags.length > 0) {
       return undefined;
     }
     const signedSeal: NostrEvent = { ...seal, sig: seal.sig };
@@ -139,7 +140,13 @@ export function unwrapOrderMessage(
       return undefined;
     }
     const rumor = parseEventJson(decrypt(seal.content, recipientSecretKey, seal.pubkey));
-    if (!rumor || rumor.pubkey !== seal.pubkey || rumor.id !== getEventHash(rumor)) {
+    // A rumor is unsigned (NIP-59): a signed one could be replayed as a public event.
+    if (
+      !rumor ||
+      rumor.sig !== undefined ||
+      rumor.pubkey !== seal.pubkey ||
+      rumor.id !== getEventHash(rumor)
+    ) {
       return undefined;
     }
     if (rumor.created_at > nowSecs() + MAX_FUTURE_SKEW_SECS) {

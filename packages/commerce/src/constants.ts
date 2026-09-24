@@ -18,6 +18,8 @@ export const KIND_INBOX_RELAYS = 10050;
 export const KIND_ORDER_MESSAGE = 16;
 /** Payment receipt inside a gift wrap (Gamma Markets). */
 export const KIND_PAYMENT_RECEIPT = 17;
+/** NIP-09 deletion: an `a` tag on the owner's AUTH address revokes it, like `mode` revoked. */
+export const KIND_DELETION = 5;
 export const KIND_SEAL = 13;
 export const KIND_GIFT_WRAP = 1059;
 

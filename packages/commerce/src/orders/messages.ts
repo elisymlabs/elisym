@@ -11,7 +11,7 @@ import {
 } from '../constants';
 import { HEX_PUBKEY_RE, type Tags, nowSecs, tagValue, tagsNamed } from '../tags';
 
-const ORDER_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
+const ORDER_ID_RE = new RegExp(`^[A-Za-z0-9-]{8,${LIMITS.MAX_ORDER_ID_LENGTH}}$`);
 const ITEM_ADDRESS_RE = new RegExp(`^${KIND_PRODUCT}:[0-9a-f]{64}:[A-Za-z0-9._:-]{1,128}$`);
 const QUANTITY_RE = /^[1-9]\d{0,3}$/;
 const AMOUNT_RE = /^(0|[1-9]\d{0,11})(\.\d{1,18})?$/;
@@ -20,6 +20,8 @@ const CURRENCY_RE = /^[A-Z]{3}$/;
 const MEDIUM_RE = /^[a-z0-9-]{1,32}$/;
 const TX_RE = /^[A-Za-z0-9]{1,128}$/;
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}$/;
+
+const ORDER_MESSAGE_TYPES: readonly string[] = ['order', 'payment_request', 'status', 'receipt'];
 
 /** Gamma Markets `type` values for kind 16. */
 const TYPE_ORDER = '1';
@@ -63,6 +65,7 @@ export interface OrderStatusMessage {
   buyerPubkey: string;
   orderId: string;
   status: OrderStatus;
+  /** Store-supplied and unchecked: show it as text, or open it only as an `https:` link. */
   delivery?: { method: DeliveryMethod; value: string };
   /** The payment the store credited: amounts in subunits of the paid asset. */
   receipt?: { medium: string; tx: string; amount: string; fee: string };
@@ -111,6 +114,10 @@ export function buildOrderMessage(
   message: OrderMessage,
   createdAt: number = nowSecs(),
 ): EventTemplate {
+  // A plain-JS caller gets a clear error here, not `undefined` from the switch.
+  if (!ORDER_MESSAGE_TYPES.some((known) => known === message.type)) {
+    throw new Error(`Unknown order message type: ${String(message.type)}`);
+  }
   assertMatches(message.orderId, ORDER_ID_RE, 'order id');
   switch (message.type) {
     case 'order': {
@@ -163,6 +170,9 @@ export function buildOrderMessage(
     }
     case 'status': {
       assertPubkey(message.buyerPubkey, 'buyerPubkey');
+      if (!ORDER_STATUSES.some((status) => status === message.status)) {
+        throw new Error(`Invalid order status: ${message.status}`);
+      }
       const tags: string[][] = [
         ['p', message.buyerPubkey],
         ['type', TYPE_STATUS],
@@ -170,8 +180,12 @@ export function buildOrderMessage(
         ['status', message.status],
       ];
       if (message.delivery !== undefined) {
-        if (message.delivery.value.length > LIMITS.MAX_TAG_VALUE_LENGTH) {
-          throw new Error('Delivery value is too long');
+        const { method, value } = message.delivery;
+        if (!DELIVERY_METHODS.some((known) => known === method)) {
+          throw new Error(`Invalid delivery method: ${method}`);
+        }
+        if (value.length === 0 || value.length > LIMITS.MAX_TAG_VALUE_LENGTH) {
+          throw new Error('Delivery value is empty or too long');
         }
         tags.push(['delivery', message.delivery.method, message.delivery.value]);
       }

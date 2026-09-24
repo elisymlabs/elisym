@@ -12,14 +12,28 @@ const SRC = join(__dirname, '..', 'src');
 const ALLOWED = [
   /^\.\.?\//,
   /^@elisym\/pay-core$/,
-  /^nostr-tools(\/(nip19|nip44|nip59))?$/,
+  /^nostr-tools\/(pure|nip19|nip44|nip59)$/,
   /^@noble\/curves\/(ed25519|secp256k1)\.js$/,
   /^@noble\/hashes\/sha3\.js$/,
   /^@scure\/base$/,
+  /^decimal\.js-light$/,
   /^zod$/,
 ];
+/** The nostr-tools root pulls in the relay pool: types only, never code (spec 9.4). */
+const TYPE_ONLY_ALLOWED = [/^nostr-tools$/];
 const IMPORT_RE =
-  /(?:^|\n)\s*(?:import|export)\b[^'"]*?from\s*['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/g;
+  /(?:^|\n)\s*((?:import|export)\b[^'"]*?)from\s*['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)|(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
+
+function isTypeOnly(statement: string | undefined): boolean {
+  return statement !== undefined && /^(import|export)\s+type\b/.test(statement);
+}
+
+function isAllowed(specifier: string, statement: string | undefined): boolean {
+  return (
+    ALLOWED.some((pattern) => pattern.test(specifier)) ||
+    (isTypeOnly(statement) && TYPE_ONLY_ALLOWED.some((pattern) => pattern.test(specifier)))
+  );
+}
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -39,13 +53,24 @@ describe('package boundary', () => {
     const offenders: string[] = [];
     for (const file of files) {
       for (const match of readFileSync(file, 'utf8').matchAll(IMPORT_RE)) {
-        const specifier = match[1] ?? match[2] ?? '';
-        if (!ALLOWED.some((pattern) => pattern.test(specifier))) {
+        const specifier = match[2] ?? match[3] ?? match[4] ?? '';
+        if (!isAllowed(specifier, match[1])) {
           offenders.push(`${relative(SRC, file)}: ${specifier}`);
         }
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('sees every import form: from, dynamic, and bare side-effect', () => {
+    const source = [
+      "import { a } from 'from-form';",
+      "export * as b from 'export-form';",
+      "const c = await import('dynamic-form');",
+      "import 'side-effect-form';",
+    ].join('\n');
+    const found = [...source.matchAll(IMPORT_RE)].map((match) => match[2] ?? match[3] ?? match[4]);
+    expect(found).toEqual(['from-form', 'export-form', 'dynamic-form', 'side-effect-form']);
   });
 
   it('the guard catches what it should', () => {
@@ -57,7 +82,10 @@ describe('package boundary', () => {
       '@solana/kit',
     ];
     for (const specifier of blocked) {
-      expect(ALLOWED.some((pattern) => pattern.test(specifier))).toBe(false);
+      expect(isAllowed(specifier, 'import { x } ')).toBe(false);
     }
+    // The nostr-tools root: types yes, code no.
+    expect(isAllowed('nostr-tools', 'import type { NostrEvent } ')).toBe(true);
+    expect(isAllowed('nostr-tools', 'import { SimplePool } ')).toBe(false);
   });
 });
