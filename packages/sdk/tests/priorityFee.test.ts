@@ -1,4 +1,4 @@
-import type { Rpc, SolanaRpcApi } from '@solana/kit';
+import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
 import { describe, expect, it, vi } from 'vitest';
 import { clearPriorityFeeCache, estimatePriorityFeeMicroLamports, pickPercentileFee } from '../src';
 
@@ -150,6 +150,27 @@ describe('estimatePriorityFeeMicroLamports', () => {
 
   // H9: the cache key carries the network - identical percentile/accounts on
   // the other cluster must hit its own RPC, never the cached devnet sample.
+  it('keeps the cache bounded, evicting the oldest entry first', async () => {
+    clearPriorityFeeCache();
+    const { rpc, callCount } = makeRpc([{ prioritizationFee: 5_000n }]);
+    // A distinct account list per call: the shape a long-lived process sees.
+    const accountsFor = (index: number) => [`Account${index}`] as unknown as Address[];
+    for (let index = 0; index < 300; index += 1) {
+      await estimatePriorityFeeMicroLamports(rpc, {
+        network: 'devnet',
+        accounts: accountsFor(index),
+      });
+    }
+    expect(callCount()).toBe(300);
+    // The newest entries are still served from the cache...
+    await estimatePriorityFeeMicroLamports(rpc, { network: 'devnet', accounts: accountsFor(299) });
+    expect(callCount()).toBe(300);
+    // ...the oldest was evicted, so asking again reaches the rpc.
+    await estimatePriorityFeeMicroLamports(rpc, { network: 'devnet', accounts: accountsFor(0) });
+    expect(callCount()).toBe(301);
+    clearPriorityFeeCache();
+  });
+
   it('never serves one cluster cached estimate to the other', async () => {
     clearPriorityFeeCache();
     const devnetSamples: FakeSample[] = [{ prioritizationFee: 5_000n }];

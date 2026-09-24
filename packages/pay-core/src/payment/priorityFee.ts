@@ -20,7 +20,33 @@ interface CacheEntry {
   expires: number;
 }
 
+/**
+ * Bound on the cache. The key carries the caller's account list, and a
+ * long-lived process (an MCP server, an always-on agent) can see many distinct
+ * lists over weeks; an entry is only replaced when its own key comes back.
+ */
+const MAX_CACHE_ENTRIES = 256;
+
 const cache = new Map<string, CacheEntry>();
+
+/** Make room for one more entry: drop expired ones, then the oldest inserted. */
+function makeRoomInCache(now: number): void {
+  if (cache.size < MAX_CACHE_ENTRIES) {
+    return;
+  }
+  for (const [key, entry] of cache) {
+    if (entry.expires <= now) {
+      cache.delete(key);
+    }
+  }
+  // A Map iterates in insertion order, so the first key is the oldest.
+  for (const key of cache.keys()) {
+    if (cache.size < MAX_CACHE_ENTRIES) {
+      break;
+    }
+    cache.delete(key);
+  }
+}
 
 export interface EstimatePriorityFeeOptions {
   /**
@@ -80,6 +106,9 @@ export async function estimatePriorityFeeMicroLamports(
 
   const samples = await rpc.getRecentPrioritizationFees(accounts).send();
   const fee = pickPercentileFee(samples, percentile);
+  // Re-inserted, not updated in place, so insertion order stays "oldest first".
+  cache.delete(key);
+  makeRoomInCache(now);
   cache.set(key, { microLamports: fee, expires: now + ttl });
   return fee;
 }
