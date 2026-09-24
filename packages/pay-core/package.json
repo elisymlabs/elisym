@@ -1,0 +1,108 @@
+{
+  "name": "@elisym/pay-core",
+  "version": "0.1.0",
+  "description": "Payment primitives for elisym: requests, fees, assets, and on-chain verification on Solana and Tempo.",
+  "keywords": [
+    "elisym",
+    "evm",
+    "payments",
+    "solana",
+    "tempo",
+    "typescript",
+    "usdc"
+  ],
+  "homepage": "https://github.com/elisymlabs/elisym",
+  "license": "MIT",
+  "author": "elisym labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elisymlabs/elisym.git",
+    "directory": "packages/pay-core"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./shared": {
+      "import": {
+        "types": "./dist/shared.d.ts",
+        "default": "./dist/shared.js"
+      },
+      "require": {
+        "types": "./dist/shared.d.cts",
+        "default": "./dist/shared.cjs"
+      }
+    },
+    "./internal": {
+      "import": {
+        "types": "./dist/internal.d.ts",
+        "default": "./dist/internal.js"
+      },
+      "require": {
+        "types": "./dist/internal.d.cts",
+        "default": "./dist/internal.cjs"
+      }
+    },
+    "./evm": {
+      "import": {
+        "types": "./dist/evm.d.ts",
+        "default": "./dist/evm.js"
+      },
+      "require": {
+        "types": "./dist/evm.d.cts",
+        "default": "./dist/evm.cjs"
+      }
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "zod": "~3.25.0"
+  },
+  "devDependencies": {
+    "@elisym/config-client": "workspace:*",
+    "@solana-program/memo": "~0.11.0",
+    "@solana-program/system": "~0.12.0",
+    "@solana-program/token": "~0.14.0",
+    "@solana/kit": "~6.8.0",
+    "@types/node": "~25.5.0",
+    "decimal.js-light": "~2.5.1",
+    "tsup": "~8.4.0",
+    "typescript": "~5.7.0",
+    "vitest": "~3.2.6"
+  },
+  "peerDependencies": {
+    "@solana-program/memo": "~0.11.0",
+    "@solana-program/system": "~0.12.0",
+    "@solana-program/token": "~0.14.0",
+    "@solana/kit": "~6.8.0",
+    "decimal.js-light": "~2.5.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

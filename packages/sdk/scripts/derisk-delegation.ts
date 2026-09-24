@@ -25,6 +25,9 @@
  *  6. owner `revoke` clears the delegate (`getDelegation` shows none).
  */
 
+import { getProtocolConfig } from '@elisym/pay-core';
+import { resolveUsdcAsset } from '@elisym/pay-core';
+import { generateSolanaWallet, signerFromSecretKeyBase58 } from '@elisym/pay-core';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
   AuthorityType,
@@ -50,7 +53,6 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from '@solana/kit';
-import { getProtocolConfig } from '../src/config/onchain';
 import { getProtocolProgramId } from '../src/constants';
 import {
   buildApproveDelegate,
@@ -61,8 +63,6 @@ import {
   deriveOwnerDelegationAta,
   getDelegation,
 } from '../src/delegation';
-import { resolveUsdcAsset } from '../src/payment/assets';
-import { generateSolanaWallet, signerFromSecretKeyBase58 } from '../src/payment/wallet';
 import type { Network } from '../src/types';
 
 const NETWORK: Network = process.env.NETWORK === 'mainnet' ? 'mainnet' : 'devnet';

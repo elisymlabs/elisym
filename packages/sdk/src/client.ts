@@ -1,6 +1,5 @@
+import { type PaymentStrategy, SolanaPaymentStrategy } from '@elisym/pay-core';
 import { RELAYS } from './constants';
-import { SolanaPaymentStrategy } from './payment/solana';
-import type { PaymentStrategy } from './payment/strategy';
 import { BlossomService } from './services/blossom';
 import { DiscoveryService } from './services/discovery';
 import { MarketplaceService } from './services/marketplace';

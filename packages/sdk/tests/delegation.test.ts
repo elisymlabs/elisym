@@ -1,3 +1,6 @@
+import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/pay-core';
+import { calculateProtocolFee } from '@elisym/pay-core';
+import { generateSolanaWallet } from '@elisym/pay-core';
 import { describe, expect, it } from 'vitest';
 import {
   buildApproveDelegate,
@@ -12,9 +15,6 @@ import {
   resolveDelegationAsset,
   validateSkillDelegation,
 } from '../src/delegation';
-import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '../src/payment/assets';
-import { calculateProtocolFee } from '../src/payment/fee';
-import { generateSolanaWallet } from '../src/payment/wallet';
 
 async function twoSigners() {
   const owner = await generateSolanaWallet();

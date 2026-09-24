@@ -1,3 +1,11 @@
+import {
+  type Asset,
+  assetsFor,
+  chainFamilyOf,
+  isChainSlug,
+  isEvmWireAddress,
+  isVirtualEvmAddress,
+} from '@elisym/pay-core';
 import { nip19, finalizeEvent, verifyEvent, type Filter, type Event } from 'nostr-tools';
 import {
   KIND_APP_HANDLER,
@@ -19,14 +27,6 @@ import {
 import { parseDelegationDescriptor } from '../delegation';
 import { parseMeteredDescriptor } from '../metered';
 import { parseOnchainDescriptor } from '../onchain';
-import { assetsFor } from '../payment/assets';
-import type { Asset } from '../payment/assets';
-import {
-  chainFamilyOf,
-  isChainSlug,
-  isEvmWireAddress,
-  isVirtualEvmAddress,
-} from '../payment/chains';
 import type { ElisymIdentity } from '../primitives/identity';
 import type { NostrPool } from '../transport/pool';
 import type {
@@ -332,7 +332,7 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     // asset fall back to a self-describing one and render prices with this
     // value, so an out-of-range number shifts the decimal point of every
     // amount shown for this card. Same bound the payment-request schema
-    // applies (`payment/schema.ts`); no real asset lives outside it.
+    // applies (`@elisym/pay-core`, `payment/schema.ts`); no real asset lives outside it.
     if (
       card.payment.decimals !== undefined &&
       (!Number.isInteger(card.payment.decimals) ||

@@ -6,7 +6,7 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { NATIVE_SOL } from '../../src/payment/assets';
+import { NATIVE_SOL } from '@elisym/pay-core';
 import { DynamicScriptSkill } from '../../src/skills/dynamicScriptSkill';
 import type { SkillContext, SkillInput } from '../../src/skills/types';
 

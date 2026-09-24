@@ -1,4 +1,17 @@
-import type { Address } from '@solana/kit';
+// The protocol's identity and the payment bounds live in `@elisym/pay-core`,
+// which owns the money core; they are re-exported here so nothing that read
+// them from the SDK has to move, and spread into the aggregates below so each
+// number is written once. Read through `./shared`, which pulls in no Solana
+// library: this file is loaded by entries (the agent store) that never pay.
+import { PAYMENT_DEFAULTS, PAYMENT_LIMITS } from '@elisym/pay-core/shared';
+
+export {
+  ELISYM_PROTOCOL_TAG,
+  getProtocolProgramId,
+  PROTOCOL_PROGRAM_ID_DEVNET,
+  PROTOCOL_PROGRAM_ID_MAINNET,
+  type ProtocolCluster,
+} from '@elisym/pay-core/shared';
 
 export const RELAYS = [
   // Dedicated elisym relay (self-hosted) first, public relays as fallback.
@@ -81,70 +94,18 @@ export const DM_INBOX_MARKER_VALUE = 'elisym';
 
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 
-/**
- * Solana program ID for the elisym protocol config (devnet deployment).
- *
- * The Anchor program at this address is the source of truth for fee bps,
- * treasury address, and admin rotation state. Read via `getProtocolConfig`.
- */
-export const PROTOCOL_PROGRAM_ID_DEVNET = 'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE' as Address;
-
-/**
- * Solana program ID for the elisym protocol config (mainnet deployment).
- *
- * Deliberately the same address as devnet - the program was deployed to
- * mainnet with the same program keypair (plan D4). The constants stay
- * per-cluster so a future divergence (or a localnet deployment) is a
- * one-line change, but the program id alone no longer identifies a
- * cluster: every program-id-keyed cache carries a network discriminator.
- */
-export const PROTOCOL_PROGRAM_ID_MAINNET =
-  'BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE' as Address;
-
-/**
- * Read-only marker pubkey attached as a non-signer account to every elisym
- * payment transaction. Lets indexers enumerate every elisym tx network-wide
- * via a single `getSignaturesForAddress(ELISYM_PROTOCOL_TAG)` call,
- * independent of fee size or recipient.
- *
- * The account does not need to exist on-chain; including its pubkey as an
- * extra read-only account in the provider transfer instruction is enough for
- * Solana's tx-by-account index to pick it up. The corresponding secret key
- * was generated and discarded - the tag never signs and never holds funds.
- */
-export const ELISYM_PROTOCOL_TAG = 'ELiZksgwDt41LaeuPDLkUfWgFXhGgVayTMP7L5nTSEL8' as Address;
-
-export type ProtocolCluster = 'devnet' | 'mainnet' | 'localnet';
-
-/** Resolve the elisym-config program ID for a given Solana cluster. */
-export function getProtocolProgramId(cluster: ProtocolCluster): Address {
-  switch (cluster) {
-    case 'devnet':
-    case 'localnet':
-      return PROTOCOL_PROGRAM_ID_DEVNET;
-    case 'mainnet':
-      return PROTOCOL_PROGRAM_ID_MAINNET;
-  }
-}
-
 /** Default values for timeouts, retries, and batch sizes. */
 export const DEFAULTS = {
+  ...PAYMENT_DEFAULTS,
   SUBSCRIPTION_TIMEOUT_MS: 120_000,
   PING_TIMEOUT_MS: 3_000,
   PING_RETRIES: 2,
   PING_CACHE_TTL_MS: 30_000,
-  PAYMENT_EXPIRY_SECS: 600,
   BATCH_SIZE: 250,
   QUERY_TIMEOUT_MS: 15_000,
   EOSE_TIMEOUT_MS: 3_000,
-  VERIFY_RETRIES: 10,
-  VERIFY_INTERVAL_MS: 3_000,
-  VERIFY_BY_REF_RETRIES: 15,
-  VERIFY_BY_REF_INTERVAL_MS: 2_000,
   RESULT_RETRY_COUNT: 3,
   RESULT_RETRY_BASE_MS: 1_000,
-  QUERY_MAX_CONCURRENCY: 6,
-  VERIFY_SIGNATURE_LIMIT: 25,
   // Default ceiling for a single iroh file transfer (seed/fetch). A tunable
   // default, not a protocol constant - the transfer is resumable and its own
   // budget, decoupled from the result-wait window.
@@ -181,6 +142,7 @@ export const DEFAULTS = {
 
 /** Protocol limits for input validation. */
 export const LIMITS = {
+  ...PAYMENT_LIMITS,
   MAX_INPUT_LENGTH: 100_000,
   // NIP-44 v2 hard cap on encrypted plaintext: the pad() length prefix is a u16,
   // so the plaintext can be at most 65_535 BYTES (not chars). Encrypting anything
@@ -207,14 +169,12 @@ export const LIMITS = {
   // use iroh. The relay enforces a ~128 MiB server-side backstop.
   MAX_BLOSSOM_ENCRYPTED_BYTES: 104_857_600, // 100 MiB
 
-  MAX_TIMEOUT_SECS: 600,
   // Upper bound for execution budgets (`max_execution_secs` / `execution_timeout_secs`).
   // Distinct from MAX_TIMEOUT_SECS (the result-wait cap): execution budgets may be
   // hours, so this exists only to keep `secs * 1000` within Node's setTimeout limit
   // (2_147_483_647 ms) - a larger value overflows and fires the timer immediately.
   MAX_EXECUTION_SECS: 2_147_483,
   MAX_CAPABILITIES: 20,
-  MAX_DESCRIPTION_LENGTH: 500,
   MAX_AGENT_NAME_LENGTH: 64,
   MAX_CAPABILITY_LENGTH: 64,
   MAX_POLICY_CONTENT_LENGTH: 50_000,

@@ -4,7 +4,7 @@
  * De-duplicating a settlement across jobs is the PROVIDER's responsibility,
  * not the verifier's. These tests pin that contract down so it cannot drift.
  *
- * Why it is stateless (packages/sdk/src/payment/solana.ts):
+ * Why it is stateless (packages/pay-core/src/payment/solana.ts):
  *   `checkTxDiff` / `checkTokenBalanceDiff` bind a payment request to a
  *   transaction by TWO facts only:
  *     1. the request's random `reference` key appears somewhere in the tx's

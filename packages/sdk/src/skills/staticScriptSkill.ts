@@ -1,9 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import type { Asset } from '@elisym/pay-core';
 import { SCRIPT_EXIT_BILLING_EXHAUSTED } from '../llm-health/constants';
 import { ScriptBillingExhaustedError, ScriptExecutionError } from '../llm-health/types';
-import type { Asset } from '../payment/assets';
 import { SCRIPT_REFUSAL_FILE_ENV, scriptOutput, throwIfRefused } from './refusal';
 import { readRefusalFile } from './refusal-file';
 import { jobScriptEnv, runScript, scopedToolEnv } from './scriptSkill';

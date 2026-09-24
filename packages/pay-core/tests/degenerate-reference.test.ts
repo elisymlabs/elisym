@@ -18,8 +18,7 @@ import {
   USDC_SOLANA_DEVNET,
   getProtocolProgramId,
 } from '../src';
-import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR } from '../src/onchain/checks';
-import { SYSTEM_PROGRAM_ADDRESS_STR } from '../src/onchain/constants';
+import { COMPUTE_BUDGET_PROGRAM_ADDRESS_STR, SYSTEM_PROGRAM_ADDRESS_STR } from '../src/constants';
 import { TOKEN_2022_PROGRAM_ADDRESS_STR } from '../src/payment/assets';
 import {
   degenerateReference,

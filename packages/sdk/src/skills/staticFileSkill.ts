@@ -1,6 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
+import type { Asset } from '@elisym/pay-core';
 import { isBlockingNode } from '../agent-store/node-type';
-import type { Asset } from '../payment/assets';
 import { resolveInsidePathReal } from './path-safety';
 import type {
   Skill,
@@ -82,12 +82,37 @@ export class StaticFileSkill implements Skill {
     }
     // Measure UTF-8 bytes, not JS string length: relays reject by byte size,
     // and a non-ASCII file is 1.5-4x its char count in UTF-8.
-    const buffer = await readFile(safePath);
-    if (buffer.length > MAX_STATIC_FILE_SIZE) {
-      throw new Error(
-        `static-file output exceeds ${MAX_STATIC_FILE_SIZE} bytes (got ${buffer.length})`,
-      );
+    return { data: (await readCapped(safePath)).toString('utf-8') };
+  }
+}
+
+/**
+ * Read at most `MAX_STATIC_FILE_SIZE` bytes, refusing a larger file before
+ * reading it: the size is checked on the open handle first, and the read stops
+ * one byte past the cap, so a file that grew after the check is refused too and
+ * a huge one is never pulled into memory while a paying customer waits.
+ */
+async function readCapped(path: string): Promise<Buffer> {
+  const handle = await open(path, 'r');
+  try {
+    const { size } = await handle.stat();
+    if (size > MAX_STATIC_FILE_SIZE) {
+      throw new Error(`static-file output exceeds ${MAX_STATIC_FILE_SIZE} bytes (got ${size})`);
     }
-    return { data: buffer.toString('utf-8') };
+    const buffer = Buffer.alloc(MAX_STATIC_FILE_SIZE + 1);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
+      if (bytesRead === 0) {
+        break;
+      }
+      filled += bytesRead;
+    }
+    if (filled > MAX_STATIC_FILE_SIZE) {
+      throw new Error(`static-file output exceeds ${MAX_STATIC_FILE_SIZE} bytes`);
+    }
+    return buffer.subarray(0, filled);
+  } finally {
+    await handle.close();
   }
 }

@@ -27,10 +27,10 @@ export type LedgerStatus = 'paid' | 'executed' | 'delivered' | 'failed';
  * A signature this ledger can actually key a de-duplication claim on.
  *
  * Written once PER PACKAGE and imported everywhere rather than spelled out at
- * each gate, because the gates have to agree. (`@elisym/sdk` keeps its own copy
- * for its acceptor; that one is exported from its module but NOT from the
- * package's public surface, so this is a deliberate second one and the two have
- * to stay identical by hand.) They have to agree because: two of them differing by an
+ * each gate, because the gates have to agree. (The payment core keeps its own copy
+ * for its acceptor, in `@elisym/pay-core/shared`; the CLI depends on the SDK,
+ * which does not re-export it, so this is a deliberate second one and the two
+ * have to stay identical by hand.) They have to agree because: two of them differing by an
  * `=== undefined` instead of this would let an empty string through one and
  * not the other, and an empty string is the value that both a hand-edited
  * ledger and a proxy rewriting an RPC page produce. A claim keyed on one owns

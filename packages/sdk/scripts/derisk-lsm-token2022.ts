@@ -30,6 +30,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { signerFromSecretKeyBase58 } from '@elisym/pay-core';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
   TOKEN_PROGRAM_ADDRESS,
@@ -56,7 +57,6 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { ELISYM_PROTOCOL_TAG } from '../src/constants';
-import { signerFromSecretKeyBase58 } from '../src/payment/wallet';
 
 const RPC_URL = process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com';
 const WS_URL = process.env.SOLANA_WS_URL ?? 'wss://api.devnet.solana.com';

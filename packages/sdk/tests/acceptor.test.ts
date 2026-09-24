@@ -10,18 +10,18 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Address, address, getAddressDecoder } from '@solana/kit';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULTS, SolanaPaymentStrategy } from '../src';
 import {
   MIN_SETTLEMENT_RETENTION_MS,
   ProviderPaymentAcceptor,
   type SettlementStore,
-  classifyRequestUsability,
-} from '../src/payment/acceptor';
-import { resetDegenerateReferenceCache } from '../src/payment/degenerate-reference';
-import { createFileSettlementStore } from '../src/payment/fileSettlementStore';
-import type { PaymentStrategy, ProtocolConfigInput } from '../src/payment/strategy';
+} from '@elisym/pay-core';
+import type { PaymentStrategy, ProtocolConfigInput } from '@elisym/pay-core';
+import { classifyRequestUsability } from '@elisym/pay-core/internal';
+import { resetDegenerateReferenceCache } from '@elisym/pay-core/internal';
+import { type Address, address, getAddressDecoder } from '@solana/kit';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULTS, SolanaPaymentStrategy } from '../src';
+import { createFileSettlementStore } from '../src/payment-file-store';
 import type { PaymentRequestData, VerifyResult } from '../src/types';
 
 const ADDRESS_DECODER = getAddressDecoder();

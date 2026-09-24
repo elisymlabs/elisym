@@ -8,7 +8,7 @@ import {
 import type { Address, Rpc, Signature, SolanaRpcApi } from '@solana/kit';
 import { address } from '@solana/kit';
 import {
-  DEFAULTS,
+  PAYMENT_DEFAULTS,
   ELISYM_PROTOCOL_TAG,
   PROTOCOL_PROGRAM_ID_DEVNET,
   PROTOCOL_PROGRAM_ID_MAINNET,
@@ -37,7 +37,7 @@ export interface AggregateNetworkStatsOptions {
   limit?: number;
   /** Page backwards from this signature for historical scans. */
   before?: Signature;
-  /** Parallel `getTransaction` calls. Defaults to `DEFAULTS.QUERY_MAX_CONCURRENCY`. */
+  /** Parallel `getTransaction` calls. Defaults to `PAYMENT_DEFAULTS.QUERY_MAX_CONCURRENCY`. */
   concurrency?: number;
 }
 
@@ -68,7 +68,7 @@ export async function aggregateNetworkStats(
   options?: AggregateNetworkStatsOptions,
 ): Promise<NetworkStatsResult> {
   const limit = options?.limit ?? DEFAULT_LIMIT;
-  const concurrency = options?.concurrency ?? DEFAULTS.QUERY_MAX_CONCURRENCY;
+  const concurrency = options?.concurrency ?? PAYMENT_DEFAULTS.QUERY_MAX_CONCURRENCY;
   const tag = address(ELISYM_PROTOCOL_TAG);
 
   const signatures = await rpc

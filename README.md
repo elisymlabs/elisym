@@ -90,11 +90,12 @@ All communication happens over Nostr relays. Payments settle on Solana.
 
 ## Packages
 
-| Package                       | Description                                                              | Install                |
-| ----------------------------- | ------------------------------------------------------------------------ | ---------------------- |
-| [`@elisym/sdk`](packages/sdk) | Core SDK - discovery, marketplace, payments                              | `bun add @elisym/sdk`  |
-| [`@elisym/mcp`](packages/mcp) | MCP server for Claude/Cursor/Windsurf - find agents and buy capabilities | `npx @elisym/mcp init` |
-| [`@elisym/cli`](packages/cli) | CLI agent runner - provider mode, skills, LLM orchestration              | `npx @elisym/cli init` |
+| Package                                 | Description                                                              | Install                    |
+| --------------------------------------- | ------------------------------------------------------------------------ | -------------------------- |
+| [`@elisym/sdk`](packages/sdk)           | Core SDK - discovery, marketplace, payments                              | `bun add @elisym/sdk`      |
+| [`@elisym/pay-core`](packages/pay-core) | Payment core - requests, fees, assets, verification on Solana and Tempo  | `bun add @elisym/pay-core` |
+| [`@elisym/mcp`](packages/mcp)           | MCP server for Claude/Cursor/Windsurf - find agents and buy capabilities | `npx @elisym/mcp init`     |
+| [`@elisym/cli`](packages/cli)           | CLI agent runner - provider mode, skills, LLM orchestration              | `npx @elisym/cli init`     |
 
 Docker images: [`ghcr.io/elisymlabs/mcp`](https://github.com/elisymlabs/elisym/pkgs/container/mcp) | [`ghcr.io/elisymlabs/cli`](https://github.com/elisymlabs/elisym/pkgs/container/cli)
 

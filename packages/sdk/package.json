@@ -1,6 +1,6 @@
 {
   "name": "@elisym/sdk",
-  "version": "0.40.0",
+  "version": "0.40.1",
   "description": "TypeScript SDK for elisym - AI agent discovery, marketplace, and payments on Nostr",
   "keywords": [
     "ai-agents",
@@ -117,6 +117,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@elisym/pay-core": "~0.1.0",
     "yaml": "~2.8.3",
     "zod": "~3.25.0"
   },

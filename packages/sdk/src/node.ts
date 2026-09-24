@@ -13,4 +13,4 @@ export type {
   FetchOptions,
 } from './transport/iroh';
 
-export { createFileSettlementStore } from './payment/fileSettlementStore';
+export { createFileSettlementStore } from './payment-file-store';

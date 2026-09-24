@@ -1,3 +1,7 @@
+// The money core lives in `@elisym/pay-core` now. Re-exported whole, so every
+// consumer keeps the import it had, and the two packages cannot drift.
+export * from '@elisym/pay-core';
+
 /**
  * @elisym/sdk - public API.
  *
@@ -105,128 +109,6 @@ export { MessagesService } from './services/messages';
 export { PingService } from './services/ping';
 export { PoliciesService } from './services/policies';
 
-// --- Payment ---
-export {
-  buildPaymentInstructions,
-  createPaymentRequestWithOnchainConfig,
-  SolanaPaymentStrategy,
-} from './payment/solana';
-export { calculateProtocolFee, validateExpiry, assertExpiry, assertLamports } from './payment/fee';
-export type {
-  BuildTransactionOptions,
-  PaymentStrategy,
-  ProtocolConfigInput,
-  Signer,
-} from './payment/strategy';
-export {
-  estimatePriorityFeeMicroLamports,
-  clearPriorityFeeCache,
-  pickPercentileFee,
-} from './payment/priorityFee';
-export type { EstimatePriorityFeeOptions } from './payment/priorityFee';
-export {
-  estimateAssetStatsRentLamports,
-  estimateSolFeeLamports,
-  formatFeeBreakdown,
-  estimateNetworkBaseline,
-  formatNetworkBaseline,
-} from './payment/feeEstimate';
-export type {
-  SolFeeEstimate,
-  EstimateSolFeeOptions,
-  NetworkBaselineEstimate,
-  NetworkBaselineOptions,
-} from './payment/feeEstimate';
-export { PaymentRequestSchema, parsePaymentRequest } from './payment/schema';
-export type { ParsedPaymentRequest, ParseOptions, ParseResult } from './payment/schema';
-export {
-  PaymentRequestV2Schema,
-  parseAnyPaymentRequest,
-  resolveAssetFromPaymentRequestV2,
-  caip19ForAsset,
-} from './payment/schema-v2';
-export type {
-  ParsedPaymentRequestV2,
-  ParseAnyOptions,
-  AnyParseError,
-  AnyParseResult,
-} from './payment/schema-v2';
-export { calculateProtocolFeeSubunits } from './payment/fee-subunits';
-export {
-  CHAINS,
-  isChainSlug,
-  chainFamilyOf,
-  chainFor,
-  chainByCaip2,
-  explorerTxUrl,
-  isEvmAddressFormat,
-  isEvmTxHashFormat,
-  isEvmWireAddress,
-  isEvmWireTxHash,
-  isVirtualEvmAddress,
-  normalizeEvmAddress,
-} from './payment/chains';
-export type { ChainSlug, ChainFamily, ChainConfig } from './payment/chains';
-export { ProviderPaymentAcceptor, MIN_SETTLEMENT_RETENTION_MS } from './payment/acceptor';
-export type {
-  SettlementClaim,
-  SettlementStore,
-  AcceptPaymentInput,
-  AcceptPaymentResult,
-} from './payment/acceptor';
-export { degenerateReference, degenerateReferenceSync } from './payment/degenerate-reference';
-export type { DegenerateReferenceCode } from './payment/degenerate-reference';
-export { verifyJobPaymentQuick, clearQuickVerifyCache } from './payment/quick-verify';
-export type { QuickVerifyResult, QuickVerifyReason } from './payment/quick-verify';
-export {
-  isDefinitelyUnpaid,
-  buildSignedPull,
-  sendConfirmToTerminal,
-  confirmPullToTerminal,
-} from './payment/settlement';
-export type {
-  SignedPullTransaction,
-  PullTerminalOutcome,
-  BuildSignedPullOptions,
-  ConfirmToTerminalOptions,
-} from './payment/settlement';
-export { aggregateNetworkStats, getNetworkStats } from './payment/analytics';
-export type {
-  AggregateNetworkStatsOptions,
-  NetworkStatsResult,
-  OnchainNetworkStats,
-} from './payment/analytics';
-export {
-  NATIVE_SOL,
-  USDC_SOLANA_DEVNET,
-  USDC_SOLANA_MAINNET,
-  LSM_SOLANA_MAINNET,
-  TOKEN_2022_PROGRAM_ADDRESS_STR,
-  USDCE_TEMPO_MAINNET,
-  PATHUSD_TEMPO,
-  KNOWN_ASSETS,
-  EVM_ASSETS,
-  ALL_ASSETS,
-  assetsFor,
-  defaultStablecoin,
-  assetKey,
-  assetByKey,
-  resolveKnownAsset,
-  resolveUsdcAsset,
-  resolveLsmAsset,
-  splAssetsForNetwork,
-  resolveAssetFromPaymentRequest,
-  parseAssetAmount,
-  formatAssetAmount,
-} from './payment/assets';
-export type { Asset, Chain } from './payment/assets';
-export {
-  encodeSecretKeyBase58,
-  exportKeyPairBytes,
-  generateSolanaWallet,
-  signerFromSecretKeyBase58,
-} from './payment/wallet';
-
 // --- Delegated execution (spl-approve bounded spend) ---
 export {
   DELEGATION_MECHANISM,
@@ -328,10 +210,6 @@ export type {
   VerifyOnchainCallArgs,
 } from './onchain';
 
-// --- On-chain protocol config ---
-export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
-export type { GetProtocolConfigOptions, ProtocolConfig } from './config/onchain';
-
 // --- Global config (~/.elisym/config.yaml) schemas ---
 // Node-only loader/writer live in `@elisym/sdk/node`; the schemas stay here so
 // browser code can validate shapes without pulling in `node:fs/promises`.
@@ -387,15 +265,14 @@ export {
   POLICY_D_TAG_PREFIX,
   POLICY_TYPE_REGEX,
   LAMPORTS_PER_SOL,
-  PROTOCOL_PROGRAM_ID_DEVNET,
-  PROTOCOL_PROGRAM_ID_MAINNET,
-  ELISYM_PROTOCOL_TAG,
-  getProtocolProgramId,
   DEFAULTS,
   LIMITS,
   utf8ByteLength,
 } from './constants';
-export type { ProtocolCluster } from './constants';
+// ELISYM_PROTOCOL_TAG, the program ids, getProtocolProgramId and ProtocolCluster
+// come from `export * from '@elisym/pay-core'` above. Named here through
+// `./constants` they would put `@elisym/pay-core/shared` into this entry's
+// types, which a `moduleResolution: node10` consumer cannot resolve.
 
 // --- Types ---
 export type {

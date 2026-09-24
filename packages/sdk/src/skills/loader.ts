@@ -1,13 +1,5 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import YAML from 'yaml';
-import { isBlockingNodeSync } from '../agent-store/node-type';
-import { LIMITS } from '../constants';
-import { type SkillDelegation, validateSkillDelegation } from '../delegation';
-import type { SkillRateLimit } from '../llm-health/types';
-import { validateSkillMetered } from '../metered';
-import { validateSkillOnchain } from '../onchain/schema';
-import type { SkillOnchainResolved } from '../onchain/types';
 import {
   type Asset,
   KNOWN_ASSETS,
@@ -17,7 +9,15 @@ import {
   resolveKnownAsset,
   resolveLsmAsset,
   resolveUsdcAsset,
-} from '../payment/assets';
+} from '@elisym/pay-core';
+import YAML from 'yaml';
+import { isBlockingNodeSync } from '../agent-store/node-type';
+import { LIMITS } from '../constants';
+import { type SkillDelegation, validateSkillDelegation } from '../delegation';
+import type { SkillRateLimit } from '../llm-health/types';
+import { validateSkillMetered } from '../metered';
+import { validateSkillOnchain } from '../onchain/schema';
+import type { SkillOnchainResolved } from '../onchain/types';
 import type { Network } from '../types';
 import { DynamicScriptSkill } from './dynamicScriptSkill';
 import { OnchainCallSkill } from './onchainCallSkill';

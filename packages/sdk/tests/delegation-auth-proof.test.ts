@@ -1,3 +1,4 @@
+import { generateSolanaWallet } from '@elisym/pay-core';
 import { describe, expect, it } from 'vitest';
 import {
   DELEGATION_NONCE_REGEX,
@@ -8,7 +9,6 @@ import {
   verifyDelegationAuthProof,
   type DelegationAuthFields,
 } from '../src/delegation/auth-proof';
-import { generateSolanaWallet } from '../src/payment/wallet';
 import { ElisymIdentity } from '../src/primitives/identity';
 
 async function proofFixture() {

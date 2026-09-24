@@ -722,6 +722,32 @@ output_file: ./big.txt
     ).rejects.toThrow(/exceeds/);
   });
 
+  it('static-file: serves a file of exactly MAX_STATIC_FILE_SIZE bytes whole', async () => {
+    const dir = writeSkill(
+      'edge',
+      `---
+name: edge-doc
+description: edge
+capabilities: [edge]
+price: 0.001
+mode: static-file
+output_file: ./edge.txt
+---
+
+`,
+    );
+    writeFileSync(join(dir, 'edge.txt'), 'y'.repeat(MAX_STATIC_FILE_SIZE), 'utf-8');
+    const [skill] = loadSkillsFromDir(tmpDir, { network: 'devnet' });
+    if (!skill) {
+      throw new Error('skill did not load');
+    }
+    const output = await skill.execute(
+      { data: '', inputType: 'text', tags: ['edge'], jobId: 'j-edge' },
+      { agentName: 't', agentDescription: '' },
+    );
+    expect(output.data).toHaveLength(MAX_STATIC_FILE_SIZE);
+  });
+
   it('loads a static-script skill and execute returns trimmed stdout', async () => {
     const dir = writeSkill(
       'gen',

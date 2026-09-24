@@ -1,3 +1,10 @@
+import {
+  assertLamports,
+  chainByCaip2,
+  isEvmWireTxHash,
+  parseAnyPaymentRequest,
+  resolveAssetFromPaymentRequestV2,
+} from '@elisym/pay-core';
 import { finalizeEvent, verifyEvent, type Filter, type Event } from 'nostr-tools';
 import {
   KIND_JOB_FEEDBACK,
@@ -22,9 +29,6 @@ import {
   MAX_PROOF_TTL_SECS,
   PROOF_CLOCK_SKEW_SECS,
 } from '../delegation/auth-proof';
-import { chainByCaip2, isEvmWireTxHash } from '../payment/chains';
-import { assertLamports } from '../payment/fee';
-import { parseAnyPaymentRequest, resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import { nip44Encrypt, nip44Decrypt } from '../primitives/crypto';
 import type { ElisymIdentity } from '../primitives/identity';
 import {

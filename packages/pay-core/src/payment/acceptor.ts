@@ -1,45 +1,16 @@
 import { type Rpc, type SolanaRpcApi, address, isAddress } from '@solana/kit';
-import { DEFAULTS } from '../constants';
+import { PAYMENT_DEFAULTS } from '../constants';
 import type { PaymentRequestData, VerifyResult } from '../types';
 import { resolveAssetFromPaymentRequest } from './assets';
 import { degenerateReference } from './degenerate-reference';
 import { calculateProtocolFee } from './fee';
+import { MIN_SETTLEMENT_RETENTION_MS, isUsableSignature } from './settlement-claim';
 import type { PaymentStrategy, ProtocolConfigInput } from './strategy';
+
+export { MIN_SETTLEMENT_RETENTION_MS };
 
 /** Outcome of asking a store to bind one settlement to one job. */
 export type SettlementClaim = 'claimed' | 'consumed-by-other' | 'not-persisted';
-
-/**
- * A signature a settlement claim can be keyed on.
- *
- * `@elisym/cli` carries a second copy in its own ledger, deliberately: this one
- * is not part of the package's public API, so the CLI cannot import it. The two
- * are kept identical by hand, and they have to be - a gate spelled `!== undefined`
- * on one side of that line lets an empty string through where the other refuses.
- *
- * Written once per package and read everywhere rather than spelled out at each gate,
- * because the gates have to agree: two differing by an `=== undefined` is how
- * an empty string gets through one and not the next. An empty string owns
- * nothing - the index drops it - so a claim keyed on one leaves the
- * transaction free for the next job while this one is marked paid.
- */
-export function isUsableSignature(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
-}
-
-/**
- * Floor on how long a settlement record has to be kept.
- *
- * Declared beside the interface rather than beside the file-backed store,
- * because every store owes it - a browser one included, and that cannot import
- * `./node`. The reasoning is the chain's history horizon: a signature dropped
- * from the index has to be unverifiable on-chain by then, or it settles a
- * second job. A public RPC keeps ~2-3 days; thirty is a tenfold margin,
- * because archival providers keep more and "unverifiable" is therefore not
- * strictly guaranteed at all. The margin compensates for that - it does not
- * prove it.
- */
-export const MIN_SETTLEMENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface SettlementStore {
   /**
@@ -573,7 +544,7 @@ export class ProviderPaymentAcceptor {
         try {
           const page = (await this.deps.rpc
             .getSignaturesForAddress(address(paymentRequest.reference), {
-              limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
+              limit: PAYMENT_DEFAULTS.VERIFY_SIGNATURE_LIMIT,
               commitment: 'confirmed',
             })
             .send()) as readonly { signature: string; err: unknown }[];
@@ -589,7 +560,7 @@ export class ProviderPaymentAcceptor {
           // empty into a poll that never terminates. The direction is the safe
           // one, which is why this is stated rather than guarded harder, and it
           // stays because a third-party strategy owes no such check.
-          windowFull = page.length >= DEFAULTS.VERIFY_SIGNATURE_LIMIT;
+          windowFull = page.length >= PAYMENT_DEFAULTS.VERIFY_SIGNATURE_LIMIT;
           candidates = page.filter((entry) => !entry.err).map((entry) => entry.signature);
           listed = true;
           break;

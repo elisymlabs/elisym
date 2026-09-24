@@ -33,7 +33,7 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { getProtocolConfig } from '../config/onchain';
-import { DEFAULTS, ELISYM_PROTOCOL_TAG, LIMITS } from '../constants';
+import { PAYMENT_DEFAULTS, ELISYM_PROTOCOL_TAG, PAYMENT_LIMITS } from '../constants';
 import type {
   Network,
   PaymentAssetRef,
@@ -85,8 +85,14 @@ function assertReference(reference: string): void {
 }
 
 function assertExpirySecs(expirySecs: number): void {
-  if (!Number.isInteger(expirySecs) || expirySecs <= 0 || expirySecs > LIMITS.MAX_TIMEOUT_SECS) {
-    throw new Error(`Invalid expiry: ${expirySecs}. Must be integer 1-${LIMITS.MAX_TIMEOUT_SECS}.`);
+  if (
+    !Number.isInteger(expirySecs) ||
+    expirySecs <= 0 ||
+    expirySecs > PAYMENT_LIMITS.MAX_TIMEOUT_SECS
+  ) {
+    throw new Error(
+      `Invalid expiry: ${expirySecs}. Must be integer 1-${PAYMENT_LIMITS.MAX_TIMEOUT_SECS}.`,
+    );
   }
 }
 
@@ -122,7 +128,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
     if (amount === 0) {
       throw new Error('Invalid payment amount: 0. Must be positive.');
     }
-    const expirySecs = options?.expirySecs ?? DEFAULTS.PAYMENT_EXPIRY_SECS;
+    const expirySecs = options?.expirySecs ?? PAYMENT_DEFAULTS.PAYMENT_EXPIRY_SECS;
     assertExpirySecs(expirySecs);
 
     const feeAmount = calculateProtocolFee(amount, config.feeBps);
@@ -540,8 +546,8 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
         expectedNet,
         feeAmount,
         mint,
-        options?.retries ?? DEFAULTS.VERIFY_RETRIES,
-        options?.intervalMs ?? DEFAULTS.VERIFY_INTERVAL_MS,
+        options?.retries ?? PAYMENT_DEFAULTS.VERIFY_RETRIES,
+        options?.intervalMs ?? PAYMENT_DEFAULTS.VERIFY_INTERVAL_MS,
       );
     }
 
@@ -553,8 +559,8 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       expectedNet,
       feeAmount,
       mint,
-      options?.retries ?? DEFAULTS.VERIFY_BY_REF_RETRIES,
-      options?.intervalMs ?? DEFAULTS.VERIFY_BY_REF_INTERVAL_MS,
+      options?.retries ?? PAYMENT_DEFAULTS.VERIFY_BY_REF_RETRIES,
+      options?.intervalMs ?? PAYMENT_DEFAULTS.VERIFY_BY_REF_INTERVAL_MS,
     );
   }
 
@@ -641,7 +647,7 @@ export class SolanaPaymentStrategy implements PaymentStrategy {
       try {
         const signatures = await rpc
           .getSignaturesForAddress(reference, {
-            limit: DEFAULTS.VERIFY_SIGNATURE_LIMIT,
+            limit: PAYMENT_DEFAULTS.VERIFY_SIGNATURE_LIMIT,
           })
           .send();
         // NOT KILLED BY ANY VERDICT: drop this filter and a failed transaction
