@@ -52,7 +52,8 @@ export interface TempoPaymentRequestCreation {
   fromBlock: number;
 }
 
-function randomMemo(): string {
+/** 32 random bytes as lowercase hex: a fresh memo, the twin of a Solana reference key. */
+export function randomTempoMemo(): string {
   const bytes = new Uint8Array(MEMO_BYTES);
   globalThis.crypto.getRandomValues(bytes);
   return `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
@@ -169,7 +170,7 @@ export async function createTempoPaymentRequest(
     ...(feeAddress === undefined
       ? {}
       : { fee_address: feeAddress, fee_amount: feeAmount.toString() }),
-    memo: randomMemo(),
+    memo: randomTempoMemo(),
     // The CHAIN's clock, which is the one every deadline is judged on: the
     // verifier reads a block timestamp, never a wall clock. A provider whose
     // machine is behind chain time by more than the window would otherwise

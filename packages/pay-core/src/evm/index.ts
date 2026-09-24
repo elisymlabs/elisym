@@ -17,7 +17,17 @@ export {
 export type { EvmProtocolConfig, GetEvmProtocolConfigOptions } from './config';
 export { readHexData, readQuantity, readWords, readUint256, readAddressWord } from './rpc-read';
 export {
+  buildTempoPaymentCalls,
+  composeTempoPaymentRequest,
+  encodeTransferWithMemo,
+  type ComposeTempoPaymentRequestOptions,
+  type TempoCall,
+  type TempoPaymentCalls,
+  type TempoPaymentLeg,
+} from './pay';
+export {
   createTempoPaymentRequest,
+  randomTempoMemo,
   type CreateTempoPaymentRequestOptions,
   type TempoPaymentRequestCreation,
 } from './request';
