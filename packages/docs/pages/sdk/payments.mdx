@@ -145,6 +145,50 @@ Two concurrent `accept` calls for the same `jobIdentity` are forbidden for the s
 
 The file-backed store refuses to start on an index it cannot read - unparseable, wrong shape, written by a different format version, or a pipe or device where the file belongs - rather than treating it as empty. It re-reads the index on **every** operation, so such a refusal surfaces from `accept` as well as from the constructor: wrap both. `accept` also throws, rather than answering, on an empty `jobIdentity`, an empty `txSignature`, or a `feeBps` that is not a non-negative integer - those are bugs in the caller, not verdicts about a payment. An index read as empty reports every settlement as unclaimed, which is the exact failure the store exists to prevent, so a corrupt FILE is something to move aside deliberately rather than something to recover from silently. One unreadable RECORD is the deliberate exception to that sentence: it is skipped and the rest of the index is kept, because refusing the whole file over one entry would strand a provider whose index is otherwise intact. The cost is that the skipped signature reads as unclaimed and can settle a second job, and nothing says so out loud - an index you have had to hand-edit is one to audit, not one to keep running against. A record whose timestamp is unreadable is kept as if it had just been written, so a prune cannot release it early.
 
+## Direct payments
+
+In a direct payment the payer pays a payee's address without a quote from the payee - the commerce checkout paying a merchant's signed payout address. The reference is not drawn at random: both sides derive it from the order (`deriveOrderPaymentReference` in `@elisym/commerce`), so the payee can tie a transfer to an order without having issued anything.
+
+| Export | Purpose |
+| --- | --- |
+| `composeSolanaPaymentRequest` | A v1 request with the given reference and no fee leg. `amount` is a `bigint`; `createdAt` is epoch seconds. |
+| `boundTransferAmount` | What a transaction's instructions pay the payee under ONE reference (below). |
+| `directInstructionsFromCompiledMessage` / `directInstructionsFromRpcTransaction` | Read the instructions of a message a wallet signed, or of a landed transaction from `getTransaction` with `encoding: 'json'`, into one shape. |
+| `listReferenceSignatures` | Every signature on a reference, paged with `before` until one is older than a floor. `complete: false` means the page cap cut it short; a node error throws. |
+| `verifyDirectSolanaPayment` | Whether one landed transaction pays the request: no error, bound amount at least the price, and the payee's balance rose as much. |
+
+`verifyPayment` is not enough here. It checks that the reference appears anywhere in the transaction and reads the recipient's balance change over the whole of it, so one transfer carrying the references of two orders - at two stores of one owner, each with its own claim ledger - would satisfy both. A direct payment is bound at the **instruction** level instead: only a top-level transfer of the asset's program (SPL `TransferChecked` with the asset's mint and decimals into the payee's ASSOCIATED token account, or a System `Transfer` of lamports) FROM another account, whose accounts are the transfer's own followed by exactly two read-only, non-signer accounts - this reference, then the protocol tag, the way `buildPaymentInstructions` attaches them - counts, and only those instructions' own amounts are summed. A self-transfer never counts (it moves nothing, and SPL Token lets a delegate repeat it for free), and the payee's balance must rise by at least everything the transaction's top-level transfers of the bindable kind move into it, so the same money cannot back two orders. A payer that cannot sign such a top-level transfer itself - a multisig authority, whose signer accounts follow the transfer's own, or a smart wallet that transfers from inside its program - does not bind, and its payment is refused as `not_bound`.
+
+```ts
+import {
+  boundTransferAmount,
+  composeSolanaPaymentRequest,
+  directInstructionsFromCompiledMessage,
+  verifyDirectSolanaPayment,
+} from '@elisym/sdk';
+import { getCompiledTransactionMessageDecoder, getTransactionDecoder } from '@solana/kit';
+
+// Payer: compose, build with buildPaymentInstructions, let the wallet sign,
+// then check the returned message before broadcasting it.
+const request = composeSolanaPaymentRequest({ recipient, amount, asset, network, reference, createdAt });
+const signed = getTransactionDecoder().decode(signedTransactionBytes);
+const signedMessage = getCompiledTransactionMessageDecoder().decode(signed.messageBytes);
+// Broadcast only if the lifetime is exactly the blockhash you set (no swap, no
+// durable nonce) and the binding below reaches the price.
+const sameLifetime = signedMessage.lifetimeToken === latestBlockhash.blockhash;
+const paid = await boundTransferAmount(directInstructionsFromCompiledMessage(signedMessage), {
+  reference,
+  recipient,
+  asset,
+});
+const safeToBroadcast = sameLifetime && paid >= BigInt(request.amount);
+
+// Payee: verify a transaction the payer reported, then claim its signature once.
+const result = await verifyDirectSolanaPayment(rpc, request, signature);
+```
+
+A payee still claims each signature once, and refuses any reference it cannot derive from the order itself. `verifyDirectSolanaPayment` judges the transaction only; whether it came in time for the order (the price and payout it was due against) is the caller's check, from the `blockTime` it returns - a `null` block time means ask again, never "on time". The RPC you pass must be on the request's own network. Of the refusals, `rpc_error`, `unreadable` and `not_found` mean "ask again" (a node failed, a page could not be read, the transaction has not landed yet); `bad_request` is the caller's; `bad_signature`, `failed`, `not_bound`, `underpaid` and `balance_mismatch` are final for that signature.
+
 ## Estimating cost
 
 Before paying, preview the real cost - base fee, priority fee, and any token-account rent. Both estimators take the network (the priority-fee cache is cluster-keyed):

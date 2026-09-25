@@ -12,6 +12,22 @@ export {
   createPaymentRequestWithOnchainConfig,
   SolanaPaymentStrategy,
 } from './payment/solana';
+export {
+  boundTransferAmount,
+  composeSolanaPaymentRequest,
+  directInstructionsFromCompiledMessage,
+  directInstructionsFromRpcTransaction,
+  listReferenceSignatures,
+  verifyDirectSolanaPayment,
+} from './payment/direct';
+export type {
+  BoundTransferExpectation,
+  ComposeSolanaPaymentRequestOptions,
+  DirectInstruction,
+  DirectVerification,
+  ListReferenceSignaturesOptions,
+  ReferenceSignature,
+} from './payment/direct';
 export { calculateProtocolFee, validateExpiry, assertExpiry, assertLamports } from './payment/fee';
 export type {
   BuildTransactionOptions,
