@@ -15,6 +15,7 @@ npm install @elisym/commerce @elisym/pay-core nostr-tools @solana/kit @solana-pr
 | Store profile       | 0                      | store         | `buildStoreProfileEvent`, `parseStoreProfile`                       |
 | Product             | 30402 (NIP-99, Gamma)  | store         | `buildProductEvent`, `parseProduct`, `priceInSubunits`              |
 | Orders, receipts    | 16 / 17 in a gift wrap | buyer / store | `buildOrderMessage`, `wrapOrderMessage`, `unwrapOrderMessage`       |
+| Payment reference   | -                      | -             | `deriveOrderPaymentReference`                                       |
 | Offer verification  | -                      | -             | `verifyOffer`, `evaluateOffer`, `isOfferPayout`                     |
 
 ## The one rule

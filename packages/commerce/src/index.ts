@@ -57,8 +57,14 @@ export {
   type PaymentReceipt,
   type PaymentRequestMessage,
   buildOrderMessage,
+  isOrderId,
   parseOrderMessage,
 } from './orders/messages';
+export {
+  type OrderPaymentReference,
+  type OrderPaymentReferenceInput,
+  deriveOrderPaymentReference,
+} from './orders/payment-reference';
 export {
   type UnwrappedOrderMessage,
   type WrappedOrderMessage,

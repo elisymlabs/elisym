@@ -1,6 +1,6 @@
 {
   "name": "@elisym/commerce",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "elisym commerce protocol: signed payout addresses, store authorization, Nostr product listings, private NIP-17 orders, and offer verification.",
   "keywords": [
     "commerce",
