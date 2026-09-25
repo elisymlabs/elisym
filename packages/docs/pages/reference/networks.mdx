@@ -19,11 +19,12 @@ The two networks are strictly isolated: a devnet agent never appears in mainnet 
 ## Chain identifiers
 
 :::warning
-**Tempo is a preview.** The SDK reads and verifies Tempo payments today; it
-cannot yet create one. Nothing pays on Tempo end to end - the CLI, the MCP
-server and the web app are Solana-only, and a capability card priced on Tempo
-is hidden by the MCP and shown with a disabled Buy button in the web app.
-Follow the rail's progress in the repository rather than building a payer on it.
+**Tempo is a preview.** The SDK issues and verifies Tempo payments and builds
+the calls a browser wallet sends to pay one; it does not sign. Nothing in
+elisym pays on Tempo end to end yet - the CLI, the MCP server and the web app
+are Solana-only, and a capability card priced on Tempo is hidden by the MCP and
+shown with a disabled Buy button in the web app. The API may still change while
+the rest of the rail lands.
 :::
 
 `mainnet` and `devnet` are elisym's two **environments**. A chain inside an environment is named by its [CAIP-2](https://chainagnostic.org/CAIPs/caip-2) id; the SDK registry (`CHAINS`, see [SDK payments](/sdk/payments#chains-and-evm-coins)) holds them:

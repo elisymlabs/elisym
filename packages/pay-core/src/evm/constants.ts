@@ -45,6 +45,12 @@ export const RECEIVE_POLICY_SELECTOR = '0xe111e611';
  */
 export const VALIDATE_RECEIVE_POLICY_SELECTOR = '0xb72b0c59';
 
+/**
+ * `transferWithMemo(address,uint256,bytes32)` on a TIP-20 token - the one call
+ * that pays a leg: it emits `TransferWithMemo`, which is what the verifier matches.
+ */
+export const TRANSFER_WITH_MEMO_SELECTOR = '0x95777d59';
+
 /** `Transfer(address indexed from, address indexed to, uint256 value)`. */
 export const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 /**
