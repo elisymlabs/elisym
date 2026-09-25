@@ -104,6 +104,7 @@ nosystem
 npub
 npubs
 nsec
+onauth
 oneose
 oneshot
 onevent
