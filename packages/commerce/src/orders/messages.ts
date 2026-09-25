@@ -12,6 +12,11 @@ import {
 import { HEX_PUBKEY_RE, type Tags, nowSecs, tagValue, tagsNamed } from '../tags';
 
 const ORDER_ID_RE = new RegExp(`^[A-Za-z0-9-]{8,${LIMITS.MAX_ORDER_ID_LENGTH}}$`);
+
+/** Whether `value` is an order id this protocol accepts: 8 to 64 of `A-Za-z0-9-`. */
+export function isOrderId(value: string): boolean {
+  return ORDER_ID_RE.test(value);
+}
 const ITEM_ADDRESS_RE = new RegExp(`^${KIND_PRODUCT}:[0-9a-f]{64}:[A-Za-z0-9._:-]{1,128}$`);
 const QUANTITY_RE = /^[1-9]\d{0,3}$/;
 const AMOUNT_RE = /^(0|[1-9]\d{0,11})(\.\d{1,18})?$/;

@@ -33,6 +33,12 @@ export const ELISYM_NETWORK_TAG = 'elisym';
  */
 export const PAYTO_PROOF_PREFIX = 'elisym-payto:v1';
 
+/**
+ * The domain of an order's payment reference hash, so it can collide with no
+ * other hash the protocol makes. The store, buyer and order id follow it.
+ */
+export const ORDER_PAYMENT_REFERENCE_PREFIX = 'elisym-order-payment:v1';
+
 export const DELIVERY_METHODS = ['download', 'license', 'access', 'webhook', 'api'] as const;
 export type DeliveryMethod = (typeof DELIVERY_METHODS)[number];
 

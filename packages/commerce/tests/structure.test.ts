@@ -14,7 +14,7 @@ const ALLOWED = [
   /^@elisym\/pay-core$/,
   /^nostr-tools\/(pure|nip19|nip44|nip59)$/,
   /^@noble\/curves\/(ed25519|secp256k1)\.js$/,
-  /^@noble\/hashes\/sha3\.js$/,
+  /^@noble\/hashes\/(sha2|sha3)\.js$/,
   /^@scure\/base$/,
   /^decimal\.js-light$/,
   /^zod$/,
