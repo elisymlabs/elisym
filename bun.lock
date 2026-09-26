@@ -196,6 +196,25 @@
         "vitest": "~3.2.6",
       },
     },
+    "packages/merchant": {
+      "name": "@elisym/merchant",
+      "version": "0.0.1",
+      "dependencies": {
+        "@elisym/commerce": "~0.2.0",
+        "@elisym/pay-core": "~0.1.2",
+        "@solana-program/memo": "~0.11.0",
+        "@solana-program/system": "~0.12.0",
+        "@solana-program/token": "~0.14.0",
+        "@solana/kit": "~6.8.0",
+        "decimal.js-light": "~2.5.1",
+        "nostr-tools": "~2.23.0",
+      },
+      "devDependencies": {
+        "@types/node": "~25.5.0",
+        "typescript": "~5.7.0",
+        "vitest": "~3.2.6",
+      },
+    },
     "packages/pay-core": {
       "name": "@elisym/pay-core",
       "version": "0.1.2",
@@ -500,6 +519,8 @@
     "@elisym/docs": ["@elisym/docs@workspace:packages/docs"],
 
     "@elisym/mcp": ["@elisym/mcp@workspace:packages/mcp"],
+
+    "@elisym/merchant": ["@elisym/merchant@workspace:packages/merchant"],
 
     "@elisym/pay-core": ["@elisym/pay-core@workspace:packages/pay-core"],
 
