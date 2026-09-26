@@ -63,6 +63,10 @@ describe('buildStoreEvents', () => {
     expect(() => buildStoreEvents({ ...CONFIG, nip05: 'owner@shop.example' }, keys, T0)).toThrow(
       /owner/,
     );
+    // Names are case-insensitive: `Owner` is `owner`.
+    expect(() => buildStoreEvents({ ...CONFIG, nip05: 'Owner@shop.example' }, keys, T0)).toThrow(
+      /owner/,
+    );
   });
 });
 

@@ -201,7 +201,14 @@ async function setup(): Promise<void> {
   console.log(`store   ${getPublicKey(keys.storeSecretKey)}`);
   console.log(`owner   ${getPublicKey(keys.ownerSecretKey)}`);
   console.log(`naddr   ${built.naddr}`);
-  console.log(`nostr.json (level A only, served with CORS): ${JSON.stringify(built.nostrJson)}`);
+  if (config.nip05 === undefined) {
+    console.log('level   C (no nip05)');
+  } else if (built.nostrJson.names._ === undefined) {
+    // commerce vouches for a store at level A only under the domain-wide name.
+    console.log('level   C: a named nip05 is not domain-wide; use _@domain or a bare domain for A');
+  } else {
+    console.log(`nostr.json for level A, served with CORS: ${JSON.stringify(built.nostrJson)}`);
+  }
 }
 
 /** Publish the delivery of a paid order; true when a relay took it. */

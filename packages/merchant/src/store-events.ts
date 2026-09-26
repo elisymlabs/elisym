@@ -45,7 +45,11 @@ export interface StoreEvents {
   naddr: string;
   /** The terms these events offer, one per payout: what the ledger records. */
   terms: OfferTerms[];
-  /** What the domain's `/.well-known/nostr.json` must serve for level A (with CORS). */
+  /**
+   * What the domain's `/.well-known/nostr.json` serves (with CORS). It gives
+   * level A only under the domain-wide name `_` (nip05 `_@domain` or a bare
+   * domain); a named nip05 such as `shop@domain` stays level C.
+   */
   nostrJson: { names: Record<string, string> };
 }
 
