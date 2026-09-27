@@ -2,7 +2,11 @@ import type { Filter, NostrEvent } from 'nostr-tools';
 import { useWebSocketImplementation } from 'nostr-tools/pool';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { describe, expect, it, vi } from 'vitest';
-import { RELAY_PUBLISH_DEADLINE_MS, RELAY_QUERY_DEADLINE_MS } from '../src/core/constants';
+import {
+  RELAY_PUBLISH_DEADLINE_MS,
+  RELAY_QUERY_DEADLINE_MS,
+  SUBSCRIBE_STABLE_MS,
+} from '../src/core/constants';
 import {
   type AuthSigner,
   type PoolLike,
@@ -59,6 +63,53 @@ describe('query', () => {
     expect(seen.every((entry) => entry.onauth === auth)).toBe(true);
     expect(events.map((event) => event.id).sort()).toEqual([first.id, second.id].sort());
     expect(await client.query([], [{ kinds: [1] }])).toEqual([]);
+  });
+});
+
+describe('a same-id copy with a bad signature', () => {
+  const genuine = note('real');
+  const forged = { ...genuine, sig: '0'.repeat(128) } as NostrEvent;
+
+  it('never hides the genuine copy from a query', async () => {
+    const pool = poolWith({
+      subscribeEose: (relays, _filter, params) => {
+        // The first relay answers with the forged copy, the second with the real one.
+        params.onevent?.(relays[0] === 'wss://a.example.com' ? forged : genuine);
+        params.onclose?.(['eose']);
+        return { close: () => undefined };
+      },
+    });
+    const client = createRelayClient({ pool });
+    const events = await client.query(
+      ['wss://a.example.com', 'wss://b.example.com'],
+      [{ kinds: [1] }],
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.sig).toBe(genuine.sig);
+  });
+
+  it('never hides the genuine copy from a subscription', async () => {
+    const handlers: Parameters<RelayLike['subscribe']>[1][] = [];
+    const relay: RelayLike = {
+      publish: async () => '',
+      auth: async () => '',
+      subscribe: (_filters, params) => {
+        handlers.push(params);
+        return { close: () => undefined };
+      },
+    };
+    const client = createRelayClient({ pool: poolWith({ ensureRelay: async () => relay }) });
+    const heard: NostrEvent[] = [];
+    const listening = client.subscribe(
+      ['wss://a.example.com', 'wss://b.example.com'],
+      { kinds: [1] },
+      (event) => heard.push(event),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    handlers[0]?.onevent?.(forged);
+    handlers[1]?.onevent?.(genuine);
+    listening.close();
+    expect(heard.map((event) => event.sig)).toEqual([genuine.sig]);
   });
 });
 
@@ -171,6 +222,7 @@ describe('publish', () => {
         auths.push('auth');
         return 'ok';
       },
+      subscribe: () => ({ close: () => undefined }),
     };
   }
 
@@ -296,5 +348,329 @@ describe('publish', () => {
     const pool = createPool();
     expect(pool.automaticallyAuth).toBeUndefined();
     pool.destroy();
+  });
+});
+
+describe('subscribe', () => {
+  interface Opened {
+    filters: unknown[];
+    params: Parameters<RelayLike['subscribe']>[1];
+    closed: string | undefined;
+  }
+
+  function scriptedRelay(opened: Opened[], auths: string[] = []): RelayLike {
+    return {
+      publish: async () => '',
+      auth: async () => {
+        auths.push('auth');
+        return '';
+      },
+      subscribe: (filters, params) => {
+        const entry: Opened = { filters, params, closed: undefined };
+        opened.push(entry);
+        return {
+          close: (reason) => {
+            entry.closed = reason ?? 'closed';
+          },
+        };
+      },
+    };
+  }
+
+  it('hands each event on once across relays, as a list of one filter', async () => {
+    const opened: Opened[] = [];
+    const relay = scriptedRelay(opened);
+    const client = createRelayClient({ pool: poolWith({ ensureRelay: async () => relay }) });
+    const heard: string[] = [];
+    const listening = client.subscribe(
+      ['wss://a.example.com', 'wss://b.example.com'],
+      { kinds: [1059] },
+      (event) => heard.push(event.id),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(opened).toHaveLength(2);
+    expect(opened[0]?.filters).toEqual([{ kinds: [1059] }]);
+    const event = note('status');
+    opened[0]?.params.onevent?.(event);
+    opened[1]?.params.onevent?.(event);
+    expect(heard).toEqual([event.id]);
+    listening.close();
+    expect(opened.every((entry) => entry.closed === 'closed by caller')).toBe(true);
+  });
+
+  it('answers auth-required once with the key, then opens again', async () => {
+    const opened: Opened[] = [];
+    const auths: string[] = [];
+    const relay = scriptedRelay(opened, auths);
+    const client = createRelayClient({ pool: poolWith({ ensureRelay: async () => relay }), auth });
+    client.subscribe(['wss://a.example.com'], { kinds: [1059] }, () => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    opened[0]?.params.onclose?.('auth-required: sign in');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(auths).toEqual(['auth']);
+    expect(opened).toHaveLength(2);
+  });
+
+  it('opens a closed subscription again after a pause, and never after the caller closed it', async () => {
+    vi.useFakeTimers();
+    try {
+      const opened: Opened[] = [];
+      const relay = scriptedRelay(opened);
+      const client = createRelayClient({ pool: poolWith({ ensureRelay: async () => relay }) });
+      const listening = client.subscribe(
+        ['wss://a.example.com'],
+        { kinds: [1059] },
+        () => undefined,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      opened[0]?.params.onclose?.('relay connection closed');
+      await vi.advanceTimersByTimeAsync(999);
+      expect(opened).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(opened).toHaveLength(2);
+      listening.close();
+      opened[1]?.params.onclose?.('closed by caller');
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(opened).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('subscribe across reconnects', () => {
+  interface Opened {
+    params: Parameters<RelayLike['subscribe']>[1];
+  }
+
+  function freshRelay(opened: Opened[], auths: string[]): RelayLike {
+    return {
+      publish: async () => '',
+      auth: async () => {
+        auths.push('auth');
+        return '';
+      },
+      subscribe: (_filters, params) => {
+        opened.push({ params });
+        return { close: () => undefined };
+      },
+    };
+  }
+
+  it('answers AUTH again on the new connection a drop leaves, and once per connection', async () => {
+    const opened: Opened[] = [];
+    const auths: string[] = [];
+    let connection = freshRelay(opened, auths);
+    const pool = poolWith({ ensureRelay: async () => connection });
+    const client = createRelayClient({ pool, auth });
+    client.subscribe(['wss://a.example.com'], { kinds: [1059] }, () => undefined);
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
+    opened[0]?.params.onclose?.('auth-required: sign in');
+    await tick();
+    // The same connection asks again: no second AUTH.
+    opened[1]?.params.onclose?.('auth-required: sign in');
+    expect(auths).toEqual(['auth']);
+    // A drop: the pool hands a new, unauthenticated connection, which may ask.
+    connection = freshRelay(opened, auths);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const last = opened.at(-1);
+    last?.params.onclose?.('auth-required: sign in');
+    await tick();
+    expect(auths).toEqual(['auth', 'auth']);
+  });
+
+  it('keeps the pause growing when a late EOSE timeout fires after a close', async () => {
+    vi.useFakeTimers();
+    try {
+      const opened: Opened[] = [];
+      const relay = freshRelay(opened, []);
+      const client = createRelayClient({ pool: poolWith({ ensureRelay: async () => relay }) });
+      const listening = client.subscribe(
+        ['wss://a.example.com'],
+        { kinds: [1059] },
+        () => undefined,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const pauses: number[] = [];
+      for (let round = 0; round < 3; round += 1) {
+        const before = opened.length;
+        const subscription = opened.at(-1);
+        subscription?.params.onclose?.('restricted: no');
+        // nostr-tools fires its EOSE timeout on the closed subscription too.
+        subscription?.params.oneose?.();
+        let waited = 0;
+        while (opened.length === before && waited < 120_000) {
+          await vi.advanceTimersByTimeAsync(500);
+          waited += 500;
+        }
+        pauses.push(waited);
+      }
+      expect(pauses).toEqual([1_000, 5_000, 15_000]);
+      listening.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts the pauses over only after a subscription stayed up a while', async () => {
+    vi.useFakeTimers();
+    try {
+      const opened: Opened[] = [];
+      const relay = freshRelay(opened, []);
+      const client = createRelayClient({ pool: poolWith({ ensureRelay: async () => relay }) });
+      const listening = client.subscribe(
+        ['wss://a.example.com'],
+        { kinds: [1059] },
+        () => undefined,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const pauseAfter = async (upFor: number) => {
+        const before = opened.length;
+        const subscription = opened.at(-1);
+        subscription?.params.oneose?.();
+        await vi.advanceTimersByTimeAsync(upFor);
+        subscription?.params.onclose?.('relay connection closed');
+        let waited = 0;
+        while (opened.length === before && waited < 120_000) {
+          await vi.advanceTimersByTimeAsync(500);
+          waited += 500;
+        }
+        return waited;
+      };
+      // Dropped right after EOSE: the pause keeps growing.
+      expect(await pauseAfter(0)).toBe(1_000);
+      expect(await pauseAfter(0)).toBe(5_000);
+      // Up long enough: the next drop is retried soon again.
+      expect(await pauseAfter(SUBSCRIBE_STABLE_MS)).toBe(1_000);
+      listening.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens nothing more once closed while a retry was pending', async () => {
+    vi.useFakeTimers();
+    try {
+      const opened: Opened[] = [];
+      let connects = 0;
+      const relay = freshRelay(opened, []);
+      const client = createRelayClient({
+        pool: poolWith({
+          ensureRelay: async () => {
+            connects += 1;
+            return relay;
+          },
+        }),
+      });
+      const listening = client.subscribe(
+        ['wss://a.example.com'],
+        { kinds: [1059] },
+        () => undefined,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      opened[0]?.params.onclose?.('relay connection closed');
+      listening.close();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(connects).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('closing', () => {
+  interface Opened {
+    params: Parameters<RelayLike['subscribe']>[1];
+  }
+
+  it('stops its subscriptions when the client closes, even as the pool drops them', async () => {
+    vi.useFakeTimers();
+    try {
+      const opened: Opened[] = [];
+      let connects = 0;
+      const relay: RelayLike = {
+        publish: async () => '',
+        auth: async () => '',
+        subscribe: (_filters, params) => {
+          opened.push({ params });
+          return { close: () => undefined };
+        },
+      };
+      const client = createRelayClient({
+        pool: poolWith({
+          ensureRelay: async () => {
+            connects += 1;
+            return relay;
+          },
+          // Like nostr-tools: destroying the pool closes each subscription.
+          destroy: () => {
+            for (const entry of opened) {
+              entry.params.onclose?.('relay connection closed by us');
+            }
+          },
+        }),
+      });
+      client.subscribe(['wss://a.example.com'], { kinds: [1059] }, () => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      client.close();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(connects).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens nothing when closed while still connecting', async () => {
+    let finishConnect: (relay: RelayLike) => void = () => undefined;
+    let subscribed = 0;
+    const relay: RelayLike = {
+      publish: async () => '',
+      auth: async () => '',
+      subscribe: () => {
+        subscribed += 1;
+        return { close: () => undefined };
+      },
+    };
+    const client = createRelayClient({
+      pool: poolWith({
+        ensureRelay: () =>
+          new Promise<RelayLike>((resolve) => {
+            finishConnect = resolve;
+          }),
+      }),
+    });
+    const listening = client.subscribe(['wss://a.example.com'], { kinds: [1059] }, () => undefined);
+    listening.close();
+    finishConnect(relay);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(subscribed).toBe(0);
+  });
+
+  it('gives up on an AUTH that never settles and opens again later', async () => {
+    vi.useFakeTimers();
+    try {
+      const opened: Opened[] = [];
+      const relay: RelayLike = {
+        publish: async () => '',
+        auth: () => new Promise<string>(() => undefined),
+        subscribe: (_filters, params) => {
+          opened.push({ params });
+          return { close: () => undefined };
+        },
+      };
+      const client = createRelayClient({
+        pool: poolWith({ ensureRelay: async () => relay }),
+        auth,
+      });
+      client.subscribe(['wss://a.example.com'], { kinds: [1059] }, () => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      opened[0]?.params.onclose?.('auth-required: sign in');
+      await vi.advanceTimersByTimeAsync(RELAY_PUBLISH_DEADLINE_MS + 1_000);
+      expect(opened.length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

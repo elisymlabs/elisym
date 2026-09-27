@@ -94,6 +94,19 @@ export function makeShop(
   };
 }
 
+/** The store's inbox list (kind 10050), signed by the store key. */
+export function inboxList(store: NostrKey, relays: string[], createdAt = NOW - 10): NostrEvent {
+  return sign(
+    {
+      kind: 10050,
+      created_at: createdAt,
+      tags: relays.map((relay) => ['relay', relay]),
+      content: '',
+    },
+    store,
+  );
+}
+
 /** Relays in memory: every relay holds the same events unless a test says otherwise. */
 export class MemoryRelays implements RelayClient {
   queried: string[][] = [];
@@ -101,7 +114,8 @@ export class MemoryRelays implements RelayClient {
 
   constructor(
     private readonly events: NostrEvent[],
-    private readonly refuse: readonly string[] = [],
+    /** Relays that refuse a publish; a test may change it. */
+    public refuse: string[] = [],
   ) {}
 
   async query(relays: readonly string[], filters: readonly Filter[]): Promise<NostrEvent[]> {
@@ -109,8 +123,36 @@ export class MemoryRelays implements RelayClient {
     return this.events.filter((event) => filters.some((filter) => matchFilter(filter, event)));
   }
 
+  listeners: { relays: string[]; filter: Filter; onEvent: (event: NostrEvent) => void }[] = [];
+
+  /** Stored events that match, then whatever is published to a listened relay later. */
+  subscribe(relays: readonly string[], filter: Filter, onEvent: (event: NostrEvent) => void) {
+    const listener = { relays: [...relays], filter, onEvent };
+    this.listeners.push(listener);
+    for (const event of this.events.filter((stored) => matchFilter(filter, stored))) {
+      onEvent(event);
+    }
+    return {
+      close: () => {
+        this.listeners = this.listeners.filter((entry) => entry !== listener);
+      },
+    };
+  }
+
   async publish(relays: readonly string[], event: NostrEvent): Promise<PublishResult> {
     this.published.push({ relays: [...relays], event });
+    const accepted = relays.filter((relay) => !this.refuse.includes(relay));
+    if (accepted.length > 0) {
+      this.events.push(event);
+      for (const listener of this.listeners) {
+        if (
+          listener.relays.some((relay) => accepted.includes(relay)) &&
+          matchFilter(listener.filter, event)
+        ) {
+          listener.onEvent(event);
+        }
+      }
+    }
     return {
       accepted: relays.filter((relay) => !this.refuse.includes(relay)),
       failed: relays
