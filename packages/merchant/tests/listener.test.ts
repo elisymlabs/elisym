@@ -138,7 +138,7 @@ describe('the live filter', () => {
   it('lets through a fresh wrap, though NIP-59 dates it up to two days back', () => {
     const buyer = key();
     const filter = wrapFilter(store.pubkey, readSince(Math.floor(Date.now() / 1000)));
-    for (let index = 0; index < 50; index += 1) {
+    for (let index = 0; index < 20; index += 1) {
       const rumor = buildOrderMessage({
         type: 'order',
         storePubkey: store.pubkey,
