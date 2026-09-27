@@ -2,12 +2,15 @@ import type { EventTemplate, Filter, NostrEvent, VerifiedEvent } from 'nostr-too
 import { SimplePool } from 'nostr-tools/pool';
 import { normalizeURL } from 'nostr-tools/utils';
 import {
+  SUBSCRIBE_RETRY_MAX_MS,
+  SUBSCRIBE_RETRY_MS,
+  SUBSCRIBE_STABLE_MS,
   RELAY_CONNECT_MAX_WAIT_MS,
   RELAY_PUBLISH_DEADLINE_MS,
   RELAY_QUERY_DEADLINE_MS,
   RELAY_QUERY_MAX_WAIT_MS,
 } from './constants';
-import { isEventShaped } from './events';
+import { isGenuineEvent } from './events';
 
 /** Signs a NIP-42 AUTH event with the buyer key when a relay asks for one. */
 export type AuthSigner = (template: EventTemplate) => Promise<VerifiedEvent>;
@@ -27,6 +30,16 @@ export interface RelayClient {
    */
   query(relays: readonly string[], filters: readonly Filter[]): Promise<NostrEvent[]>;
   publish(relays: readonly string[], event: NostrEvent): Promise<PublishResult>;
+  /**
+   * Keep listening on each relay for `filter`, each event handed on once. A
+   * relay that closes the subscription is opened again after a pause; one that
+   * asks for AUTH gets it once, signed by the client's key.
+   */
+  subscribe(
+    relays: readonly string[],
+    filter: Filter,
+    onEvent: (event: NostrEvent) => void,
+  ): { close(): void };
   close(): void;
 }
 
@@ -35,6 +48,15 @@ export interface RelayLike {
   /** Resolves only on the relay's OK true; rejects on a refusal or a timeout. */
   publish(event: NostrEvent): Promise<string>;
   auth(signer: AuthSigner): Promise<string>;
+  /** A relay-level subscription: nostr-tools takes a LIST of filters here. */
+  subscribe(
+    filters: Filter[],
+    params: {
+      onevent?: (event: NostrEvent) => void;
+      oneose?: () => void;
+      onclose?: (reason: string) => void;
+    },
+  ): { close(reason?: string): void };
 }
 
 /** The part of `SimplePool` the client uses, so tests can stand in for relays. */
@@ -57,6 +79,15 @@ export interface RelayClientOptions {
   /** Answers NIP-42 AUTH challenges (the buyer key). Without it a relay that asks is refused. */
   auth?: AuthSigner;
   pool?: PoolLike;
+}
+
+/** `promise`, or a rejection once `ms` passed. */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('timed out')), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
 function errorText(error: unknown): string {
@@ -136,7 +167,116 @@ export function createRelayClient(options: RelayClientOptions = {}): RelayClient
     return Promise.race([publishOne(url, event), deadline]).finally(() => clearTimeout(timer));
   }
 
+  /**
+   * One relay's long-lived subscription. It is opened by hand (not through the
+   * pool) so an AUTH re-subscription is ours to close, and re-opened after any
+   * close with a growing pause until the caller closes it.
+   */
+  // Every live subscription's closer: closing the client closes them first, or a
+  // subscription the pool drops would reconnect on a pool that no longer exists.
+  const liveClosers = new Set<() => void>();
+
+  function listenOn(url: string, filter: Filter, onEvent: (event: NostrEvent) => void) {
+    let closed = false;
+    let attempt = 0;
+    // AUTH is answered once per CONNECTION: after a drop the pool builds a new,
+    // unauthenticated one, which may ask again.
+    let authenticatedOn: RelayLike | undefined;
+    let current: { close(reason?: string): void } | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const again = () => {
+      if (closed) {
+        return;
+      }
+      const pause =
+        SUBSCRIBE_RETRY_MS[Math.min(attempt, SUBSCRIBE_RETRY_MS.length - 1)] ??
+        SUBSCRIBE_RETRY_MAX_MS;
+      attempt += 1;
+      timer = setTimeout(() => void open(), pause);
+    };
+    const open = async () => {
+      if (closed) {
+        return;
+      }
+      let relay: RelayLike;
+      try {
+        relay = await pool.ensureRelay(url, { connectionTimeout: RELAY_CONNECT_MAX_WAIT_MS });
+      } catch {
+        again();
+        return;
+      }
+      if (closed) {
+        return;
+      }
+      let liveSince: number | undefined;
+      const subscription = relay.subscribe([filter], {
+        onevent: onEvent,
+        // nostr-tools also fires this on its own EOSE timeout, even after a CLOSED:
+        // only a subscription still open counts.
+        oneose: () => {
+          if (current === subscription) {
+            liveSince = Date.now();
+          }
+        },
+        onclose: (reason) => {
+          if (current === subscription) {
+            current = undefined;
+            // Only a subscription that stayed up a while starts the pauses over.
+            if (liveSince !== undefined && Date.now() - liveSince >= SUBSCRIBE_STABLE_MS) {
+              attempt = 0;
+            }
+          }
+          if (closed) {
+            return;
+          }
+          if (
+            options.auth !== undefined &&
+            authenticatedOn !== relay &&
+            reason.startsWith('auth-required')
+          ) {
+            authenticatedOn = relay;
+            // A signer that throws leaves nostr-tools' AUTH pending forever: bound it.
+            withDeadline(relay.auth(options.auth), RELAY_PUBLISH_DEADLINE_MS).then(
+              () => void open(),
+              () => again(),
+            );
+            return;
+          }
+          again();
+        },
+      });
+      current = subscription;
+    };
+    void open();
+    return () => {
+      closed = true;
+      clearTimeout(timer);
+      current?.close('closed by caller');
+    };
+  }
+
   return {
+    subscribe(relays, filter, onEvent) {
+      const seen = new Set<string>();
+      // The id does not cover the signature: a relay could send a same-id copy with
+      // a bad one first and hide the genuine copy from another relay. Only a
+      // verified event takes its id (nostr-tools verifies too; this does not rely on it).
+      const handOn = (event: NostrEvent) => {
+        if (!seen.has(event.id) && isGenuineEvent(event)) {
+          seen.add(event.id);
+          onEvent(event);
+        }
+      };
+      const closers = relays.map((relay) => listenOn(relay, filter, handOn));
+      const closeAll = () => {
+        for (const close of closers) {
+          close();
+        }
+        liveClosers.delete(closeAll);
+      };
+      liveClosers.add(closeAll);
+      return { close: closeAll };
+    },
     async query(relays, filters) {
       if (relays.length === 0) {
         return [];
@@ -151,7 +291,8 @@ export function createRelayClient(options: RelayClientOptions = {}): RelayClient
           continue;
         }
         for (const event of batch.value) {
-          if (isEventShaped(event) && !seen.has(event.id)) {
+          // As in `subscribe`: only a verified copy takes its id.
+          if (!seen.has(event.id) && isGenuineEvent(event)) {
             seen.set(event.id, event);
           }
         }
@@ -197,6 +338,11 @@ export function createRelayClient(options: RelayClientOptions = {}): RelayClient
       return outcome;
     },
     close() {
+      for (const close of [...liveClosers]) {
+        close();
+      }
+      // nostr-tools closes only OPEN sockets: one still connecting now opens
+      // later and stays idle until the page goes (nothing subscribes on it).
       pool.destroy();
     },
   };

@@ -32,6 +32,18 @@ export function normalizeRelayUrl(value: unknown): string | undefined {
   return `wss://${url.host}${path}`;
 }
 
+/**
+ * The server a relay URL reaches (host and port): `wss://r.example.com` and
+ * `wss://r.example.com/inbox` are usually one relay, and count once.
+ */
+export function relayHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 /** Each usable URL once, in the order given. */
 export function uniqueRelays(values: readonly unknown[]): string[] {
   const relays: string[] = [];

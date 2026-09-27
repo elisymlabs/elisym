@@ -1,4 +1,5 @@
 import { ORDER_ACK_TARGET } from './constants';
+import { isGenuineEvent } from './events';
 import {
   type OrderRecord,
   type OrderState,
@@ -7,6 +8,7 @@ import {
   holdsPayExclusion,
   isTerminal,
 } from './order-record';
+import { relayHost } from './relays';
 
 const DATABASE_NAME = 'elisym-checkout';
 const DATABASE_VERSION = 1;
@@ -158,15 +160,21 @@ function patchRefusal(current: OrderRecord, patch: RecordPatch): 'not_ready' | u
   }
   // Acknowledged means the store's inbox holds the signed order - two of its
   // relays said OK (one when it lists one): the wallet may open only after that.
+  // Counted per relay SERVER (host and port): two URLs of one relay are one.
   if (patch.state === 'ordered' && current.state === 'created') {
     const inbox = patch.inboxRelays ?? current.inboxRelays;
-    const acknowledged = (patch.acknowledgedRelays ?? current.acknowledgedRelays).filter(
-      (relay, index, all) => inbox.includes(relay) && all.indexOf(relay) === index,
+    const inboxHosts = new Set(inbox.map(relayHost));
+    const acknowledgedHosts = new Set(
+      (patch.acknowledgedRelays ?? current.acknowledgedRelays)
+        .filter((relay) => inbox.includes(relay))
+        .map(relayHost),
     );
+    const wrap = patch.orderWrap ?? current.orderWrap;
     if (
-      (patch.orderWrap ?? current.orderWrap) === undefined ||
-      inbox.length === 0 ||
-      acknowledged.length < Math.min(ORDER_ACK_TARGET, inbox.length)
+      wrap === undefined ||
+      !isGenuineEvent(wrap) ||
+      inboxHosts.size === 0 ||
+      acknowledgedHosts.size < Math.min(ORDER_ACK_TARGET, inboxHosts.size)
     ) {
       return 'not_ready';
     }

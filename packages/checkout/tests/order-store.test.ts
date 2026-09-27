@@ -9,12 +9,18 @@ import {
   recordToShow,
 } from '../src/core/order-record';
 import { OrderStore, openOrderDatabase } from '../src/core/order-store';
+import { nostrKey, sign } from './fixtures';
+
+/** A genuine signed event standing in for an order's gift wrap. */
+function signedWrap(label: string): NonNullable<OrderRecord['orderWrap']> {
+  return sign({ kind: 1059, created_at: 1_750_000_000, tags: [], content: label }, nostrKey());
+}
 
 type TempoMarker = Extract<PaymentMarker, { rail: 'tempo' }>;
 
 /** What `created -> ordered` needs: the signed order, acknowledged by the store's inbox. */
 const ACKNOWLEDGED = {
-  orderWrap: { id: 'order-wrap' } as OrderRecord['orderWrap'],
+  orderWrap: signedWrap('order-wrap'),
   acknowledgedRelays: ['wss://inbox.example.com'],
 };
 
@@ -164,7 +170,7 @@ describe('OrderStore records', () => {
 
   it('ignores a key set to undefined rather than wiping the field', async () => {
     await store.add(record('one'));
-    const wrap = { id: 'w' } as OrderRecord['orderWrap'];
+    const wrap = signedWrap('w');
     await store.update('one', 1, {
       state: 'ordered',
       paymentRequest: '{}',
@@ -207,6 +213,43 @@ describe('OrderStore records', () => {
       ok: false,
       reason: 'not_ready',
     });
+  });
+
+  it('refuses a forged order wrap, and counts two URLs of one relay server once', async () => {
+    const forged = { ...signedWrap('real'), content: 'tampered' };
+    await store.add(record('forged'));
+    expect(
+      await store.update('forged', 1, {
+        state: 'ordered',
+        orderWrap: forged,
+        acknowledgedRelays: ['wss://inbox.example.com'],
+      }),
+    ).toMatchObject({ ok: false, reason: 'not_ready' });
+    const inboxRelays = ['wss://r.example.com', 'wss://r.example.com/inbox', 'wss://s.example.com'];
+    await store.add(record('hosts', { inboxRelays }));
+    expect(
+      await store.update('hosts', 1, {
+        state: 'ordered',
+        orderWrap: signedWrap('o'),
+        acknowledgedRelays: ['wss://r.example.com', 'wss://r.example.com/inbox'],
+      }),
+    ).toMatchObject({ ok: false, reason: 'not_ready' });
+    expect(
+      await store.update('hosts', 1, {
+        state: 'ordered',
+        orderWrap: signedWrap('o'),
+        acknowledgedRelays: ['wss://r.example.com', 'wss://s.example.com'],
+      }),
+    ).toMatchObject({ ok: true });
+    // A store listing one server twice needs just that one.
+    await store.add(record('one-server', { inboxRelays: inboxRelays.slice(0, 2) }));
+    expect(
+      await store.update('one-server', 1, {
+        state: 'ordered',
+        orderWrap: signedWrap('o'),
+        acknowledgedRelays: ['wss://r.example.com/inbox'],
+      }),
+    ).toMatchObject({ ok: true });
   });
 
   it('counts an order as acknowledged only with its signed wrap and an acknowledging relay', async () => {
@@ -801,12 +844,41 @@ describe('record rules', () => {
     const ended = record('ended', { state: 'ended-unpaid', createdAt: 5 });
     expect(recordToShow([newer, paid, ended])?.orderId).toBe('paid');
     expect(recordToShow([ended, newer])?.orderId).toBe('newer');
+    // Cancelled without a refund while an attempt holds the marker: still live news.
     const cancelled = record('cancelled', {
       state: 'paying',
       createdAt: 1,
       status: { status: 'cancelled', at: 2 },
+      marker: {
+        rail: 'solana',
+        attemptId: 'a',
+        setAt: 1,
+        blockhash: 'B',
+        lastValidBlockHeight: '100',
+      },
     });
     expect(recordToShow([newer, cancelled])?.orderId).toBe('cancelled');
+    // Cancelled with no attempt: nothing holds it, the newer order shows.
+    const dropped = record('dropped', {
+      state: 'ordered',
+      createdAt: 2,
+      status: { status: 'cancelled', at: 3 },
+    });
+    expect(recordToShow([dropped, newer])?.orderId).toBe('newer');
+    // An order that ended unpaid stays last, whatever the store said about it.
+    const endedWithNews = record('ended-news', {
+      state: 'ended-unpaid',
+      createdAt: 3,
+      status: { status: 'pending', at: 4 },
+    });
+    expect(recordToShow([endedWithNews, newer])?.orderId).toBe('newer');
+    // A store answer on a live order still comes first.
+    const pending = record('pending', {
+      state: 'ordered',
+      createdAt: 4,
+      status: { status: 'pending', at: 5 },
+    });
+    expect(recordToShow([newer, pending])?.orderId).toBe('pending');
     // Same time: the lower order id, whichever order they come in.
     const twinA = record('a-twin', { createdAt: 30 });
     const twinB = record('b-twin', { createdAt: 30 });

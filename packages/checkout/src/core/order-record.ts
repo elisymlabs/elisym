@@ -122,14 +122,25 @@ export function holdsPayExclusion(
   return record.marker !== undefined;
 }
 
-/** A payment was found, or the store has answered. */
-function hasOutcome(record: OrderRecord): boolean {
-  return (
-    record.state === 'paid' ||
-    record.state === 'completed' ||
-    record.state === 'refunded' ||
-    record.status !== undefined
-  );
+/**
+ * Which record of a product to show first, lowest rank first: a live order with
+ * news (a payment found, a blocked payment, a store answer); then an order still
+ * in progress; then a finished purchase; then an order that ended unpaid. A
+ * finished purchase never hides a newer order in progress (a repeat purchase),
+ * and neither does an order the store cancelled that holds no payment attempt.
+ */
+function showRank(record: OrderRecord): number {
+  if (isTerminal(record)) {
+    return 2;
+  }
+  if (record.state === 'ended-unpaid') {
+    return 3;
+  }
+  if (record.state === 'paid' || record.state === 'blocked' || record.paidTx !== undefined) {
+    return 0;
+  }
+  const cancelled = record.status?.status === 'cancelled';
+  return record.status !== undefined && (!cancelled || holdsPayExclusion(record)) ? 0 : 1;
 }
 
 function newer(left: OrderRecord, right: OrderRecord): OrderRecord {
@@ -140,15 +151,17 @@ function newer(left: OrderRecord, right: OrderRecord): OrderRecord {
 }
 
 /**
- * The record the widget shows for a product: one whose payment was found or
- * which has a status comes ahead of any newer unpaid one; otherwise the newest.
+ * The record the widget shows for a product: the best rank (`showRank`), then
+ * the newest within it.
  */
 export function recordToShow(records: readonly OrderRecord[]): OrderRecord | undefined {
-  const withOutcome = records.filter(hasOutcome);
-  const pool = withOutcome.length > 0 ? withOutcome : records;
   let shown: OrderRecord | undefined;
-  for (const record of pool) {
-    shown = shown === undefined ? record : newer(shown, record);
+  for (const record of records) {
+    if (shown === undefined || showRank(record) < showRank(shown)) {
+      shown = record;
+    } else if (showRank(record) === showRank(shown)) {
+      shown = newer(shown, record);
+    }
   }
   return shown;
 }
