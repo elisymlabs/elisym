@@ -1,0 +1,19 @@
+{
+  "name": "elisym test shop",
+  "product": {
+    "d": "test-course",
+    "title": "Test course",
+    "description": "A test product for the elisym checkout.",
+    "priceUsd": "0.01"
+  },
+  "payouts": [
+    {
+      "caip19": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "address": "<your devnet wallet address>"
+    }
+  ],
+  "inboxRelays": ["wss://relay.elisym.network", "wss://nos.lol"],
+  "network": "devnet",
+  "rpcUrl": "https://api.devnet.solana.com",
+  "delivery": { "method": "access", "value": "https://example.com/your-course" }
+}
