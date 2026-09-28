@@ -1,0 +1,118 @@
+# Sell with the checkout
+
+The elisym checkout sells a digital product from any web page. The buyer pays in USDC on Solana, directly to your wallet, and gets what they bought: a link or a text. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
+
+The pieces:
+
+- **Your node** ([`@elisym/merchant-node`](https://www.npmjs.com/package/@elisym/merchant-node)) publishes the product to Nostr, takes orders, checks each payment on chain and delivers.
+- **The widget** (`<elisym-buy>`) runs on your page. It frames the checkout from `pay.elisym.network`, where the offer is verified and the buyer's wallet signs.
+- **Nostr relays** carry the listing, the orders and the replies. Orders and replies are encrypted end to end between the buyer and your node, and no server of ours touches the money: the payment goes from the buyer's wallet to yours.
+
+This page takes you from nothing to a working purchase on **devnet**. [The widget](/commerce/widget) page has every attribute, the status events and the security model.
+
+## 1. Create the store
+
+You need Node.js 22.4 or newer (or Docker, see [the node's README](https://github.com/elisymlabs/elisym/tree/main/packages/merchant-node#docker)).
+
+```bash
+npx @elisym/merchant-node init --network devnet
+```
+
+This creates `~/.elisym-merchant/` with the store's keys and a `config.json` to edit. The keys identify your store: keep the folder private and back it up.
+
+Open `~/.elisym-merchant/config.json` and fill in:
+
+```json
+{
+  "name": "My store",
+  "network": "devnet",
+  "rpcUrl": "https://api.devnet.solana.com",
+  "inboxRelays": ["wss://relay.elisym.network", "wss://nos.lol"],
+  "product": {
+    "d": "my-product",
+    "title": "My product",
+    "description": "What the buyer gets.",
+    "priceUsd": "1",
+    "delivery": { "method": "access", "value": "https://example.com/the-link-the-buyer-gets" }
+  },
+  "payouts": [
+    {
+      "caip19": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "address": "<your devnet wallet address>"
+    }
+  ]
+}
+```
+
+- `priceUsd` is paid 1:1 in USDC.
+- `delivery.value` is what the buyer sees once paid: a link (opened only if it is `https:`) or a text such as a license key.
+- `payouts[0].address` is the Solana wallet the money goes to. The `caip19` above is devnet USDC.
+
+## 2. Publish it
+
+```bash
+npx @elisym/merchant-node setup
+```
+
+`setup` first checks that every inbox relay can do what the store needs. Then it publishes the product, the store profile, the inbox list, your payout list and your authorization of the store. It prints the product's address:
+
+```text
+naddr   naddr1...
+```
+
+After a change to `config.json`, stop the node, run `setup` again, then start the node again: `setup` refuses while the node runs. The product id (`product.d`) cannot change. A new product needs its own home (`--home <dir>`).
+
+## 3. Run the node
+
+```bash
+npx @elisym/merchant-node run
+```
+
+Keep it running. It reads orders from your inbox relays, checks each payment on chain and sends the delivery. If it stops, it catches up on what it missed when it starts again. `npx @elisym/merchant-node orders` lists the orders, paid or not.
+
+## 4. Add the checkout to your page
+
+```html
+<elisym-buy product="naddr1..." network="devnet"></elisym-buy>
+<script
+  src="https://pay.elisym.network/v1/embed.js"
+  integrity="sha384-n2Bj5LKM3OGGlQOwpooaauimc99mLR+4ookl8AeVpG3GjG4aLBc7jV1l2WEljNhH"
+  crossorigin="anonymous"
+></script>
+```
+
+The `integrity` hash pins the exact loader your page runs. The file under `/v1/` never changes, so the hash stays valid. A new loader would ship under a new path.
+
+## 5. Buy it
+
+Serve the page over http(s), for example with `npx serve .` on localhost. A page opened from disk (`file://`) has no origin, and the checkout refuses it. Open it in a browser with a Solana wallet that supports Wallet Standard (Phantom, Solflare, ...), switched to devnet. It needs devnet SOL for fees ([faucet.solana.com](https://faucet.solana.com)) and devnet USDC for the price ([faucet.circle.com](https://faucet.circle.com), Solana -> Devnet).
+
+The checkout shows the product, the price and who is selling it. A new store's payout list is less than three days old, so the buyer is asked to tick a box confirming where the money goes; that is expected. Pay, and within seconds the node logs the order and the payment, and the checkout shows the delivery.
+
+## Level A: let your domain vouch for the store
+
+Without more setup the store is **level C**: the checkout tells the buyer that no domain vouches for it. To reach **level A**:
+
+1. Add `"nip05": "_@your-domain.com"` to `config.json`, stop the node, run `setup` again and start the node.
+2. Serve the `nostr.json` that `setup` writes to `~/.elisym-merchant/` at `https://your-domain.com/.well-known/nostr.json`, with the header `Access-Control-Allow-Origin: *`.
+3. Run `npx @elisym/merchant-node check`. It fetches the file and says whether your domain now vouches for the store.
+
+At level A, the checkout sells only on your domain: a page served over `https:` from `your-domain.com` or one of its subdomains. It refuses any other page, including `localhost`, so test a level A store on your real site (see [the widget](/commerce/widget#where-it-sells)).
+
+## Going to mainnet
+
+A mainnet store is a separate store, with its own keys, in its own home. Give every command the home, or set `ELISYM_MERCHANT_HOME` once:
+
+```bash
+export ELISYM_MERCHANT_HOME=~/.elisym-merchant-mainnet
+npx @elisym/merchant-node init --network mainnet
+```
+
+In its `config.json`, set:
+
+- `rpcUrl` to your own Solana RPC endpoint. The public mainnet one is rate-limited and not meant for a server. A key restricted to a browser origin does not work from a server.
+- the payout to mainnet USDC, `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`, at your mainnet wallet.
+
+Then run `setup` and `run` as above. `setup` prints the mainnet store's own `naddr`: put that in the snippet, with `network="mainnet"`. The node refuses to start if the published store offers buyers anything it would not honor, such as a payout on another network or a price it did not record. So when it starts, the node never takes orders on terms it would refuse.
+
+The node's README covers the rest: the full config, Docker, the lock, and what to keep safe.
