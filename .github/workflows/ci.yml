@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, evm]
+    # commerce-p*: the stacked commerce PRs target each other.
+    branches: [main, evm, 'commerce-p*']
 
 concurrency:
   group: ci-${{ github.ref }}
