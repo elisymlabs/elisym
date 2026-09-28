@@ -1,15 +1,16 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
+import { checkoutOrigin } from './scripts/build-env';
 
 /** Where the checkout is served. Fixed at build time: the merchant page never chooses it. */
-const CHECKOUT_ORIGIN = process.env.CHECKOUT_ORIGIN ?? 'https://pay.elisym.network';
+const CHECKOUT_ORIGIN = checkoutOrigin(process.env);
 
 /**
  * `embed.js`, the loader merchants include: one self-contained file at a
  * versioned, immutable path (`/v1/embed.js`) so it can carry an SRI hash.
  */
 export default defineConfig({
-  define: { __CHECKOUT_ORIGIN__: JSON.stringify(new URL(CHECKOUT_ORIGIN).origin) },
+  define: { __CHECKOUT_ORIGIN__: JSON.stringify(CHECKOUT_ORIGIN) },
   build: {
     outDir: fileURLToPath(new URL('./dist', import.meta.url)),
     emptyOutDir: false,

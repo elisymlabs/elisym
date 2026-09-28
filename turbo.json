@@ -25,7 +25,14 @@
     "@elisym/checkout#build": {
       "dependsOn": ["^build", "generate"],
       "outputs": ["dist/**"],
-      "env": ["CHECKOUT_ORIGIN", "VERCEL_ENV"]
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "env": [
+        "CHECKOUT_ORIGIN",
+        "VERCEL_ENV",
+        "VERCEL_URL",
+        "VITE_SOLANA_RPC_URL_MAINNET",
+        "VITE_SOLANA_RPC_URL_DEVNET"
+      ]
     }
   }
 }

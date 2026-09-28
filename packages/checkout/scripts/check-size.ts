@@ -14,11 +14,10 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { gzipSync } from 'node:zlib';
 import ts from 'typescript';
+import { PRODUCTION_ORIGIN, checkoutOrigin } from './build-env';
 
 const DIST = fileURLToPath(new URL('../dist', import.meta.url));
 const EMBED_BUDGET = 5 * 1024;
-/** Must match the default in `vite.embed.config.ts`. */
-const PRODUCTION_ORIGIN = 'https://pay.elisym.network';
 const FIRST_SCREEN_BUDGET = 250 * 1024;
 
 function gzipped(path: string): number {
@@ -78,7 +77,7 @@ console.log(`v1/embed.js   ${sri}`);
 // Built for the production origin: the bytes must be the pinned ones. Built for
 // another origin (a local demo, a preview): not the file merchants pin - but a
 // production deployment never ships one.
-const origin = new URL(process.env.CHECKOUT_ORIGIN ?? PRODUCTION_ORIGIN).origin;
+const origin = checkoutOrigin(process.env);
 if (origin !== PRODUCTION_ORIGIN && process.env.VERCEL_ENV === 'production') {
   console.error(`a production build must frame ${PRODUCTION_ORIGIN}, not ${origin}`);
   process.exit(1);
