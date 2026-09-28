@@ -234,7 +234,7 @@ async function exclusionHolder(
 /** What a marker proves was requested: a signed transaction, a sent hash or an approved bundle. */
 function markerEvidence(marker: PaymentMarker): string[] {
   return marker.rail === 'solana'
-    ? [marker.signature ?? '']
+    ? [marker.signature ?? '', marker.signedTransaction ?? '']
     : [marker.txHash ?? '', marker.bundleId ?? ''];
 }
 
@@ -442,7 +442,8 @@ export class OrderStore {
       const windowMoved =
         current.marker.rail === 'solana' && next.rail === 'solana'
           ? next.blockhash !== current.marker.blockhash ||
-            next.lastValidBlockHeight !== current.marker.lastValidBlockHeight
+            next.lastValidBlockHeight !== current.marker.lastValidBlockHeight ||
+            next.slot !== current.marker.slot
           : current.marker.rail === 'tempo' &&
             next.rail === 'tempo' &&
             next.floorBlock !== current.marker.floorBlock;

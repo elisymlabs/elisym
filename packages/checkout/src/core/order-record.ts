@@ -34,8 +34,18 @@ export type PaymentMarker =
       blockhash: string;
       /** Decimal string: the attempt is over once `finalized` passes this height. */
       lastValidBlockHeight: string;
+      /**
+       * Decimal string: the slot the blockhash was read at. Nothing of this attempt can
+       * sit below it, so an RPC whose ledger starts above it cannot prove "not paid".
+       */
+      slot?: string;
       /** The signature of the transaction the wallet signed, once known. */
       signature?: string;
+      /**
+       * The signed wire transaction (base64), written with its signature BEFORE the
+       * first broadcast and rebroadcast until it lands or its blockhash expires.
+       */
+      signedTransaction?: string;
     }
   | {
       rail: 'tempo';

@@ -10,7 +10,7 @@
     "dev": "turbo run dev",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
-    "lint": "oxlint packages/sdk/src/ packages/pay-core/src/ packages/commerce/src/ packages/checkout/src/ packages/merchant/src/ packages/mcp/src/ packages/cli/src/ packages/app/app/",
+    "lint": "oxlint packages/sdk/src/ packages/pay-core/src/ packages/commerce/src/ packages/checkout/src/ packages/checkout/scripts/ packages/merchant/src/ packages/mcp/src/ packages/cli/src/ packages/app/app/",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "spell": "cspell --no-progress \"packages/sdk/src/**\" \"packages/pay-core/src/**\" \"packages/commerce/src/**\" \"packages/checkout/src/**\" \"packages/merchant/src/**\" \"packages/mcp/src/**\" \"packages/cli/src/**\" \"packages/app/app/**\" \"packages/docs/pages/**\" \"*.md\" \"packages/*/README.md\"",

@@ -7,3 +7,4 @@ export * from './core/order-record';
 export * from './core/order-store';
 export * from './core/relay-client';
 export * from './core/relays';
+export * from './core/solana-pay';

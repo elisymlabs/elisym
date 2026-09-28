@@ -62,6 +62,7 @@ function solanaMarker(attemptId: string): Extract<PaymentMarker, { rail: 'solana
     setAt: 1_750_000_100,
     blockhash: 'Blockhash',
     lastValidBlockHeight: '1000',
+    slot: '900',
   };
 }
 
@@ -518,11 +519,14 @@ describe('the payment marker', () => {
     expect((await store.get('retrying'))?.marker?.attemptId).toBe('first');
   });
 
-  it("fixes a Solana attempt's blockhash and last valid height", async () => {
+  it("fixes a Solana attempt's blockhash, last valid height and slot", async () => {
     await addPaying('one', 'mine');
+    const { slot: _dropped, ...withoutSlot } = solanaMarker('mine');
     for (const moved of [
       { ...solanaMarker('mine'), blockhash: 'Other' },
       { ...solanaMarker('mine'), lastValidBlockHeight: '5' },
+      { ...solanaMarker('mine'), slot: '901' },
+      withoutSlot,
     ]) {
       expect(await store.updateMarker('one', 3, 'mine', moved)).toMatchObject({
         ok: false,

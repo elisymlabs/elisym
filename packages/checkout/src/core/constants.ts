@@ -56,3 +56,19 @@ export const MAX_CLOCK_SKEW_SECS = 5 * 60;
 
 /** NIP-59 back-dates a gift wrap up to two days: a read for replies reaches back that far. */
 export const WRAP_BACKDATE_SECS = 2 * 24 * 60 * 60;
+
+/** The merchant keeps catching up on an order's payments this long after it (plan: 3 days). */
+export const MERCHANT_CATCH_UP_SECS = 3 * 24 * 60 * 60;
+
+/** No wallet request, first or retry, this close to the end of the merchant's catch-up. */
+export const PAY_CUTOFF_SECS = 60 * 60;
+
+/**
+ * A payment is looked for back to the order's `created_at` minus this margin
+ * (the merchant's own scan margin): the order is dated by the chain, a block a
+ * little behind it may hold the payment.
+ */
+export const PAYMENT_SCAN_MARGIN_SECS = 30 * 60;
+
+/** Compute units the payment transaction asks for: what pay-core's own builder uses. */
+export const SOLANA_COMPUTE_UNIT_LIMIT = 200_000;
