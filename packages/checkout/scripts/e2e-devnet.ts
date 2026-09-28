@@ -1,6 +1,6 @@
 /**
  * The checkout core end to end on devnet, against the test merchant
- * (`packages/merchant`, `bun src/cli.ts run`): load the offer, order, pay with
+ * (`packages/merchant-node`, `elisym-merchant run`): load the offer, order, pay with
  * a local key standing in for the wallet, watch the payment, hear the delivery.
  *
  *   BUYER_SECRETS=~/.elisym/<agent>/.secrets.json bun scripts/e2e-devnet.ts <naddr>

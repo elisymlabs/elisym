@@ -16,6 +16,7 @@ packages/**/dist
 packages/**/.turbo
 packages/**/.vercel
 packages/**/.elisym
+packages/**/.merchant
 packages/**/.claude
 packages/**/.env
 packages/**/.env.*

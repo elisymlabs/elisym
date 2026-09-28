@@ -30,7 +30,9 @@ export interface MerchantOrder {
     caip19: string;
     medium: string;
   };
-  /** Set once the delivery was published. */
+  /** Inbox relays that took the delivery so far: a retry goes to the others only. */
+  deliveredTo?: string[];
+  /** Set once the delivery counts as done (see `deliveryDone`). */
   deliveredAt?: number;
 }
 
@@ -56,6 +58,8 @@ export interface LedgerState {
    * binds: each is fetched and read once, however many orders are open.
    */
   scans: Record<string, ScannedTransaction>;
+  /** The product id (`d`) the store published: another one would strand the old listing. */
+  productD?: string;
   /** The payouts the owner's 10133 lists, and when it was signed: republished unchanged, it keeps its date. */
   payto?: { createdAt: number; payouts: string };
 }
