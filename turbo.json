@@ -21,6 +21,11 @@
     },
     "clean": {
       "cache": false
+    },
+    "@elisym/checkout#build": {
+      "dependsOn": ["^build", "generate"],
+      "outputs": ["dist/**"],
+      "env": ["CHECKOUT_ORIGIN", "VERCEL_ENV"]
     }
   }
 }

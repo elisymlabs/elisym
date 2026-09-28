@@ -2,8 +2,11 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "types": ["node", "vite/client"]
   },
-  "include": ["src", "tests", "scripts"],
+  "include": ["src", "tests", "scripts", "*.config.ts"],
   "exclude": ["node_modules", "dist"]
 }
