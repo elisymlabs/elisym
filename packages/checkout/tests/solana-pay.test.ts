@@ -241,7 +241,7 @@ describe('paying', () => {
   });
 
   it('never lets a second order of the product pay while one attempt is live', async () => {
-    const { shop, relays, fresh, record, wallet, deps, input, chain } = await setup();
+    const { relays, fresh, record, wallet, deps, input, chain } = await setup();
     chain.dropSends = true;
     expect(await payWithSolana(record, wallet, input, deps)).toMatchObject({ ok: true });
     const second = await ordered(relays, fresh);
@@ -641,6 +641,34 @@ describe('payments found later', () => {
     expect(written.record.receiptWrap).toBeUndefined();
     const watched = await watchSolanaPayment(written.record, deps);
     expect(watched.record.receiptWrap).toBeDefined();
+  });
+});
+
+describe('a delivered order', () => {
+  it('reads nothing more once the store delivered or refunded, and claims no payment', async () => {
+    for (const [state, status] of [
+      ['completed', { status: 'completed', at: NOW + 60, delivery: 'https://shop.example/course' }],
+      ['refunded', { status: 'cancelled', at: NOW + 60, refunded: true }],
+    ] as const) {
+      const { record, wallet, chain, deps, input } = await setup();
+      chain.dropSends = true;
+      const paid = await payWithSolana(record, wallet, input, deps);
+      if (!paid.ok) {
+        throw new Error(paid.reason);
+      }
+      const answered = await store.update(paid.record.orderId, paid.record.version, {
+        state,
+        status,
+      });
+      if (!answered.ok) {
+        throw new Error(answered.reason);
+      }
+      const calls = chain.calls.length;
+      const watched = await watchSolanaPayment(answered.record, deps);
+      expect(watched).toMatchObject({ state: 'closed', record: { state } });
+      expect(watched.record.paidTx).toBeUndefined();
+      expect(chain.calls).toHaveLength(calls);
+    }
   });
 });
 

@@ -9,7 +9,7 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint src/ tests/"
+    "lint": "oxlint src/ tests/ scripts/"
   },
   "dependencies": {
     "@elisym/commerce": "~0.2.0",

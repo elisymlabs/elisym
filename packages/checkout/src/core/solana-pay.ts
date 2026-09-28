@@ -709,7 +709,12 @@ export type SolanaWatch =
   /** The attempt may still land, or the chain could not be read in full: keep watching. */
   | { state: 'waiting'; record: OrderRecord }
   /** The attempt's blockhash expired at `finalized` and a full pass found no payment. */
-  | { state: 'over'; record: OrderRecord };
+  | { state: 'over'; record: OrderRecord }
+  /**
+   * The store delivered or refunded (a terminal record): its answer stands and
+   * nothing is left to watch. Says nothing about which transaction paid.
+   */
+  | { state: 'closed'; record: OrderRecord };
 
 type Search = { found: string } | 'none' | 'unsure';
 
@@ -912,9 +917,14 @@ export async function watchSolanaPayment(
   record: OrderRecord,
   deps: SolanaPayDeps,
 ): Promise<SolanaWatch> {
+  // Delivered or refunded: the store has answered, nothing is left to watch (the
+  // delivery can arrive before the widget itself found the payment).
+  if (isTerminal(record)) {
+    return { state: 'closed', record };
+  }
   if (record.paidTx !== undefined) {
     // A receipt lost before the payment was recorded is sent now.
-    if (record.receiptWrap === undefined && !isTerminal(record)) {
+    if (record.receiptWrap === undefined) {
       const receipt = await sendReceipt(record, record.paidTx, (deps.now ?? nowSecs)(), deps);
       return { state: 'paid', record: receipt.ok ? receipt.record : record };
     }
@@ -973,11 +983,12 @@ export async function retryWithSolana(
   }
   const watch = await watchSolanaPayment(record, deps);
   if (watch.state !== 'over') {
-    return {
-      ok: false,
-      reason: watch.state === 'paid' ? 'already_paid' : 'still_waiting',
-      record: watch.record,
-    };
+    const reasons = {
+      paid: 'already_paid',
+      waiting: 'still_waiting',
+      closed: 'not_payable',
+    } as const;
+    return { ok: false, reason: reasons[watch.state], record: watch.record };
   }
   const judged = watch.record;
   const previous = judged.marker;
