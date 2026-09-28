@@ -48,7 +48,13 @@ async function main(): Promise<void> {
   if (naddr === undefined || secretsPath === undefined) {
     throw new Error('usage: BUYER_SECRETS=<path> bun scripts/e2e-devnet.ts <naddr>');
   }
-  const secrets = JSON.parse(readFileSync(secretsPath, 'utf8')) as { solana_secret_key?: string };
+  let secrets: { solana_secret_key?: unknown };
+  try {
+    secrets = JSON.parse(readFileSync(secretsPath, 'utf8')) as { solana_secret_key?: unknown };
+  } catch {
+    // Never the parser's own message: it can quote the file, which may hold a key.
+    throw new Error('BUYER_SECRETS is not a readable JSON secrets file');
+  }
   if (typeof secrets.solana_secret_key !== 'string') {
     throw new Error('no plain solana_secret_key in that file');
   }
@@ -133,34 +139,42 @@ async function main(): Promise<void> {
     );
   });
 
+  const orderId = paid.record.orderId;
   const started = Date.now();
   let found = false;
-  while (Date.now() - started < GIVE_UP_MS && delivered === undefined) {
-    const current = await store.get(paid.record.orderId);
-    if (current === undefined) {
-      throw new Error('record lost');
-    }
-    // Delivered or refunded: the store has answered.
-    if (isTerminal(current)) {
-      break;
-    }
-    if (!found) {
-      const watch = await watchSolanaPayment(current, deps);
-      log(`watch: ${watch.state}`);
-      if (watch.state === 'paid') {
-        found = true;
-        log(`payment found: ${watch.record.paidTx}`);
-      } else if (watch.state === 'closed') {
-        log(`the store answered first: ${watch.record.state}`);
-        break;
-      } else if (watch.state === 'over') {
-        throw new Error('attempt over without a payment');
-      }
-    }
-    await sleep(WATCH_EVERY_MS);
+  try {
+    await watchUntilAnswered();
+  } finally {
+    listening.close();
+    readClient.close();
   }
-  listening.close();
-  readClient.close();
+
+  async function watchUntilAnswered(): Promise<void> {
+    while (Date.now() - started < GIVE_UP_MS && delivered === undefined) {
+      const current = await store.get(orderId);
+      if (current === undefined) {
+        throw new Error('record lost');
+      }
+      // Delivered or refunded: the store has answered.
+      if (isTerminal(current)) {
+        break;
+      }
+      if (!found) {
+        const watch = await watchSolanaPayment(current, deps);
+        log(`watch: ${watch.state}`);
+        if (watch.state === 'paid') {
+          found = true;
+          log(`payment found: ${watch.record.paidTx}`);
+        } else if (watch.state === 'closed') {
+          log(`the store answered first: ${watch.record.state}`);
+          break;
+        } else if (watch.state === 'over') {
+          throw new Error('attempt over without a payment');
+        }
+      }
+      await sleep(WATCH_EVERY_MS);
+    }
+  }
   const final = await store.get(paid.record.orderId);
   const delivery = final?.state === 'completed' ? final.status?.delivery : delivered;
   log(`final state ${final?.state}, delivery ${delivery ?? 'none'}`);
