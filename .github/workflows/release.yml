@@ -22,6 +22,8 @@ jobs:
       mcp_version: ${{ steps.publish.outputs.mcp_version }}
       cli_released: ${{ steps.publish.outputs.cli_released }}
       cli_version: ${{ steps.publish.outputs.cli_version }}
+      merchant_node_released: ${{ steps.publish.outputs.merchant_node_released }}
+      merchant_node_version: ${{ steps.publish.outputs.merchant_node_version }}
 
     steps:
       - name: Checkout
@@ -57,10 +59,12 @@ jobs:
           # Dependency order: pay-core first, everything else builds on it.
           # commerce goes before mcp and cli: a failed publish stops the run
           # before they are tagged, so a re-run still releases them and sets
-          # the outputs the docker and mcp-registry jobs wait for.
+          # the outputs the docker and mcp-registry jobs wait for. merchant-node
+          # builds on commerce and pay-core only.
           PACKAGES=(
             "pay-core:@elisym/pay-core"
             "commerce:@elisym/commerce"
+            "merchant-node:@elisym/merchant-node"
             "sdk:@elisym/sdk"
             "mcp:@elisym/mcp"
             "cli:@elisym/cli"
@@ -97,15 +101,17 @@ jobs:
               --verify-tag
 
             echo "  Done: ${TAG}"
-            echo "${DIR}_released=true" >> "$GITHUB_OUTPUT"
-            echo "${DIR}_version=${VERSION}" >> "$GITHUB_OUTPUT"
+            # Output names use underscores: merchant-node -> merchant_node.
+            KEY="${DIR//-/_}"
+            echo "${KEY}_released=true" >> "$GITHUB_OUTPUT"
+            echo "${KEY}_version=${VERSION}" >> "$GITHUB_OUTPUT"
           done
 
   docker:
     name: Docker (${{ matrix.package }})
     runs-on: ubuntu-latest
     needs: release
-    if: needs.release.outputs.mcp_released == 'true' || needs.release.outputs.cli_released == 'true'
+    if: needs.release.outputs.mcp_released == 'true' || needs.release.outputs.cli_released == 'true' || needs.release.outputs.merchant_node_released == 'true'
 
     permissions:
       contents: read
@@ -122,6 +128,10 @@ jobs:
             image: ghcr.io/elisymlabs/cli
             released: ${{ needs.release.outputs.cli_released }}
             version: ${{ needs.release.outputs.cli_version }}
+          - package: merchant-node
+            image: ghcr.io/elisymlabs/merchant-node
+            released: ${{ needs.release.outputs.merchant_node_released }}
+            version: ${{ needs.release.outputs.merchant_node_version }}
 
     steps:
       - name: Skip if not released
