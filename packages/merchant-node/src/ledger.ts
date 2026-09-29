@@ -1,6 +1,7 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
 import { CATCH_UP_SECS } from './constants';
+import type { Delivery } from './reply';
 import type { TermsPeriod } from './terms';
 
 /** A direct-mode order as the merchant holds it. */
@@ -20,6 +21,17 @@ export interface MerchantOrder {
   reportedTxs: string[];
   /** Reported transactions judged finally NOT a payment for this order: never checked again. */
   refusedTxs?: string[];
+  /**
+   * Tempo: reported hashes whose receipt showed no leg for this order. Not
+   * rechecked by the sweep (a report of someone else's hash costs one read), but
+   * a catch-up memo match lifts one: a receipt read and a log scan may be
+   * answered by different backends.
+   */
+  noLegTxs?: string[];
+  /** Tempo: catch-up matches whose verify said N for every term the leg could pay: not verified again. */
+  tempoNoLeg?: string[];
+  /** Tempo: a transfer to the payout that the recipient's policy blocked (the money sits with the guard). */
+  blockedTx?: string;
   /** Queue position of each reported transaction: when it arrived, then when the sweep last checked it. */
   recheckedAt?: Record<string, number>;
   paid?: {
@@ -36,13 +48,28 @@ export interface MerchantOrder {
   deliveredAt?: number;
 }
 
+/** The answer the owner sent by hand for an order, exactly as sent (a rerun sends it again). */
+export interface HandAnswer {
+  kind: 'delivered' | 'refunded';
+  delivery?: { method: Delivery['method']; value: string };
+  tx?: string;
+  amount?: string;
+  /** What the ledger held for the order when it was closed. */
+  reportedTxs: string[];
+  refusedTxs: string[];
+  noLegTxs: string[];
+}
+
 export interface LedgerState {
-  version: 1;
+  /** 2 once it holds Tempo data: an older node, which reads 0x hashes as Solana, refuses it. */
+  version: 1 | 2;
   orders: Record<string, MerchantOrder>;
   /** Every rumor id already read (orders and receipts alike). */
   seenRumors: Record<string, true>;
-  /** Keys of unpaid orders pruned after the catch-up window: the id stays used. */
+  /** Keys of unpaid orders pruned after the catch-up window, or answered by hand: the id stays used. */
   closedOrders?: Record<string, true>;
+  /** Orders the owner answered by hand (`deliver` / `refund`). */
+  answeredByHand?: Record<string, HandAnswer>;
   /** Payment signature -> the order it paid: each payment credits one order, once. */
   claims: Record<string, string>;
   /** The store's own terms over time, as it published them. */
@@ -139,11 +166,16 @@ export function loadLedger(path: string): LedgerState {
     return emptyLedger();
   }
   const state = JSON.parse(text) as LedgerState;
-  if (state.version !== 1) {
+  if (state.version !== 1 && state.version !== 2) {
     throw new Error(`Unknown ledger version in ${path}`);
   }
   state.scans ??= {};
   return state;
+}
+
+/** The ledger now holds Tempo data: from here on only a node that reads it may load it. */
+export function markTempo(state: LedgerState): void {
+  state.version = 2;
 }
 
 /** Write the whole ledger, atomically: a crash leaves the old file or the new one, never half. */

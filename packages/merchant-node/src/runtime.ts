@@ -23,6 +23,14 @@ import {
   catchUp,
   checkPayment,
 } from './solana';
+import {
+  TEMPO_HASH_RE,
+  type TempoCheck,
+  type TempoContext,
+  catchUpTempo,
+  checkTempoPayment,
+  recordTempoCheck,
+} from './tempo';
 
 export interface RuntimeDeps {
   state: LedgerState;
@@ -48,6 +56,19 @@ export interface RuntimeDeps {
   /** Replaceable in tests. */
   checkPayment?: typeof checkPayment;
   catchUp?: (state: LedgerState, context: SolanaContext, now: number) => Promise<CatchUpResult>;
+  /** Present when the store takes Tempo payouts (the `tempo` config block). */
+  tempo?: TempoContext;
+  checkTempoPayment?: typeof checkTempoPayment;
+  catchUpTempo?: typeof catchUpTempo;
+}
+
+/** A reported transaction this order has already judged: never checked again. */
+function settled(order: MerchantOrder, tx: string): boolean {
+  return (
+    order.refusedTxs?.includes(tx) === true ||
+    order.noLegTxs?.includes(tx) === true ||
+    order.blockedTx === tx
+  );
 }
 
 /**
@@ -121,11 +142,7 @@ export class MerchantRuntime {
     // Only a transaction the order reports for the first time is checked at once,
     // and only within a per-minute budget: orders and receipts are free to send,
     // so the rest wait for the sweep's bounded recheck.
-    if (
-      !result.isNew ||
-      result.order.refusedTxs?.includes(result.tx) === true ||
-      !this.takeLiveCheck()
-    ) {
+    if (!result.isNew || settled(result.order, result.tx) || !this.takeLiveCheck()) {
       return;
     }
     await this.checkReported(result.order, result.tx, 0);
@@ -134,11 +151,27 @@ export class MerchantRuntime {
   /** Check one reported transaction now; one the RPC does not see yet is tried again soon. */
   private async checkReported(order: MerchantOrder, tx: string, attempt: number): Promise<void> {
     const { state, context, save, log } = this.deps;
-    const check: PaymentCheck = await this.check(state, order, tx, context);
-    log(`receipt ${order.key} ${tx}: ${check.kind}`);
-    if (check.kind === 'refused') {
-      order.refusedTxs = [...(order.refusedTxs ?? []), tx];
+    let check: PaymentCheck | TempoCheck;
+    // Dispatched by the transaction's format: a 0x hash is Tempo's.
+    if (TEMPO_HASH_RE.test(tx)) {
+      if (this.deps.tempo === undefined) {
+        log(`receipt ${order.key} ${tx}: a Tempo payment, and this node has no tempo block`);
+        return;
+      }
+      check = await (this.deps.checkTempoPayment ?? checkTempoPayment)(
+        state,
+        order,
+        tx,
+        this.deps.tempo,
+      );
+      recordTempoCheck(state, order, tx, check);
+    } else {
+      check = await this.check(state, order, tx, context);
+      if (check.kind === 'refused') {
+        order.refusedTxs = [...(order.refusedTxs ?? []), tx];
+      }
     }
+    log(`receipt ${order.key} ${tx}: ${check.kind}`);
     save();
     if (check.kind === 'paid') {
       await this.deliverPending();
@@ -160,7 +193,7 @@ export class MerchantRuntime {
         order === undefined ||
         order.paid !== undefined ||
         !order.reportedTxs.includes(tx) ||
-        order.refusedTxs?.includes(tx) === true ||
+        settled(order, tx) ||
         !this.takeLiveCheck()
       ) {
         return;
@@ -221,12 +254,17 @@ export class MerchantRuntime {
       }
     }
     try {
-      const result = await this.sweepCatchUp(state, context, now());
-      if (result.paid.length > 0) {
-        log(`catch-up found ${result.paid.length} payment(s)`);
+      const results = [await this.sweepCatchUp(state, context, now())];
+      if (this.deps.tempo !== undefined) {
+        results.push(await (this.deps.catchUpTempo ?? catchUpTempo)(state, this.deps.tempo, now()));
       }
-      for (const account of result.incomplete) {
-        log(`warning: the history of ${account} was cut short; older payments may be missed`);
+      for (const result of results) {
+        if (result.paid.length > 0) {
+          log(`catch-up found ${result.paid.length} payment(s)`);
+        }
+        for (const account of result.incomplete) {
+          log(`warning: the history of ${account} was cut short; older payments may be missed`);
+        }
       }
     } finally {
       // Saved before anything is sent, even when the chain could not be read this

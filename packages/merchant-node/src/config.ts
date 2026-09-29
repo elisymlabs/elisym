@@ -7,17 +7,25 @@ import {
   priceInSubunits,
   splitNip05,
 } from '@elisym/commerce';
-import type { Network } from '@elisym/pay-core';
+import { EVM_ASSETS, type Network } from '@elisym/pay-core';
+import { TEMPO_UNPAYABLE_ADDRESSES } from '@elisym/pay-core/evm';
 import Decimal from 'decimal.js-light';
 import { z } from 'zod';
 import { checkoutRelaySpelling } from './relays';
 import type { Delivery } from './reply';
 import type { StoreConfig } from './store-events';
 
+export type TempoNetwork = 'mainnet' | 'moderato';
+
 export interface MerchantConfig extends StoreConfig {
   network: Network;
-  /** A Solana RPC for the network, server-side (a browser-restricted key will not do). */
-  rpcUrl: string;
+  /**
+   * A Solana RPC for the network, server-side (a browser-restricted key will not
+   * do). Required only when a Solana payout is configured.
+   */
+  rpcUrl?: string;
+  /** Present when the store takes Tempo payouts: the network, and a server-side RPC. */
+  tempo?: { network: TempoNetwork; rpcUrl?: string };
   product: StoreConfig['product'] & {
     /** What the buyer gets once paid: a link (a Blossom URL is one) or text. */
     delivery: Delivery;
@@ -59,7 +67,14 @@ const configSchema = z
       })
       .optional(),
     network: z.enum(['mainnet', 'devnet']),
-    rpcUrl: urlWith('https:', 'http:'),
+    rpcUrl: urlWith('https:', 'http:').optional(),
+    tempo: z
+      .object({
+        network: z.enum(['mainnet', 'moderato']),
+        rpcUrl: urlWith('https:', 'http:').optional(),
+      })
+      .strict()
+      .optional(),
     inboxRelays: z
       .array(
         urlWith('wss:', 'ws:').refine(
@@ -110,32 +125,64 @@ const configSchema = z
       }
     });
     const seen = new Set<string>();
+    let solanaPayouts = 0;
     config.payouts.forEach((payout, index) => {
       const path = ['payouts', index];
       const caip19 = parseCaip19(payout.caip19);
-      // The node verifies Solana payments on its own network only: a buyer who
+      // The node verifies payments on its configured networks only: a buyer who
       // paid on another rail or network would never get a delivery.
-      if (caip19 === undefined || caip19.chain.family !== 'solana') {
+      if (caip19 === undefined) {
         context.addIssue({
           code: 'custom',
           path: [...path, 'caip19'],
-          message: 'must be a Solana coin this node can verify',
+          message: 'must be a coin this node can verify',
         });
         return;
       }
-      if (caip19.chain.network !== config.network) {
-        context.addIssue({
-          code: 'custom',
-          path: [...path, 'caip19'],
-          message: `is on ${caip19.chain.network}, the node runs on ${config.network}`,
-        });
-      }
-      if (canonicalPayoutAddress(caip19.chain, payout.address) !== payout.address) {
-        context.addIssue({
-          code: 'custom',
-          path: [...path, 'address'],
-          message: 'is not a Solana address',
-        });
+      if (caip19.chain.family === 'evm') {
+        if (config.tempo === undefined) {
+          context.addIssue({
+            code: 'custom',
+            path: [...path, 'caip19'],
+            message: 'is a Tempo coin: add a "tempo" block for the node to verify it',
+          });
+          return;
+        }
+        const wanted = tempoRegistryNetwork(config.tempo.network);
+        if (caip19.chain.network !== wanted) {
+          context.addIssue({
+            code: 'custom',
+            path: [...path, 'caip19'],
+            message: `is not on Tempo ${config.tempo.network}`,
+          });
+        }
+        if (
+          canonicalPayoutAddress(caip19.chain, payout.address) !== payout.address ||
+          !isPayableTempoAddress(payout.address)
+        ) {
+          context.addIssue({
+            code: 'custom',
+            path: [...path, 'address'],
+            message:
+              'is not a Tempo address a payment can go to (lowercase 0x, not a system or coin address)',
+          });
+        }
+      } else {
+        solanaPayouts += 1;
+        if (caip19.chain.network !== config.network) {
+          context.addIssue({
+            code: 'custom',
+            path: [...path, 'caip19'],
+            message: `is on ${caip19.chain.network}, the node runs on ${config.network}`,
+          });
+        }
+        if (canonicalPayoutAddress(caip19.chain, payout.address) !== payout.address) {
+          context.addIssue({
+            code: 'custom',
+            path: [...path, 'address'],
+            message: 'is not a Solana address',
+          });
+        }
       }
       const price = config.product.priceUsd;
       if (PRICE_RE.test(price) && new Decimal(price).gt(0)) {
@@ -158,7 +205,27 @@ const configSchema = z
       }
       seen.add(caip19.id);
     });
+    if (solanaPayouts > 0 && config.rpcUrl === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['rpcUrl'],
+        message: 'is required with a Solana payout',
+      });
+    }
   });
+
+/** The registry's network name for a Tempo network: Moderato is Tempo's testnet. */
+export function tempoRegistryNetwork(network: TempoNetwork): Network {
+  return network === 'mainnet' ? 'mainnet' : 'devnet';
+}
+
+/** Not a Tempo system address, and not a coin's own contract: money sent there reaches no one. */
+function isPayableTempoAddress(address: string): boolean {
+  const coins = EVM_ASSETS.flatMap((coin) =>
+    coin.mint === undefined ? [] : [coin.mint.toLowerCase()],
+  );
+  return !TEMPO_UNPAYABLE_ADDRESSES.includes(address) && !coins.includes(address);
+}
 
 type ParsedConfig = { ok: true; config: MerchantConfig } | { ok: false; problems: string[] };
 
