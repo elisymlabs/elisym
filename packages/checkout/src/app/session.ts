@@ -688,6 +688,14 @@ export class CheckoutSession {
     this.deps.onView({ kind: 'old_prompt', orders: unconfirmed.length, until });
   }
 
+  /** An unsaved hash of an order another tab ended: it is a late approval now. */
+  private adoptLateHash(record: OrderRecord): void {
+    if (this.pendingHash?.orderId === record.orderId) {
+      this.watchLateHash(record, this.pendingHash.hash);
+      this.pendingHash = undefined;
+    }
+  }
+
   /**
    * An approval of an ended order is in flight (known only in this session):
    * no other payment of the product until it is found - the buyer approved it,
@@ -1295,6 +1303,7 @@ export class CheckoutSession {
   private async follow(record: OrderRecord, relays?: string[], problem?: Problem): Promise<void> {
     // Ended in another tab with nothing found: the product is free again.
     if (gone(record)) {
+      this.adoptLateHash(record);
       const relays = this.relays;
       this.setRecord(undefined);
       this.listenToEnded([record], relays);
@@ -1344,6 +1353,7 @@ export class CheckoutSession {
     }
     const record = this.record;
     if (record !== undefined && gone(record)) {
+      this.adoptLateHash(record);
       const relays = this.relays;
       this.setRecord(undefined);
       this.listenToEnded([record], relays);
