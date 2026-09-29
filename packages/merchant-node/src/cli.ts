@@ -4,6 +4,7 @@
  * verifies payments by the direct-mode contract and delivers.
  */
 import { existsSync, writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { KIND_INBOX_RELAYS, KIND_PAYTO, KIND_PRODUCT, splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
 import { SimplePool } from 'nostr-tools/pool';
@@ -16,13 +17,14 @@ import {
   newestPayoutList,
   offerProblems,
 } from './checks';
-import { type MerchantConfig, configTemplate, loadConfig } from './config';
+import { type MerchantConfig, configTemplate, loadConfig, tempoRegistryNetwork } from './config';
 import {
   CATCH_UP_INTERVAL_MS,
   OFFER_RELAYS,
   SOLANA_MEDIUMS,
   TERMS_CLOCK_MARGIN_SECS,
 } from './constants';
+import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } from './hand';
 import {
   type MerchantHome,
   ensureHome,
@@ -35,10 +37,11 @@ import { storeIdentity } from './intake';
 import { type LedgerState, type MerchantOrder, loadLedger, saveLedger } from './ledger';
 import { InboxListener } from './listener';
 import { publishToRelays } from './publish';
-import { buildDeliveryReply } from './reply';
+import { buildDeliveryReply, deliveryDone } from './reply';
 import { MerchantRuntime } from './runtime';
 import { payoutListDate, recordPublished, setupRefusal } from './setup-ledger';
 import { type StoreKeys, buildStoreEvents } from './store-events';
+import { tempoContextFor } from './tempo';
 import { standingTerms } from './terms';
 
 const USAGE = `usage: elisym-merchant <command> [--home <dir>]
@@ -49,6 +52,11 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
   run    take orders, verify payments, deliver
   orders list the orders: paid, delivered, the buyer's email
   check  check the inbox relays, the owner's payout list and the domain
+  deliver <buyer>:<orderId> [--yes]
+         answer an unpaid order by hand with the configured delivery
+  refund <buyer>:<orderId> --tx <refund tx> --amount <subunits> [--yes]
+         answer an unpaid order by hand with a refund you already sent
+         (both need the node stopped; --yes skips the confirmation)
 
 The home is --home, else $ELISYM_MERCHANT_HOME, else ~/.elisym-merchant.
 It holds the store's secret keys: keep it private and back it up.`;
@@ -72,23 +80,56 @@ function errorText(error: unknown): string {
 
 interface Args {
   command: string | undefined;
+  /** The order key of `deliver` / `refund`. */
+  target: string | undefined;
   home: string | undefined;
   network: string | undefined;
+  tx: string | undefined;
+  amount: string | undefined;
+  yes: boolean;
+}
+
+const VALUE_FLAGS = {
+  '--home': 'home',
+  '--network': 'network',
+  '--tx': 'tx',
+  '--amount': 'amount',
+} as const;
+
+function isValueFlag(arg: string): arg is keyof typeof VALUE_FLAGS {
+  return arg in VALUE_FLAGS;
 }
 
 function parseArgs(argv: readonly string[]): Args {
-  const args: Args = { command: undefined, home: undefined, network: undefined };
+  const args: Args = {
+    command: undefined,
+    target: undefined,
+    home: undefined,
+    network: undefined,
+    tx: undefined,
+    amount: undefined,
+    yes: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === '--home' || arg === '--network') {
+    if (arg !== undefined && isValueFlag(arg)) {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith('--')) {
         throw new Error(`${arg} needs a value`);
       }
-      args[arg === '--home' ? 'home' : 'network'] = value;
+      args[VALUE_FLAGS[arg]] = value;
       index += 1;
+    } else if (arg === '--yes') {
+      args.yes = true;
     } else if (args.command === undefined && arg !== undefined && !arg.startsWith('--')) {
       args.command = arg;
+    } else if (
+      (args.command === 'deliver' || args.command === 'refund') &&
+      args.target === undefined &&
+      arg !== undefined &&
+      !arg.startsWith('--')
+    ) {
+      args.target = arg;
     } else {
       throw new Error(`unknown argument ${arg ?? ''}`);
     }
@@ -302,6 +343,7 @@ async function refuseOffersNotHonoured(
     config.inboxRelays,
     config.network,
     standingTerms(state.terms),
+    config.tempo === undefined ? undefined : tempoRegistryNetwork(config.tempo.network),
   );
   if (problems.length > 0) {
     throw new Error(
@@ -381,11 +423,23 @@ async function run(home: MerchantHome): Promise<void> {
     });
   };
 
+  const tempo = tempoContextFor(config, storePubkey);
+  const mediums = [
+    ...(config.rpcUrl === undefined ? [] : [SOLANA_MEDIUMS[config.network]]),
+    ...(tempo === undefined ? [] : [tempo.medium]),
+  ];
   const runtime = new MerchantRuntime({
     state,
-    store: storeIdentity(storePubkey, config.product.d, [SOLANA_MEDIUMS[config.network]]),
+    store: storeIdentity(storePubkey, config.product.d, mediums),
     storeSecretKey: keys.storeSecretKey,
-    context: { rpc: createSolanaRpc(config.rpcUrl), network: config.network },
+    // With no Solana payout the Solana catch-up has no terms to scan and reads nothing.
+    context: {
+      rpc: createSolanaRpc(config.rpcUrl ?? 'https://api.devnet.solana.com'),
+      network: config.network,
+    },
+    ...(tempo === undefined ? {} : { tempo }),
+    // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
+    ...(config.rpcUrl === undefined ? { catchUp: async () => ({ paid: [], incomplete: [] }) } : {}),
     save: () => saveLedger(home.ledger, state),
     deliver: (order, skip) => deliver(pool, order, skip, config, keys),
     inboxRelayCount: config.inboxRelays.length,
@@ -455,6 +509,13 @@ function listOrders(home: MerchantHome): void {
     console.log(`${when} ${orderStatus(order)} ${order.key}${paid}${email}`);
   }
   console.log(`${all.length} order(s)`);
+  for (const [key, answer] of Object.entries(state.answeredByHand ?? {})) {
+    const detail =
+      answer.kind === 'delivered'
+        ? (answer.delivery?.value ?? '')
+        : `${answer.amount ?? ''} in ${answer.tx ?? ''}`;
+    console.log(`answered by hand: ${key} ${answer.kind} ${detail}`);
+  }
 }
 
 async function check(home: MerchantHome): Promise<void> {
@@ -480,6 +541,89 @@ async function check(home: MerchantHome): Promise<void> {
       throw new Error(
         `these inbox relays do not take and serve gift wraps for any key: ${failing.join(', ')}`,
       );
+    }
+  } finally {
+    pool.destroy();
+  }
+}
+
+/** Ask on a terminal; without one, refuse rather than wait or assume. */
+async function confirmed(question: string, yes: boolean): Promise<boolean> {
+  if (yes) {
+    return true;
+  }
+  if (!process.stdin.isTTY) {
+    throw new Error('no terminal to confirm on: pass --yes to answer without asking');
+  }
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await prompt.question(`${question} [y/N] `);
+    return answer.trim().toLowerCase() === 'y';
+  } finally {
+    prompt.close();
+  }
+}
+
+/**
+ * Answer an order by hand. The node must be stopped (the lock): a running node
+ * rewrites the ledger from memory. The close is saved first, then the answer
+ * published to the store's inbox relays; below the delivery threshold the
+ * command fails, and a rerun sends the same answer again.
+ */
+async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
+  const key = args.target;
+  if (key === undefined) {
+    throw new Error(`${args.command ?? ''} needs the order: <buyer>:<orderId> (see orders)`);
+  }
+  const config = loadConfig(home.config);
+  const keys = loadOrCreateKeys(home, false);
+  takeLock(home);
+  const state = loadLedger(home.ledger);
+  const request: HandRequest =
+    args.command === 'deliver'
+      ? { kind: 'delivered', delivery: config.product.delivery }
+      : { kind: 'refunded', tx: args.tx ?? '', amount: args.amount ?? '' };
+  const plan = planHandAnswer(state, key, request);
+  if (!plan.ok) {
+    throw new Error(plan.problem);
+  }
+  const order = state.orders[key];
+  const held = order ?? plan.answer;
+  console.log(`order    ${key}${order === undefined ? ' (closed)' : ''}`);
+  console.log(`reported ${held.reportedTxs.join(', ') || '-'}`);
+  console.log(`refused  ${(held.refusedTxs ?? []).join(', ') || '-'}`);
+  console.log(`no leg   ${(held.noLegTxs ?? []).join(', ') || '-'}`);
+  if (order?.blockedTx !== undefined) {
+    console.log(`blocked  ${order.blockedTx}`);
+  }
+  const what =
+    plan.answer.kind === 'delivered'
+      ? `deliver "${plan.answer.delivery?.value ?? ''}"`
+      : `report a refund of ${plan.answer.amount ?? ''} in ${plan.answer.tx ?? ''}`;
+  if (
+    !(await confirmed(`${plan.rerun ? 'Send again' : 'Close the order and'} ${what}?`, args.yes))
+  ) {
+    throw new Error('not confirmed: nothing was sent');
+  }
+  if (!plan.rerun) {
+    applyHandAnswer(state, key, plan.answer);
+    saveLedger(home.ledger, state);
+  }
+  const pool = new SimplePool();
+  try {
+    const wrap = buildHandAnswer(plan, keys.storeSecretKey, nowSecs());
+    const taken = await publishToRelays(
+      pool,
+      config.inboxRelays,
+      wrap.recipientWrap,
+      storeAuth(keys),
+      log,
+    );
+    console.log(
+      `taken by ${taken.length} of ${config.inboxRelays.length}: ${taken.join(', ') || '-'}`,
+    );
+    if (!deliveryDone(taken.length, config.inboxRelays.length, 0)) {
+      throw new Error('too few inbox relays took it: run the same command again to send it again');
     }
   } finally {
     pool.destroy();
@@ -517,6 +661,11 @@ async function main(): Promise<void> {
       return;
     case 'check':
       await check(home);
+      process.exit(0);
+      return;
+    case 'deliver':
+    case 'refund':
+      await answerByHand(home, args);
       process.exit(0);
       return;
     default:

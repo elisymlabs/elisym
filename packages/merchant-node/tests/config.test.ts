@@ -40,12 +40,51 @@ describe('the merchant config', () => {
     ).toEqual(['payouts.0.caip19: is on mainnet, the node runs on devnet']);
     expect(
       configProblems({ ...valid(), payouts: [{ caip19: TEMPO_USDC, address: PAYOUT }] }),
-    ).toEqual(['payouts.0.caip19: must be a Solana coin this node can verify']);
+    ).toEqual(['payouts.0.caip19: is a Tempo coin: add a "tempo" block for the node to verify it']);
     const twice = { caip19: USDC_DEVNET_CAIP19, address: PAYOUT as string };
     expect(configProblems({ ...valid(), payouts: [twice, twice] })).toEqual([
       'payouts.1.caip19: is listed twice: one payout per coin',
     ]);
     expect(configProblems({ ...valid(), payouts: [] })).toHaveLength(1);
+  });
+
+  it('takes Tempo payouts on the configured Tempo network only, at a payable address', () => {
+    const tempoPayout = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
+    const withTempo = { ...valid(), tempo: { network: 'mainnet' } };
+    expect(
+      configProblems({
+        ...withTempo,
+        payouts: [...valid().payouts, { caip19: TEMPO_USDC, address: tempoPayout }],
+      }),
+    ).toEqual([]);
+    // Moderato is the registry's devnet: a mainnet coin is refused there.
+    expect(
+      configProblems({
+        ...valid(),
+        tempo: { network: 'moderato' },
+        payouts: [{ caip19: TEMPO_USDC, address: tempoPayout }],
+      }),
+    ).toEqual(['payouts.0.caip19: is not on Tempo moderato']);
+    for (const address of [
+      tempoPayout.toUpperCase().replace('0X', '0x'),
+      '0x20c000000000000000000000b9537d11c60e8b50',
+    ]) {
+      expect(
+        configProblems({ ...withTempo, payouts: [{ caip19: TEMPO_USDC, address }] }),
+      ).toHaveLength(1);
+    }
+  });
+
+  it('needs the Solana RPC only with a Solana payout', () => {
+    const tempoOnly = {
+      ...valid(),
+      tempo: { network: 'mainnet' },
+      payouts: [{ caip19: TEMPO_USDC, address: '0x5696da2cecea22f127948458382ac2c59bc8e4bb' }],
+    };
+    const { rpcUrl: _dropped, ...withoutRpc } = tempoOnly;
+    expect(configProblems(withoutRpc)).toEqual([]);
+    const { rpcUrl: _solana, ...solanaWithoutRpc } = valid();
+    expect(configProblems(solanaWithoutRpc)).toEqual(['rpcUrl: is required with a Solana payout']);
   });
 
   it('refuses an inbox relay the checkout never contacts, or one listed twice', () => {

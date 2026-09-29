@@ -9,8 +9,8 @@ import type { HandshakeRefusal } from './handshake';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 
-/** Rails the widget pays on today: Tempo joins in step 7. */
-export const PAYABLE_FAMILIES = ['solana'] as const;
+/** Rails the widget pays on: Solana and Tempo (an EVM chain). */
+export const PAYABLE_FAMILIES = ['solana', 'evm'] as const;
 
 export type Screen =
   /** Waiting for the page's hello; no Buy button yet. */

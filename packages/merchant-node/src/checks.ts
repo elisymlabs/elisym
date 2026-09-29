@@ -159,6 +159,8 @@ export function offersNotHonoured(
   payoutList: NostrEvent | undefined,
   network: Network,
   standing: readonly OfferTerms[],
+  /** The registry network of the node's Tempo block, when it has one. */
+  tempoNetwork?: Network,
 ): string[] | undefined {
   if (listing === undefined && payoutList === undefined) {
     return undefined;
@@ -167,8 +169,11 @@ export function offersNotHonoured(
   const found = targets
     .filter(
       (target) =>
-        target.caip19.chain.family !== 'solana' ||
-        target.caip19.chain.network !== network ||
+        (target.caip19.chain.family === 'solana'
+          ? target.caip19.chain.network !== network
+          : target.caip19.chain.family !== 'evm' ||
+            tempoNetwork === undefined ||
+            target.caip19.chain.network !== tempoNetwork) ||
         !standing.some(
           (terms) => terms.caip19 === target.caip19.id && terms.payout === target.address,
         ),
@@ -243,6 +248,7 @@ export function offerProblems(
   inboxRelays: readonly string[],
   network: Network,
   standing: readonly OfferTerms[],
+  tempoNetwork?: Network,
 ): { problems: string[]; served: boolean } {
   const problems = new Set<string>();
   let served = false;
@@ -250,7 +256,13 @@ export function offerProblems(
     for (const relay of inboxRelaysNotRead(view.inboxList, inboxRelays) ?? []) {
       problems.add(`orders sent to ${relay}, which this node does not read`);
     }
-    const notHonoured = offersNotHonoured(view.listing, view.payoutList, network, standing);
+    const notHonoured = offersNotHonoured(
+      view.listing,
+      view.payoutList,
+      network,
+      standing,
+      tempoNetwork,
+    );
     served ||= notHonoured !== undefined;
     for (const offer of notHonoured ?? []) {
       problems.add(offer);

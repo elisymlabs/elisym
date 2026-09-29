@@ -1,4 +1,4 @@
-import { buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
+import { buildOrderMessage, deriveOrderPaymentReference, wrapOrderMessage } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { describe, expect, it } from 'vitest';
 import {
@@ -255,8 +255,18 @@ describe('the sweep', () => {
     deps.catchUp = async () => {
       throw new Error('node down');
     };
-    const failing = new MerchantRuntime(deps);
-    await expect(failing.sweep(true, T0 + 100)).rejects.toThrow('node down');
+    let tempoSwept = false;
+    const failing = new MerchantRuntime({
+      ...deps,
+      tempo: {} as never,
+      catchUpTempo: async () => {
+        tempoSwept = true;
+        return { paid: [], incomplete: [] };
+      },
+    });
+    // The Solana RPC failing neither throws out of the sweep nor stops the Tempo catch-up.
+    await failing.sweep(true, T0 + 100);
+    expect(tempoSwept).toBe(true);
     expect(events).toEqual(['save', 'deliver:k', 'save']);
     expect(state.resumeAt).toBe(T0 + 100);
     expect(runtime).toBeDefined();
@@ -558,5 +568,66 @@ describe('delivering to the inbox relays', () => {
     expect(Object.values(state.orders).every((order) => order.deliveredAt !== undefined)).toBe(
       true,
     );
+  });
+});
+
+describe('Tempo receipts at the runtime', () => {
+  const TEMPO_HASH = `0x${'ab'.repeat(32)}`;
+
+  function tempoReceipt(run: ReturnType<typeof harness>) {
+    return wrapped(
+      {
+        type: 'receipt',
+        storePubkey: run.store.pubkey,
+        orderId: ORDER_ID,
+        payment: {
+          medium: 'tempo',
+          reference: deriveOrderPaymentReference({
+            storePubkey: run.store.pubkey,
+            buyerPubkey: run.buyer.pubkey,
+            orderId: ORDER_ID,
+          }).tempo,
+          tx: TEMPO_HASH,
+        },
+      },
+      run.buyer,
+      run.store.pubkey,
+    );
+  }
+
+  it('checks a reported Tempo hash on the Tempo side, and sets a no-leg hash aside', async () => {
+    const run = harness();
+    run.state.orders = {};
+    const checked: string[] = [];
+    const runtime = new MerchantRuntime({
+      ...run.deps,
+      store: { ...run.identity, mediums: ['solana-devnet', 'tempo'] },
+      tempo: {} as never,
+      checkTempoPayment: async (_state, _order, hash) => {
+        checked.push(hash);
+        return { kind: 'no_leg' };
+      },
+    });
+    await runtime.handleWrap(run.order);
+    await runtime.handleWrap(tempoReceipt(run));
+    expect(checked).toEqual([TEMPO_HASH]);
+    expect(run.events).not.toContain(`check:${TEMPO_HASH}`);
+    const order = Object.values(run.state.orders)[0];
+    expect(order?.noLegTxs).toEqual([TEMPO_HASH]);
+    expect(order?.refusedTxs).toBeUndefined();
+    expect(run.state.version).toBe(2);
+  });
+
+  it('leaves a Tempo hash alone on a node with no tempo block', async () => {
+    const run = harness();
+    const runtime = new MerchantRuntime({
+      ...run.deps,
+      store: { ...run.identity, mediums: ['solana-devnet', 'tempo'] },
+    });
+    await runtime.handleWrap(run.order);
+    await runtime.handleWrap(tempoReceipt(run));
+    expect(run.events).not.toContain(`check:${TEMPO_HASH}`);
+    const order = Object.values(run.state.orders)[0];
+    expect(order?.refusedTxs).toBeUndefined();
   });
 });

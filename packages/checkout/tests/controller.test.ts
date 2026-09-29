@@ -37,7 +37,11 @@ describe('the screen for a page', () => {
     const screen = await screenForPage({ ...params, strictOrigin: false }, PAGE, deps);
     expect(screen).toMatchObject({ kind: 'offer' });
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ pageOrigin: PAGE, families: ['solana'], network: 'devnet' });
+    expect(seen[0]).toMatchObject({
+      pageOrigin: PAGE,
+      families: ['solana', 'evm'],
+      network: 'devnet',
+    });
     expect(seen[0]?.strictOrigin).toBeUndefined();
     expect(seen[0]?.pins).toBeUndefined();
     // The page's strict-origin attribute tightens: a level C store is refused.

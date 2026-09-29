@@ -101,8 +101,19 @@ export interface OrderRecord {
   marker?: PaymentMarker;
   /** The transaction that paid, once found. */
   paidTx?: string;
+  /** Wall-clock seconds when the payment was found (UI only: the "no answer" timer). */
+  paidAt?: number;
   status?: OrderStatus;
+  /**
+   * Tempo only: why the record ended unpaid, written in the same write and never
+   * changed. `over` means a wallet prompt may still be open and could still be approved.
+   */
+  endedBy?: EndedBy;
+  /** Tempo `over` records whose old-prompt warning the buyer confirmed for THIS record. */
+  confirmedOverIds?: string[];
 }
+
+export type EndedBy = 'rejected' | 'over' | 'nothing';
 
 export const TERMINAL_STATES: readonly OrderState[] = ['completed', 'refunded'];
 

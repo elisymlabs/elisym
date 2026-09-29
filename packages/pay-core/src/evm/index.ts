@@ -15,7 +15,14 @@ export {
   MAX_EVM_FEE_BPS,
 } from './config';
 export type { EvmProtocolConfig, GetEvmProtocolConfigOptions } from './config';
-export { readHexData, readQuantity, readWords, readUint256, readAddressWord } from './rpc-read';
+export {
+  readHexData,
+  readQuantity,
+  readWords,
+  readUint256,
+  readAddressWord,
+  readTxHash,
+} from './rpc-read';
 export {
   buildTempoPaymentCalls,
   composeTempoPaymentRequest,
@@ -42,6 +49,7 @@ export {
 export {
   listTempoLogs,
   listTempoBlockedLogs,
+  readBlockByNumber,
   readFinalizedBlock,
   type ListBlockedLogsOptions,
   type ListTempoLogsOptions,
@@ -53,6 +61,11 @@ export {
   type TempoTransferEvent,
   type TempoTransferLog,
 } from './logs';
+export {
+  readTempoReceiptLegs,
+  type ReadTempoReceiptLegsOptions,
+  type TempoReceiptLegs,
+} from './receipt-legs';
 export {
   canReceiveFrom,
   canStrangerReceive,

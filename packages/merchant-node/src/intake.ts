@@ -4,8 +4,9 @@ import {
   productAddress,
 } from '@elisym/commerce';
 import { EARLIEST_ORDER_SECS, MAX_RECEIPTS_PER_ORDER } from './constants';
-import { type LedgerState, type MerchantOrder, orderKey, recordReport } from './ledger';
+import { type LedgerState, type MerchantOrder, markTempo, orderKey, recordReport } from './ledger';
 import { isSolanaSignature } from './signature';
+import { TEMPO_HASH_RE } from './tempo';
 
 export interface StoreIdentity {
   storePubkey: string;
@@ -111,10 +112,20 @@ export function intake(
       return { kind: 'ignored', reason: 'unknown_order' };
     }
     const { medium, reference, tx } = message.payment;
+    // The medium names the rail, and the rail decides the reference and the tx
+    // spelling: a Tempo receipt carries this order's memo and a lowercase hash.
+    const tempo = medium.startsWith('tempo');
+    const expected = tempo
+      ? deriveOrderPaymentReference({
+          storePubkey: store.storePubkey,
+          buyerPubkey: order.buyerPubkey,
+          orderId: order.orderId,
+        }).tempo
+      : order.reference;
     if (
-      reference !== order.reference ||
+      reference !== expected ||
       !store.mediums.includes(medium) ||
-      !isSolanaSignature(tx)
+      !(tempo ? TEMPO_HASH_RE.test(tx) : isSolanaSignature(tx))
     ) {
       return { kind: 'ignored', reason: 'foreign_payment' };
     }
@@ -125,6 +136,9 @@ export function intake(
     const isNew = !order.reportedTxs.includes(tx);
     if (isNew) {
       recordReport(order, tx, now);
+      if (tempo) {
+        markTempo(state);
+      }
     }
     return { kind: 'receipt', order, tx, isNew };
   }

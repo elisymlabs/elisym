@@ -29,9 +29,22 @@ import {
   retryWithSolana,
   watchSolanaPayment,
 } from '@elisym/commerce/buyer';
+import {
+  type TempoPayDeps,
+  type TempoPayResult,
+  type TempoWallet,
+  endTempoOrder,
+  mayStillBePaid,
+  payWithTempo,
+  MERCHANT_CATCH_UP_SECS,
+  readTempoChainTime,
+  watchTempoPayment,
+} from '@elisym/commerce/buyer';
 import type { Asset, Network } from '@elisym/pay-core';
+import type { Eip1193Client } from '@elisym/pay-core/evm';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import type { CheckoutState } from '../embed/protocol';
+import type { TempoWalletOption } from './evm-wallets';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 
@@ -43,6 +56,14 @@ export const REPUBLISH_EVERY_MS = 3 * 60_000;
 export const UNSURE_AFTER_SECS = 10 * 60;
 /** At most this many of the product's ended orders keep listening for a late delivery. */
 export const MAX_ENDED_LISTENERS = 5;
+/** A found payment with no store answer this long after: "contact the store". */
+export const NO_ANSWER_AFTER_SECS = 30 * 60;
+
+/** A wallet as the screens show it. */
+export interface WalletChoice {
+  name: string;
+  icon?: string;
+}
 
 /** A wallet the page can offer: connecting it yields the account that signs. */
 export interface WalletOption {
@@ -55,6 +76,7 @@ export type Problem =
   | { reason: 'no_wallet' | 'clock_skew' | 'rpc_error' | 'self_payment' | 'too_late' }
   | { reason: 'order_not_acknowledged' | 'no_store_inbox' | 'failed' | 'bad_email' }
   | { reason: 'wallet_failed' | 'wallet_unsupported' }
+  | { reason: 'policy_blocked' | 'wrong_chain' | 'rejected' | 'attempt_over' | 'late_approval' }
   | { reason: 'offer_changed' | 'confirm_first' | 'offer_refused' }
   | { reason: 'insufficient_token' | 'insufficient_sol'; needed: bigint; available: bigint };
 
@@ -63,11 +85,14 @@ export type View =
       kind: 'offer';
       offer: ReadyOffer;
       payout: PricedPayout;
+      /** The payouts this widget can pay (a chooser when more than one), and the one chosen. */
+      payouts: PricedPayout[];
+      payoutIndex: number;
       /** Warnings the buyer must confirm before any payment. */
       confirm: OfferWarning[];
       confirmed: boolean;
       notices: OfferWarning[];
-      wallets: WalletOption[];
+      wallets: WalletChoice[];
       problem?: Problem;
       /** An earlier order of this product is still open (acknowledged, not paid). */
       continuing: boolean;
@@ -84,7 +109,9 @@ export type View =
       /** The attempt provably ended with no payment: a retry is safe. */
       canRetry: boolean;
       /** Wallets for the retry. */
-      wallets: WalletOption[];
+      wallets: WalletChoice[];
+      /** A Tempo attempt: no retry here; "check your wallet activity" while it stays open. */
+      tempo: boolean;
       /** Warnings a retry needs confirmed (after a reload the confirmation is asked again). */
       confirm: OfferWarning[];
       confirmed: boolean;
@@ -92,7 +119,25 @@ export type View =
       unsureLong: boolean;
       problem?: Problem;
     }
-  | { kind: 'waiting_store'; explorer?: string; cancelled: boolean }
+  | {
+      kind: 'waiting_store';
+      explorer?: string;
+      cancelled: boolean;
+      /** Paid, and no answer from the store for 30 minutes: contact the store. */
+      noAnswer: boolean;
+    }
+  /**
+   * A Tempo order of this product ended with its wallet prompt maybe still open:
+   * approving it pays that order too. Asked before this payment's wallet opens.
+   */
+  | {
+      kind: 'old_prompt';
+      orders: number;
+      /** After this (seconds), the store no longer sees an approval of the old request. */
+      until: number;
+    }
+  /** The recipient's transfer policy blocked the payment: the money sits with the guard. */
+  | { kind: 'blocked' }
   /** The store cancelled an order that was not paid: a new one may start. */
   | { kind: 'cancelled' }
   | { kind: 'delivered'; text: string; link?: string }
@@ -119,12 +164,31 @@ export interface SessionDeps {
   onStatus(state: CheckoutState): void;
   /** The merchant set `collect-email`: the offer asks for one (optional). */
   collectEmail?: boolean;
+  /** Tempo: a read RPC of a Tempo network, or `undefined` when none is configured. */
+  tempoFor?(network: Network): Eip1193Client | undefined;
+  /** Tempo: wallets (EIP-6963) that can pay on this Tempo network. */
+  tempoWallets?(network: Network): TempoWalletOption[];
+  /** Tempo chain time (seconds): the finalized head. */
+  tempoChainTime?(client: Eip1193Client): Promise<number>;
+  /**
+   * A store answer (or a late payment found) for an order not on screen: shown
+   * at once as a banner, never held back by the order that is.
+   */
+  onBanner?(banner: Banner): void;
   /**
    * The offer is refused now, but the product has an order to follow (paid,
    * paying, delivered, or ended and still heard): no new payment, this message
    * where the offer would be.
    */
   followOnly?: { message: string; orderId: string };
+}
+
+/** A late answer or find for an order that is not on screen. */
+export interface Banner {
+  orderId: string;
+  state: 'paid' | 'blocked' | 'completed' | 'refunded';
+  text?: string;
+  link?: string;
 }
 
 /** At most this long, and shaped like an address; anything else is not sent. */
@@ -142,6 +206,16 @@ function networkOf(payout: PricedPayout): Network {
   return payout.target.caip19.chain.network;
 }
 
+type Rail = 'solana' | 'tempo';
+
+function railOf(payout: PricedPayout): Rail {
+  return payout.target.caip19.chain.family === 'evm' ? 'tempo' : 'solana';
+}
+
+function recordRail(record: OrderRecord): Rail {
+  return record.payout.caip19.startsWith('eip155:') ? 'tempo' : 'solana';
+}
+
 /**
  * The payout target an order was placed to, from the order's own snapshot: a
  * store that lists another network first later must never move the order's
@@ -155,6 +229,15 @@ function recordTarget(record: OrderRecord): PricedPayout['target'] | undefined {
 }
 
 const NO_NETWORK = 'This network is not available here yet.';
+
+/** The explorer page of a transaction on the record's own chain. */
+function explorerFor(record: OrderRecord, tx: string, network: Network): string {
+  if (recordRail(record) === 'solana') {
+    return explorerLink(tx, network);
+  }
+  const template = recordTarget(record)?.caip19.chain.explorerTx;
+  return template === undefined ? '' : template.replace('{tx}', tx);
+}
 
 /** The block explorer page of a Solana transaction. */
 export function explorerLink(signature: string, network: Network): string {
@@ -226,6 +309,22 @@ export class CheckoutSession {
   private readonly backgroundCreated = new Map<string, number>();
   /** Deliveries or refunds heard for ended orders, shown once nothing live is on screen. */
   private readonly pendingAnswers = new Map<string, OrderRecord>();
+  /** A Tempo hash returned in this session that could not be stored yet: the watch retries it. */
+  private pendingHash: { orderId: string; hash: string } | undefined;
+  /** A payment refused until the buyer confirms the old-prompt warning: the action, the orders. */
+  private oldPrompt:
+    | { walletName: string; action: 'pay' | 'retry'; unconfirmed: string[] }
+    | undefined;
+  /** What the last wallet press was (a confirmation re-runs it). */
+  private lastAction: 'pay' | 'retry' = 'pay';
+  /** A hash approved for an order another tab ended meanwhile: watched until it is found. */
+  private lateHash: { orderId: string; hash: string; timer: unknown } | undefined;
+  /** The one-shot "no answer from the store" redraw. */
+  private noAnswerTimer: { orderId: string; handle: unknown } | undefined;
+  /** The wallet of the last pay press (a confirmation re-runs it). */
+  private lastWallet = '';
+  /** When the page loaded: the "no answer" timer of a payment found before `paidAt` existed. */
+  private readonly loadedAt: number;
 
   constructor(
     offer: ReadyOffer,
@@ -233,18 +332,26 @@ export class CheckoutSession {
   ) {
     this.followOnly = deps.followOnly;
     this.offer = offer;
-    const payout = offer.payouts[0];
+    // The first payout's network is the page's: never a quiet switch to another
+    // network. Among its payouts, the first this widget can pay is the default.
+    const first = offer.payouts[0];
+    const payout =
+      offer.payouts.find(
+        (each) =>
+          first !== undefined && networkOf(each) === networkOf(first) && this.servable(each),
+      ) ?? first;
     if (payout === undefined) {
       throw new Error('an offer without a payout');
     }
     this.payout = payout;
     this.confirmed = offer.confirm.length === 0;
+    this.loadedAt = deps.now();
   }
 
   /** Resume the product's open record (published again, the store's inbox read again), or show the offer. */
   async start(): Promise<void> {
     const records = await this.deps.store.forProduct(this.offer.productAddress);
-    if (this.followOnly === undefined && this.deps.rpcFor(networkOf(this.payout)) === undefined) {
+    if (this.followOnly === undefined && !this.servable(this.payout)) {
       // No new payment on this network. An order paid or paying on a served one is
       // still followed, and orders that ended unpaid are still heard.
       const stillFollowed = recordToShow(
@@ -253,7 +360,7 @@ export class CheckoutSession {
             record.state !== 'created' &&
             record.state !== 'ordered' &&
             !gone(record) &&
-            (isTerminal(record) || this.rpcOfRecord(record) !== undefined),
+            (isTerminal(record) || this.recordServed(record)),
         ),
       );
       this.followOnly = {
@@ -262,6 +369,8 @@ export class CheckoutSession {
       };
     }
     this.listenToEnded(records);
+    // A Tempo order that ended with its prompt still open may have been paid since.
+    await this.reconcileEnded(records);
     // Follow-only: exactly the order the snapshot was built from, never another.
     const followed = this.followOnly;
     const shown =
@@ -295,9 +404,59 @@ export class CheckoutSession {
     this.email = value;
   }
 
+  /** The buyer picked another payout (chosen BEFORE the order is placed). */
+  choosePayout(index: number): void {
+    const payout = this.payablePayouts()[index];
+    if (payout === undefined || this.busy || this.record?.state === 'paying') {
+      return;
+    }
+    this.payout = payout;
+    this.showOffer();
+  }
+
+  /** The buyer confirmed the old-prompt warning: the refused payment runs again. */
+  async confirmOldPrompt(): Promise<void> {
+    const pending = this.oldPrompt;
+    const current =
+      this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
+    if (pending === undefined || this.busy || current === undefined) {
+      return;
+    }
+    this.oldPrompt = undefined;
+    const confirmed = [...new Set([...(current.confirmedOverIds ?? []), ...pending.unconfirmed])];
+    const written = await this.deps.store.update(current.orderId, current.version, {
+      confirmedOverIds: confirmed,
+    });
+    if (!written.ok) {
+      this.showOffer({ reason: 'failed' });
+      return;
+    }
+    this.setRecord(written.record);
+    if (pending.action === 'retry') {
+      await this.retry(pending.walletName);
+    } else {
+      await this.pay(pending.walletName);
+    }
+  }
+
+  /** The buyer declined: back to what is on screen, nothing requested. */
+  cancelOldPrompt(): void {
+    this.oldPrompt = undefined;
+    if (this.record?.state === 'paying') {
+      void this.follow(this.record);
+    } else {
+      this.showOffer();
+    }
+  }
+
   /** Pay with the wallet named `walletName`. */
   async pay(walletName: string): Promise<void> {
     if (this.busy || this.followOnly !== undefined) {
+      return;
+    }
+    this.lastWallet = walletName;
+    this.lastAction = 'pay';
+    if (this.lateHashHolds()) {
       return;
     }
     if (await this.deliveryFirst()) {
@@ -313,6 +472,10 @@ export class CheckoutSession {
       usableEmail(this.email) === undefined
     ) {
       this.showOffer({ reason: 'bad_email' });
+      return;
+    }
+    if (railOf(this.payout) === 'tempo') {
+      await this.payTempo(walletName);
       return;
     }
     await this.guard(async () => {
@@ -356,10 +519,342 @@ export class CheckoutSession {
     });
   }
 
+  /**
+   * Pay on Tempo: connect (accounts, then the chain) before anything is ordered
+   * or composed, order on Tempo's finalized time, then one wallet request. No
+   * retry exists on Tempo: an attempt stays live until it is found or proven over.
+   */
+  private async payTempo(walletName: string): Promise<void> {
+    await this.guard(async () => {
+      this.deps.onView({ kind: 'working', step: 'checking' });
+      const network = networkOf(this.payout);
+      const option = this.deps.tempoWallets?.(network).find((each) => each.name === walletName);
+      if (option === undefined) {
+        this.showOffer({ reason: 'no_wallet' });
+        return;
+      }
+      let wallet: TempoWallet;
+      try {
+        wallet = await option.connect();
+      } catch {
+        this.showOffer({ reason: 'no_wallet' });
+        return;
+      }
+      const ready = await this.freshOffer();
+      if (ready === undefined) {
+        return;
+      }
+      const client = this.deps.tempoFor?.(network);
+      if (client === undefined) {
+        this.showOffer({ reason: 'rpc_error' });
+        return;
+      }
+      let chainTime: number;
+      try {
+        chainTime = await (this.deps.tempoChainTime ?? readTempoChainTime)(client);
+      } catch {
+        this.showOffer({ reason: 'rpc_error' });
+        return;
+      }
+      if (!clockAgrees(chainTime, this.deps.now())) {
+        this.showOffer({ reason: 'clock_skew' });
+        return;
+      }
+      const record = await this.orderFor(chainTime);
+      if (record === undefined) {
+        return;
+      }
+      this.deps.onView({ kind: 'working', step: 'signing' });
+      this.stopWatching();
+      this.generation += 1;
+      const result = await payWithTempo(record, wallet, ready, this.tempoDeps(client));
+      await this.afterTempoPay(result);
+    });
+  }
+
+  private async afterTempoPay(result: TempoPayResult): Promise<void> {
+    if (result.record !== undefined) {
+      const stored = await this.deps.store.get(result.record.orderId);
+      this.setRecord(stored !== undefined && isTerminal(stored) ? stored : result.record);
+      if (stored !== undefined && isTerminal(stored)) {
+        await this.follow(stored);
+        return;
+      }
+    }
+    if (result.ok) {
+      this.attemptProblem = undefined;
+      this.attemptOver = false;
+      if (result.hashUnsaved === true && result.record.state === 'ended-unpaid') {
+        // Another tab ended the order while the wallet was open: the buyer approved
+        // it anyway. The hash is watched until the payment is found, and said so.
+        this.watchLateHash(result.record, result.hash);
+        // Its store answer still comes: heard in the background, shown as a banner.
+        this.listenToEnded([result.record], this.relays);
+        this.setRecord(undefined);
+        this.showOffer({ reason: 'late_approval' });
+        return;
+      }
+      if (result.hashUnsaved === true) {
+        this.pendingHash = { orderId: result.record.orderId, hash: result.hash };
+      }
+      await this.follow(result.record);
+      return;
+    }
+    switch (result.reason) {
+      case 'insufficient_token':
+        this.showOrWait({
+          reason: 'insufficient_token',
+          needed: result.needed ?? 0n,
+          available: result.available ?? 0n,
+        });
+        return;
+      case 'needs_confirmation':
+        await this.askOldPrompt(result.unconfirmed ?? []);
+        return;
+      case 'rejected':
+        // Nothing was signed: the order ended, a new one may start (no old-prompt warning).
+        this.setRecord(undefined);
+        if (result.record !== undefined) {
+          this.listenToEnded([result.record]);
+        }
+        this.status('ended');
+        this.showOffer({ reason: 'rejected' });
+        return;
+      case 'wallet_failed':
+        // No hash: the attempt may still land (a queued prompt): it stays live.
+        this.attemptProblem = { reason: 'wallet_failed' };
+        this.attemptOver = false;
+        if (this.record !== undefined) {
+          await this.follow(this.record);
+        }
+        return;
+      case 'policy_blocked':
+      case 'wrong_chain':
+      case 'self_payment':
+      case 'rpc_error':
+        this.showOrWait({ reason: result.reason });
+        return;
+      case 'offer_changed':
+      case 'too_late':
+      case 'unpayable': {
+        const current =
+          this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
+        const ended = current === undefined ? undefined : await this.endOrder(current);
+        if (ended !== undefined && !ended.ended) {
+          await this.follow(ended.record);
+          return;
+        }
+        this.setRecord(undefined);
+        this.showOffer({ reason: result.reason === 'unpayable' ? 'failed' : result.reason });
+        return;
+      }
+      case 'exclusion': {
+        const holder =
+          result.holder === undefined ? undefined : await this.deps.store.get(result.holder);
+        if (holder !== undefined) {
+          await this.follow(holder);
+          return;
+        }
+        this.showOffer({ reason: 'failed' });
+        return;
+      }
+      default: {
+        const current =
+          this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
+        if (current !== undefined) {
+          await this.follow(current);
+        } else {
+          this.showOffer({ reason: 'failed' });
+        }
+      }
+    }
+  }
+
+  /** A payment refused for an ended Tempo order whose prompt may still be approved: ask. */
+  private async askOldPrompt(unconfirmed: string[]): Promise<void> {
+    this.oldPrompt = { walletName: this.lastWallet, action: this.lastAction, unconfirmed };
+    let until = 0;
+    try {
+      const records = await this.deps.store.forProduct(this.offer.productAddress);
+      until = Math.max(
+        0,
+        ...records
+          .filter((record) => unconfirmed.includes(record.orderId))
+          .map((record) => record.createdAt + MERCHANT_CATCH_UP_SECS),
+      );
+    } catch {
+      // The date is shown when known; the question is asked either way.
+    }
+    this.deps.onView({ kind: 'old_prompt', orders: unconfirmed.length, until });
+  }
+
+  /** An unsaved hash of an order another tab ended: it is a late approval now. */
+  private adoptLateHash(record: OrderRecord): void {
+    if (this.pendingHash?.orderId === record.orderId) {
+      this.watchLateHash(record, this.pendingHash.hash);
+      this.pendingHash = undefined;
+    }
+  }
+
+  /**
+   * An approval of an ended order is in flight (known only in this session):
+   * no other payment of the product until it is found - the buyer approved it,
+   * so there is no prompt left to reject.
+   */
+  private lateHashHolds(): boolean {
+    if (this.lateHash === undefined) {
+      return false;
+    }
+    this.showOffer({ reason: 'late_approval' });
+    return true;
+  }
+
+  /** Watch a hash approved for an ended order until it is found (or blocked): a banner then. */
+  private watchLateHash(record: OrderRecord, hash: string): void {
+    const client = this.tempoOfRecord(record);
+    if (client === undefined || this.disposed) {
+      return;
+    }
+    if (this.lateHash !== undefined) {
+      this.deps.clearInterval(this.lateHash.timer);
+    }
+    let checking = false;
+    const check = async () => {
+      if (checking || this.disposed) {
+        return;
+      }
+      checking = true;
+      try {
+        const current = await this.deps.store.get(record.orderId);
+        if (current === undefined) {
+          return;
+        }
+        const watched = await watchTempoPayment(current, this.tempoDeps(client), {
+          pendingHash: hash,
+        });
+        if (watched.state === 'paid' || watched.state === 'blocked' || watched.state === 'closed') {
+          this.banner(watched.record);
+          if (this.lateHash !== undefined) {
+            this.deps.clearInterval(this.lateHash.timer);
+            this.lateHash = undefined;
+          }
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = this.deps.setInterval(() => void check().catch(() => undefined), WATCH_EVERY_MS);
+    this.lateHash = { orderId: record.orderId, hash, timer };
+    void check().catch(() => undefined);
+  }
+
+  private tempoDeps(client: Eip1193Client): TempoPayDeps {
+    return {
+      store: this.deps.store,
+      readClient: this.deps.readClient,
+      clientFor: this.deps.clientFor,
+      client,
+      now: this.deps.now,
+    };
+  }
+
+  /** The payouts this widget can pay now, on the network of the offer's first payout. */
+  private payablePayouts(): PricedPayout[] {
+    const first = this.offer.payouts[0];
+    return this.offer.payouts.filter(
+      (payout) =>
+        first !== undefined && networkOf(payout) === networkOf(first) && this.servable(payout),
+    );
+  }
+
+  private servable(payout: PricedPayout): boolean {
+    const network = networkOf(payout);
+    return railOf(payout) === 'tempo'
+      ? this.deps.tempoFor?.(network) !== undefined
+      : this.deps.rpcFor(network) !== undefined;
+  }
+
+  /** The record's own chain is reachable from here. */
+  private recordServed(record: OrderRecord): boolean {
+    return recordRail(record) === 'tempo'
+      ? this.tempoOfRecord(record) !== undefined
+      : this.rpcOfRecord(record) !== undefined;
+  }
+
+  private tempoOfRecord(record: OrderRecord): Eip1193Client | undefined {
+    const network = this.networkOfRecord(record);
+    return network === undefined ? undefined : this.deps.tempoFor?.(network);
+  }
+
+  private walletChoices(payout: PricedPayout): WalletChoice[] {
+    const network = networkOf(payout);
+    const options =
+      railOf(payout) === 'tempo'
+        ? (this.deps.tempoWallets?.(network) ?? [])
+        : this.deps.wallets(network);
+    return options.map((option) => ({
+      name: option.name,
+      ...(option.icon === undefined ? {} : { icon: option.icon }),
+    }));
+  }
+
+  /**
+   * Each load: every Tempo order of the product that ended `over` recently is
+   * checked on its own chain, one after another - its prompt may have been
+   * approved since. A payment found (or blocked) shows as a banner, and a paid
+   * one holds the product again until the store answers.
+   */
+  private async reconcileEnded(records: readonly OrderRecord[]): Promise<void> {
+    const now = this.deps.now();
+    for (const record of records) {
+      // Ended orders whose prompt may still be approved, and every paying Tempo
+      // order whether or not it is the one shown: each is checked once per load.
+      const eligible = mayStillBePaid(record, now) || record.state === 'paying';
+      if (this.disposed || recordRail(record) !== 'tempo' || !eligible) {
+        continue;
+      }
+      const client = this.tempoOfRecord(record);
+      if (client === undefined) {
+        continue;
+      }
+      try {
+        const watched = await watchTempoPayment(record, this.tempoDeps(client));
+        if (watched.state === 'paid' || watched.state === 'blocked') {
+          this.banner(watched.record);
+        } else if (watched.state === 'over') {
+          // A paying order proven over (no hash, no pending call): it ends `over`.
+          await endTempoOrder(watched.record, this.tempoDeps(client));
+        }
+      } catch {
+        // Unreadable now: the next load checks again.
+      }
+    }
+  }
+
+  private banner(record: OrderRecord): void {
+    const state = record.state;
+    if (state !== 'paid' && state !== 'blocked' && state !== 'completed' && state !== 'refunded') {
+      return;
+    }
+    const text = state === 'completed' ? (record.status?.delivery ?? '') : undefined;
+    const link = text === undefined ? undefined : deliveryLink(text);
+    this.deps.onBanner?.({
+      orderId: record.orderId,
+      state,
+      ...(text === undefined ? {} : { text }),
+      ...(link === undefined ? {} : { link }),
+    });
+  }
+
   /** A new attempt for the same order, once the last one provably ended. */
   async retry(walletName: string): Promise<void> {
     const record = this.record;
     if (this.busy || record === undefined || this.followOnly !== undefined) {
+      return;
+    }
+    this.lastWallet = walletName;
+    this.lastAction = 'retry';
+    if (this.lateHashHolds()) {
       return;
     }
     if (!this.confirmed) {
@@ -449,6 +944,14 @@ export class CheckoutSession {
 
   dispose(): void {
     this.disposed = true;
+    if (this.lateHash !== undefined) {
+      this.deps.clearInterval(this.lateHash.timer);
+      this.lateHash = undefined;
+    }
+    if (this.noAnswerTimer !== undefined) {
+      this.deps.clearInterval(this.noAnswerTimer.handle);
+      this.noAnswerTimer = undefined;
+    }
     this.setRecord(undefined);
     for (const closer of this.background.values()) {
       closer.close();
@@ -490,12 +993,14 @@ export class CheckoutSession {
 
   /** End an order that holds nothing yet, or whose attempt provably ended on its own network. */
   private endOrder(record: OrderRecord): Promise<{ ended: boolean; record: OrderRecord }> {
+    const tempo = recordRail(record) === 'tempo' ? this.tempoOfRecord(record) : undefined;
     return endOrder(record, {
       store: this.deps.store,
       readClient: this.deps.readClient,
       clientFor: this.deps.clientFor,
       now: this.deps.now,
-      rpc: this.rpcOfRecord(record),
+      rpc: recordRail(record) === 'solana' ? this.rpcOfRecord(record) : undefined,
+      ...(tempo === undefined ? {} : { tempo }),
     });
   }
 
@@ -679,6 +1184,11 @@ export class CheckoutSession {
       return undefined;
     }
     this.status('ordered');
+    // A Tempo request is composed at the pay press (after the checks), in the core.
+    if (recordRail(record) === 'tempo') {
+      this.listen(record);
+      return record;
+    }
     const composed = await composeOrderPayment(record, this.deps.store);
     if (!composed.ok) {
       this.showOffer({ reason: 'failed' });
@@ -741,6 +1251,9 @@ export class CheckoutSession {
       case 'rpc_error':
         this.showOrWait({ reason: result.reason });
         return;
+      case 'needs_confirmation':
+        await this.askOldPrompt(result.unconfirmed ?? []);
+        return;
       case 'exclusion': {
         // Another order of this product holds a live attempt: that one is what to follow.
         const holder =
@@ -790,6 +1303,7 @@ export class CheckoutSession {
   private async follow(record: OrderRecord, relays?: string[], problem?: Problem): Promise<void> {
     // Ended in another tab with nothing found: the product is free again.
     if (gone(record)) {
+      this.adoptLateHash(record);
       const relays = this.relays;
       this.setRecord(undefined);
       this.listenToEnded([record], relays);
@@ -839,6 +1353,7 @@ export class CheckoutSession {
     }
     const record = this.record;
     if (record !== undefined && gone(record)) {
+      this.adoptLateHash(record);
       const relays = this.relays;
       this.setRecord(undefined);
       this.listenToEnded([record], relays);
@@ -868,11 +1383,23 @@ export class CheckoutSession {
       return;
     }
     if (record.state === 'paid' || record.paidTx !== undefined) {
+      if (status === undefined) {
+        this.redrawAtNoAnswer(record);
+      }
       this.deps.onView({
         kind: 'waiting_store',
         cancelled: status?.status === 'cancelled',
-        ...(record.paidTx === undefined ? {} : { explorer: explorerLink(record.paidTx, network) }),
+        noAnswer:
+          status === undefined &&
+          this.deps.now() - (record.paidAt ?? this.loadedAt) > NO_ANSWER_AFTER_SECS,
+        ...(record.paidTx === undefined
+          ? {}
+          : { explorer: explorerFor(record, record.paidTx, network) }),
       });
+      return;
+    }
+    if (record.state === 'blocked') {
+      this.deps.onView({ kind: 'blocked' });
       return;
     }
     // The store cancelled and the attempt is over: only a new order is left.
@@ -881,16 +1408,26 @@ export class CheckoutSession {
       return;
     }
     const marker = record.marker;
-    const signature = marker?.rail === 'solana' ? marker.signature : undefined;
+    const tempo = recordRail(record) === 'tempo';
+    let signature: string | undefined;
+    if (marker?.rail === 'solana') {
+      signature = marker.signature;
+    } else if (marker?.rail === 'tempo') {
+      signature = marker.txHash ?? this.pendingHash?.hash;
+    }
     const problem = extra.problem ?? this.attemptProblem;
     this.deps.onView({
       kind: 'waiting_payment',
       asset: target?.caip19.asset ?? this.payout.target.caip19.asset,
-      // Follow-only never pays: no retry is offered (start over is).
-      canRetry: this.attemptOver,
+      tempo,
+      // Follow-only never pays: no retry is offered (start over is). Tempo has no retry.
+      canRetry: this.attemptOver && !tempo,
       wallets:
-        this.attemptOver && this.followOnly === undefined && target !== undefined
-          ? this.deps.wallets(network)
+        this.attemptOver && !tempo && this.followOnly === undefined && target !== undefined
+          ? this.deps.wallets(network).map((option) => ({
+              name: option.name,
+              ...(option.icon === undefined ? {} : { icon: option.icon }),
+            }))
           : [],
       confirm: this.attemptOver && this.followOnly === undefined ? this.offer.confirm : [],
       confirmed: this.confirmed,
@@ -898,7 +1435,7 @@ export class CheckoutSession {
         !this.attemptOver &&
         marker !== undefined &&
         this.deps.now() - marker.setAt > UNSURE_AFTER_SECS,
-      ...(signature === undefined ? {} : { explorer: explorerLink(signature, network) }),
+      ...(signature === undefined ? {} : { explorer: explorerFor(record, signature, network) }),
       ...(problem === undefined ? {} : { problem }),
     });
   }
@@ -914,10 +1451,12 @@ export class CheckoutSession {
       kind: 'offer',
       offer: this.offer,
       payout: this.payout,
+      payouts: this.payablePayouts(),
+      payoutIndex: Math.max(0, this.payablePayouts().indexOf(this.payout)),
       confirm: this.offer.confirm,
       confirmed: this.confirmed,
       notices: this.offer.notices,
-      wallets: this.deps.wallets(networkOf(this.payout)),
+      wallets: this.walletChoices(this.payout),
       continuing: this.record !== undefined && this.record.state === 'ordered',
       askEmail: this.deps.collectEmail === true,
       email: this.email,
@@ -943,9 +1482,9 @@ export class CheckoutSession {
     this.watchGeneration = generation;
     const tick = async () => {
       const record = this.record;
-      const rpc = record === undefined ? undefined : this.rpcOfRecord(record);
+      const served = record !== undefined && this.recordServed(record);
       // One tick at a time, never during an action, never for an older record or attempt.
-      if (this.watching || this.busy || record === undefined || rpc === undefined) {
+      if (this.watching || this.busy || record === undefined || !served) {
         return;
       }
       if (generation !== this.generation) {
@@ -960,7 +1499,10 @@ export class CheckoutSession {
         if (current === undefined) {
           return;
         }
-        const watched = await watchSolanaPayment(current, this.payDeps(rpc));
+        const watched = await this.watchOnce(current);
+        if (watched === undefined) {
+          return;
+        }
         if (
           this.busy ||
           generation !== this.generation ||
@@ -998,6 +1540,26 @@ export class CheckoutSession {
         } else if (watched.state === 'closed') {
           this.stopWatching();
           this.render();
+        } else if (watched.state === 'over' && recordRail(watched.record) === 'tempo') {
+          // A Tempo attempt proven over ends at once (no retry): its prompt stays open,
+          // so the next payment of the product asks for confirmation first.
+          this.stopWatching();
+          const client = this.tempoOfRecord(watched.record);
+          const ended =
+            client === undefined
+              ? undefined
+              : await endTempoOrder(watched.record, this.tempoDeps(client));
+          if (ended?.ended === true && generation === this.generation && !this.busy) {
+            this.setRecord(undefined);
+            this.listenToEnded([ended.record]);
+            this.status('ended');
+            this.showOffer({ reason: 'attempt_over' });
+            void this.showPendingAnswer();
+          } else if (generation === this.generation && !this.disposed) {
+            // Not ended (a lost write, a read that answered otherwise): keep watching.
+            this.render();
+            this.watch();
+          }
         } else if (watched.state === 'over') {
           this.stopWatching();
           this.attemptProblem = undefined;
@@ -1005,6 +1567,9 @@ export class CheckoutSession {
           this.render();
           // The attempt provably ended: a delivery already heard now shows.
           void this.showPendingAnswer();
+        } else if (watched.state === 'blocked') {
+          this.stopWatching();
+          this.render();
         } else {
           // Waiting: whatever was over, a new attempt (another tab's) is live now.
           this.attemptOver = false;
@@ -1019,6 +1584,60 @@ export class CheckoutSession {
       WATCH_EVERY_MS,
     );
     void tick().catch(() => undefined);
+  }
+
+  /** One watch pass on the record's own rail. */
+  private async watchOnce(
+    current: OrderRecord,
+  ): Promise<
+    | Awaited<ReturnType<typeof watchSolanaPayment>>
+    | Awaited<ReturnType<typeof watchTempoPayment>>
+    | undefined
+  > {
+    if (recordRail(current) === 'tempo') {
+      const client = this.tempoOfRecord(current);
+      if (client === undefined) {
+        return undefined;
+      }
+      const pending =
+        this.pendingHash?.orderId === current.orderId ? this.pendingHash.hash : undefined;
+      const watched = await watchTempoPayment(current, this.tempoDeps(client), {
+        ...(pending === undefined ? {} : { pendingHash: pending }),
+      });
+      const stored =
+        watched.record.marker?.rail === 'tempo' ? watched.record.marker.txHash : undefined;
+      if (pending !== undefined && stored === pending) {
+        this.pendingHash = undefined;
+      }
+      return watched;
+    }
+    const rpc = this.rpcOfRecord(current);
+    return rpc === undefined ? undefined : await watchSolanaPayment(current, this.payDeps(rpc));
+  }
+
+  /** Redraw once the "no answer from the store" moment passes, while this record is shown. */
+  private redrawAtNoAnswer(record: OrderRecord): void {
+    if (this.noAnswerTimer?.orderId === record.orderId || this.disposed) {
+      return;
+    }
+    if (this.noAnswerTimer !== undefined) {
+      this.deps.clearInterval(this.noAnswerTimer.handle);
+    }
+    const dueIn = (record.paidAt ?? this.loadedAt) + NO_ANSWER_AFTER_SECS - this.deps.now();
+    if (dueIn < 0) {
+      this.noAnswerTimer = { orderId: record.orderId, handle: undefined };
+      return;
+    }
+    const handle = this.deps.setInterval(
+      () => {
+        this.deps.clearInterval(handle);
+        if (this.record?.orderId === record.orderId && !this.busy) {
+          this.render();
+        }
+      },
+      dueIn * 1000 + 1000,
+    );
+    this.noAnswerTimer = { orderId: record.orderId, handle };
   }
 
   private stopWatching(): void {
@@ -1037,11 +1656,14 @@ export class CheckoutSession {
     const ended = records
       .filter((record) => gone(record) && !this.background.has(record.orderId))
       .sort((left, right) => right.createdAt - left.createdAt);
+    const now = this.deps.now();
     for (const record of ended) {
       if (this.disposed) {
         return;
       }
-      if (this.background.size >= MAX_ENDED_LISTENERS) {
+      // A Tempo order whose prompt may still be approved always listens (the cap is for the rest).
+      const openPrompt = recordRail(record) === 'tempo' && mayStillBePaid(record, now);
+      if (!openPrompt && this.background.size >= MAX_ENDED_LISTENERS) {
         // Full: the newest ended orders matter most - drop the oldest heard one if older.
         const oldest = [...this.backgroundCreated.entries()].sort(
           (left, right) => left[1] - right[1],
@@ -1063,6 +1685,10 @@ export class CheckoutSession {
             this.background.get(record.orderId)?.close();
             this.background.delete(record.orderId);
             this.backgroundCreated.delete(record.orderId);
+            // Never held: a Tempo order's answer shows at once, whatever is on screen.
+            if (recordRail(updated) === 'tempo') {
+              this.banner(updated);
+            }
             this.pendingAnswers.set(updated.orderId, updated);
             void this.showPendingAnswer();
           },
@@ -1128,8 +1754,7 @@ export class CheckoutSession {
         return 'held';
       }
       if (live !== undefined && (live.state === 'ordered' || attemptEnded)) {
-        const rpc = this.rpcOfRecord(live);
-        const ended = rpc === undefined ? undefined : await endSolanaOrder(live, this.payDeps(rpc));
+        const ended = this.recordServed(live) ? await this.endOrder(live) : undefined;
         if (!this.pendingAnswers.has(pending.orderId)) {
           return 'shown';
         }
@@ -1236,6 +1861,10 @@ export class CheckoutSession {
     // Anything still running for what is stopped drops its result.
     this.generation += 1;
     this.stopWatching();
+    if (this.noAnswerTimer !== undefined) {
+      this.deps.clearInterval(this.noAnswerTimer.handle);
+      this.noAnswerTimer = undefined;
+    }
     if (this.republishTimer !== undefined) {
       this.deps.clearInterval(this.republishTimer);
       this.republishTimer = undefined;

@@ -17,6 +17,7 @@ import {
   watchSolanaPayment,
 } from '../../src/buyer/solana-pay';
 import { DAY, MemoryRelays, NOW, type Shop, inboxList, makeShop } from './fixtures';
+import { ACKNOWLEDGED, record as contractRecord } from './order-store.contract';
 import { EMPTY_ACCOUNT_RENT, FakeSolana, FakeWallet, signatureOf } from './solana-fixtures';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
@@ -786,6 +787,38 @@ describe("the caller's spend limits", () => {
     ).rejects.toThrow('locked');
     expect(spend.released).toEqual([spend.reserved[0]?.attemptId]);
     expect(wallet.requests).toBe(0);
+  });
+
+  it('asks for confirmation beside a recent Tempo order whose prompt may still be approved', async () => {
+    const { record, wallet, deps, input } = await setup();
+    const tempo = contractRecord('old-tempo', {
+      productAddress: record.productAddress,
+      createdAt: NOW,
+      payout: {
+        caip19: 'eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50',
+        address: '0xabc',
+      },
+    });
+    await store.add(tempo);
+    await store.update('old-tempo', 1, { state: 'ordered', paymentRequest: '{}', ...ACKNOWLEDGED });
+    await store.setMarker(
+      'old-tempo',
+      2,
+      { rail: 'tempo', attemptId: 'a', setAt: NOW, floorBlock: '1' },
+      NOW,
+    );
+    await store.clearMarker('old-tempo', 3, 'a', 'ended-unpaid', 'over');
+    const spend = limits();
+    expect(
+      await payWithSolana(record, wallet, input, {
+        ...deps,
+        reserve: spend.reserve,
+        release: spend.release,
+      }),
+    ).toMatchObject({ ok: false, reason: 'needs_confirmation', unconfirmed: ['old-tempo'] });
+    expect(spend.released).toEqual([spend.reserved[0]?.attemptId]);
+    expect(wallet.requests).toBe(0);
+    expect((await stored(record.orderId)).marker).toBeUndefined();
   });
 
   it('refuses before anything is recorded when the limits say no', async () => {

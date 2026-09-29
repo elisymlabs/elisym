@@ -1,6 +1,7 @@
-import { ORDER_ACK_TARGET } from './constants';
+import { MAX_CLOCK_SKEW_SECS, MERCHANT_CATCH_UP_SECS, ORDER_ACK_TARGET } from './constants';
 import { isGenuineEvent } from './events';
 import {
+  type EndedBy,
   type OrderRecord,
   type OrderState,
   type OrderStatus,
@@ -26,11 +27,15 @@ export type StoreWrite =
        * `missing`: no such record. `conflict`: the record (its version or its
        * marker's attempt) is not the one the caller judged. `exclusion`: another
        * record for this product holds a live payment. `not_ready`: the record's
-       * state does not allow this write.
+       * state does not allow this write. `needs_confirmation`: a Tempo order of
+       * this product ended `over` - its wallet prompt may still be approved - and
+       * the buyer has not confirmed the warning for it on this record.
        */
-      reason: 'missing' | 'conflict' | 'exclusion' | 'not_ready';
+      reason: 'missing' | 'conflict' | 'exclusion' | 'not_ready' | 'needs_confirmation';
       /** For `exclusion`: the order holding it. */
       holder?: string;
+      /** For `needs_confirmation`: the ended orders to confirm. */
+      unconfirmed?: string[];
     };
 
 /**
@@ -48,7 +53,10 @@ export type RecordPatch = Partial<
     | 'inboxRelays'
     | 'acknowledgedRelays'
     | 'paidTx'
+    | 'paidAt'
     | 'status'
+    | 'endedBy'
+    | 'confirmedOverIds'
   >
 >;
 
@@ -61,7 +69,10 @@ const PATCH_KEYS = [
   'inboxRelays',
   'acknowledgedRelays',
   'paidTx',
+  'paidAt',
   'status',
+  'endedBy',
+  'confirmedOverIds',
 ] as const satisfies readonly (keyof RecordPatch)[];
 
 /** The statuses that may follow a stored one: a store's answer only moves forward. */
@@ -126,6 +137,26 @@ function patchRefusal(current: OrderRecord, patch: RecordPatch): 'not_ready' | u
   if (
     patch.paidTx !== undefined &&
     (current.paidTx !== undefined || !PAID_STATES.includes(nextState))
+  ) {
+    return 'not_ready';
+  }
+  if (patch.paidAt !== undefined && patch.paidTx === undefined) {
+    return 'not_ready';
+  }
+  // Why a Tempo record ended is written with the move to `ended-unpaid` and never
+  // changed; a plain update ends only an order nothing was requested for.
+  const tempo = railOf(current) === 'tempo';
+  const endsUnpaid = patch.state === 'ended-unpaid' && current.state !== 'ended-unpaid';
+  if (patch.endedBy !== undefined && (!tempo || !endsUnpaid || patch.endedBy !== 'nothing')) {
+    return 'not_ready';
+  }
+  if (tempo && endsUnpaid && patch.endedBy === undefined) {
+    return 'not_ready';
+  }
+  // Confirmations only accumulate.
+  if (
+    patch.confirmedOverIds !== undefined &&
+    !(current.confirmedOverIds ?? []).every((id) => patch.confirmedOverIds?.includes(id))
   ) {
     return 'not_ready';
   }
@@ -329,6 +360,36 @@ export function judgeUpdate(
 }
 
 /**
+ * Tempo orders of this product that ended `over` (or with no reason, fail
+ * closed) inside the merchant's catch-up and that `current` has not confirmed:
+ * their wallet prompt may still be approved, so a new wallet request for
+ * another order needs the buyer's explicit confirmation first. Without `now`
+ * every such order counts as recent.
+ */
+function unconfirmedOver(
+  records: readonly OrderRecord[],
+  current: OrderRecord,
+  now: number | undefined,
+): string[] {
+  return records
+    .filter(
+      (sibling) =>
+        sibling.orderId !== current.orderId &&
+        railOf(sibling) === 'tempo' &&
+        sibling.state === 'ended-unpaid' &&
+        (sibling.endedBy === 'over' || sibling.endedBy === undefined) &&
+        (now === undefined ||
+          now - sibling.createdAt <= MERCHANT_CATCH_UP_SECS + MAX_CLOCK_SKEW_SECS) &&
+        !(current.confirmedOverIds ?? []).includes(sibling.orderId),
+    )
+    .map((sibling) => sibling.orderId);
+}
+
+function needsConfirmation(unconfirmed: string[]): Judged {
+  return { result: { ok: false, reason: 'needs_confirmation', unconfirmed } };
+}
+
+/**
  * Test-and-set the payment marker immediately before the wallet call. Refused
  * unless the record is still the one judged, acknowledged (`ordered`), holds
  * its composed request and no marker - and no OTHER record for the product
@@ -339,6 +400,7 @@ export function judgeSetMarker(
   orderId: string,
   expectedVersion: number,
   marker: PaymentMarker,
+  now?: number,
 ): Judged {
   const current = judgedRecord(records, orderId, expectedVersion);
   if (isJudged(current)) {
@@ -357,6 +419,10 @@ export function judgeSetMarker(
   if (holder !== undefined) {
     return refused('exclusion', holder.orderId);
   }
+  const unconfirmed = unconfirmedOver(records, current, now);
+  if (unconfirmed.length > 0) {
+    return needsConfirmation(unconfirmed);
+  }
   return accepted({ ...current, marker, state: 'paying', version: current.version + 1 });
 }
 
@@ -372,6 +438,7 @@ export function judgeUpdateMarker(
   expectedVersion: number,
   attemptId: string,
   next: PaymentMarker,
+  now?: number,
 ): Judged {
   const current = records.find((record) => record.orderId === orderId);
   if (current === undefined) {
@@ -418,6 +485,10 @@ export function judgeUpdateMarker(
     if (holder !== undefined) {
       return refused('exclusion', holder.orderId);
     }
+    const unconfirmed = unconfirmedOver(records, current, now);
+    if (unconfirmed.length > 0) {
+      return needsConfirmation(unconfirmed);
+    }
   }
   return accepted({ ...current, marker: next, version: current.version + 1 });
 }
@@ -434,6 +505,7 @@ export function judgeClearMarker(
   expectedVersion: number,
   attemptId: string,
   nextState: Extract<OrderState, 'ordered' | 'ended-unpaid'>,
+  endedBy?: Exclude<EndedBy, 'nothing'>,
 ): Judged {
   const current = records.find((record) => record.orderId === orderId);
   if (current === undefined) {
@@ -445,13 +517,20 @@ export function judgeClearMarker(
   if (current.state !== 'paying') {
     return refused('not_ready');
   }
-  // An approved Tempo bundle may still land under a new hash: it never ends
-  // unpaid on a deadline, it stays live until it is found.
-  if (
-    nextState === 'ended-unpaid' &&
-    current.marker?.rail === 'tempo' &&
-    current.marker.bundleId !== undefined
-  ) {
+  // A Tempo attempt that holds a sent hash or an approved bundle may still land
+  // (under a new hash, through a relayer): it never ends unpaid, it stays live
+  // until it is found. One that ends says why, once: a proving rejection (nothing
+  // signed) or `over` (proven unpaid, its prompt still open).
+  const tempo = current.marker?.rail === 'tempo';
+  if (nextState === 'ended-unpaid' && tempo) {
+    if (current.marker !== undefined && holdsEvidence(current.marker)) {
+      return refused('not_ready');
+    }
+    if (endedBy === undefined) {
+      return refused('not_ready');
+    }
+  }
+  if (endedBy !== undefined && (!tempo || nextState !== 'ended-unpaid')) {
     return refused('not_ready');
   }
   // "Nothing was requested" is false once the marker proves a request.
@@ -462,7 +541,12 @@ export function judgeClearMarker(
     const { marker: _removed, ...rest } = current;
     return accepted({ ...rest, state: nextState, version: current.version + 1 });
   }
-  return accepted({ ...current, state: nextState, version: current.version + 1 });
+  return accepted({
+    ...current,
+    state: nextState,
+    ...(endedBy === undefined ? {} : { endedBy }),
+    version: current.version + 1,
+  });
 }
 
 /**
@@ -541,9 +625,14 @@ export class OrderStore {
   }
 
   /** See `judgeSetMarker`. */
-  setMarker(orderId: string, expectedVersion: number, marker: PaymentMarker): Promise<StoreWrite> {
+  setMarker(
+    orderId: string,
+    expectedVersion: number,
+    marker: PaymentMarker,
+    now?: number,
+  ): Promise<StoreWrite> {
     return this.judge(orderId, (records) =>
-      judgeSetMarker(records, orderId, expectedVersion, marker),
+      judgeSetMarker(records, orderId, expectedVersion, marker, now),
     );
   }
 
@@ -553,9 +642,10 @@ export class OrderStore {
     expectedVersion: number,
     attemptId: string,
     next: PaymentMarker,
+    now?: number,
   ): Promise<StoreWrite> {
     return this.judge(orderId, (records) =>
-      judgeUpdateMarker(records, orderId, expectedVersion, attemptId, next),
+      judgeUpdateMarker(records, orderId, expectedVersion, attemptId, next, now),
     );
   }
 
@@ -565,9 +655,10 @@ export class OrderStore {
     expectedVersion: number,
     attemptId: string,
     nextState: Extract<OrderState, 'ordered' | 'ended-unpaid'>,
+    endedBy?: Exclude<EndedBy, 'nothing'>,
   ): Promise<StoreWrite> {
     return this.judge(orderId, (records) =>
-      judgeClearMarker(records, orderId, expectedVersion, attemptId, nextState),
+      judgeClearMarker(records, orderId, expectedVersion, attemptId, nextState, endedBy),
     );
   }
 

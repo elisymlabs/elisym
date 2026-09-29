@@ -266,8 +266,10 @@ export async function catchUp(
   const pending: { order: MerchantOrder; signature: string; checkedAt: number }[] = [];
   for (const order of open) {
     for (const signature of order.reportedTxs) {
+      // Only Solana signatures: a reported Tempo hash is the Tempo catch-up's.
       if (
         order.paid === undefined &&
+        isSolanaSignature(signature) &&
         order.refusedTxs?.includes(signature) !== true &&
         state.claims[signature] === undefined
       ) {

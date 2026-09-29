@@ -1,7 +1,9 @@
+import type { Eip1193Client } from '@elisym/pay-core/evm';
 import type { PricedPayout } from './offer';
 import type { OrderRecord } from './order-record';
 import type { OrderStore } from './order-store';
 import { type SolanaPayDeps, endSolanaOrder } from './solana-pay';
+import { endTempoOrder } from './tempo-pay';
 
 /**
  * Decisions a purchase makes about the records it holds, shared by the widget's
@@ -43,6 +45,8 @@ export type EndDeps = Pick<
 > & {
   /** The order's own network's RPC, or `undefined` when the caller has none for it. */
   rpc: SolanaPayDeps['rpc'] | undefined;
+  /** For a Tempo order: a read RPC of its own chain, or `undefined` when the caller has none. */
+  tempo?: Eip1193Client;
   store: OrderStore;
 };
 
@@ -63,12 +67,19 @@ export async function endOrder(
   if (record.state === 'created') {
     return { ended: true, record };
   }
-  if (deps.rpc !== undefined) {
+  // A Tempo order ends on its own rail's rules: an attempt only once proven
+  // over, and then `over` - its prompt still open.
+  if (record.payout.caip19.startsWith('eip155:') && deps.tempo !== undefined) {
+    return await endTempoOrder(record, { ...deps, client: deps.tempo });
+  }
+  if (deps.rpc !== undefined && !record.payout.caip19.startsWith('eip155:')) {
     return await endSolanaOrder(record, { ...deps, rpc: deps.rpc });
   }
   if (record.state === 'ordered' && record.marker === undefined) {
     const written = await deps.store.update(record.orderId, record.version, {
       state: 'ended-unpaid',
+      // Nothing was requested: no Tempo prompt can be open for it.
+      ...(record.payout.caip19.startsWith('eip155:') ? { endedBy: 'nothing' as const } : {}),
     });
     return written.ok ? { ended: true, record: written.record } : { ended: false, record };
   }

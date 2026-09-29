@@ -1,7 +1,8 @@
 import './styles.css';
 import { OrderStore, readChainTime } from '@elisym/commerce/buyer';
 import { createRelayClient } from '@elisym/commerce/buyer';
-import type { Network } from '@elisym/pay-core';
+import { type Network, chainByCaip2 } from '@elisym/pay-core';
+import { type Eip1193Client, createJsonRpcClient } from '@elisym/pay-core/evm';
 import { type Rpc, type SolanaRpcApi, createSolanaRpc } from '@solana/kit';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { render } from 'preact';
@@ -9,17 +10,20 @@ import { IndexedDbOrderBackend, openOrderDatabase } from '../core/order-store-id
 import { decodeCheckoutParams } from '../embed/protocol';
 import { type Actions, Checkout } from './Checkout';
 import { type Screen, followOnlyOffer, loadWithPins, screenForPage } from './controller';
+import { discoverEvmWallets, tempoWalletOptions } from './evm-wallets';
 import { acceptHandshake } from './handshake';
-import { CheckoutSession, type View } from './session';
+import { type Banner, CheckoutSession, type View } from './session';
 import { discoverWallets, payingWallets, solanaChain } from './wallets';
 
 const root = document.getElementById('app');
 const params = decodeCheckoutParams(location.hash);
 // A wallet that registers after the offer is drawn is offered as soon as it does.
 const wallets = discoverWallets(window, () => session?.refresh());
+const evmWallets = discoverEvmWallets(window, () => session?.refresh());
 const readClient = createRelayClient();
 let screen: Screen = { kind: 'waiting' };
 let view: View | undefined;
+let banner: Banner | undefined;
 let session: CheckoutSession | undefined;
 
 const actions: Actions = {
@@ -28,11 +32,14 @@ const actions: Actions = {
   pay: (name) => void session?.pay(name),
   retry: (name) => void session?.retry(name),
   startOver: () => void session?.startOver(),
+  choosePayout: (index) => session?.choosePayout(index),
+  confirmOldPrompt: () => void session?.confirmOldPrompt(),
+  cancelOldPrompt: () => session?.cancelOldPrompt(),
 };
 
 function draw(): void {
   if (root !== null) {
-    render(<Checkout screen={screen} view={view} actions={actions} />, root);
+    render(<Checkout screen={screen} view={view} banner={banner} actions={actions} />, root);
   }
 }
 
@@ -66,6 +73,27 @@ function rpcFor(network: Network): Rpc<SolanaRpcApi> | undefined {
     rpcs.set(network, rpc);
   }
   return rpc;
+}
+
+/** Tempo's chain per network: mainnet, and Moderato (the registry's devnet). */
+function tempoCaip2(network: Network): string {
+  return network === 'mainnet' ? 'eip155:4217' : 'eip155:42431';
+}
+const tempoClients = new Map<Network, Eip1193Client>();
+
+/** The widget's Tempo read RPC: the registry's public endpoint (CORS passes from the frame). */
+function tempoFor(network: Network): Eip1193Client | undefined {
+  const chain = chainByCaip2(tempoCaip2(network));
+  const url = chain?.rpcUrls[0];
+  if (url === undefined) {
+    return undefined;
+  }
+  let client = tempoClients.get(network);
+  if (client === undefined) {
+    client = createJsonRpcClient(url);
+    tempoClients.set(network, client);
+  }
+  return client;
 }
 
 async function openStore(): Promise<OrderStore | undefined> {
@@ -113,6 +141,15 @@ async function start(pageOrigin: string): Promise<void> {
         createRelayClient({ auth: async (template) => finalizeEvent(template, buyerSecretKey) }),
       rpcFor,
       wallets: (network) => payingWallets(wallets.list(), solanaChain(network)),
+      tempoFor,
+      tempoWallets: (network) => {
+        const chain = chainByCaip2(tempoCaip2(network));
+        return chain === undefined ? [] : tempoWalletOptions(evmWallets.list(), chain);
+      },
+      onBanner: (next) => {
+        banner = next;
+        draw();
+      },
       // With this store's pins, as on the first load: a re-verification never skips them.
       reloadOffer: () => loadWithPins(params, pageOrigin, { client: readClient, store }),
       now: () => Math.floor(Date.now() / 1000),
