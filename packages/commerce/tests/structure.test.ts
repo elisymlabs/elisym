@@ -25,7 +25,13 @@ const ALLOWED = [
  * main entry never imports it, so a consumer that only verifies offers pulls
  * none of that in.
  */
-const BUYER_ALLOWED = [/^nostr-tools\/(pool|utils)$/, /^@solana\/kit$/, /^@solana-program\/token$/];
+const BUYER_ALLOWED = [
+  /^nostr-tools\/(pool|utils)$/,
+  /^@solana\/kit$/,
+  /^@solana-program\/token$/,
+  // EIP-1193 reads only: no EVM library comes with it.
+  /^@elisym\/pay-core\/evm$/,
+];
 /** The nostr-tools root pulls in the relay pool: types only, never code (spec 9.4). */
 const TYPE_ONLY_ALLOWED = [/^nostr-tools$/];
 const IMPORT_RE =

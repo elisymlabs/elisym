@@ -55,11 +55,13 @@ export function makeShop(
     hints?: string[];
     price?: string;
     caip19?: string;
+    /** The payout address (a Tempo payout needs an EVM one). */
+    payout?: string;
   } = {},
 ): Shop {
   const owner = nostrKey();
   const store = nostrKey();
-  const payout = solanaAddress();
+  const payout = options.payout ?? solanaAddress();
   const events = [
     sign(
       buildProductEvent({

@@ -16,3 +16,4 @@ export * from './purchase';
 export * from './relay-client';
 export * from './relays';
 export * from './solana-pay';
+export * from './tempo-pay';
