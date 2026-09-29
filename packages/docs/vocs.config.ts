@@ -75,6 +75,13 @@ export default defineConfig({
       ],
     },
     {
+      text: 'Sell with the checkout',
+      items: [
+        { text: 'Quickstart', link: '/commerce/quickstart' },
+        { text: 'The widget', link: '/commerce/widget' },
+      ],
+    },
+    {
       text: 'Protocol',
       items: [
         { text: 'Overview', link: '/protocol/overview' },

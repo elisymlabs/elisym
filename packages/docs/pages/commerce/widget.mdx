@@ -1,0 +1,101 @@
+# The widget
+
+`<elisym-buy>` is the checkout on your page. The only code that runs on your page is `embed.js`, a small loader. It frames the checkout from `https://pay.elisym.network`. Everything else runs inside that frame, on elisym's origin: the offer is verified, the order is placed, the buyer's wallet signs and the payment is followed there.
+
+```html
+<elisym-buy product="naddr1..." network="mainnet"></elisym-buy>
+<script
+  src="https://pay.elisym.network/v1/embed.js"
+  integrity="sha384-n2Bj5LKM3OGGlQOwpooaauimc99mLR+4ookl8AeVpG3GjG4aLBc7jV1l2WEljNhH"
+  crossorigin="anonymous"
+></script>
+```
+
+## Attributes
+
+| Attribute       | Value                          | Meaning                                                                                                                                     |
+| --------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `product`       | `naddr1...`                    | The product, as `setup` printed it. Required.                                                                                               |
+| `network`       | `mainnet` or `devnet`          | Only payouts on this Solana network are offered. Without it, the first payout the store lists is used.                                      |
+| `strict-origin` | (no value)                     | Also refuse a store no domain vouches for (level C). A level A store is always refused off its domain (see [Where it sells](#where-it-sells)). |
+| `collect-email` | (no value)                     | Ask the buyer for an email (optional for them). It goes to your node with the order, and `orders` lists it. The node never sends email.     |
+| `theme`         | `auto`, `light` or `dark`      | The checkout's colors. `auto` (the default) follows the buyer's system.                                                                    |
+
+Changing an attribute re-frames the checkout. A purchase that is in progress is not lost: the checkout keeps it in the browser and resumes it.
+
+## Status events
+
+The element fires `elisym-status` (it bubbles) whenever the purchase moves on. The event carries the state name only:
+
+```js
+document.querySelector('elisym-buy').addEventListener('elisym-status', (event) => {
+  console.log(event.detail.state);
+});
+```
+
+| State       | Meaning                                                                      |
+| ----------- | ---------------------------------------------------------------------------- |
+| `ready`     | The verified offer is shown.                                                 |
+| `ordered`   | The order reached the store's inbox relays. Nothing is paid yet.            |
+| `paying`    | A payment was requested from the buyer's wallet. It may still land, or expire. |
+| `paid`      | The payment is confirmed on chain. Waiting for the store's delivery.        |
+| `completed` | The store delivered.                                                         |
+| `refunded`  | The store cancelled the order and refunded it.                               |
+| `ended`     | The buyer left an order that was never paid.                                 |
+| `refused`   | The checkout will not sell here (see below).                                 |
+
+Use them for analytics, or to show your own "thank you" next to the checkout. Never unlock anything on the strength of an event: it tells you a state, not who paid. Your node is what knows who paid, and the delivery is what the buyer gets.
+
+## What your page never learns
+
+The frame tells your page state names (and its own height), and nothing else. Your page does not learn the delivery link, the buyer's key, the order id, the wallet address or the email. A script on your page, including a compromised third-party one, cannot read them or act in the buyer's name. The frame accepts nothing from your page but the initial handshake.
+
+## Trust levels and warnings
+
+Before it shows a price, the checkout verifies the offer:
+
+- the store's signed product;
+- its profile, and the owner who authorizes the store;
+- the owner's signed payout list, which is the only source of an address it ever pays.
+
+It then shows the buyer how far the store is vouched for:
+
+- **Level A**: the store's domain serves a `nostr.json` naming both the store and its owner (see [Level A](/commerce/quickstart#level-a-let-your-domain-vouch-for-the-store)).
+- **Level C**: no domain vouches for it. The buyer is told so and pays on trust.
+
+The buyer sees a notice when:
+
+- no domain vouches for the store;
+- the store names a domain that does not confirm it;
+- the payout address carries no wallet proof;
+- they have no delivered purchase from this store on this site yet.
+
+Two warnings are about where the money goes, and the buyer must tick a box before paying:
+
+- the payout list is less than three days old (always true for a new store);
+- the payout is not among the ones the store listed on a delivered purchase from it.
+
+If the offer changes when it is checked again just before paying, the box must be ticked again.
+
+## Where it sells
+
+A level A store vouches for one domain, and the checkout sells it only on a page served over `https:` from that domain or one of its subdomains. It refuses any other page, including `localhost`. A level C store sells on any page, with the notice above. `strict-origin` refuses a level C store too, so a page with it sells only level A stores on their own domain.
+
+## When the checkout refuses
+
+The checkout shows no Pay button when:
+
+- it is not framed by a page, or the page never started it (a page opened from disk, with no origin, is one). The page receives no event then;
+- the product cannot be found or does not verify;
+- the page is not on a level A store's domain, or `strict-origin` is set and the store is level C;
+- the store has no payout on the `network` the attribute names;
+- the network is not served by this checkout yet;
+- the browser blocks storage for the checkout, for example with all site data blocked. The order record is what keeps a buyer from paying twice, so without it nothing is sold.
+
+In every case but the first, the page receives `refused`.
+
+A buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later.
+
+## One loader, pinned
+
+The checkout never changes the bytes of `https://pay.elisym.network/v1/embed.js`, so the `integrity` hash in the snippet stays valid. A changed loader ships under a new path, such as `/v2/embed.js`, with its own hash.
