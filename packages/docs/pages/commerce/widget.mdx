@@ -16,7 +16,7 @@
 | Attribute       | Value                          | Meaning                                                                                                                                     |
 | --------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `product`       | `naddr1...`                    | The product, as `setup` printed it. Required.                                                                                               |
-| `network`       | `mainnet` or `devnet`          | Only payouts on this Solana network are offered. Without it, the first payout the store lists is used.                                      |
+| `network`       | `mainnet` or `devnet`          | Only payouts on this network are offered (`devnet` is Tempo's Moderato on Tempo). Without it, the network of the first payout the store lists is used. |
 | `strict-origin` | (no value)                     | Also refuse a store no domain vouches for (level C). A level A store is always refused off its domain (see [Where it sells](#where-it-sells)). |
 | `collect-email` | (no value)                     | Ask the buyer for an email (optional for them). It goes to your node with the order, and `orders` lists it. The node never sends email.     |
 | `theme`         | `auto`, `light` or `dark`      | The checkout's colors. `auto` (the default) follows the buyer's system.                                                                    |
@@ -95,6 +95,24 @@ The checkout shows no Pay button when:
 In every case but the first, the page receives `refused`.
 
 A buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later.
+
+## Paying on Tempo
+
+A store with a Tempo payout is paid from an EIP-6963 wallet (MetaMask). The checkout asks the wallet to switch to the right Tempo network (and to add it when the wallet does not know it), then sends one transfer. The buyer needs a little more of the coin than the price, for the wallet's fee.
+
+A Tempo wallet request never expires, so the checkout never retries a Tempo payment by itself:
+
+- While a payment is unresolved, the checkout keeps checking and says **check your wallet activity**; if it stays so for long, **contact the store**.
+- A declined request ends the order: nothing was signed.
+- A request that timed out ends the order, but the wallet may still show it. Before any new payment of the product the buyer is asked to reject it: **approving the old request pays that order as well**.
+- If the recipient's account refuses the coin, the payment is **blocked**: the money is held, not delivered. Contact the store.
+
+Two cases can only be settled by hand, and the buyer is told to contact the store:
+
+- an old request approved more than three days after the order, or more than 45 minutes after the store changed its price or payout: the money reaches the store, and the node does not deliver on its own;
+- a payment the store's node has not answered 30 minutes after it was found (on either rail).
+
+The store answers such an order with its node's `deliver` or `refund` command (see [the quick start](/commerce/quickstart#answering-an-order-by-hand)). The checkout also re-checks, on each visit, Tempo orders that ended in the last three days: a late payment found there shows as a note on whatever is on screen.
 
 ## One loader, pinned
 

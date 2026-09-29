@@ -1,6 +1,6 @@
 # Sell with the checkout
 
-The elisym checkout sells a digital product from any web page. The buyer pays in USDC on Solana, directly to your wallet, and gets what they bought: a link or a text. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
+The elisym checkout sells a digital product from any web page. The buyer pays in USDC on Solana (or in a Tempo stablecoin), directly to your wallet, and gets what they bought: a link or a text. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
 
 The pieces:
 
@@ -114,5 +114,44 @@ In its `config.json`, set:
 - the payout to mainnet USDC, `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`, at your mainnet wallet.
 
 Then run `setup` and `run` as above. `setup` prints the mainnet store's own `naddr`: put that in the snippet, with `network="mainnet"`. The node refuses to start if the published store offers buyers anything it would not honor, such as a payout on another network or a price it did not record. So when it starts, the node never takes orders on terms it would refuse.
+
+## Tempo payouts
+
+The store can also take a Tempo stablecoin, paid with an EIP-6963 wallet such as MetaMask. The node verifies Tempo payments itself, so it needs a `tempo` block naming the network: `mainnet`, or `moderato` (Tempo's testnet). A Tempo payout is refused without it.
+
+Upgrade the node **before** your payout list names a Tempo address: an older node would refuse to start on an offer it cannot honor, and a buyer could pay it. Once the node has seen a Tempo order, its ledger is in a newer format, and an older node refuses to start on it: do not downgrade.
+
+On devnet, add a Moderato payout to the store from step 1 (stop the node first, and put your own Tempo address, lowercase):
+
+```bash
+node -e '
+const fs = require("fs");
+const path = `${process.env.HOME}/.elisym-merchant/config.json`;
+const config = JSON.parse(fs.readFileSync(path, "utf8"));
+config.tempo = { network: "moderato" };
+config.payouts.push({
+  caip19: "eip155:42431/erc20:0x20c0000000000000000000000000000000000000",
+  address: "<your Tempo address, lowercase>",
+});
+fs.writeFileSync(path, JSON.stringify(config, null, 2));
+'
+npx @elisym/merchant-node setup
+npx @elisym/merchant-node run
+```
+
+The node reads Tempo through the registry's public endpoint; set `"tempo": { "network": "...", "rpcUrl": "https://..." }` for your own. A store with only Tempo payouts needs no Solana `rpcUrl`.
+
+The buyer's page shows a choice between the store's payouts on the page's network. A Tempo buyer needs a little more of the coin than the price: the wallet takes its fee in the same coin.
+
+## Answering an order by hand
+
+A buyer who cannot finish a purchase is told to contact the store: a payment the node refused (paid after a price change, or after the three days it watches an order), or one that never landed. With the node **stopped**, answer the order from its key (`orders` lists them):
+
+```bash
+npx @elisym/merchant-node deliver <buyer>:<orderId>
+npx @elisym/merchant-node refund <buyer>:<orderId> --tx <your refund transaction> --amount <subunits>
+```
+
+`deliver` sends the configured delivery; `refund` reports a refund you already sent (above zero; an unpaid order is released with `deliver`, never a zero refund). The command prints what the ledger holds for the order and asks before it sends (`--yes` for scripts); the order is then closed for good, and running the same command again sends the same answer again. Check the payment yourself (the node's log and a block explorer) before you answer.
 
 The node's README covers the rest: the full config, Docker, the lock, and what to keep safe.
