@@ -34,6 +34,16 @@ if (!isOfferPayout(result.offer, caip19, challenge.payTo)) throw new Error('Not 
 
 On a server, pass `verifyOffer` a `fetch` that refuses private addresses: the merchant's domain comes from the store's own profile.
 
+## The buyer side: `@elisym/commerce/buyer`
+
+The checkout widget and the elisym MCP buy through the same core. It covers:
+
+- loading and verifying the offer (`loadOffer` for a page, `loadOfferForAgent` for an agent);
+- placing the order and paying on Solana (`placeOrder`, `payWithSolana`);
+- following the store's answer (`watchSolanaPayment`, `listenForStatus`).
+
+Order records live behind an `OrderBackend`, a read-judge-write transaction for one product. Every money rule is judged in the core, never in a backend: one order is never paid twice, and nothing is paid before the store's inbox acknowledged the order. The backends are IndexedDB in the checkout, a locked and fsynced file in the MCP, and `MemoryOrderBackend` for tests.
+
 ## License
 
 MIT

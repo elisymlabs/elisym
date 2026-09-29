@@ -30,11 +30,12 @@ COPY --parents packages/*/package.json ./
 # workspace also holds the web app and the docs site, whose dependencies have
 # no business in this image (about 1 GB and 2,700 packages unfiltered).
 RUN bun install --frozen-lockfile --production \
-  --filter @elisym/mcp --filter @elisym/sdk --filter @elisym/pay-core
+  --filter @elisym/mcp --filter @elisym/sdk --filter @elisym/pay-core --filter @elisym/commerce
 
 # The built output of every package that runs at runtime
 COPY --from=build /app/packages/pay-core/dist packages/pay-core/dist
 COPY --from=build /app/packages/sdk/dist packages/sdk/dist
+COPY --from=build /app/packages/commerce/dist packages/commerce/dist
 COPY --from=build /app/packages/mcp/dist packages/mcp/dist
 
 # Run unprivileged, as the image's `bun` user (uid 1000). HOME stays /root so

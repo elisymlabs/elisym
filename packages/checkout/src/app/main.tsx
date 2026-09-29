@@ -1,5 +1,5 @@
 import './styles.css';
-import { OrderStore } from '@elisym/commerce/buyer';
+import { OrderStore, readChainTime } from '@elisym/commerce/buyer';
 import { createRelayClient } from '@elisym/commerce/buyer';
 import type { Network } from '@elisym/pay-core';
 import { type Rpc, type SolanaRpcApi, createSolanaRpc } from '@solana/kit';
@@ -68,18 +68,6 @@ function rpcFor(network: Network): Rpc<SolanaRpcApi> | undefined {
   return rpc;
 }
 
-/** Chain time from a finalized block (the newest may not have its time yet). */
-async function chainTime(rpc: Rpc<SolanaRpcApi>): Promise<number> {
-  const slot = await rpc.getSlot({ commitment: 'finalized' }).send();
-  for (let back = 0n; back < 5n; back += 1n) {
-    const time = await rpc.getBlockTime(slot - back).send();
-    if (time !== null) {
-      return Number(time);
-    }
-  }
-  throw new Error('no block time');
-}
-
 async function openStore(): Promise<OrderStore | undefined> {
   try {
     return new OrderStore(new IndexedDbOrderBackend(await openOrderDatabase()));
@@ -128,7 +116,7 @@ async function start(pageOrigin: string): Promise<void> {
       // With this store's pins, as on the first load: a re-verification never skips them.
       reloadOffer: () => loadWithPins(params, pageOrigin, { client: readClient, store }),
       now: () => Math.floor(Date.now() / 1000),
-      chainTime,
+      chainTime: readChainTime,
       setInterval: (handler, ms) => window.setInterval(handler, ms),
       clearInterval: (handle) => window.clearInterval(handle as number),
       onView: (next) => {

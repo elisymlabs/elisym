@@ -7,6 +7,7 @@
 export * from './constants';
 export * from './events';
 export * from './inbox';
+export * from './local-wallet';
 export * from './offer';
 export * from './order-flow';
 export * from './order-record';
