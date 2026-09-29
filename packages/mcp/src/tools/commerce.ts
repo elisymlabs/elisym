@@ -227,6 +227,35 @@ async function preparePurchase(
   };
 }
 
+/**
+ * The chain work of `record` runs on the order's own network, never the
+ * agent's current one: an agent whose network changed still follows its old
+ * orders on the chain they were paid on. Another network's RPC is read from the
+ * same settings; one this build cannot reach is followed without chain work
+ * that could answer "not paid".
+ */
+async function depsFor(purchase: Purchase, record: OrderRecord): Promise<SolanaPayDeps> {
+  const network = record.offer.payouts.find(
+    (payout) =>
+      payout.caip19.id === record.payout.caip19 && payout.address === record.payout.address,
+  )?.caip19.chain.network;
+  if (network === purchase.agent.network) {
+    return purchase.deps;
+  }
+  if (network !== 'mainnet' && network !== 'devnet') {
+    return { ...purchase.deps, canProveOver: false };
+  }
+  const rpc = await commerceRuntime.purchaseRpc(network).catch(() => undefined);
+  if (rpc === undefined) {
+    return { ...purchase.deps, canProveOver: false };
+  }
+  return {
+    ...purchase.deps,
+    rpc: commerceRuntime.solanaRpc(rpc.url),
+    canProveOver: rpc.canProveOver,
+  };
+}
+
 /** Reserve an attempt's costs on both assets, or neither (a throw refuses the payment). */
 export function reserveCosts(ctx: AgentContext, costs: PaymentCosts, attemptId: string): void {
   if (costs.tokenAmount > 0n) {
@@ -390,7 +419,11 @@ function stateText(record: OrderRecord, canProveOver: boolean, over: boolean): s
     if (record.paidTx !== undefined || record.state === 'paid') {
       return `Order ${id}: paid, but the store cancelled it without a refund yet. Contact the store; the payment is ${record.paidTx ?? 'recorded'}.`;
     }
-    if (record.state === 'created' || record.state === 'ordered') {
+    if (
+      record.state === 'created' ||
+      record.state === 'ordered' ||
+      record.state === 'ended-unpaid'
+    ) {
       return `Order ${id}: the store cancelled it; nothing was paid.`;
     }
     return `Order ${id}: the store cancelled it during a payment attempt, which may still land. It is followed until the attempt is settled.`;
@@ -426,7 +459,8 @@ async function follow(
   purchase: Purchase,
   record: OrderRecord,
   deadline: number,
-): Promise<{ record: OrderRecord; over: boolean }> {
+): Promise<{ record: OrderRecord; over: boolean; canProveOver: boolean }> {
+  const deps = await depsFor(purchase, record);
   let current = record;
   let over = false;
   const listener = listenForStatus(
@@ -445,7 +479,7 @@ async function follow(
         break;
       }
       if (current.state === 'paying' || current.paidTx !== undefined || current.state === 'paid') {
-        const watched = await watchSolanaPayment(current, purchase.deps);
+        const watched = await watchSolanaPayment(current, deps);
         current = watched.record;
         if (watched.state === 'over') {
           over = true;
@@ -463,7 +497,11 @@ async function follow(
   } finally {
     listener.close();
   }
-  return { record: (await purchase.store.get(current.orderId)) ?? current, over };
+  return {
+    record: (await purchase.store.get(current.orderId)) ?? current,
+    over,
+    canProveOver: deps.canProveOver === true,
+  };
 }
 
 async function quote(ctx: AgentContext, naddr: string, heading: string) {
@@ -513,12 +551,19 @@ async function buy(
     return errorResult(purchase.refusal);
   }
   return onePerProduct(`${purchase.agentDir}|${saved.productAddress}`, async () => {
+    // Spent before anything else: a second call with the same quote, queued
+    // behind this one, finds it gone and buys nothing.
+    if (quotes.get(saved.id) !== saved) {
+      return errorResult(
+        'Unknown or expired quote_id: call buy_product with the product for a new quote.',
+      );
+    }
+    quotes.delete(saved.id);
     const fresh = await loadForAgent(purchase, saved.naddr);
     if (!fresh.ok) {
       return errorResult(`This product cannot be bought now: ${sanitizeField(fresh.message, 300)}`);
     }
     if (!matchesQuote(saved, fresh)) {
-      quotes.delete(saved.id);
       const renewed = issueQuote(purchase, saved.naddr, fresh);
       return textResult(
         quoteText(
@@ -528,7 +573,6 @@ async function buy(
         ),
       );
     }
-    quotes.delete(saved.id);
     const payout = fresh.payouts[0] as PricedPayout;
     const records = await purchase.store.forProduct(saved.productAddress);
     const delivered = records.find((record) => record.state === 'completed');
@@ -546,24 +590,24 @@ async function buy(
         current.state === 'blocked' ||
         current.paidTx !== undefined)
     ) {
-      if (current.state === 'paying' && purchase.deps.canProveOver === true) {
-        const retried = await retryIfOver(ctx, purchase, current, fresh);
-        if (retried !== undefined) {
-          return retried;
-        }
+      const retried =
+        current.state === 'paying'
+          ? await retryIfOver(ctx, purchase, current, fresh, deadline)
+          : undefined;
+      if (retried === 'ended') {
+        current = undefined;
+      } else if (retried !== undefined) {
+        return retried;
+      } else {
+        const followed = await follow(ctx, purchase, current, deadline);
+        return textResult(stateText(followed.record, followed.canProveOver, followed.over));
       }
-      const followed = await follow(ctx, purchase, current, deadline);
-      return textResult(
-        stateText(followed.record, purchase.deps.canProveOver === true, followed.over),
-      );
     }
     if (current !== undefined && onOtherTerms(current, payout)) {
       const ended = await endOrder(current, { ...purchase.deps, rpc: purchase.deps.rpc });
       if (!ended.ended) {
         const followed = await follow(ctx, purchase, ended.record, deadline);
-        return textResult(
-          stateText(followed.record, purchase.deps.canProveOver === true, followed.over),
-        );
+        return textResult(stateText(followed.record, followed.canProveOver, followed.over));
       }
       current = undefined;
     }
@@ -645,38 +689,55 @@ async function buy(
   });
 }
 
-/** Retry an attempt the chain proves over, on the approved terms; `undefined` when not over. */
+/**
+ * Settle an attempt the chain proves over: retried on the approved terms;
+ * ended when those terms moved away from the order (`'ended'`: a new order may
+ * be placed); ended too when the store closed the order meanwhile. `undefined`
+ * when the attempt is not proven over (it is followed).
+ */
 async function retryIfOver(
   ctx: AgentContext,
   purchase: Purchase,
   record: OrderRecord,
   fresh: ReadyOffer,
+  deadline: number,
 ) {
-  const watched = await watchSolanaPayment(record, purchase.deps);
+  const deps = await depsFor(purchase, record);
+  if (deps !== purchase.deps || deps.canProveOver !== true) {
+    return undefined;
+  }
+  const watched = await watchSolanaPayment(record, deps);
   if (watched.state !== 'over') {
     return undefined;
-  }
-  const payout = fresh.payouts[0] as PricedPayout;
-  if (onOtherTerms(watched.record, payout)) {
-    return undefined;
-  }
-  let chainTime: number;
-  try {
-    chainTime = await readChainTime(purchase.deps.rpc);
-  } catch {
-    return errorResult('The Solana network could not be read; nothing was paid. Try again.');
   }
   const previous = watched.record.marker?.attemptId;
   if (previous !== undefined) {
     releaseCosts(ctx, previous, false);
+  }
+  const payout = fresh.payouts[0] as PricedPayout;
+  if (onOtherTerms(watched.record, payout)) {
+    const ended = await endOrder(watched.record, deps);
+    return ended.ended ? ('ended' as const) : undefined;
+  }
+  let chainTime: number;
+  try {
+    chainTime = await readChainTime(deps.rpc);
+  } catch {
+    return errorResult('The Solana network could not be read; nothing was paid. Try again.');
   }
   const wallet = localSolanaWallet(
     await createKeyPairSignerFromBytes(
       (purchase.agent.solanaKeypair as { secretKey: Uint8Array }).secretKey,
     ),
   );
-  const result = await retryWithSolana(watched.record, wallet, { fresh, chainTime }, purchase.deps);
-  return afterPay(ctx, purchase, result, Date.now() + commerceRuntime.buyBudgetMs / 2, payout);
+  const result = await retryWithSolana(watched.record, wallet, { fresh, chainTime }, deps);
+  if (!result.ok && result.reason === 'not_payable' && result.record !== undefined) {
+    const ended = await endOrder(result.record, deps);
+    if (ended.ended) {
+      return textResult(stateText(ended.record, true, false));
+    }
+  }
+  return afterPay(ctx, purchase, result, deadline, payout);
 }
 
 async function afterPay(
@@ -691,7 +752,7 @@ async function afterPay(
   if (result.ok) {
     const followed = await follow(ctx, purchase, result.record, deadline);
     return textResult(
-      withWarnings(stateText(followed.record, purchase.deps.canProveOver === true, followed.over)),
+      withWarnings(stateText(followed.record, followed.canProveOver, followed.over)),
     );
   }
   const id = result.record?.orderId;
@@ -718,7 +779,7 @@ async function afterPay(
       if (holder !== undefined) {
         const followed = await follow(ctx, purchase, holder, deadline);
         return textResult(
-          `Another order of this product (${holder.orderId}) holds a payment attempt; following it.\n${stateText(followed.record, purchase.deps.canProveOver === true, followed.over)}`,
+          `Another order of this product (${holder.orderId}) holds a payment attempt; following it.\n${stateText(followed.record, followed.canProveOver, followed.over)}`,
         );
       }
       return errorResult(`Another order of this product holds a payment attempt${suffix}.`);
@@ -731,9 +792,7 @@ async function afterPay(
       const stored = id === undefined ? undefined : await purchase.store.get(id);
       if (stored !== undefined) {
         const followed = await follow(ctx, purchase, stored, deadline);
-        return textResult(
-          stateText(followed.record, purchase.deps.canProveOver === true, followed.over),
-        );
+        return textResult(stateText(followed.record, followed.canProveOver, followed.over));
       }
       return errorResult(`The payment did not go through${suffix}.`);
     }
@@ -781,7 +840,7 @@ async function getOrder(ctx: AgentContext, orderId: string | undefined) {
     current,
     Date.now() + commerceRuntime.followBudgetMs,
   );
-  return textResult(stateText(followed.record, purchase.deps.canProveOver === true, followed.over));
+  return textResult(stateText(followed.record, followed.canProveOver, followed.over));
 }
 
 const BuyProductSchema = z

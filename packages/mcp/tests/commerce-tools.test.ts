@@ -72,7 +72,7 @@ async function world(
   const events = [...shop.events, inboxList(shop.store, INBOX)];
   const relays = new MemoryRelays(events);
   const wallet = await generateSolanaWallet();
-  const chain = new FakeSolana(wallet.publicKey, shop.payout);
+  const chain = new FakeSolana(wallet.signer.address, shop.payout);
   chain.blockTime = NOW + 60;
   const root = mkdtempSync(join(tmpdir(), 'elisym-commerce-'));
   const agentDir = join(root, 'buyer');
@@ -85,7 +85,7 @@ async function world(
     security: {},
     ...(options.agentDir === false ? {} : { agentDir }),
     solanaKeypair: {
-      publicKey: wallet.publicKey,
+      publicKey: wallet.signer.address,
       secretKey: new Uint8Array(getBase58Encoder().encode(wallet.secretKeyBase58)),
     },
   } as AgentInstance;
@@ -177,8 +177,10 @@ describe('buy_product', () => {
     });
     expect(text(bought as never)).toMatch(/paid|confirming|Delivered/);
     expect(new Set(run.chain.sent).size).toBe(1);
+    expect(run.chain.landed.size).toBe(1);
     const [record] = await orders(run);
-    expect(record?.paidTx ?? record?.marker).toBeDefined();
+    // The attempt recorded is the transaction that landed.
+    expect(run.chain.landed.has(record?.paidTx ?? record?.marker?.signature ?? '')).toBe(true);
     // The quote is spent: the same id never buys again.
     const again = await tool('buy_product').handler(run.ctx, {
       quote_id: quote.id,
@@ -284,6 +286,105 @@ describe('buy_product', () => {
     expect(text(refused as never)).toMatch(/changed/i);
     expect(await orders(run)).toEqual([]);
     expect(run.chain.sent).toEqual([]);
+  });
+
+  it('spends a quote once even when two calls with it run at once', async () => {
+    const run = await world();
+    for (const [key, limit] of run.ctx.sessionSpendLimits) {
+      run.ctx.sessionSpendLimits.set(key, limit * 1000n);
+    }
+    const quote = await quoteId(run);
+    const call = () =>
+      tool('buy_product').handler(run.ctx, {
+        quote_id: quote.id,
+        accept_warnings: quote.warnings,
+        buy_again: true,
+      });
+    // The store delivers as soon as a payment is under way: the first call ends
+    // with a completed order, which buy_again would otherwise buy past.
+    let stop = false;
+    const delivered = new Set<string>();
+    async function deliverEachPayment() {
+      while (!stop) {
+        for (const record of await orders(run)) {
+          if (!delivered.has(record.orderId) && record.marker !== undefined) {
+            delivered.add(record.orderId);
+            await storeDelivers(run, record);
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    }
+    const deliverer = deliverEachPayment();
+    const results = await Promise.all([call(), call()]);
+    stop = true;
+    await deliverer;
+    expect(results.map((result) => text(result as never)).join('\n')).toContain(
+      'Unknown or expired quote_id',
+    );
+    expect(await orders(run)).toHaveLength(1);
+    expect(new Set(run.chain.sent).size).toBe(1);
+  });
+
+  it('ends an expired attempt whose terms changed, then buys on the new quote', async () => {
+    const run = await world();
+    for (const [key, limit] of run.ctx.sessionSpendLimits) {
+      run.ctx.sessionSpendLimits.set(key, limit * 1000n);
+    }
+    run.chain.dropSends = true;
+    const first = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: first.id,
+      accept_warnings: first.warnings,
+    });
+    const [stuck] = await orders(run);
+    expect(stuck?.state).toBe('paying');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    run.chain.dropSends = false;
+    run.events.push(
+      sign(
+        buildProductEvent({
+          d: D,
+          title: 'Agents 101',
+          description: 'Twelve lessons.',
+          price: { amount: '59', currency: 'USD' },
+          accept: [USDC_DEVNET_CAIP19],
+          createdAt: T0 + 1,
+        }),
+        run.shop.store,
+      ),
+    );
+    const second = await quoteId(run);
+    const bought = await tool('buy_product').handler(run.ctx, {
+      quote_id: second.id,
+      accept_warnings: second.warnings,
+    });
+    expect(text(bought as never)).toMatch(/paid|confirming/);
+    const after = await orders(run);
+    expect(after.find((record) => record.orderId === stuck?.orderId)?.state).toBe('ended-unpaid');
+    expect(after).toHaveLength(2);
+    expect(run.chain.landed.size).toBe(1);
+  });
+
+  it("settles an order on the order's own network after the agent's network changed", async () => {
+    const run = await world();
+    run.chain.dropSends = true;
+    const quote = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: quote.id,
+      accept_warnings: quote.warnings,
+    });
+    const [record] = await orders(run);
+    run.chain.expire();
+    // Only devnet has a full-history endpoint here; the agent now runs on mainnet.
+    commerceRuntime.purchaseRpc = async (network) => ({
+      url: 'fake',
+      canProveOver: network === 'devnet',
+    });
+    run.agent.network = 'mainnet';
+    const followed = await tool('get_order').handler(run.ctx, { order_id: record?.orderId });
+    expect(text(followed as never)).toContain('expired and nothing was paid');
   });
 
   it('refuses for an ephemeral agent', async () => {
