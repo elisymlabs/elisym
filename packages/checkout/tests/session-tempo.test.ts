@@ -308,6 +308,12 @@ describe('paying on Tempo in the widget', () => {
     await run.session.start();
     await run.session.pay('MetaMask');
     expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'late_approval' } });
+    // Until it is found, no other payment of the product: the approval is in flight.
+    run.wallet.behaviour = 'land';
+    const before = run.wallet.requests;
+    await run.session.pay('MetaMask');
+    expect(run.wallet.requests).toBe(before);
+    expect(run.last()).toMatchObject({ problem: { reason: 'late_approval' } });
     await run.timers.tick();
     expect(run.banners).toEqual([expect.objectContaining({ state: 'paid' })]);
     expect((await records(run.offer))[0]).toMatchObject({ state: 'paid', paidTx: HASH });

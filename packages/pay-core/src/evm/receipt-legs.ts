@@ -4,6 +4,9 @@
  * bound to this chain, and `eth_chainId` names the chain before anything but
  * "unreadable" is answered.
  *
+ * `absent` (the endpoint knows no such transaction) is answered before the
+ * chain is named: it only ever means "ask again".
+ *
  * A merchant reads it BEFORE a full verify of a hash a buyer reported: a hash
  * with no receipt, or with no leg for this order, costs one read instead of a
  * memo scan, so free reports of other people's hashes stay cheap. `none` is

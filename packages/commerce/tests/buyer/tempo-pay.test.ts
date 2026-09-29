@@ -446,4 +446,26 @@ describe('paying on Tempo', () => {
     const watched = await watchTempoPayment(record, run.deps);
     expect(watched).toMatchObject({ state: 'blocked', record: { state: 'blocked' } });
   });
+
+  it('reports a decline as ended only once the order ended, re-reading on a lost write', async () => {
+    const run = await world();
+    const payer = wallet(run, 'reject');
+    const original = payer.sendCall;
+    payer.sendCall = async (call) => {
+      // The status listener stores something while the prompt is open.
+      const [open] = await store.forProduct(run.record.productAddress);
+      if (open !== undefined) {
+        await store.update(open.orderId, open.version, {
+          acknowledgedRelays: ['wss://x.example.com'],
+        });
+      }
+      return original(call);
+    };
+    const result = await payWithTempo(run.record, payer, run.fresh, run.deps);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'rejected',
+      record: { state: 'ended-unpaid', endedBy: 'rejected' },
+    });
+  });
 });

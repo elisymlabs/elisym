@@ -368,6 +368,39 @@ export async function saveTempoHash(
   return { saved: false, record: current ?? record };
 }
 
+/**
+ * End an attempt the buyer declined (nothing was signed), re-reading on a lost
+ * compare-and-swap. Reported as `rejected` only once it ended; otherwise the
+ * stored record is handed back to follow (`conflict`).
+ */
+async function endRejected(
+  record: OrderRecord,
+  attemptId: string,
+  deps: TempoPayDeps,
+): Promise<TempoPayResult> {
+  let current: OrderRecord | undefined = record;
+  for (let attempt = 0; attempt < STORE_WRITE_ATTEMPTS && current !== undefined; attempt += 1) {
+    if (current.marker?.attemptId !== attemptId || current.state !== 'paying') {
+      break;
+    }
+    const ended = await deps.store.clearMarker(
+      current.orderId,
+      current.version,
+      attemptId,
+      'ended-unpaid',
+      'rejected',
+    );
+    if (ended.ok) {
+      return refusal('rejected', ended.record);
+    }
+    if (ended.reason !== 'conflict') {
+      break;
+    }
+    current = await deps.store.get(record.orderId);
+  }
+  return refusal('conflict', current ?? record);
+}
+
 function isUserRejection(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 4001;
 }
@@ -451,14 +484,7 @@ export async function payWithTempo(
     });
   } catch (error) {
     if (isUserRejection(error)) {
-      const ended = await deps.store.clearMarker(
-        current.orderId,
-        current.version,
-        attemptId,
-        'ended-unpaid',
-        'rejected',
-      );
-      return refusal('rejected', ended.ok ? ended.record : current);
+      return await endRejected(current, attemptId, deps);
     }
     return refusal('wallet_failed', current);
   }

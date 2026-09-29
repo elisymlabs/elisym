@@ -456,6 +456,9 @@ export class CheckoutSession {
     }
     this.lastWallet = walletName;
     this.lastAction = 'pay';
+    if (this.lateHashHolds()) {
+      return;
+    }
     if (await this.deliveryFirst()) {
       return;
     }
@@ -685,6 +688,19 @@ export class CheckoutSession {
     this.deps.onView({ kind: 'old_prompt', orders: unconfirmed.length, until });
   }
 
+  /**
+   * An approval of an ended order is in flight (known only in this session):
+   * no other payment of the product until it is found - the buyer approved it,
+   * so there is no prompt left to reject.
+   */
+  private lateHashHolds(): boolean {
+    if (this.lateHash === undefined) {
+      return false;
+    }
+    this.showOffer({ reason: 'late_approval' });
+    return true;
+  }
+
   /** Watch a hash approved for an ended order until it is found (or blocked): a banner then. */
   private watchLateHash(record: OrderRecord, hash: string): void {
     const client = this.tempoOfRecord(record);
@@ -830,6 +846,9 @@ export class CheckoutSession {
     }
     this.lastWallet = walletName;
     this.lastAction = 'retry';
+    if (this.lateHashHolds()) {
+      return;
+    }
     if (!this.confirmed) {
       this.render({ problem: { reason: 'confirm_first' } });
       return;
