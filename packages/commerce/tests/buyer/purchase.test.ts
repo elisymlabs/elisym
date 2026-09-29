@@ -87,4 +87,40 @@ describe('a purchase deciding about its records', () => {
     expect(await endOrder(paying, { ...DEPS_WITHOUT_RPC, store })).toMatchObject({ ended: false });
     expect((await store.get('paying'))?.state).toBe('paying');
   });
+
+  it('ends a Tempo order nothing was requested for as such, and never a Tempo attempt through a Solana RPC', async () => {
+    const tempo = {
+      payout: {
+        caip19: 'eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50',
+        address: '0xabc',
+      },
+    };
+    const store = await storeWith(record('ordered', tempo));
+    await store.update('ordered', 1, { state: 'ordered', paymentRequest: '{}', ...ACKNOWLEDGED });
+    const ordered = await store.get('ordered');
+    if (ordered === undefined) {
+      throw new Error('missing');
+    }
+    expect(await endOrder(ordered, { ...DEPS_WITHOUT_RPC, store })).toMatchObject({
+      ended: true,
+      record: { state: 'ended-unpaid', endedBy: 'nothing' },
+    });
+    await store.add(record('paying', { ...tempo, productAddress: 'other-product' }));
+    await store.update('paying', 1, { state: 'ordered', paymentRequest: '{}', ...ACKNOWLEDGED });
+    await store.setMarker('paying', 2, {
+      rail: 'tempo',
+      attemptId: 'a',
+      setAt: 1,
+      floorBlock: '1',
+    });
+    const paying = await store.get('paying');
+    if (paying === undefined) {
+      throw new Error('missing');
+    }
+    // A Solana RPC can prove nothing about a Tempo attempt.
+    expect(await endOrder(paying, { ...DEPS_WITHOUT_RPC, store, rpc: {} as never })).toMatchObject({
+      ended: false,
+    });
+    expect((await store.get('paying'))?.state).toBe('paying');
+  });
 });

@@ -980,6 +980,7 @@ async function recordPaid(
     const written = await deps.store.update(current.orderId, current.version, {
       state: 'paid',
       paidTx: signature,
+      paidAt: (deps.now ?? nowSecs)(),
     });
     if (written.ok) {
       return written.record;
