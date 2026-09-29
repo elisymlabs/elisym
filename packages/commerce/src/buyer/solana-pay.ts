@@ -1,4 +1,3 @@
-import { isOfferPayout, parseCaip19 } from '@elisym/commerce';
 import {
   type Asset,
   type DirectInstruction,
@@ -39,6 +38,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   verifySignature,
 } from '@solana/kit';
+import { isOfferPayout, parseCaip19 } from '../index';
 import {
   MERCHANT_CATCH_UP_SECS,
   PAYMENT_SCAN_MARGIN_SECS,
@@ -85,12 +85,45 @@ export interface SolanaWallet {
   signTransaction(transaction: Uint8Array): Promise<Uint8Array>;
 }
 
+/**
+ * What one payment attempt may spend, as the caller's spend limits count it:
+ * the coin's amount (for a token), and the SOL that leaves the payer's wallet
+ * (the fee, the payee's token-account rent when missing, `increment_stats`'
+ * rent on a new asset, and the amount itself for native SOL). The payer's own
+ * rent floor is only kept, never spent, so it is not counted.
+ */
+export interface PaymentCosts {
+  asset: Asset;
+  /** Subunits of `asset` when it is a token; 0 for native SOL (counted in `lamports`). */
+  tokenAmount: bigint;
+  lamports: bigint;
+  /**
+   * The network fee inside `lamports`: the one part an attempt that never paid
+   * may still have spent (a transaction that landed and failed).
+   */
+  feeLamports: bigint;
+}
+
 export interface SolanaPayDeps extends OrderDeps {
   /** The widget's own Solana RPC. */
   rpc: Rpc<SolanaRpcApi>;
   /** The device clock (seconds); the receipt's date and the marker's `setAt`. */
   now?: () => number;
   newAttemptId?: () => string;
+  /**
+   * Whether `rpc` can prove an attempt over: a full-history endpoint whose
+   * "no payment" can be trusted. Without it (`false`) the watch never answers
+   * `over`, so nothing is retried or ended on an answer that could be wrong.
+   * The widget always has one (true, the default).
+   */
+  canProveOver?: boolean;
+  /**
+   * Called once an attempt's costs are known and before its marker is written;
+   * a throw refuses the payment with `spend_limit` before anything is recorded.
+   */
+  reserve?: (costs: PaymentCosts, attemptId: string) => void;
+  /** Called when the attempt `attemptId` was refused after `reserve`, before any broadcast. */
+  release?: (attemptId: string) => void;
 }
 
 export interface PayInput {
@@ -125,7 +158,9 @@ export type SolanaPayRefusal =
   | 'wallet_unsupported'
   /** A retry before the last attempt provably ended. */
   | 'still_waiting'
-  | 'already_paid';
+  | 'already_paid'
+  /** The caller's spend limit refused the attempt's costs (`reserve` threw). Nothing was recorded. */
+  | 'spend_limit';
 
 export type SolanaPayResult =
   | { ok: true; record: OrderRecord; signature: string }
@@ -212,6 +247,8 @@ interface Funds {
   otherLamports: bigint;
   /** The compute-unit price the widget asks (micro-lamports), for the payment's own accounts. */
   priceMicroLamports: bigint;
+  /** What the attempt spends, for the caller's spend limits. */
+  costs: PaymentCosts;
 }
 
 type Checked =
@@ -370,7 +407,17 @@ async function checkFunds(
         available: lamports,
       };
     }
-    return { ok: true, funds: { lamports, otherLamports, priceMicroLamports } };
+    const costs: PaymentCosts = {
+      asset: coin.asset,
+      tokenAmount: coin.asset.mint === undefined ? 0n : amount,
+      lamports:
+        fees.rentLamports +
+        fees.assetStatsRentLamports +
+        feeLamports +
+        (coin.asset.mint === undefined ? amount : 0n),
+      feeLamports,
+    };
+    return { ok: true, funds: { lamports, otherLamports, priceMicroLamports, costs } };
   } catch {
     return { ok: false, reason: 'rpc_error' };
   }
@@ -603,6 +650,7 @@ async function signAndSend(
   // it signed would send a transaction that never lands.
   const needed = checked.funds.otherLamports + signed.feeLamports;
   if (checked.funds.lamports < needed) {
+    deps.release?.(marker.attemptId);
     return {
       ok: false,
       reason: 'insufficient_sol',
@@ -616,6 +664,7 @@ async function signAndSend(
   let current: OrderRecord | undefined = record;
   for (let attempt = 0; attempt < STORE_WRITE_ATTEMPTS && current !== undefined; attempt += 1) {
     if (current.marker?.attemptId !== marker.attemptId) {
+      deps.release?.(marker.attemptId);
       return { ok: false, reason: 'conflict', record: current };
     }
     const written = await deps.store.updateMarker(
@@ -639,10 +688,12 @@ async function signAndSend(
       };
     }
     if (written.reason !== 'conflict') {
+      deps.release?.(marker.attemptId);
       return { ok: false, reason: 'conflict', record: current };
     }
     current = await deps.store.get(record.orderId);
   }
+  deps.release?.(marker.attemptId);
   return { ok: false, reason: 'conflict', ...(current === undefined ? {} : { record: current }) };
 }
 
@@ -659,6 +710,36 @@ function storeRefusal(
     };
   }
   return { ok: false, reason: written.reason === 'conflict' ? 'conflict' : 'not_payable', record };
+}
+
+/**
+ * Run the write that records a new attempt; a throw gives the attempt's
+ * reservation back (nothing was signed or sent on it) and is rethrown.
+ */
+async function withReleaseOnThrow<T>(
+  attemptId: string,
+  deps: SolanaPayDeps,
+  write: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    deps.release?.(attemptId);
+    throw error;
+  }
+}
+
+/** Ask the caller's spend limits for the attempt's costs; `false` when refused. */
+function reserveCosts(costs: PaymentCosts, attemptId: string, deps: SolanaPayDeps): boolean {
+  if (deps.reserve === undefined) {
+    return true;
+  }
+  try {
+    deps.reserve(costs, attemptId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function newMarker(unsigned: Unsigned, deps: SolanaPayDeps): SolanaMarker {
@@ -696,8 +777,14 @@ export async function payWithSolana(
     return { ok: false, reason: 'rpc_error', record };
   }
   const marker = newMarker(unsigned, deps);
-  const marked = await deps.store.setMarker(record.orderId, record.version, marker);
+  if (!reserveCosts(checked.funds.costs, marker.attemptId, deps)) {
+    return { ok: false, reason: 'spend_limit', record };
+  }
+  const marked = await withReleaseOnThrow(marker.attemptId, deps, () =>
+    deps.store.setMarker(record.orderId, record.version, marker),
+  );
   if (!marked.ok) {
+    deps.release?.(marker.attemptId);
     return storeRefusal(marked, record);
   }
   return signAndSend(marked.record, marker, unsigned, wallet, checked, deps);
@@ -962,7 +1049,8 @@ export async function watchSolanaPayment(
     }
     return { state: 'waiting', record };
   }
-  return search === 'none' && settledAt !== undefined
+  // Only a caller whose RPC can prove it (full history) ever acts on "none".
+  return search === 'none' && settledAt !== undefined && deps.canProveOver !== false
     ? { state: 'over', record }
     : { state: 'waiting', record };
 }
@@ -1006,13 +1094,14 @@ export async function retryWithSolana(
     return { ok: false, reason: 'rpc_error', record: judged };
   }
   const marker = newMarker(unsigned, deps);
-  const replaced = await deps.store.updateMarker(
-    judged.orderId,
-    judged.version,
-    previous.attemptId,
-    marker,
+  if (!reserveCosts(checked.funds.costs, marker.attemptId, deps)) {
+    return { ok: false, reason: 'spend_limit', record: judged };
+  }
+  const replaced = await withReleaseOnThrow(marker.attemptId, deps, () =>
+    deps.store.updateMarker(judged.orderId, judged.version, previous.attemptId, marker),
   );
   if (!replaced.ok) {
+    deps.release?.(marker.attemptId);
     return storeRefusal(replaced, judged);
   }
   return signAndSend(replaced.record, marker, unsigned, wallet, checked, deps);

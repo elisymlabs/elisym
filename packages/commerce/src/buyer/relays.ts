@@ -1,4 +1,4 @@
-import { isPublicHostname } from '@elisym/commerce';
+import { isPublicHostname } from '../index';
 import { DEFAULT_RELAYS, MAX_RELAY_URL_LENGTH, STORE_RELAY_CAP } from './constants';
 
 /**

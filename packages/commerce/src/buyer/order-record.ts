@@ -1,5 +1,5 @@
-import type { VerifiedOffer } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
+import type { VerifiedOffer } from '../index';
 
 /**
  * Where one order stands. The order is sent and acknowledged BEFORE any wallet

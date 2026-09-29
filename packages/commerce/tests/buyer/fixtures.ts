@@ -9,10 +9,13 @@ import { getBase58Decoder } from '@solana/kit';
 import { type EventTemplate, type Filter, type NostrEvent, matchFilter } from 'nostr-tools';
 // Signed with `pure`: its verdict cache is the one `isGenuineEvent` must not trust.
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import type { PublishResult, RelayClient } from '../src/core/relay-client';
+import type { PublishResult, RelayClient } from '../../src/buyer/relay-client';
 
 export const USDC_DEVNET_CAIP19 =
   'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+
+export const USDC_MAINNET_CAIP19 =
+  'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export const T0 = 1_750_000_000;
 export const DAY = 24 * 60 * 60;
@@ -46,7 +49,13 @@ export interface Shop {
 }
 
 export function makeShop(
-  options: { nip05?: string; paytoCreatedAt?: number; hints?: string[]; price?: string } = {},
+  options: {
+    nip05?: string;
+    paytoCreatedAt?: number;
+    hints?: string[];
+    price?: string;
+    caip19?: string;
+  } = {},
 ): Shop {
   const owner = nostrKey();
   const store = nostrKey();
@@ -58,7 +67,7 @@ export function makeShop(
         title: 'Agents 101',
         description: 'Twelve lessons.',
         price: { amount: options.price ?? '49', currency: 'USD' },
-        accept: [USDC_DEVNET_CAIP19],
+        accept: [options.caip19 ?? USDC_DEVNET_CAIP19],
         createdAt: T0,
       }),
       store,
@@ -75,7 +84,7 @@ export function makeShop(
     sign(
       buildPaytoEvent({
         ownerPubkey: owner.pubkey,
-        accept: [{ caip19: USDC_DEVNET_CAIP19, address: payout }],
+        accept: [{ caip19: options.caip19 ?? USDC_DEVNET_CAIP19, address: payout }],
         createdAt: options.paytoCreatedAt ?? T0,
       }),
       owner,

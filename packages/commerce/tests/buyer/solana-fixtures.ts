@@ -28,7 +28,7 @@ import {
   getTransactionEncoder,
   partiallySignTransaction,
 } from '@solana/kit';
-import type { SolanaWallet } from '../src/core/solana-pay';
+import type { SolanaWallet } from '../../src/buyer/solana-pay';
 
 type Compiled = ReturnType<ReturnType<typeof getCompiledTransactionMessageDecoder>['decode']>;
 
@@ -304,6 +304,8 @@ export class FakeSolana {
             value: { blockhash: this.blockhash, lastValidBlockHeight },
           };
         }),
+      getSlot: () => this.answer('getSlot', () => 5_000n),
+      getBlockTime: () => this.answer('getBlockTime', () => BigInt(this.blockTime)),
       getEpochInfo: (config: { commitment?: string } = {}) =>
         this.answer('getEpochInfo', () => {
           // Only `finalized` is the finalized height; anything else is the tip.

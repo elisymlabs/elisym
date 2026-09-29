@@ -8,6 +8,17 @@
  * Devnet only: the key must hold devnet SOL for fees and devnet USDC.
  */
 import { readFileSync } from 'node:fs';
+import { loadOffer } from '@elisym/commerce/buyer';
+import { type OrderDeps, applyStatus, listenForStatus, placeOrder } from '@elisym/commerce/buyer';
+import { isTerminal } from '@elisym/commerce/buyer';
+import { OrderStore } from '@elisym/commerce/buyer';
+import { createRelayClient } from '@elisym/commerce/buyer';
+import {
+  type SolanaWallet,
+  composeOrderPayment,
+  payWithSolana,
+  watchSolanaPayment,
+} from '@elisym/commerce/buyer';
 import { signerFromSecretKeyBase58 } from '@elisym/pay-core';
 import {
   createSolanaRpc,
@@ -17,17 +28,7 @@ import {
 } from '@solana/kit';
 import { IDBFactory } from 'fake-indexeddb';
 import { finalizeEvent } from 'nostr-tools/pure';
-import { loadOffer } from '../src/core/offer';
-import { type OrderDeps, applyStatus, listenForStatus, placeOrder } from '../src/core/order-flow';
-import { isTerminal } from '../src/core/order-record';
-import { OrderStore, openOrderDatabase } from '../src/core/order-store';
-import { createRelayClient } from '../src/core/relay-client';
-import {
-  type SolanaWallet,
-  composeOrderPayment,
-  payWithSolana,
-  watchSolanaPayment,
-} from '../src/core/solana-pay';
+import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 
 const RPC_URL = 'https://api.devnet.solana.com';
 const PAGE_ORIGIN = 'https://merchant.example';
@@ -70,7 +71,9 @@ async function main(): Promise<void> {
   log(`buyer wallet ${wallet.address}`);
 
   const rpc = createSolanaRpc(RPC_URL);
-  const store = new OrderStore(await openOrderDatabase(new IDBFactory()));
+  const store = new OrderStore(
+    new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory())),
+  );
   const readClient = createRelayClient();
   const deps: OrderDeps & { rpc: typeof rpc } = {
     store,

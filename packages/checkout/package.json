@@ -14,7 +14,7 @@
     "dev": "bun scripts/dev.ts"
   },
   "dependencies": {
-    "@elisym/commerce": "~0.2.0",
+    "@elisym/commerce": "~0.3.0",
     "@elisym/pay-core": "~0.1.2",
     "@solana-program/memo": "~0.11.0",
     "@solana-program/system": "~0.12.0",

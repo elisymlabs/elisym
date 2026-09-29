@@ -5,10 +5,9 @@ import {
   unwrapOrderMessage,
   wrapOrderMessage,
 } from '@elisym/commerce';
-import { IDBFactory } from 'fake-indexeddb';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { loadOffer } from '../src/core/offer';
+import { loadOffer } from '../../src/buyer/offer';
 import {
   type OrderDeps,
   applyStatus,
@@ -21,10 +20,10 @@ import {
   resumeOrder,
   sendReceipt,
   statusFor,
-} from '../src/core/order-flow';
-import { type OrderRecord, recordToShow } from '../src/core/order-record';
-import { OrderStore, openOrderDatabase } from '../src/core/order-store';
-import type { RelayClient } from '../src/core/relay-client';
+} from '../../src/buyer/order-flow';
+import { type OrderRecord, recordToShow } from '../../src/buyer/order-record';
+import { MemoryOrderBackend, OrderStore } from '../../src/buyer/order-store';
+import type { RelayClient } from '../../src/buyer/relay-client';
 import { MemoryRelays, NOW, type Shop, inboxList, makeShop, nostrKey } from './fixtures';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
@@ -33,7 +32,7 @@ const PAGE = 'https://merchant.example';
 let store: OrderStore;
 
 beforeEach(async () => {
-  store = new OrderStore(await openOrderDatabase(new IDBFactory()));
+  store = new OrderStore(new MemoryOrderBackend());
 });
 
 async function ready(shop: Shop, relays: MemoryRelays) {

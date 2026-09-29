@@ -42,7 +42,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@elisym/commerce": "~0.2.0",
+    "@elisym/commerce": "~0.3.0",
     "@elisym/pay-core": "~0.1.2",
     "@solana-program/token": "~0.14.0",
     "@solana/kit": "~6.8.0",

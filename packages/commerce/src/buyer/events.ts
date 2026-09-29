@@ -1,6 +1,6 @@
-import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
+import { MAX_FUTURE_SKEW_SECS } from '../index';
 
 /** Whether a value from a relay has the NIP-01 field types. */
 export function isEventShaped(event: unknown): event is NostrEvent {

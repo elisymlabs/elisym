@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_RELAYS, STORE_RELAY_CAP } from '../src/core/constants';
-import { normalizeRelayUrl, readRelays, storeRelays, uniqueRelays } from '../src/core/relays';
+import { DEFAULT_RELAYS, STORE_RELAY_CAP } from '../../src/buyer/constants';
+import { normalizeRelayUrl, readRelays, storeRelays, uniqueRelays } from '../../src/buyer/relays';
 
 describe('normalizeRelayUrl', () => {
   it('keeps a wss relay on a public name, in one spelling', () => {

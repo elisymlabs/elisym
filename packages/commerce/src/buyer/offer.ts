@@ -1,3 +1,4 @@
+import type { ChainFamily, Network } from '@elisym/pay-core';
 import {
   type DomainKeys,
   type FetchLike,
@@ -9,8 +10,7 @@ import {
   priceInSubunits,
   productAddress,
   verifyOffer,
-} from '@elisym/commerce';
-import type { ChainFamily, Network } from '@elisym/pay-core';
+} from '../index';
 import { OFFER_SNAPSHOT_MAX_AGE_SECS } from './constants';
 import { nowSecs } from './events';
 import type { RelayClient } from './relay-client';
@@ -111,6 +111,26 @@ export async function loadOffer(naddr: string, options: LoadOfferOptions): Promi
   if (!isPageOrigin(options.pageOrigin)) {
     return refuse('bad_page_origin', 'The page embedding the checkout has no usable origin');
   }
+  return loadVerified(naddr, options, options.pageOrigin);
+}
+
+/**
+ * The offer for a buyer that is not a web page (an AI agent through the MCP):
+ * the same verification, with no page origin, so no origin rule applies. The
+ * caller shows the trust level and the verified domain to its user instead.
+ */
+export function loadOfferForAgent(
+  naddr: string,
+  options: Omit<LoadOfferOptions, 'pageOrigin' | 'strictOrigin'>,
+): Promise<LoadedOffer> {
+  return loadVerified(naddr, options, undefined);
+}
+
+async function loadVerified(
+  naddr: string,
+  options: Omit<LoadOfferOptions, 'pageOrigin'>,
+  pageOrigin: string | undefined,
+): Promise<LoadedOffer> {
   const pointer = decodeProductNaddr(naddr);
   if (pointer === undefined) {
     return refuse('bad_pointer', 'Not a product naddr');
@@ -127,7 +147,7 @@ export async function loadOffer(naddr: string, options: LoadOfferOptions): Promi
     },
     {
       now,
-      pageOrigin: options.pageOrigin,
+      ...(pageOrigin === undefined ? {} : { pageOrigin }),
       ...(options.strictOrigin === true ? { strictOrigin: true } : {}),
       ...(options.pins?.pinnedOwnerPubkey === undefined
         ? {}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_RELAYS } from '../src/core/constants';
-import { isPageOrigin, isSnapshotStale, loadOffer } from '../src/core/offer';
+import { DEFAULT_RELAYS } from '../../src/buyer/constants';
+import { isPageOrigin, isSnapshotStale, loadOffer } from '../../src/buyer/offer';
 import { MemoryRelays, NOW, USDC_DEVNET_CAIP19, makeShop } from './fixtures';
 
 const PAGE = 'https://merchant.example';

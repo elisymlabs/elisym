@@ -196,3 +196,10 @@ zeroize
 zeroized
 zod
 ZWNJ
+apfs
+btrfs
+journaled
+linuxkit
+mountinfo
+nobarrier
+orbstack

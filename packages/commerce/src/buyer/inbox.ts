@@ -1,5 +1,5 @@
-import { KIND_INBOX_RELAYS } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
+import { KIND_INBOX_RELAYS } from '../index';
 import { STORE_RELAY_CAP } from './constants';
 import { newestGenuine, nowSecs } from './events';
 import type { RelayClient } from './relay-client';

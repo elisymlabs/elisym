@@ -6,14 +6,14 @@ import {
   RELAY_PUBLISH_DEADLINE_MS,
   RELAY_QUERY_DEADLINE_MS,
   SUBSCRIBE_STABLE_MS,
-} from '../src/core/constants';
+} from '../../src/buyer/constants';
 import {
   type AuthSigner,
   type PoolLike,
   type RelayLike,
   createPool,
   createRelayClient,
-} from '../src/core/relay-client';
+} from '../../src/buyer/relay-client';
 import { nostrKey, sign } from './fixtures';
 
 const key = nostrKey();

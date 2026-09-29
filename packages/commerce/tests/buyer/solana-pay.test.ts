@@ -1,11 +1,10 @@
 import { USDC_SOLANA_DEVNET } from '@elisym/pay-core';
 import { getBase64Encoder } from '@solana/kit';
-import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { type LoadedOffer, loadOffer } from '../src/core/offer';
-import { placeOrder } from '../src/core/order-flow';
-import type { OrderRecord } from '../src/core/order-record';
-import { OrderStore, openOrderDatabase } from '../src/core/order-store';
+import { type LoadedOffer, loadOffer } from '../../src/buyer/offer';
+import { placeOrder } from '../../src/buyer/order-flow';
+import type { OrderRecord } from '../../src/buyer/order-record';
+import { MemoryOrderBackend, OrderStore } from '../../src/buyer/order-store';
 import {
   type SolanaPayDeps,
   checkBeforePaying,
@@ -16,7 +15,7 @@ import {
   retryWithSolana,
   storedSolanaRequest,
   watchSolanaPayment,
-} from '../src/core/solana-pay';
+} from '../../src/buyer/solana-pay';
 import { DAY, MemoryRelays, NOW, type Shop, inboxList, makeShop } from './fixtures';
 import { EMPTY_ACCOUNT_RENT, FakeSolana, FakeWallet, signatureOf } from './solana-fixtures';
 
@@ -30,7 +29,7 @@ type Ready = Extract<LoadedOffer, { ok: true }>;
 let store: OrderStore;
 
 beforeEach(async () => {
-  store = new OrderStore(await openOrderDatabase(new IDBFactory()));
+  store = new OrderStore(new MemoryOrderBackend());
 });
 
 async function loaded(shop: Shop, relays: MemoryRelays): Promise<Ready> {
@@ -690,5 +689,189 @@ describe('ending an order', () => {
     expect(ended).toMatchObject({ ended: true, record: { state: 'ended-unpaid' } });
     // The marker is kept: later reconciliation starts from it.
     expect(ended.record.marker?.attemptId).toBe(waiting.marker?.attemptId);
+  });
+});
+
+describe('a caller whose RPC cannot prove an attempt over', () => {
+  it('never retries or ends an expired attempt, and keeps watching it', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    const limited: SolanaPayDeps = { ...deps, canProveOver: false };
+    wallet.behaviour = 'throw';
+    await payWithSolana(record, wallet, input, limited);
+    const waiting = await stored(record.orderId);
+    chain.expire();
+    chain.nextBlockhash();
+    expect(await watchSolanaPayment(waiting, limited)).toMatchObject({ state: 'waiting' });
+    wallet.behaviour = 'sign';
+    expect(await retryWithSolana(waiting, wallet, input, limited)).toMatchObject({
+      ok: false,
+      reason: 'still_waiting',
+    });
+    expect(await endSolanaOrder(waiting, limited)).toMatchObject({ ended: false });
+    expect((await stored(record.orderId)).state).toBe('paying');
+    // The same chain, with proof: over.
+    expect(await watchSolanaPayment(waiting, deps)).toMatchObject({ state: 'over' });
+  });
+
+  it('still ends an acknowledged order that never had an attempt', async () => {
+    const { record, deps } = await setup();
+    expect(await endSolanaOrder(record, { ...deps, canProveOver: false })).toMatchObject({
+      ended: true,
+      record: { state: 'ended-unpaid' },
+    });
+  });
+});
+
+describe("the caller's spend limits", () => {
+  function limits(allow = true) {
+    const reserved: { attemptId: string; tokenAmount: bigint; lamports: bigint }[] = [];
+    const released: string[] = [];
+    return {
+      reserved,
+      released,
+      reserve: (costs: { tokenAmount: bigint; lamports: bigint }, attemptId: string) => {
+        if (!allow) {
+          throw new Error('over the limit');
+        }
+        reserved.push({ attemptId, tokenAmount: costs.tokenAmount, lamports: costs.lamports });
+      },
+      release: (attemptId: string) => {
+        released.push(attemptId);
+      },
+    };
+  }
+
+  it('reserves the price and the SOL it spends before the marker, and keeps it once sent', async () => {
+    const { record, wallet, deps, input } = await setup();
+    const spend = limits();
+    const calls: string[] = [];
+    const spied = Object.create(store) as OrderStore;
+    spied.setMarker = (...args: Parameters<OrderStore['setMarker']>) => {
+      calls.push('setMarker');
+      return store.setMarker(...args);
+    };
+    const paid = await payWithSolana(record, wallet, input, {
+      ...deps,
+      store: spied,
+      reserve: (costs, attemptId) => {
+        calls.push('reserve');
+        spend.reserve(costs, attemptId);
+      },
+      release: spend.release,
+    });
+    expect(paid).toMatchObject({ ok: true });
+    expect(calls).toEqual(['reserve', 'setMarker']);
+    expect(spend.reserved).toHaveLength(1);
+    expect(spend.reserved[0]?.tokenAmount).toBe(PRICE);
+    // The fee at least, and the payee's token-account rent when it is missing.
+    expect(spend.reserved[0]?.lamports).toBeGreaterThan(0n);
+    expect(spend.reserved[0]?.attemptId).toBe(paid.ok ? paid.record.marker?.attemptId : '');
+    expect(spend.released).toEqual([]);
+  });
+
+  it('gives the reservation back when writing the attempt throws', async () => {
+    const { record, wallet, deps, input } = await setup();
+    const spend = limits();
+    const failing = Object.create(store) as OrderStore;
+    failing.setMarker = async () => {
+      throw new Error('the order file is locked');
+    };
+    await expect(
+      payWithSolana(record, wallet, input, {
+        ...deps,
+        store: failing,
+        reserve: spend.reserve,
+        release: spend.release,
+      }),
+    ).rejects.toThrow('locked');
+    expect(spend.released).toEqual([spend.reserved[0]?.attemptId]);
+    expect(wallet.requests).toBe(0);
+  });
+
+  it('refuses before anything is recorded when the limits say no', async () => {
+    const { record, wallet, deps, input } = await setup();
+    const spend = limits(false);
+    expect(
+      await payWithSolana(record, wallet, input, {
+        ...deps,
+        reserve: spend.reserve,
+        release: spend.release,
+      }),
+    ).toMatchObject({ ok: false, reason: 'spend_limit' });
+    const after = await stored(record.orderId);
+    expect(after.state).toBe('ordered');
+    expect(after.marker).toBeUndefined();
+    expect(wallet.requests).toBe(0);
+  });
+
+  it('gives back what an attempt refused before any broadcast reserved', async () => {
+    const { relays, fresh, record, wallet, chain, deps, input } = await setup();
+    chain.dropSends = true;
+    await payWithSolana(record, wallet, input, deps);
+    // Another order of the product holds the exclusion: the marker is refused.
+    const second = await ordered(relays, fresh);
+    const spend = limits();
+    expect(
+      await payWithSolana(second, wallet, input, {
+        ...deps,
+        reserve: spend.reserve,
+        release: spend.release,
+      }),
+    ).toMatchObject({ ok: false, reason: 'exclusion' });
+    expect(spend.released).toEqual(spend.reserved.map((entry) => entry.attemptId));
+    expect(spend.released).toHaveLength(1);
+  });
+
+  it('gives back a reservation when the fee the wallet signed cannot be covered', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    wallet.behaviour = 'raise_price';
+    chain.lamports = EMPTY_ACCOUNT_RENT + 100_000n;
+    const spend = limits();
+    const result = await payWithSolana(record, wallet, input, {
+      ...deps,
+      reserve: spend.reserve,
+      release: spend.release,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'insufficient_sol' });
+    expect(spend.released).toHaveLength(1);
+  });
+
+  it('keeps the reservation while an attempt the wallet failed may still land', async () => {
+    const { record, wallet, deps, input } = await setup();
+    wallet.behaviour = 'throw';
+    const spend = limits();
+    expect(
+      await payWithSolana(record, wallet, input, {
+        ...deps,
+        reserve: spend.reserve,
+        release: spend.release,
+      }),
+    ).toMatchObject({ ok: false, reason: 'wallet_failed' });
+    expect(spend.reserved).toHaveLength(1);
+    expect(spend.released).toEqual([]);
+  });
+
+  it('reserves again for a retry, before its marker replaces the old one', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    wallet.behaviour = 'throw';
+    await payWithSolana(record, wallet, input, deps);
+    const waiting = await stored(record.orderId);
+    chain.expire();
+    chain.nextBlockhash();
+    wallet.behaviour = 'sign';
+    const spend = limits();
+    const refused = await retryWithSolana(waiting, wallet, input, {
+      ...deps,
+      reserve: limits(false).reserve,
+    });
+    expect(refused).toMatchObject({ ok: false, reason: 'spend_limit' });
+    expect((await stored(record.orderId)).marker?.attemptId).toBe(waiting.marker?.attemptId);
+    const retried = await retryWithSolana(waiting, wallet, input, {
+      ...deps,
+      reserve: spend.reserve,
+      release: spend.release,
+    });
+    expect(retried).toMatchObject({ ok: true });
+    expect(spend.reserved).toHaveLength(1);
   });
 });

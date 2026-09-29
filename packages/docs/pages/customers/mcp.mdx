@@ -85,6 +85,31 @@ The tools group by what they do.
 - `withdraw` - move funds out (two-step confirmation; gated, see below).
 - `sign_onchain_call` - verify and sign a Solana call an [on-chain capability](/customers/onchain-calls) built for you. Two-step like `withdraw`: a preview of exactly what the call does plus a nonce, then the signature. Bounded by the ceilings the capability published (lower them with `max_spend` / `max_authority`) and charged against your session spend cap. Gated behind `ELISYM_ALLOW_ONCHAIN_SIGNING=1`.
 
+### Buy products
+
+Products sold through the [elisym checkout](/commerce/quickstart) can be bought by an agent too, paid from its Solana wallet:
+
+- `buy_product` - two steps.
+  - Call it with `product` (an `naddr1...`) to get a **quote**, without ordering or paying anything. The quote shows the store's key, trust level and verified domain, the price, the payout address, and the warnings.
+  - Only after the user approves, call it again with the `quote_id`, plus `accept_warnings` for each warning they confirmed.
+  - If anything in the offer changed since the quote, a new quote comes back and nothing is ordered.
+  - It returns the delivery, or an order id to follow.
+  - A product this agent already bought is shown, not bought again, unless you pass `buy_again: true`.
+- `get_order` - list the agent's orders, or follow one by `order_id`. It sends the order again, checks the payment, and waits briefly for the store. It never pays.
+
+Store-written text (titles, names, the delivery) is untrusted data, wrapped like job results. The payment counts against the session spend limit, fee and rent included, and is refused up front if it would go over.
+
+On mainnet two more rules apply.
+
+- **Durable storage.** Buying needs storage where a write survives a crash: the payment is recorded before it is sent. That means a local disk on macOS or Linux, or Docker on a Linux host. Buying is refused on Windows and WSL2, on Docker Desktop, on OrbStack, and on network or virtual filesystems. Colima, Lima and Podman machine are not supported either, but they cannot be detected, so do not buy on mainnet from them.
+- **A full-history RPC for retries.** Proving that an expired payment attempt paid nothing needs a full-history endpoint. Put it in `~/.elisym/solana-rpc.json` (mode 0600, since the URL usually holds a key):
+
+  ```json
+  { "mainnet": "https://mainnet.helius-rpc.com/?api-key=<your key>" }
+  ```
+
+  Without it, a purchase is still paid, once. An attempt that expires is left unsettled, and never retried, until the file is added.
+
 ### Feedback, contacts, and identity
 
 - `submit_feedback` - rate a completed job. The rating is bound to the job for verification and, when the job was paid, carries the payment proof (see [Reputation](/protocol/reputation)).

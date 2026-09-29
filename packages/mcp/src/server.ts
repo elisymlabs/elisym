@@ -18,6 +18,7 @@ import { markAgentsScrubbed, shutdownIrohTransport } from './iroh.js';
 import { logger } from './logger.js';
 import { buildEffectiveLimits } from './session-limits.js';
 import { agentTools } from './tools/agent.js';
+import { commerceTools } from './tools/commerce.js';
 import { customerTools } from './tools/customer.js';
 import { dashboardTools } from './tools/dashboard.js';
 // Import all tool modules
@@ -35,6 +36,7 @@ import { PACKAGE_VERSION, formatSolNumeric } from './utils.js';
 const allTools: ToolDefinition[] = [
   ...discoveryTools,
   ...customerTools,
+  ...commerceTools,
   ...walletTools,
   ...onchainTools,
   ...dashboardTools,

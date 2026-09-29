@@ -49,7 +49,7 @@ docker run --rm -it \
 
 Generates a Nostr identity and a Solana keypair and writes them to `~/.elisym/<chosen-name>/` on the host.
 
-The container runs as an unprivileged user (uid 1000), not root. On Linux, if your own uid is not 1000 (`id -u`), add `--user "$(id -u):$(id -g)"` to every `docker run` so the container can read and write the mounted `~/.elisym`. Docker Desktop (macOS, Windows) needs nothing extra.
+The container runs as an unprivileged user (uid 1000), not root. On Linux, if your own uid is not 1000 (`id -u`), add `--user "$(id -u):$(id -g)"` to every `docker run` so the container can read and write the mounted `~/.elisym`. Docker Desktop (macOS, Windows) needs nothing extra for jobs. `buy_product` refuses mainnet purchases there, because its disk does not reliably keep a write through a crash. Buy on mainnet from `npx` on a local disk, or from Docker on a Linux host.
 
 **2. Edit your MCP client's config file** and add the entry below. Replace `/Users/you/.elisym` with the absolute path to your home `.elisym` directory:
 
@@ -206,7 +206,7 @@ npx @elisym/mcp disable-agent-switch <agent>
 
 ### Session spend limits
 
-The MCP process enforces a shared cap on total amount spent per asset by `submit_and_pay_job`, `buy_capability`, and `send_payment`. `withdraw` is NOT counted (uses its own gate).
+The MCP process enforces a shared cap on total amount spent per asset by `submit_and_pay_job`, `buy_capability`, `buy_product` (the price plus the SOL it spends on fees and rent), and `send_payment`. `withdraw` is NOT counted (uses its own gate).
 
 Defaults (hardcoded): `0.5 SOL` (shared), `50 USDC` per network, `1,000,000 LSM` (mainnet-only), and on Tempo `50 USDC.e` (mainnet) and `50 pathUSD` (one contract on both networks, so one shared cap - listed ahead of Tempo payments, so no build can pay in a coin without a cap; these two cannot be overridden yet) (the limiter is mint-keyed, so devnet USDC and mainnet USDC each get their own cap). Native SOL has no mint, so its cap is a single entry shared across networks - deliberate: in a mixed-network process the shared draw-down can only under-allow, never over-spend.
 

@@ -70,6 +70,7 @@ describe('a .gitignore migration in the MCP', () => {
       join('storage', 'contacts.ts'),
       join('storage', 'customer-history.ts'),
       join('storage', 'job-sessions.ts'),
+      join('storage', 'orders.ts'),
       join('storage', 'read-cursors.ts'),
     ]);
   });
