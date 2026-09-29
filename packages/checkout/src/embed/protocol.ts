@@ -46,6 +46,8 @@ export interface CheckoutParams {
   /** Refuse a store at levels B and C too, not only an off-domain level A one. */
   strictOrigin: boolean;
   theme: 'auto' | 'light' | 'dark';
+  /** The merchant asks for the buyer's email (optional for the buyer). */
+  collectEmail: boolean;
 }
 
 export function encodeCheckoutParams(params: CheckoutParams): string {
@@ -58,6 +60,9 @@ export function encodeCheckoutParams(params: CheckoutParams): string {
   }
   if (params.theme !== 'auto') {
     search.set('theme', params.theme);
+  }
+  if (params.collectEmail) {
+    search.set('email', '1');
   }
   return search.toString();
 }
@@ -76,5 +81,6 @@ export function decodeCheckoutParams(fragment: string): CheckoutParams | undefin
     ...(network === 'mainnet' || network === 'devnet' ? { network } : {}),
     strictOrigin: search.get('strict') === '1',
     theme: theme === 'light' || theme === 'dark' ? theme : 'auto',
+    collectEmail: search.get('email') === '1',
   };
 }

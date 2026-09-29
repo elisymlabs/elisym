@@ -41,11 +41,18 @@ function paramsOf(element: HTMLElement): CheckoutParams | undefined {
     ...(network === 'mainnet' || network === 'devnet' ? { network } : {}),
     strictOrigin: element.hasAttribute('strict-origin'),
     theme: theme === 'light' || theme === 'dark' ? theme : 'auto',
+    collectEmail: element.hasAttribute('collect-email'),
   };
 }
 
 export class ElisymBuy extends HTMLElement {
-  static readonly observedAttributes = ['product', 'network', 'strict-origin', 'theme'];
+  static readonly observedAttributes = [
+    'product',
+    'network',
+    'strict-origin',
+    'theme',
+    'collect-email',
+  ];
 
   private frame: HTMLIFrameElement | undefined;
   /** The parameters the current frame was built with. */

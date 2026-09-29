@@ -69,6 +69,7 @@ describe('the checkout parameters', () => {
       network: 'devnet' as const,
       strictOrigin: true,
       theme: 'dark' as const,
+      collectEmail: true,
     };
     expect(decodeCheckoutParams(`#${encodeCheckoutParams(params)}`)).toEqual(params);
     expect(decodeCheckoutParams('#naddr=npub1x')).toBeUndefined();
@@ -78,6 +79,7 @@ describe('the checkout parameters', () => {
       naddr: NADDR,
       strictOrigin: false,
       theme: 'auto',
+      collectEmail: false,
     });
   });
 });

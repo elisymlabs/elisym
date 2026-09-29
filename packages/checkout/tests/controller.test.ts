@@ -27,7 +27,12 @@ describe('the screen for a page', () => {
         return loadOffer(naddr, { ...options, now: NOW });
       },
     };
-    const params = { naddr: shop.naddr, network: 'devnet' as const, theme: 'auto' as const };
+    const params = {
+      naddr: shop.naddr,
+      network: 'devnet' as const,
+      theme: 'auto' as const,
+      collectEmail: false,
+    };
     const screen = await screenForPage({ ...params, strictOrigin: false }, PAGE, deps);
     expect(screen).toMatchObject({ kind: 'offer' });
     expect(seen).toHaveLength(1);
@@ -48,21 +53,56 @@ describe('the screen for a page', () => {
       { caip19: 'solana:x/token:y', address: shop.payout },
     ]);
     let pins: LoadOfferOptions['pins'];
-    await screenForPage({ naddr: shop.naddr, strictOrigin: false, theme: 'auto' }, PAGE, {
+    await screenForPage(
+      { naddr: shop.naddr, strictOrigin: false, theme: 'auto', collectEmail: false },
+      PAGE,
+      {
+        client: new MemoryRelays(shop.events),
+        store,
+        loadOffer: async (_naddr, options) => {
+          pins = options.pins;
+          return { ok: false, refusal: 'no_payable_payout', message: 'none' } as const;
+        },
+      },
+    );
+    expect(pins).toMatchObject({ pinnedOwnerPubkey: shop.owner.pubkey });
+  });
+
+  it('re-verifies with the pins too, read fresh each time', async () => {
+    const shop = makeShop();
+    const { loadWithPins } = await import('../src/app/controller');
+    const seen: LoadOfferOptions[] = [];
+    const deps = {
       client: new MemoryRelays(shop.events),
       store,
-      loadOffer: async (_naddr, options) => {
-        pins = options.pins;
+      loadOffer: async (_naddr: string, options: LoadOfferOptions) => {
+        seen.push(options);
         return { ok: false, refusal: 'no_payable_payout', message: 'none' } as const;
       },
-    });
-    expect(pins).toMatchObject({ pinnedOwnerPubkey: shop.owner.pubkey });
+    };
+    const params = {
+      naddr: shop.naddr,
+      strictOrigin: false,
+      theme: 'auto' as const,
+      collectEmail: false,
+    };
+    await loadWithPins(params, PAGE, deps);
+    expect(seen[0]?.pins).toBeUndefined();
+    // A delivery since the page opened pinned the owner: the next re-verification uses it.
+    await store.rememberDelivery(shop.store.pubkey, shop.owner.pubkey, []);
+    await loadWithPins(params, PAGE, deps);
+    expect(seen[1]?.pins).toMatchObject({ pinnedOwnerPubkey: shop.owner.pubkey });
   });
 
   it('refuses without storage, without a product, and on a refused offer', async () => {
     const shop = makeShop();
     const relays = new MemoryRelays(shop.events);
-    const params = { naddr: shop.naddr, strictOrigin: false, theme: 'auto' as const };
+    const params = {
+      naddr: shop.naddr,
+      strictOrigin: false,
+      theme: 'auto' as const,
+      collectEmail: false,
+    };
     expect(await screenForPage(params, PAGE, { client: relays, store: undefined })).toEqual({
       kind: 'refused',
       reason: 'no_storage',
