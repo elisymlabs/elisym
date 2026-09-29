@@ -22,6 +22,11 @@
     "clean": {
       "cache": false
     },
+    "@elisym/docs#build": {
+      "dependsOn": ["^build", "generate"],
+      "outputs": ["dist/**", ".vercel/output/**"],
+      "env": ["VERCEL"]
+    },
     "@elisym/checkout#build": {
       "dependsOn": ["^build", "generate"],
       "outputs": ["dist/**"],
