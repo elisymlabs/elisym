@@ -1,0 +1,62 @@
+{
+  "name": "@elisym/merchant-node",
+  "version": "0.1.0",
+  "description": "elisym merchant node: self-hosted store for the elisym checkout - takes orders over Nostr, verifies Solana payments, delivers.",
+  "keywords": [
+    "checkout",
+    "commerce",
+    "elisym",
+    "nostr",
+    "payments",
+    "solana",
+    "usdc"
+  ],
+  "homepage": "https://github.com/elisymlabs/elisym",
+  "bugs": {
+    "url": "https://github.com/elisymlabs/elisym/issues"
+  },
+  "license": "MIT",
+  "author": "elisym labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elisymlabs/elisym.git",
+    "directory": "packages/merchant-node"
+  },
+  "bin": {
+    "elisym-merchant": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/ tests/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@elisym/commerce": "~0.2.0",
+    "@elisym/pay-core": "~0.1.2",
+    "@solana-program/token": "~0.14.0",
+    "@solana/kit": "~6.8.0",
+    "decimal.js-light": "~2.5.1",
+    "nostr-tools": "~2.23.0",
+    "zod": "~3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "~25.5.0",
+    "tsup": "~8.4.0",
+    "typescript": "~5.7.0",
+    "vitest": "~3.2.6"
+  },
+  "engines": {
+    "node": ">=22.4"
+  }
+}

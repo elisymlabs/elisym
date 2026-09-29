@@ -1,4 +1,5 @@
 import { type WrappedOrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
+import { DELIVERY_RELAYS_WANTED, DELIVERY_SETTLE_SECS } from './constants';
 import type { MerchantOrder } from './ledger';
 
 export interface Delivery {
@@ -38,4 +39,19 @@ export function buildDeliveryReply(
     createdAt,
   );
   return wrapOrderMessage(rumor, storeSecretKey, order.buyerPubkey);
+}
+
+/**
+ * Whether a delivery that `accepted` of the store's `relays` inbox relays took
+ * counts as done: two of them (all, when fewer are configured), since one may
+ * drop it later; once the payment is `paidAgeSecs` past `DELIVERY_SETTLE_SECS`,
+ * any one - a relay down for good must not keep it pending forever.
+ */
+export function deliveryDone(accepted: number, relays: number, paidAgeSecs: number): boolean {
+  if (accepted === 0) {
+    return false;
+  }
+  return (
+    accepted >= Math.min(DELIVERY_RELAYS_WANTED, relays) || paidAgeSecs >= DELIVERY_SETTLE_SECS
+  );
 }

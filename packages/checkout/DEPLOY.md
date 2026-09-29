@@ -80,7 +80,7 @@ or use Protection Bypass for Automation and open the preview once with
 - [ ] A test page with `<elisym-buy product="<devnet naddr>" network="devnet">` and the
       preview's `/v1/embed.js` shows the offer. The page receives `ready` and nothing else
       about the product.
-- [ ] A devnet purchase from the test store (`packages/merchant`) goes
+- [ ] A devnet purchase from the test store (`packages/merchant-node`) goes
       `ready -> ordered -> paying -> paid -> completed` and shows the delivery.
 - [ ] Reloading during `paying` resumes the same order, and no second wallet prompt appears.
 - [ ] With site data blocked for the checkout's origin (the browser's "block all cookies and

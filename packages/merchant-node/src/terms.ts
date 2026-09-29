@@ -98,3 +98,32 @@ export function termsSince(periods: readonly TermsPeriod[], since: number): Offe
   }
   return found;
 }
+
+/** The terms standing now: the newest of each coin, not yet replaced. */
+export function standingTerms(periods: readonly TermsPeriod[]): OfferTerms[] {
+  return periods.filter((period) => period.until === undefined).map((period) => period.terms);
+}
+
+/**
+ * The terms buyers can read once a publish went out in part: the coins and
+ * price of the listing (`listingOut`: the new ones, else the standing ones),
+ * paid to the addresses of the payout list (`payoutsOut`: the new ones, else
+ * the standing ones). A coin with no payout on either side cannot be paid.
+ */
+export function visibleTerms(
+  standing: readonly OfferTerms[],
+  next: readonly OfferTerms[],
+  listingOut: boolean,
+  payoutsOut: boolean,
+): OfferTerms[] {
+  const listed = listingOut ? next : standing;
+  const payouts = payoutsOut ? next : standing;
+  const visible: OfferTerms[] = [];
+  for (const { caip19, amount } of listed) {
+    const payout = payouts.find((terms) => terms.caip19 === caip19)?.payout;
+    if (payout !== undefined) {
+      visible.push({ caip19, payout, amount });
+    }
+  }
+  return visible;
+}

@@ -59,5 +59,33 @@ export const RESUBSCRIBE_BACKOFF_MS: readonly number[] = [1_000, 5_000, 15_000, 
  */
 export const MAX_LIVE_CHECKS_PER_MINUTE = 20;
 
+/**
+ * When a reported transaction is not visible to the node's RPC yet (`ask_again`),
+ * it is checked again after these pauses (each within the live budget), not only
+ * at the next minute's sweep: the buyer waits on the other side.
+ */
+export const ASK_AGAIN_DELAYS_MS: readonly number[] = [3_000, 10_000, 30_000];
+
+/**
+ * A delivered order's status is sent again when its order or a receipt is read
+ * again (a relay may have dropped the first one), at most this often per order.
+ */
+export const RESEND_EVERY_SECS = 10 * 60;
+
+/**
+ * Statuses sent again at once, off the queue: a restart reads two days of
+ * orders back, and a slow relay must not hold new orders behind them.
+ */
+export const MAX_REPEATS_IN_FLIGHT = 4;
+
+/**
+ * A delivery counts as done once this many of the store's inbox relays took it
+ * (or all of them, when fewer are configured) - one relay may drop it later.
+ */
+export const DELIVERY_RELAYS_WANTED = 2;
+
+/** After this long past the payment, one relay taking the delivery is enough. */
+export const DELIVERY_SETTLE_SECS = 60 * 60;
+
 /** New terms are dated this much before the local clock, which may run ahead of chain time. */
 export const TERMS_CLOCK_MARGIN_SECS = 60;
