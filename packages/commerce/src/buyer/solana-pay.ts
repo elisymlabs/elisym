@@ -160,7 +160,12 @@ export type SolanaPayRefusal =
   | 'still_waiting'
   | 'already_paid'
   /** The caller's spend limit refused the attempt's costs (`reserve` threw). Nothing was recorded. */
-  | 'spend_limit';
+  | 'spend_limit'
+  /**
+   * A Tempo order of this product ended with its wallet prompt still open:
+   * the buyer confirms the warning (`confirmedOverIds`) before this request.
+   */
+  | 'needs_confirmation';
 
 export type SolanaPayResult =
   | { ok: true; record: OrderRecord; signature: string }
@@ -170,6 +175,8 @@ export type SolanaPayResult =
       record?: OrderRecord;
       /** For `exclusion`: the order holding it. */
       holder?: string;
+      /** For `needs_confirmation`: the ended orders to confirm. */
+      unconfirmed?: string[];
       /** For `insufficient_*`: what the payment needs and what the payer has, in subunits / lamports. */
       needed?: bigint;
       available?: bigint;
@@ -709,6 +716,14 @@ function storeRefusal(
       ...(written.holder === undefined ? {} : { holder: written.holder }),
     };
   }
+  if (written.reason === 'needs_confirmation') {
+    return {
+      ok: false,
+      reason: 'needs_confirmation',
+      record,
+      unconfirmed: written.unconfirmed ?? [],
+    };
+  }
   return { ok: false, reason: written.reason === 'conflict' ? 'conflict' : 'not_payable', record };
 }
 
@@ -781,7 +796,7 @@ export async function payWithSolana(
     return { ok: false, reason: 'spend_limit', record };
   }
   const marked = await withReleaseOnThrow(marker.attemptId, deps, () =>
-    deps.store.setMarker(record.orderId, record.version, marker),
+    deps.store.setMarker(record.orderId, record.version, marker, (deps.now ?? nowSecs)()),
   );
   if (!marked.ok) {
     deps.release?.(marker.attemptId);
@@ -1098,7 +1113,13 @@ export async function retryWithSolana(
     return { ok: false, reason: 'spend_limit', record: judged };
   }
   const replaced = await withReleaseOnThrow(marker.attemptId, deps, () =>
-    deps.store.updateMarker(judged.orderId, judged.version, previous.attemptId, marker),
+    deps.store.updateMarker(
+      judged.orderId,
+      judged.version,
+      previous.attemptId,
+      marker,
+      (deps.now ?? nowSecs)(),
+    ),
   );
   if (!replaced.ok) {
     deps.release?.(marker.attemptId);

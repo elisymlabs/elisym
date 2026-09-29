@@ -151,7 +151,7 @@ export function orderStoreContract(makeBackend: () => Promise<OrderBackend>): vo
         await store.update(id, 1, { state: 'ordered', ...ACKNOWLEDGED });
         if (from !== 'created' && from !== 'ordered') {
           if (from === 'blocked') {
-            await store.update(id, 2, { state: 'ended-unpaid' });
+            await store.update(id, 2, { state: 'ended-unpaid', endedBy: 'nothing' });
             await store.update(id, 3, { state: 'blocked' });
           } else {
             await store.update(id, 2, { state: from });
@@ -781,6 +781,162 @@ export function orderStoreContract(makeBackend: () => Promise<OrderBackend>): vo
       // Kept for reconciliation, but no longer excluding a new order.
       await addOrdered('fresh');
       expect(await store.setMarker('fresh', 2, solanaMarker('f'))).toMatchObject({ ok: true });
+    });
+  });
+
+  describe('old Tempo prompts', () => {
+    const NOW = 1_750_000_000 + 60;
+
+    function tempoMarker(attemptId: string, extra: Partial<TempoMarker> = {}): TempoMarker {
+      return { rail: 'tempo', attemptId, setAt: 1_750_000_050, floorBlock: '100', ...extra };
+    }
+
+    /** A Tempo order paying under `attemptId`: version 3. */
+    async function tempoPaying(
+      orderId: string,
+      attemptId: string,
+      overrides: Partial<OrderRecord> = {},
+    ): Promise<void> {
+      await addOrdered(orderId, { ...TEMPO_PAYOUT, ...overrides });
+      const set = await store.setMarker(orderId, 2, tempoMarker(attemptId), NOW);
+      if (!set.ok) {
+        throw new Error(set.reason);
+      }
+    }
+
+    /** A Tempo order that ended `over`: version 4. */
+    async function tempoOver(orderId: string, overrides: Partial<OrderRecord> = {}): Promise<void> {
+      await tempoPaying(orderId, `${orderId}-a`, overrides);
+      const ended = await store.clearMarker(orderId, 3, `${orderId}-a`, 'ended-unpaid', 'over');
+      if (!ended.ok) {
+        throw new Error(ended.reason);
+      }
+    }
+
+    it('never ends a Tempo attempt that holds a sent hash or an approved bundle', async () => {
+      for (const evidence of [{ txHash: `0x${'1'.repeat(64)}` }, { bundleId: 'bundle' }]) {
+        const id = Object.keys(evidence)[0] ?? 'x';
+        await tempoPaying(id, 'a', { productAddress: `${PRODUCT}-${id}` });
+        const current = await store.get(id);
+        const withEvidence = { ...tempoMarker('a'), ...evidence };
+        expect(await store.updateMarker(id, 3, 'a', withEvidence)).toMatchObject({ ok: true });
+        for (const endedBy of ['over', 'rejected'] as const) {
+          expect(
+            await store.clearMarker(id, (current?.version ?? 0) + 1, 'a', 'ended-unpaid', endedBy),
+          ).toMatchObject({ ok: false, reason: 'not_ready' });
+        }
+      }
+    });
+
+    it('records why a Tempo order ended, once, and only on Tempo', async () => {
+      await tempoPaying('reasonless', 'a');
+      expect(await store.clearMarker('reasonless', 3, 'a', 'ended-unpaid')).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      expect(
+        await store.clearMarker('reasonless', 3, 'a', 'ended-unpaid', 'rejected'),
+      ).toMatchObject({ ok: true, record: { state: 'ended-unpaid', endedBy: 'rejected' } });
+      expect(await store.update('reasonless', 4, { endedBy: 'nothing' })).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      // Solana records carry no reason.
+      await addPaying('solana', 's');
+      expect(await store.clearMarker('solana', 3, 's', 'ordered', 'over')).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      await addOrdered('solana-ordered');
+      expect(
+        await store.update('solana-ordered', 2, { state: 'ended-unpaid', endedBy: 'nothing' }),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+      // A plain update ends a Tempo order only as "nothing requested".
+      await addOrdered('tempo-ordered', TEMPO_PAYOUT);
+      expect(await store.update('tempo-ordered', 2, { state: 'ended-unpaid' })).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      expect(
+        await store.update('tempo-ordered', 2, { state: 'ended-unpaid', endedBy: 'over' }),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+      expect(
+        await store.update('tempo-ordered', 2, { state: 'ended-unpaid', endedBy: 'nothing' }),
+      ).toMatchObject({ ok: true, record: { endedBy: 'nothing' } });
+    });
+
+    it('asks for confirmation before paying beside a recent Tempo order that ended over', async () => {
+      for (const [id, payout] of [
+        ['on-solana', {}],
+        ['on-tempo', TEMPO_PAYOUT],
+      ] as const) {
+        const productAddress = `${PRODUCT}-${id}`;
+        await tempoOver(`old-${id}`, { productAddress });
+        await addOrdered(id, { ...payout, productAddress });
+        const marker = id === 'on-solana' ? solanaMarker('n') : tempoMarker('n');
+        expect(await store.setMarker(id, 2, marker, NOW)).toEqual({
+          ok: false,
+          reason: 'needs_confirmation',
+          unconfirmed: [`old-${id}`],
+        });
+        // Without a clock every such order counts as recent (fail closed).
+        expect(await store.setMarker(id, 2, marker)).toMatchObject({
+          reason: 'needs_confirmation',
+        });
+        expect(await store.update(id, 2, { confirmedOverIds: [`old-${id}`] })).toMatchObject({
+          ok: true,
+        });
+        expect(await store.setMarker(id, 3, marker, NOW)).toMatchObject({ ok: true });
+      }
+    });
+
+    it('does not ask past the catch-up, nor for orders nothing was requested for', async () => {
+      await tempoPaying('rejected', 'r');
+      await store.clearMarker('rejected', 3, 'r', 'ended-unpaid', 'rejected');
+      await addOrdered('nothing', TEMPO_PAYOUT);
+      await store.update('nothing', 2, { state: 'ended-unpaid', endedBy: 'nothing' });
+      await tempoOver('old');
+      await addOrdered('fresh');
+      // Only the `over` order is named.
+      expect(await store.setMarker('fresh', 2, solanaMarker('f'), NOW)).toMatchObject({
+        reason: 'needs_confirmation',
+        unconfirmed: ['old'],
+      });
+      const later = 1_750_000_000 + 3 * 24 * 60 * 60 + 5 * 60 + 1;
+      expect(await store.setMarker('fresh', 2, solanaMarker('f'), later)).toMatchObject({
+        ok: true,
+      });
+    });
+
+    it('asks before a Solana retry too', async () => {
+      await tempoOver('old');
+      // The first attempt was made when the old order was past the catch-up.
+      await addOrdered('retrying');
+      const later = 1_750_000_000 + 3 * 24 * 60 * 60 + 5 * 60 + 1;
+      expect(await store.setMarker('retrying', 2, solanaMarker('first'), later)).toMatchObject({
+        ok: true,
+      });
+      expect(
+        await store.updateMarker('retrying', 3, 'first', solanaMarker('second'), NOW),
+      ).toMatchObject({ ok: false, reason: 'needs_confirmation', unconfirmed: ['old'] });
+    });
+
+    it('keeps confirmations growing and a found time only with its payment', async () => {
+      await addOrdered('one');
+      expect(await store.update('one', 2, { confirmedOverIds: ['a', 'b'] })).toMatchObject({
+        ok: true,
+      });
+      expect(await store.update('one', 3, { confirmedOverIds: ['a'] })).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      expect(await store.update('one', 3, { paidAt: 5 })).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      expect(
+        await store.update('one', 3, { state: 'paid', paidTx: 'Tx', paidAt: 5 }),
+      ).toMatchObject({ ok: true, record: { paidAt: 5 } });
     });
   });
 

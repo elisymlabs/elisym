@@ -69,6 +69,8 @@ export async function endOrder(
   if (record.state === 'ordered' && record.marker === undefined) {
     const written = await deps.store.update(record.orderId, record.version, {
       state: 'ended-unpaid',
+      // Nothing was requested: no Tempo prompt can be open for it.
+      ...(record.payout.caip19.startsWith('eip155:') ? { endedBy: 'nothing' as const } : {}),
     });
     return written.ok ? { ended: true, record: written.record } : { ended: false, record };
   }
