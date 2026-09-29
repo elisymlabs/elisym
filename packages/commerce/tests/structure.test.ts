@@ -19,6 +19,13 @@ const ALLOWED = [
   /^decimal\.js-light$/,
   /^zod$/,
 ];
+/**
+ * The buyer subpath (`@elisym/commerce/buyer`) talks to relays and to Solana:
+ * it may also use the relay pool, the Solana kit and the token program. The
+ * main entry never imports it, so a consumer that only verifies offers pulls
+ * none of that in.
+ */
+const BUYER_ALLOWED = [/^nostr-tools\/(pool|utils)$/, /^@solana\/kit$/, /^@solana-program\/token$/];
 /** The nostr-tools root pulls in the relay pool: types only, never code (spec 9.4). */
 const TYPE_ONLY_ALLOWED = [/^nostr-tools$/];
 const IMPORT_RE =
@@ -28,9 +35,10 @@ function isTypeOnly(statement: string | undefined): boolean {
   return statement !== undefined && /^(import|export)\s+type\b/.test(statement);
 }
 
-function isAllowed(specifier: string, statement: string | undefined): boolean {
+function isAllowed(specifier: string, statement: string | undefined, buyer = false): boolean {
   return (
     ALLOWED.some((pattern) => pattern.test(specifier)) ||
+    (buyer && BUYER_ALLOWED.some((pattern) => pattern.test(specifier))) ||
     (isTypeOnly(statement) && TYPE_ONLY_ALLOWED.some((pattern) => pattern.test(specifier)))
   );
 }
@@ -54,11 +62,20 @@ describe('package boundary', () => {
     for (const file of files) {
       for (const match of readFileSync(file, 'utf8').matchAll(IMPORT_RE)) {
         const specifier = match[2] ?? match[3] ?? match[4] ?? '';
-        if (!isAllowed(specifier, match[1])) {
+        const buyer = relative(SRC, file).startsWith(`buyer${'/'}`);
+        if (!isAllowed(specifier, match[1], buyer)) {
           offenders.push(`${relative(SRC, file)}: ${specifier}`);
         }
       }
     }
+    expect(offenders).toEqual([]);
+  });
+
+  it('keeps the main entry free of the buyer subpath', () => {
+    const offenders = files
+      .filter((file) => !relative(SRC, file).startsWith(`buyer${'/'}`))
+      .filter((file) => /from\s*['"]\.\.?\/buyer/.test(readFileSync(file, 'utf8')))
+      .map((file) => relative(SRC, file));
     expect(offenders).toEqual([]);
   });
 

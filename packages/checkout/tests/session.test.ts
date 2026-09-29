@@ -1,13 +1,20 @@
 import { type OrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
+import { type LoadedOffer, loadOffer } from '@elisym/commerce/buyer';
+import type { OrderRecord } from '@elisym/commerce/buyer';
+import { OrderStore } from '@elisym/commerce/buyer';
 import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  MemoryRelays,
+  NOW,
+  type Shop,
+  inboxList,
+  makeShop,
+} from '../../commerce/tests/buyer/fixtures';
+import { FakeSolana, FakeWallet } from '../../commerce/tests/buyer/solana-fixtures';
 import { type SessionDeps, CheckoutSession, type View } from '../src/app/session';
-import { type LoadedOffer, loadOffer } from '../src/core/offer';
-import type { OrderRecord } from '../src/core/order-record';
-import { OrderStore, openOrderDatabase } from '../src/core/order-store';
+import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutState } from '../src/embed/protocol';
-import { MemoryRelays, NOW, type Shop, inboxList, makeShop } from './fixtures';
-import { FakeSolana, FakeWallet } from './solana-fixtures';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
 const PAGE = 'https://merchant.example';
@@ -17,7 +24,7 @@ type Ready = Extract<LoadedOffer, { ok: true }>;
 let store: OrderStore;
 
 beforeEach(async () => {
-  store = new OrderStore(await openOrderDatabase(new IDBFactory()));
+  store = new OrderStore(new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory())));
 });
 
 /** Intervals the test runs by hand. */
@@ -1246,7 +1253,7 @@ describe('a purchase', () => {
     run.session.dispose();
     // Another tab has a newer acknowledged order of the product (stopped by its funds check).
     run.advance(5);
-    const { placeOrder } = await import('../src/core/order-flow');
+    const { placeOrder } = await import('@elisym/commerce/buyer');
     const payout = run.offer.payouts[0];
     if (payout === undefined) {
       throw new Error('no payout');

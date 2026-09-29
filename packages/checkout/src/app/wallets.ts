@@ -1,4 +1,4 @@
-import type { SolanaWallet } from '../core/solana-pay';
+import type { SolanaWallet } from '@elisym/commerce/buyer';
 import type { WalletOption } from './session';
 
 /** The part of a Wallet Standard wallet the checkout uses. */

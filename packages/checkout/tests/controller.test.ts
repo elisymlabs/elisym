@@ -1,16 +1,17 @@
+import type { LoadOfferOptions } from '@elisym/commerce/buyer';
+import { OrderStore } from '@elisym/commerce/buyer';
 import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { MemoryRelays, NOW, inboxList, makeShop } from '../../commerce/tests/buyer/fixtures';
 import { screenForPage } from '../src/app/controller';
-import type { LoadOfferOptions } from '../src/core/offer';
-import { OrderStore, openOrderDatabase } from '../src/core/order-store';
-import { MemoryRelays, NOW, inboxList, makeShop } from './fixtures';
+import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 
 const PAGE = 'https://merchant.example';
 
 let store: OrderStore;
 
 beforeEach(async () => {
-  store = new OrderStore(await openOrderDatabase(new IDBFactory()));
+  store = new OrderStore(new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory())));
 });
 
 describe('the screen for a page', () => {
@@ -23,7 +24,7 @@ describe('the screen for a page', () => {
       store,
       loadOffer: async (naddr: string, options: LoadOfferOptions) => {
         seen.push(options);
-        const { loadOffer } = await import('../src/core/offer');
+        const { loadOffer } = await import('@elisym/commerce/buyer');
         return loadOffer(naddr, { ...options, now: NOW });
       },
     };

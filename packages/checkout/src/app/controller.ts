@@ -1,9 +1,9 @@
 import { decodeProductNaddr, productAddress } from '@elisym/commerce';
+import { type LoadedOffer, type LoadOfferOptions, loadOffer } from '@elisym/commerce/buyer';
+import { recordToShow } from '@elisym/commerce/buyer';
+import type { OrderStore } from '@elisym/commerce/buyer';
+import type { RelayClient } from '@elisym/commerce/buyer';
 import type { Network } from '@elisym/pay-core';
-import { type LoadedOffer, type LoadOfferOptions, loadOffer } from '../core/offer';
-import { recordToShow } from '../core/order-record';
-import type { OrderStore } from '../core/order-store';
-import type { RelayClient } from '../core/relay-client';
 import type { CheckoutParams } from '../embed/protocol';
 import type { HandshakeRefusal } from './handshake';
 

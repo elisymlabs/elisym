@@ -1,4 +1,3 @@
-import { isOfferPayout, parseCaip19 } from '@elisym/commerce';
 import {
   type Asset,
   type DirectInstruction,
@@ -39,6 +38,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   verifySignature,
 } from '@solana/kit';
+import { isOfferPayout, parseCaip19 } from '../index';
 import {
   MERCHANT_CATCH_UP_SECS,
   PAYMENT_SCAN_MARGIN_SECS,

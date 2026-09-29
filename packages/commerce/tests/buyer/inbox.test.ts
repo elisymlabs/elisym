@@ -1,8 +1,8 @@
 import { KIND_INBOX_RELAYS } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_RELAYS, STORE_RELAY_CAP } from '../src/core/constants';
-import { newestStoreInbox, readStoreInbox } from '../src/core/inbox';
+import { DEFAULT_RELAYS, STORE_RELAY_CAP } from '../../src/buyer/constants';
+import { newestStoreInbox, readStoreInbox } from '../../src/buyer/inbox';
 import { MemoryRelays, NOW, nostrKey, sign } from './fixtures';
 
 const store = nostrKey();

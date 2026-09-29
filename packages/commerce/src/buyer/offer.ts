@@ -1,3 +1,4 @@
+import type { ChainFamily, Network } from '@elisym/pay-core';
 import {
   type DomainKeys,
   type FetchLike,
@@ -9,8 +10,7 @@ import {
   priceInSubunits,
   productAddress,
   verifyOffer,
-} from '@elisym/commerce';
-import type { ChainFamily, Network } from '@elisym/pay-core';
+} from '../index';
 import { OFFER_SNAPSHOT_MAX_AGE_SECS } from './constants';
 import { nowSecs } from './events';
 import type { RelayClient } from './relay-client';

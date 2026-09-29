@@ -28,7 +28,7 @@ import {
   getTransactionEncoder,
   partiallySignTransaction,
 } from '@solana/kit';
-import type { SolanaWallet } from '../src/core/solana-pay';
+import type { SolanaWallet } from '../../src/buyer/solana-pay';
 
 type Compiled = ReturnType<ReturnType<typeof getCompiledTransactionMessageDecoder>['decode']>;
 

@@ -1,7 +1,5 @@
 import type { OfferWarning } from '@elisym/commerce';
-import type { Asset, Network } from '@elisym/pay-core';
-import type { Rpc, SolanaRpcApi } from '@solana/kit';
-import { type LoadedOffer, type PricedPayout, isSnapshotStale } from '../core/offer';
+import { type LoadedOffer, type PricedPayout, isSnapshotStale } from '@elisym/commerce/buyer';
 import {
   type OrderDeps,
   applyStatus,
@@ -11,9 +9,9 @@ import {
   listenForStatus,
   placeOrder,
   resumeOrder,
-} from '../core/order-flow';
-import { type OrderRecord, isTerminal, recordToShow } from '../core/order-record';
-import type { OrderStore } from '../core/order-store';
+} from '@elisym/commerce/buyer';
+import { type OrderRecord, isTerminal, recordToShow } from '@elisym/commerce/buyer';
+import type { OrderStore } from '@elisym/commerce/buyer';
 import {
   type SolanaPayResult,
   type SolanaWallet,
@@ -22,7 +20,9 @@ import {
   payWithSolana,
   retryWithSolana,
   watchSolanaPayment,
-} from '../core/solana-pay';
+} from '@elisym/commerce/buyer';
+import type { Asset, Network } from '@elisym/pay-core';
+import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import type { CheckoutState } from '../embed/protocol';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;

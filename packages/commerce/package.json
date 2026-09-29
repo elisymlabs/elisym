@@ -30,6 +30,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./buyer": {
+      "types": "./dist/buyer.d.ts",
+      "default": "./dist/buyer.js"
     }
   },
   "publishConfig": {
@@ -44,7 +48,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@elisym/pay-core": "~0.1.0",
+    "@elisym/pay-core": "~0.1.2",
     "@noble/curves": "~2.0.1",
     "@noble/hashes": "~2.0.1",
     "@scure/base": "~2.0.0",

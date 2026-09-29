@@ -1,10 +1,11 @@
 import './styles.css';
+import { OrderStore } from '@elisym/commerce/buyer';
+import { createRelayClient } from '@elisym/commerce/buyer';
 import type { Network } from '@elisym/pay-core';
 import { type Rpc, type SolanaRpcApi, createSolanaRpc } from '@solana/kit';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { render } from 'preact';
-import { OrderStore, openOrderDatabase } from '../core/order-store';
-import { createRelayClient } from '../core/relay-client';
+import { IndexedDbOrderBackend, openOrderDatabase } from '../core/order-store-idb';
 import { decodeCheckoutParams } from '../embed/protocol';
 import { type Actions, Checkout } from './Checkout';
 import { type Screen, followOnlyOffer, loadWithPins, screenForPage } from './controller';
@@ -81,7 +82,7 @@ async function chainTime(rpc: Rpc<SolanaRpcApi>): Promise<number> {
 
 async function openStore(): Promise<OrderStore | undefined> {
   try {
-    return new OrderStore(await openOrderDatabase());
+    return new OrderStore(new IndexedDbOrderBackend(await openOrderDatabase()));
   } catch {
     return undefined;
   }

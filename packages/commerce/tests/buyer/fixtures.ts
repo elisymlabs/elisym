@@ -9,7 +9,7 @@ import { getBase58Decoder } from '@solana/kit';
 import { type EventTemplate, type Filter, type NostrEvent, matchFilter } from 'nostr-tools';
 // Signed with `pure`: its verdict cache is the one `isGenuineEvent` must not trust.
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import type { PublishResult, RelayClient } from '../src/core/relay-client';
+import type { PublishResult, RelayClient } from '../../src/buyer/relay-client';
 
 export const USDC_DEVNET_CAIP19 =
   'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';

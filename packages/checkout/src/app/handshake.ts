@@ -1,4 +1,4 @@
-import { isPageOrigin } from '../core/offer';
+import { isPageOrigin } from '@elisym/commerce/buyer';
 import type { CheckoutState, FrameMessage } from '../embed/protocol';
 
 /** No acceptable hello within this long: the widget refuses to show a Buy button. */

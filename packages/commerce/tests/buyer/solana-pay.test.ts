@@ -1,11 +1,10 @@
 import { USDC_SOLANA_DEVNET } from '@elisym/pay-core';
 import { getBase64Encoder } from '@solana/kit';
-import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { type LoadedOffer, loadOffer } from '../src/core/offer';
-import { placeOrder } from '../src/core/order-flow';
-import type { OrderRecord } from '../src/core/order-record';
-import { OrderStore, openOrderDatabase } from '../src/core/order-store';
+import { type LoadedOffer, loadOffer } from '../../src/buyer/offer';
+import { placeOrder } from '../../src/buyer/order-flow';
+import type { OrderRecord } from '../../src/buyer/order-record';
+import { MemoryOrderBackend, OrderStore } from '../../src/buyer/order-store';
 import {
   type SolanaPayDeps,
   checkBeforePaying,
@@ -16,7 +15,7 @@ import {
   retryWithSolana,
   storedSolanaRequest,
   watchSolanaPayment,
-} from '../src/core/solana-pay';
+} from '../../src/buyer/solana-pay';
 import { DAY, MemoryRelays, NOW, type Shop, inboxList, makeShop } from './fixtures';
 import { EMPTY_ACCOUNT_RENT, FakeSolana, FakeWallet, signatureOf } from './solana-fixtures';
 
@@ -30,7 +29,7 @@ type Ready = Extract<LoadedOffer, { ok: true }>;
 let store: OrderStore;
 
 beforeEach(async () => {
-  store = new OrderStore(await openOrderDatabase(new IDBFactory()));
+  store = new OrderStore(new MemoryOrderBackend());
 });
 
 async function loaded(shop: Shop, relays: MemoryRelays): Promise<Ready> {
