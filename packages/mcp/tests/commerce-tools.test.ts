@@ -472,6 +472,13 @@ describe('buy_product', () => {
     expect(run.chain.landed.size).toBe(1);
   });
 
+  it('shows why an offer was refused as untrusted data', async () => {
+    const run = await world();
+    run.events.splice(0, run.events.length);
+    const refused = await tool('buy_product').handler(run.ctx, { product: run.shop.naddr });
+    expect(text(refused as never)).toContain('UNTRUSTED');
+  });
+
   it('refuses for an ephemeral agent', async () => {
     const run = await world({ agentDir: false });
     const refused = await tool('buy_product').handler(run.ctx, { product: run.shop.naddr });
