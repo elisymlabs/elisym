@@ -106,6 +106,7 @@ A Tempo wallet request never expires, so the checkout never retries a Tempo paym
 - A declined request ends the order: nothing was signed.
 - A request that timed out ends the order, but the wallet may still show it. Before any new payment of the product the buyer is asked to reject it: **approving the old request pays that order as well**.
 - If the recipient's account refuses the coin, the payment is **blocked**: the money is held, not delivered. Contact the store.
+- A sent payment that fails on chain (for example, the wallet's fee left too little of the coin) holds the product in that browser until the store answers: contact the store, which releases it with `deliver`.
 
 Two cases can only be settled by hand, and the buyer is told to contact the store:
 

@@ -36,6 +36,7 @@ import {
   endTempoOrder,
   mayStillBePaid,
   payWithTempo,
+  MERCHANT_CATCH_UP_SECS,
   readTempoChainTime,
   watchTempoPayment,
 } from '@elisym/commerce/buyer';
@@ -75,7 +76,7 @@ export type Problem =
   | { reason: 'no_wallet' | 'clock_skew' | 'rpc_error' | 'self_payment' | 'too_late' }
   | { reason: 'order_not_acknowledged' | 'no_store_inbox' | 'failed' | 'bad_email' }
   | { reason: 'wallet_failed' | 'wallet_unsupported' }
-  | { reason: 'policy_blocked' | 'wrong_chain' | 'rejected' | 'attempt_over' }
+  | { reason: 'policy_blocked' | 'wrong_chain' | 'rejected' | 'attempt_over' | 'late_approval' }
   | { reason: 'offer_changed' | 'confirm_first' | 'offer_refused' }
   | { reason: 'insufficient_token' | 'insufficient_sol'; needed: bigint; available: bigint };
 
@@ -129,7 +130,12 @@ export type View =
    * A Tempo order of this product ended with its wallet prompt maybe still open:
    * approving it pays that order too. Asked before this payment's wallet opens.
    */
-  | { kind: 'old_prompt'; orders: number }
+  | {
+      kind: 'old_prompt';
+      orders: number;
+      /** After this (seconds), the store no longer sees an approval of the old request. */
+      until: number;
+    }
   /** The recipient's transfer policy blocked the payment: the money sits with the guard. */
   | { kind: 'blocked' }
   /** The store cancelled an order that was not paid: a new one may start. */
@@ -305,8 +311,16 @@ export class CheckoutSession {
   private readonly pendingAnswers = new Map<string, OrderRecord>();
   /** A Tempo hash returned in this session that could not be stored yet: the watch retries it. */
   private pendingHash: { orderId: string; hash: string } | undefined;
-  /** A payment refused until the buyer confirms the old-prompt warning: the wallet, the orders. */
-  private oldPrompt: { walletName: string; unconfirmed: string[] } | undefined;
+  /** A payment refused until the buyer confirms the old-prompt warning: the action, the orders. */
+  private oldPrompt:
+    | { walletName: string; action: 'pay' | 'retry'; unconfirmed: string[] }
+    | undefined;
+  /** What the last wallet press was (a confirmation re-runs it). */
+  private lastAction: 'pay' | 'retry' = 'pay';
+  /** A hash approved for an order another tab ended meanwhile: watched until it is found. */
+  private lateHash: { orderId: string; hash: string; timer: unknown } | undefined;
+  /** The one-shot "no answer from the store" redraw. */
+  private noAnswerTimer: { orderId: string; handle: unknown } | undefined;
   /** The wallet of the last pay press (a confirmation re-runs it). */
   private lastWallet = '';
   /** When the page loaded: the "no answer" timer of a payment found before `paidAt` existed. */
@@ -418,13 +432,21 @@ export class CheckoutSession {
       return;
     }
     this.setRecord(written.record);
-    await this.pay(pending.walletName);
+    if (pending.action === 'retry') {
+      await this.retry(pending.walletName);
+    } else {
+      await this.pay(pending.walletName);
+    }
   }
 
-  /** The buyer declined: back to the offer, nothing requested. */
+  /** The buyer declined: back to what is on screen, nothing requested. */
   cancelOldPrompt(): void {
     this.oldPrompt = undefined;
-    this.showOffer();
+    if (this.record?.state === 'paying') {
+      void this.follow(this.record);
+    } else {
+      this.showOffer();
+    }
   }
 
   /** Pay with the wallet named `walletName`. */
@@ -433,6 +455,7 @@ export class CheckoutSession {
       return;
     }
     this.lastWallet = walletName;
+    this.lastAction = 'pay';
     if (await this.deliveryFirst()) {
       return;
     }
@@ -558,6 +581,14 @@ export class CheckoutSession {
     if (result.ok) {
       this.attemptProblem = undefined;
       this.attemptOver = false;
+      if (result.hashUnsaved === true && result.record.state === 'ended-unpaid') {
+        // Another tab ended the order while the wallet was open: the buyer approved
+        // it anyway. The hash is watched until the payment is found, and said so.
+        this.watchLateHash(result.record, result.hash);
+        this.setRecord(undefined);
+        this.showOffer({ reason: 'late_approval' });
+        return;
+      }
       if (result.hashUnsaved === true) {
         this.pendingHash = { orderId: result.record.orderId, hash: result.hash };
       }
@@ -573,7 +604,7 @@ export class CheckoutSession {
         });
         return;
       case 'needs_confirmation':
-        this.askOldPrompt(result.unconfirmed ?? []);
+        await this.askOldPrompt(result.unconfirmed ?? []);
         return;
       case 'rejected':
         // Nothing was signed: the order ended, a new one may start (no old-prompt warning).
@@ -635,9 +666,60 @@ export class CheckoutSession {
   }
 
   /** A payment refused for an ended Tempo order whose prompt may still be approved: ask. */
-  private askOldPrompt(unconfirmed: string[]): void {
-    this.oldPrompt = { walletName: this.lastWallet, unconfirmed };
-    this.deps.onView({ kind: 'old_prompt', orders: unconfirmed.length });
+  private async askOldPrompt(unconfirmed: string[]): Promise<void> {
+    this.oldPrompt = { walletName: this.lastWallet, action: this.lastAction, unconfirmed };
+    let until = 0;
+    try {
+      const records = await this.deps.store.forProduct(this.offer.productAddress);
+      until = Math.max(
+        0,
+        ...records
+          .filter((record) => unconfirmed.includes(record.orderId))
+          .map((record) => record.createdAt + MERCHANT_CATCH_UP_SECS),
+      );
+    } catch {
+      // The date is shown when known; the question is asked either way.
+    }
+    this.deps.onView({ kind: 'old_prompt', orders: unconfirmed.length, until });
+  }
+
+  /** Watch a hash approved for an ended order until it is found (or blocked): a banner then. */
+  private watchLateHash(record: OrderRecord, hash: string): void {
+    const client = this.tempoOfRecord(record);
+    if (client === undefined || this.disposed) {
+      return;
+    }
+    if (this.lateHash !== undefined) {
+      this.deps.clearInterval(this.lateHash.timer);
+    }
+    let checking = false;
+    const check = async () => {
+      if (checking || this.disposed) {
+        return;
+      }
+      checking = true;
+      try {
+        const current = await this.deps.store.get(record.orderId);
+        if (current === undefined) {
+          return;
+        }
+        const watched = await watchTempoPayment(current, this.tempoDeps(client), {
+          pendingHash: hash,
+        });
+        if (watched.state === 'paid' || watched.state === 'blocked' || watched.state === 'closed') {
+          this.banner(watched.record);
+          if (this.lateHash !== undefined) {
+            this.deps.clearInterval(this.lateHash.timer);
+            this.lateHash = undefined;
+          }
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = this.deps.setInterval(() => void check().catch(() => undefined), WATCH_EVERY_MS);
+    this.lateHash = { orderId: record.orderId, hash, timer };
+    void check().catch(() => undefined);
   }
 
   private tempoDeps(client: Eip1193Client): TempoPayDeps {
@@ -699,7 +781,10 @@ export class CheckoutSession {
   private async reconcileEnded(records: readonly OrderRecord[]): Promise<void> {
     const now = this.deps.now();
     for (const record of records) {
-      if (this.disposed || recordRail(record) !== 'tempo' || !mayStillBePaid(record, now)) {
+      // Ended orders whose prompt may still be approved, and every paying Tempo
+      // order whether or not it is the one shown: each is checked once per load.
+      const eligible = mayStillBePaid(record, now) || record.state === 'paying';
+      if (this.disposed || recordRail(record) !== 'tempo' || !eligible) {
         continue;
       }
       const client = this.tempoOfRecord(record);
@@ -710,6 +795,9 @@ export class CheckoutSession {
         const watched = await watchTempoPayment(record, this.tempoDeps(client));
         if (watched.state === 'paid' || watched.state === 'blocked') {
           this.banner(watched.record);
+        } else if (watched.state === 'over') {
+          // A paying order proven over (no hash, no pending call): it ends `over`.
+          await endTempoOrder(watched.record, this.tempoDeps(client));
         }
       } catch {
         // Unreadable now: the next load checks again.
@@ -738,6 +826,8 @@ export class CheckoutSession {
     if (this.busy || record === undefined || this.followOnly !== undefined) {
       return;
     }
+    this.lastWallet = walletName;
+    this.lastAction = 'retry';
     if (!this.confirmed) {
       this.render({ problem: { reason: 'confirm_first' } });
       return;
@@ -825,6 +915,14 @@ export class CheckoutSession {
 
   dispose(): void {
     this.disposed = true;
+    if (this.lateHash !== undefined) {
+      this.deps.clearInterval(this.lateHash.timer);
+      this.lateHash = undefined;
+    }
+    if (this.noAnswerTimer !== undefined) {
+      this.deps.clearInterval(this.noAnswerTimer.handle);
+      this.noAnswerTimer = undefined;
+    }
     this.setRecord(undefined);
     for (const closer of this.background.values()) {
       closer.close();
@@ -1125,7 +1223,7 @@ export class CheckoutSession {
         this.showOrWait({ reason: result.reason });
         return;
       case 'needs_confirmation':
-        this.askOldPrompt(result.unconfirmed ?? []);
+        await this.askOldPrompt(result.unconfirmed ?? []);
         return;
       case 'exclusion': {
         // Another order of this product holds a live attempt: that one is what to follow.
@@ -1254,6 +1352,9 @@ export class CheckoutSession {
       return;
     }
     if (record.state === 'paid' || record.paidTx !== undefined) {
+      if (status === undefined) {
+        this.redrawAtNoAnswer(record);
+      }
       this.deps.onView({
         kind: 'waiting_store',
         cancelled: status?.status === 'cancelled',
@@ -1423,8 +1524,10 @@ export class CheckoutSession {
             this.status('ended');
             this.showOffer({ reason: 'attempt_over' });
             void this.showPendingAnswer();
-          } else {
+          } else if (generation === this.generation && !this.disposed) {
+            // Not ended (a lost write, a read that answered otherwise): keep watching.
             this.render();
+            this.watch();
           }
         } else if (watched.state === 'over') {
           this.stopWatching();
@@ -1479,6 +1582,31 @@ export class CheckoutSession {
     }
     const rpc = this.rpcOfRecord(current);
     return rpc === undefined ? undefined : await watchSolanaPayment(current, this.payDeps(rpc));
+  }
+
+  /** Redraw once the "no answer from the store" moment passes, while this record is shown. */
+  private redrawAtNoAnswer(record: OrderRecord): void {
+    if (this.noAnswerTimer?.orderId === record.orderId || this.disposed) {
+      return;
+    }
+    if (this.noAnswerTimer !== undefined) {
+      this.deps.clearInterval(this.noAnswerTimer.handle);
+    }
+    const dueIn = (record.paidAt ?? this.loadedAt) + NO_ANSWER_AFTER_SECS - this.deps.now();
+    if (dueIn < 0) {
+      this.noAnswerTimer = { orderId: record.orderId, handle: undefined };
+      return;
+    }
+    const handle = this.deps.setInterval(
+      () => {
+        this.deps.clearInterval(handle);
+        if (this.record?.orderId === record.orderId && !this.busy) {
+          this.render();
+        }
+      },
+      dueIn * 1000 + 1000,
+    );
+    this.noAnswerTimer = { orderId: record.orderId, handle };
   }
 
   private stopWatching(): void {
@@ -1702,6 +1830,10 @@ export class CheckoutSession {
     // Anything still running for what is stopped drops its result.
     this.generation += 1;
     this.stopWatching();
+    if (this.noAnswerTimer !== undefined) {
+      this.deps.clearInterval(this.noAnswerTimer.handle);
+      this.noAnswerTimer = undefined;
+    }
     if (this.republishTimer !== undefined) {
       this.deps.clearInterval(this.republishTimer);
       this.republishTimer = undefined;

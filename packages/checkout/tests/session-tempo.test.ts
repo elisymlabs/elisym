@@ -73,7 +73,7 @@ async function settle(): Promise<void> {
   }
 }
 
-type Behaviour = 'land' | 'drop' | 'reject' | 'fail';
+type Behaviour = 'land' | 'drop' | 'reject' | 'fail' | 'ended-meanwhile';
 
 async function setup() {
   const shop: Shop = makeShop({ caip19: TEMPO_CAIP19, payout: PAYOUT });
@@ -116,6 +116,21 @@ async function setup() {
         throw new Error('gone');
       }
       if (wallet.behaviour === 'land') {
+        land(`0x${call.data.slice(-64)}`);
+      }
+      if (wallet.behaviour === 'ended-meanwhile') {
+        // Another tab ended the order while this prompt was open; the buyer approves anyway.
+        const [open] = await store.forProduct(offer.productAddress);
+        const marker = open?.marker;
+        if (open !== undefined && marker !== undefined) {
+          await store.clearMarker(
+            open.orderId,
+            open.version,
+            marker.attemptId,
+            'ended-unpaid',
+            'over',
+          );
+        }
         land(`0x${call.data.slice(-64)}`);
       }
       return HASH;
@@ -229,7 +244,8 @@ describe('paying on Tempo in the widget', () => {
     expect(record).toMatchObject({ state: 'paid', paidTx: HASH });
     // Thirty minutes on and the store still silent: contact it.
     run.advance(31 * 60);
-    await run.session.refresh();
+    // The page stays open: the note comes by its own timer, not by a reload.
+    await run.timers.tick();
     expect(run.last()).toMatchObject({ kind: 'waiting_store', noAnswer: true });
   });
 
@@ -283,6 +299,17 @@ describe('paying on Tempo in the widget', () => {
     expect(run.banners).toEqual([
       expect.objectContaining({ orderId: (over as OrderRecord).orderId, state: 'paid' }),
     ]);
+    expect((await records(run.offer))[0]).toMatchObject({ state: 'paid', paidTx: HASH });
+  });
+
+  it('watches a payment approved after another tab ended the order, and shows it when found', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'ended-meanwhile';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'late_approval' } });
+    await run.timers.tick();
+    expect(run.banners).toEqual([expect.objectContaining({ state: 'paid' })]);
     expect((await records(run.offer))[0]).toMatchObject({ state: 'paid', paidTx: HASH });
   });
 });

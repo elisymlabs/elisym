@@ -65,6 +65,8 @@ function problemText(problem: Problem, asset: Asset): string {
       return 'Your wallet is on another network. Switch it to the network shown and try again.';
     case 'rejected':
       return 'You declined in the wallet. Nothing was paid.';
+    case 'late_approval':
+      return 'Your wallet approved an earlier request after that order had ended: it pays that order. The checkout keeps watching for it; contact the store if nothing arrives.';
     case 'attempt_over':
       return 'The payment was not made. If your wallet still shows the old request, reject it: approving it now would pay that order too.';
     case 'self_payment':
@@ -369,6 +371,11 @@ function CheckoutView({ screen, view, actions }: Omit<Props, 'banner'>) {
           <p>
             An earlier payment request for this product may still be open in your wallet. Approving
             it would pay that order as well. Reject it in your wallet first.
+          </p>
+          <p class="muted">
+            {view.until > 0
+              ? `After ${new Date(view.until * 1000).toLocaleString()}, or if the store changed its price or payout, the store will not deliver that order on its own: you would have to contact it.`
+              : 'If the store changed its price or payout, the store will not deliver that order on its own: you would have to contact it.'}
           </p>
           <div class="wallets">
             <button type="button" onClick={() => actions.confirmOldPrompt()}>

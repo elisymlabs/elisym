@@ -75,6 +75,9 @@ export function tempoContextFor(
   };
 }
 
+/** Block timestamps kept at most (the binary search's cache). */
+const MAX_BLOCK_SAMPLES = 10_000;
+
 /** A Tempo hash as the ledger keeps it: one spelling. */
 export const TEMPO_HASH_RE = /^0x[0-9a-f]{64}$/;
 
@@ -114,7 +117,12 @@ async function blockTime(context: TempoContext, number: number): Promise<number 
   if (block === null) {
     return undefined;
   }
-  (context.samples ??= new Map()).set(number, block.timestamp);
+  const samples = (context.samples ??= new Map());
+  // Bounded: a restart costs a few binary-search reads, never unbounded memory.
+  if (samples.size >= MAX_BLOCK_SAMPLES) {
+    samples.clear();
+  }
+  samples.set(number, block.timestamp);
   return block.timestamp;
 }
 
@@ -135,9 +143,22 @@ export async function blockAtTime(
   if (head.timestamp <= target) {
     return head;
   }
+  // Start from the closest samples already read around the target: a sweep's
+  // searches for nearby times then cost a few reads, not a full search each.
   let low = 0;
   let high = head.number;
   let found = { number: 0, timestamp: 0 };
+  for (const [number, at] of context.samples ?? []) {
+    if (number > high || number < low) {
+      continue;
+    }
+    if (at <= target && number >= low) {
+      low = number;
+      found = { number, timestamp: at };
+    } else if (at > target && number <= high) {
+      high = number;
+    }
+  }
   while (low <= high) {
     const middle = Math.floor((low + high) / 2);
     const at = await blockTime(context, middle);

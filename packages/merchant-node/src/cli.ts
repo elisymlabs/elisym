@@ -438,6 +438,8 @@ async function run(home: MerchantHome): Promise<void> {
       network: config.network,
     },
     ...(tempo === undefined ? {} : { tempo }),
+    // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
+    ...(config.rpcUrl === undefined ? { catchUp: async () => ({ paid: [], incomplete: [] }) } : {}),
     save: () => saveLedger(home.ledger, state),
     deliver: (order, skip) => deliver(pool, order, skip, config, keys),
     inboxRelayCount: config.inboxRelays.length,
