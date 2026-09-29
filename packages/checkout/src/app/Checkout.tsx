@@ -1,10 +1,13 @@
 import type { OfferWarning } from '@elisym/commerce';
 import { type Asset, NATIVE_SOL, formatAssetAmount } from '@elisym/pay-core';
 import type { RefusalReason, Screen } from './controller';
-import type { Problem, View } from './session';
+import type { Banner, Problem, View } from './session';
 
 export interface Actions {
   confirm(checked: boolean): void;
+  choosePayout(index: number): void;
+  confirmOldPrompt(): void;
+  cancelOldPrompt(): void;
   setEmail(value: string): void;
   pay(walletName: string): void;
   retry(walletName: string): void;
@@ -16,6 +19,8 @@ interface Props {
   screen: Screen;
   /** The purchase, once the offer is loaded. */
   view?: View;
+  /** A late answer for another order of this product, shown above whatever is on screen. */
+  banner?: Banner;
   actions: Actions;
 }
 
@@ -49,11 +54,19 @@ const WORKING: Record<Extract<View, { kind: 'working' }>['step'], string> = {
 function problemText(problem: Problem, asset: Asset): string {
   switch (problem.reason) {
     case 'no_wallet':
-      return 'Connect a Solana wallet that can sign transactions (Phantom, Solflare, MetaMask).';
+      return 'Connect a wallet for this network (Phantom or Solflare on Solana, MetaMask on Tempo).';
     case 'clock_skew':
       return 'This device’s clock is more than 5 minutes off. Fix the clock and try again.';
     case 'rpc_error':
-      return 'The Solana network could not be reached. Try again in a moment.';
+      return 'The network could not be reached. Try again in a moment.';
+    case 'policy_blocked':
+      return 'The store’s account does not accept this coin from your wallet. Nothing was paid; contact the store.';
+    case 'wrong_chain':
+      return 'Your wallet is on another network. Switch it to the network shown and try again.';
+    case 'rejected':
+      return 'You declined in the wallet. Nothing was paid.';
+    case 'attempt_over':
+      return 'The payment was not made. If your wallet still shows the old request, reject it: approving it now would pay that order too.';
     case 'self_payment':
       return 'This wallet is the store’s own payout address; pay from another wallet.';
     case 'too_late':
@@ -91,8 +104,41 @@ function ProblemNote({ problem, asset }: { problem: Problem | undefined; asset: 
   );
 }
 
+function BannerNote({ banner }: { banner: Banner | undefined }) {
+  if (banner === undefined) {
+    return null;
+  }
+  const text: Record<Banner['state'], string> = {
+    paid: 'Your earlier order was paid after all. Waiting for the store to deliver it.',
+    blocked: 'Your earlier payment was blocked by the recipient. Contact the store.',
+    completed: 'Your earlier order was delivered:',
+    refunded: 'Your earlier order was refunded by the store.',
+  };
+  return (
+    <p class="banner" role="status">
+      {text[banner.state]}{' '}
+      {banner.link === undefined ? (
+        (banner.text ?? '')
+      ) : (
+        <a href={banner.link} target="_blank" rel="noopener noreferrer">
+          {banner.link}
+        </a>
+      )}
+    </p>
+  );
+}
+
 /** Store data is rendered as text only; a delivery is a link only when it is `https:`. */
-export function Checkout({ screen, view, actions }: Props) {
+export function Checkout({ screen, view, banner, actions }: Props) {
+  return (
+    <>
+      <BannerNote banner={banner} />
+      <CheckoutView screen={screen} view={view} actions={actions} />
+    </>
+  );
+}
+
+function CheckoutView({ screen, view, actions }: Omit<Props, 'banner'>) {
   if (view === undefined) {
     if (screen.kind === 'refused') {
       return (
@@ -119,9 +165,27 @@ export function Checkout({ screen, view, actions }: Props) {
           <p class="muted">
             Sold by {view.offer.offer.profile.name ?? 'an unnamed store'}
             {view.offer.offer.domain === undefined ? '' : ` (${view.offer.offer.domain})`}, trust
-            level {view.offer.offer.level}. Paid in {view.payout.target.caip19.asset.symbol} on
-            Solana {view.payout.target.caip19.chain.network}.
+            level {view.offer.offer.level}. Paid in {view.payout.target.caip19.asset.symbol} on{' '}
+            {view.payout.target.caip19.chain.family === 'evm' ? 'Tempo' : 'Solana'}{' '}
+            {view.payout.target.caip19.chain.network}.
           </p>
+          {view.payouts.length < 2 ? null : (
+            <fieldset class="payouts">
+              <legend>Pay with</legend>
+              {view.payouts.map((payout, index) => (
+                <label key={`${payout.target.caip19.id} ${payout.target.address}`}>
+                  <input
+                    type="radio"
+                    name="payout"
+                    checked={index === view.payoutIndex}
+                    onChange={() => actions.choosePayout(index)}
+                  />{' '}
+                  {payout.target.caip19.asset.symbol} on{' '}
+                  {payout.target.caip19.chain.family === 'evm' ? 'Tempo' : 'Solana'}
+                </label>
+              ))}
+            </fieldset>
+          )}
           {warnings.length === 0 ? null : (
             <ul class="warnings">
               {warnings.map((warning) => (
@@ -153,7 +217,7 @@ export function Checkout({ screen, view, actions }: Props) {
           <ProblemNote problem={view.problem} asset={view.payout.target.caip19.asset} />
           {view.continuing ? <p class="muted">Your earlier order is still open.</p> : null}
           {view.wallets.length === 0 ? (
-            <p class="muted">No Solana wallet found in this browser.</p>
+            <p class="muted">No wallet for this network found in this browser.</p>
           ) : (
             <div class="wallets">
               {view.wallets.map((wallet) => (
@@ -181,6 +245,12 @@ export function Checkout({ screen, view, actions }: Props) {
               ? 'The payment did not go through. Nothing was paid.'
               : 'Waiting for the payment to confirm…'}
           </p>
+          {view.tempo ? (
+            <p class="muted">
+              If your wallet still shows the request, approve or reject it there. The widget keeps
+              checking; there is no second payment from here.
+            </p>
+          ) : null}
           {view.problem === undefined ? null : (
             <p class="problem" role="alert">
               {problemText(view.problem, view.asset)}
@@ -194,7 +264,11 @@ export function Checkout({ screen, view, actions }: Props) {
             </p>
           )}
           {view.unsureLong ? (
-            <p class="muted">This is taking long. If it does not resolve, contact the store.</p>
+            <p class="muted">
+              {view.tempo
+                ? 'This is taking long. Check your wallet activity, or contact the store.'
+                : 'This is taking long. If it does not resolve, contact the store.'}
+            </p>
           ) : null}
           {view.canRetry && view.confirm.length > 0 ? (
             <>
@@ -235,6 +309,9 @@ export function Checkout({ screen, view, actions }: Props) {
               ? 'Paid, but the store cancelled this order. Contact the store.'
               : 'Paid. Waiting for the store to deliver…'}
           </p>
+          {view.noAnswer ? (
+            <p class="muted">The store has not answered for a while. Contact the store.</p>
+          ) : null}
           {view.explorer === undefined ? null : (
             <p>
               <a href={view.explorer} target="_blank" rel="noopener noreferrer">
@@ -284,6 +361,32 @@ export function Checkout({ screen, view, actions }: Props) {
               Start a new order
             </button>
           </div>
+        </div>
+      );
+    case 'old_prompt':
+      return (
+        <div role="alert">
+          <p>
+            An earlier payment request for this product may still be open in your wallet. Approving
+            it would pay that order as well. Reject it in your wallet first.
+          </p>
+          <div class="wallets">
+            <button type="button" onClick={() => actions.confirmOldPrompt()}>
+              I understand, continue
+            </button>
+            <button type="button" class="secondary" onClick={() => actions.cancelOldPrompt()}>
+              Back
+            </button>
+          </div>
+        </div>
+      );
+    case 'blocked':
+      return (
+        <div role="alert">
+          <p>
+            The payment was blocked by the recipient: the money is held, not delivered. Contact the
+            store.
+          </p>
         </div>
       );
     case 'refused':
