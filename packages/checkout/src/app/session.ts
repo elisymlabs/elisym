@@ -585,6 +585,8 @@ export class CheckoutSession {
         // Another tab ended the order while the wallet was open: the buyer approved
         // it anyway. The hash is watched until the payment is found, and said so.
         this.watchLateHash(result.record, result.hash);
+        // Its store answer still comes: heard in the background, shown as a banner.
+        this.listenToEnded([result.record], this.relays);
         this.setRecord(undefined);
         this.showOffer({ reason: 'late_approval' });
         return;

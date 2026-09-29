@@ -254,9 +254,26 @@ export class MerchantRuntime {
       }
     }
     try {
-      const results = [await this.sweepCatchUp(state, context, now())];
-      if (this.deps.tempo !== undefined) {
-        results.push(await (this.deps.catchUpTempo ?? catchUpTempo)(state, this.deps.tempo, now()));
+      // Each rail on its own: one rail's RPC failing never stops the other's catch-up.
+      const tempo = this.deps.tempo;
+      const rails: { rail: string; run: () => Promise<CatchUpResult> }[] = [
+        { rail: 'solana', run: () => this.sweepCatchUp(state, context, now()) },
+      ];
+      if (tempo !== undefined) {
+        rails.push({
+          rail: 'tempo',
+          run: () => (this.deps.catchUpTempo ?? catchUpTempo)(state, tempo, now()),
+        });
+      }
+      const results: CatchUpResult[] = [];
+      for (const { rail, run } of rails) {
+        try {
+          results.push(await run());
+        } catch (error) {
+          log(
+            `${rail} catch-up failed this time: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       }
       for (const result of results) {
         if (result.paid.length > 0) {
