@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   type OrderMessage,
   buildOrderMessage,
+  buildPaytoEvent,
   buildProductEvent,
   wrapOrderMessage,
 } from '@elisym/commerce';
@@ -15,6 +16,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   D,
+  DAY,
   MemoryRelays,
   NOW,
   type Shop,
@@ -387,6 +389,89 @@ describe('buy_product', () => {
     expect(text(followed as never)).toContain('expired and nothing was paid');
   });
 
+  it('ends an order that can no longer be paid in time, so the next quote places a new one', async () => {
+    const run = await world();
+    run.chain.lamports = 0n;
+    const first = await quoteId(run);
+    const unfunded = await tool('buy_product').handler(run.ctx, {
+      quote_id: first.id,
+      accept_warnings: first.warnings,
+    });
+    expect(text(unfunded as never)).toContain('Not enough SOL');
+    const [old] = await orders(run);
+    expect(old?.state).toBe('ordered');
+    // Three days on: too late to pay that order before the store stops watching.
+    run.chain.lamports = 1_000_000_000n;
+    const later = NOW + 3 * DAY;
+    commerceRuntime.now = () => later + 30;
+    run.chain.blockTime = later + 60;
+    const second = await quoteId(run);
+    const ended = await tool('buy_product').handler(run.ctx, {
+      quote_id: second.id,
+      accept_warnings: second.warnings,
+    });
+    expect(text(ended as never)).toContain('it was ended and nothing was paid');
+    expect((await orders(run))[0]?.state).toBe('ended-unpaid');
+    const third = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: third.id,
+      accept_warnings: third.warnings,
+    });
+    const after = await orders(run);
+    expect(after).toHaveLength(2);
+    expect(run.chain.landed.size).toBe(1);
+  });
+
+  it("ends an attempt proven over on the agent's old network and buys on the new one", async () => {
+    const run = await world();
+    for (const [key, limit] of run.ctx.sessionSpendLimits) {
+      run.ctx.sessionSpendLimits.set(key, limit * 1000n);
+    }
+    run.chain.dropSends = true;
+    const first = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: first.id,
+      accept_warnings: first.warnings,
+    });
+    const [stuck] = await orders(run);
+    expect(stuck?.state).toBe('paying');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    run.chain.dropSends = false;
+    const both = [USDC_DEVNET_CAIP19, USDC_MAINNET_CAIP19];
+    run.events.push(
+      sign(
+        buildProductEvent({
+          d: D,
+          title: 'Agents 101',
+          description: 'Twelve lessons.',
+          price: { amount: '49', currency: 'USD' },
+          accept: both,
+          createdAt: T0 + 1,
+        }),
+        run.shop.store,
+      ),
+      sign(
+        buildPaytoEvent({
+          ownerPubkey: run.shop.owner.pubkey,
+          accept: both.map((caip19) => ({ caip19, address: run.shop.payout })),
+          createdAt: T0 + 1,
+        }),
+        run.shop.owner,
+      ),
+    );
+    run.agent.network = 'mainnet';
+    const second = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: second.id,
+      accept_warnings: second.warnings,
+    });
+    const after = await orders(run);
+    expect(after.find((record) => record.orderId === stuck?.orderId)?.state).toBe('ended-unpaid');
+    expect(after).toHaveLength(2);
+    expect(run.chain.landed.size).toBe(1);
+  });
+
   it('refuses for an ephemeral agent', async () => {
     const run = await world({ agentDir: false });
     const refused = await tool('buy_product').handler(run.ctx, { product: run.shop.naddr });
@@ -419,10 +504,15 @@ describe('the spend reservations of a payment attempt', () => {
     };
   }
 
-  it('gives back an attempt once: all of it before a broadcast, only the coin once proven over', () => {
+  it('gives back an attempt once: all of it before a broadcast, all but the fee once proven over', () => {
     const ctx = new AgentContext();
     ctx.sessionSpendLimits = defaultSpendLimitsMap();
-    const costs = { asset: USDC_SOLANA_DEVNET, tokenAmount: 1_000n, lamports: 5_000n };
+    const costs = {
+      asset: USDC_SOLANA_DEVNET,
+      tokenAmount: 1_000n,
+      lamports: 5_000n,
+      feeLamports: 700n,
+    };
     reserveCosts(ctx, costs, 'a');
     reserveCosts(ctx, costs, 'b');
     releaseCosts(ctx, 'a', true);
@@ -430,8 +520,20 @@ describe('the spend reservations of a payment attempt', () => {
     // A second release of the same attempt gives back nothing more.
     releaseCosts(ctx, 'a', true);
     expect(spent(ctx)).toEqual({ token: 1_000n, lamports: 5_000n });
-    // Proven over: the fee may have been spent, so the coin comes back and the fee stays.
+    // Proven over: only the fee stays counted (a failed transaction spent it).
     releaseCosts(ctx, 'b', false);
-    expect(spent(ctx)).toEqual({ token: 0n, lamports: 5_000n });
+    expect(spent(ctx)).toEqual({ token: 0n, lamports: 700n });
+  });
+
+  it('gives back the price of a native SOL attempt proven over', () => {
+    const ctx = new AgentContext();
+    ctx.sessionSpendLimits = defaultSpendLimitsMap();
+    reserveCosts(
+      ctx,
+      { asset: NATIVE_SOL, tokenAmount: 0n, lamports: 50_005_000n, feeLamports: 5_000n },
+      'a',
+    );
+    releaseCosts(ctx, 'a', false);
+    expect(spent(ctx).lamports).toBe(5_000n);
   });
 });

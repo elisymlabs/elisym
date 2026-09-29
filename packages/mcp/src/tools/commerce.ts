@@ -15,7 +15,7 @@
  *   instructions.
  */
 import { randomUUID } from 'node:crypto';
-import type { OfferWarning, OrderStatusMessage } from '@elisym/commerce';
+import { type OfferWarning, type OrderStatusMessage, parseCaip19 } from '@elisym/commerce';
 import {
   type LoadedOffer,
   type OrderRecord,
@@ -114,7 +114,7 @@ const productQueues = new Map<string, Promise<unknown>>();
  */
 const reservations = new Map<
   string,
-  { asset: PaymentCosts['asset']; token: bigint; lamports: bigint }
+  { asset: PaymentCosts['asset']; token: bigint; lamports: bigint; fee: bigint }
 >();
 /** The storage verdict per agent directory, judged once. */
 const storageVerdicts = new Map<string, Promise<{ durable: boolean; reason?: string }>>();
@@ -235,10 +235,7 @@ async function preparePurchase(
  * that could answer "not paid".
  */
 async function depsFor(purchase: Purchase, record: OrderRecord): Promise<SolanaPayDeps> {
-  const network = record.offer.payouts.find(
-    (payout) =>
-      payout.caip19.id === record.payout.caip19 && payout.address === record.payout.address,
-  )?.caip19.chain.network;
+  const network = parseCaip19(record.payout.caip19)?.chain.network;
   if (network === purchase.agent.network) {
     return purchase.deps;
   }
@@ -270,15 +267,16 @@ export function reserveCosts(ctx: AgentContext, costs: PaymentCosts, attemptId: 
     asset: costs.asset,
     token: costs.tokenAmount,
     lamports: costs.lamports,
+    fee: costs.feeLamports,
   });
 }
 
 /**
  * Give back what this process reserved for `attemptId`, once: all of it
- * (refused before any broadcast), or only the coin (an attempt proven over:
- * its fee may have been spent).
+ * (refused before any broadcast), or all but the network fee (an attempt
+ * proven over: a transaction that landed and failed spent its fee).
  */
-export function releaseCosts(ctx: AgentContext, attemptId: string, includingSol: boolean): void {
+export function releaseCosts(ctx: AgentContext, attemptId: string, includingFee: boolean): void {
   const reserved = reservations.get(attemptId);
   if (reserved === undefined) {
     return;
@@ -287,8 +285,9 @@ export function releaseCosts(ctx: AgentContext, attemptId: string, includingSol:
   if (reserved.token > 0n) {
     releaseSpend(ctx, reserved.asset, reserved.token);
   }
-  if (includingSol) {
-    releaseSpend(ctx, NATIVE_SOL, reserved.lamports);
+  const lamports = includingFee ? reserved.lamports : reserved.lamports - reserved.fee;
+  if (lamports > 0n) {
+    releaseSpend(ctx, NATIVE_SOL, lamports);
   }
 }
 
@@ -604,7 +603,7 @@ async function buy(
       }
     }
     if (current !== undefined && onOtherTerms(current, payout)) {
-      const ended = await endOrder(current, { ...purchase.deps, rpc: purchase.deps.rpc });
+      const ended = await endOrder(current, await depsFor(purchase, current));
       if (!ended.ended) {
         const followed = await follow(ctx, purchase, ended.record, deadline);
         return textResult(stateText(followed.record, followed.canProveOver, followed.over));
@@ -685,9 +684,22 @@ async function buy(
       { fresh: payable, chainTime: await readChainTime(purchase.deps.rpc).catch(() => chainTime) },
       purchase.deps,
     );
+    // An order that can no longer be paid on these terms is ended, so the next
+    // quote places a new one instead of meeting it again.
+    if (!paid.ok && ENDS_ORDER.has(paid.reason) && paid.record !== undefined) {
+      const ended = await endOrder(paid.record, purchase.deps);
+      if (ended.ended) {
+        return errorResult(
+          `Order ${ended.record.orderId} can no longer be paid on these terms (${paid.reason}); it was ended and nothing was paid. Call buy_product with the product for a new quote.`,
+        );
+      }
+    }
     return afterPay(ctx, purchase, paid, deadline, payout);
   });
 }
+
+/** Refusals after which an order is ended rather than paid later. */
+const ENDS_ORDER: ReadonlySet<string> = new Set(['too_late', 'offer_changed']);
 
 /**
  * Settle an attempt the chain proves over: retried on the approved terms;
@@ -703,7 +715,7 @@ async function retryIfOver(
   deadline: number,
 ) {
   const deps = await depsFor(purchase, record);
-  if (deps !== purchase.deps || deps.canProveOver !== true) {
+  if (deps.canProveOver !== true) {
     return undefined;
   }
   const watched = await watchSolanaPayment(record, deps);
@@ -715,6 +727,8 @@ async function retryIfOver(
     releaseCosts(ctx, previous, false);
   }
   const payout = fresh.payouts[0] as PricedPayout;
+  // Terms that moved (another network is another CAIP-19, so an order paid on
+  // the agent's old network lands here too): ended, and a new order is placed.
   if (onOtherTerms(watched.record, payout)) {
     const ended = await endOrder(watched.record, deps);
     return ended.ended ? ('ended' as const) : undefined;
@@ -731,10 +745,17 @@ async function retryIfOver(
     ),
   );
   const result = await retryWithSolana(watched.record, wallet, { fresh, chainTime }, deps);
-  if (!result.ok && result.reason === 'not_payable' && result.record !== undefined) {
-    const ended = await endOrder(result.record, deps);
-    if (ended.ended) {
-      return textResult(stateText(ended.record, true, false));
+  if (!result.ok && result.record !== undefined) {
+    if (ENDS_ORDER.has(result.reason)) {
+      const ended = await endOrder(result.record, deps);
+      if (ended.ended) {
+        return 'ended' as const;
+      }
+    } else if (result.reason === 'not_payable') {
+      const ended = await endOrder(result.record, deps);
+      if (ended.ended) {
+        return textResult(stateText(ended.record, true, false));
+      }
     }
   }
   return afterPay(ctx, purchase, result, deadline, payout);

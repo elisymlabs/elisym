@@ -97,6 +97,11 @@ export interface PaymentCosts {
   /** Subunits of `asset` when it is a token; 0 for native SOL (counted in `lamports`). */
   tokenAmount: bigint;
   lamports: bigint;
+  /**
+   * The network fee inside `lamports`: the one part an attempt that never paid
+   * may still have spent (a transaction that landed and failed).
+   */
+  feeLamports: bigint;
 }
 
 export interface SolanaPayDeps extends OrderDeps {
@@ -410,6 +415,7 @@ async function checkFunds(
         fees.assetStatsRentLamports +
         feeLamports +
         (coin.asset.mint === undefined ? amount : 0n),
+      feeLamports,
     };
     return { ok: true, funds: { lamports, otherLamports, priceMicroLamports, costs } };
   } catch {
