@@ -53,6 +53,9 @@ const PRIVATE_STATE_GITIGNORE_ENTRIES = [
   '.jobs.json*',
   '.customer-history.json*',
   '.contacts.json*',
+  // The buyer's orders (each with its one-time Nostr key) and their lock files.
+  '.orders.json*',
+  '.orders.lock*',
 ] as const;
 
 const GITIGNORE_CONTENT = [

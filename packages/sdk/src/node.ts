@@ -14,3 +14,6 @@ export type {
 } from './transport/iroh';
 
 export { createFileSettlementStore } from './payment-file-store';
+
+export { createGuardedFetch } from './guarded-fetch';
+export type { GuardedFetchOptions } from './guarded-fetch';

@@ -395,6 +395,8 @@ describe('createAgentDir', () => {
     expect(lines).toContain('.jobs.json*');
     expect(lines).toContain('.customer-history.json*');
     expect(lines).toContain('.contacts.json*');
+    expect(lines).toContain('.orders.json*');
+    expect(lines).toContain('.orders.lock*');
     expect(lines).toContain('.messages-read.json*');
     expect(lines).toContain('.job-sessions.json*');
     // The x402 bridge cache: which upstream calls were paid for, and the
@@ -513,6 +515,8 @@ describe('createAgentDir', () => {
     expect(lines).toContain('.jobs.json*');
     expect(lines).toContain('.customer-history.json*');
     expect(lines).toContain('.contacts.json*');
+    expect(lines).toContain('.orders.json*');
+    expect(lines).toContain('.orders.lock*');
     // Append-only: what was there stays, so an older build reading this file
     // still finds the names it wrote.
     expect(lines).toContain('.secrets.json');
