@@ -11,6 +11,7 @@ export * from './offer';
 export * from './order-flow';
 export * from './order-record';
 export * from './order-store';
+export * from './purchase';
 export * from './relay-client';
 export * from './relays';
 export * from './solana-pay';

@@ -10,7 +10,15 @@ import {
   placeOrder,
   resumeOrder,
 } from '@elisym/commerce/buyer';
-import { type OrderRecord, isTerminal, recordToShow } from '@elisym/commerce/buyer';
+import {
+  type OrderRecord,
+  cancelledUnpaid,
+  endOrder,
+  gone,
+  isTerminal,
+  onOtherTerms,
+  recordToShow,
+} from '@elisym/commerce/buyer';
 import type { OrderStore } from '@elisym/commerce/buyer';
 import {
   type SolanaPayResult,
@@ -172,20 +180,6 @@ function stateOf(record: OrderRecord): CheckoutState | undefined {
     default:
       return undefined;
   }
-}
-
-/** The store cancelled an order no payment is known for (the attempt, if any, is over). */
-function cancelledUnpaid(record: OrderRecord): boolean {
-  return (
-    record.status?.status === 'cancelled' &&
-    record.paidTx === undefined &&
-    (record.state === 'created' || record.state === 'ordered')
-  );
-}
-
-/** Ended with no payment found (in this tab or another): no longer this product's purchase. */
-function gone(record: OrderRecord): boolean {
-  return record.state === 'ended-unpaid' && record.paidTx === undefined;
 }
 
 /**
@@ -495,24 +489,14 @@ export class CheckoutSession {
   }
 
   /** End an order that holds nothing yet, or whose attempt provably ended on its own network. */
-  private async endOrder(record: OrderRecord): Promise<{ ended: boolean; record: OrderRecord }> {
-    if (record.state === 'created') {
-      // Never acknowledged: nothing was requested for it and it holds nothing.
-      return { ended: true, record };
-    }
-    const rpc = this.rpcOfRecord(record);
-    if (rpc !== undefined) {
-      return await endSolanaOrder(record, this.payDeps(rpc));
-    }
-    if (record.state === 'ordered' && record.marker === undefined) {
-      // No attempt was ever made: ending it needs only the store, never the chain.
-      const written = await this.deps.store.update(record.orderId, record.version, {
-        state: 'ended-unpaid',
-      });
-      return written.ok ? { ended: true, record: written.record } : { ended: false, record };
-    }
-    // An attempt may still land on a network this build cannot read: it stays followed.
-    return { ended: false, record };
+  private endOrder(record: OrderRecord): Promise<{ ended: boolean; record: OrderRecord }> {
+    return endOrder(record, {
+      store: this.deps.store,
+      readClient: this.deps.readClient,
+      clientFor: this.deps.clientFor,
+      now: this.deps.now,
+      rpc: this.rpcOfRecord(record),
+    });
   }
 
   /** The network an order's chain work runs on: the order's own, never the offer's. */
@@ -639,12 +623,7 @@ export class CheckoutSession {
       this.setRecord(undefined);
       record = undefined;
     }
-    const stale =
-      record !== undefined &&
-      (cancelledUnpaid(record) ||
-        record.payout.caip19 !== this.payout.target.caip19.id ||
-        record.payout.address !== this.payout.target.address ||
-        record.amount !== this.payout.amount.toString());
+    const stale = record !== undefined && onOtherTerms(record, this.payout);
     if (record !== undefined && stale) {
       const ended = await this.endOrder(record);
       if (!ended.ended) {
