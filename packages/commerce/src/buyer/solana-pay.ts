@@ -712,6 +712,23 @@ function storeRefusal(
   return { ok: false, reason: written.reason === 'conflict' ? 'conflict' : 'not_payable', record };
 }
 
+/**
+ * Run the write that records a new attempt; a throw gives the attempt's
+ * reservation back (nothing was signed or sent on it) and is rethrown.
+ */
+async function withReleaseOnThrow<T>(
+  attemptId: string,
+  deps: SolanaPayDeps,
+  write: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    deps.release?.(attemptId);
+    throw error;
+  }
+}
+
 /** Ask the caller's spend limits for the attempt's costs; `false` when refused. */
 function reserveCosts(costs: PaymentCosts, attemptId: string, deps: SolanaPayDeps): boolean {
   if (deps.reserve === undefined) {
@@ -763,7 +780,9 @@ export async function payWithSolana(
   if (!reserveCosts(checked.funds.costs, marker.attemptId, deps)) {
     return { ok: false, reason: 'spend_limit', record };
   }
-  const marked = await deps.store.setMarker(record.orderId, record.version, marker);
+  const marked = await withReleaseOnThrow(marker.attemptId, deps, () =>
+    deps.store.setMarker(record.orderId, record.version, marker),
+  );
   if (!marked.ok) {
     deps.release?.(marker.attemptId);
     return storeRefusal(marked, record);
@@ -1078,11 +1097,8 @@ export async function retryWithSolana(
   if (!reserveCosts(checked.funds.costs, marker.attemptId, deps)) {
     return { ok: false, reason: 'spend_limit', record: judged };
   }
-  const replaced = await deps.store.updateMarker(
-    judged.orderId,
-    judged.version,
-    previous.attemptId,
-    marker,
+  const replaced = await withReleaseOnThrow(marker.attemptId, deps, () =>
+    deps.store.updateMarker(judged.orderId, judged.version, previous.attemptId, marker),
   );
   if (!replaced.ok) {
     deps.release?.(marker.attemptId);

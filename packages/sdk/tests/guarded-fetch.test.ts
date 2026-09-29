@@ -84,6 +84,18 @@ describe('the guarded fetch', () => {
     expect(fake.asked).toEqual([]);
   });
 
+  it('refuses a status a Response cannot hold, instead of throwing out of a listener', async () => {
+    for (const status of [101, 999]) {
+      const guarded = createGuardedFetch({
+        resolve: async () => ['93.184.216.34'],
+        request: fakeRequest({ status, body: '{}' }).request,
+      });
+      await expect(guarded('https://shop.example/.well-known/nostr.json')).rejects.toThrow(
+        String(status),
+      );
+    }
+  });
+
   it('never follows a redirect, and caps the body', async () => {
     const redirect = fakeRequest({ status: 302, headers: { location: 'https://evil.example/' } });
     await expect(

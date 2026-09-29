@@ -769,6 +769,25 @@ describe("the caller's spend limits", () => {
     expect(spend.released).toEqual([]);
   });
 
+  it('gives the reservation back when writing the attempt throws', async () => {
+    const { record, wallet, deps, input } = await setup();
+    const spend = limits();
+    const failing = Object.create(store) as OrderStore;
+    failing.setMarker = async () => {
+      throw new Error('the order file is locked');
+    };
+    await expect(
+      payWithSolana(record, wallet, input, {
+        ...deps,
+        store: failing,
+        reserve: spend.reserve,
+        release: spend.release,
+      }),
+    ).rejects.toThrow('locked');
+    expect(spend.released).toEqual([spend.reserved[0]?.attemptId]);
+    expect(wallet.requests).toBe(0);
+  });
+
   it('refuses before anything is recorded when the limits say no', async () => {
     const { record, wallet, deps, input } = await setup();
     const spend = limits(false);

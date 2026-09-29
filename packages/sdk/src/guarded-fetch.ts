@@ -80,6 +80,13 @@ export function createGuardedFetch(
         },
         (response) => {
           const status = response.statusCode ?? 0;
+          // A status a Response cannot hold would throw inside a listener,
+          // out of reach of this promise.
+          if (status < 200 || status > 599) {
+            response.resume();
+            reject(refused(`status ${status}`));
+            return;
+          }
           if (status >= 300 && status < 400) {
             response.resume();
             // Never followed: another host could answer for this one.
@@ -107,12 +114,16 @@ export function createGuardedFetch(
               }
             }
             const body = Buffer.concat(chunks);
-            resolveResponse(
-              new Response(status === 204 || status === 304 ? null : body, {
-                status,
-                headers: responseHeaders,
-              }),
-            );
+            try {
+              resolveResponse(
+                new Response(status === 204 || status === 304 ? null : body, {
+                  status,
+                  headers: responseHeaders,
+                }),
+              );
+            } catch (error) {
+              reject(error);
+            }
           });
           response.on('error', reject);
         },
