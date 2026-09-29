@@ -653,14 +653,14 @@ describe('writeYaml + loadAgent round-trip', () => {
     expect(loaded.encrypted).toBe(true);
     expect(loaded.secrets.nostr_secret_key).toBe('a'.repeat(64));
     expect(loaded.secrets.llm_api_keys?.anthropic).toBe('sk-test-key');
-  }, 15_000);
+  }, 60_000); // scrypt (N=2^17) takes seconds on a shared CI runner.
 
   it('throws if encrypted without passphrase', async () => {
     const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
     await writeYaml(dir, yaml);
     await writeSecrets(dir, secrets, 'pw');
     await expect(loadAgent('Bob', work)).rejects.toThrow(/encrypted secrets/);
-  });
+  }, 60_000);
 
   it('round-trips the delegate key and encrypts it at rest', async () => {
     const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
@@ -678,7 +678,7 @@ describe('writeYaml + loadAgent round-trip', () => {
     expect(loaded.secrets.solana_delegate_secret_key).toBe('b'.repeat(88));
     // Encrypted delegate key must be reported as an encrypted field.
     expect(loaded.encrypted).toBe(true);
-  }, 15_000);
+  }, 60_000); // scrypt (N=2^17) takes seconds on a shared CI runner.
 
   it('loads project-local agent when .elisym/ is present', async () => {
     mkdirSync(join(work, 'proj', '.git'), { recursive: true });

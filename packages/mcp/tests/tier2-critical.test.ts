@@ -231,7 +231,8 @@ describe('config security flags', () => {
   });
 });
 
-describe('encryption', () => {
+// Each scrypt derivation (N=2^17) takes seconds on a shared CI runner.
+describe('encryption', { timeout: 60_000 }, () => {
   let tmpHome: string;
   const originalHome = process.env.HOME;
   const originalPassphrase = process.env.ELISYM_PASSPHRASE;
