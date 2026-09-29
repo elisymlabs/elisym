@@ -1,5 +1,8 @@
 import { fileURLToPath } from 'node:url';
-import { type Plugin, defineConfig } from 'vite';
+import { type Plugin, type UserConfig, defineConfig, loadEnv } from 'vite';
+import { buildEnvProblems } from './scripts/build-env';
+
+const PACKAGE_DIR = fileURLToPath(new URL('.', import.meta.url));
 
 /** The checkout iframe app: `dist/index.html`, served at `/checkout`. */
 /** In development, serve the app at `/checkout` as the deployment does. */
@@ -15,9 +18,10 @@ const checkoutRoute: Plugin = {
   },
 };
 
-export default defineConfig({
+const CONFIG: UserConfig = {
   plugins: [checkoutRoute],
   root: fileURLToPath(new URL('./src/app', import.meta.url)),
+  envDir: PACKAGE_DIR,
   base: '/',
   esbuild: { jsx: 'automatic', jsxImportSource: 'preact' },
   build: {
@@ -26,4 +30,13 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: true,
   },
+};
+
+export default defineConfig(({ mode }) => {
+  // `.env` files and the process env both reach `import.meta.env`: check what the bundle gets.
+  const problems = buildEnvProblems({ ...process.env, ...loadEnv(mode, PACKAGE_DIR, 'VITE_') });
+  if (problems.length > 0) {
+    throw new Error(`the checkout build environment is wrong:\n- ${problems.join('\n- ')}`);
+  }
+  return CONFIG;
 });

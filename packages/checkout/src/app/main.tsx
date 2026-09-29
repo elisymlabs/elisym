@@ -40,12 +40,17 @@ function show(next: Screen): void {
   draw();
 }
 
+/** A build variable that is set to something (an empty one counts as unset). */
+function configured(value: string | undefined): string | undefined {
+  return value === undefined || value === '' ? undefined : value;
+}
+
+const MAINNET_RPC_URL = configured(import.meta.env.VITE_SOLANA_RPC_URL_MAINNET);
+
 /** The widget's own Solana RPC per network (build env); the public devnet one by default. */
 const RPC_URLS: Partial<Record<Network, string>> = {
-  devnet: import.meta.env.VITE_SOLANA_RPC_URL_DEVNET ?? 'https://api.devnet.solana.com',
-  ...(import.meta.env.VITE_SOLANA_RPC_URL_MAINNET === undefined
-    ? {}
-    : { mainnet: import.meta.env.VITE_SOLANA_RPC_URL_MAINNET }),
+  devnet: configured(import.meta.env.VITE_SOLANA_RPC_URL_DEVNET) ?? 'https://api.devnet.solana.com',
+  ...(MAINNET_RPC_URL === undefined ? {} : { mainnet: MAINNET_RPC_URL }),
 };
 const rpcs = new Map<Network, Rpc<SolanaRpcApi>>();
 
