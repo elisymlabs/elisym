@@ -205,6 +205,18 @@ const configSchema = z
       }
       seen.add(caip19.id);
     });
+    // A page shows the payouts on its own network only, and anyone can frame a level C
+    // store: Moderato on a mainnet store would let a testnet coin pay for a real delivery.
+    if (
+      config.tempo !== undefined &&
+      tempoRegistryNetwork(config.tempo.network) !== config.network
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['tempo', 'network'],
+        message: `is ${config.tempo.network}, the node runs on ${config.network}: use network "mainnet" with Tempo "mainnet", or network "devnet" with Tempo "moderato"`,
+      });
+    }
     if (solanaPayouts > 0 && config.rpcUrl === undefined) {
       context.addIssue({
         code: 'custom',
