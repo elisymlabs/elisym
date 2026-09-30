@@ -50,11 +50,16 @@ describe('the merchant config', () => {
 
   it('takes Tempo payouts on the configured Tempo network only, at a payable address', () => {
     const tempoPayout = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
-    const withTempo = { ...valid(), tempo: { network: 'mainnet' } };
+    const withTempo = {
+      ...valid(),
+      network: 'mainnet',
+      tempo: { network: 'mainnet' },
+      payouts: [{ caip19: MAINNET_USDC, address: PAYOUT }],
+    };
     expect(
       configProblems({
         ...withTempo,
-        payouts: [...valid().payouts, { caip19: TEMPO_USDC, address: tempoPayout }],
+        payouts: [...withTempo.payouts, { caip19: TEMPO_USDC, address: tempoPayout }],
       }),
     ).toEqual([]);
     // Moderato is the registry's devnet: a mainnet coin is refused there.
@@ -75,9 +80,45 @@ describe('the merchant config', () => {
     }
   });
 
+  it('refuses a Tempo network other than the node network', () => {
+    const moderatoPathUsd = 'eip155:42431/erc20:0x20c0000000000000000000000000000000000000';
+    const tempoPayout = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
+    // A mainnet store paid in a testnet coin: any page framing it on devnet gets a real delivery.
+    expect(
+      configProblems({
+        ...valid(),
+        network: 'mainnet',
+        tempo: { network: 'moderato' },
+        payouts: [
+          { caip19: MAINNET_USDC, address: PAYOUT },
+          { caip19: moderatoPathUsd, address: tempoPayout },
+        ],
+      }),
+    ).toEqual([
+      'tempo.network: is moderato, the node runs on mainnet: use network "mainnet" with Tempo "mainnet", or network "devnet" with Tempo "moderato"',
+    ]);
+    expect(
+      configProblems({
+        ...valid(),
+        tempo: { network: 'mainnet' },
+        payouts: [...valid().payouts, { caip19: TEMPO_USDC, address: tempoPayout }],
+      }),
+    ).toEqual([
+      'tempo.network: is mainnet, the node runs on devnet: use network "mainnet" with Tempo "mainnet", or network "devnet" with Tempo "moderato"',
+    ]);
+    expect(
+      configProblems({
+        ...valid(),
+        tempo: { network: 'moderato' },
+        payouts: [...valid().payouts, { caip19: moderatoPathUsd, address: tempoPayout }],
+      }),
+    ).toEqual([]);
+  });
+
   it('needs the Solana RPC only with a Solana payout', () => {
     const tempoOnly = {
       ...valid(),
+      network: 'mainnet',
       tempo: { network: 'mainnet' },
       payouts: [{ caip19: TEMPO_USDC, address: '0x5696da2cecea22f127948458382ac2c59bc8e4bb' }],
     };

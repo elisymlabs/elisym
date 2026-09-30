@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>elisym demo store</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/store.css" />
+  </head>
+  <body>
+    <header>
+      <strong>elisym demo store</strong>
+      <span id="network-badge" hidden></span>
+    </header>
+    <main>
+      <section id="setup" hidden>
+        <h1>Point the page at your product</h1>
+        <p>
+          Run <code>setup</code> on your node and paste the <code>naddr</code> it prints. See
+          <code>examples/demo-store/README.md</code>.
+        </p>
+        <form id="setup-form">
+          <label>
+            Product naddr
+            <textarea name="product" rows="4" required spellcheck="false"></textarea>
+          </label>
+          <label>
+            Network
+            <select name="network">
+              <option value="devnet">devnet</option>
+              <option value="mainnet">mainnet (real money)</option>
+            </select>
+          </label>
+          <label class="inline">
+            <input type="checkbox" name="collect-email" />
+            Ask the buyer for an email
+          </label>
+          <button type="submit">Open the store</button>
+          <p id="setup-error" class="error" hidden></p>
+        </form>
+      </section>
+      <section id="store" hidden>
+        <h1>Checkout</h1>
+        <p class="lead">
+          The checkout below is the production widget from <code>pay.elisym.network</code>, framed
+          by this page. The payment goes from the buyer's wallet to the store's payout address.
+        </p>
+        <div id="checkout"></div>
+        <h2>Status events</h2>
+        <p class="hint">
+          What <code>elisym-status</code> tells this page. It carries state names only: never unlock
+          anything on it.
+        </p>
+        <ol id="events"></ol>
+        <p><a href="/">Use another product</a></p>
+      </section>
+    </main>
+    <script
+      src="https://pay.elisym.network/v1/embed.js"
+      integrity="sha384-n2Bj5LKM3OGGlQOwpooaauimc99mLR+4ookl8AeVpG3GjG4aLBc7jV1l2WEljNhH"
+      crossorigin="anonymous"
+    ></script>
+    <script src="/store.js"></script>
+  </body>
+</html>

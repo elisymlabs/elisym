@@ -83,6 +83,8 @@ Keep it running. It reads orders from your inbox relays, checks each payment on 
 
 The `integrity` hash pins the exact loader your page runs. The file under `/v1/` never changes, so the hash stays valid. A new loader would ship under a new path.
 
+No page yet? The repository has a ready one: [`examples/demo-store`](https://github.com/elisymlabs/elisym/tree/main/examples/demo-store) serves a store page on localhost that takes the `naddr` and the network from its URL, and logs the checkout's status events.
+
 ## 5. Buy it
 
 Serve the page over http(s), for example with `npx serve .` on localhost. A page opened from disk (`file://`) has no origin, and the checkout refuses it. Open it in a browser with a Solana wallet that supports Wallet Standard (Phantom, Solflare, ...), switched to devnet. It needs devnet SOL for fees ([faucet.solana.com](https://faucet.solana.com)) and devnet USDC for the price ([faucet.circle.com](https://faucet.circle.com), Solana -> Devnet).
@@ -117,7 +119,7 @@ Then run `setup` and `run` as above. `setup` prints the mainnet store's own `nad
 
 ## Tempo payouts
 
-The store can also take a Tempo stablecoin, paid with an EIP-6963 wallet such as MetaMask. The node verifies Tempo payments itself, so it needs a `tempo` block naming the network: `mainnet`, or `moderato` (Tempo's testnet). A Tempo payout is refused without it.
+The store can also take a Tempo stablecoin, paid with an EIP-6963 wallet such as MetaMask. The node verifies Tempo payments itself, so it needs a `tempo` block naming the Tempo network that matches the node's `network`: `mainnet` on mainnet, `moderato` (Tempo's testnet) on devnet. A Tempo payout is refused without it, and so is a Tempo network that does not match.
 
 Upgrade the node **before** your payout list names a Tempo address: an older node would refuse to start on an offer it cannot honor, and a buyer could pay it. Once the node has seen a Tempo order, its ledger is in a newer format, and an older node refuses to start on it: do not downgrade.
 

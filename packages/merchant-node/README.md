@@ -1,8 +1,8 @@
 # @elisym/merchant-node
 
 The self-hosted store behind the elisym checkout. It publishes your product to Nostr, takes
-orders sent by the checkout widget, checks each Solana payment on chain, and sends the
-buyer what they bought.
+orders sent by the checkout widget, checks each payment on chain (USDC on Solana, or a
+stablecoin on Tempo), and sends the buyer what they bought.
 
 You do not need an account or a server of ours. The node holds your store's keys and a small
 ledger on your own disk.
@@ -10,9 +10,10 @@ ledger on your own disk.
 ## What you need
 
 - Node.js 22.4 or newer, or Docker.
-- A Solana wallet address to be paid to (USDC).
-- A Solana RPC endpoint for the node itself. On mainnet, use your own provider key
-  (Helius, Triton, ...). A key restricted to a browser origin does not work from a server.
+- A Solana wallet address to be paid to (USDC), a Tempo address, or both.
+- For Solana payouts, a Solana RPC endpoint for the node itself. On mainnet, use your own
+  provider key (Helius, Triton, ...). A key restricted to a browser origin does not work from a
+  server. Tempo is read through its public endpoint unless you set your own.
 - What the buyer gets once paid: a link (a Blossom URL, a course page, a download) or text
   (a license key).
 
@@ -53,13 +54,15 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 
 ## Commands
 
-| Command  | What it does                                                                        |
-| -------- | ----------------------------------------------------------------------------------- |
-| `init`   | Creates the home: a `config.json` template (never overwritten) and the store's keys |
-| `setup`  | Checks the inbox relays, publishes the store, and records the terms it offers       |
-| `run`    | Takes orders, verifies payments and delivers                                        |
-| `orders` | Lists the orders: open, paid, delivered, and the buyer's email                      |
-| `check`  | Checks the inbox relays, the owner's payout list and the domain                     |
+| Command   | What it does                                                                        |
+| --------- | ----------------------------------------------------------------------------------- |
+| `init`    | Creates the home: a `config.json` template (never overwritten) and the store's keys |
+| `setup`   | Checks the inbox relays, publishes the store, and records the terms it offers       |
+| `run`     | Takes orders, verifies payments and delivers                                        |
+| `orders`  | Lists the orders: open, paid, delivered, and the buyer's email                      |
+| `check`   | Checks the inbox relays, the owner's payout list and the domain                     |
+| `deliver` | Answers an unpaid order by hand with the configured delivery (node stopped)         |
+| `refund`  | Answers an unpaid order by hand with a refund you already sent (node stopped)       |
 
 Every command takes `--home <dir>`. Without it, the home is `$ELISYM_MERCHANT_HOME`, else
 `~/.elisym-merchant`.
@@ -83,21 +86,22 @@ it starts.
 
 ## The config
 
-| Field                     | Meaning                                                                         |
-| ------------------------- | ------------------------------------------------------------------------------- |
-| `name`                    | The store's name, shown in the checkout                                         |
-| `nip05`                   | Optional. `_@your-domain.com` for level A (see below)                           |
-| `network`                 | `devnet` or `mainnet`                                                           |
-| `rpcUrl`                  | The node's Solana RPC (`https:`)                                                |
-| `inboxRelays`             | 1 to 5 relays (`wss:`) where the store reads orders and replies                 |
-| `product.d`               | The product's id in the store (letters, digits, `.`, `-`, `_`)                  |
-| `product.title`           | Title                                                                           |
-| `product.description`     | Description                                                                     |
-| `product.summary`         | Optional short line                                                             |
-| `product.priceUsd`        | Price in USD, such as `"49"` or `"0.50"`                                        |
-| `product.delivery.method` | `access`, `download`, `license`, `api` or `webhook`: how the checkout labels it |
-| `product.delivery.value`  | The link or text the buyer gets (up to 1024 characters)                         |
-| `payouts`                 | One `{ "caip19": ..., "address": ... }` per coin. Solana, on `network`, only    |
+| Field                     | Meaning                                                                                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
+| `name`                    | The store's name, shown in the checkout                                                             |
+| `nip05`                   | Optional. `_@your-domain.com` for level A (see below)                                               |
+| `network`                 | `devnet` or `mainnet`                                                                               |
+| `rpcUrl`                  | The node's Solana RPC (`https:`). Needed with a Solana payout                                       |
+| `tempo`                   | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl` |
+| `inboxRelays`             | 1 to 5 relays (`wss:`) where the store reads orders and replies                                     |
+| `product.d`               | The product's id in the store (letters, digits, `.`, `-`, `_`)                                      |
+| `product.title`           | Title                                                                                               |
+| `product.description`     | Description                                                                                         |
+| `product.summary`         | Optional short line                                                                                 |
+| `product.priceUsd`        | Price in USD, such as `"49"` or `"0.50"`                                                            |
+| `product.delivery.method` | `access`, `download`, `license`, `api` or `webhook`: how the checkout labels it                     |
+| `product.delivery.value`  | The link or text the buyer gets (up to 1024 characters)                                             |
+| `payouts`                 | One `{ "caip19": ..., "address": ... }` per coin, see [Tempo payouts](#tempo-payouts)               |
 
 The node refuses to start with a config it cannot use, and names every problem.
 
@@ -116,6 +120,26 @@ configured). While one relay is down, the node retries only that relay, each min
 after the payment, one relay is enough. If a relay later drops a delivery, the node sends the
 status again when it reads that order or a receipt for it again: at most every ten minutes per
 order, and a few at a time (the rest wait until the order is read again).
+
+### Tempo payouts
+
+A store can also take a Tempo stablecoin, paid with an EIP-6963 wallet such as MetaMask. Add a
+`tempo` block naming the Tempo network that matches the node's `network` (`mainnet` on mainnet,
+`moderato` on devnet), and one payout per coin, with your Tempo address in
+lowercase:
+
+| Network            | `tempo.network` | Coin    | `caip19`                                                        |
+| ------------------ | --------------- | ------- | --------------------------------------------------------------- |
+| Tempo mainnet      | `mainnet`       | USDC.e  | `eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50`  |
+| Tempo mainnet      | `mainnet`       | pathUSD | `eip155:4217/erc20:0x20c0000000000000000000000000000000000000`  |
+| Moderato (testnet) | `moderato`      | pathUSD | `eip155:42431/erc20:0x20c0000000000000000000000000000000000000` |
+
+A Tempo payout is refused without the `tempo` block, and a store with only Tempo payouts needs
+no Solana `rpcUrl`, but it still names its network: `"network": "mainnet"` for Tempo mainnet
+(`init` writes `devnet` unless told `--network mainnet`). A page shows the store's payouts on its own network, and the buyer picks
+one. Upgrade
+the node before the payout list names a Tempo address, and do not downgrade it afterwards: once
+the node has seen a Tempo order, an older node refuses its ledger.
 
 ## Level A: your domain vouches for the store
 
@@ -157,10 +181,10 @@ To edit the config in the volume, mount a host directory instead, for example
 - `keys.json` holds the store key and the owner key. Whoever has them can publish a different
   payout address in your store's name. Keep the home private (the node creates it as `0700`)
   and back it up. A lost key means a new store.
-- The owner's payout list must name only payouts this node checks: Solana, on its network,
-  at the addresses its ledger records. `run` refuses to start when the published list names
-  another one, for example a Tempo address added from elsewhere or an address `setup` did not
-  record. A buyer could pay that address and never get a delivery. It refuses the same way
+- The owner's payout list must name only payouts this node checks: on its networks, at the
+  addresses its ledger records. `run` refuses to start when the published list names another
+  one, for example a Tempo address added from elsewhere without a `tempo` block, or an address
+  `setup` did not record. A buyer could pay that address and never get a delivery. It refuses the same way
   when the published listing asks a price the ledger does not record (a `setup` killed
   between publishing and recording, for example by `docker stop`), and when the published
   inbox list names a relay the node does not read (the config changed without `setup`). Run
@@ -172,7 +196,9 @@ To edit the config in the volume, mount a host directory instead, for example
 
 ## Limits
 
-- One product per node, paid on Solana (USDC) on one network.
+- One product per node, on one network: USDC on Solana and stablecoins on Tempo (Moderato on
+  devnet).
 - Delivery is the configured link or text. Uploading a file to Blossom is up to you; the link
   goes in `product.delivery.value`.
-- Refunds are made by hand from your wallet.
+- Refunds are made by hand from your wallet. `refund` reports one to the buyer of an order the
+  node did not credit; a refund of a delivered order is between you and the buyer.
