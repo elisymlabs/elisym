@@ -17,6 +17,9 @@ import { discoverWallets, payingWallets, solanaChain } from './wallets';
 
 const root = document.getElementById('app');
 const params = decodeCheckoutParams(location.hash);
+// Declared before discovery: a wallet may announce itself synchronously, inside
+// the discovery call, and its callback reads `session`.
+let session: CheckoutSession | undefined;
 // A wallet that registers after the offer is drawn is offered as soon as it does.
 const wallets = discoverWallets(window, () => session?.refresh());
 const evmWallets = discoverEvmWallets(window, () => session?.refresh());
@@ -24,7 +27,6 @@ const readClient = createRelayClient();
 let screen: Screen = { kind: 'waiting' };
 let view: View | undefined;
 let banner: Banner | undefined;
-let session: CheckoutSession | undefined;
 
 const actions: Actions = {
   confirm: (checked) => session?.confirm(checked),
