@@ -1,0 +1,143 @@
+:root {
+  --bg: #fafafa;
+  --fg: #16161a;
+  --muted: #5c5c66;
+  --card: #ffffff;
+  --border: #e3e3e8;
+  --accent: #6d4aff;
+  --warn: #b3261e;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111114;
+    --fg: #ececf1;
+    --muted: #a0a0ab;
+    --card: #1a1a1f;
+    --border: #2c2c33;
+    --accent: #a38bff;
+    --warn: #ff8a80;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    16px/1.5 system-ui,
+    sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+#network-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#network-badge.mainnet {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+main {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+}
+
+h1 {
+  font-size: 24px;
+}
+
+h2 {
+  font-size: 18px;
+  margin-top: 32px;
+}
+
+.lead,
+.hint {
+  color: var(--muted);
+}
+
+form {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+label {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}
+
+label.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+}
+
+textarea,
+select {
+  width: 100%;
+  padding: 8px;
+  font:
+    14px ui-monospace,
+    monospace;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+textarea {
+  word-break: break-all;
+}
+
+button {
+  justify-self: start;
+  padding: 8px 16px;
+  color: #fff;
+  background: var(--accent);
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.error {
+  margin: 0;
+  color: var(--warn);
+}
+
+#events {
+  padding-left: 24px;
+  font:
+    14px ui-monospace,
+    monospace;
+  color: var(--muted);
+}
+
+code {
+  font-size: 0.9em;
+}
