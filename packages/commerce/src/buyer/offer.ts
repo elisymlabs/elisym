@@ -78,6 +78,11 @@ export interface LoadOfferOptions {
   /** Domain lookups (nostr.json, DoH); defaults to the global `fetch`. */
   fetch?: FetchLike;
   resolveDomain?: (nip05: string) => Promise<DomainKeys | undefined>;
+  /**
+   * Pass by the relays the client recently waited on in vain (`QueryOptions`):
+   * for the load that opens a page, never for a re-verification before paying.
+   */
+  skipUnreachable?: boolean;
 }
 
 /** Whether `value` is a real http(s) origin, in its canonical spelling. */
@@ -141,7 +146,12 @@ async function loadVerified(
   const verification = await verifyOffer(
     naddr,
     {
-      fetchEvents: (filters) => options.client.query(relays, filters),
+      fetchEvents: (filters) =>
+        options.client.query(
+          relays,
+          filters,
+          options.skipUnreachable === true ? { skipUnreachable: true } : {},
+        ),
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       ...(options.resolveDomain === undefined ? {} : { resolveDomain: options.resolveDomain }),
     },

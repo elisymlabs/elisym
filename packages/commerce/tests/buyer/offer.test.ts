@@ -46,6 +46,29 @@ describe('loadOffer', () => {
     ).toBe(true);
   });
 
+  it('passes by unreachable relays only when asked (the load that opens a page)', async () => {
+    const shop = makeShop();
+    const opening = new MemoryRelays(shop.events);
+    await loadOffer(shop.naddr, {
+      client: opening,
+      pageOrigin: PAGE,
+      families: ['solana'],
+      now: NOW,
+      skipUnreachable: true,
+    });
+    expect(opening.skipped.length).toBeGreaterThan(1);
+    expect(opening.skipped.every((skips) => skips)).toBe(true);
+    const reverifying = new MemoryRelays(shop.events);
+    await loadOffer(shop.naddr, {
+      client: reverifying,
+      pageOrigin: PAGE,
+      families: ['solana'],
+      now: NOW,
+    });
+    expect(reverifying.skipped.length).toBeGreaterThan(1);
+    expect(reverifying.skipped.some((skips) => skips)).toBe(false);
+  });
+
   it('refuses a page without a usable origin before reading anything', async () => {
     const shop = makeShop();
     for (const pageOrigin of [

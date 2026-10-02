@@ -58,6 +58,7 @@ describe('the screen for a page', () => {
       { caip19: 'solana:x/token:y', address: shop.payout },
     ]);
     let pins: LoadOfferOptions['pins'];
+    let skipUnreachable: boolean | undefined;
     await screenForPage(
       { naddr: shop.naddr, strictOrigin: false, theme: 'auto', collectEmail: false },
       PAGE,
@@ -66,11 +67,14 @@ describe('the screen for a page', () => {
         store,
         loadOffer: async (_naddr, options) => {
           pins = options.pins;
+          skipUnreachable = options.skipUnreachable;
           return { ok: false, refusal: 'no_payable_payout', message: 'none' } as const;
         },
       },
     );
     expect(pins).toMatchObject({ pinnedOwnerPubkey: shop.owner.pubkey });
+    // The load that opens the page may pass by relays just found dead.
+    expect(skipUnreachable).toBe(true);
   });
 
   it('re-verifies with the pins too, read fresh each time', async () => {
@@ -93,6 +97,8 @@ describe('the screen for a page', () => {
     };
     await loadWithPins(params, PAGE, deps);
     expect(seen[0]?.pins).toBeUndefined();
+    // A re-verification before paying tries every relay.
+    expect(seen[0]?.skipUnreachable).toBeUndefined();
     // A delivery since the page opened pinned the owner: the next re-verification uses it.
     await store.rememberDelivery(shop.store.pubkey, shop.owner.pubkey, []);
     await loadWithPins(params, PAGE, deps);

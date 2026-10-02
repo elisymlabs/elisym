@@ -5,7 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   RELAY_PUBLISH_DEADLINE_MS,
   RELAY_QUERY_DEADLINE_MS,
+  SLOW_CONNECT_FAILURE_MAX_MS,
+  SLOW_CONNECT_FAILURE_MS,
   SUBSCRIBE_STABLE_MS,
+  UNREACHABLE_RELAY_SKIP_MS,
 } from '../../src/buyer/constants';
 import {
   type AuthSigner,
@@ -13,6 +16,7 @@ import {
   type RelayLike,
   createPool,
   createRelayClient,
+  unreachableRelays,
 } from '../../src/buyer/relay-client';
 import { nostrKey, sign } from './fixtures';
 
@@ -160,6 +164,10 @@ describe('query deadline', () => {
 
 /** Relays in memory behind a WebSocket: each answers a REQ with its events, after a delay. */
 const RELAY_BEHAVIOUR = new Map<string, { events: unknown[]; delayMs: number }>();
+/** Relays whose connection fails at once, relays that never answer the dial, and dials per relay. */
+const FAILING_RELAYS = new Set<string>();
+const HANGING_RELAYS = new Set<string>();
+const DIALS = new Map<string, number>();
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -170,7 +178,16 @@ class FakeWebSocket {
   onerror: (() => void) | null = null;
 
   constructor(private readonly url: string) {
+    const relay = url.replace(/\/$/, '');
+    DIALS.set(relay, (DIALS.get(relay) ?? 0) + 1);
     setTimeout(() => {
+      if (FAILING_RELAYS.has(relay)) {
+        this.onerror?.();
+        return;
+      }
+      if (HANGING_RELAYS.has(relay)) {
+        return;
+      }
       this.readyState = 1;
       this.onopen?.();
     }, 0);
@@ -211,6 +228,137 @@ describe('query against real relay connections', () => {
     client.close();
     expect(events.map((event) => event.id)).toEqual([genuine.id]);
     expect(events[0]?.sig).toBe(genuine.sig);
+  });
+});
+
+describe('a relay a query could not connect to', () => {
+  it('is skipped after a slow failure until the skip runs out, never after a fast one', () => {
+    vi.useFakeTimers();
+    try {
+      const relays = unreachableRelays();
+      const dead = 'wss://dead.example.com/';
+      const refusing = 'wss://refusing.example.com/';
+      relays.dialling(dead);
+      relays.dialling(refusing);
+      vi.advanceTimersByTime(SLOW_CONNECT_FAILURE_MS - 1);
+      relays.onRelayConnectionFailure(refusing);
+      vi.advanceTimersByTime(1);
+      relays.onRelayConnectionFailure(dead);
+      expect(relays.skipped(dead)).toBe(true);
+      expect(relays.skipped(refusing)).toBe(false);
+      vi.advanceTimersByTime(UNREACHABLE_RELAY_SKIP_MS - 1);
+      expect(relays.skipped(dead)).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(relays.skipped(dead)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never skips a relay whose failure took longer than a connection wait can (a frozen page)', () => {
+    vi.useFakeTimers();
+    try {
+      const relays = unreachableRelays();
+      const relay = 'wss://healthy.example.com/';
+      relays.dialling(relay);
+      vi.advanceTimersByTime(SLOW_CONNECT_FAILURE_MAX_MS + 1);
+      relays.onRelayConnectionFailure(relay);
+      expect(relays.skipped(relay)).toBe(false);
+      relays.dialling(relay);
+      vi.advanceTimersByTime(SLOW_CONNECT_FAILURE_MAX_MS);
+      relays.onRelayConnectionFailure(relay);
+      expect(relays.skipped(relay)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the wait from the dial a connection answered, not from an earlier one', () => {
+    vi.useFakeTimers();
+    try {
+      const relays = unreachableRelays();
+      const relay = 'wss://flaky.example.com/';
+      relays.dialling(relay);
+      relays.onRelayConnectionSuccess(relay);
+      vi.advanceTimersByTime(SLOW_CONNECT_FAILURE_MS * 10);
+      relays.dialling(relay);
+      relays.onRelayConnectionFailure(relay);
+      expect(relays.skipped(relay)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the wait from the first of concurrent dials, which share one connection', () => {
+    vi.useFakeTimers();
+    try {
+      const relays = unreachableRelays();
+      const relay = 'wss://dead.example.com/';
+      relays.dialling(relay);
+      vi.advanceTimersByTime(SLOW_CONNECT_FAILURE_MS);
+      relays.dialling(relay);
+      relays.onRelayConnectionFailure(relay);
+      expect(relays.skipped(relay)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is wired into the pool: both connection hooks reach the client', () => {
+    const calls: string[] = [];
+    const pool = createPool({
+      onRelayConnectionFailure: (url) => calls.push(`failure ${url}`),
+      onRelayConnectionSuccess: (url) => calls.push(`success ${url}`),
+    });
+    pool.onRelayConnectionFailure?.('wss://a.example.com/');
+    pool.onRelayConnectionSuccess?.('wss://b.example.com/');
+    expect(calls).toEqual(['failure wss://a.example.com/', 'success wss://b.example.com/']);
+  });
+
+  it('dials a relay that refused at once again, even for a query that skips', async () => {
+    useWebSocketImplementation(FakeWebSocket);
+    const listing = note('the listing');
+    FAILING_RELAYS.add('wss://refusing.example.com');
+    RELAY_BEHAVIOUR.set('wss://alive.example.com', { events: [listing], delayMs: 0 });
+    DIALS.clear();
+    const client = createRelayClient();
+    try {
+      const relays = ['wss://refusing.example.com', 'wss://alive.example.com'];
+      const first = await client.query(relays, [{ kinds: [1] }], { skipUnreachable: true });
+      expect(first.map((event) => event.id)).toEqual([listing.id]);
+      await client.query(relays, [{ kinds: [1] }], { skipUnreachable: true });
+      expect(DIALS.get('wss://refusing.example.com')).toBe(2);
+    } finally {
+      client.close();
+      FAILING_RELAYS.delete('wss://refusing.example.com');
+    }
+  });
+
+  it('is not waited on again by a query that skips, and is dialled again by one that does not', async () => {
+    useWebSocketImplementation(FakeWebSocket);
+    const listing = note('the listing');
+    HANGING_RELAYS.add('wss://dead.example.com');
+    RELAY_BEHAVIOUR.set('wss://alive.example.com', { events: [listing], delayMs: 0 });
+    DIALS.clear();
+    const client = createRelayClient();
+    try {
+      const relays = ['wss://dead.example.com', 'wss://alive.example.com'];
+      const first = await client.query(relays, [{ kinds: [1] }, { kinds: [2] }], {
+        skipUnreachable: true,
+      });
+      const startedSecond = Date.now();
+      const second = await client.query(relays, [{ kinds: [1] }], { skipUnreachable: true });
+      expect(Date.now() - startedSecond).toBeLessThan(SLOW_CONNECT_FAILURE_MS);
+      expect(first.map((event) => event.id)).toEqual([listing.id]);
+      expect(second.map((event) => event.id)).toEqual([listing.id]);
+      expect(DIALS.get('wss://dead.example.com')).toBe(1);
+      // The read that decides where an order goes tries every relay.
+      await client.query(relays, [{ kinds: [1] }]);
+      expect(DIALS.get('wss://dead.example.com')).toBe(2);
+    } finally {
+      client.close();
+      HANGING_RELAYS.delete('wss://dead.example.com');
+    }
   });
 });
 

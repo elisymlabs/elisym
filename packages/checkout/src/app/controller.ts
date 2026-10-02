@@ -37,6 +37,8 @@ export interface LoadDeps {
   store: OrderStore | undefined;
   /** Replaceable in tests. */
   loadOffer?: (naddr: string, options: LoadOfferOptions) => Promise<LoadedOffer>;
+  /** The load that opens the page: it may pass by relays just found dead (`LoadOfferOptions`). */
+  skipUnreachable?: boolean;
 }
 
 /**
@@ -58,6 +60,7 @@ export async function loadWithPins(
     families: PAYABLE_FAMILIES,
     ...(params.network === undefined ? {} : { network: params.network as Network }),
     ...(params.strictOrigin ? { strictOrigin: true } : {}),
+    ...(deps.skipUnreachable === true ? { skipUnreachable: true } : {}),
     ...(pins === undefined
       ? {}
       : { pins: { pinnedOwnerPubkey: pins.pinnedOwnerPubkey, knownPayouts: pins.knownPayouts } }),
@@ -82,7 +85,11 @@ export async function screenForPage(
   if (pointer === undefined) {
     return { kind: 'refused', reason: 'no_product' };
   }
-  const loaded = await loadWithPins(params, pageOrigin, { ...deps, store: deps.store });
+  const loaded = await loadWithPins(params, pageOrigin, {
+    ...deps,
+    store: deps.store,
+    skipUnreachable: true,
+  });
   if (!loaded.ok) {
     return { kind: 'refused', reason: 'offer_refused', message: loaded.message };
   }
