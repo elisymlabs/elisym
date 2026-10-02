@@ -74,9 +74,8 @@ run while a node holds the home. Run `run` again afterwards. If only part of a c
 the relays (for example the payout list but not the listing), `setup` records what buyers can
 now see, says so and fails: run it again. Each of the listing, the payout list and the inbox
 list must also reach at least one of the relays every checkout reads
-(`wss://relay.elisym.network`, `wss://relay.damus.io`, `wss://nos.lol`,
-`wss://relay.nostr.band`), whatever inbox relays the store uses; `setup` fails until one
-takes it.
+(`wss://relay.elisym.network`, `wss://relay.damus.io`, `wss://nos.lol`), whatever inbox
+relays the store uses; `setup` fails until one takes it.
 
 The home's lock (`run.lock`) keeps two processes from writing the ledger at once, wherever they
 run (containers and hosts sharing the home included). Its holder refreshes it every 20 seconds.
