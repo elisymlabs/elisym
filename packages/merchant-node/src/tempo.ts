@@ -30,6 +30,7 @@ import {
   markTempo,
   openOrders,
 } from './ledger';
+import { TEMPO_HASH_RE } from './order-rules';
 import type { CatchUpResult, PaymentCheck } from './solana';
 import { type OfferTerms, termsAt, termsSince } from './terms';
 
@@ -77,9 +78,6 @@ export function tempoContextFor(
 
 /** Block timestamps kept at most (the binary search's cache). */
 const MAX_BLOCK_SAMPLES = 10_000;
-
-/** A Tempo hash as the ledger keeps it: one spelling. */
-export const TEMPO_HASH_RE = /^0x[0-9a-f]{64}$/;
 
 /** The rumor may be dated up to 15 minutes ahead: the scan starts this far before it. */
 const FLOOR_MARGIN_SECS = Math.max(ORDER_SCAN_MARGIN_SECS, 900);

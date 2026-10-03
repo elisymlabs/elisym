@@ -31,6 +31,26 @@
     "import/no-named-as-default": "off",
     "import/no-unassigned-import": "off"
   },
+  "overrides": [
+    {
+      "files": [
+        "packages/merchant-node/src/admin/**",
+        "packages/merchant-node/src/order-rules.ts",
+        "packages/merchant-node/src/constants.ts",
+        "packages/merchant-node/src/signature.ts"
+      ],
+      "rules": {
+        "eslint/no-restricted-globals": [
+          "error",
+          "Buffer",
+          "process",
+          "require",
+          "global",
+          "__dirname"
+        ]
+      }
+    }
+  ],
   "ignorePatterns": [
     "dist/",
     "build/",

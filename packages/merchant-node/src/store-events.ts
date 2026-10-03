@@ -53,6 +53,25 @@ export interface StoreEvents {
   nostrJson: { names: Record<string, string> };
 }
 
+/**
+ * What the domain's `/.well-known/nostr.json` serves for this store: built from
+ * the public keys alone, so `check` reports the domain without the owner's
+ * secret. The store cannot take the name `owner`, which names the owner key.
+ */
+export function storeNostrJson(
+  config: Pick<StoreConfig, 'nip05'>,
+  storePubkey: string,
+  ownerPubkey: string,
+): StoreEvents['nostrJson'] {
+  const local = config.nip05 === undefined ? '_' : (splitNip05(config.nip05)?.local ?? '_');
+  if (local === NOSTR_JSON_OWNER_NAME) {
+    throw new Error(
+      `The store's nip05 name cannot be "${NOSTR_JSON_OWNER_NAME}": it names the owner`,
+    );
+  }
+  return { names: { [local]: storePubkey, [NOSTR_JSON_OWNER_NAME]: ownerPubkey } };
+}
+
 /** Build and sign everything a store publishes, at `createdAt`. */
 export function buildStoreEvents(
   config: StoreConfig,
@@ -120,17 +139,10 @@ export function buildStoreEvents(
     ),
     byOwner(buildStoreAuthEvent({ storePubkey, mode: 'self-host', createdAt })),
   ];
-  const local = config.nip05 === undefined ? '_' : (splitNip05(config.nip05)?.local ?? '_');
-  // `owner` names the owner key in nostr.json: a store under that name would be lost.
-  if (local === NOSTR_JSON_OWNER_NAME) {
-    throw new Error(
-      `The store's nip05 name cannot be "${NOSTR_JSON_OWNER_NAME}": it names the owner`,
-    );
-  }
   return {
     events,
     naddr: encodeProductNaddr({ storePubkey, d: config.product.d }, [...(options.hints ?? [])]),
     terms,
-    nostrJson: { names: { [local]: storePubkey, [NOSTR_JSON_OWNER_NAME]: ownerPubkey } },
+    nostrJson: storeNostrJson(config, storePubkey, ownerPubkey),
   };
 }

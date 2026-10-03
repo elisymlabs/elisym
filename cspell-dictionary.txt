@@ -203,3 +203,6 @@ linuxkit
 mountinfo
 nobarrier
 orbstack
+noopener
+noreferrer
+nosniff

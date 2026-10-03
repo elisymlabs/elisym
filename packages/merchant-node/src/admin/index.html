@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Store admin</title>
+    <link rel="stylesheet" href="/admin.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Store orders</h1>
+
+      <section id="login">
+        <p>
+          Paste your store's secret key (<code>npx @elisym/merchant-node store-key</code> prints
+          it). The page reads your orders from your inbox relays with it.
+        </p>
+        <p class="warn">
+          This key can redirect payments from new buyers. It stays in this tab's memory only and is
+          never sent anywhere. Close the tab when you are done.
+        </p>
+        <div class="key-row">
+          <label for="store-key">Store secret key (nsec or 64 hex)</label>
+          <input
+            id="store-key"
+            class="masked"
+            type="text"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+          />
+          <button id="open" type="button">Open</button>
+        </div>
+        <p id="login-error" class="warn" role="alert"></p>
+      </section>
+
+      <section id="dashboard" hidden>
+        <div class="store-line">
+          <strong id="store-name"></strong>
+          <span id="store-pubkey" class="mono"></span>
+        </div>
+        <div class="actions">
+          <button id="refresh" type="button">Refresh</button>
+          <button id="forget" type="button">Forget the key</button>
+        </div>
+        <p id="status" role="status"></p>
+        <ul id="warnings"></ul>
+        <p id="more-row" hidden>
+          More history not loaded.
+          <button id="more" type="button">Load more history</button>
+        </p>
+
+        <h2>Credited</h2>
+        <ul id="totals"></ul>
+
+        <h2>Orders</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Order</th>
+                <th>Buyer's claimed total</th>
+                <th>Email</th>
+                <th>State</th>
+                <th>Credited by your node</th>
+                <th>Transaction</th>
+                <th>Buyer</th>
+              </tr>
+            </thead>
+            <tbody id="orders"></tbody>
+          </table>
+        </div>
+        <p id="no-orders" class="note">No orders found.</p>
+
+        <h2>About this page</h2>
+        <ul class="note">
+          <li>
+            History is what your inbox relays still hold: many keep private messages for only about
+            two days. The elisym relay keeps them.
+          </li>
+          <li>
+            Orders your node answered before it kept copies of its answers show at most "payment
+            reported".
+          </li>
+          <li>
+            Totals count only what your node credited. Your node's <code>orders</code> command is
+            the reference.
+          </li>
+        </ul>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

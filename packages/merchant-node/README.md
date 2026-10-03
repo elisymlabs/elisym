@@ -54,15 +54,18 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 
 ## Commands
 
-| Command   | What it does                                                                                                                                                                                                                                           |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `init`    | Creates the home: a `config.json` template (never overwritten) and the store's keys                                                                                                                                                                    |
-| `setup`   | Checks the inbox relays, publishes the store, and records the terms it offers                                                                                                                                                                          |
-| `run`     | Takes orders, verifies payments and delivers                                                                                                                                                                                                           |
-| `orders`  | Lists the orders: open, paid, delivered, and the buyer's email                                                                                                                                                                                         |
-| `check`   | Checks the inbox relays, the owner's payout list and the domain                                                                                                                                                                                        |
-| `deliver` | Answers an unpaid order by hand with the configured delivery (node stopped)                                                                                                                                                                            |
-| `refund`  | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
+| Command        | What it does                                                                                                                                                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `init`         | Creates the home: a `config.json` template (never overwritten) and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest))                                                                                            |
+| `setup`        | Checks the inbox relays, publishes the store, and records the terms it offers                                                                                                                                                                          |
+| `run`          | Takes orders, verifies payments and delivers                                                                                                                                                                                                           |
+| `orders`       | Lists the orders: open, paid, delivered, and the buyer's email                                                                                                                                                                                         |
+| `check`        | Checks the inbox relays, the owner's payout list and the domain                                                                                                                                                                                        |
+| `deliver`      | Answers an unpaid order by hand with the configured delivery (node stopped)                                                                                                                                                                            |
+| `refund`       | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
+| `encrypt-keys` | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                       |
+| `store-key`    | Prints the store's secret key (nsec), for the admin page on this machine: only to a terminal, or with `--yes`                                                                                                                                          |
+| `admin`        | Serves the admin page on `127.0.0.1` (`--port`, default 5199): paste the store key there to see the orders (see [Admin](#admin)); reads no home                                                                                                        |
 
 Every command takes `--home <dir>`. Without it, the home is `$ELISYM_MERCHANT_HOME`, else
 `~/.elisym-merchant`.
@@ -154,6 +157,84 @@ for it. For level A:
 Only the domain-wide name `_` gives level A. A named address such as `shop@your-domain.com`
 stays level C.
 
+## Keys at rest
+
+`keys.json` holds two secret keys: the store key (it signs the listing, the store profile and
+every reply) and the owner key (it signs the payout list). Set a passphrase before `init` and
+both are encrypted (AES-256-GCM, a key from scrypt), with their public keys kept in the clear.
+The first line makes a random passphrase in a file of its own, once, and never overwrites it.
+Back that file up off this machine: without it the keys are lost.
+
+```bash
+[ -s ~/.elisym-merchant-passphrase ] || (umask 077 && openssl rand -base64 32 > ~/.elisym-merchant-passphrase)
+export ELISYM_MERCHANT_PASSPHRASE_FILE=~/.elisym-merchant-passphrase
+npx @elisym/merchant-node init
+```
+
+`ELISYM_MERCHANT_PASSPHRASE_FILE` names the file (a Docker or systemd secret works the same
+way). `ELISYM_MERCHANT_PASSPHRASE` holds the passphrase itself instead. One trailing newline in
+the file is ignored. Setting both is an error. `init` on a home that is already encrypted
+checks that the passphrase opens it, so a passphrase file made anew by mistake is caught there. A home created without a passphrase is encrypted in place
+with `encrypt-keys` (node stopped).
+
+Every command that needs an encrypted key reads the passphrase from there, and says so when
+it is missing. Back the passphrase up: without it the encrypted keys are lost.
+
+What it protects: a copy of the home on its own (a backup, a snapshot, a copied volume). It
+does not protect a host that also holds the passphrase: `docker run -e` keeps it in the
+container config and in shell history, and a secret file or `EnvironmentFile` sits on the same
+host. Keep the passphrase source out of the volume and out of its backups. Older backups and
+snapshots taken before encrypting still hold the plain keys.
+
+Both keys, the default, is what protects buyers: the store key signs the profile that names the
+owner, so a plain store key lets whoever copies the home publish a profile naming another owner
+and redirect new buyers. `--owner-only` (on `init` or `encrypt-keys`) encrypts the owner key
+only, for a node that must run without the passphrase: `run`, `check`, `deliver` and `refund`
+then need none, but only buyers who bought before (and so pinned the owner) are protected.
+
+`store-key` prints the store key for the admin page. In Docker run it with a terminal and
+without keeping the container, so the key is not kept in its log:
+`docker run --rm -it --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant store-key`.
+A logging driver that ships stdout elsewhere would keep it there too.
+
+## Admin
+
+`admin` serves a page on this machine where you see the store's orders:
+
+```bash
+npx @elisym/merchant-node store-key   # copy the nsec it prints
+npx @elisym/merchant-node admin       # open http://127.0.0.1:5199/ and paste it
+```
+
+The page reads the store's inbox relays (its inbox list, or the default relays when it has
+none) with the store key and shows each order: when it was placed, the total the buyer's order
+claims, the email, the state, what the node credited and the transaction. The totals add up
+what the node credited, per coin.
+
+| State            | Meaning                                                               |
+| ---------------- | --------------------------------------------------------------------- |
+| ordered          | an order, nothing more yet                                            |
+| payment reported | the buyer reported a payment the node has not confirmed (not counted) |
+| delivered        | the node credited a payment and delivered (counted in the totals)     |
+| released by hand | answered with `deliver` without a payment (not counted)               |
+| refunded         | answered with `refund` (the refund is shown, not counted)             |
+
+- The key stays in the tab's memory: it is never stored and never sent anywhere (it only
+  answers relays that ask the store to authenticate). Close the tab when you are done. Whoever
+  has the store key can redirect payments from new buyers.
+- Only what the store key signed counts as the node's word: the node's answers come from the
+  copies it wraps to its own key. A buyer's claims (an order's total, a reported payment) are
+  shown as claims. The claimed total is checked against the current listing only for orders
+  placed well after the listing changed.
+- History is what the inbox relays still hold. Many keep private messages for about two days;
+  `wss://relay.elisym.network` keeps them. The page opens at most 1000 messages per load and
+  offers to load more; a relay that does not answer in time marks the view partial.
+- Orders the node answered before it kept copies of its answers (before 0.4.0) show at most
+  "payment reported". The `orders` command is the reference.
+- The server listens on `127.0.0.1` only and serves the page's own files, nothing else. Do not
+  run `admin` in Docker: a server on the container's `127.0.0.1` is unreachable from the host.
+  Run it with `npx` on the machine whose browser opens it.
+
 ## Docker
 
 Build from the repository root:
@@ -164,13 +245,48 @@ docker build -f packages/merchant-node/Dockerfile -t elisym-merchant .
 
 The home is the volume at `/data`. Its files belong to the image's user (uid 1000).
 
+With encrypted keys, first make the passphrase file once (as in "Keys at rest"):
+
 ```bash
-docker run --rm -v elisym-merchant:/data elisym-merchant init --network devnet
-# edit config.json in the volume, then:
-docker run --rm -v elisym-merchant:/data elisym-merchant setup
-docker run -d --name shop --restart unless-stopped -v elisym-merchant:/data elisym-merchant run
+[ -s ~/.elisym-merchant-passphrase ] || (umask 077 && openssl rand -base64 32 > ~/.elisym-merchant-passphrase)
+```
+
+Back it up off this machine. The container reads it as uid 1000: Docker Desktop on macOS needs
+nothing more. On a Linux host where your user is not uid 1000, give the file to that uid with
+`sudo chown 1000 ~/.elisym-merchant-passphrase && sudo chmod 400 ~/.elisym-merchant-passphrase`
+(read it later with `sudo`). Do not open it to group 1000 instead: on most hosts that group
+belongs to another account.
+
+Every command below mounts the file read-only with `--mount` (which fails on a missing file
+rather than creating anything) and names it with `-e`. The first line checks that the
+container can read it before anything else runs:
+
+```bash
+docker run --rm --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly --entrypoint cat elisym-merchant /run/secrets/merchant > /dev/null && docker run --rm --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant init --network devnet
+```
+
+Edit `config.json` in the volume, then publish and start the node:
+
+```bash
+docker run --rm --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant setup
+docker run -d --name shop --restart unless-stopped --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant run
 docker logs -f shop
 ```
+
+A store already running in Docker with plain keys is encrypted in place, from an image built
+from this version (rebuild it first: an older image does not know `encrypt-keys`), then started
+from a new container (the old one has no passphrase mount and would restart in a loop). Make
+the passphrase file as above first. The chain assumes the container `shop` and the volume
+`elisym-merchant` from the steps above, and each step runs only if the one before it succeeded.
+The old container is removed only after the keys are encrypted: if a step fails before that,
+`docker start shop` brings the store back unchanged.
+
+```bash
+docker build -f packages/merchant-node/Dockerfile -t elisym-merchant . && docker run --rm --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly --entrypoint cat elisym-merchant /run/secrets/merchant > /dev/null && docker stop shop && docker run --rm --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant encrypt-keys && docker rm shop && docker run -d --name shop --restart unless-stopped --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant run
+```
+
+Leave the `--mount` and `-e` out for plain keys: `init` then says `keys    plain`. With
+`--owner-only` keys, `run` needs no passphrase.
 
 To edit the config in the volume, mount a host directory instead, for example
 `-v "$PWD/shop:/data"`, and edit `shop/config.json`. The directory must be writable by uid 1000.
@@ -202,5 +318,5 @@ To edit the config in the volume, mount a host directory instead, for example
 - Refunds are made by hand from your wallet. `refund` reports one to the buyer of an order the
   node did not credit; a refund of a delivered order is between you and the buyer.
 - Every answer the node sends a buyer (a delivery, a hand answer) is also wrapped to the store's
-  own key and published to its inbox relays, so a later admin view can read what the node
+  own key and published to its inbox relays, so the [admin page](#admin) can read what the node
   answered. These copies are never read back as orders.
