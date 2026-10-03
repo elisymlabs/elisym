@@ -6,6 +6,8 @@ import { StepHeading } from './StepHeading';
 interface Props {
   view: Extract<View, { kind: 'delivered' }>;
   onBuyAgain(): void;
+  /** In a modal only: close it. */
+  onDone?: () => void;
 }
 
 /** The link's host, so the buyer sees where "Open" goes. */
@@ -17,7 +19,7 @@ function hostOf(link: string): string {
   }
 }
 
-export function DoneStep({ view, onBuyAgain }: Props) {
+export function DoneStep({ view, onBuyAgain, onDone }: Props) {
   return (
     <div class="step done" data-step="done">
       <img class="mark" src={CHECK_GLYPH} alt="" aria-hidden="true" />
@@ -31,6 +33,11 @@ export function DoneStep({ view, onBuyAgain }: Props) {
           </a>
           <p class="note">{hostOf(view.link)}</p>
         </div>
+      )}
+      {onDone === undefined ? null : (
+        <button type="button" class="secondary" onClick={onDone}>
+          Done
+        </button>
       )}
       <button type="button" class="secondary" onClick={onBuyAgain}>
         Buy again

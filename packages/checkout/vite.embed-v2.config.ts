@@ -6,23 +6,20 @@ import { checkoutOrigin } from './scripts/build-env';
 const CHECKOUT_ORIGIN = checkoutOrigin(process.env);
 
 /**
- * `embed.js`, the loader merchants include: one self-contained file at a
- * versioned, immutable path (`/v1/embed.js`) so it can carry an SRI hash.
+ * `v2/embed.js`, the modal loader: built like v1 (lib mode takes one IIFE
+ * entry, hence a config of its own), at its own immutable path.
  */
 export default defineConfig({
   define: { __CHECKOUT_ORIGIN__: JSON.stringify(CHECKOUT_ORIGIN) },
   build: {
     outDir: fileURLToPath(new URL('./dist', import.meta.url)),
     emptyOutDir: false,
-    // The oldest engines the loader must run in (wallet webviews included). Newer
-    // syntax is lowered inline or through helpers scoped inside the IIFE; the
-    // build's check guards the page's global scope, not what gets lowered.
     target: ['chrome90', 'edge90', 'firefox90', 'safari14.1'],
     lib: {
-      entry: fileURLToPath(new URL('./src/embed/v1/entry.ts', import.meta.url)),
+      entry: fileURLToPath(new URL('./src/embed/v2/entry.ts', import.meta.url)),
       formats: ['iife'],
-      name: 'ElisymEmbed',
-      fileName: () => 'v1/embed.js',
+      name: 'ElisymEmbedV2',
+      fileName: () => 'v2/embed.js',
     },
   },
 });

@@ -2,11 +2,20 @@
 
 The checkout is two things served from one origin, `https://pay.elisym.network`:
 
-- `/v1/embed.js` - the loader merchants include, pinned by an SRI hash (`src/embed/v1.sri`).
-  Its bytes never change under that path; a changed loader ships as `/v2/embed.js`.
-- `/checkout` - the iframe app the loader frames.
+- `/v1/embed.js` and `/v2/embed.js` - the loaders merchants include, each pinned by an SRI
+  hash (`src/embed/v1.sri`, `src/embed/v2.sri`). v1 frames the checkout in place; v2 shows it
+  in a modal behind a button by default (`display="inline"` frames it in place). Their bytes
+  never change under their path; a changed loader ships as `/v3/embed.js`.
+- `/checkout` - the iframe app the loaders frame.
 
-The build (`vite.config.ts`, `vite.embed.config.ts`, `scripts/check-size.ts`) refuses to
+The production bytes of both loaders are committed (`embed-prod/v1/embed.js`,
+`embed-prod/v2/embed.js`), and a production build copies them as they are, so a toolchain
+update can never change them. Other origins build the loaders from their frozen sources
+(`src/embed/v1/`, `src/embed/v2/`), which are never edited: `embed-prod/frozen.sha256` lists
+their hashes. `bun scripts/build-embeds.ts --from-source` rebuilds them for production to
+compare with the committed bytes.
+
+The build (`vite.config.ts`, `scripts/build-embeds.ts`, `scripts/check-size.ts`) refuses to
 produce a deployment that breaks either one.
 
 ## The Vercel project (once)
@@ -39,8 +48,10 @@ The build fails when:
   `api.mainnet-beta.solana.com` (it rejects browser requests and keeps no full history);
 - any RPC URL is not `https:` (plain `http:` is accepted only for `localhost` / `127.0.0.1`);
 - a Production build would frame any origin other than `https://pay.elisym.network`;
-- the production-origin `v1/embed.js` differs from `src/embed/v1.sri`;
-- the size budgets or the loader's global-scope check fail.
+- the production-origin `v1/embed.js` or `v2/embed.js` differs from its `.sri`, or a committed
+  `embed-prod/` file does;
+- a frozen loader source differs from `embed-prod/frozen.sha256`;
+- the size budgets or the loaders' global-scope check fail.
 
 ## The widget's RPC key
 
@@ -61,8 +72,8 @@ One full-history endpoint per network, used for both sending and finding payment
 
 A preview's loader frames that very deployment's checkout (`https://$VERCEL_URL`), never
 production and never a newer deployment of the same branch. A preview build without
-`VERCEL_URL` fails. Its `v1/embed.js` therefore differs from the pinned bytes, and the SRI check is
-skipped. That file is for testing only.
+`VERCEL_URL` fails. Its `v1/embed.js` and `v2/embed.js` therefore differ from the pinned bytes,
+and the SRI check is skipped. Those files are for testing only.
 
 Vercel Deployment Protection must allow the preview to be framed by a test page on another
 site. A cookie from opening the preview directly is not sent to a third-party frame when the
@@ -72,11 +83,13 @@ or use Protection Bypass for Automation and open the preview once with
 
 ### Preview checklist
 
-- [ ] The build log prints `embed.js`, `first screen` and `v1/embed.js` lines and no error.
+- [ ] The build log prints `first screen`, `v1/embed.js` and `v2/embed.js` lines and no error.
 - [ ] `/checkout` responds with the `Content-Security-Policy`, `Referrer-Policy: no-referrer`
       and `Cache-Control: no-cache` headers.
-- [ ] `/v1/embed.js` responds with `Access-Control-Allow-Origin: *` and the immutable
-      `Cache-Control`.
+- [ ] `/v1/embed.js` and `/v2/embed.js` respond with `Access-Control-Allow-Origin: *` and the
+      immutable `Cache-Control`.
+- [ ] With the preview's `/v2/embed.js`, the button opens the checkout in a modal; the close
+      button, Escape and a click outside it close it, and focus returns to the button.
 - [ ] A test page with `<elisym-buy product="<devnet naddr>" network="devnet">` and the
       preview's `/v1/embed.js` shows the offer. The page receives `ready` and nothing else
       about the product.
@@ -90,7 +103,9 @@ or use Protection Bypass for Automation and open the preview once with
 ## Production release
 
 1. Merge to `main`. Vercel builds Production with the variables above.
-2. Check that the build log's `v1/embed.js` line equals `src/embed/v1.sri`.
+2. Check that the build log's `v1/embed.js` and `v2/embed.js` lines equal `src/embed/v1.sri`
+   and `src/embed/v2.sri`, and that `https://pay.elisym.network/v2/embed.js` hashes to
+   `src/embed/v2.sri` before any page or doc points at it.
 3. Run the preview checklist against `https://pay.elisym.network`, with a mainnet product,
    before announcing it. Real money is involved, so a person does this step.
 4. Merchants pin:

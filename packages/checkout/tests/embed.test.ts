@@ -1,13 +1,13 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ElisymBuy } from '../src/embed/embed';
-import { decodeCheckoutParams, encodeCheckoutParams } from '../src/embed/protocol';
+import type { ElisymBuy } from '../src/embed/v1/embed';
+import { decodeCheckoutParams, encodeCheckoutParams } from '../src/embed/v1/protocol';
 
 const ORIGIN = 'https://pay.test';
 const NADDR = 'naddr1qqtestproduct';
 
 beforeAll(async () => {
-  await import('../src/embed/embed');
+  await import('../src/embed/v1/embed');
 });
 
 afterEach(() => {
@@ -249,7 +249,7 @@ describe('<elisym-buy>', () => {
     const element = document.createElement('elisym-buy-late');
     element.setAttribute('product', NADDR);
     document.body.appendChild(element);
-    const { ElisymBuy } = await import('../src/embed/embed');
+    const { ElisymBuy } = await import('../src/embed/v1/embed');
     customElements.define('elisym-buy-late', class extends (ElisymBuy as typeof ElisymBuy) {});
     expect(element.querySelectorAll('iframe')).toHaveLength(1);
     expect((element as ElisymBuy).isConnected).toBe(true);

@@ -20,7 +20,10 @@
     "**/skills-examples/**",
     "**/landing/src/components/**",
     "**/.vocs/**",
-    "packages/docs/cache/**"
+    "packages/docs/cache/**",
+    "packages/checkout/src/embed/v1/**",
+    "packages/checkout/src/embed/v2/**",
+    "packages/checkout/embed-prod/**"
   ],
   "language": "en",
   "version": "0.2"

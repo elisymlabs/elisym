@@ -30,6 +30,9 @@
     "packages/config-client/idl.json",
     ".vocs/",
     "packages/docs/cache/",
-    "packages/docs/pages/"
+    "packages/docs/pages/",
+    "packages/checkout/src/embed/v1/",
+    "packages/checkout/src/embed/v2/",
+    "packages/checkout/embed-prod/"
   ]
 }

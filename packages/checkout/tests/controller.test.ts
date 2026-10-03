@@ -33,6 +33,7 @@ describe('the screen for a page', () => {
       network: 'devnet' as const,
       theme: 'auto' as const,
       collectEmail: false,
+      display: 'inline' as const,
     };
     const screen = await screenForPage({ ...params, strictOrigin: false }, PAGE, deps);
     expect(screen).toMatchObject({ kind: 'offer' });
@@ -60,7 +61,13 @@ describe('the screen for a page', () => {
     let pins: LoadOfferOptions['pins'];
     let skipUnreachable: boolean | undefined;
     await screenForPage(
-      { naddr: shop.naddr, strictOrigin: false, theme: 'auto', collectEmail: false },
+      {
+        naddr: shop.naddr,
+        strictOrigin: false,
+        theme: 'auto',
+        collectEmail: false,
+        display: 'inline',
+      },
       PAGE,
       {
         client: new MemoryRelays(shop.events),
@@ -94,6 +101,7 @@ describe('the screen for a page', () => {
       strictOrigin: false,
       theme: 'auto' as const,
       collectEmail: false,
+      display: 'inline' as const,
     };
     await loadWithPins(params, PAGE, deps);
     expect(seen[0]?.pins).toBeUndefined();
@@ -113,6 +121,7 @@ describe('the screen for a page', () => {
       strictOrigin: false,
       theme: 'auto' as const,
       collectEmail: false,
+      display: 'inline' as const,
     };
     expect(await screenForPage(params, PAGE, { client: relays, store: undefined })).toEqual({
       kind: 'refused',
