@@ -1338,6 +1338,12 @@ describe('a purchase', () => {
       message: 'gone',
     });
     await run.session.retry('Fake');
+    const refusedView = run.last();
+    const refusedStore =
+      refusedView !== undefined && 'about' in refusedView
+        ? (refusedView.about as { store: object }).store
+        : undefined;
+    expect(refusedStore).not.toHaveProperty('level');
     run.deps.reloadOffer = accepted;
     run.wallet.behaviour = 'sign';
     await run.session.retry('Fake');

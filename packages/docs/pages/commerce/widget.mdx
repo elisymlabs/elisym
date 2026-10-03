@@ -95,9 +95,10 @@ Before it shows a price, the checkout verifies the offer:
 It then shows the buyer how far the store is vouched for:
 
 - **Level A**: the store's domain serves a `nostr.json` naming both the store and its owner (see [Level A](/commerce/quickstart#level-a-let-your-domain-vouch-for-the-store)).
+- **Level B**: the store has a hosted name, but no website of its own vouches for it.
 - **Level C**: no domain vouches for it. The buyer pays on trust.
 
-Only the trust chip in the header shows the level ("Verified: your-domain", "Named store" or "Unverified store"). The checkout still works out its warnings (a payout list less than three days old, a payout unknown from earlier purchases, no wallet proof, no domain), but it shows none of them and asks the buyer to tick nothing. What protects the payment is unchanged: the address comes only from the owner's signed payout list, the offer is verified again just before paying, and a changed price or payout sends the buyer back to the offer.
+Only the trust chip in the header shows the level ("Verified: your-domain", "Named store" or "Unverified store"). The checkout still works out its warnings (a payout list less than three days old, a payout unknown from earlier purchases, no wallet proof, no domain), but it shows none of them and asks the buyer to tick nothing. What protects the payment is unchanged: the address comes only from the owner's signed payout list, the offer is verified again just before paying, and a changed price or payout is shown to the buyer before anything is paid.
 
 ## Where it sells
 
