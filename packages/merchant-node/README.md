@@ -65,6 +65,7 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 | `refund`       | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
 | `encrypt-keys` | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                       |
 | `store-key`    | Prints the store's secret key (nsec), for the admin page on this machine: only to a terminal, or with `--yes`                                                                                                                                          |
+| `admin`        | Serves the admin page on `127.0.0.1` (`--port`, default 5199): paste the store key there to see the orders (see [Admin](#admin)); reads no home                                                                                                        |
 
 Every command takes `--home <dir>`. Without it, the home is `$ELISYM_MERCHANT_HOME`, else
 `~/.elisym-merchant`.
@@ -196,6 +197,44 @@ without keeping the container, so the key is not kept in its log:
 `docker run --rm -it --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant store-key`.
 A logging driver that ships stdout elsewhere would keep it there too.
 
+## Admin
+
+`admin` serves a page on this machine where you see the store's orders:
+
+```bash
+npx @elisym/merchant-node store-key   # copy the nsec it prints
+npx @elisym/merchant-node admin       # open http://127.0.0.1:5199/ and paste it
+```
+
+The page reads the store's inbox relays (its inbox list, or the default relays when it has
+none) with the store key and shows each order: when it was placed, the total the buyer's order
+claims, the email, the state, what the node credited and the transaction. The totals add up
+what the node credited, per coin.
+
+| State            | Meaning                                                               |
+| ---------------- | --------------------------------------------------------------------- |
+| ordered          | an order, nothing more yet                                            |
+| payment reported | the buyer reported a payment the node has not confirmed (not counted) |
+| delivered        | the node credited a payment and delivered (counted in the totals)     |
+| released by hand | answered with `deliver` without a payment (not counted)               |
+| refunded         | answered with `refund` (the refund is shown, not counted)             |
+
+- The key stays in the tab's memory: it is never stored and never sent anywhere (it only
+  answers relays that ask the store to authenticate). Close the tab when you are done. Whoever
+  has the store key can redirect payments from new buyers.
+- Only what the store key signed counts as the node's word: the node's answers come from the
+  copies it wraps to its own key. A buyer's claims (an order's total, a reported payment) are
+  shown as claims. The claimed total is checked against the current listing only for orders
+  placed well after the listing changed.
+- History is what the inbox relays still hold. Many keep private messages for about two days;
+  `wss://relay.elisym.network` keeps them. The page opens at most 1000 messages per load and
+  offers to load more; a relay that does not answer in time marks the view partial.
+- Orders the node answered before it kept copies of its answers (before 0.4.0) show at most
+  "payment reported". The `orders` command is the reference.
+- The server listens on `127.0.0.1` only and serves the page's own files, nothing else. Do not
+  run `admin` in Docker: a server on the container's `127.0.0.1` is unreachable from the host.
+  Run it with `npx` on the machine whose browser opens it.
+
 ## Docker
 
 Build from the repository root:
@@ -279,5 +318,5 @@ To edit the config in the volume, mount a host directory instead, for example
 - Refunds are made by hand from your wallet. `refund` reports one to the buyer of an order the
   node did not credit; a refund of a delivered order is between you and the buyer.
 - Every answer the node sends a buyer (a delivery, a hand answer) is also wrapped to the store's
-  own key and published to its inbox relays, so a later admin view can read what the node
+  own key and published to its inbox relays, so the [admin page](#admin) can read what the node
   answered. These copies are never read back as orders.

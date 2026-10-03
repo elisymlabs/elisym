@@ -10,11 +10,11 @@ import { type StoreIdentity, intake } from './intake';
 import {
   type LedgerState,
   type MerchantOrder,
-  orderKey,
   pruneExpiredOrders,
   undeliveredOrders,
 } from './ledger';
 import { SeenWraps, readSince, resumePointAfterSweep } from './listener';
+import { TEMPO_HASH_RE, orderKey } from './order-rules';
 import { deliveryDone } from './reply';
 import type { SelfCopies } from './self-copies';
 import {
@@ -25,7 +25,6 @@ import {
   checkPayment,
 } from './solana';
 import {
-  TEMPO_HASH_RE,
   type TempoCheck,
   type TempoContext,
   catchUpTempo,

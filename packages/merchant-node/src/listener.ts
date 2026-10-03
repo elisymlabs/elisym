@@ -2,6 +2,7 @@ import { KIND_GIFT_WRAP, MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import type { EventTemplate, VerifiedEvent } from 'nostr-tools/pure';
 import { RESUBSCRIBE_BACKOFF_MS, WRAP_BACKDATE_SECS } from './constants';
+import { nextPageUntil } from './order-rules';
 
 /** The close reason nostr-tools gives a `subscribeEose` that reached EOSE (or its own timeout). */
 const EOSE_CLOSE_REASON = 'closed automatically on eose';
@@ -108,25 +109,6 @@ export function wrapFilter(storePubkey: string, since: number, until?: number): 
     since,
     ...(until === undefined ? {} : { until }),
   };
-}
-
-/**
- * The next backfill page after one that returned `received` wraps, the oldest
- * dated `oldest`, or `undefined` when the history down to `since` is read.
- * `until` is inclusive: a page that did not move below `until` (a flood of
- * wraps sharing one second) steps one second down rather than stopping.
- */
-export function nextPageUntil(
-  since: number,
-  until: number,
-  received: number,
-  oldest: number,
-): number | undefined {
-  if (received === 0 || oldest <= since) {
-    return undefined;
-  }
-  const next = oldest < until ? oldest : until - 1;
-  return next > since ? next : undefined;
 }
 
 /**

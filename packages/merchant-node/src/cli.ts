@@ -5,10 +5,12 @@
  */
 import { existsSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
+import { fileURLToPath } from 'node:url';
 import { KIND_INBOX_RELAYS, KIND_PAYTO, KIND_PRODUCT, splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
 import { SimplePool } from 'nostr-tools/pool';
 import { type EventTemplate, finalizeEvent } from 'nostr-tools/pure';
+import { ADMIN_HOST, DEFAULT_ADMIN_PORT, isAdminPort, startAdminServer } from './admin-server';
 import {
   checkDomain,
   checkInboxRelays,
@@ -72,6 +74,9 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
          (or the file $ELISYM_MERCHANT_PASSPHRASE_FILE names); both keys by default
   store-key [--yes]
          print the store's secret key, for the admin page on this machine
+  admin [--port <port>]
+         serve the admin page on 127.0.0.1 (default port ${DEFAULT_ADMIN_PORT}): paste the
+         store key there to see the orders your inbox relays hold
   deliver <buyer>:<orderId> [--yes]
          answer an unpaid order by hand with the configured delivery
   refund <buyer>:<orderId> --tx <refund tx> --amount <subunits> [--asset <caip19>] [--yes]
@@ -111,6 +116,7 @@ interface Args {
   tx: string | undefined;
   amount: string | undefined;
   asset: string | undefined;
+  port: string | undefined;
   yes: boolean;
   ownerOnly: boolean;
 }
@@ -121,6 +127,7 @@ const VALUE_FLAGS = {
   '--tx': 'tx',
   '--amount': 'amount',
   '--asset': 'asset',
+  '--port': 'port',
 } as const;
 
 function isValueFlag(arg: string): arg is keyof typeof VALUE_FLAGS {
@@ -136,6 +143,7 @@ function parseArgs(argv: readonly string[]): Args {
     tx: undefined,
     amount: undefined,
     asset: undefined,
+    port: undefined,
     yes: false,
     ownerOnly: false,
   };
@@ -765,8 +773,26 @@ function printStoreKey(home: MerchantHome, yes: boolean): void {
   console.log(nsec);
 }
 
+/**
+ * `admin`: serve the admin page on this machine. It reads no home: the store
+ * key is pasted into the page, which reads the relays itself.
+ */
+async function serveAdmin(portFlag: string | undefined): Promise<void> {
+  const port = portFlag === undefined ? DEFAULT_ADMIN_PORT : Number(portFlag);
+  if ((portFlag !== undefined && !/^\d{1,5}$/.test(portFlag)) || !isAdminPort(port)) {
+    throw new Error('--port is a number from 1 to 65535');
+  }
+  const root = fileURLToPath(new URL('./admin/', import.meta.url));
+  await startAdminServer(root, port);
+  console.log(`admin   http://${ADMIN_HOST}:${port}/ (this machine only; Ctrl-C to stop)`);
+  console.log(`note    get the key to paste with: elisym-merchant store-key`);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  if (args.port !== undefined && args.command !== 'admin') {
+    throw new Error('--port is for admin');
+  }
   if (args.network !== undefined && args.command !== 'init') {
     throw new Error('--network is for init; the config names the network');
   }
@@ -784,6 +810,10 @@ async function main(): Promise<void> {
       return;
     case 'store-key':
       printStoreKey(home, args.yes);
+      return;
+    case 'admin':
+      stopOnSignals();
+      await serveAdmin(args.port);
       return;
     case 'setup': {
       const stopRequested = deferSignals();

@@ -3,17 +3,13 @@ import {
   deriveOrderPaymentReference,
   productAddress,
 } from '@elisym/commerce';
-import { EARLIEST_ORDER_SECS, MAX_RECEIPTS_PER_ORDER } from './constants';
-import { type LedgerState, type MerchantOrder, markTempo, orderKey, recordReport } from './ledger';
-import { isSolanaSignature } from './signature';
-import { TEMPO_HASH_RE } from './tempo';
+import { MAX_RECEIPTS_PER_ORDER } from './constants';
+import { type LedgerState, type MerchantOrder, markTempo, recordReport } from './ledger';
+import { type StoreRules, isDirectOrder, orderKey, receiptProblem } from './order-rules';
 
-export interface StoreIdentity {
-  storePubkey: string;
+export interface StoreIdentity extends StoreRules {
   /** The one product this store sells in direct mode: `30402:<store>:<d>`. */
   productAddress: string;
-  /** Receipt mediums the store takes, e.g. `solana-devnet`. */
-  mediums: readonly string[];
 }
 
 export type IntakeResult =
@@ -47,7 +43,8 @@ export function storeIdentity(
   d: string,
   mediums: readonly string[],
 ): StoreIdentity {
-  return { storePubkey, productAddress: productAddress({ storePubkey, d }), mediums };
+  const address = productAddress({ storePubkey, d });
+  return { storePubkey, productAddress: address, productAddresses: new Set([address]), mediums };
 }
 
 /**
@@ -77,14 +74,7 @@ export function intake(
     if (message.storePubkey !== store.storePubkey) {
       return { kind: 'ignored', reason: 'not_for_this_store' };
     }
-    const [item, ...rest] = message.items;
-    if (
-      unwrapped.createdAt < EARLIEST_ORDER_SECS ||
-      item === undefined ||
-      rest.length > 0 ||
-      item.product !== store.productAddress ||
-      item.quantity !== 1
-    ) {
+    if (!isDirectOrder(message, unwrapped.createdAt, store)) {
       return { kind: 'ignored', reason: 'not_a_direct_order' };
     }
     const key = orderKey(unwrapped.senderPubkey, message.orderId);
@@ -118,24 +108,11 @@ export function intake(
     if (order === undefined) {
       return { kind: 'ignored', reason: 'unknown_order' };
     }
-    const { medium, reference, tx } = message.payment;
-    // The medium names the rail, and the rail decides the reference and the tx
-    // spelling: a Tempo receipt carries this order's memo and a lowercase hash.
-    const tempo = medium.startsWith('tempo');
-    const expected = tempo
-      ? deriveOrderPaymentReference({
-          storePubkey: store.storePubkey,
-          buyerPubkey: order.buyerPubkey,
-          orderId: order.orderId,
-        }).tempo
-      : order.reference;
-    if (
-      reference !== expected ||
-      !store.mediums.includes(medium) ||
-      !(tempo ? TEMPO_HASH_RE.test(tx) : isSolanaSignature(tx))
-    ) {
+    if (receiptProblem(message, order, store) !== undefined) {
       return { kind: 'ignored', reason: 'foreign_payment' };
     }
+    const { medium, tx } = message.payment;
+    const tempo = medium.startsWith('tempo');
     if (!order.reportedTxs.includes(tx) && order.reportedTxs.length >= MAX_RECEIPTS_PER_ORDER) {
       return { kind: 'ignored', reason: 'too_many_receipts' };
     }
