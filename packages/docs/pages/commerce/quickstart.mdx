@@ -107,8 +107,12 @@ A mainnet store is a separate store, with its own keys, in its own home. Give ev
 
 ```bash
 export ELISYM_MERCHANT_HOME=~/.elisym-merchant-mainnet
+[ -s ~/.elisym-merchant-mainnet-passphrase ] || (umask 077 && openssl rand -base64 32 > ~/.elisym-merchant-mainnet-passphrase)
+export ELISYM_MERCHANT_PASSPHRASE_FILE=~/.elisym-merchant-mainnet-passphrase
 npx @elisym/merchant-node init --network mainnet
 ```
+
+With a passphrase set (`ELISYM_MERCHANT_PASSPHRASE_FILE` here, or `ELISYM_MERCHANT_PASSPHRASE`), `init` encrypts the store key and the owner key in `keys.json`, and every later command reads the passphrase the same way. The passphrase file is generated once (the line never overwrites it, and `init` checks that it opens an encrypted home), never typed or printed: back it up off this machine, because without it the keys are lost. It protects a copy of the home, such as a backup, not a server that holds the passphrase too. The node's README has the details, including `--owner-only` for a node that must run without it.
 
 In its `config.json`, set:
 
