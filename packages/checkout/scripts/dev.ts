@@ -3,6 +3,10 @@
  * served by Vite on http://127.0.0.1:5174 - two origins, as in production.
  *
  *   bun scripts/dev.ts <naddr> [devnet|mainnet]
+ *
+ * Or every checkout state side by side (canned, nothing paid), for the visual pass:
+ *
+ *   bun scripts/dev.ts fixtures
  */
 import { readFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
@@ -11,6 +15,25 @@ import { build, createServer } from 'vite';
 
 const APP_ORIGIN = 'http://127.0.0.1:5174';
 const PAGE_PORT = 5173;
+const FIXTURES_PORT = 5175;
+
+if (process.argv[2] === 'fixtures') {
+  const fixtures = await createServer({
+    configFile: false,
+    root: fileURLToPath(new URL('./fixtures', import.meta.url)),
+    esbuild: { jsx: 'automatic', jsxImportSource: 'preact' },
+    server: {
+      host: '127.0.0.1',
+      port: FIXTURES_PORT,
+      strictPort: true,
+      fs: { allow: [fileURLToPath(new URL('..', import.meta.url))] },
+    },
+  });
+  await fixtures.listen();
+  console.log(`Open http://127.0.0.1:${FIXTURES_PORT} (canned states, nothing is paid).`);
+  await new Promise(() => undefined);
+}
+
 const naddr = process.argv[2];
 const network = process.argv[3] ?? 'devnet';
 // Both go into the demo page's HTML: accept only what they can be.

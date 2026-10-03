@@ -1,0 +1,34 @@
+.fixtures-bar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  background: var(--surface);
+}
+
+.fixtures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  padding: 24px;
+}
+
+.fixtures figure {
+  margin: 0;
+  border: 1px dashed var(--border);
+}
+
+.fixtures figure.wide {
+  width: 420px;
+}
+
+.fixtures figure.narrow {
+  width: 375px;
+}
+
+.fixtures figcaption {
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}

@@ -80,6 +80,15 @@ export type Problem =
   | { reason: 'offer_changed' | 'confirm_first' | 'offer_refused' }
   | { reason: 'insufficient_token' | 'insufficient_sol'; needed: bigint; available: bigint };
 
+/** The payment a progress screen is about: the live order's, else the payout chosen. */
+export interface Paying {
+  /** In the coin's subunits. */
+  amount: string;
+  asset: Asset;
+  network: Network;
+  chain: Rail;
+}
+
 export type View =
   | {
       kind: 'offer';
@@ -94,15 +103,20 @@ export type View =
       notices: OfferWarning[];
       wallets: WalletChoice[];
       problem?: Problem;
-      /** An earlier order of this product is still open (acknowledged, not paid). */
-      continuing: boolean;
+      /**
+       * An earlier order of this product on these exact terms is still open: it
+       * is paid as it is (its email went with it), so no email is asked. `created`:
+       * not acknowledged by the store yet; `ordered`: acknowledged, not paid.
+       */
+      continuing: false | 'created' | 'ordered';
       /** The merchant asks for an email (optional for the buyer). */
       askEmail: boolean;
       email: string;
     }
-  | { kind: 'working'; step: 'checking' | 'ordering' | 'signing' }
+  | { kind: 'working'; step: 'checking' | 'ordering' | 'signing'; paying?: Paying }
   | {
       kind: 'waiting_payment';
+      paying?: Paying;
       /** The coin being paid, for amounts in a problem. */
       asset: Asset;
       explorer?: string;
@@ -121,6 +135,7 @@ export type View =
     }
   | {
       kind: 'waiting_store';
+      paying?: Paying;
       explorer?: string;
       cancelled: boolean;
       /** Paid, and no answer from the store for 30 minutes: contact the store. */
@@ -206,7 +221,7 @@ function networkOf(payout: PricedPayout): Network {
   return payout.target.caip19.chain.network;
 }
 
-type Rail = 'solana' | 'tempo';
+export type Rail = 'solana' | 'tempo';
 
 function railOf(payout: PricedPayout): Rail {
   return payout.target.caip19.chain.family === 'evm' ? 'tempo' : 'solana';
@@ -229,6 +244,37 @@ function recordTarget(record: OrderRecord): PricedPayout['target'] | undefined {
 }
 
 const NO_NETWORK = 'This network is not available here yet.';
+/** The reloaded offer has no payout this widget can pay on the page's network. */
+const NO_PAYABLE_PAYOUT = 'This product cannot be paid here';
+
+function samePayout(left: PricedPayout, right: PricedPayout): boolean {
+  return (
+    left.target.caip19.id === right.target.caip19.id && left.target.address === right.target.address
+  );
+}
+
+/** What an order is paying, from the order's own snapshot. */
+function recordPaying(record: OrderRecord): Paying | undefined {
+  const target = recordTarget(record);
+  return target === undefined
+    ? undefined
+    : {
+        amount: record.amount,
+        asset: target.caip19.asset,
+        network: target.caip19.chain.network,
+        chain: recordRail(record),
+      };
+}
+
+/** What a new order for `payout` would pay. */
+export function payoutPaying(payout: PricedPayout): Paying {
+  return {
+    amount: payout.amount.toString(),
+    asset: payout.target.caip19.asset,
+    network: networkOf(payout),
+    chain: railOf(payout),
+  };
+}
 
 /** The explorer page of a transaction on the record's own chain. */
 function explorerFor(record: OrderRecord, tx: string, network: Network): string {
@@ -325,6 +371,11 @@ export class CheckoutSession {
   private lastWallet = '';
   /** When the page loaded: the "no answer" timer of a payment found before `paidAt` existed. */
   private readonly loadedAt: number;
+  /**
+   * The page's network, fixed at load: a reloaded offer that lists another
+   * network first never moves a purchase to it.
+   */
+  private readonly network: Network;
 
   constructor(
     offer: ReadyOffer,
@@ -340,9 +391,10 @@ export class CheckoutSession {
         (each) =>
           first !== undefined && networkOf(each) === networkOf(first) && this.servable(each),
       ) ?? first;
-    if (payout === undefined) {
+    if (first === undefined || payout === undefined) {
       throw new Error('an offer without a payout');
     }
+    this.network = networkOf(first);
     this.payout = payout;
     this.confirmed = offer.confirm.length === 0;
     this.loadedAt = deps.now();
@@ -466,11 +518,11 @@ export class CheckoutSession {
       this.showOffer({ reason: 'confirm_first' });
       return;
     }
-    if (
-      this.deps.collectEmail === true &&
-      this.email.trim() !== '' &&
-      usableEmail(this.email) === undefined
-    ) {
+    // A new order is certain: a typo never costs a wallet prompt or the open order.
+    // (Both rails: `payTempo` starts below.) An order continued on its own terms
+    // went with its email already, so no typed value blocks it.
+    const newOrder = this.record === undefined || onOtherTerms(this.record, this.payout);
+    if (newOrder && this.emailUnusable()) {
       this.showOffer({ reason: 'bad_email' });
       return;
     }
@@ -479,7 +531,7 @@ export class CheckoutSession {
       return;
     }
     await this.guard(async () => {
-      this.deps.onView({ kind: 'working', step: 'checking' });
+      this.working('checking');
       if (!(await this.connect(walletName, networkOf(this.payout)))) {
         this.showOffer({ reason: 'no_wallet' });
         return;
@@ -506,7 +558,7 @@ export class CheckoutSession {
       if (record === undefined || this.wallet === undefined) {
         return;
       }
-      this.deps.onView({ kind: 'working', step: 'signing' });
+      this.working('signing');
       this.stopWatching();
       this.generation += 1;
       const result = await payWithSolana(
@@ -526,7 +578,7 @@ export class CheckoutSession {
    */
   private async payTempo(walletName: string): Promise<void> {
     await this.guard(async () => {
-      this.deps.onView({ kind: 'working', step: 'checking' });
+      this.working('checking');
       const network = networkOf(this.payout);
       const option = this.deps.tempoWallets?.(network).find((each) => each.name === walletName);
       if (option === undefined) {
@@ -564,7 +616,7 @@ export class CheckoutSession {
       if (record === undefined) {
         return;
       }
-      this.deps.onView({ kind: 'working', step: 'signing' });
+      this.working('signing');
       this.stopWatching();
       this.generation += 1;
       const result = await payWithTempo(record, wallet, ready, this.tempoDeps(client));
@@ -758,13 +810,34 @@ export class CheckoutSession {
     };
   }
 
-  /** The payouts this widget can pay now, on the network of the offer's first payout. */
-  private payablePayouts(): PricedPayout[] {
-    const first = this.offer.payouts[0];
-    return this.offer.payouts.filter(
-      (payout) =>
-        first !== undefined && networkOf(payout) === networkOf(first) && this.servable(payout),
+  /** The payouts this widget can pay now, on the page's network. */
+  private payablePayouts(offer: ReadyOffer = this.offer): PricedPayout[] {
+    return offer.payouts.filter(
+      (payout) => networkOf(payout) === this.network && this.servable(payout),
     );
+  }
+
+  /** The buyer typed an email the merchant asked for, and it is not one. */
+  private emailUnusable(): boolean {
+    return (
+      this.deps.collectEmail === true &&
+      this.email.trim() !== '' &&
+      usableEmail(this.email) === undefined
+    );
+  }
+
+  /**
+   * A progress screen, with the payment it is about: the order's own while it
+   * is being signed, or while it is the one being continued; else the payout
+   * chosen, which is exactly what a new order will be placed for.
+   */
+  private working(step: 'checking' | 'ordering' | 'signing'): void {
+    const record = this.record;
+    const paying =
+      record !== undefined && (step === 'signing' || !onOtherTerms(record, this.payout))
+        ? recordPaying(record)
+        : payoutPaying(this.payout);
+    this.deps.onView({ kind: 'working', step, ...(paying === undefined ? {} : { paying }) });
   }
 
   private servable(payout: PricedPayout): boolean {
@@ -889,7 +962,7 @@ export class CheckoutSession {
         await this.follow(current);
         return;
       }
-      this.deps.onView({ kind: 'working', step: 'signing' });
+      this.working('signing');
       this.stopWatching();
       this.generation += 1;
       const result = await retryWithSolana(
@@ -1080,27 +1153,21 @@ export class CheckoutSession {
     }
     const reloaded = await this.deps.reloadOffer();
     if (!reloaded.ok) {
-      const live = this.record;
-      if (live !== undefined && live.state !== 'created' && live.state !== 'ordered') {
-        // No new payment, but the order that is paying or paid is still followed.
-        this.render({ problem: { reason: 'offer_refused' } });
-        return undefined;
-      }
-      this.setRecord(undefined);
-      this.refuse(reloaded.message);
-      return undefined;
+      return this.refusedOnReload(reloaded.message);
     }
     const verdict = compareOffers(this.payout, this.offer.confirm, reloaded);
+    // The chosen payout is gone: only another one on the page's network replaces
+    // it, never one on another network. None: refused, exactly as above.
+    const fallback = this.payablePayouts(reloaded)[0];
+    if (verdict === 'gone' && fallback === undefined) {
+      return this.refusedOnReload(NO_PAYABLE_PAYOUT);
+    }
     this.offer = reloaded;
     if (verdict === 'same') {
       return reloaded;
     }
-    const kept = reloaded.payouts.find(
-      (payout) =>
-        payout.target.caip19.id === this.payout.target.caip19.id &&
-        payout.target.address === this.payout.target.address,
-    );
-    const payout = kept ?? reloaded.payouts[0];
+    const kept = reloaded.payouts.find((payout) => samePayout(payout, this.payout));
+    const payout = kept ?? fallback;
     if (payout !== undefined) {
       this.payout = payout;
     }
@@ -1112,6 +1179,19 @@ export class CheckoutSession {
     } else {
       this.showOffer({ reason: 'offer_changed' });
     }
+    return undefined;
+  }
+
+  /** The re-verification refused: a live order is still followed, else the widget refuses. */
+  private refusedOnReload(message: string): undefined {
+    const live = this.record;
+    if (live !== undefined && live.state !== 'created' && live.state !== 'ordered') {
+      // No new payment, but the order that is paying or paid is still followed.
+      this.render({ problem: { reason: 'offer_refused' } });
+      return undefined;
+    }
+    this.setRecord(undefined);
+    this.refuse(message);
     return undefined;
   }
 
@@ -1140,13 +1220,18 @@ export class CheckoutSession {
       record = undefined;
     }
     if (record?.state === 'created') {
-      this.deps.onView({ kind: 'working', step: 'ordering' });
+      this.working('ordering');
       const resumed = await resumeOrder(record, this.orderDeps(), this.deps.now());
       record = resumed.record;
       this.relays = resumed.relays;
     }
     if (record === undefined) {
-      this.deps.onView({ kind: 'working', step: 'ordering' });
+      // The one place both rails decide on a new order: never one with an unusable email.
+      if (this.emailUnusable()) {
+        this.showOffer({ reason: 'bad_email' });
+        return undefined;
+      }
+      this.working('ordering');
       const email = this.deps.collectEmail === true ? usableEmail(this.email) : undefined;
       const placed = await placeOrder(
         {
@@ -1372,6 +1457,7 @@ export class CheckoutSession {
     const target = recordTarget(record);
     const network = target?.caip19.chain.network ?? networkOf(this.payout);
     const status = record.status;
+    const paying = recordPaying(record);
     if (record.state === 'completed') {
       const text = status?.delivery ?? '';
       const link = deliveryLink(text);
@@ -1388,6 +1474,7 @@ export class CheckoutSession {
       }
       this.deps.onView({
         kind: 'waiting_store',
+        ...(paying === undefined ? {} : { paying }),
         cancelled: status?.status === 'cancelled',
         noAnswer:
           status === undefined &&
@@ -1418,6 +1505,7 @@ export class CheckoutSession {
     const problem = extra.problem ?? this.attemptProblem;
     this.deps.onView({
       kind: 'waiting_payment',
+      ...(paying === undefined ? {} : { paying }),
       asset: target?.caip19.asset ?? this.payout.target.caip19.asset,
       tempo,
       // Follow-only never pays: no retry is offered (start over is). Tempo has no retry.
@@ -1446,25 +1534,46 @@ export class CheckoutSession {
       this.status('refused');
       return;
     }
-    this.offerProblem = problem;
+    const payouts = this.payablePayouts();
+    let payoutIndex = payouts.findIndex((payout) => samePayout(payout, this.payout));
+    let shown = problem;
+    const substitute = payouts[0];
+    if (payoutIndex === -1 && substitute !== undefined) {
+      // Never reached (the payout always comes from that list): if it ever is, the
+      // buyer reviews the payout now selected - never a quiet switch.
+      this.payout = substitute;
+      this.confirmed = this.offer.confirm.length === 0;
+      payoutIndex = 0;
+      shown = { reason: 'offer_changed' };
+    }
+    this.offerProblem = shown;
     this.deps.onView({
       kind: 'offer',
       offer: this.offer,
       payout: this.payout,
-      payouts: this.payablePayouts(),
-      payoutIndex: Math.max(0, this.payablePayouts().indexOf(this.payout)),
+      payouts,
+      payoutIndex,
       confirm: this.offer.confirm,
       confirmed: this.confirmed,
       notices: this.offer.notices,
       wallets: this.walletChoices(this.payout),
-      continuing: this.record !== undefined && this.record.state === 'ordered',
+      continuing: this.continuing(),
       askEmail: this.deps.collectEmail === true,
       email: this.email,
-      ...(problem === undefined ? {} : { problem }),
+      ...(shown === undefined ? {} : { problem: shown }),
     });
     if (this.record === undefined) {
       this.status('ready');
     }
+  }
+
+  /** The open order a pay press continues on its own terms, if any (its email went with it). */
+  private continuing(): false | 'created' | 'ordered' {
+    const record = this.record;
+    if (record === undefined || onOtherTerms(record, this.payout)) {
+      return false;
+    }
+    return record.state === 'created' || record.state === 'ordered' ? record.state : false;
   }
 
   /** Reconcile the live attempt until it is found, ends, or the store answers. */
