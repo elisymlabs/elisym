@@ -8,7 +8,6 @@ export const DEFAULT_RELAYS: readonly string[] = [
   'wss://relay.elisym.network',
   'wss://relay.damus.io',
   'wss://nos.lol',
-  'wss://relay.nostr.band',
 ];
 
 /** At most this many relays named by the store (its inbox list, naddr hints). */
@@ -25,6 +24,24 @@ export const ORDER_ACK_TARGET = 2;
 
 /** How long one relay query waits before it answers with what it has. */
 export const RELAY_QUERY_MAX_WAIT_MS = 4000;
+
+/**
+ * How long a query that asks (`QueryOptions.skipUnreachable`, the load that opens
+ * a page) passes by a relay this client could not connect to: a dead relay then
+ * costs one connection wait for that load, not one per read.
+ */
+export const UNREACHABLE_RELAY_SKIP_MS = 15_000;
+
+/**
+ * A failed connection counts toward the skip only when it took about as long as
+ * a query's connection wait: the pool waits `max(maxWait * 0.8, maxWait - 1000)`,
+ * never under 3 s, so 3.2 s for `RELAY_QUERY_MAX_WAIT_MS`. A fast refusal (a 503,
+ * a reset) costs nothing to retry.
+ */
+export const SLOW_CONNECT_FAILURE_MS = 2000;
+
+/** A failure that took longer is a page or process that was frozen (the buyer in the wallet app), not a dead relay. */
+export const SLOW_CONNECT_FAILURE_MAX_MS = 4500;
 
 /** The most one relay's query may take in all, AUTH and a re-subscription included. */
 export const RELAY_QUERY_DEADLINE_MS = 15_000;

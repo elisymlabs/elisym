@@ -31,7 +31,6 @@ export const OFFER_RELAYS: readonly string[] = [
   'wss://relay.elisym.network',
   'wss://relay.damus.io',
   'wss://nos.lol',
-  'wss://relay.nostr.band',
 ];
 
 /** How long one relay may take to connect and answer a publish. */
