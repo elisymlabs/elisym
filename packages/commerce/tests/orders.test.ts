@@ -18,6 +18,8 @@ const STORE = 'a'.repeat(64);
 const BUYER = 'b'.repeat(64);
 const ORDER_ID = '8f14e45f-ceea-467a-9575-1b2c3d4e5f60';
 const ITEM = `30402:${STORE}:course-101`;
+const USDC_ASSET =
+  'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 
 const ORDER: OrderRequest = {
   type: 'order',
@@ -58,6 +60,21 @@ const MESSAGES: OrderMessage[] = [
     orderId: ORDER_ID,
     status: 'cancelled',
     refund: { tx: '4xRefund', amount: '49000000' },
+  },
+  {
+    type: 'status',
+    buyerPubkey: BUYER,
+    orderId: ORDER_ID,
+    status: 'completed',
+    delivery: { method: 'access', value: 'https://shop.example/course?token=t' },
+    receipt: { medium: 'solana', tx: '5xSig', amount: '49000000', fee: '0', caip19: USDC_ASSET },
+  },
+  {
+    type: 'status',
+    buyerPubkey: BUYER,
+    orderId: ORDER_ID,
+    status: 'cancelled',
+    refund: { tx: '4xRefund', amount: '49000000', caip19: USDC_ASSET },
   },
   RECEIPT,
 ];
@@ -126,6 +143,67 @@ describe('order messages', () => {
       }),
     ).toBeUndefined();
     expect(parseOrderMessage({ kind: KIND_ORDER_MESSAGE, tags: [['type', '1']] })).toBeUndefined();
+  });
+
+  it('carries the credited asset as the last element of the receipt and refund tags', () => {
+    const credited = buildOrderMessage({
+      type: 'status',
+      buyerPubkey: BUYER,
+      orderId: ORDER_ID,
+      status: 'completed',
+      receipt: { medium: 'solana', tx: '5xSig', amount: '1', fee: '0', caip19: USDC_ASSET },
+    });
+    expect(credited.tags).toContainEqual(['receipt', 'solana', '5xSig', '1', '0', USDC_ASSET]);
+    const refunded = buildOrderMessage({
+      type: 'status',
+      buyerPubkey: BUYER,
+      orderId: ORDER_ID,
+      status: 'cancelled',
+      refund: { tx: '4xRefund', amount: '1', caip19: USDC_ASSET },
+    });
+    expect(refunded.tags).toContainEqual(['refund', '4xRefund', '1', USDC_ASSET]);
+    for (const asset of ['', 'not an asset', 'solana/token', `${USDC_ASSET} `]) {
+      expect(() =>
+        buildOrderMessage({
+          type: 'status',
+          buyerPubkey: BUYER,
+          orderId: ORDER_ID,
+          status: 'completed',
+          receipt: { medium: 'solana', tx: '5xSig', amount: '1', fee: '0', caip19: asset },
+        }),
+      ).toThrow(/receipt asset/);
+      expect(() =>
+        buildOrderMessage({
+          type: 'status',
+          buyerPubkey: BUYER,
+          orderId: ORDER_ID,
+          status: 'cancelled',
+          refund: { tx: '4xRefund', amount: '1', caip19: asset },
+        }),
+      ).toThrow(/refund asset/);
+    }
+  });
+
+  it('keeps a receipt and a refund whose asset is unreadable, without the asset', () => {
+    const parsed = parseOrderMessage({
+      kind: KIND_ORDER_MESSAGE,
+      tags: [
+        ['p', BUYER],
+        ['type', '3'],
+        ['order', ORDER_ID],
+        ['status', 'cancelled'],
+        ['receipt', 'solana', 'sig', '49', '0', 'garbage asset'],
+        ['refund', 'refundTx', '49', 'garbage asset'],
+      ],
+    });
+    expect(parsed).toEqual({
+      type: 'status',
+      buyerPubkey: BUYER,
+      orderId: ORDER_ID,
+      status: 'cancelled',
+      receipt: { medium: 'solana', tx: 'sig', amount: '49', fee: '0' },
+      refund: { tx: 'refundTx', amount: '49' },
+    });
   });
 
   it('drops a receipt tag with a non-integer amount instead of guessing', () => {
