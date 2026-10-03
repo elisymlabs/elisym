@@ -35,6 +35,10 @@
             <input type="checkbox" name="collect-email" />
             Ask the buyer for an email
           </label>
+          <label class="inline">
+            <input type="checkbox" name="inline" />
+            Show the checkout in the page instead of a Buy button
+          </label>
           <button type="submit">Open the store</button>
           <p id="setup-error" class="error" hidden></p>
         </form>
@@ -42,22 +46,22 @@
       <section id="store" hidden>
         <h1>Checkout</h1>
         <p class="lead">
-          The checkout below is the production widget from <code>pay.elisym.network</code>, framed
-          by this page. The payment goes from the buyer's wallet to the store's payout address.
+          The production checkout from <code>pay.elisym.network</code>, framed by this page. The
+          payment goes from the buyer's wallet to the store's payout address.
         </p>
         <div id="checkout"></div>
         <h2>Status events</h2>
         <p class="hint">
-          What <code>elisym-status</code> tells this page. It carries state names only: never unlock
-          anything on it.
+          What <code>elisym-status</code>, <code>elisym-open</code> and <code>elisym-close</code>
+          tell this page. They carry state names and open/close only: never unlock anything on them.
         </p>
         <ol id="events"></ol>
         <p><a href="/">Use another product</a></p>
       </section>
     </main>
     <script
-      src="https://pay.elisym.network/v1/embed.js"
-      integrity="sha384-n2Bj5LKM3OGGlQOwpooaauimc99mLR+4ookl8AeVpG3GjG4aLBc7jV1l2WEljNhH"
+      src="https://pay.elisym.network/v2/embed.js"
+      integrity="sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ"
       crossorigin="anonymous"
     ></script>
     <script src="/store.js"></script>

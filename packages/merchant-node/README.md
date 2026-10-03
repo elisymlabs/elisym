@@ -43,8 +43,8 @@ npx @elisym/merchant-node run
 ```html
 <elisym-buy product="naddr1..." network="devnet"></elisym-buy>
 <script
-  src="https://pay.elisym.network/v1/embed.js"
-  integrity="<see the checkout docs>"
+  src="https://pay.elisym.network/v2/embed.js"
+  integrity="sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ"
   crossorigin="anonymous"
 ></script>
 ```
