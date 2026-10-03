@@ -1,4 +1,3 @@
-import type { OfferWarning } from '@elisym/commerce';
 import { type Asset, NATIVE_SOL, type Network, formatAssetAmount } from '@elisym/pay-core';
 import type { RefusalReason } from '../controller';
 import type { Paying, Problem, Rail, View } from '../session';
@@ -11,34 +10,6 @@ export const REFUSALS: Record<RefusalReason, string> = {
     'This browser blocks storage for the checkout (private mode?). Payments need it to stay safe.',
   offer_refused: 'This product cannot be bought here.',
   failed: 'The checkout could not start. Reload the page to try again.',
-};
-
-export const WARNINGS: Record<OfferWarning, string> = {
-  domain_unverified: 'The store names a domain that does not confirm it.',
-  origin_mismatch: 'This page is not on the store’s domain.',
-  origin_unverifiable: 'No domain vouches for this store: check you trust this page.',
-  payout_recently_changed: 'The store changed where it is paid very recently.',
-  payout_changed: 'The store is paid to a different address than on your last purchase.',
-  payout_unsigned: 'The payout address carries no wallet proof.',
-  owner_unpinned: 'First purchase from this store on this site.',
-};
-
-/** The longer "why this matters", under the always-shown list. */
-export const WARNING_DETAILS: Record<OfferWarning, string> = {
-  domain_unverified:
-    'The store profile claims a website, but that website does not list the store’s keys. Treat the store as unverified.',
-  origin_mismatch:
-    'The checkout is embedded on a page the store’s domain does not cover. Someone else may be reselling or imitating it.',
-  origin_unverifiable:
-    'Nothing ties this store to a website, so the checkout cannot tell whether this page belongs to it. Pay only if you trust the page.',
-  payout_recently_changed:
-    'A new payout address published minutes ago can mean the store’s keys changed hands. If you did not expect a change, ask the store first.',
-  payout_changed:
-    'Your earlier purchase from this store paid another address. Stores rarely change it; ask the store if you are unsure.',
-  payout_unsigned:
-    'The wallet that receives the payment did not sign for this store. The store’s owner key still vouches for it.',
-  owner_unpinned:
-    'This browser has no earlier purchase from this store to compare with, so changes of its keys cannot be noticed yet.',
 };
 
 export const WORKING: Record<Extract<View, { kind: 'working' }>['step'], string> = {
@@ -94,15 +65,13 @@ export function problemText(problem: Problem, asset: Asset): string {
     case 'failed':
       return 'Something went wrong. Try again.';
     case 'wallet_failed':
-      return 'The wallet did not sign. If it did after all, the payment is found; otherwise you can retry in about a minute and a half.';
+      return 'The wallet did not sign. If it signed after all, the payment will be found.';
     case 'wallet_unsupported':
-      return 'This wallet changed the transaction, which the checkout never sends. You can retry in about a minute and a half, or use another wallet.';
+      return 'This wallet changed the transaction, which the checkout never sends. Use another wallet once a retry is possible.';
     case 'offer_changed':
       return 'The store changed this offer. Review it before paying.';
     case 'offer_refused':
       return 'The store no longer offers this product here. Your order is still being followed.';
-    case 'confirm_first':
-      return 'Read the warnings and tick the box before paying.';
     case 'bad_email':
       return 'That email does not look right. Fix it, or leave the field empty.';
     case 'insufficient_token':
@@ -110,4 +79,29 @@ export function problemText(problem: Problem, asset: Asset): string {
     case 'insufficient_sol':
       return `Not enough SOL for the network fees: ${formatAssetAmount(NATIVE_SOL, problem.needed)} needed, ${formatAssetAmount(NATIVE_SOL, problem.available)} held.`;
   }
+}
+
+/** "1:05": a countdown, minutes and seconds. */
+export function formatCountdown(seconds: number): string {
+  const whole = Math.max(0, Math.ceil(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+
+/** After `hintAfterMs` of an action with no answer: what the buyer can do. */
+export function slowHint(step: 'checking' | 'signing', chain: Rail): string {
+  if (step === 'checking') {
+    return 'This is taking long. If a wallet window is open, answer it; otherwise reload the page.';
+  }
+  return chain === 'tempo'
+    ? 'Your wallet has not answered. If you closed its window, reload the page: the checkout keeps checking the request, and once it has lapsed a new order can start after a question about the old request.'
+    : 'Your wallet has not answered. If you closed its window, reload the page: the order picks up where it is, and a retry opens once it is safe.';
+}
+
+/** A start still running after `SLOW_START_MS`: never a refusal. */
+export function slowLoading(modal: boolean): string {
+  return `This is taking longer than usual: the checkout is still checking your earlier order with the network. ${
+    modal
+      ? 'You can close this and come back, or reload the page.'
+      : 'Keep this page open, or reload it.'
+  }`;
 }

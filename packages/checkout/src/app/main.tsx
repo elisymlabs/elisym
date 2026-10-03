@@ -9,7 +9,13 @@ import { render } from 'preact';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../core/order-store-idb';
 import { decodeCheckoutParams } from '../embed/protocol';
 import { type Actions, Checkout } from './Checkout';
-import { type Screen, followOnlyOffer, loadWithPins, screenForPage } from './controller';
+import {
+  type Screen,
+  followOnlyOffer,
+  loadWithPins,
+  screenForPage,
+  startWithHint,
+} from './controller';
 import { discoverEvmWallets, tempoWalletOptions } from './evm-wallets';
 import { acceptHandshake } from './handshake';
 import { armFirstFocus, closeOnEscape } from './modal-frame';
@@ -32,7 +38,6 @@ let banner: Banner | undefined;
 // The session's own promises reach the UI: a step change caused by the buyer
 // takes focus only until the action that caused it settles.
 const actions: Actions = {
-  confirm: (checked) => session?.confirm(checked),
   setEmail: (value) => session?.setEmail(value),
   pay: async (name) => session?.pay(name),
   retry: async (name) => session?.retry(name),
@@ -190,7 +195,16 @@ async function start(pageOrigin: string): Promise<void> {
       collectEmail: params.collectEmail,
       ...(followOnly === undefined ? {} : { followOnly }),
     });
-    await session.start();
+    const started = session;
+    await startWithHint(
+      () => started.start(),
+      () => {
+        // Only the loading line gains a hint: the session's first view replaces it.
+        if (view === undefined && screen.kind === 'loading') {
+          show({ kind: 'loading', slow: true });
+        }
+      },
+    );
   } catch {
     // Storage or a relay failed in a way no check caught: never a Buy button then,
     // and nothing of the half-started session keeps running or drawing.

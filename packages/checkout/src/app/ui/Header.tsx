@@ -1,18 +1,15 @@
-import type { TrustLevel } from '@elisym/commerce';
+import type { StoreInfo } from '../session';
 import { TrustChip } from './TrustChip';
-
-export interface StoreInfo {
-  name: string | undefined;
-  level: TrustLevel;
-  domain: string | undefined;
-}
 
 interface Props {
   store: StoreInfo | undefined;
   testNetwork: boolean;
 }
 
-/** The store, as named by its own (untrusted) profile, and how far it is verified. */
+/**
+ * The store, as named by its own (untrusted) profile, and how far it is
+ * verified - no chip when the level is not known now (an order's old snapshot).
+ */
 export function Header({ store, testNetwork }: Props) {
   return (
     <header class="header">
@@ -21,7 +18,9 @@ export function Header({ store, testNetwork }: Props) {
       </h1>
       <div class="badges">
         {testNetwork ? <span class="badge">Test network</span> : null}
-        {store === undefined ? null : <TrustChip level={store.level} domain={store.domain} />}
+        {store?.level === undefined ? null : (
+          <TrustChip level={store.level} domain={store.domain} />
+        )}
       </div>
     </header>
   );

@@ -12,7 +12,8 @@ import {
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
 } from '@elisym/pay-core';
-import { type View, payoutPaying } from '../../src/app/session';
+import { type About, type View, payoutPaying } from '../../src/app/session';
+import { nowSeconds } from '../../src/app/ui/clock';
 
 export type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 export type OfferView = Extract<View, { kind: 'offer' }>;
@@ -123,9 +124,6 @@ export function offerView(offer: ReadyOffer, overrides: Partial<OfferView> = {})
     payout,
     payouts: offer.payouts,
     payoutIndex,
-    confirm: offer.confirm,
-    confirmed: offer.confirm.length === 0,
-    notices: offer.notices,
     wallets: [{ name: 'Phantom' }, { name: 'Solflare' }],
     continuing: false,
     askEmail: false,
@@ -134,8 +132,53 @@ export function offerView(offer: ReadyOffer, overrides: Partial<OfferView> = {})
   };
 }
 
-/** Every state the checkout draws, for the fixture page. */
-export function cannedViews(): { name: string; view: View | undefined }[] {
+/** What a progress view of `offer` is about: its store and product. */
+export function aboutOf(offer: ReadyOffer, email?: string): About {
+  const { profile, level, domain, product } = offer.offer;
+  return {
+    store: { name: profile.name, level, ...(domain === undefined ? {} : { domain }) },
+    product: {
+      title: product.title,
+      ...(product.summary === undefined ? {} : { summary: product.summary }),
+      price: product.price,
+    },
+    ...(email === undefined ? {} : { email }),
+  };
+}
+
+type WaitingView = Extract<View, { kind: 'waiting_payment' }>;
+
+/** A Solana wait for `paying`, nothing decided yet; `overrides` say otherwise. */
+export function waitingView(
+  about: About,
+  paying: WaitingView['paying'],
+  overrides: Partial<WaitingView> = {},
+): WaitingView {
+  return {
+    kind: 'waiting_payment',
+    about,
+    ...(paying === undefined ? {} : { paying }),
+    asset: paying?.asset ?? USDC_SOLANA_DEVNET,
+    canRetry: false,
+    wallets: [],
+    tempo: false,
+    signed: true,
+    followOnly: false,
+    unserved: false,
+    ...overrides,
+  };
+}
+
+/** A dev-only start for the fixture page: what is open, and the hint at once. */
+export interface CannedProps {
+  initialWalletsOpen?: boolean;
+  initialListOpen?: boolean;
+  hintAfterMs?: number;
+}
+
+/** Every state the checkout draws, for the fixture page. Times are from the device clock now. */
+export function cannedViews(): { name: string; view: View | undefined; props?: CannedProps }[] {
+  const now = nowSeconds();
   const solana = cannedOffer();
   const many = cannedOffer({
     level: 'C',
@@ -145,73 +188,124 @@ export function cannedViews(): { name: string; view: View | undefined }[] {
   });
   const tempo = cannedOffer({ level: 'B', domain: 'elisym.shop', payouts: ['tempo-mainnet'] });
   const paying = payoutPaying(priced('solana-devnet'));
-  const asset = USDC_SOLANA_DEVNET;
+  const tempoPaying = payoutPaying(priced('tempo-devnet'));
+  const about = aboutOf(solana, 'buyer@example.com');
   return [
     { name: 'loading', view: undefined },
-    { name: 'review', view: offerView(solana) },
-    { name: 'review: warnings, two networks, email', view: offerView(many, { askEmail: true }) },
-    { name: 'review: Tempo mainnet', view: offerView(tempo, { wallets: [{ name: 'MetaMask' }] }) },
+    { name: 'offer', view: offerView(solana) },
+    { name: 'offer: two networks, email', view: offerView(many, { askEmail: true }) },
     {
-      name: 'review: continuing',
+      name: 'offer: the payout list open',
+      view: offerView(many),
+      props: { initialListOpen: true },
+    },
+    {
+      name: 'offer: wallets open',
+      view: offerView(many, { askEmail: true }),
+      props: { initialWalletsOpen: true },
+    },
+    { name: 'offer: Tempo mainnet', view: offerView(tempo, { wallets: [{ name: 'MetaMask' }] }) },
+    {
+      name: 'offer: continuing',
       view: offerView(solana, { askEmail: true, continuing: 'ordered' }),
     },
     {
-      name: 'review: a problem',
+      name: 'offer: a problem',
       view: offerView(solana, { problem: { reason: 'offer_changed' } }),
     },
-    { name: 'no wallet', view: offerView(solana, { wallets: [] }) },
-    { name: 'working', view: { kind: 'working', step: 'signing', paying } },
+    {
+      name: 'no wallet',
+      view: offerView(solana, { wallets: [] }),
+      props: { initialWalletsOpen: true },
+    },
+    { name: 'working', view: { kind: 'working', step: 'signing', paying, about } },
+    {
+      name: 'working: no answer from the wallet',
+      view: { kind: 'working', step: 'signing', paying, about },
+      props: { hintAfterMs: 0 },
+    },
     {
       name: 'waiting for the payment',
-      view: {
-        kind: 'waiting_payment',
-        paying,
-        asset,
-        canRetry: false,
-        wallets: [],
-        tempo: false,
-        confirm: [],
-        confirmed: true,
-        unsureLong: false,
+      view: waitingView(about, paying, {
         explorer: 'https://explorer.solana.com/tx/abc?cluster=devnet',
-      },
+        retryIn: { seconds: 75, at: now },
+        unsureAt: now + 600,
+      }),
+    },
+    {
+      name: 'wallet did not sign: retry countdown',
+      view: waitingView(about, paying, {
+        signed: false,
+        problem: { reason: 'wallet_failed' },
+        retryIn: { seconds: 72, at: now },
+        unsureAt: now + 600,
+      }),
     },
     {
       name: 'retry',
-      view: {
-        kind: 'waiting_payment',
-        paying,
-        asset,
+      view: waitingView(about, paying, {
         canRetry: true,
+        signed: false,
         wallets: [{ name: 'Phantom' }],
-        tempo: false,
-        confirm: ['payout_recently_changed'],
-        confirmed: false,
-        unsureLong: false,
         problem: { reason: 'wallet_failed' },
-      },
+      }),
+    },
+    {
+      name: 'follow-only: start over countdown',
+      view: waitingView(about, paying, {
+        followOnly: true,
+        retryIn: { seconds: 40, at: now },
+        unsureAt: now + 600,
+      }),
+    },
+    {
+      name: 'network not checked here',
+      view: waitingView(about, paying, { unserved: true, unsureAt: now + 600 }),
+    },
+    {
+      name: 'Tempo: request countdown',
+      view: waitingView(about, tempoPaying, {
+        tempo: true,
+        signed: false,
+        requestEndsIn: { seconds: 2400, at: now },
+        unsureAt: now + 600,
+      }),
     },
     {
       name: 'waiting for the store',
-      view: { kind: 'waiting_store', paying, cancelled: false, noAnswer: false },
+      view: { kind: 'waiting_store', paying, about, cancelled: false, noAnswer: false },
     },
     {
       name: 'paid, cancelled',
-      view: { kind: 'waiting_store', paying, cancelled: true, noAnswer: true },
+      view: { kind: 'waiting_store', paying, about, cancelled: true, noAnswer: true },
     },
-    { name: 'old prompt', view: { kind: 'old_prompt', orders: 1, until: 1_750_000_900 } },
+    {
+      name: 'old prompt',
+      view: { kind: 'old_prompt', orders: 1, until: now + 900, about, paying: tempoPaying },
+    },
     {
       name: 'delivered: link',
       view: {
         kind: 'delivered',
         text: 'https://shop.example/course',
         link: 'https://shop.example/course',
+        store: about.store,
       },
     },
-    { name: 'delivered: text', view: { kind: 'delivered', text: 'LICENSE-KEY-1234-5678' } },
-    { name: 'refunded', view: { kind: 'refunded' } },
-    { name: 'cancelled', view: { kind: 'cancelled' } },
-    { name: 'blocked', view: { kind: 'blocked' } },
-    { name: 'refused', view: { kind: 'refused', message: 'The store is not on this domain.' } },
+    {
+      name: 'delivered: text',
+      view: { kind: 'delivered', text: 'LICENSE-KEY-1234-5678', store: about.store },
+    },
+    { name: 'refunded', view: { kind: 'refunded', store: about.store } },
+    { name: 'cancelled', view: { kind: 'cancelled', store: about.store } },
+    { name: 'blocked', view: { kind: 'blocked', store: about.store } },
+    {
+      name: 'refused',
+      view: {
+        kind: 'refused',
+        message: 'The store is not on this domain.',
+        store: { name: 'Demo Shop' },
+      },
+    },
   ];
 }

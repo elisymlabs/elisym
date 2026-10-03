@@ -186,6 +186,28 @@ a {
   font-weight: 600;
 }
 
+h3.step-heading {
+  font-size: 16px;
+}
+
+.offer-panel,
+.product {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The wallets open right under the offer, with a little room to read as the next section. */
+.offer-panel > [data-step='wallets'] {
+  margin-top: 8px;
+}
+
+.product-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
 .summary,
 .note,
 .label,
@@ -207,6 +229,9 @@ a {
 }
 
 .paying {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
   padding: 8px 12px;
   border-radius: var(--radius-small);
@@ -214,32 +239,109 @@ a {
   font-weight: 600;
 }
 
+.pay-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.sent-email {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.sent-email .label {
+  margin-right: 8px;
+}
+
 .pay-with {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
-.chips {
+.select-root {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.payout-chip {
-  display: inline-flex;
+.select {
+  display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   border-color: var(--border);
   background: var(--background);
   color: var(--text);
   font-weight: 400;
+  text-align: left;
 }
 
-.payout-chip[aria-checked='true'] {
+.select:hover:not([aria-disabled='true']) {
+  background: var(--surface-hover);
+}
+
+.select[aria-expanded='true'] {
   border-color: var(--accent);
-  background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.select[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.select-value {
+  flex: 1;
+}
+
+.select-chevron {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: -4px 4px 0;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+}
+
+.select[aria-expanded='true'] .select-chevron {
+  margin-top: 4px;
+  transform: rotate(-135deg);
+}
+
+.select-list {
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--background);
+  list-style: none;
+}
+
+.select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+
+.select-option[data-active] {
+  background: var(--surface-hover);
+}
+
+.select-option[aria-selected='true'] {
+  font-weight: 600;
+}
+
+.countdown {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
 .glyph {
@@ -264,34 +366,10 @@ a {
   font-weight: 700;
 }
 
-.warnings,
 .problem,
 .banner {
   padding: 8px 12px;
   border-radius: var(--radius-small);
-}
-
-.warnings {
-  background: var(--warning-background);
-  color: var(--warning-text);
-}
-
-.warnings ul {
-  margin: 0 0 8px;
-  padding-left: 16px;
-}
-
-.warnings details {
-  margin-bottom: 8px;
-}
-
-.warnings summary {
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.warnings details p {
-  margin: 8px 0 0;
 }
 
 .problem {
@@ -306,17 +384,6 @@ a {
 .banner {
   margin: 16px 16px 0;
   background: var(--surface);
-}
-
-.confirm {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  font-weight: 600;
-}
-
-.confirm input {
-  margin-top: 3px;
 }
 
 .field {
@@ -371,18 +438,6 @@ button:disabled {
   border-color: var(--border);
   background: transparent;
   color: var(--text);
-}
-
-.back {
-  align-self: flex-start;
-  min-height: 32px;
-  padding: 4px 8px;
-  background: transparent;
-  color: var(--muted);
-}
-
-.back::before {
-  content: '‹ ';
 }
 
 .wallet-list {

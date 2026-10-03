@@ -8,9 +8,8 @@ The page is plain HTML. It frames the checkout from `pay.elisym.network` with th
 `<elisym-buy>` element and logs the `elisym-status` events the checkout sends. The product and
 the network come from the page URL, so one page serves any store.
 
-A store with no `nip05` is trust level C: the checkout shows that no domain vouches for it. A
-payout list published in the last 72 hours also asks the buyer to confirm where the money goes.
-Both are expected for a new demo store. A level A store (one whose domain vouches for it, see
+A store with no `nip05` is trust level C: the checkout's header says "Unverified store". That is
+expected for a new demo store. A level A store (one whose domain vouches for it, see
 [the node's README](../../packages/merchant-node/README.md)) sells only on its own domain, so
 this page cannot show it.
 

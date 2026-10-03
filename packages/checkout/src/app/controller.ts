@@ -9,6 +9,23 @@ import type { HandshakeRefusal } from './handshake';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 
+/** A start still running this long says so: never a refusal, the session keeps going. */
+export const SLOW_START_MS = 30_000;
+
+/**
+ * Run the session's start; if it is still running after `SLOW_START_MS`, call
+ * `onSlow` once - and nothing else. A slow start is a buyer with an earlier
+ * order being checked: it is waited for, never refused on a timer.
+ */
+export async function startWithHint(start: () => Promise<void>, onSlow: () => void): Promise<void> {
+  const timer = setTimeout(onSlow, SLOW_START_MS);
+  try {
+    await start();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Rails the widget pays on: Solana and Tempo (an EVM chain). */
 export const PAYABLE_FAMILIES = ['solana', 'evm'] as const;
 
@@ -17,7 +34,8 @@ export type Screen =
   | { kind: 'waiting' }
   /** The widget will not sell here. */
   | { kind: 'refused'; reason: RefusalReason; message?: string }
-  | { kind: 'loading' }
+  /** `slow`: still loading long after it began (an earlier order is being checked). */
+  | { kind: 'loading'; slow?: boolean }
   | { kind: 'offer'; offer: ReadyOffer };
 
 export type RefusalReason =

@@ -13,7 +13,13 @@ import {
   solanaAddress,
 } from '../../commerce/tests/buyer/fixtures';
 import { FakeSolana, FakeWallet } from '../../commerce/tests/buyer/solana-fixtures';
-import { type SessionDeps, CheckoutSession, type View } from '../src/app/session';
+import {
+  RETRY_SETTLE_BLOCKS,
+  SLOT_SECS_ESTIMATE,
+  type SessionDeps,
+  CheckoutSession,
+  type View,
+} from '../src/app/session';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutState } from '../src/embed/protocol';
 
@@ -197,7 +203,7 @@ describe('a purchase', () => {
   it('goes from the offer to the delivery, telling the page only state names', async () => {
     const run = await setup();
     await run.session.start();
-    expect(run.last()).toMatchObject({ kind: 'offer', confirmed: true, continuing: false });
+    expect(run.last()).toMatchObject({ kind: 'offer', continuing: false });
     await run.session.pay('Fake');
     expect(run.wallet.requests).toBe(1);
     expect(run.last()).toMatchObject({ kind: 'waiting_payment' });
@@ -206,28 +212,28 @@ describe('a purchase', () => {
     const record = await recordOf(run.offer);
     expect(record.state).toBe('paid');
     await storeSays(run.shop, run.relays, record);
+    const { profile, level, domain } = run.offer.offer;
     expect(run.last()).toEqual({
       kind: 'delivered',
       text: 'https://shop.example/course',
       link: 'https://shop.example/course',
+      // The header keeps naming the store, with the level the offer has now.
+      store: { name: profile.name, level, ...(domain === undefined ? {} : { domain }) },
     });
     expect(run.statuses).toEqual(['ready', 'ordered', 'paying', 'paid', 'completed']);
     // Delivered: nothing keeps running.
     expect(run.timers.running.size).toBe(0);
   });
 
-  it('never pays before the buyer confirms a warning that needs it', async () => {
+  it('pays with a confirm-class warning on the offer, and never asks for a tick', async () => {
     const shop = makeShop({ paytoCreatedAt: NOW - 60 });
     const run = await setup({ shop });
+    expect(run.offer.confirm).toEqual(['payout_recently_changed']);
     await run.session.start();
-    expect(run.last()).toMatchObject({
-      kind: 'offer',
-      confirmed: false,
-      confirm: ['payout_recently_changed'],
-    });
-    await run.session.pay('Fake');
-    expect(run.wallet.requests).toBe(0);
-    run.session.confirm(true);
+    const offer = run.last();
+    expect(offer).toMatchObject({ kind: 'offer' });
+    expect(offer).not.toHaveProperty('confirm');
+    expect(offer).not.toHaveProperty('confirmed');
     await run.session.pay('Fake');
     expect(run.wallet.requests).toBe(1);
   });
@@ -518,11 +524,10 @@ describe('a purchase', () => {
     expect(run.wallet.requests).toBe(0);
   });
 
-  it('asks to confirm a warning that appears only on the re-verification', async () => {
+  it('a warning that appears only on the re-verification changes nothing: the payment goes on', async () => {
     const run = await setup();
     await run.session.start();
-    expect(run.last()).toMatchObject({ kind: 'offer', confirmed: true });
-    // Later: same price, but the payout is now one the buyer's past purchases do not know.
+    // Later: same price and payout, but a warning the first load did not have.
     run.advance(600);
     run.deps.reloadOffer = async () => ({
       ...run.offer,
@@ -530,17 +535,10 @@ describe('a purchase', () => {
       confirm: ['payout_changed'],
     });
     await run.session.pay('Fake');
-    expect(run.last()).toMatchObject({
-      kind: 'offer',
-      confirmed: false,
-      confirm: ['payout_changed'],
-      problem: { reason: 'offer_changed' },
-    });
-    await run.session.pay('Fake');
-    expect(run.wallet.requests).toBe(0);
-    run.session.confirm(true);
-    await run.session.pay('Fake');
     expect(run.wallet.requests).toBe(1);
+    expect(run.views.some((view) => view.kind === 'offer' && view.problem !== undefined)).toBe(
+      false,
+    );
   });
 
   it('hears the new order, not the one it abandoned for new terms', async () => {
@@ -618,7 +616,7 @@ describe('a purchase', () => {
     const first = await placedFor(run);
     await storeSays(run.shop, run.relays, first, { status: 'cancelled', delivery: undefined });
     await run.session.start();
-    expect(run.last()).toEqual({ kind: 'cancelled' });
+    expect(run.last()).toMatchObject({ kind: 'cancelled' });
     await run.session.startOver();
     expect(run.last()).toMatchObject({ kind: 'offer' });
     await run.session.pay('Fake');
@@ -767,7 +765,7 @@ describe('a purchase', () => {
     await run.session.start();
     await settle();
     expect((await recordOf(run.offer)).state).toBe('created');
-    expect(run.last()).toEqual({ kind: 'cancelled' });
+    expect(run.last()).toMatchObject({ kind: 'cancelled' });
     await run.session.startOver();
     expect(run.last()).toMatchObject({ kind: 'offer' });
   });
@@ -781,7 +779,7 @@ describe('a purchase', () => {
     await storeSays(run.shop, run.relays, record, { status: 'cancelled', delivery: undefined });
     run.chain.expire();
     await run.timers.tick();
-    expect(run.last()).toEqual({ kind: 'cancelled' });
+    expect(run.last()).toMatchObject({ kind: 'cancelled' });
   });
 
   it('keeps a refusal on screen when a wallet registers late', async () => {
@@ -882,7 +880,7 @@ describe('a purchase', () => {
     run.chain.onList = undefined;
     release();
     await settle();
-    expect(run.last()).toEqual({ kind: 'cancelled' });
+    expect(run.last()).toMatchObject({ kind: 'cancelled' });
     run.wallet.behaviour = 'sign';
     await run.session.retry('Fake');
     expect(run.wallet.requests).toBe(1);
@@ -1092,7 +1090,7 @@ describe('a purchase', () => {
       delivery: undefined,
       refund: { tx: '6'.repeat(88), amount: '49000000' },
     } as Partial<OrderMessage>);
-    expect(run.last()).toEqual({ kind: 'refunded' });
+    expect(run.last()).toMatchObject({ kind: 'refunded' });
     await run.session.startOver();
     expect(run.last()).toMatchObject({ kind: 'offer' });
   });
@@ -1170,9 +1168,13 @@ describe('a purchase', () => {
     await follow.start();
     await run.timers.tick();
     await run.timers.tick();
-    expect(run.last()).toMatchObject({ kind: 'waiting_store' });
+    // The offer is the order's old snapshot: the store is named, its trust level never claimed.
+    const name = run.offer.offer.profile.name;
+    expect(run.last()).toMatchObject({ kind: 'waiting_store', about: { store: { name } } });
+    expect(run.last()).not.toHaveProperty('about.store.level');
     await storeSays(run.shop, run.relays, await recordOf(run.offer));
-    expect(run.last()).toMatchObject({ kind: 'delivered' });
+    expect(run.last()).toMatchObject({ kind: 'delivered', store: { name } });
+    expect(run.last()).not.toHaveProperty('store.level');
     await follow.pay('Fake');
     await follow.retry('Fake');
     expect(run.wallet.requests).toBe(1);
@@ -1201,6 +1203,8 @@ describe('a purchase', () => {
     expect(run.last()).toEqual({
       kind: 'refused',
       message: 'This product cannot be bought here.',
+      // An order's old snapshot: its name only, never a trust level it may no longer have.
+      store: { name: run.offer.offer.profile.name },
     });
     run.wallet.behaviour = 'sign';
     await follow.pay('Fake');
@@ -1222,7 +1226,8 @@ describe('a purchase', () => {
       return raised(run.offer, NOW + 630);
     };
     run.wallet.behaviour = 'sign';
-    await run.session.retry('Fake');
+    // (A retry is refused at once while the attempt may land: a pay press is the action.)
+    await run.session.pay('Fake');
     expect(run.last()).toMatchObject({ kind: 'delivered' });
   });
 
@@ -1304,6 +1309,43 @@ describe('a purchase', () => {
     });
     expect(run.wallet.requests).toBe(1);
     expect((await recordOf(run.offer)).state).toBe('paying');
+    // The store no longer accepts this page: no trust level is shown for it.
+    const view = run.last();
+    const store = view?.kind === 'waiting_payment' ? view.about.store : undefined;
+    expect(store?.name).toBeDefined();
+    expect(store).not.toHaveProperty('level');
+    // A redraw (a wallet registering late) keeps the reason.
+    run.session.refresh();
+    expect(run.last()).toMatchObject({ problem: { reason: 'offer_refused' } });
+    // Once that order ends, the refusal shows: never a new purchase with the old trust level.
+    await run.session.startOver();
+    expect(run.last()).toMatchObject({ kind: 'refused', message: 'gone' });
+  });
+
+  it('shows the trust level again once a later reload accepts the page', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    run.advance(600);
+    const accepted = run.deps.reloadOffer;
+    run.deps.reloadOffer = async () => ({
+      ok: false,
+      refusal: 'no_payable_payout',
+      message: 'gone',
+    });
+    await run.session.retry('Fake');
+    run.deps.reloadOffer = accepted;
+    run.wallet.behaviour = 'sign';
+    await run.session.retry('Fake');
+    const view = run.last();
+    const store =
+      view !== undefined && 'about' in view ? (view.about as { store: object }).store : undefined;
+    expect(store).toHaveProperty('level');
+    expect(view).not.toMatchObject({ problem: { reason: 'offer_refused' } });
   });
 
   it('publishes the open order again on load', async () => {
@@ -1318,11 +1360,10 @@ describe('a purchase', () => {
     expect(run.relays.published.length).toBeGreaterThan(before);
   });
 
-  it('asks for the confirmation again before a retry after a reload', async () => {
+  it('a retry after a reload needs no confirmation', async () => {
     const shop = makeShop({ paytoCreatedAt: NOW - 60 });
     const run = await setup({ shop });
     await run.session.start();
-    run.session.confirm(true);
     run.wallet.behaviour = 'throw';
     await run.session.pay('Fake');
     run.session.dispose();
@@ -1332,18 +1373,6 @@ describe('a purchase', () => {
     await run.timers.tick();
     expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
     run.wallet.behaviour = 'sign';
-    await again.retry('Fake');
-    // Asked on the waiting screen itself, with the warnings to confirm.
-    expect(run.last()).toMatchObject({
-      kind: 'waiting_payment',
-      canRetry: true,
-      confirm: ['payout_recently_changed'],
-      confirmed: false,
-      problem: { reason: 'confirm_first' },
-    });
-    expect(run.wallet.requests).toBe(1);
-    again.confirm(true);
-    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true, confirmed: true });
     await again.retry('Fake');
     expect(run.wallet.requests).toBe(2);
   });
@@ -1387,7 +1416,7 @@ describe('a purchase', () => {
       delivery: undefined,
       refund: { tx: '6'.repeat(88), amount: '49000000' },
     } as Partial<OrderMessage>);
-    expect(run.last()).toEqual({ kind: 'refunded' });
+    expect(run.last()).toMatchObject({ kind: 'refunded' });
     expect(run.statuses.at(-1)).toBe('refunded');
   });
 
@@ -1508,7 +1537,10 @@ describe('the payout chosen, across reloads', () => {
     run.advance(600);
     run.deps.reloadOffer = async () => mainnetOnly(raised(run.offer, NOW + 630));
     await run.session.pay('Fake');
-    expect(run.last()).toEqual({ kind: 'refused', message: 'This product cannot be paid here' });
+    expect(run.last()).toMatchObject({
+      kind: 'refused',
+      message: 'This product cannot be paid here',
+    });
     expect(run.statuses).toContain('refused');
     expect(run.wallet.requests).toBe(0);
     expect(await store.forProduct(run.offer.productAddress)).toHaveLength(0);
@@ -1765,5 +1797,338 @@ describe('the payment a progress screen names', () => {
     }
     await run.timers.tick();
     expect(run.last()).toMatchObject({ kind: 'waiting_store', paying: { amount: record.amount } });
+  });
+});
+
+/** The same offer, verified again at `now`, with a new price on the listing and its payouts. */
+function repriced(offer: Ready, now: number): Ready {
+  return {
+    ...raised(offer, now),
+    offer: {
+      ...offer.offer,
+      product: { ...offer.offer.product, price: { amount: '99', currency: 'USD' } },
+    },
+  };
+}
+
+describe('what a progress screen is about', () => {
+  it('names the new terms while a new order is placed beside an open one on old terms', async () => {
+    const run = await setup();
+    await run.session.start();
+    const tokens = run.chain.tokens;
+    run.chain.tokens = 1n;
+    await run.session.pay('Fake');
+    run.chain.tokens = tokens;
+    expect((await recordOf(run.offer)).state).toBe('ordered');
+    run.advance(600);
+    run.deps.reloadOffer = async () => repriced(run.offer, NOW + 630);
+    // The first press finds the change and shows it; the next one places the new order.
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'offer_changed' } });
+    const from = run.views.length;
+    await run.session.pay('Fake');
+    const early = run.views
+      .slice(from)
+      .filter((view) => view.kind === 'working' && view.step !== 'signing');
+    expect(early.length).toBeGreaterThan(0);
+    for (const view of early) {
+      expect(view).toMatchObject({ about: { product: { price: { amount: '99' } } } });
+    }
+  });
+
+  it('names the order’s own product and price after a reload, whatever the store lists now', async () => {
+    const run = await setup();
+    run.chain.dropSends = true;
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.session.dispose();
+    const now = repriced(run.offer, NOW + 30);
+    const again = new CheckoutSession(now, run.deps);
+    await again.start();
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      about: {
+        product: { price: run.offer.offer.product.price },
+        store: { name: run.offer.offer.profile.name, level: run.offer.offer.level },
+      },
+    });
+  });
+
+  it('shows the email this session sent with the order, and none after a reload', async () => {
+    const run = await setup();
+    run.chain.dropSends = true;
+    run.deps.collectEmail = true;
+    await run.session.start();
+    run.session.setEmail('buyer@example.com');
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      about: { email: 'buyer@example.com' },
+    });
+    run.session.dispose();
+    const again = new CheckoutSession(run.offer, run.deps);
+    await again.start();
+    const view = run.last();
+    expect(view?.kind).toBe('waiting_payment');
+    expect(view?.kind === 'waiting_payment' ? view.about.email : 'none').toBeUndefined();
+  });
+
+  it('says when a still-unsure attempt is long, and stops saying it once it is over', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    const record = await recordOf(run.offer);
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      signed: false,
+      followOnly: false,
+      unserved: false,
+      unsureAt: (record.marker?.setAt ?? 0) + 600,
+    });
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    expect(run.last()).not.toHaveProperty('unsureAt');
+  });
+});
+
+/** The chain's RPC, with its block-height read failing on demand and the session's reads counted. */
+function epochRpc(chain: FakeSolana) {
+  const state = { fails: false, throwsAtOnce: false, sessionReads: 0 };
+  const rpc = new Proxy(chain.rpc, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== 'getEpochInfo' || typeof value !== 'function') {
+        return value;
+      }
+      return (config: unknown) => {
+        const request = value(config) as { send(options?: unknown): Promise<unknown> };
+        const sendAsync = async (options?: { abortSignal?: AbortSignal }) => {
+          // Only the session's own read carries a timeout.
+          if (options?.abortSignal !== undefined) {
+            state.sessionReads += 1;
+            if (state.fails) {
+              throw new Error('node down');
+            }
+          }
+          return request.send(options);
+        };
+        return {
+          send: (options?: { abortSignal?: AbortSignal }) => {
+            // A client that throws before returning a promise, on the session's read only.
+            if (options?.abortSignal !== undefined && state.throwsAtOnce) {
+              throw new Error('broken client');
+            }
+            return sendAsync(options);
+          },
+        };
+      };
+    },
+  });
+  return { rpc, state };
+}
+
+describe('the retry countdown', () => {
+  async function failed() {
+    const run = await setup();
+    const epoch = epochRpc(run.chain);
+    run.deps.rpcFor = () => epoch.rpc;
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    const record = await recordOf(run.offer);
+    const marker = record.marker;
+    if (marker?.rail !== 'solana') {
+      throw new Error('no Solana attempt');
+    }
+    return { run, epoch, lastValid: BigInt(marker.lastValidBlockHeight), record };
+  }
+
+  it('counts the blocks to the settle margin from the finalized height, as an estimate', async () => {
+    const { run, lastValid } = await failed();
+    await run.timers.tick();
+    await run.timers.tick();
+    const left = Number(lastValid + RETRY_SETTLE_BLOCKS - run.chain.height);
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      canRetry: false,
+      retryIn: { seconds: Math.ceil(left * SLOT_SECS_ESTIMATE) },
+    });
+  });
+
+  it('never counts back up when the chain is slower than the estimate', async () => {
+    const { run } = await failed();
+    await run.timers.tick();
+    await run.timers.tick();
+    const first = run.last();
+    const known = first?.kind === 'waiting_payment' ? first.retryIn : undefined;
+    if (known === undefined) {
+      throw new Error('no estimate');
+    }
+    // Ten seconds pass and the chain does not move: the estimate keeps counting down.
+    run.advance(10);
+    await run.timers.tick();
+    await run.timers.tick();
+    const later = run.last();
+    const next = later?.kind === 'waiting_payment' ? later.retryIn : undefined;
+    expect(next).toBeDefined();
+    expect(next?.seconds ?? Infinity).toBeLessThanOrEqual(
+      Math.max(0, known.seconds - ((next?.at ?? 0) - known.at)),
+    );
+  });
+
+  it('never stops the watch when the read throws at once', async () => {
+    const { run, epoch } = await failed();
+    epoch.state.throwsAtOnce = true;
+    await run.timers.tick();
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+  });
+
+  it('shows none until a read succeeds, and keeps the last one through a failed read', async () => {
+    const { run, epoch } = await failed();
+    epoch.state.fails = true;
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.last()).not.toHaveProperty('retryIn');
+    epoch.state.fails = false;
+    await run.timers.tick();
+    await run.timers.tick();
+    const view = run.last();
+    const known = view?.kind === 'waiting_payment' ? view.retryIn : undefined;
+    expect(known).toBeDefined();
+    epoch.state.fails = true;
+    run.advance(5);
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ retryIn: known });
+  });
+
+  it('reaches 0 no later than the watch may judge the attempt over, and then reads no more', async () => {
+    const { run, epoch, lastValid } = await failed();
+    expect(RETRY_SETTLE_BLOCKS).toBe(32n);
+    // At exactly the settle margin: the countdown is done, the attempt not yet over.
+    run.chain.advance(lastValid + RETRY_SETTLE_BLOCKS - run.chain.height);
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      canRetry: false,
+      retryIn: { seconds: 0 },
+    });
+    const reads = epoch.state.sessionReads;
+    await run.timers.tick();
+    expect(epoch.state.sessionReads).toBe(reads);
+    // One block more: over.
+    run.chain.advance(1n);
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    expect(run.last()).not.toHaveProperty('retryIn');
+  });
+
+  it('never shows the countdown of an earlier attempt for a new one', async () => {
+    const { run } = await failed();
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.last()).toHaveProperty('retryIn');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    run.wallet.behaviour = 'sign';
+    run.chain.dropSends = true;
+    await run.session.retry('Fake');
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: false, signed: true });
+    expect(run.last()).not.toHaveProperty('retryIn');
+  });
+});
+
+describe('a press, held against changes', () => {
+  it('never changes the payout while a pay press is running', async () => {
+    const second = solanaAddress();
+    const run = await setup({ transform: (offer) => withSecondPayout(offer, second) });
+    await run.session.start();
+    const pressed = run.session.pay('Fake');
+    run.session.choosePayout(1);
+    await pressed;
+    const record = await recordOf(run.offer);
+    expect(record.payout.address).toBe(run.offer.payouts[0]?.target.address);
+  });
+
+  it('opens no wallet for a retry while the attempt may still land', async () => {
+    const run = await setup();
+    let connects = 0;
+    run.deps.wallets = () => [
+      {
+        name: 'Fake',
+        connect: async () => {
+          connects += 1;
+          return run.wallet;
+        },
+      },
+    ];
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    const requests = run.wallet.requests;
+    const before = connects;
+    run.wallet.behaviour = 'sign';
+    await run.session.retry('Fake');
+    expect(connects).toBe(before);
+    expect(run.wallet.requests).toBe(requests);
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: false });
+  });
+
+  it('shows the retry working before the wallet connects, and never ends on it', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    const record = await recordOf(run.offer);
+    // A wallet that never answers: the retry stays on its working view.
+    run.deps.wallets = () => [{ name: 'Fake', connect: () => new Promise(() => undefined) }];
+    void run.session.retry('Fake');
+    await settle();
+    expect(run.last()).toMatchObject({
+      kind: 'working',
+      step: 'checking',
+      paying: { amount: record.amount },
+      about: { product: { title: record.offer.product.title } },
+    });
+  });
+
+  it('never leaves a retry on its working view when the network went away meanwhile', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    let served = true;
+    const chainRpc = run.chain.rpc;
+    run.deps.rpcFor = () => (served ? chainRpc : undefined);
+    run.deps.wallets = () => [
+      {
+        name: 'Fake',
+        connect: async () => {
+          served = false;
+          return run.wallet;
+        },
+      },
+    ];
+    await run.session.retry('Fake');
+    expect(run.last()?.kind).not.toBe('working');
   });
 });

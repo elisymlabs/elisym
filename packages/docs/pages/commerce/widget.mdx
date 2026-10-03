@@ -25,7 +25,16 @@ Changing an attribute re-frames the checkout. A purchase that is in progress is 
 
 ## What the buyer sees
 
-The checkout is a short wizard inside the frame. The buyer first reviews the product, the price, the network it is paid on, and any warnings. Then they choose a wallet from the ones their browser has. Then they follow the payment to the delivery. The store's name and its trust level stay in the header on every step, and a devnet checkout says "Test network". This look reaches every page that uses `v1/embed.js`, with no change to your snippet.
+The checkout is one panel inside the frame that grows as the purchase goes on:
+
+1. The product and its price.
+2. **Pay with**: a dropdown of the coins and networks the store takes, when there are several (a label when there is one).
+3. The email field, when you set `collect-email`.
+4. **Choose wallet**, which opens the wallets the buyer's browser has right below. The payout and the email above stay editable until a payment starts.
+5. Once the buyer picks a wallet, the payment's progress takes the wallets' place, and the payment shows read-only above it.
+6. The delivery, or how the order ended.
+
+There is no confirmation step and no box to tick. The store's name stays in the header the whole time, with its trust level unless the store no longer offers the product on this page, and a devnet checkout says "Test network". The buyer always has something to do or knows how long to wait: when a wallet did not sign, the checkout says "you can retry in about M:SS" while the attempt may still land, then offers the retry and Start over once it provably cannot. This look reaches every page that embeds the checkout, with no change to your snippet.
 
 ## Status events
 
@@ -65,25 +74,13 @@ Before it shows a price, the checkout verifies the offer:
 It then shows the buyer how far the store is vouched for:
 
 - **Level A**: the store's domain serves a `nostr.json` naming both the store and its owner (see [Level A](/commerce/quickstart#level-a-let-your-domain-vouch-for-the-store)).
-- **Level C**: no domain vouches for it. The buyer is told so and pays on trust.
+- **Level C**: no domain vouches for it. The buyer pays on trust.
 
-The buyer sees a notice when:
-
-- no domain vouches for the store;
-- the store names a domain that does not confirm it;
-- the payout address carries no wallet proof;
-- they have no delivered purchase from this store on this site yet.
-
-Two warnings are about where the money goes, and the buyer must tick a box before paying:
-
-- the payout list is less than three days old (always true for a new store);
-- the payout is not among the ones the store listed on a delivered purchase from it.
-
-If the offer changes when it is checked again just before paying, the box must be ticked again.
+Only the trust chip in the header shows the level ("Verified: your-domain", "Named store" or "Unverified store"). The checkout still works out its warnings (a payout list less than three days old, a payout unknown from earlier purchases, no wallet proof, no domain), but it shows none of them and asks the buyer to tick nothing. What protects the payment is unchanged: the address comes only from the owner's signed payout list, the offer is verified again just before paying, and a changed price or payout sends the buyer back to the offer.
 
 ## Where it sells
 
-A level A store vouches for one domain, and the checkout sells it only on a page served over `https:` from that domain or one of its subdomains. It refuses any other page, including `localhost`. A level C store sells on any page, with the notice above. `strict-origin` refuses a level C store too, so a page with it sells only level A stores on their own domain.
+A level A store vouches for one domain, and the checkout sells it only on a page served over `https:` from that domain or one of its subdomains. It refuses any other page, including `localhost`. A level C store sells on any page, under its "Unverified store" chip. `strict-origin` refuses a level C store too, so a page with it sells only level A stores on their own domain.
 
 ## When the checkout refuses
 
@@ -107,7 +104,7 @@ A store with a Tempo payout is paid from an EIP-6963 wallet (MetaMask). The chec
 
 A Tempo wallet request never expires, so the checkout never retries a Tempo payment by itself:
 
-- While a payment is unresolved, the checkout keeps checking and says **check your wallet activity**; if it stays so for long, **contact the store**.
+- While the wallet has not answered, the checkout counts down to the request's late deadline, about 40 minutes ("the checkout stops waiting for this request in about M:SS; if you do not want to pay, reject it in your wallet"). Then it says it is **checking whether the request was approved**, and if that stays unresolved, **this is taking long: check your wallet activity, or contact the store**.
 - A declined request ends the order: nothing was signed.
 - A request that timed out ends the order, but the wallet may still show it. Before any new payment of the product the buyer is asked to reject it: **approving the old request pays that order as well**.
 - If the recipient's account refuses the coin, the payment is **blocked**: the money is held, not delivered. Contact the store.
