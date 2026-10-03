@@ -1,7 +1,7 @@
 import { evaluateOffer, unwrapOrderMessage } from '@elisym/commerce';
 import { describe, expect, it } from 'vitest';
 import { buildDeliveryReply } from '../src/reply';
-import { buildStoreEvents } from '../src/store-events';
+import { buildStoreEvents, storeNostrJson } from '../src/store-events';
 import { D, PAYOUT, T0, USDC_DEVNET_CAIP19, key } from './fixtures';
 
 const CONFIG = {
@@ -67,6 +67,19 @@ describe('buildStoreEvents', () => {
     expect(() => buildStoreEvents({ ...CONFIG, nip05: 'Owner@shop.example' }, keys, T0)).toThrow(
       /owner/,
     );
+  });
+
+  it('builds the same nostr.json from the public keys alone (check reads no owner secret)', () => {
+    const store = key();
+    const owner = key();
+    const keys = { storeSecretKey: store.secretKey, ownerSecretKey: owner.secretKey };
+    const config = { ...CONFIG, nip05: '_@shop.example' };
+    expect(storeNostrJson(config, store.pubkey, owner.pubkey)).toEqual(
+      buildStoreEvents(config, keys, T0).nostrJson,
+    );
+    expect(() =>
+      storeNostrJson({ nip05: 'owner@shop.example' }, store.pubkey, owner.pubkey),
+    ).toThrow(/owner/);
   });
 });
 

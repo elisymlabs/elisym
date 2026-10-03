@@ -1,6 +1,6 @@
 {
   "name": "@elisym/merchant-node",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "elisym merchant node: self-hosted store for the elisym checkout - takes orders over Nostr, verifies Solana payments, delivers.",
   "keywords": [
     "checkout",
@@ -36,7 +36,8 @@
   },
   "scripts": {
     "build": "tsup",
-    "test": "vitest run",
+    "test": "vitest run && bun run test:bun",
+    "test:bun": "bun ./tests/bun/secret-box-smoke.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src/ tests/",
     "clean": "rm -rf dist"

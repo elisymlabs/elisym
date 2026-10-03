@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline/promises';
 import { KIND_INBOX_RELAYS, KIND_PAYTO, KIND_PRODUCT, splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
 import { SimplePool } from 'nostr-tools/pool';
-import { type EventTemplate, finalizeEvent, getPublicKey } from 'nostr-tools/pure';
+import { type EventTemplate, finalizeEvent } from 'nostr-tools/pure';
 import {
   checkDomain,
   checkInboxRelays,
@@ -29,20 +29,33 @@ import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } fr
 import { handOutcome, publishHandAnswer } from './hand-publish';
 import {
   type MerchantHome,
+  encryptHomeKeys,
   ensureHome,
   heldByRunningMerchant,
-  loadOrCreateKeys,
+  initKeys,
+  loadKeys,
   merchantHome,
   takeLock,
 } from './home';
 import { storeIdentity } from './intake';
+import {
+  PASSPHRASE_HINT,
+  STORE_KEY_WARNING,
+  encryptionNotes,
+  openSecret,
+  openSetupKeys,
+  openCheckKeys,
+  readPassphrase,
+  storeKeyForAdmin,
+} from './keys';
 import { type LedgerState, type MerchantOrder, loadLedger, saveLedger } from './ledger';
 import { InboxListener } from './listener';
+import { printable } from './printable';
 import { publishToRelays } from './publish';
 import { MerchantRuntime } from './runtime';
 import { SelfCopies } from './self-copies';
 import { payoutListDate, recordPublished, setupRefusal } from './setup-ledger';
-import { type StoreKeys, buildStoreEvents } from './store-events';
+import { buildStoreEvents, storeNostrJson } from './store-events';
 import { tempoContextFor } from './tempo';
 import { standingTerms } from './terms';
 
@@ -54,6 +67,11 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
   run    take orders, verify payments, deliver
   orders list the orders: paid, delivered, the buyer's email
   check  check the inbox relays, the owner's payout list and the domain
+  encrypt-keys [--owner-only]
+         encrypt the keys in keys.json with $ELISYM_MERCHANT_PASSPHRASE
+         (or the file $ELISYM_MERCHANT_PASSPHRASE_FILE names); both keys by default
+  store-key [--yes]
+         print the store's secret key, for the admin page on this machine
   deliver <buyer>:<orderId> [--yes]
          answer an unpaid order by hand with the configured delivery
   refund <buyer>:<orderId> --tx <refund tx> --amount <subunits> [--asset <caip19>] [--yes]
@@ -63,11 +81,13 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
          (both need the node stopped; --yes skips the confirmation)
 
 The home is --home, else $ELISYM_MERCHANT_HOME, else ~/.elisym-merchant.
-It holds the store's secret keys: keep it private and back it up.`;
+It holds the store's secret keys: keep it private and back it up. init encrypts
+new keys when $ELISYM_MERCHANT_PASSPHRASE (or ..._FILE) is set (--owner-only:
+the owner key only); a command that needs an encrypted key reads it from there.`;
 
 /** Answers a relay's NIP-42 challenge with the store key. */
-function storeAuth(keys: StoreKeys) {
-  return async (template: EventTemplate) => finalizeEvent(template, keys.storeSecretKey);
+function storeAuth(storeSecretKey: Uint8Array) {
+  return async (template: EventTemplate) => finalizeEvent(template, storeSecretKey);
 }
 
 function nowSecs(): number {
@@ -92,6 +112,7 @@ interface Args {
   amount: string | undefined;
   asset: string | undefined;
   yes: boolean;
+  ownerOnly: boolean;
 }
 
 const VALUE_FLAGS = {
@@ -116,6 +137,7 @@ function parseArgs(argv: readonly string[]): Args {
     amount: undefined,
     asset: undefined,
     yes: false,
+    ownerOnly: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -128,6 +150,8 @@ function parseArgs(argv: readonly string[]): Args {
       index += 1;
     } else if (arg === '--yes') {
       args.yes = true;
+    } else if (arg === '--owner-only') {
+      args.ownerOnly = true;
     } else if (args.command === undefined && arg !== undefined && !arg.startsWith('--')) {
       args.command = arg;
     } else if (
@@ -144,9 +168,15 @@ function parseArgs(argv: readonly string[]): Args {
   return args;
 }
 
-function init(home: MerchantHome, network: string | undefined): void {
+function init(home: MerchantHome, network: string | undefined, ownerOnly: boolean): void {
   if (network !== undefined && network !== 'devnet' && network !== 'mainnet') {
     throw new Error('--network is devnet or mainnet');
+  }
+  // The passphrase is read and checked before anything is created: a failing
+  // init never leaves a home with a config and no keys.
+  const passphrase = readPassphrase();
+  if (ownerOnly && passphrase === undefined) {
+    throw new Error(`--owner-only encrypts the owner key: ${PASSPHRASE_HINT}`);
   }
   ensureHome(home);
   if (existsSync(home.config)) {
@@ -159,9 +189,25 @@ function init(home: MerchantHome, network: string | undefined): void {
     );
     console.log(`config  ${home.config} (edit it)`);
   }
-  const keys = loadOrCreateKeys(home, true);
-  console.log(`store   ${getPublicKey(keys.storeSecretKey)}`);
-  console.log(`owner   ${getPublicKey(keys.ownerSecretKey)}`);
+  const { keys, created, keptPlain } = initKeys(home, passphrase, ownerOnly);
+  console.log(`store   ${keys.storePubkey}`);
+  console.log(`owner   ${keys.ownerPubkey}`);
+  if (created && passphrase !== undefined) {
+    console.log(`keys    encrypted (${ownerOnly ? 'the owner key only' : 'both keys'})`);
+    for (const note of encryptionNotes(ownerOnly)) {
+      console.log(`note    ${note}`);
+    }
+  }
+  if (created && passphrase === undefined) {
+    console.log(
+      `keys    plain (no passphrase set; ${PASSPHRASE_HINT} before init to encrypt them)`,
+    );
+  }
+  if (keptPlain) {
+    console.log(
+      `keys    kept plain: run encrypt-keys${ownerOnly ? ' --owner-only' : ''} to encrypt them`,
+    );
+  }
   console.log('next    edit config.json, then run setup');
 }
 
@@ -173,7 +219,7 @@ function init(home: MerchantHome, network: string | undefined): void {
 async function reportInboxRelays(
   pool: SimplePool,
   config: MerchantConfig,
-  keys: StoreKeys,
+  storeSecretKey: Uint8Array,
 ): Promise<string[]> {
   const reader = new SimplePool();
   let verdicts: Awaited<ReturnType<typeof checkInboxRelays>>;
@@ -182,8 +228,8 @@ async function reportInboxRelays(
       pool,
       reader,
       config.inboxRelays,
-      keys.storeSecretKey,
-      storeAuth(keys),
+      storeSecretKey,
+      storeAuth(storeSecretKey),
       log,
       nowSecs(),
     );
@@ -210,6 +256,8 @@ async function reportDomain(
   home: MerchantHome,
   config: MerchantConfig,
   nostrJson: { names: Record<string, string> },
+  /** Whether the owner key was opened here: only then is nostr.json written. */
+  write = true,
 ): Promise<void> {
   const split = config.nip05 === undefined ? undefined : splitNip05(config.nip05);
   if (split === undefined) {
@@ -221,10 +269,16 @@ async function reportDomain(
     console.log('level   C: a named nip05 is not domain-wide; use _@domain or a bare domain for A');
     return;
   }
-  writeFileSync(home.nostrJson, `${JSON.stringify(nostrJson)}\n`);
-  console.log(
-    `nostr   serve ${home.nostrJson} at https://${split.domain}/.well-known/nostr.json with "Access-Control-Allow-Origin: *"`,
-  );
+  if (write) {
+    writeFileSync(home.nostrJson, `${JSON.stringify(nostrJson)}\n`);
+    console.log(
+      `nostr   serve ${home.nostrJson} at https://${split.domain}/.well-known/nostr.json with "Access-Control-Allow-Origin: *"`,
+    );
+  } else {
+    console.log(
+      `nostr   not written: the owner key is encrypted; run check again with the passphrase (${PASSPHRASE_HINT}) to write it`,
+    );
+  }
   const verdict = await checkDomain(split.domain, nostrJson);
   console.log(
     verdict.ok
@@ -239,7 +293,10 @@ async function setup(home: MerchantHome): Promise<void> {
   // lock is held for the whole setup, so a merchant cannot start in between.
   takeLock(home);
   const config = loadConfig(home.config);
-  const keys = loadOrCreateKeys(home, false);
+  // Both secrets first, before anything is checked, signed or published: a
+  // missing or wrong passphrase must never leave a half-published store.
+  const loaded = loadKeys(home);
+  const keys = openSetupKeys(loaded, readPassphrase());
   const state = loadLedger(home.ledger);
   const refusal = setupRefusal(state, config.product.d);
   if (refusal !== undefined) {
@@ -247,7 +304,7 @@ async function setup(home: MerchantHome): Promise<void> {
   }
   const pool = new SimplePool();
   try {
-    const failing = await reportInboxRelays(pool, config, keys);
+    const failing = await reportInboxRelays(pool, config, keys.storeSecretKey);
     if (failing.length > 0) {
       throw new Error(
         `these inbox relays do not take and serve gift wraps for any key: ${failing.join(', ')}. Replace them in config.json.`,
@@ -256,7 +313,7 @@ async function setup(home: MerchantHome): Promise<void> {
     const relays = [...new Set([...OFFER_RELAYS, ...config.inboxRelays])];
     const now = nowSecs();
     const payouts = JSON.stringify(config.payouts);
-    const newest = await newestPayoutList(pool, relays, getPublicKey(keys.ownerSecretKey));
+    const newest = await newestPayoutList(pool, relays, loaded.ownerPubkey);
     const paytoCreatedAt = payoutListDate(state, payouts, newest?.created_at, now);
     const built = buildStoreEvents(config, keys, now, {
       hints: config.inboxRelays.slice(0, 2),
@@ -266,7 +323,13 @@ async function setup(home: MerchantHome): Promise<void> {
     // Kinds a default relay took: every page reads those, whatever its naddr's hints.
     const everywhereKinds = new Set<number>();
     for (const event of built.events) {
-      const accepted = await publishToRelays(pool, relays, event, storeAuth(keys), log);
+      const accepted = await publishToRelays(
+        pool,
+        relays,
+        event,
+        storeAuth(keys.storeSecretKey),
+        log,
+      );
       log(`kind ${event.kind}: accepted by ${accepted.length}/${relays.length}`);
       if (accepted.length > 0) {
         acceptedKinds.add(event.kind);
@@ -298,8 +361,8 @@ async function setup(home: MerchantHome): Promise<void> {
     // reads back from here, not from its own start.
     state.resumeAt ??= now;
     saveLedger(home.ledger, state);
-    console.log(`store   ${getPublicKey(keys.storeSecretKey)}`);
-    console.log(`owner   ${getPublicKey(keys.ownerSecretKey)}`);
+    console.log(`store   ${loaded.storePubkey}`);
+    console.log(`owner   ${loaded.ownerPubkey}`);
     console.log(`naddr   ${built.naddr}`);
     await reportDomain(home, config, built.nostrJson);
     // Buyers send orders to the inbox list: one that did not go out may leave them
@@ -328,10 +391,10 @@ async function setup(home: MerchantHome): Promise<void> {
 async function refuseOffersNotHonoured(
   pool: SimplePool,
   config: MerchantConfig,
-  keys: StoreKeys,
+  pubkeys: { storePubkey: string; ownerPubkey: string },
   state: LedgerState,
 ): Promise<void> {
-  const storePubkey = getPublicKey(keys.storeSecretKey);
+  const { storePubkey, ownerPubkey } = pubkeys;
   // Judged twice: from the default relays, which every page reads, and with the
   // store's own inbox relays too, which a page reads when its naddr hints them.
   const views = [OFFER_RELAYS, [...new Set([...OFFER_RELAYS, ...config.inboxRelays])]];
@@ -339,7 +402,7 @@ async function refuseOffersNotHonoured(
     views.map(async (relays) => {
       const [listing, payoutList, inboxList] = await Promise.all([
         newestListing(pool, relays, storePubkey, config.product.d),
-        newestPayoutList(pool, relays, getPublicKey(keys.ownerSecretKey)),
+        newestPayoutList(pool, relays, ownerPubkey),
         newestInboxList(pool, relays, storePubkey),
       ]);
       return { listing, payoutList, inboxList };
@@ -395,13 +458,14 @@ function deferSignals(): () => number | undefined {
 
 async function run(home: MerchantHome): Promise<void> {
   const config = loadConfig(home.config);
-  const keys = loadOrCreateKeys(home, false);
-  const storePubkey = getPublicKey(keys.storeSecretKey);
+  const loaded = loadKeys(home);
+  const storeSecretKey = openSecret(loaded, 'store', readPassphrase());
+  const storePubkey = loaded.storePubkey;
   takeLock(home);
   // Pings find a half-open socket, which would otherwise never close.
   const pool = new SimplePool({ enablePing: true });
   const state = loadLedger(home.ledger);
-  await refuseOffersNotHonoured(pool, config, keys, state);
+  await refuseOffersNotHonoured(pool, config, loaded, state);
 
   // One queue: every ledger change happens in order, and is saved before anything is sent.
   let queue: Promise<void> = Promise.resolve();
@@ -418,7 +482,12 @@ async function run(home: MerchantHome): Promise<void> {
   ];
   // The store's copies of its replies go to every inbox relay, whichever took the buyer copy.
   const selfCopies = new SelfCopies({
-    publish: publishSelfCopy({ pool, inboxRelays: config.inboxRelays, auth: storeAuth(keys), log }),
+    publish: publishSelfCopy({
+      pool,
+      inboxRelays: config.inboxRelays,
+      auth: storeAuth(storeSecretKey),
+      log,
+    }),
     log,
   });
   process.on('exit', () => {
@@ -431,7 +500,7 @@ async function run(home: MerchantHome): Promise<void> {
   const runtime = new MerchantRuntime({
     state,
     store: storeIdentity(storePubkey, config.product.d, mediums),
-    storeSecretKey: keys.storeSecretKey,
+    storeSecretKey,
     // With no Solana payout the Solana catch-up has no terms to scan and reads nothing.
     context: {
       rpc: createSolanaRpc(config.rpcUrl ?? 'https://api.devnet.solana.com'),
@@ -447,8 +516,8 @@ async function run(home: MerchantHome): Promise<void> {
           pool,
           inboxRelays: config.inboxRelays,
           delivery: config.product.delivery,
-          storeSecretKey: keys.storeSecretKey,
-          auth: storeAuth(keys),
+          storeSecretKey,
+          auth: storeAuth(storeSecretKey),
           log,
           now: nowSecs,
         },
@@ -468,7 +537,7 @@ async function run(home: MerchantHome): Promise<void> {
   const listener = new InboxListener({
     pool,
     storePubkey,
-    auth: storeAuth(keys),
+    auth: storeAuth(storeSecretKey),
     onWrap: (wrap) => {
       if (runtime.admit(wrap)) {
         enqueue(() => runtime.handleWrap(wrap));
@@ -519,7 +588,7 @@ function listOrders(home: MerchantHome): void {
   for (const order of all) {
     const when = new Date(order.createdAt * 1000).toISOString();
     const paid = order.paid === undefined ? '' : ` ${order.paid.amount} ${order.paid.signature}`;
-    const email = order.email === undefined ? '' : ` email=${order.email}`;
+    const email = order.email === undefined ? '' : ` email=${printable(order.email)}`;
     console.log(`${when} ${orderStatus(order)} ${order.key}${paid}${email}`);
   }
   console.log(`${all.length} order(s)`);
@@ -534,20 +603,28 @@ function listOrders(home: MerchantHome): void {
 
 async function check(home: MerchantHome): Promise<void> {
   const config = loadConfig(home.config);
-  const keys = loadOrCreateKeys(home, false);
+  const loaded = loadKeys(home);
+  // The relay probe is signed and AUTHed by the store key; nostr.json is written
+  // only for an owner key that opens here.
+  const { storeSecretKey, writeNostrJson } = openCheckKeys(loaded, readPassphrase());
   if (heldByRunningMerchant(home)) {
     console.log('note    a merchant is running on this home');
   }
   const pool = new SimplePool();
   try {
-    const failing = await reportInboxRelays(pool, config, keys);
+    const failing = await reportInboxRelays(pool, config, storeSecretKey);
     let offers: unknown;
     try {
-      await refuseOffersNotHonoured(pool, config, keys, loadLedger(home.ledger));
+      await refuseOffersNotHonoured(pool, config, loaded, loadLedger(home.ledger));
     } catch (error) {
       offers = error;
     }
-    await reportDomain(home, config, buildStoreEvents(config, keys, nowSecs()).nostrJson);
+    await reportDomain(
+      home,
+      config,
+      storeNostrJson(config, loaded.storePubkey, loaded.ownerPubkey),
+      writeNostrJson,
+    );
     if (offers !== undefined) {
       throw offers;
     }
@@ -590,7 +667,7 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
     throw new Error(`${args.command ?? ''} needs the order: <buyer>:<orderId> (see orders)`);
   }
   const config = loadConfig(home.config);
-  const keys = loadOrCreateKeys(home, false);
+  const storeSecretKey = openSecret(loadKeys(home), 'store', readPassphrase());
   takeLock(home);
   const state = loadLedger(home.ledger);
   const request: HandRequest =
@@ -634,8 +711,14 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   }
   const pool = new SimplePool();
   try {
-    const wrap = buildHandAnswer(plan, keys.storeSecretKey, nowSecs());
-    const sent = await publishHandAnswer(pool, config.inboxRelays, wrap, storeAuth(keys), log);
+    const wrap = buildHandAnswer(plan, storeSecretKey, nowSecs());
+    const sent = await publishHandAnswer(
+      pool,
+      config.inboxRelays,
+      wrap,
+      storeAuth(storeSecretKey),
+      log,
+    );
     const outcome = handOutcome(sent, config.inboxRelays.length);
     for (const line of outcome.lines) {
       console.log(line);
@@ -648,15 +731,59 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   }
 }
 
+/** `encrypt-keys`: seal the home's plain keys with the passphrase, in place. */
+function encryptKeys(home: MerchantHome, ownerOnly: boolean): void {
+  const passphrase = readPassphrase();
+  if (passphrase === undefined) {
+    throw new Error(`encrypt-keys needs the passphrase: ${PASSPHRASE_HINT}`);
+  }
+  const { changed } = encryptHomeKeys(home, passphrase, ownerOnly);
+  if (!changed) {
+    console.log('keys    already encrypted: nothing to do');
+    return;
+  }
+  console.log(`keys    encrypted (${ownerOnly ? 'the owner key only' : 'both keys'})`);
+  for (const note of encryptionNotes(ownerOnly)) {
+    console.log(`note    ${note}`);
+  }
+  console.log('note    older backups and snapshots of this home still hold the plain keys');
+}
+
+/**
+ * `store-key`: the store's secret key, to paste into the admin page on this
+ * machine. Only to a terminal, or with --yes: it must not land in a log
+ * unasked. Never the owner key.
+ */
+function printStoreKey(home: MerchantHome, yes: boolean): void {
+  const nsec = storeKeyForAdmin(
+    loadKeys(home),
+    readPassphrase(),
+    process.stdout.isTTY === true,
+    yes,
+  );
+  console.error(STORE_KEY_WARNING);
+  console.log(nsec);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.network !== undefined && args.command !== 'init') {
     throw new Error('--network is for init; the config names the network');
   }
+  if (args.ownerOnly && args.command !== 'init' && args.command !== 'encrypt-keys') {
+    throw new Error('--owner-only is for init and encrypt-keys');
+  }
   const home = merchantHome(args.home);
   switch (args.command) {
     case 'init':
-      init(home, args.network);
+      init(home, args.network, args.ownerOnly);
+      return;
+    case 'encrypt-keys':
+      encryptKeys(home, args.ownerOnly);
+      process.exit(0);
+      return;
+    case 'store-key':
+      printStoreKey(home, args.yes);
       return;
     case 'setup': {
       const stopRequested = deferSignals();
