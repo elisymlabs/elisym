@@ -75,13 +75,13 @@ Keep it running. It reads orders from your inbox relays, checks each payment on 
 ```html
 <elisym-buy product="naddr1..." network="devnet"></elisym-buy>
 <script
-  src="https://pay.elisym.network/v1/embed.js"
-  integrity="sha384-n2Bj5LKM3OGGlQOwpooaauimc99mLR+4ookl8AeVpG3GjG4aLBc7jV1l2WEljNhH"
+  src="https://pay.elisym.network/v2/embed.js"
+  integrity="sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ"
   crossorigin="anonymous"
 ></script>
 ```
 
-The `integrity` hash pins the exact loader your page runs. The file under `/v1/` never changes, so the hash stays valid. A new loader would ship under a new path.
+The page shows a Buy button that opens the checkout in a modal. Add `display="inline"` to show it in the page instead, and `label="..."` to change the button's text (see [the widget](/commerce/widget)). The `integrity` hash pins the exact loader your page runs. The file under `/v2/` never changes, so the hash stays valid. A new loader would ship under a new path.
 
 No page yet? The repository has a ready one: [`examples/demo-store`](https://github.com/elisymlabs/elisym/tree/main/examples/demo-store) serves a store page on localhost that takes the `naddr` and the network from its URL, and logs the checkout's status events.
 
@@ -89,7 +89,7 @@ No page yet? The repository has a ready one: [`examples/demo-store`](https://git
 
 Serve the page over http(s), for example with `npx serve .` on localhost. A page opened from disk (`file://`) has no origin, and the checkout refuses it. Open it in a browser with a Solana wallet that supports Wallet Standard (Phantom, Solflare, ...), switched to devnet. It needs devnet SOL for fees ([faucet.solana.com](https://faucet.solana.com)) and devnet USDC for the price ([faucet.circle.com](https://faucet.circle.com), Solana -> Devnet).
 
-The checkout shows the product, the price and who is selling it. Pay, and within seconds the node logs the order and the payment, and the checkout shows the delivery.
+Click Buy: the checkout opens and shows the product, the price and who is selling it. Pay, and within seconds the node logs the order and the payment, and the checkout shows the delivery.
 
 ## See your orders
 

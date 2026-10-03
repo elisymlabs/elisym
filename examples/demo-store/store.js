@@ -29,13 +29,20 @@ function onSetupSubmit(event) {
   if (form.get('collect-email') === 'on') {
     next.set('collect-email', '1');
   }
+  if (form.get('inline') === 'on') {
+    next.set('display', 'inline');
+  }
   location.search = next.toString();
 }
 
-function logStatus(event) {
+function logEvent(text) {
   const item = document.createElement('li');
-  item.textContent = `${new Date().toLocaleTimeString()}  ${event.detail.state}`;
+  item.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
   document.getElementById('events').append(item);
+}
+
+function logStatus(event) {
+  logEvent(event.detail.state);
 }
 
 function showStore() {
@@ -50,7 +57,14 @@ function showStore() {
   if (params.get('collect-email') === '1') {
     buy.setAttribute('collect-email', '');
   }
+  if (params.get('display') === 'inline') {
+    buy.setAttribute('display', 'inline');
+  } else {
+    buy.setAttribute('label', 'Buy the demo product');
+  }
   buy.addEventListener('elisym-status', logStatus);
+  buy.addEventListener('elisym-open', () => logEvent('opened'));
+  buy.addEventListener('elisym-close', () => logEvent('closed'));
   document.getElementById('checkout').append(buy);
   document.getElementById('store').hidden = false;
 }
