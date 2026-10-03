@@ -12,6 +12,7 @@ import { type Actions, Checkout } from './Checkout';
 import { type Screen, followOnlyOffer, loadWithPins, screenForPage } from './controller';
 import { discoverEvmWallets, tempoWalletOptions } from './evm-wallets';
 import { acceptHandshake } from './handshake';
+import { armFirstFocus, closeOnEscape } from './modal-frame';
 import { type Banner, CheckoutSession, type View } from './session';
 import { discoverWallets, payingWallets, solanaChain } from './wallets';
 
@@ -41,9 +42,30 @@ const actions: Actions = {
   cancelOldPrompt: () => session?.cancelOldPrompt(),
 };
 
+/** Shown in the page's modal dialog: the frame can ask to close it. */
+const MODAL = params?.display === 'modal';
+const closeModal = MODAL ? () => handshake.post({ type: 'close' }) : undefined;
+const firstFocus = MODAL
+  ? armFirstFocus(window, () =>
+      document.getElementById('store-name')?.focus({ preventScroll: true }),
+    )
+  : undefined;
+
 function draw(): void {
   if (root !== null) {
-    render(<Checkout screen={screen} view={view} banner={banner} actions={actions} />, root);
+    render(
+      <Checkout
+        screen={screen}
+        view={view}
+        banner={banner}
+        actions={actions}
+        {...(closeModal === undefined ? {} : { onClose: closeModal })}
+      />,
+      root,
+    );
+    if (view !== undefined || screen.kind === 'refused') {
+      firstFocus?.ready();
+    }
   }
 }
 
@@ -194,6 +216,9 @@ const handshake = acceptHandshake(
 
 if (params !== undefined) {
   document.documentElement.dataset.theme = params.theme;
+}
+if (closeModal !== undefined) {
+  closeOnEscape(window, closeModal);
 }
 draw();
 

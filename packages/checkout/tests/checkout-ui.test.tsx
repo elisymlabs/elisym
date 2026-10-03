@@ -20,6 +20,7 @@ interface Calls {
 interface DrawProps {
   view?: View;
   banner?: Banner;
+  onClose?: () => void;
 }
 
 /** A `Checkout` in the page, with actions that record what they were asked. */
@@ -537,6 +538,18 @@ describe('the done step', () => {
     await act(async () => ui.button('Copy').click());
     expect(window.getSelection()?.toString()).toBe('KEY-1234');
     expect(ui.text()).toContain('Selected');
+  });
+});
+
+describe('the done step in a modal', () => {
+  it('has Done, which asks the page to close; inline has none', () => {
+    const closes: string[] = [];
+    const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
+    expect(ui.buttons().some((each) => each.textContent === 'Done')).toBe(false);
+    ui.draw({ onClose: () => closes.push('close') });
+    ui.click('Done');
+    expect(closes).toEqual(['close']);
+    expect(ui.calls.startOver).toBe(0);
   });
 });
 

@@ -36,6 +36,8 @@ interface Props {
   /** A late answer for another order of this product, shown above whatever is on screen. */
   banner?: Banner;
   actions: Actions;
+  /** In a modal only: ask the page to close it. */
+  onClose?: () => void;
 }
 
 /** The network a view is about, when it says. */
@@ -58,7 +60,7 @@ function networkOf(view: View | undefined): Network | undefined {
  * it is `https:`. Steps are UI state over the session's views: the session
  * decides what is possible, this only decides which part of the offer shows.
  */
-export function Checkout({ screen, view, banner, actions }: Props) {
+export function Checkout({ screen, view, banner, actions, onClose }: Props) {
   const tracker = useRef(INITIAL_TRACKER);
   const seen = useRef<View | undefined>(undefined);
   const email = useRef('');
@@ -180,7 +182,7 @@ export function Checkout({ screen, view, banner, actions }: Props) {
         );
         break;
       case 'delivered':
-        body = <DoneStep view={view} onBuyAgain={startOver} />;
+        body = <DoneStep view={view} onBuyAgain={startOver} onDone={onClose} />;
         break;
       case 'refunded':
         body = (

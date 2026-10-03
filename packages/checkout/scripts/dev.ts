@@ -46,13 +46,15 @@ if (
 }
 const DEV_DIR = fileURLToPath(new URL('../.dev', import.meta.url));
 
-// The loader, built for the local checkout origin (never the pinned v1 file).
+// The loaders, built for the local checkout origin (never the pinned files).
 process.env.CHECKOUT_ORIGIN = APP_ORIGIN;
-await build({
-  configFile: fileURLToPath(new URL('../vite.embed.config.ts', import.meta.url)),
-  build: { outDir: DEV_DIR, emptyOutDir: true },
-  logLevel: 'warn',
-});
+for (const [index, config] of ['vite.embed.config.ts', 'vite.embed-v2.config.ts'].entries()) {
+  await build({
+    configFile: fileURLToPath(new URL(`../${config}`, import.meta.url)),
+    build: { outDir: DEV_DIR, emptyOutDir: index === 0 },
+    logLevel: 'warn',
+  });
+}
 
 const app = await createServer({
   configFile: fileURLToPath(new URL('../vite.config.ts', import.meta.url)),
@@ -60,30 +62,39 @@ const app = await createServer({
 });
 await app.listen();
 
-const page = `<!doctype html>
+/** The demo page: v2 in a modal by default; `?display=inline`, or `?loader=v1`. */
+function page(search: URLSearchParams): string {
+  const v1 = search.get('loader') === 'v1';
+  const display = v1 ? '' : ` display="${search.get('display') === 'inline' ? 'inline' : 'modal'}"`;
+  return `<!doctype html>
 <html lang="en">
-  <head><meta charset="UTF-8" /><title>Demo store</title></head>
+  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Demo store</title></head>
   <body style="font-family: system-ui; max-width: 480px; margin: 40px auto">
     <h2>Demo store page</h2>
-    <elisym-buy product="${naddr}" network="${network}"></elisym-buy>
+    <p><a href="/">v2 modal</a> · <a href="/?display=inline">v2 inline</a> · <a href="/?loader=v1">v1</a></p>
+    <elisym-buy product="${naddr}" network="${network}"${display}></elisym-buy>
     <pre id="status"></pre>
-    <script src="/v1/embed.js"></script>
+    <script src="/${v1 ? 'v1' : 'v2'}/embed.js"></script>
     <script>
-      document.addEventListener('elisym-status', (event) => {
-        document.getElementById('status').textContent += 'status: ' + event.detail.state + '\\n';
-      });
+      for (const type of ['elisym-status', 'elisym-open', 'elisym-close']) {
+        document.addEventListener(type, (event) => {
+          document.getElementById('status').textContent +=
+            type + (event.detail?.state ? ': ' + event.detail.state : '') + '\\n';
+        });
+      }
     </script>
   </body>
 </html>`;
+}
 
 createHttpServer((request, response) => {
-  const path = new URL(request.url ?? '/', `http://localhost:${PAGE_PORT}`).pathname;
-  if (path === '/v1/embed.js') {
+  const url = new URL(request.url ?? '/', `http://localhost:${PAGE_PORT}`);
+  if (url.pathname === '/v1/embed.js' || url.pathname === '/v2/embed.js') {
     response.writeHead(200, { 'content-type': 'text/javascript' });
-    response.end(readFileSync(`${DEV_DIR}/v1/embed.js`));
+    response.end(readFileSync(`${DEV_DIR}${url.pathname}`));
     return;
   }
   response.writeHead(200, { 'content-type': 'text/html' });
-  response.end(page);
+  response.end(page(url.searchParams));
 }).listen(PAGE_PORT, 'localhost');
 console.log(`Open http://localhost:${PAGE_PORT} (the checkout runs on ${APP_ORIGIN}).`);

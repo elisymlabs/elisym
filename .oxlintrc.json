@@ -51,5 +51,14 @@
       }
     }
   ],
-  "ignorePatterns": ["dist/", "build/", "node_modules/", ".turbo/", "*.mjs"]
+  "ignorePatterns": [
+    "dist/",
+    "build/",
+    "node_modules/",
+    ".turbo/",
+    "*.mjs",
+    "packages/checkout/src/embed/v1/**",
+    "packages/checkout/src/embed/v2/**",
+    "packages/checkout/embed-prod/**"
+  ]
 }

@@ -1,11 +1,7 @@
 /**
  * The messages between the merchant page (`embed.js`) and the checkout iframe.
- * The page learns a state name, the content's height and when to close - never
- * the delivery link, the buyer key or the order id: a scam page framing a real
- * store must not get the buyer's access.
- *
- * The loaders keep frozen copies of this file (`v1/`, `v2/`): a change here
- * reaches the checkout app only. A change the page must see ships as a new loader.
+ * The page learns a state name only - never the delivery link, the buyer key or
+ * the order id: a scam page framing a real store must not get the buyer's access.
  */
 
 /** Page -> iframe: re-sent until acknowledged. */
@@ -18,9 +14,7 @@ export type FrameMessage =
   | { type: 'ack' }
   /** The height the iframe's content needs, in CSS pixels. */
   | { type: 'resize'; height: number }
-  | { type: 'status'; state: CheckoutState }
-  /** In a modal only: the buyer is done (Escape, or Done after a delivery). */
-  | { type: 'close' };
+  | { type: 'status'; state: CheckoutState };
 
 /** What the page may learn about the purchase. */
 export const CHECKOUT_STATES = [
@@ -54,11 +48,6 @@ export interface CheckoutParams {
   theme: 'auto' | 'light' | 'dark';
   /** The merchant asks for the buyer's email (optional for the buyer). */
   collectEmail: boolean;
-  /**
-   * How the page shows the frame: in a modal dialog (v2's default) or in place.
-   * A v1 loader never sends it, so its absence means `inline`.
-   */
-  display: 'modal' | 'inline';
 }
 
 export function encodeCheckoutParams(params: CheckoutParams): string {
@@ -75,8 +64,6 @@ export function encodeCheckoutParams(params: CheckoutParams): string {
   if (params.collectEmail) {
     search.set('email', '1');
   }
-  // Always written: the decoder reads its absence as a v1 loader's inline frame.
-  search.set('display', params.display);
   return search.toString();
 }
 
@@ -95,6 +82,5 @@ export function decodeCheckoutParams(fragment: string): CheckoutParams | undefin
     strictOrigin: search.get('strict') === '1',
     theme: theme === 'light' || theme === 'dark' ? theme : 'auto',
     collectEmail: search.get('email') === '1',
-    display: search.get('display') === 'modal' ? 'modal' : 'inline',
   };
 }
