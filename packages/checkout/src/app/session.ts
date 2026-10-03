@@ -43,8 +43,8 @@ import {
   watchTempoPayment,
 } from '@elisym/commerce/buyer';
 import type { Asset, Network } from '@elisym/pay-core';
-import type { Eip1193Client } from '@elisym/pay-core/evm';
-import type { Rpc, SolanaRpcApi } from '@solana/kit';
+import { type Eip1193Client, readQuantity, withAbort } from '@elisym/pay-core/evm';
+import { type Rpc, type SolanaRpcApi, isSignature } from '@solana/kit';
 import type { CheckoutState } from '../embed/protocol';
 import { type TempoWalletOption, TempoChainUnsupported, walletErrorKind } from './evm-wallets';
 
@@ -75,6 +75,8 @@ export const EPOCH_READ_TIMEOUT_MS = 4_000;
  * has no timeout of its own, and the buyer would wait on "Checking..." forever.
  */
 export const CHAIN_TIME_TIMEOUT_MS = 15_000;
+/** The one look-up of a transaction a receipt may name gives up after this long: no row then. */
+export const TX_CHECK_TIMEOUT_MS = 10_000;
 
 /** A wallet as the screens show it. */
 export interface WalletChoice {
@@ -123,8 +125,10 @@ export interface About {
 }
 
 /**
- * What a finished order was, from its own record: the payment rows only when
- * this checkout saw the payment itself (`paid`), never on the store's word alone.
+ * What a finished order was, from its own record: "Paid" only when this
+ * checkout's own verifier found the payment (`paid`), never on the store's word.
+ * Otherwise the transaction this checkout sent may show (`sent`), and only once
+ * the chain says it went through - which is not proof it paid this order's terms.
  */
 export interface Receipt {
   store: string;
@@ -134,6 +138,8 @@ export interface Receipt {
   orderId: string;
   /** The payment this checkout found: its transaction, and when it was found (seconds). */
   paid?: { tx: string; at?: number; explorer?: string };
+  /** A transaction this checkout sent for the order, found on chain and successful. */
+  sent?: { tx: string; explorer?: string };
   /** When the store's answer was accepted (seconds): the date row when no payment was seen. */
   answeredAt?: number;
 }
@@ -221,12 +227,19 @@ export type View =
       paying?: Paying;
     }
   /** The recipient's transfer policy blocked the payment: the money sits with the guard. */
-  | { kind: 'blocked'; store?: StoreInfo }
+  | { kind: 'blocked'; store?: StoreInfo; product?: About['product'] }
   /** The store cancelled an order that was not paid: a new one may start. */
-  | { kind: 'cancelled'; store?: StoreInfo }
-  | { kind: 'delivered'; text: string; link?: string; store?: StoreInfo; receipt?: Receipt }
-  | { kind: 'refunded'; store?: StoreInfo; receipt?: Receipt }
-  | { kind: 'refused'; message: string; store?: StoreInfo };
+  | { kind: 'cancelled'; store?: StoreInfo; product?: About['product'] }
+  | {
+      kind: 'delivered';
+      text: string;
+      link?: string;
+      store?: StoreInfo;
+      product?: About['product'];
+      receipt?: Receipt;
+    }
+  | { kind: 'refunded'; store?: StoreInfo; product?: About['product']; receipt?: Receipt }
+  | { kind: 'refused'; message: string; store?: StoreInfo; product?: About['product'] };
 
 export interface SessionDeps {
   store: OrderStore;
@@ -363,13 +376,13 @@ function explorerFor(record: OrderRecord, tx: string, network: Network): string 
     return explorerLink(tx, network);
   }
   const template = recordTarget(record)?.caip19.chain.explorerTx;
-  return template === undefined ? '' : template.replace('{tx}', tx);
+  return template === undefined ? '' : template.replace('{tx}', encodeURIComponent(tx));
 }
 
 /** The block explorer page of a Solana transaction. */
 export function explorerLink(signature: string, network: Network): string {
   const cluster = network === 'mainnet' ? '' : `?cluster=${network}`;
-  return `https://explorer.solana.com/tx/${signature}${cluster}`;
+  return `https://explorer.solana.com/tx/${encodeURIComponent(signature)}${cluster}`;
 }
 
 /** A wallet's connect answer: the wallet, or why there is none. */
@@ -396,33 +409,6 @@ function tempoConnectProblem(
   return error instanceof TempoChainUnsupported
     ? 'tempo_unsupported'
     : connectProblem(walletErrorKind(error));
-}
-
-/**
- * A finished order's receipt, entirely from its own record. The payment rows
- * come only from `paidTx`, which this checkout's own chain check wrote: a store
- * can answer an order this checkout never saw paid.
- */
-function receiptOf(record: OrderRecord, network: Network): Receipt {
-  const paying = recordPaying(record);
-  const tx = record.paidTx;
-  const explorer = tx === undefined ? undefined : explorerFor(record, tx, network);
-  return {
-    store: record.offer.profile.name ?? 'Unnamed store',
-    product: record.offer.product.title,
-    ...(paying === undefined ? {} : { paying }),
-    orderId: record.orderId,
-    ...(tx === undefined
-      ? {}
-      : {
-          paid: {
-            tx,
-            ...(record.paidAt === undefined ? {} : { at: record.paidAt }),
-            ...(explorer?.startsWith('https://') === true ? { explorer } : {}),
-          },
-        }),
-    ...(record.status === undefined ? {} : { answeredAt: record.status.at }),
-  };
 }
 
 /** The page-facing state of a record, or none (created: nothing to tell yet). */
@@ -516,6 +502,17 @@ export class CheckoutSession {
   private retrying = false;
   /** The email this session sent with each order it placed (the record keeps none). */
   private readonly sentEmail = new Map<string, string>();
+  /**
+   * Every Tempo hash a wallet returned in this session, by order: a receipt
+   * may name it even after the pending or late hash was let go.
+   */
+  private readonly sentHash = new Map<string, string>();
+  /** Attempts this session proved over: their transaction never landed and is never named. */
+  private readonly overAttemptIds = new Set<string>();
+  /** The transaction each finished order's receipt may name, chosen once. */
+  private readonly receiptCandidates = new Map<string, string>();
+  /** The one on-chain look-up of each such transaction, by order and transaction. */
+  private readonly txChecks = new Map<string, 'pending' | boolean>();
   /**
    * Why a re-check refused this page, while an order kept it from ending: the
    * trust level is no longer shown, and no new purchase is offered.
@@ -833,6 +830,11 @@ export class CheckoutSession {
   }
 
   private async afterTempoPay(result: TempoPayResult): Promise<void> {
+    if (result.ok) {
+      // Remembered before anything else: a store that answered while the wallet was
+      // open makes the record terminal, and its receipt still names what was sent.
+      this.sentHash.set(result.record.orderId, result.hash);
+    }
     if (result.record !== undefined) {
       const stored = await this.deps.store.get(result.record.orderId);
       this.setRecord(stored !== undefined && isTerminal(stored) ? stored : result.record);
@@ -856,6 +858,7 @@ export class CheckoutSession {
       }
       if (result.hashUnsaved === true) {
         this.pendingHash = { orderId: result.record.orderId, hash: result.hash };
+        this.sentHash.set(result.record.orderId, result.hash);
       }
       await this.follow(result.record);
       return;
@@ -1013,6 +1016,7 @@ export class CheckoutSession {
     };
     const timer = this.deps.setInterval(() => void check().catch(() => undefined), WATCH_EVERY_MS);
     this.lateHash = { orderId: record.orderId, hash, timer };
+    this.sentHash.set(record.orderId, hash);
     void check().catch(() => undefined);
   }
 
@@ -1057,6 +1061,146 @@ export class CheckoutSession {
 
   private payingOf(terms: OrderRecord | undefined): Paying | undefined {
     return terms === undefined ? payoutPaying(this.payout) : recordPaying(terms);
+  }
+
+  /**
+   * An order seen ended with nothing found, or an attempt proven over: its
+   * marker's transaction never landed, so no receipt ever names it.
+   */
+  private noteOver(record: OrderRecord): void {
+    if (record.marker !== undefined) {
+      this.overAttemptIds.add(record.marker.attemptId);
+    }
+  }
+
+  /**
+   * The transaction a finished order's receipt may name, chosen once: the
+   * attempt's own (not one proven over), else a Tempo hash a wallet returned
+   * in this session for the order.
+   */
+  private receiptCandidate(record: OrderRecord): string | undefined {
+    const chosen = this.receiptCandidates.get(record.orderId);
+    if (chosen !== undefined) {
+      return chosen;
+    }
+    const marker = record.marker;
+    let tx: string | undefined;
+    if (marker?.rail === 'solana' && !this.overAttemptIds.has(marker.attemptId)) {
+      tx = marker.signature;
+    } else if (marker?.rail === 'tempo' && !this.overAttemptIds.has(marker.attemptId)) {
+      tx = marker.txHash;
+    }
+    tx ??= this.sentHash.get(record.orderId);
+    if (tx !== undefined) {
+      this.receiptCandidates.set(record.orderId, tx);
+    }
+    return tx;
+  }
+
+  /**
+   * A finished order's receipt, entirely from its own record. "Paid" only with
+   * `paidTx` (this checkout's verifier found the payment); otherwise the
+   * transaction this checkout sent, once the chain says it succeeded - looked
+   * up once, after the view is drawn, never shown while unknown.
+   */
+  private receiptOf(record: OrderRecord, network: Network): Receipt {
+    const paying = recordPaying(record);
+    const base = {
+      store: record.offer.profile.name ?? 'Unnamed store',
+      product: record.offer.product.title,
+      ...(paying === undefined ? {} : { paying }),
+      orderId: record.orderId,
+      ...(record.status === undefined ? {} : { answeredAt: record.status.at }),
+    };
+    const paidTx = record.paidTx;
+    if (paidTx !== undefined) {
+      const explorer = explorerFor(record, paidTx, network);
+      return {
+        ...base,
+        paid: {
+          tx: paidTx,
+          ...(record.paidAt === undefined ? {} : { at: record.paidAt }),
+          ...(explorer.startsWith('https://') ? { explorer } : {}),
+        },
+      };
+    }
+    const tx = this.receiptCandidate(record);
+    if (tx === undefined) {
+      return base;
+    }
+    const checked = this.txChecks.get(`${record.orderId}:${tx}`);
+    if (checked === undefined) {
+      this.checkSentTx(record, tx);
+      return base;
+    }
+    if (checked !== true) {
+      return base;
+    }
+    const explorer = explorerFor(record, tx, network);
+    return {
+      ...base,
+      sent: { tx, ...(explorer.startsWith('https://') ? { explorer } : {}) },
+    };
+  }
+
+  /**
+   * Look a sent transaction up once, on the order's own network: found and
+   * successful, or nothing. A late answer only fills the cache; it redraws only
+   * the same finished order, and never during an action.
+   */
+  private checkSentTx(record: OrderRecord, tx: string): void {
+    const key = `${record.orderId}:${tx}`;
+    this.txChecks.set(key, 'pending');
+    void this.sentTxSucceeded(record, tx)
+      .catch(() => false)
+      .then((found) => {
+        this.txChecks.set(key, found);
+        const current = this.record;
+        if (
+          found &&
+          !this.busy &&
+          !this.disposed &&
+          !this.refused &&
+          current?.orderId === record.orderId &&
+          isTerminal(current)
+        ) {
+          this.render();
+        }
+      });
+  }
+
+  private async sentTxSucceeded(record: OrderRecord, tx: string): Promise<boolean> {
+    if (recordTarget(record) === undefined) {
+      return false;
+    }
+    if (recordRail(record) === 'solana') {
+      const rpc = this.rpcOfRecord(record);
+      if (rpc === undefined || !isSignature(tx)) {
+        return false;
+      }
+      const statuses = await rpc
+        .getSignatureStatuses([tx], { searchTransactionHistory: true })
+        .send({ abortSignal: AbortSignal.timeout(TX_CHECK_TIMEOUT_MS) });
+      const status = statuses.value[0];
+      return (
+        status !== null &&
+        status !== undefined &&
+        status.err === null &&
+        (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')
+      );
+    }
+    const client = this.tempoOfRecord(record);
+    if (client === undefined) {
+      return false;
+    }
+    const receipt: unknown = await withAbort(
+      client.request({ method: 'eth_getTransactionReceipt', params: [tx] }),
+      AbortSignal.timeout(TX_CHECK_TIMEOUT_MS),
+    );
+    if (typeof receipt !== 'object' || receipt === null || !('status' in receipt)) {
+      return false;
+    }
+    return readQuantity(receipt.status) === 1n;
   }
 
   /**
@@ -1466,7 +1610,12 @@ export class CheckoutSession {
 
   private refuse(message: string): void {
     this.refused = true;
-    this.deps.onView({ kind: 'refused', message, store: { name: this.offer.offer.profile.name } });
+    this.deps.onView({
+      kind: 'refused',
+      message,
+      store: { name: this.offer.offer.profile.name },
+      product: productOf(this.offer.offer.product),
+    });
     this.status('refused');
   }
 
@@ -1546,6 +1695,7 @@ export class CheckoutSession {
     let record =
       this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
     if (record !== undefined && gone(record)) {
+      this.noteOver(record);
       this.setRecord(undefined);
       record = undefined;
     }
@@ -1735,6 +1885,7 @@ export class CheckoutSession {
     // Ended in another tab with nothing found: the product is free again.
     if (gone(record)) {
       this.adoptLateHash(record);
+      this.noteOver(record);
       const relays = this.relays;
       this.setRecord(undefined);
       this.listenToEnded([record], relays);
@@ -1759,7 +1910,11 @@ export class CheckoutSession {
     }
     this.listen(record);
     if (cancelledUnpaid(record)) {
-      this.deps.onView({ kind: 'cancelled', store: this.storeInfo() });
+      this.deps.onView({
+        kind: 'cancelled',
+        store: this.storeInfo(),
+        product: productOf(record.offer.product),
+      });
       return;
     }
     if (record.state === 'created' || record.state === 'ordered') {
@@ -1785,6 +1940,7 @@ export class CheckoutSession {
     const record = this.record;
     if (record !== undefined && gone(record)) {
       this.adoptLateHash(record);
+      this.noteOver(record);
       const relays = this.relays;
       this.setRecord(undefined);
       this.listenToEnded([record], relays);
@@ -1794,7 +1950,11 @@ export class CheckoutSession {
     }
     if (record === undefined || record.state === 'created' || record.state === 'ordered') {
       if (record !== undefined && cancelledUnpaid(record)) {
-        this.deps.onView({ kind: 'cancelled', store: this.storeInfo() });
+        this.deps.onView({
+          kind: 'cancelled',
+          store: this.storeInfo(),
+          product: productOf(record.offer.product),
+        });
         return;
       }
       this.showOffer(extra.problem);
@@ -1805,6 +1965,7 @@ export class CheckoutSession {
     const status = record.status;
     const paying = recordPaying(record);
     const store = this.storeInfo();
+    const product = productOf(record.offer.product);
     if (record.state === 'completed') {
       const text = status?.delivery ?? '';
       const link = deliveryLink(text);
@@ -1813,12 +1974,18 @@ export class CheckoutSession {
         text,
         ...(link === undefined ? {} : { link }),
         store,
-        receipt: receiptOf(record, network),
+        product,
+        receipt: this.receiptOf(record, network),
       });
       return;
     }
     if (record.state === 'refunded') {
-      this.deps.onView({ kind: 'refunded', store, receipt: receiptOf(record, network) });
+      this.deps.onView({
+        kind: 'refunded',
+        store,
+        product,
+        receipt: this.receiptOf(record, network),
+      });
       return;
     }
     const about = this.aboutOf(record);
@@ -1841,12 +2008,12 @@ export class CheckoutSession {
       return;
     }
     if (record.state === 'blocked') {
-      this.deps.onView({ kind: 'blocked', store });
+      this.deps.onView({ kind: 'blocked', store, product });
       return;
     }
     // The store cancelled and the attempt is over: only a new order is left.
     if (this.attemptOver && status?.status === 'cancelled') {
-      this.deps.onView({ kind: 'cancelled', store });
+      this.deps.onView({ kind: 'cancelled', store, product });
       return;
     }
     const marker = record.marker;
@@ -1987,6 +2154,7 @@ export class CheckoutSession {
         kind: 'refused',
         message: this.followOnly.message,
         store: { name: this.offer.offer.profile.name },
+        product: productOf(this.offer.offer.product),
       });
       this.status('refused');
       return;
@@ -2131,6 +2299,7 @@ export class CheckoutSession {
           this.stopWatching();
           this.attemptProblem = undefined;
           this.attemptOver = true;
+          this.noteOver(watched.record);
           this.render();
           // The attempt provably ended: a delivery already heard now shows.
           void this.showPendingAnswer();
@@ -2220,6 +2389,11 @@ export class CheckoutSession {
    * delivered or refunded and nothing live is on screen, it is shown.
    */
   private listenToEnded(records: readonly OrderRecord[], relays: readonly string[] = []): void {
+    for (const record of records) {
+      if (gone(record)) {
+        this.noteOver(record);
+      }
+    }
     const ended = records
       .filter((record) => gone(record) && !this.background.has(record.orderId))
       .sort((left, right) => right.createdAt - left.createdAt);

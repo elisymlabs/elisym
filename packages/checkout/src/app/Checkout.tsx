@@ -92,8 +92,26 @@ function storeOf(view: View | undefined): StoreInfo | undefined {
   }
 }
 
+/** The product a view is about, when it says: the order's own once there is one. */
+function productOf(view: View | undefined): string | undefined {
+  if (view === undefined) {
+    return undefined;
+  }
+  switch (view.kind) {
+    case 'offer':
+      return view.offer.offer.product.title;
+    case 'working':
+    case 'waiting_payment':
+    case 'waiting_store':
+    case 'old_prompt':
+      return view.about.product.title;
+    default:
+      return view.product?.title;
+  }
+}
+
 /**
- * The checkout card: a header (the store, its trust level), one panel that
+ * The checkout card: a header (the product, the store, its trust level), one panel that
  * grows top to bottom as the purchase goes on, and a footer. Store data is
  * rendered as text only; a delivery is a link only when it is `https:`. The
  * session decides what is possible; this only decides what is open and where
@@ -115,6 +133,7 @@ export function Checkout({
   const seen = useRef<View | undefined>(undefined);
   const email = useRef('');
   const store = useRef<StoreInfo | undefined>(undefined);
+  const product = useRef<string | undefined>(undefined);
   const network = useRef<Network | undefined>(undefined);
   /** A buyer's action is running: the first view it produces takes focus. */
   const armed = useRef(false);
@@ -137,6 +156,7 @@ export function Checkout({
     panel.current = advancePanel(panel.current, view);
     network.current = networkOf(view) ?? network.current;
     store.current = storeOf(view) ?? store.current;
+    product.current = productOf(view) ?? product.current;
     locked.current = false;
     if (view?.kind === 'offer') {
       // Reseeded from the session on every offer: what is shown is what is sent.
@@ -337,8 +357,9 @@ export function Checkout({
   return (
     <>
       <BannerNote banner={banner} />
-      <section class="card" aria-labelledby="store-name" ref={card}>
+      <section class="card" aria-labelledby="checkout-title" ref={card}>
         <Header
+          product={product.current}
           store={store.current}
           testNetwork={network.current !== undefined && network.current !== 'mainnet'}
         />

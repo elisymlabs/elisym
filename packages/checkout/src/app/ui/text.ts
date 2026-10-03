@@ -20,6 +20,27 @@ export const WORKING: Record<Extract<View, { kind: 'working' }>['step'], string>
 
 export const CHAIN_NAMES: Record<Rail, string> = { solana: 'Solana', tempo: 'Tempo' };
 
+/** At most this many characters of a store-given name stay in the DOM (the full one in `title`). */
+export const MAX_SHOWN_CHARS = 200;
+
+/** The user-perceived characters of a text: a cut never splits an emoji or an accent. */
+function graphemes(value: string): string[] {
+  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    return Array.from(segmenter.segment(value), (part) => part.segment);
+  }
+  return Array.from(value);
+}
+
+/** A name as rendered: up to `MAX_SHOWN_CHARS` characters, then an ellipsis. */
+export function shownText(value: string): string {
+  if (value.length <= MAX_SHOWN_CHARS) {
+    return value;
+  }
+  const parts = graphemes(value);
+  return parts.length <= MAX_SHOWN_CHARS ? value : `${parts.slice(0, MAX_SHOWN_CHARS).join('')}…`;
+}
+
 /** "Solana devnet", "Tempo mainnet": the network a payment runs on, always shown. */
 export function networkLabel(chain: Rail, network: Network): string {
   return `${CHAIN_NAMES[chain]} ${network}`;
@@ -151,8 +172,9 @@ export function paidLine(paying: Paying): string {
 
 /**
  * The receipt as plain text, one row per line: what the buyer sees and what
- * "Copy receipt" copies are the same text. The payment rows only when this
- * checkout saw the payment; otherwise the order total, said to be unseen.
+ * "Copy receipt" copies are the same text. "Paid" only when this checkout's
+ * verifier found the payment; otherwise the order total, and the transaction
+ * this checkout sent once the chain says it went through - last, after the order.
  */
 export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded'): string {
   const lines = [
@@ -161,20 +183,12 @@ export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded'): s
   ];
   const amount = receipt.paying === undefined ? undefined : paidLine(receipt.paying);
   const paid = receipt.paid;
-  if (paid !== undefined) {
-    if (amount !== undefined) {
-      lines.push(`Paid: ${amount}`);
-    }
-    if (paid.at !== undefined) {
-      lines.push(`Payment confirmed on: ${new Date(paid.at * 1000).toLocaleString()}`);
-    }
-  } else {
-    if (amount !== undefined) {
-      lines.push(`Order total: ${amount}`);
-    }
-    lines.push('Payment: not seen by this checkout');
+  if (amount !== undefined) {
+    lines.push(paid === undefined ? `Total: ${amount}` : `Paid: ${amount}`);
   }
-  if ((paid === undefined || paid.at === undefined) && receipt.answeredAt !== undefined) {
+  if (paid?.at !== undefined) {
+    lines.push(`Payment confirmed on: ${new Date(paid.at * 1000).toLocaleString()}`);
+  } else if (receipt.answeredAt !== undefined) {
     const label = kind === 'refunded' ? 'Refunded on' : 'Delivered on';
     lines.push(`${label}: ${new Date(receipt.answeredAt * 1000).toLocaleString()}`);
   }
@@ -184,6 +198,8 @@ export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded'): s
   lines.push(`Order: ${receiptField(receipt.orderId)}`);
   if (paid !== undefined) {
     lines.push(`Transaction: ${receiptField(paid.tx)}`);
+  } else if (receipt.sent !== undefined) {
+    lines.push(`Transaction sent: ${receiptField(receipt.sent.tx)}`);
   }
   return lines.join('\n');
 }
