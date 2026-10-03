@@ -9,7 +9,8 @@ import {
   RESEND_EVERY_SECS,
 } from '../src/constants';
 import type { MerchantOrder } from '../src/ledger';
-import { MerchantRuntime, type RuntimeDeps } from '../src/runtime';
+import { type DeliveryAttempt, MerchantRuntime, type RuntimeDeps } from '../src/runtime';
+import { SelfCopies } from '../src/self-copies';
 import type { PaymentCheck } from '../src/solana';
 import { T0, chain, key, referenceFor, signatureOf, world } from './fixtures';
 
@@ -24,6 +25,17 @@ function wrapped(
 ) {
   return wrapOrderMessage(buildOrderMessage(message, T0 + 60), sender.secretKey, recipient)
     .recipientWrap;
+}
+
+/** A stand-in for the store's copy of a reply: what the copy queue is handed. */
+const COPY = wrapped(
+  { type: 'status', buyerPubkey: 'b'.repeat(64), orderId: ORDER_ID, status: 'completed' },
+  key(),
+  key().pubkey,
+);
+
+function attempt(taken: string[], selfWrap: NostrEvent = COPY): DeliveryAttempt {
+  return { taken, selfWrap };
 }
 
 function harness(
@@ -47,7 +59,7 @@ function harness(
     },
     deliver: async (order: MerchantOrder, skip: readonly string[]) => {
       events.push(`deliver:${order.key}`);
-      return delivered ? INBOX.filter((relay) => !skip.includes(relay)) : [];
+      return attempt(delivered ? INBOX.filter((relay) => !skip.includes(relay)) : []);
     },
     inboxRelayCount: INBOX.length,
     log: () => undefined,
@@ -453,7 +465,7 @@ describe('a delivered order read again', () => {
       ...deps,
       deliver: (order) => {
         events.push(`deliver:${order.key}`);
-        return new Promise<string[]>(() => undefined);
+        return new Promise<DeliveryAttempt>(() => undefined);
       },
     });
     for (const orderWrap of orders) {
@@ -486,7 +498,7 @@ describe('delivering to the inbox relays', () => {
         const targets = INBOX.filter((relay) => !skip.includes(relay));
         sentTo.push(targets);
         // The second relay is down.
-        return targets.filter((relay) => relay === INBOX[0]);
+        return attempt(targets.filter((relay) => relay === INBOX[0]));
       },
     });
     await flaky.handleWrap(order);
@@ -524,7 +536,10 @@ describe('delivering to the inbox relays', () => {
       },
     };
     const answers: string[][] = [[], [INBOX[0] as string]];
-    const runtime = new MerchantRuntime({ ...deps, deliver: async () => answers.shift() ?? [] });
+    const runtime = new MerchantRuntime({
+      ...deps,
+      deliver: async () => attempt(answers.shift() ?? []),
+    });
     await runtime.deliverPending();
     expect(saved).toHaveLength(0);
     await runtime.deliverPending();
@@ -560,7 +575,7 @@ describe('delivering to the inbox relays', () => {
         most = Math.max(most, inFlight);
         await new Promise((resolve) => setTimeout(resolve, 5));
         inFlight -= 1;
-        return INBOX;
+        return attempt(INBOX);
       },
     });
     await runtime.deliverPending();
@@ -568,6 +583,174 @@ describe('delivering to the inbox relays', () => {
     expect(Object.values(state.orders).every((order) => order.deliveredAt !== undefined)).toBe(
       true,
     );
+  });
+});
+
+describe("the store's copy of a delivery", () => {
+  function copyQueue() {
+    const published: NostrEvent[] = [];
+    const selfCopies = new SelfCopies({
+      publish: async (wrap) => {
+        published.push(wrap);
+        return ['wss://inbox-a'];
+      },
+      log: () => undefined,
+      later: () => undefined,
+    });
+    return { selfCopies, published };
+  }
+
+  it('is queued once per order, on the attempt that makes it delivered, never on a resend', async () => {
+    let clock = T0 + 100;
+    const { deps, order, receipt, state, buyer } = harness('paid', true, () => clock);
+    const { selfCopies, published } = copyQueue();
+    const copies: NostrEvent[] = [];
+    let call = 0;
+    const runtime = new MerchantRuntime({
+      ...deps,
+      selfCopies,
+      deliver: async (_order, skip) => {
+        call += 1;
+        const own = wrapped(
+          { type: 'status', buyerPubkey: buyer.pubkey, orderId: ORDER_ID, status: 'completed' },
+          key(),
+          key().pubkey,
+        );
+        copies.push(own);
+        // First attempt: one relay of two. Then the other relay stays down.
+        const taken = call === 1 ? [INBOX[0] as string] : [];
+        return attempt(
+          taken.filter((relay) => !skip.includes(relay)),
+          own,
+        );
+      },
+    });
+    await runtime.handleWrap(order);
+    await runtime.handleWrap(receipt);
+    await runtime.deliverPending();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const held = state.orders[`${buyer.pubkey}:${ORDER_ID}`];
+    expect(held?.deliveredAt).toBeUndefined();
+    expect(published).toEqual([]);
+    // The settle path: the attempt that makes it delivered reached no relay itself.
+    clock = (held?.paid?.blockTime ?? 0) + DELIVERY_SETTLE_SECS;
+    await runtime.deliverPending();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(held?.deliveredAt).toBe(clock);
+    expect(published).toEqual([copies.at(-1)]);
+    // A resend sends the buyer the delivery again, and makes no second copy.
+    clock += RESEND_EVERY_SECS;
+    const callsBefore = call;
+    await runtime.handleWrap(order);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(call).toBe(callsBefore + 1);
+    expect(published).toHaveLength(1);
+  });
+
+  it('never holds up or fails a delivery when its copy hangs or fails', async () => {
+    for (const publish of [
+      () => new Promise<string[]>(() => undefined),
+      async (): Promise<string[]> => {
+        throw new Error('relay down');
+      },
+    ]) {
+      const { deps, state, events } = harness('paid', true, () => T0 + 100);
+      state.orders.k = {
+        key: 'k',
+        buyerPubkey: 'b',
+        orderId: 'o',
+        rumorId: 'r',
+        createdAt: T0,
+        reference: 'x',
+        reportedTxs: [],
+        paid: {
+          signature: signatureOf(53),
+          amount: '1',
+          blockTime: T0 + 90,
+          caip19: 'x',
+          medium: 'solana-devnet',
+        },
+      };
+      const selfCopies = new SelfCopies({ publish, log: () => undefined, later: () => undefined });
+      const runtime = new MerchantRuntime({ ...deps, selfCopies });
+      await runtime.deliverPending();
+      expect(state.orders.k?.deliveredAt).toBe(T0 + 100);
+      expect(events.at(-1)).toBe('save');
+    }
+  });
+
+  it('waits while buyer deliveries are published', async () => {
+    const { deps, state } = harness('paid', true, () => T0 + 100);
+    const { selfCopies, published } = copyQueue();
+    state.orders.k = {
+      key: 'k',
+      buyerPubkey: 'b',
+      orderId: 'o',
+      rumorId: 'r',
+      createdAt: T0,
+      reference: 'x',
+      reportedTxs: [],
+      paid: {
+        signature: signatureOf(51),
+        amount: '1',
+        blockTime: T0 + 90,
+        caip19: 'x',
+        medium: 'solana-devnet',
+      },
+    };
+    let release: (() => void) | undefined;
+    const runtime = new MerchantRuntime({
+      ...deps,
+      selfCopies,
+      deliver: () =>
+        new Promise<DeliveryAttempt>((resolve) => {
+          release = () => resolve(attempt(INBOX));
+        }),
+    });
+    const delivering = runtime.deliverPending();
+    // A copy queued earlier (say, a retry) must not go out while the buyer's does.
+    selfCopies.add(COPY, 'earlier');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(published).toEqual([]);
+    release?.();
+    await delivering;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(published).toEqual([COPY, COPY]);
+  });
+
+  it('logs a copy it could not make when the delivery itself could not be built', async () => {
+    const logs: string[] = [];
+    const { deps, state } = harness('paid', true, () => T0 + 100 + DELIVERY_SETTLE_SECS);
+    const { selfCopies, published } = copyQueue();
+    state.orders.k = {
+      key: 'k',
+      buyerPubkey: 'b',
+      orderId: 'o',
+      rumorId: 'r',
+      createdAt: T0,
+      reference: 'x',
+      reportedTxs: [],
+      deliveredTo: [INBOX[0] as string],
+      paid: {
+        signature: signatureOf(52),
+        amount: '1',
+        blockTime: T0 + 90,
+        caip19: 'x',
+        medium: 'solana-devnet',
+      },
+    };
+    const runtime = new MerchantRuntime({
+      ...deps,
+      selfCopies,
+      log: (message) => logs.push(message),
+      deliver: async () => {
+        throw new Error('cannot build');
+      },
+    });
+    await runtime.deliverPending();
+    expect(state.orders.k?.deliveredAt).toBeDefined();
+    expect(published).toEqual([]);
+    expect(logs).toContain('copy for k not made: the delivery could not be built');
   });
 });
 

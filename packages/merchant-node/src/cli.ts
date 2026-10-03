@@ -24,7 +24,9 @@ import {
   SOLANA_MEDIUMS,
   TERMS_CLOCK_MARGIN_SECS,
 } from './constants';
+import { deliverOrder, publishSelfCopy } from './deliver';
 import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } from './hand';
+import { handOutcome, publishHandAnswer } from './hand-publish';
 import {
   type MerchantHome,
   ensureHome,
@@ -37,8 +39,8 @@ import { storeIdentity } from './intake';
 import { type LedgerState, type MerchantOrder, loadLedger, saveLedger } from './ledger';
 import { InboxListener } from './listener';
 import { publishToRelays } from './publish';
-import { buildDeliveryReply, deliveryDone } from './reply';
 import { MerchantRuntime } from './runtime';
+import { SelfCopies } from './self-copies';
 import { payoutListDate, recordPublished, setupRefusal } from './setup-ledger';
 import { type StoreKeys, buildStoreEvents } from './store-events';
 import { tempoContextFor } from './tempo';
@@ -54,8 +56,10 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
   check  check the inbox relays, the owner's payout list and the domain
   deliver <buyer>:<orderId> [--yes]
          answer an unpaid order by hand with the configured delivery
-  refund <buyer>:<orderId> --tx <refund tx> --amount <subunits> [--yes]
+  refund <buyer>:<orderId> --tx <refund tx> --amount <subunits> [--asset <caip19>] [--yes]
          answer an unpaid order by hand with a refund you already sent
+         (--asset: the refunded coin; required when the store has several payouts,
+         and ignored, with a warning, when re-sending an answer kept without one)
          (both need the node stopped; --yes skips the confirmation)
 
 The home is --home, else $ELISYM_MERCHANT_HOME, else ~/.elisym-merchant.
@@ -86,6 +90,7 @@ interface Args {
   network: string | undefined;
   tx: string | undefined;
   amount: string | undefined;
+  asset: string | undefined;
   yes: boolean;
 }
 
@@ -94,6 +99,7 @@ const VALUE_FLAGS = {
   '--network': 'network',
   '--tx': 'tx',
   '--amount': 'amount',
+  '--asset': 'asset',
 } as const;
 
 function isValueFlag(arg: string): arg is keyof typeof VALUE_FLAGS {
@@ -108,6 +114,7 @@ function parseArgs(argv: readonly string[]): Args {
     network: undefined,
     tx: undefined,
     amount: undefined,
+    asset: undefined,
     yes: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -386,25 +393,6 @@ function deferSignals(): () => number | undefined {
   return () => requested;
 }
 
-/** Publish the delivery of a paid order to the inbox relays not in `skip`; the ones that took it. */
-async function deliver(
-  pool: SimplePool,
-  order: MerchantOrder,
-  skip: readonly string[],
-  config: MerchantConfig,
-  keys: StoreKeys,
-): Promise<string[]> {
-  const reply = buildDeliveryReply(order, config.product.delivery, keys.storeSecretKey, nowSecs());
-  // By convention the store replies on its OWN inbox relays: the buyer key has none.
-  return await publishToRelays(
-    pool,
-    config.inboxRelays.filter((relay) => !skip.includes(relay)),
-    reply.recipientWrap,
-    storeAuth(keys),
-    log,
-  );
-}
-
 async function run(home: MerchantHome): Promise<void> {
   const config = loadConfig(home.config);
   const keys = loadOrCreateKeys(home, false);
@@ -428,6 +416,18 @@ async function run(home: MerchantHome): Promise<void> {
     ...(config.rpcUrl === undefined ? [] : [SOLANA_MEDIUMS[config.network]]),
     ...(tempo === undefined ? [] : [tempo.medium]),
   ];
+  // The store's copies of its replies go to every inbox relay, whichever took the buyer copy.
+  const selfCopies = new SelfCopies({
+    publish: publishSelfCopy({ pool, inboxRelays: config.inboxRelays, auth: storeAuth(keys), log }),
+    log,
+  });
+  process.on('exit', () => {
+    if (selfCopies.pending > 0) {
+      log(
+        `${selfCopies.pending} copy(ies) for the admin lost: the node stopped before sending them`,
+      );
+    }
+  });
   const runtime = new MerchantRuntime({
     state,
     store: storeIdentity(storePubkey, config.product.d, mediums),
@@ -441,7 +441,21 @@ async function run(home: MerchantHome): Promise<void> {
     // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
     ...(config.rpcUrl === undefined ? { catchUp: async () => ({ paid: [], incomplete: [] }) } : {}),
     save: () => saveLedger(home.ledger, state),
-    deliver: (order, skip) => deliver(pool, order, skip, config, keys),
+    deliver: (order, skip) =>
+      deliverOrder(
+        {
+          pool,
+          inboxRelays: config.inboxRelays,
+          delivery: config.product.delivery,
+          storeSecretKey: keys.storeSecretKey,
+          auth: storeAuth(keys),
+          log,
+          now: nowSecs,
+        },
+        order,
+        skip,
+      ),
+    selfCopies,
     inboxRelayCount: config.inboxRelays.length,
     log,
     now: nowSecs,
@@ -582,7 +596,13 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   const request: HandRequest =
     args.command === 'deliver'
       ? { kind: 'delivered', delivery: config.product.delivery }
-      : { kind: 'refunded', tx: args.tx ?? '', amount: args.amount ?? '' };
+      : {
+          kind: 'refunded',
+          tx: args.tx ?? '',
+          amount: args.amount ?? '',
+          ...(args.asset === undefined ? {} : { asset: args.asset }),
+          payoutAssets: config.payouts.map((payout) => payout.caip19),
+        };
   const plan = planHandAnswer(state, key, request);
   if (!plan.ok) {
     throw new Error(plan.problem);
@@ -596,10 +616,13 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   if (order?.blockedTx !== undefined) {
     console.log(`blocked  ${order.blockedTx}`);
   }
+  if (plan.warning !== undefined) {
+    console.log(`warning  ${plan.warning}`);
+  }
   const what =
     plan.answer.kind === 'delivered'
       ? `deliver "${plan.answer.delivery?.value ?? ''}"`
-      : `report a refund of ${plan.answer.amount ?? ''} in ${plan.answer.tx ?? ''}`;
+      : `report a refund of ${plan.answer.amount ?? ''}${plan.answer.caip19 === undefined ? '' : ` ${plan.answer.caip19}`} in ${plan.answer.tx ?? ''}`;
   if (
     !(await confirmed(`${plan.rerun ? 'Send again' : 'Close the order and'} ${what}?`, args.yes))
   ) {
@@ -612,17 +635,12 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   const pool = new SimplePool();
   try {
     const wrap = buildHandAnswer(plan, keys.storeSecretKey, nowSecs());
-    const taken = await publishToRelays(
-      pool,
-      config.inboxRelays,
-      wrap.recipientWrap,
-      storeAuth(keys),
-      log,
-    );
-    console.log(
-      `taken by ${taken.length} of ${config.inboxRelays.length}: ${taken.join(', ') || '-'}`,
-    );
-    if (!deliveryDone(taken.length, config.inboxRelays.length, 0)) {
+    const sent = await publishHandAnswer(pool, config.inboxRelays, wrap, storeAuth(keys), log);
+    const outcome = handOutcome(sent, config.inboxRelays.length);
+    for (const line of outcome.lines) {
+      console.log(line);
+    }
+    if (!outcome.done) {
       throw new Error('too few inbox relays took it: run the same command again to send it again');
     }
   } finally {

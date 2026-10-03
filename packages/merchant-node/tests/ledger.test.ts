@@ -71,4 +71,10 @@ describe('ledger', () => {
     expect(loadLedger(path)).toEqual(state);
     expect(() => readFileSync(`${path}.tmp`)).toThrow();
   });
+
+  it('refuses to start empty when the ledger exists but cannot be read', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'merchant-ledger-'));
+    // A directory where the file should be: a read error that is not "missing".
+    expect(() => loadLedger(directory)).toThrow(/EISDIR/);
+  });
 });

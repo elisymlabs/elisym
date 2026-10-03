@@ -1,4 +1,9 @@
-import { type WrappedOrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
+import {
+  type WrappedOrderMessage,
+  buildOrderMessage,
+  parseCaip19,
+  wrapOrderMessage,
+} from '@elisym/commerce';
 import { DELIVERY_RELAYS_WANTED, DELIVERY_SETTLE_SECS } from './constants';
 import type { MerchantOrder } from './ledger';
 
@@ -6,6 +11,14 @@ export interface Delivery {
   method: 'download' | 'license' | 'access' | 'webhook' | 'api';
   /** Shown to the buyer as text, or opened as a link only when it is `https:`. */
   value: string;
+}
+
+/**
+ * The paid asset as the status names it, or `undefined` for one the registry no
+ * longer knows: the asset only labels the receipt, so it never blocks a delivery.
+ */
+export function creditedAsset(caip19: string): string | undefined {
+  return parseCaip19(caip19) === undefined ? undefined : caip19;
 }
 
 /**
@@ -22,6 +35,7 @@ export function buildDeliveryReply(
   if (order.paid === undefined) {
     throw new Error('Only a paid order is delivered');
   }
+  const asset = creditedAsset(order.paid.caip19);
   const rumor = buildOrderMessage(
     {
       type: 'status',
@@ -34,6 +48,7 @@ export function buildDeliveryReply(
         tx: order.paid.signature,
         amount: order.paid.amount,
         fee: '0',
+        ...(asset === undefined ? {} : { caip19: asset }),
       },
     },
     createdAt,

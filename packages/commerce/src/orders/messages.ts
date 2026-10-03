@@ -25,6 +25,8 @@ const CURRENCY_RE = /^[A-Z]{3}$/;
 const MEDIUM_RE = /^[a-z0-9-]{1,32}$/;
 const TX_RE = /^[A-Za-z0-9]{1,128}$/;
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}$/;
+/** The shape of a CAIP-19 asset id (`<namespace>:<reference>/<asset namespace>:<asset reference>`). */
+const CAIP19_RE = /^[-a-z0-9]{3,8}:[-_a-zA-Z0-9]{1,32}\/[-a-z0-9]{3,8}:[-.%a-zA-Z0-9]{1,128}$/;
 
 const ORDER_MESSAGE_TYPES: readonly string[] = ['order', 'payment_request', 'status', 'receipt'];
 
@@ -72,9 +74,12 @@ export interface OrderStatusMessage {
   status: OrderStatus;
   /** Store-supplied and unchecked: show it as text, or open it only as an `https:` link. */
   delivery?: { method: DeliveryMethod; value: string };
-  /** The payment the store credited: amounts in subunits of the paid asset. */
-  receipt?: { medium: string; tx: string; amount: string; fee: string };
-  refund?: { tx: string; amount: string };
+  /**
+   * The payment the store credited: amounts in subunits of the paid asset, named
+   * by `caip19` when the store says which (an older store does not).
+   */
+  receipt?: { medium: string; tx: string; amount: string; fee: string; caip19?: string };
+  refund?: { tx: string; amount: string; caip19?: string };
 }
 
 /**
@@ -199,18 +204,28 @@ export function buildOrderMessage(
         assertMatches(message.receipt.tx, TX_RE, 'receipt tx');
         assertMatches(message.receipt.amount, SUBUNITS_RE, 'receipt amount');
         assertMatches(message.receipt.fee, SUBUNITS_RE, 'receipt fee');
-        tags.push([
+        const receiptTag = [
           'receipt',
           message.receipt.medium,
           message.receipt.tx,
           message.receipt.amount,
           message.receipt.fee,
-        ]);
+        ];
+        if (message.receipt.caip19 !== undefined) {
+          assertMatches(message.receipt.caip19, CAIP19_RE, 'receipt asset');
+          receiptTag.push(message.receipt.caip19);
+        }
+        tags.push(receiptTag);
       }
       if (message.refund !== undefined) {
         assertMatches(message.refund.tx, TX_RE, 'refund tx');
         assertMatches(message.refund.amount, SUBUNITS_RE, 'refund amount');
-        tags.push(['refund', message.refund.tx, message.refund.amount]);
+        const refundTag = ['refund', message.refund.tx, message.refund.amount];
+        if (message.refund.caip19 !== undefined) {
+          assertMatches(message.refund.caip19, CAIP19_RE, 'refund asset');
+          refundTag.push(message.refund.caip19);
+        }
+        tags.push(refundTag);
       }
       return { kind: KIND_ORDER_MESSAGE, created_at: createdAt, tags, content: '' };
     }
@@ -312,7 +327,7 @@ function readStatus(tags: Tags, orderId: string): OrderStatusMessage | undefined
     message.delivery = { method, value: deliveryValue };
   }
   const receiptTag = tagsNamed(tags, 'receipt')[0];
-  const [, medium, tx, amount, fee] = receiptTag ?? [];
+  const [, medium, tx, amount, fee, receiptAsset] = receiptTag ?? [];
   if (
     medium &&
     MEDIUM_RE.test(medium) &&
@@ -324,11 +339,18 @@ function readStatus(tags: Tags, orderId: string): OrderStatusMessage | undefined
     SUBUNITS_RE.test(fee)
   ) {
     message.receipt = { medium, tx, amount, fee };
+    // An asset that is not a CAIP-19 drops only the asset, never the receipt.
+    if (receiptAsset !== undefined && CAIP19_RE.test(receiptAsset)) {
+      message.receipt.caip19 = receiptAsset;
+    }
   }
   const refundTag = tagsNamed(tags, 'refund')[0];
-  const [, refundTx, refundAmount] = refundTag ?? [];
+  const [, refundTx, refundAmount, refundAsset] = refundTag ?? [];
   if (refundTx && TX_RE.test(refundTx) && refundAmount && SUBUNITS_RE.test(refundAmount)) {
     message.refund = { tx: refundTx, amount: refundAmount };
+    if (refundAsset !== undefined && CAIP19_RE.test(refundAsset)) {
+      message.refund.caip19 = refundAsset;
+    }
   }
   return message;
 }

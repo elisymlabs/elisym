@@ -1,4 +1,4 @@
-import { buildPaytoEvent, buildProductEvent } from '@elisym/commerce';
+import { buildPaytoEvent, buildProductEvent, unwrapOrderMessage } from '@elisym/commerce';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import { type EventTemplate, type VerifiedEvent, finalizeEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
@@ -88,6 +88,41 @@ describe('checking the inbox relays', () => {
     'wss://c': 'refuses',
     'wss://d': 'auth-then-recipient-only',
   };
+
+  it('publishes the probe alone: no copy wrapped to the store key', async () => {
+    const store = key();
+    const connect = relays({ 'wss://a': 'serves' });
+    const base = connect();
+    const published: NostrEvent[] = [];
+    const writer = {
+      ensureRelay: async (url: string): Promise<PublishRelay> => {
+        const relay = await base.ensureRelay(url);
+        return {
+          ...relay,
+          publish: async (event: NostrEvent) => {
+            published.push(event);
+            return relay.publish(event);
+          },
+        };
+      },
+    };
+    await checkInboxRelays(
+      writer,
+      connect(),
+      ['wss://a'],
+      store.secretKey,
+      async (template) => finalizeEvent(template, store.secretKey),
+      () => undefined,
+      T0,
+    );
+    expect(published).toHaveLength(1);
+    const [probe] = published;
+    expect(probe?.tags.some((tag) => tag[0] === 'p' && tag[1] === store.pubkey)).toBe(false);
+    if (probe === undefined) {
+      throw new Error('no probe published');
+    }
+    expect(unwrapOrderMessage(probe, store.secretKey)).toBeUndefined();
+  });
 
   it('says which relays take and serve a gift wrap for any key', async () => {
     const store = key();

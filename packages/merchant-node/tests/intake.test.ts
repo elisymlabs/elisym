@@ -1,3 +1,4 @@
+import { buildOrderMessage, unwrapOrderMessage, wrapOrderMessage } from '@elisym/commerce';
 import { describe, expect, it } from 'vitest';
 import { intake } from '../src/intake';
 import { T0, delivered, key, orderFrom, referenceFor, signatureOf, world } from './fixtures';
@@ -123,6 +124,36 @@ describe('intake of an order', () => {
       kind: 'ignored',
       reason: 'not_for_this_store',
     });
+  });
+});
+
+describe('intake of what the store key sealed', () => {
+  it('never takes an order sealed by the store itself, even one addressed to the store', () => {
+    const { store, identity, state } = world();
+    const result = intake(state, orderFrom(store, store, ORDER_ID), identity);
+    expect(result).toEqual({ kind: 'ignored', reason: 'own_message' });
+    expect(state.orders).toEqual({});
+    expect(state.seenRumors).toEqual({});
+  });
+
+  it("ignores the store's own copy of a reply it sent a buyer", () => {
+    const { store, identity, state } = world();
+    const buyer = key();
+    const wrapped = wrapOrderMessage(
+      buildOrderMessage(
+        { type: 'status', buyerPubkey: buyer.pubkey, orderId: ORDER_ID, status: 'completed' },
+        T0 + 60,
+      ),
+      store.secretKey,
+      buyer.pubkey,
+    );
+    const copy = unwrapOrderMessage(wrapped.selfWrap, store.secretKey);
+    expect(copy?.senderPubkey).toBe(store.pubkey);
+    if (copy === undefined) {
+      throw new Error('the copy did not open with the store key');
+    }
+    expect(intake(state, copy, identity)).toEqual({ kind: 'ignored', reason: 'own_message' });
+    expect(state.orders).toEqual({});
   });
 });
 

@@ -78,6 +78,18 @@ export const RESEND_EVERY_SECS = 10 * 60;
 export const MAX_REPEATS_IN_FLIGHT = 4;
 
 /**
+ * The store's copies of its replies (for the admin) waiting to be published: a
+ * catch-up delivers every paid order at once. A copy is lost past this.
+ */
+export const SELF_COPY_QUEUE_MAX = 512;
+
+/** Copies published at once. */
+export const SELF_COPY_CONCURRENCY = 8;
+
+/** A copy no inbox relay took is tried again after these pauses: three tries in all. */
+export const SELF_COPY_RETRY_DELAYS_MS: readonly number[] = [10_000, 60_000];
+
+/**
  * A delivery counts as done once this many of the store's inbox relays took it
  * (or all of them, when fewer are configured) - one relay may drop it later.
  */

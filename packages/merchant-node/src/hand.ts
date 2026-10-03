@@ -4,14 +4,27 @@
  * reverted, a late approval). The rules are pure, so the CLI only sequences them:
  * the close is saved first, then the answer is published.
  */
-import { type WrappedOrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
+import {
+  type WrappedOrderMessage,
+  buildOrderMessage,
+  parseCaip19,
+  wrapOrderMessage,
+} from '@elisym/commerce';
 import { type HandAnswer, type LedgerState, markTempo } from './ledger';
 import type { Delivery } from './reply';
 import { isSolanaSignature } from './signature';
 
 export type HandRequest =
   | { kind: 'delivered'; delivery: Delivery }
-  | { kind: 'refunded'; tx: string; amount: string };
+  | {
+      kind: 'refunded';
+      tx: string;
+      amount: string;
+      /** `--asset`: the refunded coin, as CAIP-19. */
+      asset?: string;
+      /** The configured payouts' assets: the default when there is exactly one. */
+      payoutAssets: readonly string[];
+    };
 
 export type HandPlan =
   | {
@@ -22,6 +35,8 @@ export type HandPlan =
       orderId: string;
       /** A rerun of an answer already saved: nothing is written again. */
       rerun: boolean;
+      /** Said to the operator before sending. */
+      warning?: string;
     }
   | { ok: false; problem: string };
 
@@ -65,6 +80,26 @@ export function planHandAnswer(state: LedgerState, key: string, request: HandReq
         problem: `${key} was already answered as ${stored.kind}: the other answer is refused`,
       };
     }
+    // A rerun sends what was sent: the default asset never applies, and only an
+    // explicit --asset that differs from the stored one is refused.
+    if (request.kind === 'refunded' && request.asset !== undefined) {
+      if (stored.caip19 === undefined) {
+        return {
+          ok: true,
+          answer: stored,
+          buyerPubkey,
+          orderId,
+          rerun: true,
+          warning: `${key} was answered without an asset: it is sent again unchanged, without --asset`,
+        };
+      }
+      if (stored.caip19 !== request.asset) {
+        return {
+          ok: false,
+          problem: `${key} was refunded in ${stored.caip19}: --asset ${request.asset} is refused`,
+        };
+      }
+    }
     return { ok: true, answer: stored, buyerPubkey, orderId, rerun: true };
   }
   const order = state.orders[key];
@@ -77,16 +112,59 @@ export function planHandAnswer(state: LedgerState, key: string, request: HandReq
       problem: `${key} is paid: the node delivers it itself (a refund of a delivered order is not handled here)`,
     };
   }
+  let asset: string | undefined;
+  if (request.kind === 'refunded') {
+    const chosen = refundAsset(request);
+    if (!chosen.ok) {
+      return chosen;
+    }
+    asset = chosen.asset;
+  }
   const answer: HandAnswer = {
     kind: request.kind,
     ...(request.kind === 'delivered'
       ? { delivery: { ...request.delivery } }
-      : { tx: request.tx, amount: request.amount }),
+      : {
+          tx: request.tx,
+          amount: request.amount,
+          ...(asset === undefined ? {} : { caip19: asset }),
+        }),
     reportedTxs: [...(order?.reportedTxs ?? [])],
     refusedTxs: [...(order?.refusedTxs ?? [])],
     noLegTxs: [...(order?.noLegTxs ?? [])],
   };
   return { ok: true, answer, buyerPubkey, orderId, rerun: false };
+}
+
+/**
+ * The asset of a new refund: `--asset`, else the only configured payout. It must
+ * be a coin the registry knows (a refund may be in one since removed from the
+ * config), and the refund tx must be of its chain.
+ */
+function refundAsset(
+  request: Extract<HandRequest, { kind: 'refunded' }>,
+): { ok: true; asset: string } | { ok: false; problem: string } {
+  const [only, ...others] = request.payoutAssets;
+  const asset = request.asset ?? (others.length === 0 ? only : undefined);
+  if (asset === undefined) {
+    return {
+      ok: false,
+      problem: 'the store has several payouts: pass --asset <caip19> for the coin refunded',
+    };
+  }
+  const parsed = parseCaip19(asset);
+  if (parsed === undefined) {
+    return { ok: false, problem: `--asset ${asset} is not an asset this node knows` };
+  }
+  const ofChain =
+    parsed.chain.family === 'evm' ? TEMPO_HASH_RE.test(request.tx) : isSolanaSignature(request.tx);
+  if (!ofChain) {
+    return {
+      ok: false,
+      problem: `the refund tx is not a ${parsed.chain.family === 'evm' ? 'Tempo' : 'Solana'} transaction, as ${asset} needs`,
+    };
+  }
+  return { ok: true, asset };
 }
 
 /**
@@ -127,7 +205,11 @@ export function buildHandAnswer(
           buyerPubkey: plan.buyerPubkey,
           orderId: plan.orderId,
           status: 'cancelled',
-          refund: { tx: answer.tx ?? '', amount: answer.amount ?? '' },
+          refund: {
+            tx: answer.tx ?? '',
+            amount: answer.amount ?? '',
+            ...(answer.caip19 === undefined ? {} : { caip19: answer.caip19 }),
+          },
         },
     createdAt,
   );
