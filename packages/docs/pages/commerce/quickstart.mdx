@@ -151,9 +151,9 @@ A buyer who cannot finish a purchase is told to contact the store: a payment the
 
 ```bash
 npx @elisym/merchant-node deliver <buyer>:<orderId>
-npx @elisym/merchant-node refund <buyer>:<orderId> --tx <your refund transaction> --amount <subunits>
+npx @elisym/merchant-node refund <buyer>:<orderId> --tx <your refund transaction> --amount <subunits> --asset <caip19 of the refunded coin>
 ```
 
-`deliver` sends the configured delivery; `refund` reports a refund you already sent (above zero; an unpaid order is released with `deliver`, never a zero refund). The command prints what the ledger holds for the order and asks before it sends (`--yes` for scripts); the order is then closed for good, and running the same command again sends the same answer again. Check the payment yourself (the node's log and a block explorer) before you answer.
+`deliver` sends the configured delivery; `refund` reports a refund you already sent (above zero; an unpaid order is released with `deliver`, never a zero refund). `--asset` names the refunded coin as CAIP-19, the same id as in your config's `payouts`: it may be left out when the store has one payout, and is required when it has several. The refund transaction must be on that coin's chain. Running `refund` again for an answer kept by an older node sends it unchanged, without an asset. The command prints what the ledger holds for the order and asks before it sends (`--yes` for scripts); the order is then closed for good, and running the same command again sends the same answer again. Check the payment yourself (the node's log and a block explorer) before you answer.
 
 The node's README covers the rest: the full config, Docker, the lock, and what to keep safe.

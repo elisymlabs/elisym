@@ -54,15 +54,15 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 
 ## Commands
 
-| Command   | What it does                                                                        |
-| --------- | ----------------------------------------------------------------------------------- |
-| `init`    | Creates the home: a `config.json` template (never overwritten) and the store's keys |
-| `setup`   | Checks the inbox relays, publishes the store, and records the terms it offers       |
-| `run`     | Takes orders, verifies payments and delivers                                        |
-| `orders`  | Lists the orders: open, paid, delivered, and the buyer's email                      |
-| `check`   | Checks the inbox relays, the owner's payout list and the domain                     |
-| `deliver` | Answers an unpaid order by hand with the configured delivery (node stopped)         |
-| `refund`  | Answers an unpaid order by hand with a refund you already sent (node stopped)       |
+| Command   | What it does                                                                                                                                                                                                                                           |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `init`    | Creates the home: a `config.json` template (never overwritten) and the store's keys                                                                                                                                                                    |
+| `setup`   | Checks the inbox relays, publishes the store, and records the terms it offers                                                                                                                                                                          |
+| `run`     | Takes orders, verifies payments and delivers                                                                                                                                                                                                           |
+| `orders`  | Lists the orders: open, paid, delivered, and the buyer's email                                                                                                                                                                                         |
+| `check`   | Checks the inbox relays, the owner's payout list and the domain                                                                                                                                                                                        |
+| `deliver` | Answers an unpaid order by hand with the configured delivery (node stopped)                                                                                                                                                                            |
+| `refund`  | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
 
 Every command takes `--home <dir>`. Without it, the home is `$ELISYM_MERCHANT_HOME`, else
 `~/.elisym-merchant`.
@@ -201,3 +201,6 @@ To edit the config in the volume, mount a host directory instead, for example
   goes in `product.delivery.value`.
 - Refunds are made by hand from your wallet. `refund` reports one to the buyer of an order the
   node did not credit; a refund of a delivered order is between you and the buyer.
+- Every answer the node sends a buyer (a delivery, a hand answer) is also wrapped to the store's
+  own key and published to its inbox relays, so a later admin view can read what the node
+  answered. These copies are never read back as orders.

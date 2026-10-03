@@ -16,6 +16,7 @@ import {
 } from './ledger';
 import { SeenWraps, readSince, resumePointAfterSweep } from './listener';
 import { deliveryDone } from './reply';
+import type { SelfCopies } from './self-copies';
 import {
   type CatchUpResult,
   type PaymentCheck,
@@ -32,6 +33,12 @@ import {
   recordTempoCheck,
 } from './tempo';
 
+/** One delivery attempt: the relays that took it now, and the store's own copy of the reply. */
+export interface DeliveryAttempt {
+  taken: string[];
+  selfWrap: NostrEvent;
+}
+
 export interface RuntimeDeps {
   state: LedgerState;
   store: StoreIdentity;
@@ -41,9 +48,15 @@ export interface RuntimeDeps {
   save: () => void;
   /**
    * Publish the delivery of one paid order to the store's inbox relays, except
-   * `skip` (they took it already); resolves to the relays that took it now.
+   * `skip` (they took it already); resolves to the relays that took it now and
+   * the store's own copy of the reply (published separately, see `selfCopies`).
    */
-  deliver: (order: MerchantOrder, skip: readonly string[]) => Promise<string[]>;
+  deliver: (order: MerchantOrder, skip: readonly string[]) => Promise<DeliveryAttempt>;
+  /**
+   * Where the store's copy of a delivery goes, once per order: on the attempt
+   * that makes it delivered. Without it no copy is published.
+   */
+  selfCopies?: SelfCopies;
   /** How many inbox relays the store has: a delivery wants two of them (see `deliveryDone`). */
   inboxRelayCount: number;
   log: (message: string) => void;
@@ -220,7 +233,7 @@ export class MerchantRuntime {
     this.repeatsInFlight += 1;
     const { deliver, log } = this.deps;
     void deliver(order, [])
-      .then((taken) => {
+      .then(({ taken }) => {
         log(`delivery for ${order.key} sent again: taken by ${taken.length}`);
       })
       .catch((error: unknown) => {
@@ -303,13 +316,22 @@ export class MerchantRuntime {
     if (pending.length === 0) {
       return;
     }
-    const taken = await Promise.all(
-      pending.map((order) => deliver(order, order.deliveredTo ?? []).catch(() => [])),
-    );
+    const selfCopies = this.deps.selfCopies;
+    // Copies wait while buyer deliveries go out: they share the relays' rate limits.
+    selfCopies?.pause();
+    let attempts: (DeliveryAttempt | undefined)[];
+    try {
+      attempts = await Promise.all(
+        pending.map((order) => deliver(order, order.deliveredTo ?? []).catch(() => undefined)),
+      );
+    } finally {
+      selfCopies?.resume();
+    }
     const at = now();
     let changed = false;
     pending.forEach((order, index) => {
-      const fresh = (taken[index] ?? []).filter(
+      const attempt = attempts[index];
+      const fresh = (attempt?.taken ?? []).filter(
         (relay) => !(order.deliveredTo ?? []).includes(relay),
       );
       if (fresh.length > 0) {
@@ -321,6 +343,13 @@ export class MerchantRuntime {
         changed = true;
         order.deliveredAt = at;
         log(`delivered ${order.key} (${order.paid?.signature ?? ''})`);
+        // One copy per order, of the attempt that made it delivered. Published
+        // after the save below by the copy queue, which never blocks this one.
+        if (attempt === undefined) {
+          log(`copy for ${order.key} not made: the delivery could not be built`);
+        } else {
+          selfCopies?.add(attempt.selfWrap, order.key);
+        }
       } else {
         log(`delivery for ${order.key} taken by ${order.deliveredTo?.length ?? 0}; will retry`);
       }

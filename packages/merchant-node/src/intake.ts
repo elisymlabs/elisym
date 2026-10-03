@@ -23,6 +23,8 @@ export type IntakeResult =
   | { kind: 'receipt'; order: MerchantOrder; tx: string; isNew: boolean };
 
 export type IgnoreReason =
+  /** Sealed by the store key itself: its own copy of a reply, never an order or a receipt. */
+  | 'own_message'
   /** The same rumor again (a resumed widget republishes it byte for byte). */
   | 'seen'
   /** Addressed to another key, or naming another store. */
@@ -59,6 +61,11 @@ export function intake(
   store: StoreIdentity,
   now: number = Math.floor(Date.now() / 1000),
 ): IntakeResult {
+  // The store's copies of its own replies come back on its inbox: nothing the
+  // store key sealed is ever a buyer's order or receipt.
+  if (unwrapped.senderPubkey === store.storePubkey) {
+    return { kind: 'ignored', reason: 'own_message' };
+  }
   if (state.seenRumors[unwrapped.rumorId] === true) {
     return { kind: 'ignored', reason: 'seen' };
   }

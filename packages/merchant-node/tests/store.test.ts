@@ -104,9 +104,36 @@ describe('buildDeliveryReply', () => {
         orderId: order.orderId,
         status: 'completed',
         delivery: { method: 'access', value: 'https://shop.example/course' },
-        receipt: { medium: 'solana-devnet', tx: '5'.repeat(88), amount: '1000000', fee: '0' },
+        receipt: {
+          medium: 'solana-devnet',
+          tx: '5'.repeat(88),
+          amount: '1000000',
+          fee: '0',
+          caip19: USDC_DEVNET_CAIP19,
+        },
       },
     });
+    // The store's own copy opens with the store key and carries the same status.
+    expect(unwrapOrderMessage(reply.selfWrap, store.secretKey)).toMatchObject({
+      senderPubkey: store.pubkey,
+      recipientPubkey: buyer.pubkey,
+      message: { type: 'status', status: 'completed', receipt: { caip19: USDC_DEVNET_CAIP19 } },
+    });
+    // An asset the registry no longer knows is left out: the order is still delivered.
+    const unknown = buildDeliveryReply(
+      {
+        ...order,
+        paid: { ...order.paid, caip19: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:Gone' },
+      },
+      { method: 'access', value: 'https://shop.example/course' },
+      store.secretKey,
+      T0 + 10,
+    );
+    const openedUnknown = unwrapOrderMessage(unknown.recipientWrap, buyer.secretKey);
+    expect(openedUnknown?.message).toMatchObject({ type: 'status', status: 'completed' });
+    expect(
+      openedUnknown?.message.type === 'status' ? openedUnknown.message.receipt : undefined,
+    ).toEqual({ medium: 'solana-devnet', tx: '5'.repeat(88), amount: '1000000', fee: '0' });
     expect(() =>
       buildDeliveryReply(
         { ...order, paid: undefined },

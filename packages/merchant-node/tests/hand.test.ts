@@ -7,11 +7,14 @@ import { describe, expect, it } from 'vitest';
 import { applyHandAnswer, buildHandAnswer, planHandAnswer } from '../src/hand';
 import { intake } from '../src/intake';
 import { pruneExpiredOrders } from '../src/ledger';
-import { T0, delivered, key, orderFrom, signatureOf, world } from './fixtures';
+import { T0, USDC_DEVNET_CAIP19, delivered, key, orderFrom, signatureOf, world } from './fixtures';
 
 const ORDER_ID = 'b3a7c2d4-0000-4000-8000-00000000d001';
 const DELIVERY = { method: 'access' as const, value: 'https://shop.example/course' };
 const TEMPO_TX = `0x${'ab'.repeat(32)}`;
+const PATHUSD_MODERATO = 'eip155:42431/erc20:0x20c0000000000000000000000000000000000000';
+const ONE_PAYOUT = [USDC_DEVNET_CAIP19];
+const TWO_PAYOUTS = [USDC_DEVNET_CAIP19, PATHUSD_MODERATO];
 
 function withOrder() {
   const setup = world();
@@ -85,7 +88,12 @@ describe('answering by hand', () => {
     });
     expect(again).toMatchObject({ ok: true, rerun: true, answer: { delivery: DELIVERY } });
     expect(
-      planHandAnswer(run.state, run.order.key, { kind: 'refunded', tx: TEMPO_TX, amount: '5' }),
+      planHandAnswer(run.state, run.order.key, {
+        kind: 'refunded',
+        tx: TEMPO_TX,
+        amount: '5',
+        payoutAssets: ONE_PAYOUT,
+      }),
     ).toMatchObject({ ok: false });
   });
 
@@ -97,7 +105,13 @@ describe('answering by hand', () => {
       { tx: TEMPO_TX.toUpperCase().replace('0X', '0x'), amount: '5' },
       { tx: 'not-a-tx', amount: '5' },
     ]) {
-      expect(planHandAnswer(run.state, run.order.key, { kind: 'refunded', ...bad })).toMatchObject({
+      expect(
+        planHandAnswer(run.state, run.order.key, {
+          kind: 'refunded',
+          ...bad,
+          payoutAssets: [PATHUSD_MODERATO],
+        }),
+      ).toMatchObject({
         ok: false,
       });
     }
@@ -105,6 +119,7 @@ describe('answering by hand', () => {
       kind: 'refunded',
       tx: signatureOf(3),
       amount: '1000000',
+      payoutAssets: ONE_PAYOUT,
     });
     if (!plan.ok) {
       throw new Error(plan.problem);
@@ -115,8 +130,110 @@ describe('answering by hand', () => {
     );
     expect(read?.message).toMatchObject({
       status: 'cancelled',
-      refund: { tx: signatureOf(3), amount: '1000000' },
+      refund: { tx: signatureOf(3), amount: '1000000', caip19: USDC_DEVNET_CAIP19 },
     });
+  });
+
+  it('names the refunded asset: the only payout by default, --asset when there are several', () => {
+    const refund = { kind: 'refunded' as const, tx: signatureOf(5), amount: '7' };
+    const single = withOrder();
+    expect(
+      planHandAnswer(single.state, single.order.key, { ...refund, payoutAssets: ONE_PAYOUT }),
+    ).toMatchObject({ ok: true, answer: { caip19: USDC_DEVNET_CAIP19 } });
+    const several = withOrder();
+    expect(
+      planHandAnswer(several.state, several.order.key, { ...refund, payoutAssets: TWO_PAYOUTS }),
+    ).toMatchObject({ ok: false, problem: expect.stringMatching(/--asset/) });
+    expect(
+      planHandAnswer(several.state, several.order.key, {
+        ...refund,
+        asset: USDC_DEVNET_CAIP19,
+        payoutAssets: TWO_PAYOUTS,
+      }),
+    ).toMatchObject({ ok: true, answer: { caip19: USDC_DEVNET_CAIP19 } });
+    // A coin since removed from the config is still a refund the node can name.
+    expect(
+      planHandAnswer(several.state, several.order.key, {
+        ...refund,
+        tx: TEMPO_TX,
+        asset: PATHUSD_MODERATO,
+        payoutAssets: ONE_PAYOUT,
+      }),
+    ).toMatchObject({ ok: true, answer: { caip19: PATHUSD_MODERATO } });
+    // Not a known asset, or a tx of another chain than the asset's.
+    expect(
+      planHandAnswer(several.state, several.order.key, {
+        ...refund,
+        asset: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:Gone',
+        payoutAssets: TWO_PAYOUTS,
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      planHandAnswer(several.state, several.order.key, {
+        ...refund,
+        asset: PATHUSD_MODERATO,
+        payoutAssets: TWO_PAYOUTS,
+      }),
+    ).toMatchObject({ ok: false, problem: expect.stringMatching(/Tempo/) });
+    expect(
+      planHandAnswer(several.state, several.order.key, {
+        ...refund,
+        tx: TEMPO_TX,
+        asset: USDC_DEVNET_CAIP19,
+        payoutAssets: TWO_PAYOUTS,
+      }),
+    ).toMatchObject({ ok: false, problem: expect.stringMatching(/Solana/) });
+  });
+
+  it('re-sends a refund as kept: no default asset, and only a conflicting --asset is refused', () => {
+    const refund = { kind: 'refunded' as const, tx: signatureOf(6), amount: '7' };
+    const run = withOrder();
+    const first = planHandAnswer(run.state, run.order.key, { ...refund, payoutAssets: ONE_PAYOUT });
+    if (!first.ok) {
+      throw new Error(first.problem);
+    }
+    applyHandAnswer(run.state, run.order.key, first.answer);
+    // The payout rotated since, or there are several now: the kept answer goes again.
+    for (const payoutAssets of [[PATHUSD_MODERATO], TWO_PAYOUTS]) {
+      expect(planHandAnswer(run.state, run.order.key, { ...refund, payoutAssets })).toMatchObject({
+        ok: true,
+        rerun: true,
+        answer: { caip19: USDC_DEVNET_CAIP19 },
+      });
+    }
+    expect(
+      planHandAnswer(run.state, run.order.key, {
+        ...refund,
+        asset: PATHUSD_MODERATO,
+        payoutAssets: TWO_PAYOUTS,
+      }),
+    ).toMatchObject({ ok: false });
+    // An answer kept by a node before 0.4.0 has no asset: it goes again unchanged.
+    const old = withOrder();
+    const oldFirst = planHandAnswer(old.state, old.order.key, {
+      ...refund,
+      payoutAssets: ONE_PAYOUT,
+    });
+    if (!oldFirst.ok) {
+      throw new Error(oldFirst.problem);
+    }
+    const { caip19: _dropped, ...withoutAsset } = oldFirst.answer;
+    applyHandAnswer(old.state, old.order.key, withoutAsset);
+    const again = planHandAnswer(old.state, old.order.key, { ...refund, payoutAssets: ONE_PAYOUT });
+    expect(again).toMatchObject({ ok: true, rerun: true });
+    expect(again.ok && again.answer.caip19).toBe(undefined);
+    expect(again.ok && again.warning).toBe(undefined);
+    const explicit = planHandAnswer(old.state, old.order.key, {
+      ...refund,
+      asset: USDC_DEVNET_CAIP19,
+      payoutAssets: ONE_PAYOUT,
+    });
+    expect(explicit).toMatchObject({
+      ok: true,
+      rerun: true,
+      warning: expect.stringMatching(/without/),
+    });
+    expect(explicit.ok && explicit.answer.caip19).toBe(undefined);
   });
 
   it('answers a pruned order, and refuses an unknown key or a paid order', () => {

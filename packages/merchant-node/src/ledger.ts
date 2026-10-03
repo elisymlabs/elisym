@@ -54,6 +54,8 @@ export interface HandAnswer {
   delivery?: { method: Delivery['method']; value: string };
   tx?: string;
   amount?: string;
+  /** The refunded asset: absent in an answer kept by a node older than 0.4.0. */
+  caip19?: string;
   /** What the ledger held for the order when it was closed. */
   reportedTxs: string[];
   refusedTxs: string[];
@@ -162,8 +164,14 @@ export function loadLedger(path: string): LedgerState {
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
-  } catch {
-    return emptyLedger();
+  } catch (error) {
+    // Only a missing file is a first run. Any other read error (permissions, a
+    // directory, I/O) must stop the node: an empty ledger saved over the real one
+    // would forget every claim, and a payment could be credited twice.
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return emptyLedger();
+    }
+    throw error;
   }
   const state = JSON.parse(text) as LedgerState;
   if (state.version !== 1 && state.version !== 2) {
