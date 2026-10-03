@@ -1,6 +1,7 @@
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
 import { CATCH_UP_SECS } from './constants';
+import { replaceFileDurably } from './durable-file';
 import type { Delivery } from './reply';
 import type { TermsPeriod } from './terms';
 
@@ -103,10 +104,6 @@ export function emptyLedger(): LedgerState {
   return { version: 1, orders: {}, seenRumors: {}, claims: {}, terms: [], scans: {} };
 }
 
-export function orderKey(buyerPubkey: string, orderId: string): string {
-  return `${buyerPubkey}:${orderId}`;
-}
-
 /**
  * Claim `signature` for the order `key`: true when it is now (or already was)
  * that order's, false when another order holds it. The claim must be saved
@@ -188,7 +185,5 @@ export function markTempo(state: LedgerState): void {
 
 /** Write the whole ledger, atomically: a crash leaves the old file or the new one, never half. */
 export function saveLedger(path: string, state: LedgerState): void {
-  const temporary = `${path}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporary, path);
+  replaceFileDurably(path, `${path}.tmp`, `${JSON.stringify(state, null, 2)}\n`);
 }

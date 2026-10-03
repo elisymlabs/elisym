@@ -11,6 +11,7 @@ import {
   wrapOrderMessage,
 } from '@elisym/commerce';
 import { type HandAnswer, type LedgerState, markTempo } from './ledger';
+import { TEMPO_HASH_RE } from './order-rules';
 import type { Delivery } from './reply';
 import { isSolanaSignature } from './signature';
 
@@ -40,7 +41,6 @@ export type HandPlan =
     }
   | { ok: false; problem: string };
 
-const TEMPO_HASH_RE = /^0x[0-9a-f]{64}$/;
 const POSITIVE_SUBUNITS_RE = /^[1-9]\d{0,38}$/;
 
 /** A refund transaction as the ledger spells payments: a Solana signature or a lowercase Tempo hash. */

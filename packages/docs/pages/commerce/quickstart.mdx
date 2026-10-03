@@ -91,6 +91,17 @@ Serve the page over http(s), for example with `npx serve .` on localhost. A page
 
 The checkout shows the product, the price and who is selling it. A new store's payout list is less than three days old, so the buyer is asked to tick a box confirming where the money goes; that is expected. Pay, and within seconds the node logs the order and the payment, and the checkout shows the delivery.
 
+## See your orders
+
+The node serves an admin page on your machine. Print the store key, then start the page and paste the key into it:
+
+```bash
+npx @elisym/merchant-node store-key --yes
+npx @elisym/merchant-node admin
+```
+
+Open [http://127.0.0.1:5199/](http://127.0.0.1:5199/). The page reads your inbox relays with the store key and lists each order: the total the buyer claims, the email, whether it was paid and delivered, and the transaction, with totals per coin. The key stays in the tab: it is never stored or sent. With encrypted keys, `store-key` reads the passphrase like `run` does (`ELISYM_MERCHANT_PASSPHRASE` or `ELISYM_MERCHANT_PASSPHRASE_FILE`). `--yes` lets it print without a terminal; leave it out to have it refuse when its output would land in a log. Run `admin` with `npx`, not in Docker.
+
 ## Level A: let your domain vouch for the store
 
 Without more setup the store is **level C**: the checkout tells the buyer that no domain vouches for it. To reach **level A**:

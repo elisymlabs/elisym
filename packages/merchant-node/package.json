@@ -1,6 +1,6 @@
 {
   "name": "@elisym/merchant-node",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "elisym merchant node: self-hosted store for the elisym checkout - takes orders over Nostr, verifies Solana payments, delivers.",
   "keywords": [
     "checkout",
@@ -35,11 +35,11 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "rm -rf dist && tsup && bun scripts/check-admin.ts",
     "test": "vitest run && bun run test:bun",
     "test:bun": "bun ./tests/bun/secret-box-smoke.ts",
-    "typecheck": "tsc --noEmit",
-    "lint": "oxlint src/ tests/",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.admin.json",
+    "lint": "oxlint src/ tests/ scripts/",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -53,6 +53,7 @@
   },
   "devDependencies": {
     "@types/node": "~25.5.0",
+    "happy-dom": "~20.14.5",
     "tsup": "~8.4.0",
     "typescript": "~5.7.0",
     "vitest": "~3.2.6"

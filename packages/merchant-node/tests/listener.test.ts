@@ -7,11 +7,11 @@ import {
   type ListenerPool,
   PAGE_WAIT_MS,
   SeenWraps,
-  nextPageUntil,
   readSince,
   resumePointAfterSweep,
   wrapFilter,
 } from '../src/listener';
+import { nextPageUntil } from '../src/order-rules';
 import { T0, key } from './fixtures';
 
 const RELAY = 'wss://inbox.example.com';

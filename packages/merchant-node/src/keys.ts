@@ -1,12 +1,4 @@
-import {
-  closeSync,
-  fsyncSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeSync,
-} from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 /**
  * The store's keys at rest. `keys.json` holds the store key and the owner key,
@@ -19,6 +11,7 @@ import { nsecEncode } from 'nostr-tools/nip19';
 import { getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { z } from 'zod';
+import { replaceFileDurably } from './durable-file';
 import { decryptSecret, encryptSecret, isEncrypted } from './secret-box';
 
 /** The passphrase, in the clear. */
@@ -210,35 +203,13 @@ export function keysFileText(file: KeysFile): string {
  * A crash leaves the old file or the new one, never half of either.
  */
 export function replaceKeysFile(path: string, file: KeysFile): void {
-  const temporary = join(dirname(path), `.keys.json.${process.pid}.tmp`);
-  // A temporary file left by a failed write may hold a plain key: it never
-  // survives, whether this write fails (removed below) or an earlier one did.
-  rmSync(temporary, { force: true });
-  try {
-    const descriptor = openSync(temporary, 'wx', 0o600);
-    try {
-      writeSync(descriptor, keysFileText(file));
-      fsyncSync(descriptor);
-    } finally {
-      closeSync(descriptor);
-    }
-    renameSync(temporary, path);
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    throw error;
-  }
-  // The rename itself is flushed too: after a crash, the old plain file must not
-  // come back. A platform that cannot sync a directory (Windows) skips it: the
-  // file is already replaced, and failing now would say otherwise.
-  if (process.platform === 'win32') {
-    return;
-  }
-  const directory = openSync(dirname(path), 'r');
-  try {
-    fsyncSync(directory);
-  } finally {
-    closeSync(directory);
-  }
+  // The temporary file may hold a plain key: `replaceFileDurably` never leaves it
+  // behind, and flushes the rename so the old plain file cannot come back.
+  replaceFileDurably(
+    path,
+    join(dirname(path), `.keys.json.${process.pid}.tmp`),
+    keysFileText(file),
+  );
 }
 
 /** What an operator is told whenever keys are encrypted. */

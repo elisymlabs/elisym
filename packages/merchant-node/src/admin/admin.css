@@ -1,0 +1,105 @@
+:root {
+  color-scheme: light dark;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --line: #d2d2d7;
+  --warn: #b3261e;
+  --surface: #ffffff;
+  --accent: #0b57d0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #f5f5f7;
+    --muted: #a1a1a6;
+    --line: #3a3a3c;
+    --warn: #ff8a80;
+    --surface: #1c1c1e;
+    --accent: #8ab4f8;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--text);
+  font:
+    15px/1.5 system-ui,
+    sans-serif;
+}
+
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+a {
+  color: var(--accent);
+}
+
+.mono {
+  font-family: ui-monospace, monospace;
+}
+
+.note {
+  color: var(--muted);
+}
+
+.warn {
+  color: var(--warn);
+}
+
+/* Masked like a password, but a plain text field: password managers save type=password. */
+.masked {
+  -webkit-text-security: disc;
+  font-family: ui-monospace, monospace;
+}
+
+.key-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.key-row input {
+  flex: 1 1 320px;
+  padding: 6px 8px;
+}
+
+.store-line,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+th {
+  overflow-wrap: normal;
+}
+
+.state-delivered {
+  font-weight: 600;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}

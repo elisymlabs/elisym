@@ -2,7 +2,7 @@
  * The CLI end to end on scratch homes, for orderings no helper can pin: what
  * runs before the passphrase is read, and what a failing command leaves behind.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,5 +113,43 @@ describe('the merchant CLI', () => {
     expect(JSON.parse(readFileSync(join(home, 'keys.json'), 'utf8')).store).toMatch(
       /^[0-9a-f]{64}$/,
     );
+  });
+
+  it('admin takes --port, a real port, and only admin does', () => {
+    const notAPort = cli(['admin', '--port', '0']);
+    expect(notAPort.code).not.toBe(0);
+    expect(notAPort.output).toMatch(/--port is a number from 1 to 65535/);
+    expect(cli(['admin', '--port', '12ab']).output).toMatch(/--port is a number/);
+    const elsewhere = cli(['orders', '--port', '5199', '--home', scratchDir()]);
+    expect(elsewhere.code).not.toBe(0);
+    expect(elsewhere.output).toMatch(/--port is for admin/);
+  });
+
+  it('the built admin serves its page on 127.0.0.1, reading no home', async () => {
+    const built = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+    const port = 20_000 + Math.floor(Math.random() * 40_000);
+    const child = spawn('node', [built, 'admin', '--port', String(port)], {
+      env: { PATH: process.env.PATH ?? '', HOME: join(tmpdir(), `no-home-${Date.now()}`) },
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let output = '';
+        child.stdout.on('data', (chunk: Buffer) => {
+          output += chunk.toString('utf8');
+          if (output.includes(`http://127.0.0.1:${port}/`)) {
+            resolve();
+          }
+        });
+        child.on('exit', (code) => reject(new Error(`admin exited with ${code}: ${output}`)));
+      });
+      const page = await fetch(`http://127.0.0.1:${port}/`);
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain('id="store-key"');
+      const app = await fetch(`http://127.0.0.1:${port}/app.js`);
+      expect(app.status).toBe(200);
+      expect((await app.text()).length).toBeGreaterThan(1000);
+    } finally {
+      child.kill();
+    }
   });
 });
