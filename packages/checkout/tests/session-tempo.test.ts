@@ -318,4 +318,41 @@ describe('paying on Tempo in the widget', () => {
     expect(run.banners).toEqual([expect.objectContaining({ state: 'paid' })]);
     expect((await records(run.offer))[0]).toMatchObject({ state: 'paid', paidTx: HASH });
   });
+
+  it('asks for a fixed email before the wallet connects or switches chain', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    let connects = 0;
+    run.deps.tempoWallets = () => [
+      {
+        name: 'MetaMask',
+        connect: async () => {
+          connects += 1;
+          throw new Error('never connected');
+        },
+      },
+    ];
+    await run.session.start();
+    run.session.setEmail('not an email');
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'bad_email' } });
+    expect(connects).toBe(0);
+    expect(await records(run.offer)).toHaveLength(0);
+  });
+
+  it('names the Tempo payment on the progress screens', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'drop';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    const signing = run.views.find((view) => view.kind === 'working' && view.step === 'signing');
+    expect(signing).toMatchObject({
+      paying: { amount: PRICE.toString(), network: 'devnet', chain: 'tempo' },
+    });
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      tempo: true,
+      paying: { chain: 'tempo', network: 'devnet' },
+    });
+  });
 });

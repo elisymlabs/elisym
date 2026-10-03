@@ -23,6 +23,10 @@
 
 Changing an attribute re-frames the checkout. A purchase that is in progress is not lost: the checkout keeps it in the browser and resumes it.
 
+## What the buyer sees
+
+The checkout is a short wizard inside the frame. The buyer first reviews the product, the price, the network it is paid on, and any warnings. Then they choose a wallet from the ones their browser has. Then they follow the payment to the delivery. The store's name and its trust level stay in the header on every step, and a devnet checkout says "Test network". This look reaches every page that uses `v1/embed.js`, with no change to your snippet.
+
 ## Status events
 
 The element fires `elisym-status` (it bubbles) whenever the purchase moves on. The event carries the state name only:
@@ -89,6 +93,7 @@ The checkout shows no Pay button when:
 - the product cannot be found or does not verify;
 - the page is not on a level A store's domain, or `strict-origin` is set and the store is level C;
 - the store has no payout on the `network` the attribute names;
+- the store drops the payout network during a purchase: the checkout refuses rather than switching networks during a purchase. Set `network` for this to hold across page reloads too; without it, a reload uses the store's first-listed network;
 - the network is not served by this checkout yet;
 - the browser blocks storage for the checkout, for example with all site data blocked. The order record is what keeps a buyer from paying twice, so without it nothing is sold.
 

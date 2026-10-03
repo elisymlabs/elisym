@@ -24,6 +24,14 @@ function gzipped(path: string): number {
   return gzipSync(readFileSync(path)).length;
 }
 
+// Only what is deployed: the fixture page and other dev files stay out of the build.
+const DIST_ENTRIES = ['assets', 'index.html', 'v1'];
+const extra = readdirSync(DIST).filter((entry) => !DIST_ENTRIES.includes(entry));
+if (extra.length > 0) {
+  console.error(`dist/ holds more than the deployment: ${extra.join(', ')}`);
+  process.exit(1);
+}
+
 const embed = gzipped(join(DIST, 'v1', 'embed.js'));
 // The first screen: every script and stylesheet the page loads up front.
 const html = readFileSync(join(DIST, 'index.html'), 'utf8');

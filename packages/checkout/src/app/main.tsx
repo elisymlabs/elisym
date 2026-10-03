@@ -28,14 +28,16 @@ let screen: Screen = { kind: 'waiting' };
 let view: View | undefined;
 let banner: Banner | undefined;
 
+// The session's own promises reach the UI: a step change caused by the buyer
+// takes focus only until the action that caused it settles.
 const actions: Actions = {
   confirm: (checked) => session?.confirm(checked),
   setEmail: (value) => session?.setEmail(value),
-  pay: (name) => void session?.pay(name),
-  retry: (name) => void session?.retry(name),
-  startOver: () => void session?.startOver(),
+  pay: async (name) => session?.pay(name),
+  retry: async (name) => session?.retry(name),
+  startOver: async () => session?.startOver(),
   choosePayout: (index) => session?.choosePayout(index),
-  confirmOldPrompt: () => void session?.confirmOldPrompt(),
+  confirmOldPrompt: async () => session?.confirmOldPrompt(),
   cancelOldPrompt: () => session?.cancelOldPrompt(),
 };
 

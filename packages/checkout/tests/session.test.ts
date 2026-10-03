@@ -1,7 +1,7 @@
 import { type OrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
 import { type LoadedOffer, loadOffer } from '@elisym/commerce/buyer';
 import type { OrderRecord } from '@elisym/commerce/buyer';
-import { OrderStore } from '@elisym/commerce/buyer';
+import { OrderStore, endOrder } from '@elisym/commerce/buyer';
 import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -10,6 +10,7 @@ import {
   type Shop,
   inboxList,
   makeShop,
+  solanaAddress,
 } from '../../commerce/tests/buyer/fixtures';
 import { FakeSolana, FakeWallet } from '../../commerce/tests/buyer/solana-fixtures';
 import { type SessionDeps, CheckoutSession, type View } from '../src/app/session';
@@ -67,10 +68,13 @@ async function loaded(shop: Shop, relays: MemoryRelays, now = NOW): Promise<Read
   return offer;
 }
 
-async function setup(options: { shop?: Shop; wallet?: FakeWallet } = {}) {
+async function setup(
+  options: { shop?: Shop; wallet?: FakeWallet; transform?: (offer: Ready) => Ready } = {},
+) {
   const shop = options.shop ?? makeShop();
   const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
-  const offer = await loaded(shop, relays);
+  const transform = options.transform ?? ((offer: Ready) => offer);
+  const offer = transform(await loaded(shop, relays));
   const wallet = options.wallet ?? (await FakeWallet.create());
   const chain = new FakeSolana(wallet.address, shop.payout);
   chain.blockTime = NOW + 60;
@@ -84,7 +88,7 @@ async function setup(options: { shop?: Shop; wallet?: FakeWallet } = {}) {
     clientFor: () => relays,
     rpcFor: () => chain.rpc,
     wallets: () => [{ name: 'Fake', connect: async () => wallet }],
-    reloadOffer: () => loaded(shop, relays, clock),
+    reloadOffer: async () => transform(await loaded(shop, relays, clock)),
     now: () => clock,
     chainTime: async () => clock,
     setInterval: timers.set,
@@ -1429,5 +1433,337 @@ describe('a purchase', () => {
       run.shop.store.secretKey,
     )?.message;
     expect(message).not.toHaveProperty('email');
+  });
+});
+
+/** The offer with a second payout on the same network: another address, `extra` subunits dearer. */
+function withSecondPayout(offer: Ready, address: string, extra = 5n): Ready {
+  const [first] = offer.payouts;
+  if (first === undefined) {
+    throw new Error('no payout');
+  }
+  const target = { ...first.target, address };
+  return {
+    ...offer,
+    offer: { ...offer.offer, payouts: [...offer.offer.payouts, target] },
+    payouts: [...offer.payouts, { target, amount: first.amount + extra }],
+  };
+}
+
+/** The same offer listed on mainnet only (the store dropped its devnet payout). */
+function mainnetOnly(offer: Ready): Ready {
+  const listed = withMainnetFirst(offer);
+  return { ...listed, payouts: listed.payouts.slice(0, 1) };
+}
+
+/** The offer as it would be reloaded without its first payout. */
+function withoutFirst(offer: Ready): Ready {
+  return { ...offer, payouts: offer.payouts.slice(1) };
+}
+
+function lastOffer(run: Awaited<ReturnType<typeof setup>>): Extract<View, { kind: 'offer' }> {
+  const view = run.last();
+  if (view?.kind !== 'offer') {
+    throw new Error(`expected the offer, got ${view?.kind}`);
+  }
+  return view;
+}
+
+/** Every offer shown selects its own payout, found by value. */
+function selectsByValue(views: readonly View[]): boolean {
+  return views.every((view) => {
+    if (view.kind !== 'offer') {
+      return true;
+    }
+    const chosen = view.payouts[view.payoutIndex];
+    return (
+      chosen !== undefined &&
+      chosen.target.caip19.id === view.payout.target.caip19.id &&
+      chosen.target.address === view.payout.target.address
+    );
+  });
+}
+
+describe('the payout chosen, across reloads', () => {
+  it('keeps the chosen payout selected by value after a stale reload that changed nothing', async () => {
+    const second = solanaAddress();
+    const run = await setup({ transform: (offer) => withSecondPayout(offer, second) });
+    await run.session.start();
+    run.session.choosePayout(1);
+    run.advance(600);
+    run.deps.chainTime = async () => {
+      throw new Error('down');
+    };
+    await run.session.pay('Fake');
+    const view = lastOffer(run);
+    expect(view.problem).toEqual({ reason: 'rpc_error' });
+    expect(view.payoutIndex).toBe(1);
+    expect(view.payout.target.address).toBe(second);
+    expect(selectsByValue(run.views)).toBe(true);
+  });
+
+  it('refuses rather than switching networks when the chosen payout is gone', async () => {
+    const run = await setup();
+    await run.session.start();
+    run.advance(600);
+    run.deps.reloadOffer = async () => mainnetOnly(raised(run.offer, NOW + 630));
+    await run.session.pay('Fake');
+    expect(run.last()).toEqual({ kind: 'refused', message: 'This product cannot be paid here' });
+    expect(run.statuses).toContain('refused');
+    expect(run.wallet.requests).toBe(0);
+    expect(await store.forProduct(run.offer.productAddress)).toHaveLength(0);
+  });
+
+  it('replaces a gone payout only with another one on the same network, for review', async () => {
+    const second = solanaAddress();
+    const run = await setup({ transform: (offer) => withSecondPayout(offer, second) });
+    await run.session.start();
+    run.advance(600);
+    const reloaded = withMainnetFirst(withoutFirst(withSecondPayout(run.offer, second)));
+    // Reloaded: mainnet listed first, then the second devnet payout; the first is gone.
+    run.deps.reloadOffer = async () => ({ ...reloaded, snapshotAt: NOW + 630 });
+    await run.session.pay('Fake');
+    const view = lastOffer(run);
+    expect(view.problem).toEqual({ reason: 'offer_changed' });
+    expect(view.payout.target.address).toBe(second);
+    expect(view.payout.target.caip19.chain.network).toBe('devnet');
+    expect(view.payouts.every((payout) => payout.target.caip19.chain.network === 'devnet')).toBe(
+      true,
+    );
+    expect(run.wallet.requests).toBe(0);
+    expect(selectsByValue(run.views)).toBe(true);
+    // A wallet registering redraws the same problem object: the step never moves for it.
+    const problem = view.problem;
+    run.session.refresh();
+    expect(lastOffer(run).problem).toBe(problem);
+  });
+
+  it('keeps following a live attempt when its payout is gone on a retry, every time', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    const requests = run.wallet.requests;
+    run.wallet.behaviour = 'sign';
+    run.advance(600);
+    run.deps.reloadOffer = async () => mainnetOnly(raised(run.offer, NOW + 630));
+    for (const press of [1, 2]) {
+      await run.session.retry('Fake');
+      expect(run.last(), `press ${press}`).toMatchObject({
+        kind: 'waiting_payment',
+        problem: { reason: 'offer_refused' },
+      });
+      expect(run.wallet.requests).toBe(requests);
+      expect((await recordOf(run.offer)).state).toBe('paying');
+      run.advance(30);
+    }
+    expect(run.views.some((view) => view.kind === 'refused')).toBe(false);
+    expect(run.statuses).not.toContain('refused');
+  });
+});
+
+describe('the email, checked against the order actually sent', () => {
+  /** An acknowledged order on the default payout, not paid (the wallet held too little). */
+  async function openOrder(run: Awaited<ReturnType<typeof setup>>): Promise<OrderRecord> {
+    const tokens = run.chain.tokens;
+    run.chain.tokens = 1n;
+    await run.session.pay('Fake');
+    run.chain.tokens = tokens;
+    const record = await recordOf(run.offer);
+    expect(record.state).toBe('ordered');
+    return record;
+  }
+
+  it('never blocks continuing an open order with a typo held for another one', async () => {
+    const second = solanaAddress();
+    const run = await setup({ transform: (offer) => withSecondPayout(offer, second) });
+    run.deps.collectEmail = true;
+    await run.session.start();
+    const first = await openOrder(run);
+    expect(lastOffer(run).continuing).toBe('ordered');
+    run.session.choosePayout(1);
+    expect(lastOffer(run).continuing).toBe(false);
+    run.session.setEmail('not an email');
+    run.session.choosePayout(0);
+    expect(lastOffer(run).continuing).toBe('ordered');
+    await run.session.pay('Fake');
+    expect(
+      run.views.some((view) => view.kind === 'offer' && view.problem?.reason === 'bad_email'),
+    ).toBe(false);
+    expect(run.wallet.requests).toBe(1);
+    const all = await store.forProduct(run.offer.productAddress);
+    expect(all.map((record) => record.orderId)).toEqual([first.orderId]);
+  });
+
+  it('checks the email again when the open order turned out ended before the press', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    await run.session.start();
+    const first = await openOrder(run);
+    run.session.setEmail('not an email');
+    // Another tab ended it meanwhile.
+    const ended = await endOrder(first, {
+      store,
+      readClient: run.relays,
+      clientFor: () => run.relays,
+      now: run.deps.now,
+      rpc: run.chain.rpc,
+    });
+    expect(ended.ended).toBe(true);
+    await run.session.pay('Fake');
+    const view = lastOffer(run);
+    expect(view.problem).toEqual({ reason: 'bad_email' });
+    expect(view.continuing).toBe(false);
+    expect(await store.forProduct(run.offer.productAddress)).toHaveLength(1);
+    expect(run.wallet.requests).toBe(0);
+  });
+
+  it('asks for a fixed email before any wallet opens when a new order is certain', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    let connects = 0;
+    const wallets = run.deps.wallets;
+    run.deps.wallets = (network) =>
+      wallets(network).map((option) => ({
+        ...option,
+        connect: () => {
+          connects += 1;
+          return option.connect();
+        },
+      }));
+    await run.session.start();
+    run.session.setEmail('not an email');
+    await run.session.pay('Fake');
+    expect(lastOffer(run).problem).toEqual({ reason: 'bad_email' });
+    expect(connects).toBe(0);
+  });
+
+  it('asks for a fixed email before ending the open order for another payout', async () => {
+    const second = solanaAddress();
+    const run = await setup({ transform: (offer) => withSecondPayout(offer, second) });
+    run.deps.collectEmail = true;
+    await run.session.start();
+    const first = await openOrder(run);
+    run.session.choosePayout(1);
+    run.session.setEmail('not an email');
+    await run.session.pay('Fake');
+    expect(lastOffer(run).problem).toEqual({ reason: 'bad_email' });
+    expect((await store.get(first.orderId))?.state).toBe('ordered');
+  });
+
+  it('places an order with no email when the field is left blank', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    await run.session.start();
+    run.session.setEmail('   ');
+    await run.session.pay('Fake');
+    expect(run.wallet.requests).toBe(1);
+    const { unwrapOrderMessage } = await import('@elisym/commerce');
+    const message = unwrapOrderMessage(
+      (await recordOf(run.offer)).orderWrap as never,
+      run.shop.store.secretKey,
+    )?.message;
+    expect(message).not.toHaveProperty('email');
+  });
+
+  it('never blocks on a typed value when the merchant asks for no email', async () => {
+    const run = await setup();
+    await run.session.start();
+    run.session.setEmail('not an email');
+    await run.session.pay('Fake');
+    expect(run.wallet.requests).toBe(1);
+    expect(run.views.some((view) => view.kind === 'offer' && view.problem !== undefined)).toBe(
+      false,
+    );
+  });
+});
+
+describe('the open order the offer continues', () => {
+  it('is an order the store has not acknowledged yet', async () => {
+    const run = await setup();
+    run.relays.refuse = INBOX;
+    await run.session.start();
+    await run.session.pay('Fake');
+    expect(lastOffer(run)).toMatchObject({
+      continuing: 'created',
+      problem: { reason: 'order_not_acknowledged' },
+    });
+  });
+
+  it('stays across a reload that changed nothing, and ends with a new price', async () => {
+    const run = await setup();
+    await run.session.start();
+    const tokens = run.chain.tokens;
+    run.chain.tokens = 1n;
+    await run.session.pay('Fake');
+    expect(lastOffer(run).continuing).toBe('ordered');
+    run.advance(600);
+    await run.session.pay('Fake');
+    expect(lastOffer(run).continuing).toBe('ordered');
+    run.chain.tokens = tokens;
+    run.advance(600);
+    run.deps.reloadOffer = async () => raised(run.offer, NOW + 1230);
+    await run.session.pay('Fake');
+    expect(lastOffer(run)).toMatchObject({
+      continuing: false,
+      problem: { reason: 'offer_changed' },
+    });
+  });
+});
+
+describe('the payment a progress screen names', () => {
+  it('is the payout chosen for a new order, never the open order on other terms', async () => {
+    const second = solanaAddress();
+    const run = await setup({ transform: (offer) => withSecondPayout(offer, second) });
+    await run.session.start();
+    const tokens = run.chain.tokens;
+    run.chain.tokens = 1n;
+    await run.session.pay('Fake');
+    run.chain.tokens = tokens;
+    const first = run.offer.payouts[0];
+    const chosen = run.offer.payouts[1];
+    if (first === undefined || chosen === undefined) {
+      throw new Error('two payouts');
+    }
+    run.session.choosePayout(1);
+    const from = run.views.length;
+    run.wallet.behaviour = 'throw';
+    await run.session.pay('Fake');
+    const working = run.views
+      .slice(from)
+      .filter((view) => view.kind === 'working')
+      .map((view) => [view.step, view.paying?.amount]);
+    expect(working).toEqual([
+      ['checking', chosen.amount.toString()],
+      ['ordering', chosen.amount.toString()],
+      ['signing', chosen.amount.toString()],
+    ]);
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      paying: { amount: chosen.amount.toString(), network: 'devnet', chain: 'solana' },
+    });
+  });
+
+  it('is the open order itself while it is continued', async () => {
+    const run = await setup();
+    await run.session.start();
+    const tokens = run.chain.tokens;
+    run.chain.tokens = 1n;
+    await run.session.pay('Fake');
+    run.chain.tokens = tokens;
+    const record = await recordOf(run.offer);
+    const from = run.views.length;
+    await run.session.pay('Fake');
+    const steps = run.views.slice(from).filter((view) => view.kind === 'working');
+    expect(steps.length).toBeGreaterThan(0);
+    for (const view of steps) {
+      expect(view).toMatchObject({ paying: { amount: record.amount } });
+    }
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_store', paying: { amount: record.amount } });
   });
 });

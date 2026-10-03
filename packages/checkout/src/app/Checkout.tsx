@@ -1,17 +1,31 @@
-import type { OfferWarning } from '@elisym/commerce';
-import { type Asset, NATIVE_SOL, formatAssetAmount } from '@elisym/pay-core';
-import type { RefusalReason, Screen } from './controller';
-import type { Banner, Problem, View } from './session';
+import type { Network } from '@elisym/pay-core';
+import type { ComponentChildren } from 'preact';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import type { Screen } from './controller';
+import type { Banner, View } from './session';
+import { BannerNote } from './ui/BannerNote';
+import { isPhone } from './ui/device';
+import { DoneStep } from './ui/DoneStep';
+import { EndedStep } from './ui/EndedStep';
+import { Footer } from './ui/Footer';
+import { RETURN_GLYPH, STOP_GLYPH } from './ui/glyphs';
+import { Header, type StoreInfo } from './ui/Header';
+import { OldPromptStep } from './ui/OldPromptStep';
+import { ProgressStep } from './ui/ProgressStep';
+import { ReviewStep } from './ui/ReviewStep';
+import { INITIAL_TRACKER, type Step, advanceStep, shownProblem } from './ui/steps';
+import { REFUSALS } from './ui/text';
+import { WalletsStep } from './ui/WalletsStep';
 
 export interface Actions {
   confirm(checked: boolean): void;
   choosePayout(index: number): void;
-  confirmOldPrompt(): void;
+  confirmOldPrompt(): Promise<void>;
   cancelOldPrompt(): void;
   setEmail(value: string): void;
-  pay(walletName: string): void;
-  retry(walletName: string): void;
-  startOver(): void;
+  pay(walletName: string): Promise<void>;
+  retry(walletName: string): Promise<void>;
+  startOver(): Promise<void>;
 }
 
 interface Props {
@@ -24,384 +38,204 @@ interface Props {
   actions: Actions;
 }
 
-const REFUSALS: Record<RefusalReason, string> = {
-  not_framed: 'This checkout only works embedded in a store page.',
-  no_hello: 'The store page did not start the checkout.',
-  no_product: 'This checkout names no product.',
-  no_storage:
-    'This browser blocks storage for the checkout (private mode?). Payments need it to stay safe.',
-  offer_refused: 'This product cannot be bought here.',
-  failed: 'The checkout could not start. Reload the page to try again.',
-};
-
-const WARNINGS: Record<OfferWarning, string> = {
-  domain_unverified: 'The store names a domain that does not confirm it.',
-  origin_mismatch: 'This page is not on the store’s domain.',
-  origin_unverifiable: 'No domain vouches for this store: check you trust this page.',
-  payout_recently_changed: 'The store changed where it is paid very recently.',
-  payout_changed: 'The store is paid to a different address than on your last purchase.',
-  payout_unsigned: 'The payout address carries no wallet proof.',
-  owner_unpinned: 'First purchase from this store on this site.',
-};
-
-const WORKING: Record<Extract<View, { kind: 'working' }>['step'], string> = {
-  checking: 'Checking…',
-  ordering: 'Sending the order to the store…',
-  signing: 'Confirm the payment in your wallet…',
-};
-
-/** `asset`: the coin the order is paid in, for amounts of it. */
-function problemText(problem: Problem, asset: Asset): string {
-  switch (problem.reason) {
-    case 'no_wallet':
-      return 'Connect a wallet for this network (Phantom or Solflare on Solana, MetaMask on Tempo).';
-    case 'clock_skew':
-      return 'This device’s clock is more than 5 minutes off. Fix the clock and try again.';
-    case 'rpc_error':
-      return 'The network could not be reached. Try again in a moment.';
-    case 'policy_blocked':
-      return 'The store’s account does not accept this coin from your wallet. Nothing was paid; contact the store.';
-    case 'wrong_chain':
-      return 'Your wallet is on another network. Switch it to the network shown and try again.';
-    case 'rejected':
-      return 'You declined in the wallet. Nothing was paid.';
-    case 'late_approval':
-      return 'Your wallet approved an earlier request after that order had ended: it pays that order. The checkout keeps watching for it; contact the store if nothing arrives.';
-    case 'attempt_over':
-      return 'The payment was not made. If your wallet still shows the old request, reject it: approving it now would pay that order too.';
-    case 'self_payment':
-      return 'This wallet is the store’s own payout address; pay from another wallet.';
-    case 'too_late':
-      return 'This order is too old to pay. Start a new one.';
-    case 'order_not_acknowledged':
-      return 'The store’s relays did not take the order yet. Try again.';
-    case 'no_store_inbox':
-      return 'The store names no inbox to send orders to. Contact the store.';
-    case 'failed':
-      return 'Something went wrong. Try again.';
-    case 'wallet_failed':
-      return 'The wallet did not sign. If it did after all, the payment is found; otherwise you can retry in about a minute and a half.';
-    case 'wallet_unsupported':
-      return 'This wallet changed the transaction, which the checkout never sends. You can retry in about a minute and a half, or use another wallet.';
-    case 'offer_changed':
-      return 'The store changed this offer. Review it before paying.';
-    case 'offer_refused':
-      return 'The store no longer offers this product here. Your order is still being followed.';
-    case 'confirm_first':
-      return 'Read the warnings and tick the box before paying.';
-    case 'bad_email':
-      return 'That email does not look right. Fix it, or leave the field empty.';
-    case 'insufficient_token':
-      return `Not enough funds: the price is ${formatAssetAmount(asset, problem.needed)}, the wallet holds ${formatAssetAmount(asset, problem.available)}.`;
-    case 'insufficient_sol':
-      return `Not enough SOL for the network fees: ${formatAssetAmount(NATIVE_SOL, problem.needed)} needed, ${formatAssetAmount(NATIVE_SOL, problem.available)} held.`;
+/** The network a view is about, when it says. */
+function networkOf(view: View | undefined): Network | undefined {
+  if (view === undefined) {
+    return undefined;
   }
-}
-
-function ProblemNote({ problem, asset }: { problem: Problem | undefined; asset: Asset }) {
-  return problem === undefined ? null : (
-    <p class="problem" role="alert">
-      {problemText(problem, asset)}
-    </p>
-  );
-}
-
-function BannerNote({ banner }: { banner: Banner | undefined }) {
-  if (banner === undefined) {
-    return null;
+  if (view.kind === 'offer') {
+    return view.payout.target.caip19.chain.network;
   }
-  const text: Record<Banner['state'], string> = {
-    paid: 'Your earlier order was paid after all. Waiting for the store to deliver it.',
-    blocked: 'Your earlier payment was blocked by the recipient. Contact the store.',
-    completed: 'Your earlier order was delivered:',
-    refunded: 'Your earlier order was refunded by the store.',
-  };
-  return (
-    <p class="banner" role="status">
-      {text[banner.state]}{' '}
-      {banner.link === undefined ? (
-        (banner.text ?? '')
-      ) : (
-        <a href={banner.link} target="_blank" rel="noopener noreferrer">
-          {banner.link}
-        </a>
-      )}
-    </p>
-  );
+  if (view.kind === 'working' || view.kind === 'waiting_payment' || view.kind === 'waiting_store') {
+    return view.paying?.network;
+  }
+  return undefined;
 }
 
-/** Store data is rendered as text only; a delivery is a link only when it is `https:`. */
+/**
+ * The checkout card: a header (the store, its trust level), one step, and a
+ * footer. Store data is rendered as text only; a delivery is a link only when
+ * it is `https:`. Steps are UI state over the session's views: the session
+ * decides what is possible, this only decides which part of the offer shows.
+ */
 export function Checkout({ screen, view, banner, actions }: Props) {
+  const tracker = useRef(INITIAL_TRACKER);
+  const seen = useRef<View | undefined>(undefined);
+  const email = useRef('');
+  const store = useRef<StoreInfo | undefined>(undefined);
+  const network = useRef<Network | undefined>(undefined);
+  /** A buyer's action is running: the first view it produces takes focus. */
+  const armed = useRef(false);
+  const focusHeading = useRef(false);
+  const card = useRef<HTMLElement>(null);
+  const [, redraw] = useState(0);
+
+  if (view !== seen.current) {
+    seen.current = view;
+    tracker.current = advanceStep(tracker.current, view);
+    network.current = networkOf(view) ?? network.current;
+    if (view?.kind === 'offer') {
+      // Reseeded from the session on every offer: what is shown is what is sent.
+      email.current = view.email;
+      const { profile, level, domain } = view.offer.offer;
+      store.current = { name: profile.name, level, domain };
+    }
+    if (armed.current && view !== undefined) {
+      armed.current = false;
+      focusHeading.current = true;
+    }
+  }
+
+  useEffect(() => {
+    if (!focusHeading.current) {
+      return;
+    }
+    focusHeading.current = false;
+    // Never pulls focus back once the buyer is elsewhere.
+    if (document.hasFocus()) {
+      card.current?.querySelector<HTMLElement>('[data-heading]')?.focus({ preventScroll: true });
+    }
+  });
+
+  const run = (action: () => Promise<void>) => {
+    armed.current = true;
+    void action().finally(() => {
+      armed.current = false;
+    });
+  };
+  const goTo = (step: Step) => {
+    const leaving = view?.kind === 'offer' ? view.problem : undefined;
+    tracker.current = { ...tracker.current, step, dismissed: leaving ?? tracker.current.dismissed };
+    focusHeading.current = true;
+    redraw((count) => count + 1);
+  };
+  const setEmail = (value: string) => {
+    email.current = value;
+    actions.setEmail(value);
+    redraw((count) => count + 1);
+  };
+  const startOver = () => run(() => actions.startOver());
+
+  let body: ComponentChildren;
+  if (view === undefined) {
+    body =
+      screen.kind === 'refused' ? (
+        <EndedStep glyph={STOP_GLYPH} title="Not available" alert>
+          <p>{REFUSALS[screen.reason]}</p>
+          {screen.message === undefined ? null : <p class="note">{screen.message}</p>}
+        </EndedStep>
+      ) : (
+        <p class="status loading" role="status">
+          Loading…
+        </p>
+      );
+  } else {
+    const problem =
+      view.kind === 'offer' || view.kind === 'waiting_payment'
+        ? shownProblem(tracker.current, view.problem)
+        : undefined;
+    switch (view.kind) {
+      case 'offer':
+        body =
+          tracker.current.step === 'review' ? (
+            <ReviewStep
+              view={view}
+              problem={problem}
+              email={email.current}
+              onEmail={setEmail}
+              onConfirm={actions.confirm}
+              onChoose={actions.choosePayout}
+              onContinue={() => goTo('wallets')}
+            />
+          ) : (
+            <WalletsStep
+              view={view}
+              problem={problem}
+              phone={isPhone(navigator.userAgent)}
+              onBack={() => goTo('review')}
+              onPay={(name) => run(() => actions.pay(name))}
+            />
+          );
+        break;
+      case 'working':
+      case 'waiting_payment':
+      case 'waiting_store':
+        body = (
+          <ProgressStep
+            view={view}
+            problem={problem}
+            onConfirm={actions.confirm}
+            onRetry={(name) => run(() => actions.retry(name))}
+            onStartOver={startOver}
+          />
+        );
+        break;
+      case 'old_prompt':
+        body = (
+          <OldPromptStep
+            view={view}
+            onContinue={() => run(() => actions.confirmOldPrompt())}
+            onBack={actions.cancelOldPrompt}
+          />
+        );
+        break;
+      case 'delivered':
+        body = <DoneStep view={view} onBuyAgain={startOver} />;
+        break;
+      case 'refunded':
+        body = (
+          <EndedStep
+            glyph={RETURN_GLYPH}
+            title="Refunded"
+            action={{ label: 'Start a new order', run: startOver }}
+          >
+            <p>The store cancelled this order and refunded the payment.</p>
+          </EndedStep>
+        );
+        break;
+      case 'cancelled':
+        body = (
+          <EndedStep
+            glyph={STOP_GLYPH}
+            title="Cancelled"
+            action={{ label: 'Start a new order', run: startOver }}
+          >
+            <p>The store cancelled this order. Nothing was paid.</p>
+          </EndedStep>
+        );
+        break;
+      case 'blocked':
+        body = (
+          <EndedStep glyph={STOP_GLYPH} title="Payment blocked" alert>
+            <p>
+              The payment was blocked by the recipient: the money is held, not delivered. Contact
+              the store.
+            </p>
+          </EndedStep>
+        );
+        break;
+      case 'refused':
+        body = (
+          <EndedStep glyph={STOP_GLYPH} title="Not available" alert>
+            <p>{REFUSALS.offer_refused}</p>
+            <p class="note">{view.message}</p>
+          </EndedStep>
+        );
+        break;
+    }
+  }
+
   return (
     <>
       <BannerNote banner={banner} />
-      <CheckoutView screen={screen} view={view} actions={actions} />
+      <section class="card" aria-labelledby="store-name" ref={card}>
+        <Header
+          store={store.current}
+          testNetwork={network.current !== undefined && network.current !== 'mainnet'}
+        />
+        {body}
+        <Footer />
+      </section>
     </>
   );
-}
-
-function CheckoutView({ screen, view, actions }: Omit<Props, 'banner'>) {
-  if (view === undefined) {
-    if (screen.kind === 'refused') {
-      return (
-        <div class="refused" role="alert">
-          <p>{REFUSALS[screen.reason]}</p>
-          {screen.message === undefined ? null : <p class="muted">{screen.message}</p>}
-        </div>
-      );
-    }
-    return <p class="muted">Loading…</p>;
-  }
-  switch (view.kind) {
-    case 'offer': {
-      const { product } = view.offer.offer;
-      const warnings = [...view.confirm, ...view.notices];
-      const canPay = view.confirmed && view.wallets.length > 0;
-      return (
-        <article>
-          <h1>{product.title}</h1>
-          {product.summary === undefined ? null : <p>{product.summary}</p>}
-          <p class="price">
-            {product.price.amount} {product.price.currency}
-          </p>
-          <p class="muted">
-            Sold by {view.offer.offer.profile.name ?? 'an unnamed store'}
-            {view.offer.offer.domain === undefined ? '' : ` (${view.offer.offer.domain})`}, trust
-            level {view.offer.offer.level}. Paid in {view.payout.target.caip19.asset.symbol} on{' '}
-            {view.payout.target.caip19.chain.family === 'evm' ? 'Tempo' : 'Solana'}{' '}
-            {view.payout.target.caip19.chain.network}.
-          </p>
-          {view.payouts.length < 2 ? null : (
-            <fieldset class="payouts">
-              <legend>Pay with</legend>
-              {view.payouts.map((payout, index) => (
-                <label key={`${payout.target.caip19.id} ${payout.target.address}`}>
-                  <input
-                    type="radio"
-                    name="payout"
-                    checked={index === view.payoutIndex}
-                    onChange={() => actions.choosePayout(index)}
-                  />{' '}
-                  {payout.target.caip19.asset.symbol} on{' '}
-                  {payout.target.caip19.chain.family === 'evm' ? 'Tempo' : 'Solana'}
-                </label>
-              ))}
-            </fieldset>
-          )}
-          {warnings.length === 0 ? null : (
-            <ul class="warnings">
-              {warnings.map((warning) => (
-                <li key={warning}>{WARNINGS[warning]}</li>
-              ))}
-            </ul>
-          )}
-          {view.confirm.length === 0 ? null : (
-            <label class="confirm">
-              <input
-                type="checkbox"
-                checked={view.confirmed}
-                onChange={(event) => actions.confirm(event.currentTarget.checked)}
-              />{' '}
-              I have read the warnings above and still want to pay.
-            </label>
-          )}
-          {view.askEmail ? (
-            <label class="email">
-              Email for the delivery (optional)
-              <input
-                type="email"
-                autoComplete="email"
-                value={view.email}
-                onInput={(event) => actions.setEmail(event.currentTarget.value)}
-              />
-            </label>
-          ) : null}
-          <ProblemNote problem={view.problem} asset={view.payout.target.caip19.asset} />
-          {view.continuing ? <p class="muted">Your earlier order is still open.</p> : null}
-          {view.wallets.length === 0 ? (
-            <p class="muted">No wallet for this network found in this browser.</p>
-          ) : (
-            <div class="wallets">
-              {view.wallets.map((wallet) => (
-                <button
-                  type="button"
-                  key={wallet.name}
-                  disabled={!canPay}
-                  onClick={() => actions.pay(wallet.name)}
-                >
-                  Pay with {wallet.name}
-                </button>
-              ))}
-            </div>
-          )}
-        </article>
-      );
-    }
-    case 'working':
-      return <p class="muted">{WORKING[view.step]}</p>;
-    case 'waiting_payment':
-      return (
-        <div>
-          <p>
-            {view.canRetry
-              ? 'The payment did not go through. Nothing was paid.'
-              : 'Waiting for the payment to confirm…'}
-          </p>
-          {view.tempo ? (
-            <p class="muted">
-              If your wallet still shows the request, approve or reject it there. The widget keeps
-              checking; there is no second payment from here.
-            </p>
-          ) : null}
-          {view.problem === undefined ? null : (
-            <p class="problem" role="alert">
-              {problemText(view.problem, view.asset)}
-            </p>
-          )}
-          {view.explorer === undefined ? null : (
-            <p>
-              <a href={view.explorer} target="_blank" rel="noopener noreferrer">
-                View the transaction
-              </a>
-            </p>
-          )}
-          {view.unsureLong ? (
-            <p class="muted">
-              {view.tempo
-                ? 'This is taking long. Check your wallet activity, or contact the store.'
-                : 'This is taking long. If it does not resolve, contact the store.'}
-            </p>
-          ) : null}
-          {view.canRetry && view.confirm.length > 0 ? (
-            <>
-              <ul class="warnings">
-                {view.confirm.map((warning) => (
-                  <li key={warning}>{WARNINGS[warning]}</li>
-                ))}
-              </ul>
-              <label class="confirm">
-                <input
-                  type="checkbox"
-                  checked={view.confirmed}
-                  onChange={(event) => actions.confirm(event.currentTarget.checked)}
-                />{' '}
-                I have read the warnings above and still want to pay.
-              </label>
-            </>
-          ) : null}
-          {view.canRetry ? (
-            <div class="wallets">
-              {view.wallets.map((wallet) => (
-                <button type="button" key={wallet.name} onClick={() => actions.retry(wallet.name)}>
-                  Try again with {wallet.name}
-                </button>
-              ))}
-              <button type="button" class="secondary" onClick={() => actions.startOver()}>
-                Start over
-              </button>
-            </div>
-          ) : null}
-        </div>
-      );
-    case 'waiting_store':
-      return (
-        <div>
-          <p>
-            {view.cancelled
-              ? 'Paid, but the store cancelled this order. Contact the store.'
-              : 'Paid. Waiting for the store to deliver…'}
-          </p>
-          {view.noAnswer ? (
-            <p class="muted">The store has not answered for a while. Contact the store.</p>
-          ) : null}
-          {view.explorer === undefined ? null : (
-            <p>
-              <a href={view.explorer} target="_blank" rel="noopener noreferrer">
-                View the payment
-              </a>
-            </p>
-          )}
-        </div>
-      );
-    case 'delivered':
-      return (
-        <div>
-          <p class="done">Delivered.</p>
-          {view.link === undefined ? (
-            <p class="delivery">{view.text}</p>
-          ) : (
-            <p>
-              <a href={view.link} target="_blank" rel="noopener noreferrer">
-                {view.link}
-              </a>
-            </p>
-          )}
-          <div class="wallets">
-            <button type="button" class="secondary" onClick={() => actions.startOver()}>
-              Buy again
-            </button>
-          </div>
-        </div>
-      );
-    case 'refunded':
-      return (
-        <div>
-          <p>The store cancelled this order and refunded the payment.</p>
-          <div class="wallets">
-            <button type="button" onClick={() => actions.startOver()}>
-              Start a new order
-            </button>
-          </div>
-        </div>
-      );
-    case 'cancelled':
-      return (
-        <div>
-          <p>The store cancelled this order. Nothing was paid.</p>
-          <div class="wallets">
-            <button type="button" onClick={() => actions.startOver()}>
-              Start a new order
-            </button>
-          </div>
-        </div>
-      );
-    case 'old_prompt':
-      return (
-        <div role="alert">
-          <p>
-            An earlier payment request for this product may still be open in your wallet. Approving
-            it would pay that order as well. Reject it in your wallet first.
-          </p>
-          <p class="muted">
-            {view.until > 0
-              ? `After ${new Date(view.until * 1000).toLocaleString()}, or if the store changed its price or payout, the store will not deliver that order on its own: you would have to contact it.`
-              : 'If the store changed its price or payout, the store will not deliver that order on its own: you would have to contact it.'}
-          </p>
-          <div class="wallets">
-            <button type="button" onClick={() => actions.confirmOldPrompt()}>
-              I understand, continue
-            </button>
-            <button type="button" class="secondary" onClick={() => actions.cancelOldPrompt()}>
-              Back
-            </button>
-          </div>
-        </div>
-      );
-    case 'blocked':
-      return (
-        <div role="alert">
-          <p>
-            The payment was blocked by the recipient: the money is held, not delivered. Contact the
-            store.
-          </p>
-        </div>
-      );
-    case 'refused':
-      return (
-        <div class="refused" role="alert">
-          <p>{REFUSALS.offer_refused}</p>
-          <p class="muted">{view.message}</p>
-        </div>
-      );
-  }
 }
