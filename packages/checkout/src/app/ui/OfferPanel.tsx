@@ -82,7 +82,7 @@ export function OfferPanel({
       {view.askEmail ? (
         <EmailField value={email} onInput={onEmail} continuing={view.continuing} />
       ) : null}
-      <ProblemNote problem={atEmail} asset={paying.asset} />
+      <ProblemNote problem={atEmail} asset={paying.asset} reveal />
       {!view.askEmail && view.continuing !== false ? (
         <p class="note">
           {view.continuing === 'created'
@@ -90,7 +90,7 @@ export function OfferPanel({
             : 'Your earlier order is still open.'}
         </p>
       ) : null}
-      <ProblemNote problem={aboveButton} asset={paying.asset} tempo={tempo} />
+      <ProblemNote problem={aboveButton} asset={paying.asset} tempo={tempo} reveal />
       {walletsOpen ? (
         <WalletSection
           wallets={view.wallets}

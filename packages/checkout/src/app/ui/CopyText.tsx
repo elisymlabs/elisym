@@ -1,4 +1,5 @@
-import { useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { isTouchOnly } from './device';
 
 interface Props {
   text: string;
@@ -10,9 +11,25 @@ interface Props {
   textClass?: string;
 }
 
+/** How long the button says "Copied" (or how to copy the selection) before its name returns. */
+export const COPIED_FOR_MS = 2000;
+
+type Outcome = 'copied' | 'selected';
+
+/** How a buyer copies the selected text themselves: shown in the button, and announced. */
+function selectedHint(): { label: string; announcement: string } {
+  if (isTouchOnly(navigator.userAgent, navigator.maxTouchPoints)) {
+    return { label: 'Text selected', announcement: 'Text selected: copy it from the menu.' };
+  }
+  const keys = /Mac/.test(navigator.userAgent) ? 'Press ⌘C' : 'Press Ctrl+C';
+  return { label: keys, announcement: `Selected: ${keys} to copy it.` };
+}
+
 /**
  * A text with a Copy button. A v1 frame has no clipboard permission, so a
  * refused write falls back to selecting the shown text for the buyer to copy.
+ * The outcome shows in the button itself (all its labels share one cell, so
+ * nothing moves) and is announced by a hidden live region.
  */
 export function CopyText({
   text,
@@ -21,7 +38,25 @@ export function CopyText({
   textClass = 'delivery',
 }: Props) {
   const box = useRef<HTMLParagraphElement>(null);
-  const [outcome, setOutcome] = useState<'copied' | 'selected' | undefined>(undefined);
+  const [outcome, setOutcome] = useState<Outcome | undefined>(undefined);
+  const [said, setSaid] = useState('');
+  const timers = useRef<{ reset?: number; say?: number }>({});
+  useEffect(
+    () => () => {
+      window.clearTimeout(timers.current.reset);
+      window.clearTimeout(timers.current.say);
+    },
+    [],
+  );
+  const show = (next: Outcome, message: string) => {
+    setOutcome(next);
+    // Cleared now and set on the next tick: the same message twice is announced twice.
+    setSaid('');
+    window.clearTimeout(timers.current.say);
+    timers.current.say = window.setTimeout(() => setSaid(message), 0);
+    window.clearTimeout(timers.current.reset);
+    timers.current.reset = window.setTimeout(() => setOutcome(undefined), COPIED_FOR_MS);
+  };
   const select = () => {
     const node = box.current;
     const selection = window.getSelection();
@@ -31,29 +66,39 @@ export function CopyText({
       selection.removeAllRanges();
       selection.addRange(range);
     }
-    setOutcome('selected');
+    show('selected', selectedHint().announcement);
   };
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
-      setOutcome('copied');
+      show('copied', copiedText);
     } catch {
       select();
     }
   };
+  const labels: { key: 'idle' | Outcome; text: string }[] = [
+    { key: 'idle', text: label },
+    { key: 'copied', text: '✓ Copied' },
+    { key: 'selected', text: selectedHint().label },
+  ];
+  const current = outcome ?? 'idle';
   return (
     <div class="copy">
       <p class={textClass} ref={box}>
         {text}
       </p>
-      <button type="button" class="secondary" onClick={() => void copy()}>
-        {label}
+      <button type="button" class="secondary copy-button" onClick={() => void copy()}>
+        <span class="label-stack">
+          {labels.map((entry) => (
+            <span key={entry.key} class="label-option" data-current={entry.key === current}>
+              {entry.text}
+            </span>
+          ))}
+        </span>
       </button>
-      {outcome === undefined ? null : (
-        <p class="note" role="status">
-          {outcome === 'copied' ? copiedText : 'Selected: copy it with your keyboard or menu.'}
-        </p>
-      )}
+      <span class="visually-hidden" role="status">
+        {said}
+      </span>
     </div>
   );
 }

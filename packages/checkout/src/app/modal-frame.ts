@@ -12,7 +12,7 @@ export interface FirstFocus {
 
 /**
  * In a modal only: the first time the frame gets focus (the loader focuses it
- * on open), move it to the store-name heading, once. Until the heading is on
+ * on open), move it to the product heading, once. Until the heading is on
  * screen, a focus that came is remembered; once it is, the focus moves only if
  * the frame still has it. The buyer's own first click or key disarms it, so a
  * later return from a wallet popup never jumps the sheet.

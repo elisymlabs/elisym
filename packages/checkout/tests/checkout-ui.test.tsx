@@ -32,6 +32,16 @@ interface DrawProps {
   screen?: Screen;
 }
 
+/** The copy button's label on screen (the others in its cell are hidden). */
+function currentLabel(ui: { container: HTMLElement }): string | undefined {
+  return ui.container.querySelector('.label-option[data-current="true"]')?.textContent ?? undefined;
+}
+
+/** What the copy button's hidden live region says. */
+function said(ui: { container: HTMLElement }): string {
+  return ui.container.querySelector('.visually-hidden[role="status"]')?.textContent ?? '';
+}
+
 /** A `Checkout` in the page, with actions that record what they were asked. */
 function mount(
   view?: View,
@@ -635,13 +645,13 @@ describe('progress', () => {
 
   it('names the store and the product of a payment resumed after a reload', () => {
     const ui = mount(waitingView(aboutOf(cannedOffer({ name: 'Resumed Shop' })), paying));
-    expect(ui.container.querySelector('#store-name')?.textContent).toBe('Resumed Shop');
+    expect(ui.container.querySelector('.store-name')?.textContent).toBe('Resumed Shop');
     expect(ui.container.querySelector('.product-title')?.textContent).toBe('Agents 101');
   });
 
   it('shows no trust chip for a store named from an order’s old snapshot', () => {
     const ui = mount(waitingView({ ...about, store: { name: 'Demo Shop' } }, paying));
-    expect(ui.container.querySelector('#store-name')?.textContent).toBe('Demo Shop');
+    expect(ui.container.querySelector('.store-name')?.textContent).toBe('Demo Shop');
     expect(ui.has('.chip')).toBe(false);
   });
 
@@ -956,9 +966,15 @@ describe('the done step', () => {
     vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
     const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
     expect(ui.has('a.button')).toBe(false);
+    const before = ui.container.querySelectorAll('.card *').length;
     await act(async () => ui.button('Copy').click());
     expect(writeText).toHaveBeenCalledWith('KEY-1234');
-    expect(ui.text()).toContain('Copied.');
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    // The button says it; the live region announces it; nothing is added to the card.
+    expect(currentLabel(ui)).toBe('✓ Copied');
+    expect(said(ui)).toBe('Copied.');
+    expect(ui.container.querySelectorAll('.card *').length).toBe(before);
+    expect(ui.has('.note[role="status"]')).toBe(false);
   });
 
   it('selects the text when the clipboard is refused', async () => {
@@ -969,12 +985,14 @@ describe('the done step', () => {
     const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
     await act(async () => ui.button('Copy').click());
     expect(window.getSelection()?.toString()).toBe('KEY-1234');
-    expect(ui.text()).toContain('Selected');
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(currentLabel(ui)).toMatch(/^Press (Ctrl\+C|⌘C)$/);
+    expect(said(ui)).toContain('Selected');
   });
 
   it('keeps naming the store', () => {
     const ui = mount({ kind: 'delivered', text: 'KEY-1234', store: about.store });
-    expect(ui.container.querySelector('#store-name')?.textContent).toBe('Demo Shop');
+    expect(ui.container.querySelector('.store-name')?.textContent).toBe('Demo Shop');
   });
 });
 
@@ -1023,8 +1041,8 @@ describe('the receipt', () => {
     const text = receiptText(ui);
     expect(text).not.toContain('Paid');
     expect(text).not.toContain('Transaction');
-    expect(text).toContain('Order total: 1.5 USDC · Solana mainnet');
-    expect(text).toContain('Payment: not seen by this checkout');
+    expect(text).toContain('Total: 1.5 USDC · Solana mainnet');
+    expect(text).not.toContain('not seen');
     expect(text).toContain(`Refunded on: ${new Date((PAID_AT + 60) * 1000).toLocaleString()}`);
     expect(text).toContain('Refunded by the store');
     expect(ui.container.querySelector('.receipt a')).toBeNull();
@@ -1036,7 +1054,10 @@ describe('the receipt', () => {
     const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
     await act(async () => ui.button('Copy receipt').click());
     expect(writeText).toHaveBeenCalledWith(receiptText(ui));
-    expect(ui.text()).toContain('Receipt copied.');
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(
+      ui.container.querySelector('.receipt .visually-hidden[role="status"]')?.textContent,
+    ).toBe('Receipt copied.');
   });
 
   it('selects exactly what it shows when the clipboard is refused', async () => {
@@ -1200,7 +1221,7 @@ describe('store data', () => {
     const offer = cannedOffer({ name: hostile, title: hostile, summary: hostile });
     const ui = mount(offerView(offer));
     expect(ui.container.querySelectorAll('img[src="x"]')).toHaveLength(0);
-    expect(ui.container.querySelector('#store-name')?.textContent).toBe(hostile);
+    expect(ui.container.querySelector('.store-name')?.textContent).toBe(hostile);
     expect(ui.container.querySelector('.product-title')?.textContent).toBe(hostile);
     ui.draw({ view: { kind: 'delivered', text: hostile } });
     expect(ui.container.querySelector('.delivery')?.textContent).toBe(hostile);
@@ -1304,5 +1325,195 @@ describe('focus', () => {
     vi.spyOn(document, 'hasFocus').mockReturnValue(false);
     ui.draw({ view: offerView(offer, { problem: { reason: 'rpc_error' } }) });
     expect(ui.container.contains(document.activeElement)).toBe(false);
+  });
+});
+
+describe('the header', () => {
+  const title = (ui: { container: HTMLElement }) =>
+    ui.container.querySelector<HTMLElement>('#checkout-title');
+
+  it('names the product first, then the store and its chips on a quieter line', () => {
+    const ui = mount(offerView(cannedOffer({ level: 'A', domain: 'shop.example' })));
+    expect(title(ui)?.tagName).toBe('H1');
+    expect(title(ui)?.textContent).toBe('Agents 101');
+    expect(title(ui)?.classList.contains('product-title')).toBe(true);
+    const line = ui.container.querySelector('.store-line');
+    expect(line?.querySelector('.store-name')?.textContent).toBe('Demo Shop');
+    expect(line?.querySelector('.badge')?.textContent).toBe('Test network');
+    expect(line?.querySelector('.chip')).not.toBeNull();
+    expect(ui.container.querySelector('.card')?.getAttribute('aria-labelledby')).toBe(
+      'checkout-title',
+    );
+    // Still exactly one section heading in the card: the header's is not one.
+    expect(ui.container.querySelectorAll('[data-heading]').length).toBeLessThanOrEqual(1);
+    expect(title(ui)?.hasAttribute('data-heading')).toBe(false);
+  });
+
+  it('shows the store name with no chip at level C', () => {
+    const ui = mount(offerView(cannedOffer({ level: 'C' })));
+    expect(ui.container.querySelector('.store-name')?.textContent).toBe('Demo Shop');
+    expect(ui.has('.chip')).toBe(false);
+  });
+
+  it('keeps a long name whole for hover and screen readers, clamped by CSS', () => {
+    const long = 'Deposit '.repeat(20).trim();
+    const ui = mount(offerView(cannedOffer({ title: long })));
+    expect(title(ui)?.textContent).toBe(long);
+    expect(title(ui)?.getAttribute('title')).toBe(long);
+  });
+
+  it('renders at most 200 characters of an absurd name, cut between whole characters', () => {
+    const family = '👨‍👩‍👧';
+    const long = `${'a'.repeat(199)}${family}${'b'.repeat(400)}`;
+    const ui = mount(offerView(cannedOffer({ title: long })));
+    const shown = title(ui)?.textContent ?? '';
+    expect(shown).toBe(`${'a'.repeat(199)}${family}…`);
+    expect(title(ui)?.getAttribute('title')).toBe(long);
+  });
+
+  it('names the product on progress and on every ending', () => {
+    const product = { title: 'Deposit 1 USD', price: { amount: '1', currency: 'USD' } };
+    for (const view of [
+      waitingView({ ...about, product }, paying),
+      { kind: 'cancelled', store: about.store, product } as View,
+      { kind: 'blocked', store: about.store, product } as View,
+      { kind: 'delivered', text: 'KEY', store: about.store, product } as View,
+      { kind: 'refunded', store: about.store, product } as View,
+    ]) {
+      const ui = mount(view);
+      expect(title(ui)?.textContent).toBe('Deposit 1 USD');
+      expect(ui.container.querySelector('.store-name')?.textContent).toBe('Demo Shop');
+      render(null, ui.container);
+      ui.container.remove();
+    }
+  });
+
+  it('says "Checkout" before an offer is known', () => {
+    const ui = mount(undefined);
+    expect(title(ui)?.textContent).toBe('Checkout');
+  });
+});
+
+describe('the receipt of a transaction this checkout only sent', () => {
+  const sent = (): Receipt => ({
+    store: 'Demo Shop',
+    product: 'Agents 101',
+    paying: { amount: '1500000', asset, network: 'mainnet', chain: 'solana' },
+    orderId: 'order-1',
+    sent: { tx: 'SIG', explorer: 'https://explorer.solana.com/tx/SIG' },
+    answeredAt: Date.UTC(2031, 4, 6, 12, 0, 0) / 1000,
+  });
+
+  it('names it last, says Total (never Paid), and links "Look up the transaction"', () => {
+    const ui = mount({ kind: 'delivered', text: 'KEY', receipt: sent() });
+    const text = ui.container.querySelector('.receipt-text')?.textContent ?? '';
+    expect(text).toContain('Total: 1.5 USDC · Solana mainnet');
+    expect(text).not.toContain('Paid');
+    expect(text.split('\n').at(-1)).toBe('Transaction sent: SIG');
+    const link = ui.container.querySelector('.receipt a');
+    expect(link?.textContent).toBe('Look up the transaction');
+    expect(link?.getAttribute('href')).toBe('https://explorer.solana.com/tx/SIG');
+    expect(link?.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+});
+
+describe('copy buttons', () => {
+  it('fit every label in one cell, the inactive ones hidden from view and from the name', () => {
+    const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
+    const options = [...ui.container.querySelectorAll('.copy-button .label-option')];
+    expect(options.map((option) => option.getAttribute('data-current'))).toEqual([
+      'true',
+      'false',
+      'false',
+    ]);
+    expect(ui.container.querySelector('.visually-hidden[role="status"]')?.textContent).toBe('');
+  });
+
+  it('go back to their name after a while', async () => {
+    vi.useFakeTimers();
+    try {
+      const writeText = vi.fn(async () => undefined);
+      vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
+      const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
+      await act(async () => ui.button('Copy').click());
+      expect(currentLabel(ui)).toBe('✓ Copied');
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(currentLabel(ui)).toBe('Copy');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('announce a second copy again (cleared, then set on the next tick)', async () => {
+    vi.useFakeTimers();
+    try {
+      const writeText = vi.fn(async () => undefined);
+      vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
+      const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
+      const region = ui.container.querySelector('.visually-hidden[role="status"]') as HTMLElement;
+      const texts: string[] = [];
+      const observer = new MutationObserver(() => texts.push(region.textContent ?? ''));
+      observer.observe(region, { childList: true, characterData: true, subtree: true });
+      for (let click = 0; click < 2; click += 1) {
+        await act(async () => ui.button('Copy').click());
+        await act(async () => {
+          vi.advanceTimersByTime(1);
+        });
+      }
+      await act(async () => Promise.resolve());
+      observer.disconnect();
+      expect(texts.filter((text) => text === 'Copied.').length).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148';
+  const MAC_UA =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15';
+  for (const [name, userAgent, touchPoints, label, announcement] of [
+    ['a phone', IPHONE_UA, 5, 'Text selected', 'Text selected: copy it from the menu.'],
+    [
+      'an iPad that says it is a Mac',
+      MAC_UA,
+      5,
+      'Text selected',
+      'Text selected: copy it from the menu.',
+    ],
+    ['a Mac', MAC_UA, 0, 'Press ⌘C', 'Selected: Press ⌘C to copy it.'],
+  ] as const) {
+    it(`point the buyer at how to copy the selection on ${name}`, async () => {
+      vi.useFakeTimers();
+      try {
+        vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent);
+        vi.spyOn(navigator, 'maxTouchPoints', 'get').mockReturnValue(touchPoints);
+        const writeText = vi.fn(async () => {
+          throw new Error('denied');
+        });
+        vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
+        const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
+        await act(async () => ui.button('Copy').click());
+        await act(async () => {
+          vi.advanceTimersByTime(1);
+        });
+        expect(currentLabel(ui)).toBe(label);
+        expect(ui.container.querySelector('.visually-hidden[role="status"]')?.textContent).toBe(
+          announcement,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  }
+});
+
+describe('sections that appear', () => {
+  it('fade in only outside a step that already does, with no fill that could hide them', () => {
+    const ui = mount(offerView(cannedOffer(), { problem: { reason: 'rpc_error' } }));
+    const note = ui.container.querySelector('[data-problem-note]');
+    expect(note?.classList.contains('reveal')).toBe(true);
+    expect(note?.closest('.step')).toBeNull();
   });
 });

@@ -8,25 +8,35 @@ The pieces:
 - **The widget** (`<elisym-buy>`) runs on your page. It frames the checkout from `pay.elisym.network`, where the offer is verified and the buyer's wallet signs.
 - **Nostr relays** carry the listing, the orders and the replies. Orders and replies are encrypted end to end between the buyer and your node, and no server of ours touches the money: the payment goes from the buyer's wallet to yours.
 
-This page takes you from nothing to a working purchase on **devnet**. [The widget](/commerce/widget) page has every attribute, the status events and the security model.
+This page takes you from nothing to a working purchase on **mainnet**, with real money. To try it first with test tokens, see [Try it free on devnet](#try-it-free-on-devnet) at the end. [The widget](/commerce/widget) page has every attribute, the status events and the security model.
 
 ## 1. Create the store
 
 You need Node.js 22.4 or newer (or Docker, see [the node's README](https://github.com/elisymlabs/elisym/tree/main/packages/merchant-node#docker)).
 
+The store lives in its own folder (its home), and its keys are encrypted with a passphrase from the start. **Run this block in every new terminal before any `npx @elisym/merchant-node` command**, so each command works on this store:
+
 ```bash
-npx @elisym/merchant-node init --network devnet
+export ELISYM_MERCHANT_HOME=~/.elisym-merchant-mainnet
+export ELISYM_MERCHANT_PASSPHRASE_FILE=~/.elisym-merchant-mainnet-passphrase
 ```
 
-This creates `~/.elisym-merchant/` with the store's keys and a `config.json` to edit. The keys identify your store: keep the folder private and back it up.
+Then create the passphrase (once; the line never overwrites an existing one) and the store:
 
-Open `~/.elisym-merchant/config.json` and fill in:
+```bash
+[ -s ~/.elisym-merchant-mainnet-passphrase ] || (umask 077 && openssl rand -base64 32 > ~/.elisym-merchant-mainnet-passphrase)
+npx @elisym/merchant-node init --network mainnet
+```
+
+`init` encrypts the store key and the owner key in `keys.json` and writes a `config.json` to edit. An existing home is kept; `init` never switches its network. The passphrase is never typed or printed: back up the home and the passphrase file off this machine, because without the passphrase the keys are lost. The node's README has the details, including `--owner-only` for a node that must run without it.
+
+Open `$ELISYM_MERCHANT_HOME/config.json` and fill in:
 
 ```json
 {
   "name": "My store",
-  "network": "devnet",
-  "rpcUrl": "https://api.devnet.solana.com",
+  "network": "mainnet",
+  "rpcUrl": "https://mainnet.helius-rpc.com/?api-key=<a server-side key>",
   "inboxRelays": ["wss://relay.elisym.network", "wss://nos.lol"],
   "product": {
     "d": "my-product",
@@ -37,16 +47,19 @@ Open `~/.elisym-merchant/config.json` and fill in:
   },
   "payouts": [
     {
-      "caip19": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-      "address": "<your devnet wallet address>"
+      "caip19": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "address": "<your Solana wallet address>"
     }
   ]
 }
 ```
 
+- `rpcUrl` is your own Solana RPC endpoint that keeps the full transaction history. The public mainnet one is rate-limited and not meant for a server, and a key restricted to a browser origin does not work from a server.
 - `priceUsd` is paid 1:1 in USDC.
 - `delivery.value` is what the buyer sees once paid: a link (opened only if it is `https:`) or a text such as a license key.
-- `payouts[0].address` is the Solana wallet the money goes to. The `caip19` above is devnet USDC.
+- `payouts[0].address` is the Solana wallet the money goes to. The `caip19` above is mainnet USDC.
+
+**Real money.** Payments go straight from the buyer's wallet to these addresses: nothing holds them for you, and nothing can pull them back. Start with a small price, buy it yourself once, and only then share the page.
 
 ## 2. Publish it
 
@@ -60,7 +73,7 @@ npx @elisym/merchant-node setup
 naddr   naddr1...
 ```
 
-After a change to `config.json`, stop the node, run `setup` again, then start the node again: `setup` refuses while the node runs. The product id (`product.d`) cannot change. A new product needs its own home (`--home <dir>`).
+After a change to `config.json`, stop the node, run `setup` again, then start the node again: `setup` refuses while the node runs. The product id (`product.d`) cannot change. A new product needs its own home (another `ELISYM_MERCHANT_HOME`).
 
 ## 3. Run the node
 
@@ -68,12 +81,12 @@ After a change to `config.json`, stop the node, run `setup` again, then start th
 npx @elisym/merchant-node run
 ```
 
-Keep it running. It reads orders from your inbox relays, checks each payment on chain and sends the delivery. If it stops, it catches up on what it missed when it starts again. `npx @elisym/merchant-node orders` lists the orders, paid or not.
+Keep it running. It reads orders from your inbox relays, checks each payment on chain and sends the delivery. If it stops, it catches up on what it missed when it starts again. The node refuses to start if the published store offers buyers anything it would not honor, such as a payout on another network or a price it did not record. In another terminal (after the export block), `npx @elisym/merchant-node orders` lists the orders, paid or not.
 
 ## 4. Add the checkout to your page
 
 ```html
-<elisym-buy product="naddr1..." network="devnet" theme="dark"></elisym-buy>
+<elisym-buy product="naddr1..." network="mainnet" theme="dark"></elisym-buy>
 <script
   src="https://pay.elisym.network/v2/embed.js"
   integrity="sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ"
@@ -81,15 +94,15 @@ Keep it running. It reads orders from your inbox relays, checks each payment on 
 ></script>
 ```
 
-The page shows a Buy button that opens the checkout in a modal. Add `display="inline"` to show it in the page instead, and `label="..."` to change the button's text (see [the widget](/commerce/widget)). The `integrity` hash pins the exact loader your page runs. The file under `/v2/` never changes, so the hash stays valid. A new loader would ship under a new path.
+The page shows a Buy button that opens the checkout in a modal. Add `display="inline"` to show it in the page instead, `theme="light"` for a light page, and `label="..."` to change the button's text (see [the widget](/commerce/widget)). The `integrity` hash pins the exact loader your page runs. The file under `/v2/` never changes, so the hash stays valid. A new loader would ship under a new path.
 
 No page yet? The repository has a ready one: [`examples/demo-store`](https://github.com/elisymlabs/elisym/tree/main/examples/demo-store) serves a store page on localhost that takes the `naddr` and the network from its URL, and logs the checkout's status events.
 
 ## 5. Buy it
 
-Serve the page over http(s), for example with `npx serve .` on localhost. A page opened from disk (`file://`) has no origin, and the checkout refuses it. Open it in a browser with a Solana wallet that supports Wallet Standard (Phantom, Solflare, ...), switched to devnet. It needs devnet SOL for fees ([faucet.solana.com](https://faucet.solana.com)) and devnet USDC for the price ([faucet.circle.com](https://faucet.circle.com), Solana -> Devnet).
+Serve the page over http(s), for example with `npx serve .` on localhost. A page opened from disk (`file://`) has no origin, and the checkout refuses it. Open it in a browser with a Solana wallet that supports Wallet Standard (Phantom, Solflare, ...) holding the price in USDC and a little SOL for the fee.
 
-Click Buy: the checkout opens and shows the product, the price and who is selling it. Pay, and within seconds the node logs the order and the payment, and the checkout shows the delivery.
+Click Buy: the checkout opens and shows the product, the price and who is selling it. Pay, and within seconds the node logs the order and the payment, and the checkout shows the delivery with a receipt.
 
 ## See your orders
 
@@ -104,33 +117,13 @@ Open [http://127.0.0.1:5199/](http://127.0.0.1:5199/). The page reads your inbox
 
 ## Level A: let your domain vouch for the store
 
-Without more setup the store is **level C**: the checkout tells the buyer that no domain vouches for it. To reach **level A**:
+Without more setup the store is **level C**: no domain vouches for it, and the checkout shows no trust chip. To reach **level A** ("Verified: your-domain" in the checkout):
 
 1. Add `"nip05": "_@your-domain.com"` to `config.json`, stop the node, run `setup` again and start the node.
-2. Serve the `nostr.json` that `setup` writes to `~/.elisym-merchant/` at `https://your-domain.com/.well-known/nostr.json`, with the header `Access-Control-Allow-Origin: *`.
+2. Serve the `nostr.json` that `setup` writes in your store's home (`$ELISYM_MERCHANT_HOME`) at `https://your-domain.com/.well-known/nostr.json`, with the header `Access-Control-Allow-Origin: *`.
 3. Run `npx @elisym/merchant-node check`. It fetches the file and says whether your domain now vouches for the store.
 
 At level A, the checkout sells only on your domain: a page served over `https:` from `your-domain.com` or one of its subdomains. It refuses any other page, including `localhost`, so test a level A store on your real site (see [the widget](/commerce/widget#where-it-sells)).
-
-## Going to mainnet
-
-A mainnet store is a separate store, with its own keys, in its own home. Give every command the home, or set `ELISYM_MERCHANT_HOME` once:
-
-```bash
-export ELISYM_MERCHANT_HOME=~/.elisym-merchant-mainnet
-[ -s ~/.elisym-merchant-mainnet-passphrase ] || (umask 077 && openssl rand -base64 32 > ~/.elisym-merchant-mainnet-passphrase)
-export ELISYM_MERCHANT_PASSPHRASE_FILE=~/.elisym-merchant-mainnet-passphrase
-npx @elisym/merchant-node init --network mainnet
-```
-
-With a passphrase set (`ELISYM_MERCHANT_PASSPHRASE_FILE` here, or `ELISYM_MERCHANT_PASSPHRASE`), `init` encrypts the store key and the owner key in `keys.json`, and every later command reads the passphrase the same way. The passphrase file is generated once (the line never overwrites it, and `init` checks that it opens an encrypted home), never typed or printed: back it up off this machine, because without it the keys are lost. It protects a copy of the home, such as a backup, not a server that holds the passphrase too. The node's README has the details, including `--owner-only` for a node that must run without it.
-
-In its `config.json`, set:
-
-- `rpcUrl` to your own Solana RPC endpoint. The public mainnet one is rate-limited and not meant for a server. A key restricted to a browser origin does not work from a server.
-- the payout to mainnet USDC, `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`, at your mainnet wallet.
-
-Then run `setup` and `run` as above. `setup` prints the mainnet store's own `naddr`: put that in the snippet, with `network="mainnet"`. The node refuses to start if the published store offers buyers anything it would not honor, such as a payout on another network or a price it did not record. So when it starts, the node never takes orders on terms it would refuse.
 
 ## Tempo payouts
 
@@ -138,16 +131,18 @@ The store can also take a Tempo stablecoin, paid with an EIP-6963 wallet such as
 
 Upgrade the node **before** your payout list names a Tempo address: an older node would refuse to start on an offer it cannot honor, and a buyer could pay it. Once the node has seen a Tempo order, its ledger is in a newer format, and an older node refuses to start on it: do not downgrade.
 
-On devnet, add a Moderato payout to the store from step 1 (stop the node first, and put your own Tempo address, lowercase):
+To add a Tempo USDC.e payout to the mainnet store (stop the node first, run the export block, and put your own Tempo address, lowercase):
 
 ```bash
 node -e '
 const fs = require("fs");
-const path = `${process.env.HOME}/.elisym-merchant/config.json`;
+const home = process.env.ELISYM_MERCHANT_HOME;
+if (!home) throw new Error("run the export block first");
+const path = `${home}/config.json`;
 const config = JSON.parse(fs.readFileSync(path, "utf8"));
-config.tempo = { network: "moderato" };
+config.tempo = { network: "mainnet" };
 config.payouts.push({
-  caip19: "eip155:42431/erc20:0x20c0000000000000000000000000000000000000",
+  caip19: "eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50",
   address: "<your Tempo address, lowercase>",
 });
 fs.writeFileSync(path, JSON.stringify(config, null, 2));
@@ -155,6 +150,8 @@ fs.writeFileSync(path, JSON.stringify(config, null, 2));
 npx @elisym/merchant-node setup
 npx @elisym/merchant-node run
 ```
+
+A Tempo buyer pays with MetaMask (or another EIP-6963 wallet that can add the Tempo network) and needs USDC.e on Tempo.
 
 The node reads Tempo through the registry's public endpoint; set `"tempo": { "network": "...", "rpcUrl": "https://..." }` for your own. A store with only Tempo payouts needs no Solana `rpcUrl`.
 
@@ -172,3 +169,22 @@ npx @elisym/merchant-node refund <buyer>:<orderId> --tx <your refund transaction
 `deliver` sends the configured delivery; `refund` reports a refund you already sent (above zero; an unpaid order is released with `deliver`, never a zero refund). `--asset` names the refunded coin as CAIP-19, the same id as in your config's `payouts`: it may be left out when the store has one payout, and is required when it has several. The refund transaction must be on that coin's chain. Running `refund` again for an answer kept by an older node sends it unchanged, without an asset. The command prints what the ledger holds for the order and asks before it sends (`--yes` for scripts); the order is then closed for good, and running the same command again sends the same answer again. Check the payment yourself (the node's log and a block explorer) before you answer.
 
 The node's README covers the rest: the full config, Docker, the lock, and what to keep safe.
+
+## Try it free on devnet
+
+Devnet runs the same flow with test tokens. It is a separate store in its own home, without a passphrase. Run this block in every new terminal for the devnet store:
+
+```bash
+export ELISYM_MERCHANT_HOME=~/.elisym-merchant-devnet
+unset ELISYM_MERCHANT_PASSPHRASE_FILE
+```
+
+Then:
+
+```bash
+npx @elisym/merchant-node init --network devnet
+```
+
+In `$ELISYM_MERCHANT_HOME/config.json` the template already has `"network": "devnet"`, the public devnet RPC `https://api.devnet.solana.com`, and devnet USDC `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`: set the product and your devnet wallet address. Run `setup` and `run` as above, and put the `naddr` this devnet setup prints in the snippet, with `network="devnet"`. Switch the wallet to devnet (testnet mode in Phantom or Solflare). The wallet needs devnet SOL for fees ([faucet.solana.com](https://faucet.solana.com)) and devnet USDC for the price ([faucet.circle.com](https://faucet.circle.com), Solana -> Devnet).
+
+For a Tempo payout on devnet, use Moderato, Tempo's testnet: the script above with `config.tempo = { network: "moderato" }` and `caip19: "eip155:42431/erc20:0x20c0000000000000000000000000000000000000"` (pathUSD).
