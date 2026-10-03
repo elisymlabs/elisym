@@ -10,7 +10,6 @@ const WIDTHS = [420, 375];
 const THEMES = ['auto', 'light', 'dark'] as const;
 
 const NOTHING: Actions = {
-  confirm: () => undefined,
   choosePayout: () => undefined,
   confirmOldPrompt: async () => undefined,
   cancelOldPrompt: () => undefined,
@@ -46,7 +45,7 @@ function Fixtures() {
               screen={{ kind: 'loading' }}
               view={canned.view}
               banner={
-                canned.name === 'review'
+                canned.name === 'offer'
                   ? {
                       orderId: 'x',
                       state: 'completed',
@@ -56,6 +55,7 @@ function Fixtures() {
                   : undefined
               }
               actions={NOTHING}
+              {...canned.props}
             />
           </figure>
         ))}

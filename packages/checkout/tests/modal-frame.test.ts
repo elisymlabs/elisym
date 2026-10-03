@@ -88,7 +88,7 @@ describe('the first focus in a modal', () => {
 
 describe('Escape in a modal frame', () => {
   it('asks the page to close, and nothing else does', () => {
-    let listener: ((event: { key: string }) => void) | undefined;
+    let listener: ((event: { key: string; defaultPrevented: boolean }) => void) | undefined;
     let closes = 0;
     closeOnEscape(
       {
@@ -98,8 +98,23 @@ describe('Escape in a modal frame', () => {
       },
       () => (closes += 1),
     );
-    listener?.({ key: 'Enter' });
-    listener?.({ key: 'Escape' });
+    listener?.({ key: 'Enter', defaultPrevented: false });
+    listener?.({ key: 'Escape', defaultPrevented: false });
     expect(closes).toBe(1);
+  });
+
+  it('leaves an Escape something in the frame handled (an open list) to it', () => {
+    let listener: ((event: { key: string; defaultPrevented: boolean }) => void) | undefined;
+    let closes = 0;
+    closeOnEscape(
+      {
+        addEventListener: (_type, added) => {
+          listener = added;
+        },
+      },
+      () => (closes += 1),
+    );
+    listener?.({ key: 'Escape', defaultPrevented: true });
+    expect(closes).toBe(0);
   });
 });

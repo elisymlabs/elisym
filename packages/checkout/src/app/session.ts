@@ -1,4 +1,4 @@
-import type { OfferWarning } from '@elisym/commerce';
+import type { Product, TrustLevel } from '@elisym/commerce';
 import { type LoadedOffer, type PricedPayout, isSnapshotStale } from '@elisym/commerce/buyer';
 import {
   type OrderDeps,
@@ -38,6 +38,8 @@ import {
   payWithTempo,
   MERCHANT_CATCH_UP_SECS,
   readTempoChainTime,
+  storedTempoRequest,
+  tempoLateDeadline,
   watchTempoPayment,
 } from '@elisym/commerce/buyer';
 import type { Asset, Network } from '@elisym/pay-core';
@@ -58,6 +60,16 @@ export const UNSURE_AFTER_SECS = 10 * 60;
 export const MAX_ENDED_LISTENERS = 5;
 /** A found payment with no store answer this long after: "contact the store". */
 export const NO_ANSWER_AFTER_SECS = 30 * 60;
+/**
+ * Finalized blocks past an attempt's last valid height before the watch may
+ * judge it over: the copy of commerce's private `EXPIRY_SETTLE_BLOCKS`
+ * (`buyer/solana-pay.ts:71`, used at `:1048`). The countdown only; the watch decides.
+ */
+export const RETRY_SETTLE_BLOCKS = 32n;
+/** Solana's target slot time, for an estimate of a block count in seconds. */
+export const SLOT_SECS_ESTIMATE = 0.4;
+/** The extra block-height read of a watch pass gives up after this long. */
+export const EPOCH_READ_TIMEOUT_MS = 4_000;
 
 /** A wallet as the screens show it. */
 export interface WalletChoice {
@@ -77,7 +89,7 @@ export type Problem =
   | { reason: 'order_not_acknowledged' | 'no_store_inbox' | 'failed' | 'bad_email' }
   | { reason: 'wallet_failed' | 'wallet_unsupported' }
   | { reason: 'policy_blocked' | 'wrong_chain' | 'rejected' | 'attempt_over' | 'late_approval' }
-  | { reason: 'offer_changed' | 'confirm_first' | 'offer_refused' }
+  | { reason: 'offer_changed' | 'offer_refused' }
   | { reason: 'insufficient_token' | 'insufficient_sol'; needed: bigint; available: bigint };
 
 /** The payment a progress screen is about: the live order's, else the payout chosen. */
@@ -89,6 +101,27 @@ export interface Paying {
   chain: Rail;
 }
 
+/** The store as the header names it. No level when it comes from an order's old snapshot. */
+export interface StoreInfo {
+  name: string | undefined;
+  level?: TrustLevel;
+  domain?: string;
+}
+
+/** What a progress view is about: the store, the product (the order's own once it is paid on), the email sent. */
+export interface About {
+  store: StoreInfo;
+  product: { title: string; summary?: string; price: Product['price'] };
+  /** The email this session sent with the order shown, if any. */
+  email?: string;
+}
+
+/** A time estimate: `seconds` left as of `at` (unix seconds, device clock). */
+export interface Countdown {
+  seconds: number;
+  at: number;
+}
+
 export type View =
   | {
       kind: 'offer';
@@ -97,10 +130,6 @@ export type View =
       /** The payouts this widget can pay (a chooser when more than one), and the one chosen. */
       payouts: PricedPayout[];
       payoutIndex: number;
-      /** Warnings the buyer must confirm before any payment. */
-      confirm: OfferWarning[];
-      confirmed: boolean;
-      notices: OfferWarning[];
       wallets: WalletChoice[];
       problem?: Problem;
       /**
@@ -113,10 +142,16 @@ export type View =
       askEmail: boolean;
       email: string;
     }
-  | { kind: 'working'; step: 'checking' | 'ordering' | 'signing'; paying?: Paying }
+  | {
+      kind: 'working';
+      step: 'checking' | 'ordering' | 'signing';
+      paying?: Paying;
+      about: About;
+    }
   | {
       kind: 'waiting_payment';
       paying?: Paying;
+      about: About;
       /** The coin being paid, for amounts in a problem. */
       asset: Asset;
       explorer?: string;
@@ -124,18 +159,26 @@ export type View =
       canRetry: boolean;
       /** Wallets for the retry. */
       wallets: WalletChoice[];
-      /** A Tempo attempt: no retry here; "check your wallet activity" while it stays open. */
+      /** A Tempo attempt: no retry here; it ends once proven over. */
       tempo: boolean;
-      /** Warnings a retry needs confirmed (after a reload the confirmation is asked again). */
-      confirm: OfferWarning[];
-      confirmed: boolean;
-      /** Still unsure long after the attempt: the buyer should contact the store. */
-      unsureLong: boolean;
+      /** The wallet answered: a signature (Solana), or a hash or bundle (Tempo). */
+      signed: boolean;
+      /** This session only follows the order: never a retry, start over only. */
+      followOnly: boolean;
+      /** This checkout cannot read the order's network: it cannot tell when it ends. */
+      unserved: boolean;
+      /** When still unsure, the buyer should contact the store (unix seconds). */
+      unsureAt?: number;
+      /** Solana: about when a retry can be judged safe (an estimate; the watch decides). */
+      retryIn?: Countdown;
+      /** Tempo: about when the checkout stops waiting for the wallet request. */
+      requestEndsIn?: Countdown;
       problem?: Problem;
     }
   | {
       kind: 'waiting_store';
       paying?: Paying;
+      about: About;
       explorer?: string;
       cancelled: boolean;
       /** Paid, and no answer from the store for 30 minutes: contact the store. */
@@ -150,14 +193,16 @@ export type View =
       orders: number;
       /** After this (seconds), the store no longer sees an approval of the old request. */
       until: number;
+      about: About;
+      paying?: Paying;
     }
   /** The recipient's transfer policy blocked the payment: the money sits with the guard. */
-  | { kind: 'blocked' }
+  | { kind: 'blocked'; store?: StoreInfo }
   /** The store cancelled an order that was not paid: a new one may start. */
-  | { kind: 'cancelled' }
-  | { kind: 'delivered'; text: string; link?: string }
-  | { kind: 'refunded' }
-  | { kind: 'refused'; message: string };
+  | { kind: 'cancelled'; store?: StoreInfo }
+  | { kind: 'delivered'; text: string; link?: string; store?: StoreInfo }
+  | { kind: 'refunded'; store?: StoreInfo }
+  | { kind: 'refused'; message: string; store?: StoreInfo };
 
 export interface SessionDeps {
   store: OrderStore;
@@ -266,6 +311,15 @@ function recordPaying(record: OrderRecord): Paying | undefined {
       };
 }
 
+/** A product as a progress view names it. */
+function productOf(product: Product): About['product'] {
+  return {
+    title: product.title,
+    ...(product.summary === undefined ? {} : { summary: product.summary }),
+    price: product.price,
+  };
+}
+
 /** What a new order for `payout` would pay. */
 export function payoutPaying(payout: PricedPayout): Paying {
   return {
@@ -322,7 +376,6 @@ function stateOf(record: OrderRecord): CheckoutState | undefined {
 export class CheckoutSession {
   private offer: ReadyOffer;
   private payout: PricedPayout;
-  private confirmed: boolean;
   private record: OrderRecord | undefined;
   /** The relays the store is heard on for the current record (its inbox and past acknowledgers). */
   private relays: string[] = [];
@@ -369,6 +422,21 @@ export class CheckoutSession {
   private noAnswerTimer: { orderId: string; handle: unknown } | undefined;
   /** The wallet of the last pay press (a confirmation re-runs it). */
   private lastWallet = '';
+  /** A pay or retry press is running (from its first await): the payout cannot change under it. */
+  private pressing = false;
+  /** A retry is running: its progress views name the order's own terms. */
+  private retrying = false;
+  /** The email this session sent with each order it placed (the record keeps none). */
+  private readonly sentEmail = new Map<string, string>();
+  /**
+   * Why a re-check refused this page, while an order kept it from ending: the
+   * trust level is no longer shown, and no new purchase is offered.
+   */
+  private refusedHere: string | undefined;
+  /** The last block-height estimate of the live Solana attempt, by attempt. */
+  private retryEstimate:
+    | { attemptId: string; seconds: number; at: number; latched: boolean }
+    | undefined;
   /** When the page loaded: the "no answer" timer of a payment found before `paidAt` existed. */
   private readonly loadedAt: number;
   /**
@@ -396,7 +464,6 @@ export class CheckoutSession {
     }
     this.network = networkOf(first);
     this.payout = payout;
-    this.confirmed = offer.confirm.length === 0;
     this.loadedAt = deps.now();
   }
 
@@ -441,25 +508,27 @@ export class CheckoutSession {
     await this.follow(resumed.record, resumed.relays);
   }
 
-  /** The buyer ticked "I understand" for the offer's warnings. */
-  confirm(checked: boolean): void {
-    this.confirmed = checked || this.offer.confirm.length === 0;
-    if (this.record?.state === 'paying') {
-      this.render();
-    } else {
-      this.showOffer();
-    }
-  }
-
   /** What the buyer typed as email (sent with a new order only when it is one). */
   setEmail(value: string): void {
     this.email = value;
   }
 
-  /** The buyer picked another payout (chosen BEFORE the order is placed). */
+  /**
+   * The buyer picked another payout: only while no payment is pressed or
+   * running, the old-prompt question is not up, and the order on screen (if
+   * any) is not paid on yet.
+   */
   choosePayout(index: number): void {
     const payout = this.payablePayouts()[index];
-    if (payout === undefined || this.busy || this.record?.state === 'paying') {
+    const state = this.record?.state;
+    const open = state === undefined || state === 'created' || state === 'ordered';
+    if (
+      payout === undefined ||
+      this.busy ||
+      this.pressing ||
+      !open ||
+      this.oldPrompt !== undefined
+    ) {
       return;
     }
     this.payout = payout;
@@ -503,19 +572,24 @@ export class CheckoutSession {
 
   /** Pay with the wallet named `walletName`. */
   async pay(walletName: string): Promise<void> {
-    if (this.busy || this.followOnly !== undefined) {
+    if (this.busy || this.pressing || this.followOnly !== undefined) {
       return;
     }
+    this.pressing = true;
+    try {
+      await this.payPressed(walletName);
+    } finally {
+      this.pressing = false;
+    }
+  }
+
+  private async payPressed(walletName: string): Promise<void> {
     this.lastWallet = walletName;
     this.lastAction = 'pay';
     if (this.lateHashHolds()) {
       return;
     }
     if (await this.deliveryFirst()) {
-      return;
-    }
-    if (!this.confirmed) {
-      this.showOffer({ reason: 'confirm_first' });
       return;
     }
     // A new order is certain: a typo never costs a wallet prompt or the open order.
@@ -737,7 +811,15 @@ export class CheckoutSession {
     } catch {
       // The date is shown when known; the question is asked either way.
     }
-    this.deps.onView({ kind: 'old_prompt', orders: unconfirmed.length, until });
+    const terms = this.termsShown(false);
+    const paying = this.payingOf(terms);
+    this.deps.onView({
+      kind: 'old_prompt',
+      orders: unconfirmed.length,
+      until,
+      about: this.aboutOf(terms),
+      ...(paying === undefined ? {} : { paying }),
+    });
   }
 
   /** An unsaved hash of an order another tab ended: it is a late approval now. */
@@ -827,17 +909,53 @@ export class CheckoutSession {
   }
 
   /**
-   * A progress screen, with the payment it is about: the order's own while it
-   * is being signed, or while it is the one being continued; else the payout
-   * chosen, which is exactly what a new order will be placed for.
+   * The order whose terms a progress screen shows: the open one while it is
+   * being signed or retried, or while it is the one being continued; else none,
+   * and the screen shows the payout chosen - exactly what a new order is placed
+   * for. The payment line and the product always come from the same choice.
    */
-  private working(step: 'checking' | 'ordering' | 'signing'): void {
+  private termsShown(signing: boolean): OrderRecord | undefined {
     const record = this.record;
-    const paying =
-      record !== undefined && (step === 'signing' || !onOtherTerms(record, this.payout))
-        ? recordPaying(record)
-        : payoutPaying(this.payout);
-    this.deps.onView({ kind: 'working', step, ...(paying === undefined ? {} : { paying }) });
+    return record !== undefined && (signing || this.retrying || !onOtherTerms(record, this.payout))
+      ? record
+      : undefined;
+  }
+
+  private payingOf(terms: OrderRecord | undefined): Paying | undefined {
+    return terms === undefined ? payoutPaying(this.payout) : recordPaying(terms);
+  }
+
+  /**
+   * The store from the offer on screen: its name only when that offer is an
+   * order's old snapshot (follow-only), so no trust level is shown it no longer has.
+   */
+  private storeInfo(): StoreInfo {
+    const { profile, level, domain } = this.offer.offer;
+    if (this.deps.followOnly !== undefined || this.refusedHere !== undefined) {
+      return { name: profile.name };
+    }
+    return { name: profile.name, level, ...(domain === undefined ? {} : { domain }) };
+  }
+
+  private aboutOf(terms: OrderRecord | undefined): About {
+    const email = terms === undefined ? undefined : this.sentEmail.get(terms.orderId);
+    return {
+      store: this.storeInfo(),
+      product: productOf(terms === undefined ? this.offer.offer.product : terms.offer.product),
+      ...(email === undefined ? {} : { email }),
+    };
+  }
+
+  /** A progress screen, with the payment and the product it is about. */
+  private working(step: 'checking' | 'ordering' | 'signing'): void {
+    const terms = this.termsShown(step === 'signing');
+    const paying = this.payingOf(terms);
+    this.deps.onView({
+      kind: 'working',
+      step,
+      about: this.aboutOf(terms),
+      ...(paying === undefined ? {} : { paying }),
+    });
   }
 
   private servable(payout: PricedPayout): boolean {
@@ -919,19 +1037,34 @@ export class CheckoutSession {
     });
   }
 
-  /** A new attempt for the same order, once the last one provably ended. */
+  /**
+   * A new attempt for the same order, once the last one provably ended. Never
+   * before: no wallet even opens while the attempt may still land (commerce's
+   * `retryWithSolana` refuses one too).
+   */
   async retry(walletName: string): Promise<void> {
     const record = this.record;
-    if (this.busy || record === undefined || this.followOnly !== undefined) {
+    if (
+      this.busy ||
+      this.pressing ||
+      record === undefined ||
+      this.followOnly !== undefined ||
+      !this.attemptOver
+    ) {
       return;
     }
+    this.pressing = true;
+    try {
+      await this.retryPressed(record, walletName);
+    } finally {
+      this.pressing = false;
+    }
+  }
+
+  private async retryPressed(record: OrderRecord, walletName: string): Promise<void> {
     this.lastWallet = walletName;
     this.lastAction = 'retry';
     if (this.lateHashHolds()) {
-      return;
-    }
-    if (!this.confirmed) {
-      this.render({ problem: { reason: 'confirm_first' } });
       return;
     }
     if (await this.deliveryFirst()) {
@@ -942,37 +1075,56 @@ export class CheckoutSession {
       return;
     }
     await this.guard(async () => {
-      if (!(await this.connect(walletName, network))) {
-        this.render({ problem: { reason: 'no_wallet' } });
-        return;
+      this.retrying = true;
+      try {
+        await this.retryGuarded(record, walletName, network);
+      } finally {
+        this.retrying = false;
       }
-      const ready = await this.freshOffer();
-      const rpc = this.deps.rpcFor(network);
-      if (ready === undefined || rpc === undefined || this.wallet === undefined) {
-        return;
-      }
-      const chainTime = await this.readChainTime(rpc);
-      if (chainTime === undefined) {
-        this.render({ problem: { reason: 'rpc_error' } });
-        return;
-      }
-      const current = (await this.deps.store.get(record.orderId)) ?? record;
-      if (current.status?.status === 'cancelled') {
-        // The store cancelled it: never another attempt (the store refuses one too).
-        await this.follow(current);
-        return;
-      }
-      this.working('signing');
-      this.stopWatching();
-      this.generation += 1;
-      const result = await retryWithSolana(
-        current,
-        this.wallet,
-        { fresh: ready, chainTime },
-        this.payDeps(rpc),
-      );
-      await this.afterPay(result, rpc);
     });
+  }
+
+  private async retryGuarded(
+    record: OrderRecord,
+    walletName: string,
+    network: Network,
+  ): Promise<void> {
+    this.working('checking');
+    if (!(await this.connect(walletName, network))) {
+      this.render({ problem: { reason: 'no_wallet' } });
+      return;
+    }
+    const ready = await this.freshOffer();
+    // The re-verification drew its own view (a changed or refused offer).
+    if (ready === undefined) {
+      return;
+    }
+    const rpc = this.deps.rpcFor(network);
+    if (rpc === undefined || this.wallet === undefined) {
+      this.render();
+      return;
+    }
+    const chainTime = await this.readChainTime(rpc);
+    if (chainTime === undefined) {
+      this.render({ problem: { reason: 'rpc_error' } });
+      return;
+    }
+    const current = (await this.deps.store.get(record.orderId)) ?? record;
+    if (current.status?.status === 'cancelled') {
+      // The store cancelled it: never another attempt (the store refuses one too).
+      await this.follow(current);
+      return;
+    }
+    this.working('signing');
+    this.stopWatching();
+    this.generation += 1;
+    const result = await retryWithSolana(
+      current,
+      this.wallet,
+      { fresh: ready, chainTime },
+      this.payDeps(rpc),
+    );
+    await this.afterPay(result, rpc);
   }
 
   /** Leave an order that will not be paid (only once nothing can still land). */
@@ -1128,7 +1280,7 @@ export class CheckoutSession {
 
   private refuse(message: string): void {
     this.refused = true;
-    this.deps.onView({ kind: 'refused', message });
+    this.deps.onView({ kind: 'refused', message, store: { name: this.offer.offer.profile.name } });
     this.status('refused');
   }
 
@@ -1144,8 +1296,8 @@ export class CheckoutSession {
 
   /**
    * The offer to pay against: verified again when the snapshot is older than
-   * two minutes. A changed price or payout, or a new warning to confirm, sends
-   * the buyer back to the offer; a refusal ends the attempt.
+   * two minutes. A changed price or payout sends the buyer back to the offer;
+   * a refusal ends the attempt. Warnings are no change: none is asked about.
    */
   private async freshOffer(): Promise<ReadyOffer | undefined> {
     if (!isSnapshotStale(this.offer.snapshotAt, this.deps.now())) {
@@ -1155,7 +1307,8 @@ export class CheckoutSession {
     if (!reloaded.ok) {
       return this.refusedOnReload(reloaded.message);
     }
-    const verdict = compareOffers(this.payout, this.offer.confirm, reloaded);
+    // The fresh offer's own warnings are passed: only the payout and its amount decide.
+    const verdict = compareOffers(this.payout, reloaded.confirm, reloaded);
     // The chosen payout is gone: only another one on the page's network replaces
     // it, never one on another network. None: refused, exactly as above.
     const fallback = this.payablePayouts(reloaded)[0];
@@ -1163,6 +1316,7 @@ export class CheckoutSession {
       return this.refusedOnReload(NO_PAYABLE_PAYOUT);
     }
     this.offer = reloaded;
+    this.refusedHere = undefined;
     if (verdict === 'same') {
       return reloaded;
     }
@@ -1171,7 +1325,6 @@ export class CheckoutSession {
     if (payout !== undefined) {
       this.payout = payout;
     }
-    this.confirmed = reloaded.confirm.length === 0;
     const live = this.record;
     if (live !== undefined && live.state !== 'created' && live.state !== 'ordered') {
       // The attempt on screen stays followed: the change shows where it is retried.
@@ -1184,6 +1337,8 @@ export class CheckoutSession {
 
   /** The re-verification refused: a live order is still followed, else the widget refuses. */
   private refusedOnReload(message: string): undefined {
+    // The store no longer accepts this page: its trust level is not shown again.
+    this.refusedHere = message;
     const live = this.record;
     if (live !== undefined && live.state !== 'created' && live.state !== 'ordered') {
       // No new payment, but the order that is paying or paid is still followed.
@@ -1246,6 +1401,10 @@ export class CheckoutSession {
       if (placed.record !== undefined) {
         this.setRecord(placed.record);
         this.relays = placed.record.inboxRelays;
+        // Sent with it whether or not the store took it yet: a resume sends the same order.
+        if (email !== undefined) {
+          this.sentEmail.set(placed.record.orderId, email);
+        }
       }
       if (!placed.ok) {
         const problems: Record<typeof placed.reason, Problem> = {
@@ -1380,6 +1539,7 @@ export class CheckoutSession {
       this.stop();
       this.attemptProblem = undefined;
       this.attemptOver = false;
+      this.retryEstimate = undefined;
     }
     this.record = record;
   }
@@ -1413,7 +1573,7 @@ export class CheckoutSession {
     }
     this.listen(record);
     if (cancelledUnpaid(record)) {
-      this.deps.onView({ kind: 'cancelled' });
+      this.deps.onView({ kind: 'cancelled', store: this.storeInfo() });
       return;
     }
     if (record.state === 'created' || record.state === 'ordered') {
@@ -1448,7 +1608,7 @@ export class CheckoutSession {
     }
     if (record === undefined || record.state === 'created' || record.state === 'ordered') {
       if (record !== undefined && cancelledUnpaid(record)) {
-        this.deps.onView({ kind: 'cancelled' });
+        this.deps.onView({ kind: 'cancelled', store: this.storeInfo() });
         return;
       }
       this.showOffer(extra.problem);
@@ -1458,16 +1618,23 @@ export class CheckoutSession {
     const network = target?.caip19.chain.network ?? networkOf(this.payout);
     const status = record.status;
     const paying = recordPaying(record);
+    const store = this.storeInfo();
     if (record.state === 'completed') {
       const text = status?.delivery ?? '';
       const link = deliveryLink(text);
-      this.deps.onView({ kind: 'delivered', text, ...(link === undefined ? {} : { link }) });
+      this.deps.onView({
+        kind: 'delivered',
+        text,
+        ...(link === undefined ? {} : { link }),
+        store,
+      });
       return;
     }
     if (record.state === 'refunded') {
-      this.deps.onView({ kind: 'refunded' });
+      this.deps.onView({ kind: 'refunded', store });
       return;
     }
+    const about = this.aboutOf(record);
     if (record.state === 'paid' || record.paidTx !== undefined) {
       if (status === undefined) {
         this.redrawAtNoAnswer(record);
@@ -1475,6 +1642,7 @@ export class CheckoutSession {
       this.deps.onView({
         kind: 'waiting_store',
         ...(paying === undefined ? {} : { paying }),
+        about,
         cancelled: status?.status === 'cancelled',
         noAnswer:
           status === undefined &&
@@ -1486,26 +1654,38 @@ export class CheckoutSession {
       return;
     }
     if (record.state === 'blocked') {
-      this.deps.onView({ kind: 'blocked' });
+      this.deps.onView({ kind: 'blocked', store });
       return;
     }
     // The store cancelled and the attempt is over: only a new order is left.
     if (this.attemptOver && status?.status === 'cancelled') {
-      this.deps.onView({ kind: 'cancelled' });
+      this.deps.onView({ kind: 'cancelled', store });
       return;
     }
     const marker = record.marker;
     const tempo = recordRail(record) === 'tempo';
     let signature: string | undefined;
+    let signed = false;
     if (marker?.rail === 'solana') {
       signature = marker.signature;
+      signed = marker.signature !== undefined;
     } else if (marker?.rail === 'tempo') {
-      signature = marker.txHash ?? this.pendingHash?.hash;
+      const pending =
+        this.pendingHash?.orderId === record.orderId ? this.pendingHash.hash : undefined;
+      signature = marker.txHash ?? pending;
+      signed =
+        marker.txHash !== undefined || marker.bundleId !== undefined || pending !== undefined;
     }
-    const problem = extra.problem ?? this.attemptProblem;
+    // A refusal by the store stays explained on every redraw while the order lives.
+    const refused: Problem | undefined =
+      this.refusedHere === undefined ? undefined : { reason: 'offer_refused' };
+    const problem = extra.problem ?? this.attemptProblem ?? refused;
+    const retryIn = this.retryCountdown(record);
+    const requestEndsIn = tempo && !signed ? this.requestCountdown(record) : undefined;
     this.deps.onView({
       kind: 'waiting_payment',
       ...(paying === undefined ? {} : { paying }),
+      about,
       asset: target?.caip19.asset ?? this.payout.target.caip19.asset,
       tempo,
       // Follow-only never pays: no retry is offered (start over is). Tempo has no retry.
@@ -1517,20 +1697,110 @@ export class CheckoutSession {
               ...(option.icon === undefined ? {} : { icon: option.icon }),
             }))
           : [],
-      confirm: this.attemptOver && this.followOnly === undefined ? this.offer.confirm : [],
-      confirmed: this.confirmed,
-      unsureLong:
-        !this.attemptOver &&
-        marker !== undefined &&
-        this.deps.now() - marker.setAt > UNSURE_AFTER_SECS,
+      signed,
+      followOnly: this.followOnly !== undefined,
+      unserved: !this.recordServed(record),
+      ...(this.attemptOver || marker === undefined
+        ? {}
+        : { unsureAt: marker.setAt + UNSURE_AFTER_SECS }),
+      ...(retryIn === undefined ? {} : { retryIn }),
+      ...(requestEndsIn === undefined ? {} : { requestEndsIn }),
       ...(signature === undefined ? {} : { explorer: explorerFor(record, signature, network) }),
       ...(problem === undefined ? {} : { problem }),
     });
   }
 
+  /** The live Solana attempt's estimate, while it may still land and is the one estimated. */
+  private retryCountdown(record: OrderRecord): Countdown | undefined {
+    const estimate = this.retryEstimate;
+    const marker = record.marker;
+    if (
+      this.attemptOver ||
+      estimate === undefined ||
+      marker?.rail !== 'solana' ||
+      marker.attemptId !== estimate.attemptId
+    ) {
+      return undefined;
+    }
+    return { seconds: estimate.seconds, at: estimate.at };
+  }
+
+  /** A Tempo request not answered yet: about when the checkout stops waiting for it. */
+  private requestCountdown(record: OrderRecord): Countdown | undefined {
+    const request = storedTempoRequest(record);
+    if (request === undefined) {
+      return undefined;
+    }
+    const now = this.deps.now();
+    return { seconds: Math.max(0, tempoLateDeadline(request) - now), at: now };
+  }
+
+  /**
+   * Read the finalized block height for the live Solana attempt's estimate:
+   * outside the watch pass, bounded, never drawing; the next pass shows it. A
+   * failed read keeps the last estimate; one that reached 0 is never read again.
+   */
+  private readRetryEstimate(record: OrderRecord, generation: number): void {
+    const marker = record.marker;
+    const rpc = this.rpcOfRecord(record);
+    if (marker?.rail !== 'solana' || rpc === undefined || this.attemptOver) {
+      return;
+    }
+    const known = this.retryEstimate;
+    if (known?.attemptId === marker.attemptId && known.latched) {
+      return;
+    }
+    let lastValid: bigint;
+    try {
+      lastValid = BigInt(marker.lastValidBlockHeight);
+    } catch {
+      return;
+    }
+    const attemptId = marker.attemptId;
+    void rpc
+      .getEpochInfo({ commitment: 'finalized' })
+      .send({ abortSignal: AbortSignal.timeout(EPOCH_READ_TIMEOUT_MS) })
+      .then((epoch) => {
+        if (
+          this.disposed ||
+          generation !== this.generation ||
+          this.record?.marker?.attemptId !== attemptId
+        ) {
+          return;
+        }
+        const left = lastValid + RETRY_SETTLE_BLOCKS - BigInt(epoch.blockHeight);
+        const blocksLeft = left > 0n ? Number(left) : 0;
+        const at = this.deps.now();
+        let seconds = Math.ceil(blocksLeft * SLOT_SECS_ESTIMATE);
+        // Skipped slots make blocks slower than the estimate: never count back up,
+        // or the line would flip between "checking" and "waiting".
+        const earlier = this.retryEstimate;
+        if (earlier?.attemptId === attemptId) {
+          seconds = Math.min(seconds, Math.max(0, earlier.seconds - (at - earlier.at)));
+        }
+        this.retryEstimate = { attemptId, seconds, at, latched: blocksLeft === 0 };
+      })
+      .catch(() => {
+        // Unread now: the last estimate stays, counted down from its own time.
+      });
+  }
+
   private showOffer(problem?: Problem): void {
+    // The old-prompt question is no longer on screen: the next wallet press asks
+    // it again (commerce answers `needs_confirmation` until it is confirmed).
+    this.oldPrompt = undefined;
+    if (this.refusedHere !== undefined) {
+      // The store refused this page while an order was still live; that order
+      // has ended, so the refusal shows now instead of a new purchase.
+      this.refuse(this.refusedHere);
+      return;
+    }
     if (this.followOnly !== undefined) {
-      this.deps.onView({ kind: 'refused', message: this.followOnly.message });
+      this.deps.onView({
+        kind: 'refused',
+        message: this.followOnly.message,
+        store: { name: this.offer.offer.profile.name },
+      });
       this.status('refused');
       return;
     }
@@ -1542,7 +1812,6 @@ export class CheckoutSession {
       // Never reached (the payout always comes from that list): if it ever is, the
       // buyer reviews the payout now selected - never a quiet switch.
       this.payout = substitute;
-      this.confirmed = this.offer.confirm.length === 0;
       payoutIndex = 0;
       shown = { reason: 'offer_changed' };
     }
@@ -1553,9 +1822,6 @@ export class CheckoutSession {
       payout: this.payout,
       payouts,
       payoutIndex,
-      confirm: this.offer.confirm,
-      confirmed: this.confirmed,
-      notices: this.offer.notices,
       wallets: this.walletChoices(this.payout),
       continuing: this.continuing(),
       askEmail: this.deps.collectEmail === true,
@@ -1601,6 +1867,11 @@ export class CheckoutSession {
           this.stopWatching();
         }
         return;
+      }
+      try {
+        this.readRetryEstimate(record, generation);
+      } catch {
+        // An estimate only: it never stops the watch.
       }
       this.watching = true;
       try {

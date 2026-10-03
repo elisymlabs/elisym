@@ -10,7 +10,7 @@ interface Props {
 export function OldPromptStep({ view, onContinue, onBack }: Props) {
   return (
     <div class="step" data-step="old-prompt">
-      <StepHeading>Check your wallet first</StepHeading>
+      <StepHeading level={3}>Check your wallet first</StepHeading>
       <div class="problem" role="alert">
         <p>
           An earlier payment request for this product may still be open in your wallet. Approving it

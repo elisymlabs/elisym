@@ -58,13 +58,19 @@ export function armFirstFocus(self: FocusWindow, focusHeading: () => void): Firs
 
 /** The part of `window` the Escape listener uses. */
 export interface KeyWindow {
-  addEventListener(type: 'keydown', listener: (event: { key: string }) => void): void;
+  addEventListener(
+    type: 'keydown',
+    listener: (event: { key: string; defaultPrevented: boolean }) => void,
+  ): void;
 }
 
-/** In a modal only: Escape inside the frame never reaches the page, so the frame asks it to close. */
+/**
+ * In a modal only: Escape inside the frame never reaches the page, so the frame
+ * asks it to close - unless something in the frame handled it (an open list).
+ */
 export function closeOnEscape(self: KeyWindow, close: () => void): void {
   self.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
+    if (event.key === 'Escape' && !event.defaultPrevented) {
       close();
     }
   });

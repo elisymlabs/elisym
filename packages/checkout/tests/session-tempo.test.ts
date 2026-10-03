@@ -340,6 +340,60 @@ describe('paying on Tempo in the widget', () => {
     expect(await records(run.offer)).toHaveLength(0);
   });
 
+  it('counts down to the request’s late deadline only while the wallet has not answered', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'fail';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    const [paying] = await records(run.offer);
+    const request = JSON.parse(paying?.paymentRequest ?? '{}') as {
+      created_at: number;
+      expiry_secs: number;
+    };
+    const now = NOW + 30;
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      tempo: true,
+      signed: false,
+      requestEndsIn: { seconds: request.created_at + request.expiry_secs + 1800 - now, at: now },
+    });
+  });
+
+  it('counts nothing down once the wallet returned a hash', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'drop';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', tempo: true, signed: true });
+    expect(run.last()).not.toHaveProperty('requestEndsIn');
+  });
+
+  it('changes no payout under the old-prompt question, and asks it again after a redraw', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'fail';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    const [paying] = await records(run.offer);
+    run.pastDeadline(paying as OrderRecord);
+    await run.timers.tick();
+    run.wallet.behaviour = 'land';
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({ kind: 'old_prompt', orders: 1, paying: { chain: 'tempo' } });
+    const shown = run.views.length;
+    run.session.choosePayout(0);
+    expect(run.views.length).toBe(shown);
+    // A wallet registers: the offer is drawn again, and the question is gone.
+    run.session.refresh();
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+    const redrawn = run.views.length;
+    run.session.choosePayout(0);
+    expect(run.views.length).toBe(redrawn + 1);
+    const requested = run.wallet.requests;
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({ kind: 'old_prompt', orders: 1 });
+    expect(run.wallet.requests).toBe(requested);
+  });
+
   it('names the Tempo payment on the progress screens', async () => {
     const run = await setup();
     run.wallet.behaviour = 'drop';
