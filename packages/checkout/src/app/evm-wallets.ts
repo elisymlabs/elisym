@@ -12,6 +12,8 @@ export interface Eip6963Info {
   name: string;
   /** A data: URI image (anything else is not shown: the CSP allows only data: images). */
   icon?: string;
+  /** The wallet's reverse-DNS id (`io.metamask`, `app.phantom`), when it says. */
+  rdns?: string;
 }
 
 export interface Eip6963Wallet {
@@ -26,11 +28,69 @@ export interface TempoWalletOption {
   connect(): Promise<TempoWallet>;
 }
 
-/** An EIP-1193 error code: 4001 is a user refusal, 4902 an unknown chain. */
-function errorCode(error: unknown): number | undefined {
-  return typeof error === 'object' && error !== null && 'code' in error
-    ? Number((error as { code: unknown }).code)
+/**
+ * Wallets whose EVM provider cannot add or switch to a custom chain such as
+ * Tempo: they are not offered there. Extend by rdns as more are found.
+ */
+export const TEMPO_UNSUPPORTED_RDNS: readonly string[] = ['app.phantom'];
+
+/** The wallet cannot pay on the Tempo chain: it refused to add or switch to it. */
+export class TempoChainUnsupported extends Error {
+  constructor() {
+    super('this wallet cannot use the Tempo chain');
+    this.name = 'TempoChainUnsupported';
+  }
+}
+
+/** A field of an error-like object, if it has one. */
+function fieldOf(value: unknown, key: string): unknown {
+  return typeof value === 'object' && value !== null && key in value
+    ? (value as Record<string, unknown>)[key]
     : undefined;
+}
+
+/** A wallet error code (EIP-1193): 4001 a user refusal, 4902 an unknown chain, -32002 busy. */
+export function errorCode(error: unknown): number | undefined {
+  const code = fieldOf(error, 'code');
+  return code === undefined ? undefined : Number(code);
+}
+
+/** Some MetaMask builds (mobile) send the unknown chain as -32603, with 4902 nested. */
+function nestedCode(error: unknown): number | undefined {
+  return errorCode(fieldOf(fieldOf(error, 'data'), 'originalError'));
+}
+
+function messageOf(error: unknown): string {
+  const message = fieldOf(error, 'message');
+  return typeof message === 'string' ? message : '';
+}
+
+/** The buyer refused in the wallet. */
+const REJECTED = 4001;
+/** The wallet already has a request open (a press after a cancel, say). */
+const BUSY = -32002;
+/** The wallet does not know the chain: it is added, then used. */
+const UNKNOWN_CHAIN = 4902;
+/** Codes a wallet answers to a switch it does not do at all. */
+const UNSUPPORTED_CODES: readonly number[] = [4200, -32601, -32602];
+/** Codes a wallet answers to an add it does not do at all (-32602 there may be a bad RPC). */
+const ADD_UNSUPPORTED_CODES: readonly number[] = [4200, -32601];
+
+/** How a failed wallet request reads to the buyer: refused, busy, or anything else. */
+export function walletErrorKind(error: unknown): 'rejected' | 'busy' | 'failed' {
+  const code = errorCode(error);
+  if (code === REJECTED) {
+    return 'rejected';
+  }
+  return code === BUSY ? 'busy' : 'failed';
+}
+
+function unknownChain(error: unknown): boolean {
+  return (
+    errorCode(error) === UNKNOWN_CHAIN ||
+    nestedCode(error) === UNKNOWN_CHAIN ||
+    /unrecognized chain|unknown chain/i.test(messageOf(error))
+  );
 }
 
 const HEX_CHAIN = (chainId: number) => `0x${chainId.toString(16)}`;
@@ -47,10 +107,32 @@ async function switchTo(provider: Eip1193Provider, chain: ChainConfig): Promise<
   try {
     await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId }] });
   } catch (error) {
-    if (errorCode(error) !== 4902) {
+    const code = errorCode(error);
+    if (code === REJECTED || code === BUSY) {
       throw error;
     }
-    const explorer = chain.explorerTx?.split('/tx/')[0];
+    // An unknown chain is added first: only a wallet that cannot add one is unsupported.
+    if (unknownChain(error)) {
+      await addChain(provider, chain, chainId);
+      return;
+    }
+    if (
+      (code !== undefined && UNSUPPORTED_CODES.includes(code)) ||
+      /unsupported|not supported/i.test(messageOf(error))
+    ) {
+      throw new TempoChainUnsupported();
+    }
+    throw error;
+  }
+}
+
+async function addChain(
+  provider: Eip1193Provider,
+  chain: ChainConfig,
+  chainId: string,
+): Promise<void> {
+  const explorer = chain.explorerTx?.split('/tx/')[0];
+  try {
     await provider.request({
       method: 'wallet_addEthereumChain',
       params: [
@@ -63,6 +145,17 @@ async function switchTo(provider: Eip1193Provider, chain: ChainConfig): Promise<
         },
       ],
     });
+  } catch (error) {
+    // Only a wallet that does not do this at all is unsupported: an unreachable
+    // RPC or a refusal is not a reason to send the buyer to another wallet.
+    const code = errorCode(error);
+    if (
+      (code !== undefined && ADD_UNSUPPORTED_CODES.includes(code)) ||
+      /unsupported|not supported|not implemented/i.test(messageOf(error))
+    ) {
+      throw new TempoChainUnsupported();
+    }
+    throw error;
   }
 }
 
@@ -100,11 +193,16 @@ export function tempoWalletOptions(
   wallets: readonly Eip6963Wallet[],
   chain: ChainConfig,
 ): TempoWalletOption[] {
-  return wallets.map((wallet) => ({
-    name: wallet.info.name,
-    ...(wallet.info.icon?.startsWith('data:') === true ? { icon: wallet.info.icon } : {}),
-    connect: () => connectTempo(wallet.provider, chain),
-  }));
+  return wallets
+    .filter(
+      (wallet) =>
+        wallet.info.rdns === undefined || !TEMPO_UNSUPPORTED_RDNS.includes(wallet.info.rdns),
+    )
+    .map((wallet) => ({
+      name: wallet.info.name,
+      ...(wallet.info.icon?.startsWith('data:') === true ? { icon: wallet.info.icon } : {}),
+      connect: () => connectTempo(wallet.provider, chain),
+    }));
 }
 
 /**
@@ -130,7 +228,15 @@ export function discoverEvmWallets(
     ) {
       return;
     }
-    found.set(info.uuid, { info, provider });
+    found.set(info.uuid, {
+      info: {
+        uuid: info.uuid,
+        name: info.name,
+        ...(typeof info.icon === 'string' ? { icon: info.icon } : {}),
+        ...(typeof info.rdns === 'string' ? { rdns: info.rdns } : {}),
+      },
+      provider,
+    });
     onChange();
   });
   target.dispatchEvent(new Event('eip6963:requestProvider'));

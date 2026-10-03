@@ -122,13 +122,7 @@ export function WaitingPayment({ view, problem, onRetry, onStartOver }: Props) {
           {view.wallets.length === 0 ? null : <p class="label">Try again with</p>}
           <div class="wallet-list">
             {view.wallets.map((wallet) => (
-              <WalletRow
-                key={wallet.name}
-                wallet={wallet}
-                tempo={false}
-                disabled={false}
-                onPick={onRetry}
-              />
+              <WalletRow key={wallet.name} wallet={wallet} disabled={false} onPick={onRetry} />
             ))}
           </div>
           <button type="button" class="secondary" onClick={onStartOver}>

@@ -1,6 +1,7 @@
 import type { View } from '../session';
 import { CopyText } from './CopyText';
 import { CHECK_GLYPH } from './glyphs';
+import { ReceiptBlock } from './ReceiptBlock';
 import { StepHeading } from './StepHeading';
 
 interface Props {
@@ -42,6 +43,7 @@ export function DoneStep({ view, onBuyAgain, onDone }: Props) {
       <button type="button" class="secondary" onClick={onBuyAgain}>
         Buy again
       </button>
+      {view.receipt === undefined ? null : <ReceiptBlock receipt={view.receipt} kind="delivered" />}
     </div>
   );
 }

@@ -17,6 +17,7 @@ const NOTHING: Actions = {
   pay: async () => undefined,
   retry: async () => undefined,
   startOver: async () => undefined,
+  cancel: () => undefined,
 };
 
 function Fixtures() {

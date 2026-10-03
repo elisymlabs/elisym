@@ -3,13 +3,11 @@ import { usableIcon } from './device';
 
 interface Props {
   wallet: WalletChoice;
-  /** A Tempo payment: connecting switches the wallet to the Tempo chain. */
-  tempo: boolean;
   disabled: boolean;
   onPick(name: string): void;
 }
 
-export function WalletRow({ wallet, tempo, disabled, onPick }: Props) {
+export function WalletRow({ wallet, disabled, onPick }: Props) {
   const icon = usableIcon(wallet.icon);
   return (
     <button
@@ -25,10 +23,7 @@ export function WalletRow({ wallet, tempo, disabled, onPick }: Props) {
       ) : (
         <img class="wallet-icon" src={icon} alt="" aria-hidden="true" />
       )}
-      <span class="wallet-name">
-        {wallet.name}
-        {tempo ? <span class="wallet-note">switches to Tempo</span> : null}
-      </span>
+      <span class="wallet-name">{wallet.name}</span>
       <span class="chevron" aria-hidden="true" />
     </button>
   );

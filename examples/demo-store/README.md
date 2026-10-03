@@ -10,7 +10,7 @@ checkout in the page" for the inline layout). It logs the `elisym-status` events
 sends, and when the modal opens and closes. The product and the network come from the page
 URL, so one page serves any store.
 
-A store with no `nip05` is trust level C: the checkout's header says "Unverified store". That is
+A store with no `nip05` is trust level C: the checkout's header shows no trust chip. That is
 expected for a new demo store. A level A store (one whose domain vouches for it, see
 [the node's README](../../packages/merchant-node/README.md)) sells only on its own domain, so
 this page cannot show it.

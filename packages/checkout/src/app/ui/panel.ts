@@ -13,6 +13,8 @@ export const PROBLEM_PLACE = {
   offer_refused: 'offer',
   too_late: 'offer',
   no_wallet: 'wallets',
+  tempo_unsupported: 'wallets',
+  wallet_busy: 'wallets',
   rpc_error: 'wallets',
   clock_skew: 'wallets',
   wrong_chain: 'wallets',

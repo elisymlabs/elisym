@@ -29,13 +29,7 @@ export function WalletSection({ wallets, chain, asset, problem, phone, locked, o
       ) : (
         <div class="wallet-list">
           {wallets.map((wallet) => (
-            <WalletRow
-              key={wallet.name}
-              wallet={wallet}
-              tempo={tempo}
-              disabled={locked}
-              onPick={onPay}
-            />
+            <WalletRow key={wallet.name} wallet={wallet} disabled={locked} onPick={onPay} />
           ))}
         </div>
       )}

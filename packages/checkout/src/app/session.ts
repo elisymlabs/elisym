@@ -46,7 +46,7 @@ import type { Asset, Network } from '@elisym/pay-core';
 import type { Eip1193Client } from '@elisym/pay-core/evm';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import type { CheckoutState } from '../embed/protocol';
-import type { TempoWalletOption } from './evm-wallets';
+import { type TempoWalletOption, TempoChainUnsupported, walletErrorKind } from './evm-wallets';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 
@@ -70,6 +70,11 @@ export const RETRY_SETTLE_BLOCKS = 32n;
 export const SLOT_SECS_ESTIMATE = 0.4;
 /** The extra block-height read of a watch pass gives up after this long. */
 export const EPOCH_READ_TIMEOUT_MS = 4_000;
+/**
+ * The Solana chain-time read before an order gives up after this long: its RPC
+ * has no timeout of its own, and the buyer would wait on "Checking..." forever.
+ */
+export const CHAIN_TIME_TIMEOUT_MS = 15_000;
 
 /** A wallet as the screens show it. */
 export interface WalletChoice {
@@ -86,6 +91,7 @@ export interface WalletOption {
 
 export type Problem =
   | { reason: 'no_wallet' | 'clock_skew' | 'rpc_error' | 'self_payment' | 'too_late' }
+  | { reason: 'tempo_unsupported' | 'wallet_busy' }
   | { reason: 'order_not_acknowledged' | 'no_store_inbox' | 'failed' | 'bad_email' }
   | { reason: 'wallet_failed' | 'wallet_unsupported' }
   | { reason: 'policy_blocked' | 'wrong_chain' | 'rejected' | 'attempt_over' | 'late_approval' }
@@ -114,6 +120,22 @@ export interface About {
   product: { title: string; summary?: string; price: Product['price'] };
   /** The email this session sent with the order shown, if any. */
   email?: string;
+}
+
+/**
+ * What a finished order was, from its own record: the payment rows only when
+ * this checkout saw the payment itself (`paid`), never on the store's word alone.
+ */
+export interface Receipt {
+  store: string;
+  product: string;
+  /** What the order is for; absent when its payout cannot be read. */
+  paying?: Paying;
+  orderId: string;
+  /** The payment this checkout found: its transaction, and when it was found (seconds). */
+  paid?: { tx: string; at?: number; explorer?: string };
+  /** When the store's answer was accepted (seconds): the date row when no payment was seen. */
+  answeredAt?: number;
 }
 
 /** A time estimate: `seconds` left as of `at` (unix seconds, device clock). */
@@ -147,6 +169,8 @@ export type View =
       step: 'checking' | 'ordering' | 'signing';
       paying?: Paying;
       about: About;
+      /** Waiting for the wallet's connect answer: the buyer may cancel and choose again. */
+      cancellable?: true;
     }
   | {
       kind: 'waiting_payment';
@@ -200,8 +224,8 @@ export type View =
   | { kind: 'blocked'; store?: StoreInfo }
   /** The store cancelled an order that was not paid: a new one may start. */
   | { kind: 'cancelled'; store?: StoreInfo }
-  | { kind: 'delivered'; text: string; link?: string; store?: StoreInfo }
-  | { kind: 'refunded'; store?: StoreInfo }
+  | { kind: 'delivered'; text: string; link?: string; store?: StoreInfo; receipt?: Receipt }
+  | { kind: 'refunded'; store?: StoreInfo; receipt?: Receipt }
   | { kind: 'refused'; message: string; store?: StoreInfo };
 
 export interface SessionDeps {
@@ -220,6 +244,9 @@ export interface SessionDeps {
   chainTime(rpc: Rpc<SolanaRpcApi>): Promise<number>;
   setInterval(handler: () => void, ms: number): unknown;
   clearInterval(handle: unknown): void;
+  /** One-shot timers (the chain-time read's deadline). */
+  setTimeout(handler: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
   onView(view: View): void;
   onStatus(state: CheckoutState): void;
   /** The merchant set `collect-email`: the offer asks for one (optional). */
@@ -345,6 +372,59 @@ export function explorerLink(signature: string, network: Network): string {
   return `https://explorer.solana.com/tx/${signature}${cluster}`;
 }
 
+/** A wallet's connect answer: the wallet, or why there is none. */
+type ConnectAnswer = { wallet: SolanaWallet } | { error: 'rejected' | 'busy' | 'failed' };
+
+/** The problem a refused or failed wallet connect shows. */
+function connectProblem(
+  error: 'rejected' | 'busy' | 'failed',
+): 'rejected' | 'wallet_busy' | 'no_wallet' {
+  switch (error) {
+    case 'rejected':
+      return 'rejected';
+    case 'busy':
+      return 'wallet_busy';
+    case 'failed':
+      return 'no_wallet';
+  }
+}
+
+/** A Tempo connect failure, as the buyer is told: a wallet without the chain is named as such. */
+function tempoConnectProblem(
+  error: unknown,
+): 'tempo_unsupported' | 'rejected' | 'wallet_busy' | 'no_wallet' {
+  return error instanceof TempoChainUnsupported
+    ? 'tempo_unsupported'
+    : connectProblem(walletErrorKind(error));
+}
+
+/**
+ * A finished order's receipt, entirely from its own record. The payment rows
+ * come only from `paidTx`, which this checkout's own chain check wrote: a store
+ * can answer an order this checkout never saw paid.
+ */
+function receiptOf(record: OrderRecord, network: Network): Receipt {
+  const paying = recordPaying(record);
+  const tx = record.paidTx;
+  const explorer = tx === undefined ? undefined : explorerFor(record, tx, network);
+  return {
+    store: record.offer.profile.name ?? 'Unnamed store',
+    product: record.offer.product.title,
+    ...(paying === undefined ? {} : { paying }),
+    orderId: record.orderId,
+    ...(tx === undefined
+      ? {}
+      : {
+          paid: {
+            tx,
+            ...(record.paidAt === undefined ? {} : { at: record.paidAt }),
+            ...(explorer?.startsWith('https://') === true ? { explorer } : {}),
+          },
+        }),
+    ...(record.status === undefined ? {} : { answeredAt: record.status.at }),
+  };
+}
+
 /** The page-facing state of a record, or none (created: nothing to tell yet). */
 function stateOf(record: OrderRecord): CheckoutState | undefined {
   switch (record.state) {
@@ -379,8 +459,16 @@ export class CheckoutSession {
   private record: OrderRecord | undefined;
   /** The relays the store is heard on for the current record (its inbox and past acknowledgers). */
   private relays: string[] = [];
-  private wallet: SolanaWallet | undefined;
   private busy = false;
+  /** The press that holds `busy`: only its own end releases it. */
+  private busyOwner: number | undefined;
+  /**
+   * The current press id: bumped by every pay or retry press and by a cancel. A
+   * press whose id is no longer current drops whatever its awaits bring back.
+   */
+  private press = 0;
+  /** The press now waiting for the wallet's connect answer: the one Cancel ends. */
+  private cancellableFor: number | undefined;
   private disposed = false;
   /** Bumped whenever the current record or its attempt changes: late results for older ones drop. */
   private generation = 0;
@@ -575,15 +663,40 @@ export class CheckoutSession {
     if (this.busy || this.pressing || this.followOnly !== undefined) {
       return;
     }
+    this.press += 1;
+    const press = this.press;
     this.pressing = true;
     try {
-      await this.payPressed(walletName);
+      await this.payPressed(walletName, press);
     } finally {
-      this.pressing = false;
+      // A cancelled press ends later: it never releases a newer press's flag.
+      if (this.press === press) {
+        this.pressing = false;
+      }
     }
   }
 
-  private async payPressed(walletName: string): Promise<void> {
+  /**
+   * The buyer cancels while the wallet has not answered its connect request:
+   * the press ends now (a late answer is dropped), the screen it came from shows
+   * again, and nothing about the order changes - nothing was asked of it yet.
+   */
+  cancel(): void {
+    if (this.disposed || this.cancellableFor === undefined || this.cancellableFor !== this.press) {
+      return;
+    }
+    this.press += 1;
+    this.cancellableFor = undefined;
+    this.busy = false;
+    this.busyOwner = undefined;
+    this.pressing = false;
+    this.retrying = false;
+    // Exactly how an action ends: the stored truth, then any answer held meanwhile.
+    this.render();
+    void this.showPendingAnswer();
+  }
+
+  private async payPressed(walletName: string, press: number): Promise<void> {
     this.lastWallet = walletName;
     this.lastAction = 'pay';
     if (this.lateHashHolds()) {
@@ -601,15 +714,24 @@ export class CheckoutSession {
       return;
     }
     if (railOf(this.payout) === 'tempo') {
-      await this.payTempo(walletName);
+      await this.payTempo(walletName, press);
       return;
     }
-    await this.guard(async () => {
-      this.working('checking');
-      if (!(await this.connect(walletName, networkOf(this.payout)))) {
-        this.showOffer({ reason: 'no_wallet' });
+    await this.guard(press, async () => {
+      this.cancellableFor = press;
+      this.working('checking', true);
+      const answer = await this.connect(walletName, networkOf(this.payout));
+      if (this.press !== press) {
+        // Cancelled: the answer is dropped, nothing is drawn.
         return;
       }
+      this.cancellableFor = undefined;
+      if ('error' in answer) {
+        this.showOffer({ reason: connectProblem(answer.error) });
+        return;
+      }
+      const wallet = answer.wallet;
+      this.working('checking');
       const ready = await this.freshOffer();
       const rpc = this.deps.rpcFor(networkOf(this.payout));
       if (ready === undefined) {
@@ -629,7 +751,7 @@ export class CheckoutSession {
         return;
       }
       const record = await this.orderFor(chainTime);
-      if (record === undefined || this.wallet === undefined) {
+      if (record === undefined) {
         return;
       }
       this.working('signing');
@@ -637,7 +759,7 @@ export class CheckoutSession {
       this.generation += 1;
       const result = await payWithSolana(
         record,
-        this.wallet,
+        wallet,
         { fresh: ready, chainTime },
         this.payDeps(rpc),
       );
@@ -650,22 +772,34 @@ export class CheckoutSession {
    * or composed, order on Tempo's finalized time, then one wallet request. No
    * retry exists on Tempo: an attempt stays live until it is found or proven over.
    */
-  private async payTempo(walletName: string): Promise<void> {
-    await this.guard(async () => {
-      this.working('checking');
+  private async payTempo(walletName: string, press: number): Promise<void> {
+    await this.guard(press, async () => {
+      this.cancellableFor = press;
+      this.working('checking', true);
       const network = networkOf(this.payout);
       const option = this.deps.tempoWallets?.(network).find((each) => each.name === walletName);
       if (option === undefined) {
+        this.cancellableFor = undefined;
         this.showOffer({ reason: 'no_wallet' });
         return;
       }
       let wallet: TempoWallet;
       try {
         wallet = await option.connect();
-      } catch {
-        this.showOffer({ reason: 'no_wallet' });
+      } catch (error) {
+        if (this.press !== press) {
+          // Cancelled: a late refusal draws nothing.
+          return;
+        }
+        this.cancellableFor = undefined;
+        this.showOffer({ reason: tempoConnectProblem(error) });
         return;
       }
+      if (this.press !== press) {
+        return;
+      }
+      this.cancellableFor = undefined;
+      this.working('checking');
       const ready = await this.freshOffer();
       if (ready === undefined) {
         return;
@@ -947,7 +1081,7 @@ export class CheckoutSession {
   }
 
   /** A progress screen, with the payment and the product it is about. */
-  private working(step: 'checking' | 'ordering' | 'signing'): void {
+  private working(step: 'checking' | 'ordering' | 'signing', cancellable = false): void {
     const terms = this.termsShown(step === 'signing');
     const paying = this.payingOf(terms);
     this.deps.onView({
@@ -955,6 +1089,7 @@ export class CheckoutSession {
       step,
       about: this.aboutOf(terms),
       ...(paying === undefined ? {} : { paying }),
+      ...(cancellable ? { cancellable: true as const } : {}),
     });
   }
 
@@ -1053,15 +1188,23 @@ export class CheckoutSession {
     ) {
       return;
     }
+    this.press += 1;
+    const press = this.press;
     this.pressing = true;
     try {
-      await this.retryPressed(record, walletName);
+      await this.retryPressed(record, walletName, press);
     } finally {
-      this.pressing = false;
+      if (this.press === press) {
+        this.pressing = false;
+      }
     }
   }
 
-  private async retryPressed(record: OrderRecord, walletName: string): Promise<void> {
+  private async retryPressed(
+    record: OrderRecord,
+    walletName: string,
+    press: number,
+  ): Promise<void> {
     this.lastWallet = walletName;
     this.lastAction = 'retry';
     if (this.lateHashHolds()) {
@@ -1074,12 +1217,14 @@ export class CheckoutSession {
     if (network === undefined) {
       return;
     }
-    await this.guard(async () => {
+    await this.guard(press, async () => {
       this.retrying = true;
       try {
-        await this.retryGuarded(record, walletName, network);
+        await this.retryGuarded(record, walletName, network, press);
       } finally {
-        this.retrying = false;
+        if (this.press === press) {
+          this.retrying = false;
+        }
       }
     });
   }
@@ -1088,19 +1233,28 @@ export class CheckoutSession {
     record: OrderRecord,
     walletName: string,
     network: Network,
+    press: number,
   ): Promise<void> {
-    this.working('checking');
-    if (!(await this.connect(walletName, network))) {
-      this.render({ problem: { reason: 'no_wallet' } });
+    this.cancellableFor = press;
+    this.working('checking', true);
+    const answer = await this.connect(walletName, network);
+    if (this.press !== press) {
       return;
     }
+    this.cancellableFor = undefined;
+    if ('error' in answer) {
+      this.render({ problem: { reason: connectProblem(answer.error) } });
+      return;
+    }
+    const wallet = answer.wallet;
+    this.working('checking');
     const ready = await this.freshOffer();
     // The re-verification drew its own view (a changed or refused offer).
     if (ready === undefined) {
       return;
     }
     const rpc = this.deps.rpcFor(network);
-    if (rpc === undefined || this.wallet === undefined) {
+    if (rpc === undefined) {
       this.render();
       return;
     }
@@ -1120,7 +1274,7 @@ export class CheckoutSession {
     this.generation += 1;
     const result = await retryWithSolana(
       current,
-      this.wallet,
+      wallet,
       { fresh: ready, chainTime },
       this.payDeps(rpc),
     );
@@ -1133,7 +1287,8 @@ export class CheckoutSession {
     if (this.busy || record === undefined) {
       return;
     }
-    await this.guard(async () => {
+    // Not a press: it never runs beside one, so it keeps the current id.
+    await this.guard(this.press, async () => {
       const current = (await this.deps.store.get(record.orderId)) ?? record;
       // Finished (delivered or refunded): nothing to end, a new order may start.
       if (isTerminal(current)) {
@@ -1187,15 +1342,24 @@ export class CheckoutSession {
 
   // ---- internals -----------------------------------------------------------
 
-  private async guard(run: () => Promise<void>): Promise<void> {
+  /**
+   * Run one action at a time, owned by `press`: a press cancelled meanwhile
+   * (its id no longer current) neither draws from its failure nor releases
+   * the newer press's `busy`.
+   */
+  private async guard(press: number, run: () => Promise<void>): Promise<void> {
     // One action at a time: a caller that awaited before this point may find one running.
     if (this.busy) {
       return;
     }
     this.busy = true;
+    this.busyOwner = press;
     try {
       await run();
     } catch {
+      if (this.press !== press) {
+        return;
+      }
       // Show what is stored, never a screen the record does not back.
       const stored =
         this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
@@ -1207,12 +1371,18 @@ export class CheckoutSession {
         await this.follow(stored, undefined, { reason: 'failed' });
       }
     } finally {
-      this.busy = false;
-      // The store answered the current order during the action: that answer shows.
-      if (this.record !== undefined && isTerminal(this.record) && !this.refused) {
-        this.render();
+      if (this.busyOwner === press) {
+        this.busy = false;
+        this.busyOwner = undefined;
+        if (this.cancellableFor === press) {
+          this.cancellableFor = undefined;
+        }
+        // The store answered the current order during the action: that answer shows.
+        if (this.record !== undefined && isTerminal(this.record) && !this.refused) {
+          this.render();
+        }
+        void this.showPendingAnswer();
       }
-      void this.showPendingAnswer();
     }
   }
 
@@ -1239,25 +1409,41 @@ export class CheckoutSession {
     return network === undefined ? undefined : this.deps.rpcFor(network);
   }
 
-  private async connect(walletName: string, network: Network): Promise<boolean> {
+  /**
+   * Ask the wallet to connect. The wallet comes back to the press that asked:
+   * nothing keeps it, so a late answer for a cancelled press reaches no one.
+   */
+  private async connect(walletName: string, network: Network): Promise<ConnectAnswer> {
     const option = this.deps.wallets(network).find((wallet) => wallet.name === walletName);
     if (option === undefined) {
-      return false;
+      return { error: 'failed' };
     }
     try {
-      this.wallet = await option.connect();
-      return true;
-    } catch {
-      return false;
+      return { wallet: await option.connect() };
+    } catch (error) {
+      return { error: walletErrorKind(error) };
     }
   }
 
-  private async readChainTime(rpc: Rpc<SolanaRpcApi>): Promise<number | undefined> {
-    try {
-      return await this.deps.chainTime(rpc);
-    } catch {
-      return undefined;
-    }
+  /** Chain time, or `undefined` when unreadable or slower than `CHAIN_TIME_TIMEOUT_MS`. */
+  private readChainTime(rpc: Rpc<SolanaRpcApi>): Promise<number | undefined> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (time: number | undefined) => {
+        if (!settled) {
+          settled = true;
+          resolve(time);
+        }
+      };
+      const timer = this.deps.setTimeout(() => finish(undefined), CHAIN_TIME_TIMEOUT_MS);
+      this.deps
+        .chainTime(rpc)
+        .then(
+          (time) => finish(time),
+          () => finish(undefined),
+        )
+        .finally(() => this.deps.clearTimeout(timer));
+    });
   }
 
   private payDeps(rpc: Rpc<SolanaRpcApi>) {
@@ -1627,11 +1813,12 @@ export class CheckoutSession {
         text,
         ...(link === undefined ? {} : { link }),
         store,
+        receipt: receiptOf(record, network),
       });
       return;
     }
     if (record.state === 'refunded') {
-      this.deps.onView({ kind: 'refunded', store });
+      this.deps.onView({ kind: 'refunded', store, receipt: receiptOf(record, network) });
       return;
     }
     const about = this.aboutOf(record);

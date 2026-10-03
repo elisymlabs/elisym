@@ -45,6 +45,7 @@ const actions: Actions = {
   choosePayout: (index) => session?.choosePayout(index),
   confirmOldPrompt: async () => session?.confirmOldPrompt(),
   cancelOldPrompt: () => session?.cancelOldPrompt(),
+  cancel: () => session?.cancel(),
 };
 
 /** Shown in the page's modal dialog: the frame can ask to close it. */
@@ -187,6 +188,8 @@ async function start(pageOrigin: string): Promise<void> {
       chainTime: readChainTime,
       setInterval: (handler, ms) => window.setInterval(handler, ms),
       clearInterval: (handle) => window.clearInterval(handle as number),
+      setTimeout: (handler, ms) => window.setTimeout(handler, ms),
+      clearTimeout: (handle) => window.clearTimeout(handle as number),
       onView: (next) => {
         view = next;
         draw();

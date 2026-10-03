@@ -90,7 +90,7 @@ or use Protection Bypass for Automation and open the preview once with
       immutable `Cache-Control`.
 - [ ] With the preview's `/v2/embed.js`, the button opens the checkout in a modal; the close
       button, Escape and a click outside it close it, and focus returns to the button.
-- [ ] A test page with `<elisym-buy product="<devnet naddr>" network="devnet">` and the
+- [ ] A test page with `<elisym-buy product="<devnet naddr>" network="devnet" theme="dark">` and the
       preview's `/v1/embed.js` shows the offer. The page receives `ready` and nothing else
       about the product.
 - [ ] A devnet purchase from the test store (`packages/merchant-node`) goes

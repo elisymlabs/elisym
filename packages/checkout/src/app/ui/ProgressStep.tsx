@@ -12,6 +12,7 @@ interface Props {
   problem: Problem | undefined;
   onRetry(name: string): void;
   onStartOver(): void;
+  onCancel(): void;
   hintAfterMs: number;
 }
 
@@ -38,12 +39,21 @@ function heading(view: ProgressView): string {
 }
 
 /** Working and waiting, in the wallet section's place: where the purchase is, and what is left to do. */
-export function ProgressStep({ view, problem, onRetry, onStartOver, hintAfterMs }: Props) {
+export function ProgressStep({
+  view,
+  problem,
+  onRetry,
+  onStartOver,
+  onCancel,
+  hintAfterMs,
+}: Props) {
   return (
     <div class="step" data-step="progress">
       <StepHeading level={3}>{heading(view)}</StepHeading>
       <Stepper active={activeStage(view)} />
-      {view.kind === 'working' ? <WorkingStatus view={view} hintAfterMs={hintAfterMs} /> : null}
+      {view.kind === 'working' ? (
+        <WorkingStatus view={view} hintAfterMs={hintAfterMs} onCancel={onCancel} />
+      ) : null}
       {view.kind === 'waiting_payment' ? (
         <WaitingPayment view={view} problem={problem} onRetry={onRetry} onStartOver={onStartOver} />
       ) : null}

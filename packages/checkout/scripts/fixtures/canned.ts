@@ -176,7 +176,13 @@ export interface CannedProps {
   hintAfterMs?: number;
 }
 
+/** A Solana signature and a Tempo hash, for receipts. */
+const CANNED_SIGNATURE =
+  '5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW';
+const CANNED_HASH = '0x9b2f5c1d7e3a4b6c8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e';
+
 /** Every state the checkout draws, for the fixture page. Times are from the device clock now. */
+
 export function cannedViews(): { name: string; view: View | undefined; props?: CannedProps }[] {
   const now = nowSeconds();
   const solana = cannedOffer();
@@ -206,6 +212,19 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
     },
     { name: 'offer: Tempo mainnet', view: offerView(tempo, { wallets: [{ name: 'MetaMask' }] }) },
     {
+      name: 'offer: Tempo wallets',
+      view: offerView(tempo, { wallets: [{ name: 'MetaMask' }] }),
+      props: { initialWalletsOpen: true },
+    },
+    {
+      name: 'offer: a wallet without Tempo',
+      view: offerView(tempo, {
+        wallets: [{ name: 'MetaMask' }],
+        problem: { reason: 'tempo_unsupported' },
+      }),
+      props: { initialWalletsOpen: true },
+    },
+    {
       name: 'offer: continuing',
       view: offerView(solana, { askEmail: true, continuing: 'ordered' }),
     },
@@ -217,6 +236,15 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
       name: 'no wallet',
       view: offerView(solana, { wallets: [] }),
       props: { initialWalletsOpen: true },
+    },
+    {
+      name: 'working: waiting for the wallet',
+      view: { kind: 'working', step: 'checking', paying, about, cancellable: true },
+    },
+    {
+      name: 'working: the wallet has not answered',
+      view: { kind: 'working', step: 'checking', paying: tempoPaying, about, cancellable: true },
+      props: { hintAfterMs: 0 },
     },
     { name: 'working', view: { kind: 'working', step: 'signing', paying, about } },
     {
@@ -290,13 +318,50 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
         text: 'https://shop.example/course',
         link: 'https://shop.example/course',
         store: about.store,
+        receipt: {
+          store: 'Demo Shop',
+          product: about.product.title,
+          paying,
+          orderId: 'b3a7c2d4-0000-4000-8000-000000000001',
+          paid: {
+            tx: CANNED_SIGNATURE,
+            at: now - 120,
+            explorer: `https://explorer.solana.com/tx/${CANNED_SIGNATURE}?cluster=devnet`,
+          },
+          answeredAt: now - 60,
+        },
       },
     },
     {
       name: 'delivered: text',
-      view: { kind: 'delivered', text: 'LICENSE-KEY-1234-5678', store: about.store },
+      view: {
+        kind: 'delivered',
+        text: 'LICENSE-KEY-1234-5678',
+        store: about.store,
+        receipt: {
+          store: 'Demo Shop',
+          product: about.product.title,
+          paying: tempoPaying,
+          orderId: 'b3a7c2d4-0000-4000-8000-000000000002',
+          paid: { tx: CANNED_HASH, at: now - 300 },
+          answeredAt: now - 200,
+        },
+      },
     },
-    { name: 'refunded', view: { kind: 'refunded', store: about.store } },
+    {
+      name: 'refunded',
+      view: {
+        kind: 'refunded',
+        store: about.store,
+        receipt: {
+          store: 'Demo Shop',
+          product: about.product.title,
+          paying,
+          orderId: 'b3a7c2d4-0000-4000-8000-000000000003',
+          answeredAt: now - 60,
+        },
+      },
+    },
     { name: 'cancelled', view: { kind: 'cancelled', store: about.store } },
     { name: 'blocked', view: { kind: 'blocked', store: about.store } },
     {

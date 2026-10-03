@@ -3,6 +3,7 @@
  * filters, a finalized head the test moves, and an EIP-1193 wallet whose
  * payment lands as a real `TransferWithMemo` receipt.
  */
+import { type OrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
 import { type LoadedOffer, OrderStore, loadOffer } from '@elisym/commerce/buyer';
 import type { OrderRecord } from '@elisym/commerce/buyer';
 import type { TempoWallet } from '@elisym/commerce/buyer';
@@ -17,6 +18,7 @@ import {
 } from '../../commerce/tests/buyer/fixtures';
 import { TRANSFER_WITH_MEMO_TOPIC } from '../../pay-core/src/evm/constants';
 import { type FakeChainOptions, fakeTempoChain } from '../../pay-core/tests/tempo-chain';
+import { TempoChainUnsupported } from '../src/app/evm-wallets';
 import { type Banner, CheckoutSession, type SessionDeps, type View } from '../src/app/session';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 
@@ -75,11 +77,18 @@ async function settle(): Promise<void> {
 
 type Behaviour = 'land' | 'drop' | 'reject' | 'fail' | 'ended-meanwhile';
 
-async function setup() {
+async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
   const shop: Shop = makeShop({ caip19: TEMPO_CAIP19, payout: PAYOUT });
   const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
-  const load = (now: number) =>
-    loadOffer(shop.naddr, { client: relays, pageOrigin: PAGE, families: ['evm'], now });
+  const load = async (now: number) => {
+    const loaded = await loadOffer(shop.naddr, {
+      client: relays,
+      pageOrigin: PAGE,
+      families: ['evm'],
+      now,
+    });
+    return loaded.ok ? transform(loaded) : loaded;
+  };
   const offer = (await load(NOW)) as Ready;
   if (!offer.ok) {
     throw new Error('offer');
@@ -204,6 +213,8 @@ async function setup() {
     chainTime: async () => clock,
     setInterval: timers.set,
     clearInterval: timers.clear,
+    setTimeout: timers.set,
+    clearTimeout: timers.clear,
     onView: (view) => views.push(view),
     onStatus: () => undefined,
     onBanner: (banner) => banners.push(banner),
@@ -409,4 +420,114 @@ describe('paying on Tempo in the widget', () => {
       paying: { chain: 'tempo', network: 'devnet' },
     });
   });
+});
+
+describe('the Tempo wallet connect', () => {
+  it('can be cancelled while it waits, and a late refusal draws nothing', async () => {
+    const run = await setup();
+    await run.session.start();
+    let refuse: (error: unknown) => void = () => undefined;
+    const pending = new Promise<TempoWallet>((_, failWith) => {
+      refuse = failWith;
+    });
+    run.deps.tempoWallets = () => [{ name: 'MetaMask', connect: () => pending }];
+    const pressed = run.session.pay('MetaMask');
+    await settle();
+    expect(run.last()).toMatchObject({ kind: 'working', step: 'checking', cancellable: true });
+    run.session.cancel();
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+    expect(run.last()).not.toHaveProperty('problem');
+    const views = run.views.length;
+    refuse(Object.assign(new Error('User rejected the request.'), { code: 4001 }));
+    await pressed;
+    await settle();
+    expect(run.views.length).toBe(views);
+    expect(await records(run.offer)).toHaveLength(0);
+  });
+
+  it('names a wallet that cannot use Tempo, and a refusal, in the open wallet list', async () => {
+    const run = await setup();
+    await run.session.start();
+    run.deps.tempoWallets = () => [
+      { name: 'MetaMask', connect: () => Promise.reject(new TempoChainUnsupported()) },
+    ];
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'tempo_unsupported' } });
+    run.deps.tempoWallets = () => [
+      {
+        name: 'MetaMask',
+        connect: () => Promise.reject(Object.assign(new Error('declined'), { code: 4001 })),
+      },
+    ];
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'rejected' } });
+    run.deps.tempoWallets = () => [
+      {
+        name: 'MetaMask',
+        connect: () => Promise.reject(Object.assign(new Error('pending'), { code: -32002 })),
+      },
+    ];
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'wallet_busy' } });
+  });
+});
+
+/** The same offer with every payout's explorer page on another (non-https) address. */
+function withExplorer(explorerTx: string) {
+  return (offer: Ready): Ready => ({
+    ...offer,
+    offer: {
+      ...offer.offer,
+      payouts: offer.offer.payouts.map((payout) => ({
+        ...payout,
+        caip19: { ...payout.caip19, chain: { ...payout.caip19.chain, explorerTx } },
+      })),
+    },
+    payouts: offer.payouts.map((payout) => ({
+      ...payout,
+      target: {
+        ...payout.target,
+        caip19: {
+          ...payout.target.caip19,
+          chain: { ...payout.target.caip19.chain, explorerTx },
+        },
+      },
+    })),
+  });
+}
+
+describe('the receipt of a Tempo order', () => {
+  for (const explorerTx of ['http://explorer.example/tx/{tx}', '']) {
+    it(`links no explorer page that is not https (${explorerTx || 'none'})`, async () => {
+      const run = await setup(withExplorer(explorerTx));
+      await run.session.start();
+      await run.session.pay('MetaMask');
+      await run.timers.tick();
+      const [record] = await records(run.offer);
+      if (record === undefined) {
+        throw new Error('no record');
+      }
+      const status = {
+        type: 'status',
+        buyerPubkey: record.buyerPubkey,
+        orderId: record.orderId,
+        status: 'completed',
+        delivery: { method: 'access', value: 'https://shop.example/course' },
+      } as OrderMessage;
+      await run.relays.publish(
+        INBOX,
+        wrapOrderMessage(
+          buildOrderMessage(status, NOW + 100),
+          run.shop.store.secretKey,
+          record.buyerPubkey,
+        ).recipientWrap,
+      );
+      await settle();
+      const view = run.last();
+      expect(view).toMatchObject({ kind: 'delivered' });
+      const receipt = view?.kind === 'delivered' ? view.receipt : undefined;
+      expect(receipt?.paid?.tx).toBe(HASH);
+      expect(receipt?.paid).not.toHaveProperty('explorer');
+    });
+  }
 });

@@ -1,6 +1,6 @@
 import { type Asset, NATIVE_SOL, type Network, formatAssetAmount } from '@elisym/pay-core';
 import type { RefusalReason } from '../controller';
-import type { Paying, Problem, Rail, View } from '../session';
+import type { Paying, Problem, Rail, Receipt, View } from '../session';
 
 export const REFUSALS: Record<RefusalReason, string> = {
   not_framed: 'This checkout only works embedded in a store page.',
@@ -40,6 +40,10 @@ export function problemText(problem: Problem, asset: Asset): string {
   switch (problem.reason) {
     case 'no_wallet':
       return 'Connect a wallet for this network (Phantom or Solflare on Solana, MetaMask on Tempo).';
+    case 'tempo_unsupported':
+      return 'This wallet cannot pay on Tempo. Choose another wallet.';
+    case 'wallet_busy':
+      return 'Your wallet already has a request open. Answer or close it, then choose again.';
     case 'clock_skew':
       return 'This device’s clock is more than 5 minutes off. Fix the clock and try again.';
     case 'rpc_error':
@@ -87,10 +91,15 @@ export function formatCountdown(seconds: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
 }
 
-/** After `hintAfterMs` of an action with no answer: what the buyer can do. */
-export function slowHint(step: 'checking' | 'signing', chain: Rail): string {
+/**
+ * After `hintAfterMs` of an action with no answer: what the buyer can do.
+ * `cancellable`: the wallet has not answered its connect request yet.
+ */
+export function slowHint(step: 'checking' | 'signing', chain: Rail, cancellable = false): string {
   if (step === 'checking') {
-    return 'This is taking long. If a wallet window is open, answer it; otherwise reload the page.';
+    return cancellable
+      ? 'Your wallet has not answered. Answer it, or cancel and choose again.'
+      : 'This is taking long. Reload the page to try again; no new payment request has been sent to your wallet.';
   }
   return chain === 'tempo'
     ? 'Your wallet has not answered. If you closed its window, reload the page: the checkout keeps checking the request, and once it has lapsed a new order can start after a question about the old request.'
@@ -104,4 +113,77 @@ export function slowLoading(modal: boolean): string {
       ? 'You can close this and come back, or reload the page.'
       : 'Keep this page open, or reload it.'
   }`;
+}
+
+/**
+ * Code point ranges that could forge a line or reorder text in a copied
+ * receipt: C0 and C1 controls, line and paragraph separators, bidi controls.
+ */
+const UNSAFE_RANGES: readonly (readonly [number, number])[] = [
+  [0x00, 0x1f],
+  [0x7f, 0x9f],
+  [0x2028, 0x2029],
+  [0x202a, 0x202e],
+  [0x2066, 0x2069],
+];
+
+function unsafeCharacter(character: string): boolean {
+  const code = character.codePointAt(0) ?? 0;
+  return UNSAFE_RANGES.some(([low, high]) => code >= low && code <= high);
+}
+
+/** No field of a copied receipt is longer than this. */
+export const RECEIPT_FIELD_MAX = 200;
+
+/** A field the store or the chain supplied, made safe for one line of plain text. */
+export function receiptField(value: string): string {
+  return Array.from(value, (character) => (unsafeCharacter(character) ? ' ' : character))
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, RECEIPT_FIELD_MAX);
+}
+
+/** "1.5 USDC · Solana mainnet": what an order is for. */
+export function paidLine(paying: Paying): string {
+  return `${formatAssetAmount(paying.asset, BigInt(paying.amount))} · ${networkLabel(paying.chain, paying.network)}`;
+}
+
+/**
+ * The receipt as plain text, one row per line: what the buyer sees and what
+ * "Copy receipt" copies are the same text. The payment rows only when this
+ * checkout saw the payment; otherwise the order total, said to be unseen.
+ */
+export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded'): string {
+  const lines = [
+    `Store: ${receiptField(receipt.store)}`,
+    `Product: ${receiptField(receipt.product)}`,
+  ];
+  const amount = receipt.paying === undefined ? undefined : paidLine(receipt.paying);
+  const paid = receipt.paid;
+  if (paid !== undefined) {
+    if (amount !== undefined) {
+      lines.push(`Paid: ${amount}`);
+    }
+    if (paid.at !== undefined) {
+      lines.push(`Payment confirmed on: ${new Date(paid.at * 1000).toLocaleString()}`);
+    }
+  } else {
+    if (amount !== undefined) {
+      lines.push(`Order total: ${amount}`);
+    }
+    lines.push('Payment: not seen by this checkout');
+  }
+  if ((paid === undefined || paid.at === undefined) && receipt.answeredAt !== undefined) {
+    const label = kind === 'refunded' ? 'Refunded on' : 'Delivered on';
+    lines.push(`${label}: ${new Date(receipt.answeredAt * 1000).toLocaleString()}`);
+  }
+  if (kind === 'refunded') {
+    lines.push('Refunded by the store');
+  }
+  lines.push(`Order: ${receiptField(receipt.orderId)}`);
+  if (paid !== undefined) {
+    lines.push(`Transaction: ${receiptField(paid.tx)}`);
+  }
+  return lines.join('\n');
 }
