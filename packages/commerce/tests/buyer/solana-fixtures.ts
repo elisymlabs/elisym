@@ -426,7 +426,10 @@ export class FakeSolana {
 
 export type WalletBehaviour =
   | 'sign'
+  /** Fails without proving a decline (a plain error): the attempt stays live. */
   | 'throw'
+  /** The buyer declines: throws `{ code: 4001 }`, as Wallet Standard wallets do. */
+  | 'reject'
   /** Replaces the blockhash with another one before signing. */
   | 'swap_blockhash'
   /** Lowers the transfer's amount before signing. */
@@ -463,7 +466,10 @@ export class FakeWallet implements SolanaWallet {
     this.requests += 1;
     await this.duringPrompt?.();
     if (this.behaviour === 'throw') {
-      throw new Error('User rejected the request.');
+      throw new Error('wallet failed');
+    }
+    if (this.behaviour === 'reject') {
+      throw Object.assign(new Error('User rejected the request.'), { code: 4001 });
     }
     const decoded = getTransactionDecoder().decode(bytes);
     let messageBytes = decoded.messageBytes;

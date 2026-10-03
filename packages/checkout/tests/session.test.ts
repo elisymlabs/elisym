@@ -2581,3 +2581,97 @@ describe('the receipt', () => {
     expect(receipt?.answeredAt).toBeDefined();
   });
 });
+
+describe('a decline in the wallet', () => {
+  it('goes back to the offer at once, and the next press pays the same order', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'reject';
+    await run.session.start();
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'rejected' } });
+    expect(run.views.some((view) => view.kind === 'waiting_payment')).toBe(false);
+    expect(run.statuses.at(-1)).toBe('ordered');
+    const first = await recordOf(run.offer);
+    expect(first.state).toBe('ordered');
+    expect(first.marker).toBeUndefined();
+    run.wallet.behaviour = 'sign';
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_store' });
+    const after = await recordOf(run.offer);
+    expect(after.orderId).toBe(first.orderId);
+  });
+
+  it('a declined retry returns to ordered: paying, then ordered, and pays again', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    run.wallet.behaviour = 'reject';
+    await run.session.retry('Fake');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'rejected' } });
+    const paying = run.statuses.lastIndexOf('paying');
+    expect(paying).toBeGreaterThanOrEqual(0);
+    expect(run.statuses.slice(paying + 1)).toContain('ordered');
+    expect(run.statuses.at(-1)).toBe('ordered');
+    run.wallet.behaviour = 'sign';
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_store' });
+  });
+
+  it('shows the cancellation when the store cancelled while the wallet was open', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'reject';
+    run.wallet.duringPrompt = async () => {
+      const current = await recordOf(run.offer);
+      await store.update(current.orderId, current.version, {
+        status: { status: 'cancelled', at: NOW + 40 },
+      });
+    };
+    await run.session.start();
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({ kind: 'cancelled' });
+  });
+
+  it('another tab hears the order is open again', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    const otherStatuses: CheckoutState[] = [];
+    const other = new CheckoutSession(run.offer, {
+      ...run.deps,
+      onView: () => undefined,
+      onStatus: (state) => otherStatuses.push(state),
+    });
+    await other.start();
+    expect(otherStatuses.at(-1)).toBe('paying');
+    // This tab's attempt is released as a decline would release it.
+    const current = await recordOf(run.offer);
+    await store.clearMarker(
+      current.orderId,
+      current.version,
+      current.marker?.attemptId ?? '',
+      'ordered',
+    );
+    await run.timers.tick();
+    await settle();
+    expect(otherStatuses.at(-1)).toBe('ordered');
+  });
+
+  it('any other wallet failure still waits out the attempt', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      problem: { reason: 'wallet_failed' },
+    });
+  });
+});
