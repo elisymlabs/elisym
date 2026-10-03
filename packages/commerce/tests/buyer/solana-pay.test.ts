@@ -11,6 +11,7 @@ import {
   checkSignedTransaction,
   composeOrderPayment,
   endSolanaOrder,
+  isSolanaUserRejection,
   payWithSolana,
   retryWithSolana,
   storedSolanaRequest,
@@ -906,5 +907,156 @@ describe("the caller's spend limits", () => {
     });
     expect(retried).toMatchObject({ ok: true });
     expect(spend.reserved).toHaveLength(1);
+  });
+});
+
+describe('a decline in the wallet', () => {
+  function spendLimits() {
+    const reserved: string[] = [];
+    const released: string[] = [];
+    return {
+      reserved,
+      released,
+      reserve: (_costs: { tokenAmount: bigint; lamports: bigint }, attemptId: string) => {
+        reserved.push(attemptId);
+      },
+      release: (attemptId: string) => {
+        released.push(attemptId);
+      },
+    };
+  }
+
+  it('releases the attempt at once: the order is ordered again, nothing was sent', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    wallet.behaviour = 'reject';
+    const spend = spendLimits();
+    const result = await payWithSolana(record, wallet, input, {
+      ...deps,
+      reserve: spend.reserve,
+      release: spend.release,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'rejected', record: { state: 'ordered' } });
+    const after = await stored(record.orderId);
+    expect(after.state).toBe('ordered');
+    expect(after.marker).toBeUndefined();
+    expect(spend.released).toEqual(spend.reserved);
+    expect(spend.released).toHaveLength(1);
+    expect(chain.sent).toEqual([]);
+  });
+
+  it('pays the same order anew right after a decline, with a new attempt', async () => {
+    const { record, wallet, deps, input } = await setup();
+    wallet.behaviour = 'reject';
+    const declined = await payWithSolana(record, wallet, input, deps);
+    if (declined.ok || declined.record === undefined) {
+      throw new Error('expected a decline');
+    }
+    wallet.behaviour = 'sign';
+    const paid = await payWithSolana(declined.record, wallet, input, deps);
+    if (!paid.ok) {
+      throw new Error(paid.reason);
+    }
+    expect(paid.record.orderId).toBe(record.orderId);
+    expect(paid.record.reference).toBe(record.reference);
+    expect(await watchSolanaPayment(paid.record, deps)).toMatchObject({ state: 'paid' });
+  });
+
+  it('releases a declined retry too, and the order can be paid again', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    wallet.behaviour = 'throw';
+    await payWithSolana(record, wallet, input, deps);
+    const waiting = await stored(record.orderId);
+    chain.expire();
+    chain.nextBlockhash();
+    wallet.behaviour = 'reject';
+    const declined = await retryWithSolana(waiting, wallet, input, deps);
+    expect(declined).toMatchObject({ ok: false, reason: 'rejected', record: { state: 'ordered' } });
+    expect((await stored(record.orderId)).marker).toBeUndefined();
+    wallet.behaviour = 'sign';
+    const paid = await payWithSolana(await stored(record.orderId), wallet, input, deps);
+    expect(paid).toMatchObject({ ok: true });
+  });
+
+  it('still releases when the record changed while the wallet was open', async () => {
+    const { record, wallet, deps, input } = await setup();
+    wallet.behaviour = 'reject';
+    wallet.duringPrompt = async () => {
+      const current = await stored(record.orderId);
+      await store.update(current.orderId, current.version, {
+        status: { status: 'pending', at: NOW + 40 },
+      });
+    };
+    const result = await payWithSolana(record, wallet, input, deps);
+    expect(result).toMatchObject({ ok: false, reason: 'rejected', record: { state: 'ordered' } });
+    expect((await stored(record.orderId)).marker).toBeUndefined();
+  });
+
+  it("never clears another tab's attempt", async () => {
+    const { record, wallet, deps, input } = await setup();
+    wallet.behaviour = 'reject';
+    let otherAttempt: string | undefined;
+    wallet.duringPrompt = async () => {
+      const current = await stored(record.orderId);
+      const attemptId = current.marker?.attemptId ?? '';
+      const cleared = await store.clearMarker(
+        current.orderId,
+        current.version,
+        attemptId,
+        'ordered',
+      );
+      if (!cleared.ok || current.marker === undefined) {
+        throw new Error('could not clear');
+      }
+      otherAttempt = 'other-tab-attempt';
+      const set = await store.setMarker(cleared.record.orderId, cleared.record.version, {
+        ...current.marker,
+        attemptId: otherAttempt,
+      });
+      if (!set.ok) {
+        throw new Error(set.reason);
+      }
+    };
+    const result = await payWithSolana(record, wallet, input, deps);
+    expect(result).toMatchObject({ ok: false, reason: 'conflict' });
+    expect((await stored(record.orderId)).marker?.attemptId).toBe(otherAttempt);
+  });
+
+  it('keeps the attempt when every write conflicts', async () => {
+    const { record, wallet, deps, input } = await setup();
+    wallet.behaviour = 'reject';
+    const conflicting = Object.create(store) as OrderStore;
+    conflicting.clearMarker = async () => ({ ok: false, reason: 'conflict' });
+    const result = await payWithSolana(record, wallet, input, { ...deps, store: conflicting });
+    expect(result).toMatchObject({ ok: false, reason: 'conflict' });
+    expect((await stored(record.orderId)).marker).toBeDefined();
+  });
+
+  it('counts only an own code 4001 as a decline', () => {
+    expect(isSolanaUserRejection({ code: 4001 })).toBe(true);
+    expect(isSolanaUserRejection({ code: '4001' })).toBe(true);
+    for (const error of [
+      new Error('User rejected the request.'),
+      { code: 4100 },
+      { code: '0xfa1' },
+      { code: [4001] },
+      { code: ' 4001 ' },
+      { code: 4001n },
+      { message: 'User rejected the request.' },
+      Object.create({ code: 4001 }),
+      null,
+      'User rejected the request.',
+    ]) {
+      expect(isSolanaUserRejection(error)).toBe(false);
+    }
+  });
+
+  it('keeps the attempt live on any other wallet failure', async () => {
+    const { record, wallet, deps, input } = await setup();
+    wallet.behaviour = 'throw';
+    expect(await payWithSolana(record, wallet, input, deps)).toMatchObject({
+      ok: false,
+      reason: 'wallet_failed',
+    });
+    expect((await stored(record.orderId)).marker).toBeDefined();
   });
 });

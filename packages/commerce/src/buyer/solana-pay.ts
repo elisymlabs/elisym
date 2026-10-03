@@ -152,8 +152,16 @@ export type SolanaPayRefusal =
   | 'exclusion'
   /** The record changed meanwhile; read it again. */
   | 'conflict'
-  /** The wallet did not sign. The attempt stays live until its blockhash expires. */
+  /**
+   * The wallet did not sign, and did not prove it declined (`isSolanaUserRejection`).
+   * The attempt stays live until its blockhash expires.
+   */
   | 'wallet_failed'
+  /**
+   * The buyer declined in the wallet: nothing was signed. The attempt was released
+   * and the order is `ordered` again, to be paid anew.
+   */
+  | 'rejected'
   /** The wallet returned a transaction the widget does not send (below). Same wait. */
   | 'wallet_unsupported'
   /** A retry before the last attempt provably ended. */
@@ -625,10 +633,57 @@ async function broadcast(rpc: Rpc<SolanaRpcApi>, wire: string): Promise<void> {
 }
 
 /**
+ * Whether a `signTransaction` error is the buyer's explicit decline: an object
+ * whose own `code` is 4001 (or '4001'). The widget signs and broadcasts itself,
+ * so a declined request left no signed bytes anywhere it could send. Anything
+ * else (timeouts, other codes, plain errors) is not proof.
+ */
+export function isSolanaUserRejection(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !Object.hasOwn(error, 'code')) {
+    return false;
+  }
+  const code: unknown = Reflect.get(error, 'code');
+  return code === 4001 || code === '4001';
+}
+
+/**
+ * Release an attempt the buyer declined (nothing was signed): the order is
+ * `ordered` again. Re-reads on a lost compare-and-swap; never clears another
+ * tab's attempt, which is handed back as `conflict`.
+ */
+async function releaseRejected(
+  record: OrderRecord,
+  attemptId: string,
+  deps: SolanaPayDeps,
+): Promise<SolanaPayResult> {
+  let current: OrderRecord | undefined = record;
+  for (let attempt = 0; attempt < STORE_WRITE_ATTEMPTS && current !== undefined; attempt += 1) {
+    if (current.marker?.attemptId !== attemptId || current.state !== 'paying') {
+      break;
+    }
+    const cleared = await deps.store.clearMarker(
+      current.orderId,
+      current.version,
+      attemptId,
+      'ordered',
+    );
+    if (cleared.ok) {
+      return { ok: false, reason: 'rejected', record: cleared.record };
+    }
+    if (cleared.reason !== 'conflict') {
+      break;
+    }
+    current = await deps.store.get(record.orderId);
+  }
+  return { ok: false, reason: 'conflict', ...(current === undefined ? {} : { record: current }) };
+}
+
+/**
  * Ask the wallet to sign the attempt `marker` (already set), check what it
  * returned, record the signature and the bytes BEFORE the first broadcast, send,
- * and send the receipt. Any failure leaves the marker: Wallet Standard has no
- * proving rejection, so the attempt stays live until its blockhash expires.
+ * and send the receipt. An explicit decline releases the attempt at once (no
+ * signed bytes exist); any other failure leaves the marker, so the attempt stays
+ * live until its blockhash expires.
  */
 async function signAndSend(
   record: OrderRecord,
@@ -641,7 +696,11 @@ async function signAndSend(
   let signedBytes: Uint8Array;
   try {
     signedBytes = await wallet.signTransaction(unsigned.bytes);
-  } catch {
+  } catch (error) {
+    if (isSolanaUserRejection(error)) {
+      deps.release?.(marker.attemptId);
+      return releaseRejected(record, marker.attemptId, deps);
+    }
     return { ok: false, reason: 'wallet_failed', record };
   }
   const signed = await checkSignedTransaction(signedBytes, {

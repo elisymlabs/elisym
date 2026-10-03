@@ -226,6 +226,16 @@ describe('the panel rule', () => {
     });
   }
 
+  it('after a declined retry, shows the decline above Choose wallet', () => {
+    const offer = cannedOffer();
+    const ui = mount(waitingView(about, paying, { canRetry: true }));
+    ui.draw({ view: offerView(offer, { problem: { reason: 'rejected' } }) });
+    expect(ui.walletsOpen()).toBe(false);
+    expect(ui.alerts()).toHaveLength(1);
+    expect(ui.alerts()[0]).toContain('You declined in the wallet');
+    expect(ui.buttons().some((each) => each.textContent === 'Choose wallet')).toBe(true);
+  });
+
   for (const problem of WALLET_PROBLEMS) {
     it(`keeps the wallets open and shows ${problem.reason} among them`, () => {
       const offer = cannedOffer();
