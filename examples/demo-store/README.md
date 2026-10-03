@@ -4,9 +4,11 @@ A local store page that sells one product through the production checkout. Use i
 purchase end to end on devnet or on mainnet, in USDC on Solana or in a stablecoin on Tempo,
 without a domain or a hosting account.
 
-The page is plain HTML. It frames the checkout from `pay.elisym.network` with the
-`<elisym-buy>` element and logs the `elisym-status` events the checkout sends. The product and
-the network come from the page URL, so one page serves any store.
+The page is plain HTML. It loads the checkout from `pay.elisym.network` with the
+`<elisym-buy>` element: a Buy button that opens the checkout in a modal (tick "Show the
+checkout in the page" for the inline layout). It logs the `elisym-status` events the checkout
+sends, and when the modal opens and closes. The product and the network come from the page
+URL, so one page serves any store.
 
 A store with no `nip05` is trust level C: the checkout shows that no domain vouches for it. A
 payout list published in the last 72 hours also asks the buyer to confirm where the money goes.

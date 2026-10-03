@@ -108,12 +108,12 @@ or use Protection Bypass for Automation and open the preview once with
    `src/embed/v2.sri` before any page or doc points at it.
 3. Run the preview checklist against `https://pay.elisym.network`, with a mainnet product,
    before announcing it. Real money is involved, so a person does this step.
-4. Merchants pin:
+4. Merchants pin (v1 is kept working as it is; new pages use v2):
 
    ```html
    <script
-     src="https://pay.elisym.network/v1/embed.js"
-     integrity="<the value in src/embed/v1.sri>"
+     src="https://pay.elisym.network/v2/embed.js"
+     integrity="<the value in src/embed/v2.sri>"
      crossorigin="anonymous"
    ></script>
    ```
