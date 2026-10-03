@@ -18,6 +18,7 @@ import { INITIAL_PANEL, advancePanel, openWallets, shownProblem } from './ui/pan
 import { PayingLine } from './ui/PayingLine';
 import { ProductBlock } from './ui/ProductBlock';
 import { ProgressStep } from './ui/ProgressStep';
+import { ReceiptBlock } from './ui/ReceiptBlock';
 import { REFUSALS, payoutLabel, slowLoading } from './ui/text';
 
 export interface Actions {
@@ -28,6 +29,8 @@ export interface Actions {
   pay(walletName: string): Promise<void>;
   retry(walletName: string): Promise<void>;
   startOver(): Promise<void>;
+  /** End a press whose wallet has not answered its connect request yet. */
+  cancel(): void;
 }
 
 /** An action left unanswered this long (a wallet window has no timeout) gets a hint. */
@@ -122,6 +125,8 @@ export function Checkout({
   /** A wallet was pressed: the payout and the wallets wait for the next view (or the press to end). */
   const locked = useRef(false);
   const card = useRef<HTMLElement>(null);
+  /** The latest action run: an older one ending late never unlocks or disarms a newer one. */
+  const runs = useRef(0);
   const [, redraw] = useState(0);
 
   if (view !== seen.current) {
@@ -159,12 +164,17 @@ export function Checkout({
   });
 
   const run = (action: () => Promise<void>, lock = false) => {
+    runs.current += 1;
+    const mine = runs.current;
     armed.current = true;
     if (lock) {
       locked.current = true;
       redraw((count) => count + 1);
     }
     void action().finally(() => {
+      if (mine !== runs.current) {
+        return;
+      }
       armed.current = false;
       if (locked.current) {
         locked.current = false;
@@ -178,6 +188,11 @@ export function Checkout({
     redraw((count) => count + 1);
   };
   const startOver = () => run(() => actions.startOver());
+  // Through `run`, so the view it brings back takes focus like any action's.
+  const cancel = () =>
+    run(async () => {
+      actions.cancel();
+    });
 
   let body: ComponentChildren;
   if (view === undefined) {
@@ -244,6 +259,7 @@ export function Checkout({
               problem={problem}
               onRetry={(name) => run(() => actions.retry(name))}
               onStartOver={startOver}
+              onCancel={cancel}
               hintAfterMs={hintAfterMs}
             />
           </>
@@ -276,6 +292,11 @@ export function Checkout({
             glyph={RETURN_GLYPH}
             title="Refunded"
             action={{ label: 'Start a new order', run: startOver }}
+            after={
+              view.receipt === undefined ? undefined : (
+                <ReceiptBlock receipt={view.receipt} kind="refunded" />
+              )
+            }
           >
             <p>The store cancelled this order and refunded the payment.</p>
           </EndedStep>

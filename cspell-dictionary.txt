@@ -206,3 +206,5 @@ orbstack
 noopener
 noreferrer
 nosniff
+logomark
+rdns

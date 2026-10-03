@@ -54,6 +54,7 @@ function showStore() {
   const buy = document.createElement('elisym-buy');
   buy.setAttribute('product', product);
   buy.setAttribute('network', network);
+  buy.setAttribute('theme', 'dark');
   if (params.get('collect-email') === '1') {
     buy.setAttribute('collect-email', '');
   }

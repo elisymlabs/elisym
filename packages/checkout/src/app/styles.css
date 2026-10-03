@@ -131,15 +131,7 @@ a {
   font-weight: 600;
 }
 
-.trust {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-}
-
 .chip {
-  min-height: 0;
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
@@ -151,19 +143,6 @@ a {
 
 .chip[data-level='A'] {
   color: var(--success);
-}
-
-.chip[data-level='C'] {
-  background: var(--warning-background);
-  color: var(--warning-text);
-}
-
-.trust-detail {
-  max-width: 260px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  text-align: right;
 }
 
 .step {
@@ -468,12 +447,6 @@ button:disabled {
   flex-direction: column;
 }
 
-.wallet-note {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 400;
-}
-
 .chevron::after {
   content: '›';
   color: var(--muted);
@@ -574,6 +547,41 @@ button:disabled {
   background: var(--surface);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.receipt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.receipt .copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.receipt-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.receipt-text {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .footer {

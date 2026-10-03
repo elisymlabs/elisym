@@ -12,7 +12,7 @@ import {
 } from '../scripts/fixtures/canned';
 import { type Actions, Checkout } from '../src/app/Checkout';
 import type { Screen } from '../src/app/controller';
-import type { Banner, Paying, Problem, View } from '../src/app/session';
+import type { Banner, Paying, Problem, Receipt, View } from '../src/app/session';
 import { PROBLEM_PLACE } from '../src/app/ui/panel';
 
 interface Calls {
@@ -22,6 +22,7 @@ interface Calls {
   choose: number[];
   email: string[];
   oldPromptBack: number;
+  cancel: number;
 }
 
 interface DrawProps {
@@ -32,7 +33,10 @@ interface DrawProps {
 }
 
 /** A `Checkout` in the page, with actions that record what they were asked. */
-function mount(view?: View, options: { refused?: boolean; hintAfterMs?: number } = {}) {
+function mount(
+  view?: View,
+  options: { refused?: boolean; hintAfterMs?: number; cancelDraws?: View } = {},
+) {
   const container = document.createElement('div');
   document.body.append(container);
   const calls: Calls = {
@@ -42,6 +46,7 @@ function mount(view?: View, options: { refused?: boolean; hintAfterMs?: number }
     choose: [],
     email: [],
     oldPromptBack: 0,
+    cancel: 0,
   };
   /** What the next action resolves with; a test may hold it open. */
   let settle: Promise<void> = Promise.resolve();
@@ -63,6 +68,13 @@ function mount(view?: View, options: { refused?: boolean; hintAfterMs?: number }
     startOver: () => {
       calls.startOver += 1;
       return settle;
+    },
+    cancel: () => {
+      calls.cancel += 1;
+      // As the session does: the view it brings back is drawn at once.
+      if (options.cancelDraws !== undefined) {
+        draw({ view: options.cancelDraws });
+      }
     },
   };
   let props: DrawProps = {
@@ -261,7 +273,10 @@ describe('the panel rule', () => {
       view: offerView(offer, { payoutIndex: 1, wallets: [{ name: 'MetaMask' }] }),
     });
     expect(ui.walletsOpen()).toBe(true);
-    expect(ui.text()).toContain('switches to Tempo');
+    // A Tempo wallet row is the wallet's name, nothing else: the wallet asks to switch itself.
+    const row = ui.container.querySelector('.wallet-row .wallet-name');
+    expect(row?.textContent).toBe('MetaMask');
+    expect(ui.text()).not.toContain('switches to Tempo');
   });
 
   it('starts closed on the offer after a payment ended back on it', () => {
@@ -567,6 +582,25 @@ describe('the wallets', () => {
       view: offerView(offer, { wallets: [{ name: 'Other' }], problem: { reason: 'no_wallet' } }),
     });
     expect(ui.alerts().join(' ')).toContain('MetaMask is known to work');
+    ui.draw({
+      view: offerView(offer, {
+        wallets: [{ name: 'Other' }],
+        problem: { reason: 'tempo_unsupported' },
+      }),
+    });
+    expect(ui.walletsOpen()).toBe(true);
+    expect(ui.alerts().join(' ')).toContain(
+      'This wallet cannot pay on Tempo. Choose another wallet.',
+    );
+    expect(ui.alerts().join(' ')).toContain('MetaMask is known to work');
+  });
+
+  it('send a phone on Tempo to MetaMask’s in-app browser', () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148',
+    );
+    const ui = withWallets(offerView(cannedOffer({ payouts: ['tempo-devnet'] }), { wallets: [] }));
+    expect(ui.text()).toContain('Open this page in MetaMask’s in-app browser.');
   });
 
   it('send a phone to its wallet app’s browser', () => {
@@ -624,9 +658,71 @@ describe('progress', () => {
         vi.advanceTimersByTime(1_000);
       });
       const hint = ui.container.querySelector('.hint')?.textContent ?? '';
-      expect(hint).toContain(step === 'checking' ? 'This is taking long' : 'reload the page');
+      expect(hint).toBe(
+        step === 'checking'
+          ? 'This is taking long. Reload the page to try again; no new payment request has been sent to your wallet.'
+          : 'Your wallet has not answered. If you closed its window, reload the page: the order picks up where it is, and a retry opens once it is safe.',
+      );
     });
   }
+
+  it('offers Cancel while the wallet has not answered its connect request, and says so', () => {
+    vi.useFakeTimers();
+    const ui = mount({ kind: 'working', step: 'checking', paying, about, cancellable: true });
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(ui.container.querySelector('.hint')?.textContent).toBe(
+      'Your wallet has not answered. Answer it, or cancel and choose again.',
+    );
+    ui.click('Cancel');
+    expect(ui.calls.cancel).toBe(1);
+  });
+
+  it('has no Cancel once the wallet answered (checking, ordering, signing)', () => {
+    const ui = mount({ kind: 'working', step: 'checking', paying, about });
+    expect(ui.buttons().some((each) => each.textContent === 'Cancel')).toBe(false);
+    for (const step of ['ordering', 'signing'] as const) {
+      ui.draw({ view: { kind: 'working', step, paying, about } });
+      expect(ui.buttons().some((each) => each.textContent === 'Cancel')).toBe(false);
+    }
+  });
+
+  it('a cancelled press ending late never unlocks the press that followed it', async () => {
+    const offer = cannedOffer();
+    const ui = mount(offerView(offer), { cancelDraws: offerView(offer) });
+    ui.click('Choose wallet');
+    let endFirst: () => void = () => undefined;
+    ui.hold(
+      new Promise<void>((resolve) => {
+        endFirst = resolve;
+      }),
+    );
+    ui.click('Phantom');
+    ui.draw({ view: { kind: 'working', step: 'checking', paying, about, cancellable: true } });
+    ui.click('Cancel');
+    ui.hold(new Promise<void>(() => undefined));
+    ui.click('Phantom');
+    expect(ui.button('Phantom').disabled).toBe(true);
+    await act(async () => {
+      endFirst();
+    });
+    expect(ui.button('Phantom').disabled).toBe(true);
+  });
+
+  it('after Cancel, focus is on the wallet list it went back to', () => {
+    const offer = cannedOffer();
+    const ui = mount(offerView(offer), { cancelDraws: offerView(offer) });
+    ui.click('Choose wallet');
+    ui.hold(new Promise<void>(() => undefined));
+    ui.click('Phantom');
+    ui.draw({ view: { kind: 'working', step: 'checking', paying, about, cancellable: true } });
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    ui.button('Cancel').focus();
+    ui.click('Cancel');
+    expect(ui.walletsOpen()).toBe(true);
+    expect(document.activeElement?.textContent).toBe('Choose a wallet');
+  });
 
   it('words the hint for Tempo, and gives none while the order is sent', () => {
     vi.useFakeTimers();
@@ -882,6 +978,142 @@ describe('the done step', () => {
   });
 });
 
+const TX =
+  '5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW';
+const PAID_AT = Date.UTC(2031, 4, 6, 12, 0, 0) / 1000;
+
+function receipt(overrides: Partial<Receipt> = {}): Receipt {
+  return {
+    store: 'Demo Shop',
+    product: 'Agents 101',
+    paying: { amount: '1500000', asset, network: 'mainnet', chain: 'solana' },
+    orderId: 'order-1',
+    paid: { tx: TX, at: PAID_AT, explorer: `https://explorer.solana.com/tx/${TX}` },
+    answeredAt: PAID_AT + 60,
+    ...overrides,
+  };
+}
+
+describe('the receipt', () => {
+  const receiptText = (ui: Ui) => ui.container.querySelector('.receipt-text')?.textContent ?? '';
+
+  it('says what was paid, when it was seen, the order and the full transaction', () => {
+    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    const text = receiptText(ui);
+    expect(text).toContain('Store: Demo Shop');
+    expect(text).toContain('Product: Agents 101');
+    expect(text).toContain('Paid: 1.5 USDC · Solana mainnet');
+    expect(text).toContain(`Payment confirmed on: ${new Date(PAID_AT * 1000).toLocaleString()}`);
+    expect(text).toContain('2031');
+    expect(text).toContain('Order: order-1');
+    expect(text).toContain(`Transaction: ${TX}`);
+    const link = [...ui.container.querySelectorAll('.receipt a')].find(
+      (each) => each.textContent === 'View transaction',
+    );
+    expect(link?.getAttribute('href')).toBe(`https://explorer.solana.com/tx/${TX}`);
+    expect(link?.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(link?.getAttribute('target')).toBe('_blank');
+  });
+
+  it('claims no payment it did not see: the order total only, and no link', () => {
+    const ui = mount({
+      kind: 'refunded',
+      receipt: receipt({ paid: undefined }),
+    });
+    const text = receiptText(ui);
+    expect(text).not.toContain('Paid');
+    expect(text).not.toContain('Transaction');
+    expect(text).toContain('Order total: 1.5 USDC · Solana mainnet');
+    expect(text).toContain('Payment: not seen by this checkout');
+    expect(text).toContain(`Refunded on: ${new Date((PAID_AT + 60) * 1000).toLocaleString()}`);
+    expect(text).toContain('Refunded by the store');
+    expect(ui.container.querySelector('.receipt a')).toBeNull();
+  });
+
+  it('copies exactly what it shows, under its own name', async () => {
+    const writeText = vi.fn(async () => undefined);
+    vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
+    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    await act(async () => ui.button('Copy receipt').click());
+    expect(writeText).toHaveBeenCalledWith(receiptText(ui));
+    expect(ui.text()).toContain('Receipt copied.');
+  });
+
+  it('selects exactly what it shows when the clipboard is refused', async () => {
+    const writeText = vi.fn(async () => {
+      throw new Error('denied');
+    });
+    vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
+    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    await act(async () => ui.button('Copy receipt').click());
+    expect(window.getSelection()?.toString()).toBe(receiptText(ui));
+  });
+
+  it('keeps a store-made title on one line, as text', () => {
+    const title = 'X\nPaid: 999 USDC\u202e<b>bold</b>';
+    const ui = mount({ kind: 'delivered', text: 'KEY', receipt: receipt({ product: title }) });
+    const lines = receiptText(ui).split('\n');
+    expect(lines.filter((line) => line.startsWith('Product:'))).toHaveLength(1);
+    expect(lines.filter((line) => line.startsWith('Paid:'))).toHaveLength(1);
+    expect(receiptText(ui)).not.toContain('\u202e');
+    expect(ui.container.querySelector('.receipt b')).toBeNull();
+  });
+
+  it('takes focus on its heading when it replaces the screen the buyer was on', () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    const ui = mount({ kind: 'working', step: 'checking', paying, about, cancellable: true });
+    ui.button('Cancel').focus();
+    expect(document.activeElement?.textContent).toBe('Cancel');
+    ui.draw({ view: { kind: 'delivered', text: 'KEY-1234', receipt: receipt() } });
+    expect(document.activeElement?.textContent).toBe('Delivered');
+    expect(document.activeElement?.hasAttribute('data-heading')).toBe(true);
+  });
+
+  it('sits outside the refund’s live region, under the only section heading', () => {
+    const ui = mount({ kind: 'refunded', receipt: receipt() });
+    const block = ui.container.querySelector('.receipt');
+    expect(block).not.toBeNull();
+    expect(block?.closest('[role="status"]')).toBeNull();
+    expect(ui.container.querySelectorAll('[data-heading]')).toHaveLength(1);
+  });
+
+  /** Whether `first` comes before `second` in the document. */
+  const before = (first: Element | null | undefined, second: Element | null | undefined) =>
+    first !== null &&
+    first !== undefined &&
+    second !== null &&
+    second !== undefined &&
+    (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+  it('comes last when delivered: the delivery, then Buy again, then the receipt', () => {
+    const ui = mount({
+      kind: 'delivered',
+      text: 'https://shop.example/course',
+      link: 'https://shop.example/course',
+      receipt: receipt(),
+    });
+    const heading = ui.container.querySelector('[data-heading]');
+    const open = ui.container.querySelector('a.button');
+    const buyAgain = ui.button('Buy again');
+    const block = ui.container.querySelector('.receipt');
+    expect(before(heading, open)).toBe(true);
+    expect(before(open, buyAgain)).toBe(true);
+    expect(before(buyAgain, block)).toBe(true);
+    const text = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    expect(before(text.button('Copy'), text.button('Buy again'))).toBe(true);
+    expect(before(text.button('Buy again'), text.button('Copy receipt'))).toBe(true);
+  });
+
+  it('comes last when refunded: the outcome, then Start a new order, then the receipt', () => {
+    const ui = mount({ kind: 'refunded', receipt: receipt() });
+    const status = ui.container.querySelector('[role="status"]');
+    const start = ui.button('Start a new order');
+    const block = ui.container.querySelector('.receipt');
+    expect(before(status, start)).toBe(true);
+    expect(before(start, block)).toBe(true);
+  });
+});
+
 describe('the done step in a modal', () => {
   it('has Done, which asks the page to close; inline has none', () => {
     const closes: string[] = [];
@@ -931,21 +1163,35 @@ describe('the trust chip', () => {
   const cases = [
     { level: 'A' as const, domain: 'shop.example', label: 'Verified: shop.example' },
     { level: 'B' as const, domain: 'elisym.shop', label: 'Named store' },
-    { level: 'C' as const, domain: undefined, label: 'Unverified store' },
   ];
   for (const { level, domain, label } of cases) {
-    it(`says ${label} at level ${level}, and explains on click`, () => {
-      const ui = mount(
-        offerView(cannedOffer({ level, ...(domain === undefined ? {} : { domain }) })),
-      );
-      const chip = ui.container.querySelector('.chip') as HTMLButtonElement;
-      expect(chip.textContent).toBe(label);
+    it(`says ${label} at level ${level}, as a plain label`, () => {
+      const ui = mount(offerView(cannedOffer({ level, domain })));
+      const chip = ui.container.querySelector('.chip');
+      expect(chip?.textContent).toBe(label);
+      expect(chip?.tagName).toBe('SPAN');
+      expect(ui.container.querySelector('.badges button')).toBeNull();
       expect(ui.has('.trust-detail')).toBe(false);
-      act(() => chip.click());
-      expect(chip.getAttribute('aria-expanded')).toBe('true');
-      expect(ui.has('.trust-detail')).toBe(true);
     });
   }
+
+  it('shows none once the level is gone from the store, after an A offer showed one', () => {
+    // A level A offer, then the session names the store without its level
+    // (followed from a snapshot, or refused here): the chip goes.
+    const ui = mount(offerView(cannedOffer({ level: 'A', domain: 'shop.example' })));
+    expect(ui.has('.chip')).toBe(true);
+    ui.draw({ view: waitingView({ ...about, store: { name: 'Demo Shop' } }, paying) });
+    expect(ui.has('.chip')).toBe(false);
+    ui.draw({ view: { kind: 'refused', message: 'gone', store: { name: 'Demo Shop' } } });
+    expect(ui.has('.chip')).toBe(false);
+  });
+
+  it('shows no chip at level C, and no text about it', () => {
+    const ui = mount(offerView(cannedOffer({ level: 'C' })));
+    expect(ui.has('.chip')).toBe(false);
+    expect(ui.text()).not.toContain('Unverified');
+    expect(ui.text()).not.toContain('No website vouches');
+  });
 });
 
 describe('store data', () => {

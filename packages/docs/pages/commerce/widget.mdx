@@ -3,7 +3,7 @@
 `<elisym-buy>` is the checkout on your page. The only code that runs on your page is `embed.js`, a small loader. It frames the checkout from `https://pay.elisym.network`. Everything else runs inside that frame, on elisym's origin: the offer is verified, the order is placed, the buyer's wallet signs and the payment is followed there.
 
 ```html
-<elisym-buy product="naddr1..." network="mainnet"></elisym-buy>
+<elisym-buy product="naddr1..." network="mainnet" theme="dark"></elisym-buy>
 <script
   src="https://pay.elisym.network/v2/embed.js"
   integrity="sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ"
@@ -21,7 +21,7 @@ The element shows a Buy button. A click opens the checkout in a modal over your 
 | `network`       | `mainnet` or `devnet`          | Only payouts on this network are offered (`devnet` is Tempo's Moderato on Tempo). Without it, the network of the first payout the store lists is used. |
 | `strict-origin` | (no value)                     | Also refuse a store no domain vouches for (level C). A level A store is always refused off its domain (see [Where it sells](#where-it-sells)). |
 | `collect-email` | (no value)                     | Ask the buyer for an email (optional for them). It goes to your node with the order, and `orders` lists it. The node never sends email.     |
-| `theme`         | `auto`, `light` or `dark`      | The checkout's colors. `auto` (the default) follows the buyer's system.                                                                    |
+| `theme`         | `auto`, `light` or `dark`      | The checkout's colors. `auto` (the default) follows the buyer's system; the snippets use `dark`.                                          |
 | `display`       | `modal` or `inline`            | `modal` (the default): a Buy button opens the checkout in a modal. `inline`: the checkout sits in the page.                                |
 | `label`         | text                           | The Buy button's text. Without it, or when empty, the button reads "Buy". Changing it never reloads the checkout.                          |
 
@@ -36,9 +36,11 @@ The checkout is one panel inside the frame that grows as the purchase goes on:
 3. The email field, when you set `collect-email`.
 4. **Choose wallet**, which opens the wallets the buyer's browser has right below. The payout and the email above stay editable until a payment starts.
 5. Once the buyer picks a wallet, the payment's progress takes the wallets' place, and the payment shows read-only above it.
-6. The delivery, or how the order ended.
+6. The delivery or the refund with a receipt (what was paid, when, and the transaction when this checkout saw the payment), or how the order ended.
 
-There is no confirmation step and no box to tick. The store's name stays in the header the whole time, with its trust level unless the store no longer offers the product on this page, and a devnet checkout says "Test network". The buyer always has something to do or knows how long to wait: when a wallet did not sign, the checkout says "you can retry in about M:SS" while the attempt may still land, then offers the retry and Start over once it provably cannot. Pages that still use `v1/embed.js` get the same checkout, inline, with no change to their snippet.
+While the wallet connects, the buyer can cancel and choose another wallet.
+
+There is no confirmation step and no box to tick. The store's name stays in the header the whole time, with its trust level when it has one (level A or B), unless the store no longer offers the product on this page, and a devnet checkout says "Test network". The buyer always has something to do or knows how long to wait: when a wallet did not sign, the checkout says "you can retry in about M:SS" while the attempt may still land, then offers the retry and Start over once it provably cannot. Pages that still use `v1/embed.js` get the same checkout, inline, with no change to their snippet.
 
 ## Status events
 
@@ -78,7 +80,7 @@ elisym-buy::part(dialog) {
 }
 ```
 
-The checkout inside the frame is never styled by your page: only `theme` changes its colors.
+The checkout inside the frame is never styled by your page: only `theme` changes its colors. The snippets use `theme="dark"`, which we recommend. Use `theme="light"` for a light page; without `theme`, the checkout follows the buyer's system setting.
 
 ## What your page never learns
 
@@ -98,11 +100,11 @@ It then shows the buyer how far the store is vouched for:
 - **Level B**: the store has a hosted name, but no website of its own vouches for it.
 - **Level C**: no domain vouches for it. The buyer pays on trust.
 
-Only the trust chip in the header shows the level ("Verified: your-domain", "Named store" or "Unverified store"). The checkout still works out its warnings (a payout list less than three days old, a payout unknown from earlier purchases, no wallet proof, no domain), but it shows none of them and asks the buyer to tick nothing. What protects the payment is unchanged: the address comes only from the owner's signed payout list, the offer is verified again just before paying, and a changed price or payout is shown to the buyer before anything is paid.
+Only the trust chip in the header shows the level ("Verified: your-domain" or "Named store"; an unverified store shows none). The checkout still works out its warnings (a payout list less than three days old, a payout unknown from earlier purchases, no wallet proof, no domain), but it shows none of them and asks the buyer to tick nothing. What protects the payment is unchanged: the address comes only from the owner's signed payout list, the offer is verified again just before paying, and a changed price or payout is shown to the buyer before anything is paid.
 
 ## Where it sells
 
-A level A store vouches for one domain, and the checkout sells it only on a page served over `https:` from that domain or one of its subdomains. It refuses any other page, including `localhost`. A level C store sells on any page, under its "Unverified store" chip. `strict-origin` refuses a level C store too, so a page with it sells only level A stores on their own domain.
+A level A store vouches for one domain, and the checkout sells it only on a page served over `https:` from that domain or one of its subdomains. It refuses any other page, including `localhost`. A level C store sells on any page, with no trust chip. `strict-origin` refuses a level C store too, so a page with it sells only level A stores on their own domain.
 
 ## When the checkout refuses
 
@@ -122,7 +124,7 @@ A buyer with an order already paid or in progress still sees that order to its e
 
 ## Paying on Tempo
 
-A store with a Tempo payout is paid from an EIP-6963 wallet (MetaMask). The checkout asks the wallet to switch to the right Tempo network (and to add it when the wallet does not know it), then sends one transfer. The buyer needs a little more of the coin than the price, for the wallet's fee.
+A store with a Tempo payout is paid from an EIP-6963 wallet (MetaMask). The checkout asks the wallet to switch to the right Tempo network (and to add it when the wallet does not know it), then sends one transfer. The buyer needs a little more of the coin than the price, for the wallet's fee. Wallets that cannot add a custom network are not offered on Tempo; if a wallet refuses the network, the checkout says so and the buyer picks another.
 
 A Tempo wallet request never expires, so the checkout never retries a Tempo payment by itself:
 

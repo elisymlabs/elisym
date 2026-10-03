@@ -19,7 +19,11 @@ export function NoWallet({ chain, phone }: Props) {
     return (
       <div class="empty">
         <p>No wallet found in this browser.</p>
-        <p>Open this page in your wallet app’s browser.</p>
+        <p>
+          {chain === 'tempo'
+            ? 'Open this page in MetaMask’s in-app browser.'
+            : 'Open this page in your wallet app’s browser.'}
+        </p>
       </div>
     );
   }

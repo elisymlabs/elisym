@@ -14,12 +14,14 @@ import {
 } from '../../commerce/tests/buyer/fixtures';
 import { FakeSolana, FakeWallet } from '../../commerce/tests/buyer/solana-fixtures';
 import {
+  CHAIN_TIME_TIMEOUT_MS,
   RETRY_SETTLE_BLOCKS,
   SLOT_SECS_ESTIMATE,
   type SessionDeps,
   CheckoutSession,
   type View,
 } from '../src/app/session';
+import { receiptText } from '../src/app/ui/text';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutState } from '../src/embed/protocol';
 
@@ -99,6 +101,8 @@ async function setup(
     chainTime: async () => clock,
     setInterval: timers.set,
     clearInterval: timers.clear,
+    setTimeout: timers.set,
+    clearTimeout: timers.clear,
     onView: (view) => views.push(view),
     onStatus: (state) => statuses.push(state),
   };
@@ -213,12 +217,35 @@ describe('a purchase', () => {
     expect(record.state).toBe('paid');
     await storeSays(run.shop, run.relays, record);
     const { profile, level, domain } = run.offer.offer;
+    const paid = await recordOf(run.offer);
+    const paidTx = paid.paidTx;
+    if (paidTx === undefined || paid.paidAt === undefined) {
+      throw new Error('a paid record names its transaction and when it was found');
+    }
     expect(run.last()).toEqual({
       kind: 'delivered',
       text: 'https://shop.example/course',
       link: 'https://shop.example/course',
       // The header keeps naming the store, with the level the offer has now.
       store: { name: profile.name, level, ...(domain === undefined ? {} : { domain }) },
+      // The receipt is the order's own: the payment rows because this checkout saw it.
+      receipt: {
+        store: profile.name,
+        product: run.offer.offer.product.title,
+        paying: {
+          amount: paid.amount,
+          asset: run.offer.payouts[0]?.target.caip19.asset,
+          network: 'devnet',
+          chain: 'solana',
+        },
+        orderId: paid.orderId,
+        paid: {
+          tx: paidTx,
+          at: paid.paidAt,
+          explorer: `https://explorer.solana.com/tx/${paidTx}?cluster=devnet`,
+        },
+        answeredAt: paid.status?.at,
+      },
     });
     expect(run.statuses).toEqual(['ready', 'ordered', 'paying', 'paid', 'completed']);
     // Delivered: nothing keeps running.
@@ -1775,7 +1802,9 @@ describe('the payment a progress screen names', () => {
       .slice(from)
       .filter((view) => view.kind === 'working')
       .map((view) => [view.step, view.paying?.amount]);
+    // Checking twice: while the wallet connects (cancellable), then after.
     expect(working).toEqual([
+      ['checking', chosen.amount.toString()],
       ['checking', chosen.amount.toString()],
       ['ordering', chosen.amount.toString()],
       ['signing', chosen.amount.toString()],
@@ -2136,5 +2165,419 @@ describe('a press, held against changes', () => {
     ];
     await run.session.retry('Fake');
     expect(run.last()?.kind).not.toBe('working');
+  });
+});
+
+/** A promise the test settles by hand. */
+function held<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (error: unknown) => void = () => undefined;
+  const promise = new Promise<T>((settleWith, failWith) => {
+    resolve = settleWith;
+    reject = failWith;
+  });
+  return { promise, resolve, reject };
+}
+
+/** A wallet error as wallets throw them: a code and a message. */
+function walletError(code: number, message = 'wallet error'): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+describe('cancel while the wallet connects', () => {
+  it('ends the press at once: the offer again, nothing asked, and a new press works', async () => {
+    const run = await setup();
+    await run.session.start();
+    const connect = held<FakeWallet>();
+    run.deps.wallets = () => [{ name: 'Fake', connect: () => connect.promise }];
+    const pressed = run.session.pay('Fake');
+    await settle();
+    expect(run.last()).toMatchObject({ kind: 'working', step: 'checking', cancellable: true });
+    run.session.cancel();
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+    expect(run.last()).not.toHaveProperty('problem');
+    // The late answer is dropped: no order, no request, no view.
+    const views = run.views.length;
+    connect.resolve(run.wallet);
+    await pressed;
+    await settle();
+    expect(run.views.length).toBe(views);
+    expect(run.wallet.requests).toBe(0);
+    expect(await store.forProduct(run.offer.productAddress)).toHaveLength(0);
+    // Busy and pressing were released: a new press pays.
+    run.deps.wallets = () => [{ name: 'Fake', connect: async () => run.wallet }];
+    await run.session.pay('Fake');
+    expect(run.wallet.requests).toBe(1);
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment' });
+  });
+
+  it('a connect refused after the cancel draws nothing', async () => {
+    const run = await setup();
+    await run.session.start();
+    const connect = held<FakeWallet>();
+    run.deps.wallets = () => [{ name: 'Fake', connect: () => connect.promise }];
+    const pressed = run.session.pay('Fake');
+    await settle();
+    run.session.cancel();
+    const views = run.views.length;
+    connect.reject(walletError(4001));
+    await pressed;
+    await settle();
+    expect(run.views.length).toBe(views);
+  });
+
+  it('signs with the new press’s own wallet, never the cancelled press’s late one', async () => {
+    const run = await setup();
+    await run.session.start();
+    const first = held<FakeWallet>();
+    const other = await FakeWallet.create();
+    run.deps.wallets = () => [
+      { name: 'A', connect: () => first.promise },
+      { name: 'B', connect: async () => other },
+    ];
+    const pressA = run.session.pay('A');
+    await settle();
+    run.session.cancel();
+    // B connects, then waits on the chain time; A's connect answers meanwhile.
+    const chainTime = held<number>();
+    run.deps.chainTime = () => chainTime.promise;
+    const pressB = run.session.pay('B');
+    await settle();
+    expect(run.last()).toMatchObject({ kind: 'working', step: 'checking' });
+    expect(run.last()).not.toHaveProperty('cancellable');
+    first.resolve(run.wallet);
+    await pressA;
+    await settle();
+    // Still B's press: busy is held (a refresh draws nothing), and A is ignored.
+    const views = run.views.length;
+    run.session.refresh();
+    expect(run.views.length).toBe(views);
+    chainTime.resolve(NOW + 30);
+    await pressB;
+    expect(other.requests).toBe(1);
+    expect(run.wallet.requests).toBe(0);
+  });
+
+  it('a cancelled press ending late never frees the payout of a press still starting', async () => {
+    const run = await setup({ transform: (offer) => withSecondPayout(offer, solanaAddress()) });
+    await run.session.start();
+    const connect = held<FakeWallet>();
+    run.deps.wallets = () => [{ name: 'Fake', connect: () => connect.promise }];
+    const pressA = run.session.pay('Fake');
+    await settle();
+    run.session.cancel();
+    // Press B is held before its guard (the delivery-first check).
+    const before = held<boolean>();
+    const hooks = run.session as unknown as { deliveryFirst(): Promise<boolean> };
+    hooks.deliveryFirst = () => before.promise;
+    const pressB = run.session.pay('Fake');
+    connect.resolve(run.wallet);
+    await pressA;
+    await settle();
+    const views = run.views.length;
+    run.session.choosePayout(1);
+    expect(run.views.length).toBe(views);
+    before.resolve(true);
+    await pressB;
+  });
+
+  it('cancels a retry back to the retry rows; a late answer changes nothing', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    const connect = held<FakeWallet>();
+    run.deps.wallets = () => [{ name: 'Fake', connect: () => connect.promise }];
+    const retried = run.session.retry('Fake');
+    await settle();
+    expect(run.last()).toMatchObject({ kind: 'working', step: 'checking', cancellable: true });
+    run.session.cancel();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    const views = run.views.length;
+    const requests = run.wallet.requests;
+    run.wallet.behaviour = 'sign';
+    connect.resolve(run.wallet);
+    await retried;
+    await settle();
+    expect(run.views.length).toBe(views);
+    expect(run.wallet.requests).toBe(requests);
+  });
+
+  it('shows the order the store cancelled during the wait', async () => {
+    const run = await setup();
+    await run.session.start();
+    const tokens = run.chain.tokens;
+    run.chain.tokens = 1n;
+    await run.session.pay('Fake');
+    run.chain.tokens = tokens;
+    const record = await recordOf(run.offer);
+    expect(record.state).toBe('ordered');
+    const connect = held<FakeWallet>();
+    run.deps.wallets = () => [{ name: 'Fake', connect: () => connect.promise }];
+    const pressed = run.session.pay('Fake');
+    await settle();
+    await storeSays(run.shop, run.relays, record, { status: 'cancelled', delivery: undefined });
+    run.session.cancel();
+    expect(run.last()).toMatchObject({ kind: 'cancelled' });
+    connect.resolve(run.wallet);
+    await pressed;
+  });
+
+  it('is not offered once the wallet answered; Cancel then does nothing', async () => {
+    const run = await setup();
+    await run.session.start();
+    const chainTime = held<number>();
+    run.deps.chainTime = () => chainTime.promise;
+    const pressed = run.session.pay('Fake');
+    await settle();
+    expect(run.last()).toMatchObject({ kind: 'working', step: 'checking' });
+    expect(run.last()).not.toHaveProperty('cancellable');
+    const views = run.views.length;
+    run.session.cancel();
+    expect(run.views.length).toBe(views);
+    chainTime.resolve(NOW + 30);
+    await pressed;
+    const later = run.views
+      .slice(views)
+      .filter((view) => view.kind === 'working' && view.cancellable === true);
+    expect(later).toHaveLength(0);
+    expect(run.wallet.requests).toBe(1);
+  });
+
+  it('names a refusal and a busy wallet at connect (both rails share the reading)', async () => {
+    const run = await setup();
+    await run.session.start();
+    run.deps.wallets = () => [
+      {
+        name: 'Fake',
+        connect: () => Promise.reject(walletError(4001, 'User rejected the request.')),
+      },
+    ];
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'rejected' } });
+    run.deps.wallets = () => [
+      { name: 'Fake', connect: () => Promise.reject(walletError(-32002, 'Request pending')) },
+    ];
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'wallet_busy' } });
+    run.deps.wallets = () => [
+      { name: 'Fake', connect: () => Promise.reject(new Error('no account')) },
+    ];
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'no_wallet' } });
+  });
+});
+
+describe('a cancelled retry, after it', () => {
+  it('signs with the new retry’s own wallet, never the cancelled retry’s late one', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    const first = held<FakeWallet>();
+    const other = await FakeWallet.create();
+    run.deps.wallets = () => [
+      { name: 'A', connect: () => first.promise },
+      { name: 'B', connect: async () => other },
+    ];
+    const requestsBefore = run.wallet.requests;
+    const retryA = run.session.retry('A');
+    await settle();
+    run.session.cancel();
+    const chainTime = held<number>();
+    run.deps.chainTime = () => chainTime.promise;
+    const retryB = run.session.retry('B');
+    await settle();
+    run.wallet.behaviour = 'sign';
+    first.resolve(run.wallet);
+    await retryA;
+    await settle();
+    chainTime.resolve(run.deps.now());
+    await retryB;
+    expect(other.requests).toBe(1);
+    expect(run.wallet.requests).toBe(requestsBefore);
+  });
+
+  it('a new order shows the payout chosen, not the cancelled retry’s order', async () => {
+    const run = await setup({ transform: (offer) => withSecondPayout(offer, solanaAddress()) });
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    const connect = held<FakeWallet>();
+    run.deps.wallets = () => [{ name: 'Fake', connect: () => connect.promise }];
+    const retried = run.session.retry('Fake');
+    await settle();
+    run.session.cancel();
+    connect.resolve(run.wallet);
+    await retried;
+    await run.session.startOver();
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+    // A new order that stays acknowledged and unpaid (too little in the wallet).
+    run.deps.wallets = () => [{ name: 'Fake', connect: async () => run.wallet }];
+    run.wallet.behaviour = 'sign';
+    const tokens = run.chain.tokens;
+    run.chain.tokens = 1n;
+    await run.session.pay('Fake');
+    run.chain.tokens = tokens;
+    const chosen = run.offer.payouts[1];
+    if (chosen === undefined) {
+      throw new Error('two payouts');
+    }
+    run.session.choosePayout(1);
+    const next = held<FakeWallet>();
+    run.deps.wallets = () => [{ name: 'Fake', connect: () => next.promise }];
+    const pressed = run.session.pay('Fake');
+    await settle();
+    expect(run.last()).toMatchObject({
+      kind: 'working',
+      step: 'checking',
+      paying: { amount: chosen.amount.toString() },
+    });
+    run.session.cancel();
+    next.resolve(run.wallet);
+    await pressed;
+  });
+
+  it('a cancelled retry ending late leaves the next retry naming its own order', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    const record = await recordOf(run.offer);
+    // A retry finds the offer dearer: the payout chosen now differs from the order's.
+    run.advance(200);
+    run.deps.reloadOffer = async () => {
+      const now = run.deps.now();
+      return raised(await loaded(run.shop, run.relays, now), now);
+    };
+    await run.session.retry('Fake');
+    expect(run.last()).toMatchObject({ problem: { reason: 'offer_changed' } });
+    const first = held<FakeWallet>();
+    const second = held<FakeWallet>();
+    let presses = 0;
+    run.deps.wallets = () => [
+      {
+        name: 'Fake',
+        connect: () => {
+          presses += 1;
+          return presses === 1 ? first.promise : second.promise;
+        },
+      },
+    ];
+    const retryA = run.session.retry('Fake');
+    await settle();
+    run.session.cancel();
+    const retryB = run.session.retry('Fake');
+    await settle();
+    first.resolve(run.wallet);
+    await retryA;
+    await settle();
+    const from = run.views.length;
+    second.resolve(run.wallet);
+    await settle();
+    const checking = run.views
+      .slice(from)
+      .find((view) => view.kind === 'working' && view.step === 'checking');
+    expect(checking).toMatchObject({ paying: { amount: record.amount } });
+    await retryB;
+  });
+});
+
+/** Record the delays the session asks of one-shot timers (the test still runs them by hand). */
+function recordDelays(run: Awaited<ReturnType<typeof setup>>): number[] {
+  const delays: number[] = [];
+  run.deps.setTimeout = (handler, ms) => {
+    delays.push(ms);
+    return run.timers.set(handler);
+  };
+  return delays;
+}
+
+describe('the chain-time read', () => {
+  it('gives up after its deadline: rpc_error on the offer, nothing placed', async () => {
+    const run = await setup();
+    await run.session.start();
+    const delays = recordDelays(run);
+    run.deps.chainTime = () => new Promise<number>(() => undefined);
+    const pressed = run.session.pay('Fake');
+    await settle();
+    await run.timers.tick();
+    await pressed;
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'rpc_error' } });
+    expect(await store.forProduct(run.offer.productAddress)).toHaveLength(0);
+    expect(delays).toEqual([CHAIN_TIME_TIMEOUT_MS]);
+  });
+
+  it('gives up on a retry too: rpc_error on the wait', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    const delays = recordDelays(run);
+    run.deps.chainTime = () => new Promise<number>(() => undefined);
+    const retried = run.session.retry('Fake');
+    await settle();
+    await run.timers.tick();
+    await retried;
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      problem: { reason: 'rpc_error' },
+    });
+    expect(delays).toEqual([CHAIN_TIME_TIMEOUT_MS]);
+  });
+});
+
+describe('the receipt', () => {
+  it('names a store with no profile name "Unnamed store", on screen and in the copy', async () => {
+    const nameless = (offer: Ready): Ready => ({
+      ...offer,
+      offer: { ...offer.offer, profile: { ...offer.offer.profile, name: undefined } },
+    });
+    const run = await setup({ transform: nameless });
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    await storeSays(run.shop, run.relays, await recordOf(run.offer));
+    const view = run.last();
+    const receipt = view?.kind === 'delivered' ? view.receipt : undefined;
+    if (receipt === undefined) {
+      throw new Error('no receipt');
+    }
+    expect(receipt.store).toBe('Unnamed store');
+    expect(receiptText(receipt, 'delivered')).toContain('Store: Unnamed store');
+  });
+
+  it('shows no payment rows for an order the store answered without this checkout seeing it paid', async () => {
+    const run = await setup();
+    await run.session.start();
+    const tokens = run.chain.tokens;
+    run.chain.tokens = 1n;
+    await run.session.pay('Fake');
+    run.chain.tokens = tokens;
+    const record = await recordOf(run.offer);
+    await storeSays(run.shop, run.relays, record);
+    const view = run.last();
+    expect(view).toMatchObject({ kind: 'delivered' });
+    const receipt = view?.kind === 'delivered' ? view.receipt : undefined;
+    expect(receipt).toMatchObject({ orderId: record.orderId, product: 'Agents 101' });
+    expect(receipt).not.toHaveProperty('paid');
+    expect(receipt?.answeredAt).toBeDefined();
   });
 });

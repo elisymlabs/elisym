@@ -41,7 +41,7 @@ npx @elisym/merchant-node run
 `setup` prints the product's `naddr`. Put it in the checkout snippet on your page:
 
 ```html
-<elisym-buy product="naddr1..." network="devnet"></elisym-buy>
+<elisym-buy product="naddr1..." network="devnet" theme="dark"></elisym-buy>
 <script
   src="https://pay.elisym.network/v2/embed.js"
   integrity="sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ"
