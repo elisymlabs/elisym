@@ -93,3 +93,19 @@ describe('withdraw and send_payment tool descriptions mention commitment behavio
     }
   });
 });
+
+describe('product tools are rate limited like every other tool', () => {
+  for (const name of ['buy_product', 'get_order']) {
+    it(`${name} is refused once the window is full`, async () => {
+      const tool = registeredTools.find((each) => each.name === name);
+      if (tool === undefined) {
+        throw new Error(`no ${name} tool`);
+      }
+      const ctx = new AgentContext();
+      for (let index = 0; index < 10; index++) {
+        ctx.toolRateLimiter.check();
+      }
+      await expect(tool.handler(ctx, {})).rejects.toThrow(/Rate limit/);
+    });
+  }
+});
