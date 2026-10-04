@@ -165,14 +165,19 @@ export function receiptField(value: string): string {
     .slice(0, RECEIPT_FIELD_MAX);
 }
 
+/** A transaction id shortened for the screen: its first 6 and last 4 characters. */
+export function shortTx(tx: string): string {
+  return tx.length <= 12 ? tx : `${tx.slice(0, 6)}…${tx.slice(-4)}`;
+}
+
 /** "1.5 USDC · Solana mainnet": what an order is for. */
 export function paidLine(paying: Paying): string {
   return `${formatAssetAmount(paying.asset, BigInt(paying.amount))} · ${networkLabel(paying.chain, paying.network)}`;
 }
 
 /**
- * The receipt as plain text, one row per line: what the buyer sees and what
- * "Copy receipt" copies are the same text. "Paid" only when this checkout's
+ * The receipt as plain text, one row per line: what "Copy receipt" copies,
+ * with the full transaction id (the screen shows it shortened). "Paid" only when this checkout's
  * verifier found the payment; otherwise the order total, and the transaction
  * this checkout sent once the chain says it went through - last, after the order.
  */

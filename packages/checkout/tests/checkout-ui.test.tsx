@@ -14,6 +14,7 @@ import { type Actions, Checkout } from '../src/app/Checkout';
 import type { Screen } from '../src/app/controller';
 import type { Banner, Paying, Problem, Receipt, View } from '../src/app/session';
 import { PROBLEM_PLACE } from '../src/app/ui/panel';
+import { receiptText as fullReceiptText } from '../src/app/ui/text';
 
 interface Calls {
   pay: string[];
@@ -1023,7 +1024,15 @@ function receipt(overrides: Partial<Receipt> = {}): Receipt {
 }
 
 describe('the receipt', () => {
-  const receiptText = (ui: Ui) => ui.container.querySelector('.receipt-text')?.textContent ?? '';
+  /** The full text "Copy receipt" copies (and the fallback shows and selects). */
+  const receiptText = (
+    _ui: Ui,
+    shown: Receipt = receipt(),
+    kind: 'delivered' | 'refunded' = 'delivered',
+  ) => fullReceiptText(shown, kind);
+  /** What the screen shows. */
+  const shownText = (ui: Ui) => ui.container.querySelector('.receipt-text')?.textContent ?? '';
+  const SHORT = `${TX.slice(0, 6)}…${TX.slice(-4)}`;
 
   it('says what was paid, when it was seen, the order and the full transaction', () => {
     const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
@@ -1035,12 +1044,41 @@ describe('the receipt', () => {
     expect(text).toContain('2031');
     expect(text).toContain('Order: order-1');
     expect(text).toContain(`Transaction: ${TX}`);
-    const link = [...ui.container.querySelectorAll('.receipt a')].find(
-      (each) => each.textContent === 'View transaction',
-    );
+  });
+
+  it('shows the transaction shortened, as the link itself, with no separate link', () => {
+    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    const shown = shownText(ui);
+    expect(shown).toContain(`Transaction: ${SHORT} ↗`);
+    expect(shown).not.toContain(TX);
+    const links = [...ui.container.querySelectorAll('.receipt a')];
+    expect(links).toHaveLength(1);
+    const link = links[0];
+    expect(link?.textContent).toBe(`${SHORT} ↗`);
     expect(link?.getAttribute('href')).toBe(`https://explorer.solana.com/tx/${TX}`);
+    expect(link?.getAttribute('title')).toBe(TX);
+    expect(link?.getAttribute('aria-label')).toBe(`View transaction ${SHORT} on the explorer`);
     expect(link?.getAttribute('rel')).toBe('noopener noreferrer');
     expect(link?.getAttribute('target')).toBe('_blank');
+    expect(ui.text()).not.toContain('View transaction');
+  });
+
+  it('links no transaction without an https explorer page: the short id as text', () => {
+    const ui = mount({
+      kind: 'delivered',
+      text: 'KEY-1234',
+      receipt: receipt({ paid: { tx: TX, at: PAID_AT, explorer: 'http://explorer.example/tx' } }),
+    });
+    expect(ui.container.querySelector('.receipt a')).toBeNull();
+    expect(shownText(ui)).toContain(`Transaction: ${SHORT}`);
+    expect(shownText(ui)).not.toContain('↗');
+  });
+
+  it('says what the order number is for, on screen only', () => {
+    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    const hint = ui.container.querySelector('.receipt .receipt-hint');
+    expect(hint?.textContent).toBe('Give this number to the store if you need help.');
+    expect(receiptText(ui)).not.toContain('Give this number');
   });
 
   it('claims no payment it did not see: the order total only, and no link', () => {
@@ -1048,45 +1086,71 @@ describe('the receipt', () => {
       kind: 'refunded',
       receipt: receipt({ paid: undefined }),
     });
-    const text = receiptText(ui);
+    const text = receiptText(ui, receipt({ paid: undefined }), 'refunded');
     expect(text).not.toContain('Paid');
     expect(text).not.toContain('Transaction');
     expect(text).toContain('Total: 1.5 USDC · Solana mainnet');
     expect(text).not.toContain('not seen');
     expect(text).toContain(`Refunded on: ${new Date((PAID_AT + 60) * 1000).toLocaleString()}`);
     expect(text).toContain('Refunded by the store');
+    expect(shownText(ui)).not.toContain('Paid');
+    expect(shownText(ui)).toContain('Total: 1.5 USDC · Solana mainnet');
     expect(ui.container.querySelector('.receipt a')).toBeNull();
   });
 
-  it('copies exactly what it shows, under its own name', async () => {
+  it('copies the full receipt, under its own name', async () => {
     const writeText = vi.fn(async () => undefined);
     vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
     const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
     await act(async () => ui.button('Copy receipt').click());
     expect(writeText).toHaveBeenCalledWith(receiptText(ui));
+    expect(receiptText(ui)).toContain(`Transaction: ${TX}`);
     await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
     expect(
       ui.container.querySelector('.receipt .visually-hidden[role="status"]')?.textContent,
     ).toBe('Receipt copied.');
   });
 
-  it('selects exactly what it shows when the clipboard is refused', async () => {
-    const writeText = vi.fn(async () => {
-      throw new Error('denied');
+  for (const [name, userAgent, touchPoints] of [
+    ['a desktop', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 0],
+    ['a phone', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', 5],
+  ] as const) {
+    it(`on ${name}, a refused clipboard shows the full receipt and selects it`, async () => {
+      vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent);
+      vi.spyOn(navigator, 'maxTouchPoints', 'get').mockReturnValue(touchPoints);
+      const writeText = vi.fn(async () => {
+        throw new Error('denied');
+      });
+      vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
+      const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+      expect(shownText(ui)).not.toContain(TX);
+      await act(async () => ui.button('Copy receipt').click());
+      const block = ui.container.querySelector('.receipt-text');
+      expect(block?.textContent).toBe(receiptText(ui));
+      expect(window.getSelection()?.toString()).toBe(receiptText(ui));
+      expect(window.getSelection()?.anchorNode).toBe(block);
+      expect(receiptText(ui)).toContain(`Transaction: ${TX}`);
     });
+  }
+
+  it('a successful copy never changes what the receipt shows', async () => {
+    const writeText = vi.fn(async () => undefined);
     vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
     const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    const before = shownText(ui);
     await act(async () => ui.button('Copy receipt').click());
-    expect(window.getSelection()?.toString()).toBe(receiptText(ui));
+    expect(shownText(ui)).toBe(before);
   });
 
   it('keeps a store-made title on one line, as text', () => {
     const title = 'X\nPaid: 999 USDC\u202e<b>bold</b>';
     const ui = mount({ kind: 'delivered', text: 'KEY', receipt: receipt({ product: title }) });
-    const lines = receiptText(ui).split('\n');
+    const full = receiptText(ui, receipt({ product: title }));
+    const lines = full.split('\n');
     expect(lines.filter((line) => line.startsWith('Product:'))).toHaveLength(1);
     expect(lines.filter((line) => line.startsWith('Paid:'))).toHaveLength(1);
-    expect(receiptText(ui)).not.toContain('\u202e');
+    expect(full).not.toContain('\u202e');
+    expect(shownText(ui)).not.toContain('\u202e');
     expect(ui.container.querySelector('.receipt b')).toBeNull();
   });
 
@@ -1414,14 +1478,17 @@ describe('the receipt of a transaction this checkout only sent', () => {
     answeredAt: Date.UTC(2031, 4, 6, 12, 0, 0) / 1000,
   });
 
-  it('names it last, says Total (never Paid), and links "Look up the transaction"', () => {
+  it('names it last, says Total (never Paid), as "Transaction sent" linked', () => {
     const ui = mount({ kind: 'delivered', text: 'KEY', receipt: sent() });
-    const text = ui.container.querySelector('.receipt-text')?.textContent ?? '';
+    const text = fullReceiptText(sent(), 'delivered');
     expect(text).toContain('Total: 1.5 USDC · Solana mainnet');
     expect(text).not.toContain('Paid');
     expect(text.split('\n').at(-1)).toBe('Transaction sent: SIG');
+    expect(ui.container.querySelector('.receipt-text')?.textContent).toContain(
+      'Transaction sent: SIG ↗',
+    );
     const link = ui.container.querySelector('.receipt a');
-    expect(link?.textContent).toBe('Look up the transaction');
+    expect(link?.textContent).toBe('SIG ↗');
     expect(link?.getAttribute('href')).toBe('https://explorer.solana.com/tx/SIG');
     expect(link?.getAttribute('rel')).toBe('noopener noreferrer');
   });
