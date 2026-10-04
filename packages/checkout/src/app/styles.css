@@ -65,6 +65,16 @@
   box-sizing: border-box;
 }
 
+/* While the frame grows toward the content: no scrollbar flashes. */
+html.growing {
+  overflow: hidden;
+}
+
+/* In the modal the frame may hit its cap and scroll: a steady gutter, so nothing rewraps. */
+html[data-display='modal'] {
+  scrollbar-gutter: stable;
+}
+
 /* Inline: an opaque, full-bleed body with no inner border, as the frame always showed. */
 body {
   margin: 0;
@@ -103,23 +113,53 @@ a {
 
 .header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.header h1 {
+/* The product first: two lines at most, the full name on hover (its `title`). */
+.header .product-title {
+  display: -webkit-box;
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
-.badges {
+/* Who sells it, quieter: the store name on one line, then the chips. */
+.store-line {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.store-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.store-line .badge,
+.store-line .chip {
+  flex: none;
+  max-width: 100%;
+}
+
+/* A verified domain wraps rather than being cut: the buyer sees all of it. */
+.store-line .chip {
+  overflow-wrap: anywhere;
 }
 
 .badge {
@@ -159,6 +199,11 @@ a {
   }
 }
 
+/* A section appearing on its own (outside a step that already fades in): no base opacity, no fill. */
+.reveal {
+  animation: enter 160ms ease;
+}
+
 .step-heading {
   margin: 0;
   font-size: 18px;
@@ -179,12 +224,6 @@ h3.step-heading {
 /* The wallets open right under the offer, with a little room to read as the next section. */
 .offer-panel > [data-step='wallets'] {
   margin-top: 8px;
-}
-
-.product-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
 }
 
 .summary,
@@ -582,6 +621,31 @@ button:disabled {
   line-height: 1.5;
   white-space: pre-line;
   overflow-wrap: anywhere;
+}
+
+/* Every label of a copy button in one cell: the widest sizes it, only the current one shows. */
+.label-stack {
+  display: inline-grid;
+}
+
+.label-option {
+  grid-area: 1 / 1;
+}
+
+.label-option[data-current='false'] {
+  visibility: hidden;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .footer {

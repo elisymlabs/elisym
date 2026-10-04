@@ -18,6 +18,7 @@ import {
 } from './controller';
 import { discoverEvmWallets, tempoWalletOptions } from './evm-wallets';
 import { acceptHandshake } from './handshake';
+import { createHeightAnimator } from './height';
 import { armFirstFocus, closeOnEscape } from './modal-frame';
 import { type Banner, CheckoutSession, type View } from './session';
 import { discoverWallets, payingWallets, solanaChain } from './wallets';
@@ -53,7 +54,7 @@ const MODAL = params?.display === 'modal';
 const closeModal = MODAL ? () => handshake.post({ type: 'close' }) : undefined;
 const firstFocus = MODAL
   ? armFirstFocus(window, () =>
-      document.getElementById('store-name')?.focus({ preventScroll: true }),
+      document.getElementById('checkout-title')?.focus({ preventScroll: true }),
     )
   : undefined;
 
@@ -137,7 +138,8 @@ async function openStore(): Promise<OrderStore | undefined> {
 }
 
 async function start(pageOrigin: string): Promise<void> {
-  reportHeight();
+  // Whatever was posted before the hello was dropped: the page gets the height now.
+  heights.flush(contentHeight());
   if (params === undefined) {
     show({ kind: 'refused', reason: 'no_product' });
     handshake.status('refused');
@@ -220,9 +222,25 @@ async function start(pageOrigin: string): Promise<void> {
 }
 
 /** The content's own height (the body has no margin), never the frame's current one. */
-function reportHeight(): void {
-  handshake.post({ type: 'resize', height: document.body.getBoundingClientRect().height });
+function contentHeight(): number {
+  return document.body.getBoundingClientRect().height;
 }
+
+const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
+
+/** The frame's height, told smoothly: the loader sets each reported height at once. */
+const heights = createHeightAnimator({
+  post: (height) => handshake.post({ type: 'resize', height }),
+  now: () => performance.now(),
+  requestFrame: (callback) => window.requestAnimationFrame(callback),
+  cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+  setTimer: (callback, ms) => window.setTimeout(callback, ms),
+  clearTimer: (handle) => window.clearTimeout(handle),
+  reducedMotion: () => typeof matchMedia === 'function' && matchMedia(REDUCED_MOTION).matches,
+  innerWidth: () => window.innerWidth,
+  innerHeight: () => window.innerHeight,
+  setGrowing: (on) => document.documentElement.classList.toggle('growing', on),
+});
 
 // Registered synchronously, before anything renders: a hello is never missed.
 const handshake = acceptHandshake(
@@ -233,6 +251,7 @@ const handshake = acceptHandshake(
 
 if (params !== undefined) {
   document.documentElement.dataset.theme = params.theme;
+  document.documentElement.dataset.display = params.display;
 }
 if (closeModal !== undefined) {
   closeOnEscape(window, closeModal);
@@ -241,5 +260,5 @@ draw();
 
 // Tell the page how tall the content is.
 if (root !== null && typeof ResizeObserver !== 'undefined') {
-  new ResizeObserver(reportHeight).observe(document.body);
+  new ResizeObserver(() => heights.target(contentHeight())).observe(document.body);
 }

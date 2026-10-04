@@ -318,6 +318,7 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
         text: 'https://shop.example/course',
         link: 'https://shop.example/course',
         store: about.store,
+        product: about.product,
         receipt: {
           store: 'Demo Shop',
           product: about.product.title,
@@ -338,6 +339,7 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
         kind: 'delivered',
         text: 'LICENSE-KEY-1234-5678',
         store: about.store,
+        product: about.product,
         receipt: {
           store: 'Demo Shop',
           product: about.product.title,
@@ -353,6 +355,7 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
       view: {
         kind: 'refunded',
         store: about.store,
+        product: about.product,
         receipt: {
           store: 'Demo Shop',
           product: about.product.title,
@@ -362,14 +365,58 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
         },
       },
     },
-    { name: 'cancelled', view: { kind: 'cancelled', store: about.store } },
-    { name: 'blocked', view: { kind: 'blocked', store: about.store } },
+    {
+      name: 'delivered: the store answered first (transaction sent)',
+      view: {
+        kind: 'delivered',
+        text: 'https://shop.example/course',
+        link: 'https://shop.example/course',
+        store: about.store,
+        product: about.product,
+        receipt: {
+          store: 'Demo Shop',
+          product: about.product.title,
+          paying,
+          orderId: 'b3a7c2d4-0000-4000-8000-000000000004',
+          sent: {
+            tx: CANNED_SIGNATURE,
+            explorer: `https://explorer.solana.com/tx/${CANNED_SIGNATURE}?cluster=devnet`,
+          },
+          answeredAt: now - 30,
+        },
+      },
+    },
+    {
+      name: 'offer: a long product name',
+      view: offerView(
+        cannedOffer({
+          title:
+            'Deposit 1 USD to your account balance, credited at once, with a receipt for your records and taxes',
+          name: 'A store with a very long name that will not fit on one line at all',
+        }),
+      ),
+    },
+    {
+      name: 'offer: a long verified domain',
+      view: offerView(
+        cannedOffer({
+          name: 'Northwind Learning Collective',
+          domain: 'courses.northwind-learning-collective.example',
+        }),
+      ),
+    },
+    {
+      name: 'cancelled',
+      view: { kind: 'cancelled', store: about.store, product: about.product },
+    },
+    { name: 'blocked', view: { kind: 'blocked', store: about.store, product: about.product } },
     {
       name: 'refused',
       view: {
         kind: 'refused',
         message: 'The store is not on this domain.',
         store: { name: 'Demo Shop' },
+        product: about.product,
       },
     },
   ];

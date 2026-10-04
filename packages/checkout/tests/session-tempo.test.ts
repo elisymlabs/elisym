@@ -4,7 +4,7 @@
  * payment lands as a real `TransferWithMemo` receipt.
  */
 import { type OrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
-import { type LoadedOffer, OrderStore, loadOffer } from '@elisym/commerce/buyer';
+import { type LoadedOffer, OrderStore, applyStatus, loadOffer } from '@elisym/commerce/buyer';
 import type { OrderRecord } from '@elisym/commerce/buyer';
 import type { TempoWallet } from '@elisym/commerce/buyer';
 import { IDBFactory } from 'fake-indexeddb';
@@ -75,7 +75,14 @@ async function settle(): Promise<void> {
   }
 }
 
-type Behaviour = 'land' | 'drop' | 'reject' | 'fail' | 'ended-meanwhile';
+type Behaviour =
+  | 'land'
+  | 'drop'
+  | 'reject'
+  | 'fail'
+  | 'ended-meanwhile'
+  | 'ended-meanwhile-unseen'
+  | 'answered-meanwhile';
 
 async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
   const shop: Shop = makeShop({ caip19: TEMPO_CAIP19, payout: PAYOUT });
@@ -127,8 +134,17 @@ async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
       if (wallet.behaviour === 'land') {
         land(`0x${call.data.slice(-64)}`);
       }
-      if (wallet.behaviour === 'ended-meanwhile') {
-        // Another tab ended the order while this prompt was open; the buyer approves anyway.
+      if (wallet.behaviour === 'answered-meanwhile') {
+        // The store delivers while the wallet is still open: the hash cannot be saved.
+        land(`0x${call.data.slice(-64)}`);
+        const [open] = await store.forProduct(offer.productAddress);
+        if (open !== undefined) {
+          await completed(open);
+        }
+      }
+      if (wallet.behaviour === 'ended-meanwhile' || wallet.behaviour === 'ended-meanwhile-unseen') {
+        // Another tab ended the order while this prompt was open; the buyer approves anyway
+        // (unseen: the chain does not show it yet).
         const [open] = await store.forProduct(offer.productAddress);
         const marker = open?.marker;
         if (open !== undefined && marker !== undefined) {
@@ -140,7 +156,9 @@ async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
             'over',
           );
         }
-        land(`0x${call.data.slice(-64)}`);
+        if (wallet.behaviour === 'ended-meanwhile') {
+          land(`0x${call.data.slice(-64)}`);
+        }
       }
       return HASH;
     },
@@ -172,6 +190,25 @@ async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
         },
       ],
     };
+  }
+  /** The store's delivery of `record`, heard by the widget. */
+  async function completed(record: OrderRecord): Promise<void> {
+    const status = {
+      type: 'status',
+      buyerPubkey: record.buyerPubkey,
+      orderId: record.orderId,
+      status: 'completed',
+      delivery: { method: 'access', value: 'https://shop.example/course' },
+    } as OrderMessage;
+    await relays.publish(
+      INBOX,
+      wrapOrderMessage(
+        buildOrderMessage(status, NOW + 100),
+        shop.store.secretKey,
+        record.buyerPubkey,
+      ).recipientWrap,
+    );
+    await settle();
   }
   /** Past the request's late deadline, with the traffic that lets "none" be vouched. */
   function pastDeadline(record: OrderRecord): void {
@@ -230,6 +267,8 @@ async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
     banners,
     land,
     pastDeadline,
+    completed,
+    receipts: options.receipts,
     session: new CheckoutSession(offer, deps),
     advance: (seconds: number) => {
       clock += seconds;
@@ -530,4 +569,101 @@ describe('the receipt of a Tempo order', () => {
       expect(receipt?.paid).not.toHaveProperty('explorer');
     });
   }
+});
+
+describe('the transaction a Tempo receipt names', () => {
+  function sentOf(view: View | undefined) {
+    return view?.kind === 'delivered' ? view.receipt?.sent : undefined;
+  }
+
+  it('names the hash this checkout sent, once its receipt succeeded, when the store answered first', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    const [record] = await records(run.offer);
+    await run.completed(record as OrderRecord);
+    await settle();
+    const view = run.last();
+    expect(view).toMatchObject({ kind: 'delivered' });
+    expect(view?.kind === 'delivered' ? view.receipt?.paid : undefined).toBeUndefined();
+    expect(sentOf(view)?.tx).toBe(HASH);
+  });
+
+  it('names nothing for a hash whose transaction reverted', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    run.receipts[HASH] = { ...(run.receipts[HASH] as object), status: '0x0' };
+    const [record] = await records(run.offer);
+    await run.completed(record as OrderRecord);
+    await settle();
+    expect(run.last()).toMatchObject({ kind: 'delivered' });
+    expect(sentOf(run.last())).toBeUndefined();
+  });
+
+  it('names a hash the wallet returned after the store had answered (never saved)', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'answered-meanwhile';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    await settle();
+    const [record] = await records(run.offer);
+    expect(record?.marker?.rail === 'tempo' ? record.marker.txHash : 'unexpected').toBeUndefined();
+    expect(run.last()).toMatchObject({ kind: 'delivered' });
+    expect(sentOf(run.last())?.tx).toBe(HASH);
+  });
+
+  it('names the late hash of an ended order the store then delivered, once the chain shows it', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'ended-meanwhile-unseen';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'late_approval' } });
+    const [ended] = await records(run.offer);
+    if (ended === undefined) {
+      throw new Error('no record');
+    }
+    expect(ended).toMatchObject({ state: 'ended-unpaid' });
+    // The approval lands now; the watcher has not looked again before the store answers.
+    run.land(ended.reference);
+    await run.completed(ended);
+    await settle();
+    const view = run.last();
+    expect(view).toMatchObject({ kind: 'delivered' });
+    expect(view?.kind === 'delivered' ? view.receipt?.paid : undefined).toBeUndefined();
+    expect(sentOf(view)?.tx).toBe(HASH);
+  });
+
+  it('still names the late hash when its watcher closed before the store answer was shown', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'ended-meanwhile-unseen';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    const [ended] = await records(run.offer);
+    if (ended === undefined) {
+      throw new Error('no record');
+    }
+    // Another tab hears the delivery first: the watcher finds the order closed and stops.
+    const delivery = {
+      type: 'status',
+      buyerPubkey: ended.buyerPubkey,
+      orderId: ended.orderId,
+      status: 'completed',
+      delivery: { method: 'access', value: 'https://shop.example/course' },
+    } as OrderMessage;
+    if (delivery.type !== 'status') {
+      throw new Error('not a status');
+    }
+    await applyStatus(store, ended.orderId, delivery, NOW + 100);
+    await run.timers.tick();
+    expect(run.banners).toEqual([expect.objectContaining({ state: 'completed' })]);
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+    // The approval shows on the chain after all; this tab then hears the answer.
+    run.receipts[HASH] = { transactionHash: HASH, status: '0x1', logs: [] };
+    await run.completed(ended);
+    await settle();
+    const view = run.last();
+    expect(view).toMatchObject({ kind: 'delivered' });
+    expect(sentOf(view)?.tx).toBe(HASH);
+  });
 });

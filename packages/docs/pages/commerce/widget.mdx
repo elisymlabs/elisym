@@ -36,11 +36,11 @@ The checkout is one panel inside the frame that grows as the purchase goes on:
 3. The email field, when you set `collect-email`.
 4. **Choose wallet**, which opens the wallets the buyer's browser has right below. The payout and the email above stay editable until a payment starts.
 5. Once the buyer picks a wallet, the payment's progress takes the wallets' place, and the payment shows read-only above it.
-6. The delivery or the refund with a receipt (what was paid, when, and the transaction when this checkout saw the payment), or how the order ended.
+6. The delivery or the refund with a receipt: what the order cost, and the transaction this checkout sent with its explorer link once the chain says it went through ("Paid" when this checkout confirmed the payment itself), or how the order ended.
 
 While the wallet connects, the buyer can cancel and choose another wallet.
 
-There is no confirmation step and no box to tick. The store's name stays in the header the whole time, with its trust level when it has one (level A or B), unless the store no longer offers the product on this page, and a devnet checkout says "Test network". The buyer always has something to do or knows how long to wait: when the buyer declines in the wallet, the checkout is back at once and the same order can be paid again; when a wallet failed in another way, the checkout says "you can retry in about M:SS" while the attempt may still land, then offers the retry and Start over once it provably cannot. An immediate retry after a decline relies on the wallet not sending a transaction it reports as declined. Pages that still use `v1/embed.js` get the same checkout, inline, with no change to their snippet.
+There is no confirmation step and no box to tick. The product's name heads the checkout the whole time, with the store's name under it and its trust level when it has one (level A or B), unless the store no longer offers the product on this page, and a devnet checkout says "Test network". The buyer always has something to do or knows how long to wait: when the buyer declines in the wallet, the checkout is back at once and the same order can be paid again; when a wallet failed in another way, the checkout says "you can retry in about M:SS" while the attempt may still land, then offers the retry and Start over once it provably cannot. An immediate retry after a decline relies on the wallet not sending a transaction it reports as declined. Pages that still use `v1/embed.js` get the same checkout, inline, with no change to their snippet.
 
 ## Status events
 

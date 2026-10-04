@@ -19,6 +19,7 @@ import {
   SLOT_SECS_ESTIMATE,
   type SessionDeps,
   CheckoutSession,
+  explorerLink,
   type View,
 } from '../src/app/session';
 import { receiptText } from '../src/app/ui/text';
@@ -228,6 +229,14 @@ describe('a purchase', () => {
       link: 'https://shop.example/course',
       // The header keeps naming the store, with the level the offer has now.
       store: { name: profile.name, level, ...(domain === undefined ? {} : { domain }) },
+      // The header names the product the order is for.
+      product: {
+        title: run.offer.offer.product.title,
+        ...(run.offer.offer.product.summary === undefined
+          ? {}
+          : { summary: run.offer.offer.product.summary }),
+        price: run.offer.offer.product.price,
+      },
       // The receipt is the order's own: the payment rows because this checkout saw it.
       receipt: {
         store: profile.name,
@@ -1232,6 +1241,7 @@ describe('a purchase', () => {
       message: 'This product cannot be bought here.',
       // An order's old snapshot: its name only, never a trust level it may no longer have.
       store: { name: run.offer.offer.profile.name },
+      product: expect.objectContaining({ title: run.offer.offer.product.title }),
     });
     run.wallet.behaviour = 'sign';
     await follow.pay('Fake');
@@ -2579,6 +2589,197 @@ describe('the receipt', () => {
     expect(receipt).toMatchObject({ orderId: record.orderId, product: 'Agents 101' });
     expect(receipt).not.toHaveProperty('paid');
     expect(receipt?.answeredAt).toBeDefined();
+  });
+});
+
+/** The chain's RPC with its signature-status read answered by the test, reads counted. */
+function statusRpc(chain: FakeSolana, answer: (signature: string) => Promise<unknown> | 'real') {
+  const state = { reads: 0 };
+  const rpc = new Proxy(chain.rpc, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== 'getSignatureStatuses' || typeof value !== 'function') {
+        return value;
+      }
+      return (signatures: string[], config: unknown) => {
+        const real = value(signatures, config) as { send(options?: unknown): Promise<unknown> };
+        return {
+          send: (options?: { abortSignal?: AbortSignal }) => {
+            // Only the receipt's look-up carries a timeout (the watch's reads do not).
+            if (options?.abortSignal === undefined) {
+              return real.send(options);
+            }
+            state.reads += 1;
+            const answered = answer(signatures[0] ?? '');
+            return answered === 'real' ? real.send(options) : answered;
+          },
+        };
+      };
+    },
+  });
+  return { rpc, state };
+}
+
+/** A completed order whose payment this checkout's watch never confirmed: the store answered first. */
+async function answeredFirst(rpcFor?: (chain: FakeSolana) => SessionDeps['rpcFor']) {
+  const run = await setup();
+  if (rpcFor !== undefined) {
+    run.deps.rpcFor = rpcFor(run.chain);
+  }
+  // The transaction lands, but the watch cannot read it yet: no `paidTx`.
+  run.chain.indexLag = true;
+  await run.session.start();
+  await run.session.pay('Fake');
+  const record = await recordOf(run.offer);
+  const marker = record.marker;
+  if (marker?.rail !== 'solana' || marker.signature === undefined) {
+    throw new Error('no signed attempt');
+  }
+  await storeSays(run.shop, run.relays, record);
+  return { run, signature: marker.signature };
+}
+
+function receiptOfView(view: View | undefined) {
+  return view?.kind === 'delivered' || view?.kind === 'refunded' ? view.receipt : undefined;
+}
+
+describe('the transaction a receipt names', () => {
+  it('names the transaction this checkout sent once the chain says it went through, never "Paid"', async () => {
+    const { run, signature } = await answeredFirst();
+    const deliveries = run.views.filter((view) => view.kind === 'delivered');
+    // Drawn first without it (the look-up runs after), then with it.
+    expect(receiptOfView(deliveries[0])).not.toHaveProperty('sent');
+    const receipt = receiptOfView(run.last());
+    expect(receipt).not.toHaveProperty('paid');
+    expect(receipt?.sent).toEqual({
+      tx: signature,
+      explorer: `https://explorer.solana.com/tx/${signature}?cluster=devnet`,
+    });
+    if (receipt === undefined) {
+      throw new Error('no receipt');
+    }
+    const text = receiptText(receipt, 'delivered');
+    expect(text).toContain('Total: 49 USDC · Solana devnet');
+    expect(text).not.toContain('Paid');
+    expect(text).not.toContain('not seen');
+    expect(text.split('\n').at(-1)).toBe(`Transaction sent: ${signature}`);
+  });
+
+  it('names nothing for a transaction the chain does not know', async () => {
+    const run = await setup();
+    run.chain.dropSends = true;
+    await run.session.start();
+    await run.session.pay('Fake');
+    await storeSays(run.shop, run.relays, await recordOf(run.offer));
+    await settle();
+    const receipt = receiptOfView(run.last());
+    expect(receipt).toBeDefined();
+    expect(receipt).not.toHaveProperty('sent');
+    expect(receipt).not.toHaveProperty('paid');
+  });
+
+  for (const [name, answer] of [
+    [
+      'failed on chain',
+      async () => ({ value: [{ err: { failed: true }, confirmationStatus: 'finalized' }] }),
+    ],
+    ['only processed', async () => ({ value: [{ err: null, confirmationStatus: 'processed' }] })],
+    [
+      'a look-up that throws',
+      async () => {
+        throw new Error('node down');
+      },
+    ],
+    ['a look-up that never answers', () => new Promise(() => undefined)],
+  ] as const) {
+    it(`names nothing for ${name}`, async () => {
+      const probe: { state?: { reads: number } } = {};
+      const { run } = await answeredFirst((chain) => {
+        const made = statusRpc(chain, answer);
+        probe.state = made.state;
+        return () => made.rpc;
+      });
+      await settle();
+      expect(probe.state?.reads).toBe(1);
+      expect(receiptOfView(run.last())).not.toHaveProperty('sent');
+    });
+  }
+
+  it('looks nothing up, and names nothing, without a client for the order network', async () => {
+    const probe: { state?: { reads: number } } = {};
+    const { run } = await answeredFirst((chain) => {
+      const made = statusRpc(chain, () => 'real');
+      probe.state = made.state;
+      return () => made.rpc;
+    });
+    // The page loses its RPC before the receipt is first drawn again (a new session).
+    run.session.dispose();
+    run.deps.rpcFor = () => undefined;
+    const again = new CheckoutSession(run.offer, run.deps);
+    await again.start();
+    await settle();
+    expect(receiptOfView(run.last())).not.toHaveProperty('sent');
+    expect(probe.state?.reads).toBe(1);
+  });
+
+  it('never names an attempt proven over, whatever the chain would say', async () => {
+    const probe: { state?: { reads: number } } = {};
+    const run = await setup();
+    const made = statusRpc(run.chain, async () => ({
+      value: [{ err: null, confirmationStatus: 'finalized' }],
+    }));
+    probe.state = made.state;
+    run.deps.rpcFor = () => made.rpc;
+    run.chain.dropSends = true;
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    // The store releases the order by hand.
+    await storeSays(run.shop, run.relays, await recordOf(run.offer));
+    await settle();
+    expect(receiptOfView(run.last())).toBeDefined();
+    expect(receiptOfView(run.last())).not.toHaveProperty('sent');
+    expect(probe.state?.reads).toBe(0);
+  });
+
+  it('shows no transaction while the look-up is still out, on any redraw', async () => {
+    const { run } = await answeredFirst((chain) => {
+      const made = statusRpc(chain, () => new Promise(() => undefined));
+      return () => made.rpc;
+    });
+    run.session.refresh();
+    await settle();
+    expect(run.last()).toMatchObject({ kind: 'delivered' });
+    expect(receiptOfView(run.last())).not.toHaveProperty('sent');
+  });
+
+  it('a look-up that answers during an action draws nothing', async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const { run } = await answeredFirst((chain) => {
+      const made = statusRpc(chain, () => held);
+      return () => made.rpc;
+    });
+    const drawn = run.views.length;
+    const startingOver = run.session.startOver();
+    release({ value: [{ err: null, confirmationStatus: 'finalized' }] });
+    await startingOver;
+    await settle();
+    const after = run.views.slice(drawn);
+    expect(after.some((view) => receiptOfView(view)?.sent !== undefined)).toBe(false);
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+  });
+});
+
+describe('the explorer link', () => {
+  it('encodes the transaction into the URL', () => {
+    expect(explorerLink('a/b?c#d', 'mainnet')).toBe('https://explorer.solana.com/tx/a%2Fb%3Fc%23d');
+    expect(explorerLink('sig', 'devnet')).toBe('https://explorer.solana.com/tx/sig?cluster=devnet');
   });
 });
 
