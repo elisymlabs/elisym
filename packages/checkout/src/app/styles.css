@@ -648,6 +648,16 @@ button:disabled {
   border: 0;
 }
 
+.receipt-line {
+  display: block;
+}
+
+.receipt-hint {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .footer {
   padding-top: 8px;
   border-top: 1px solid var(--border);
