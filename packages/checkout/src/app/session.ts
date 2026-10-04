@@ -1818,9 +1818,20 @@ export class CheckoutSession {
         this.showOffer({ reason: result.reason });
         return;
       }
+      case 'rejected':
+        // The buyer declined: nothing was signed and the attempt was released, so the
+        // same order is paid anew at once (follow also shows a store's cancellation).
+        this.attemptProblem = undefined;
+        this.attemptOver = false;
+        if (result.record !== undefined) {
+          await this.follow(result.record, undefined, { reason: 'rejected' });
+        } else {
+          this.showOffer({ reason: 'rejected' });
+        }
+        return;
       case 'wallet_failed':
       case 'wallet_unsupported':
-        // No Solana error proves nothing was signed: the attempt waits for expiry.
+        // Only an explicit decline proves nothing was signed: the attempt waits for expiry.
         this.attemptProblem = { reason: result.reason };
         this.attemptOver = false;
         if (this.record !== undefined) {
@@ -2261,9 +2272,14 @@ export class CheckoutSession {
           return;
         }
         if (watched.record.state === 'created' || watched.record.state === 'ordered') {
-          // The attempt was cleared (nothing was requested): back to the offer.
+          // The attempt was cleared (nothing was requested, or the buyer declined in
+          // another tab): back to the offer, and the page hears the order is open again.
           this.stopWatching();
           this.attemptOver = false;
+          const reopened = stateOf(this.record);
+          if (reopened !== undefined && reopened !== 'ended') {
+            this.status(reopened);
+          }
           this.render();
           void this.showPendingAnswer();
           return;
