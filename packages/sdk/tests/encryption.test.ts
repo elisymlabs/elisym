@@ -13,7 +13,9 @@ describe('isEncrypted', () => {
   });
 });
 
-describe('encryptSecret / decryptSecret', () => {
+// Every test here runs scrypt, which is deliberately slow: under a fully parallel
+// CI suite one round can outgrow the 5 s default and fail as a timeout, not a defect.
+describe('encryptSecret / decryptSecret', { timeout: 30_000 }, () => {
   const passphrase = 'test-passphrase-123';
 
   it('round-trips a secret', () => {
