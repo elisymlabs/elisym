@@ -51,6 +51,32 @@ function storeEvents(store: ReturnType<typeof key>, owner: ReturnType<typeof key
   ];
 }
 
+/**
+ * A relay client that answers each filter as a relay would: by kind, author
+ * and `#d`, at most 250 events per filter (a relay's result limit).
+ */
+function relayLike(events: NostrEvent[]): RelayClient {
+  return {
+    ...fakeClient([]),
+    query: (_relays, filters) =>
+      Promise.resolve(
+        filters.flatMap((filter) =>
+          events
+            .filter(
+              (event) =>
+                (filter.kinds === undefined || filter.kinds.includes(event.kind)) &&
+                (filter.authors === undefined || filter.authors.includes(event.pubkey)) &&
+                (filter['#d'] === undefined ||
+                  event.tags.some(
+                    (tag) => tag[0] === 'd' && filter['#d']?.includes(tag[1] ?? '') === true,
+                  )),
+            )
+            .slice(0, 250),
+        ),
+      ),
+  };
+}
+
 function fakeClient(events: NostrEvent[]): RelayClient {
   return {
     query: () => Promise.resolve(events),
@@ -213,12 +239,186 @@ describe('the admin page', () => {
     byId('open').click();
     await vi.waitFor(() => expect(byId('status').textContent).toMatch(/^Read 1 order messages/));
     expect(byId('orders').querySelectorAll('tr')).toHaveLength(0);
-    expect(byId('warnings').textContent).toMatch(/No listing found/);
+    expect(byId('warnings').textContent).toMatch(
+      /1 orders name products with no listing found .*: they are hidden\./,
+    );
 
     events.push(...storeEvents(store, owner));
     byId('refresh').click();
     await vi.waitFor(() => expect(byId('orders').querySelectorAll('tr')).toHaveLength(1));
-    expect(byId('warnings').textContent).not.toMatch(/No listing found|No inbox list/);
+    expect(byId('warnings').textContent).not.toMatch(/no listing found|No inbox list/);
     expect(byId('store-name').textContent).toBe(HOSTILE_NAME);
+  });
+
+  it('shows the product of each order, and each product on sale or sold out', async () => {
+    const store = key();
+    const owner = key();
+    const buyer = key();
+    const stopped = finalizeEvent(
+      buildProductEvent({
+        d: 'stopped',
+        title: 'Old course',
+        description: '',
+        price: { amount: '5', currency: 'USD' },
+        visibility: 'sold-out',
+        accept: [USDC_DEVNET_CAIP19],
+        createdAt: T0,
+      }),
+      store.secretKey,
+    );
+    const wraps = [
+      wrapOf(orderBody(store, 'b3a7c2d4-0000-4000-8000-00000000c001'), buyer, store),
+      wrapOf(
+        orderBody(store, 'b3a7c2d4-0000-4000-8000-00000000c002', {
+          items: [{ product: `30402:${store.pubkey}:stopped`, quantity: 1 }],
+          total: { amount: '5', currency: 'USD' },
+        }),
+        buyer,
+        store,
+      ),
+    ];
+    startAdmin(document, {
+      client: relayLike([...storeEvents(store, owner), stopped]),
+      pool: fakePool(wraps),
+      now: () => Math.floor(Date.now() / 1000),
+      forget: () => undefined,
+    });
+    keyInput().value = nip19.nsecEncode(store.secretKey);
+    byId('open').click();
+    await vi.waitFor(() => expect(byId('orders').querySelectorAll('tr')).toHaveLength(2));
+    const headers = [...document.querySelectorAll('thead th')].map((cell) => cell.textContent);
+    const products = [...byId('orders').querySelectorAll('tr')].map(
+      (row) => row.querySelectorAll('td')[headers.indexOf('Product')]?.textContent,
+    );
+    expect(products.sort()).toEqual(['Course', 'Old course']);
+    expect(byId('products').textContent).toContain(`${D}: Course, 1 USD, on sale`);
+    expect(byId('products').textContent).toContain('stopped: Old course, 5 USD, sold out');
+  });
+
+  it('M39: reads every ordered product among more listings than a relay answers at once, sharing one second', async () => {
+    const store = key();
+    const owner = key();
+    const many = Array.from({ length: 300 }, (_, index) =>
+      finalizeEvent(
+        buildProductEvent({
+          d: `p${index}`,
+          title: `Product ${index}`,
+          description: '',
+          price: { amount: '1', currency: 'USD' },
+          accept: [USDC_DEVNET_CAIP19],
+          createdAt: T0,
+        }),
+        store.secretKey,
+      ),
+    );
+    const ordered = [5, 120, 260, 299];
+    const wraps = ordered.map((index) => {
+      const buyer = key();
+      return wrapOf(
+        orderBody(store, `b3a7c2d4-0000-4000-8000-0000000d${String(index).padStart(4, '0')}`, {
+          items: [{ product: `30402:${store.pubkey}:p${index}`, quantity: 1 }],
+        }),
+        buyer,
+        store,
+      );
+    });
+    startAdmin(document, {
+      client: relayLike([...storeEvents(store, owner), ...many]),
+      pool: fakePool(wraps),
+      now: () => Math.floor(Date.now() / 1000),
+      forget: () => undefined,
+    });
+    keyInput().value = nip19.nsecEncode(store.secretKey);
+    byId('open').click();
+    await vi.waitFor(() => expect(byId('orders').querySelectorAll('tr')).toHaveLength(4));
+    expect(byId('warnings').textContent).not.toMatch(/no listing found/);
+  });
+
+  it('M41 M42: Refresh reads the listing of a product newly ordered, and again a repriced one', async () => {
+    const store = key();
+    const owner = key();
+    const buyer = key();
+    const listingOf = (d: string, amount: string, createdAt: number) =>
+      finalizeEvent(
+        buildProductEvent({
+          d,
+          title: d,
+          description: '',
+          price: { amount, currency: 'USD' },
+          accept: [USDC_DEVNET_CAIP19],
+          createdAt,
+        }),
+        store.secretKey,
+      );
+    const events = [...storeEvents(store, owner), listingOf('x', '2', T0)];
+    const wraps = [wrapOf(orderBody(store, 'b3a7c2d4-0000-4000-8000-00000000e001'), buyer, store)];
+    startAdmin(document, {
+      client: relayLike(events),
+      pool: fakePool(wraps),
+      now: () => Math.floor(Date.now() / 1000),
+      forget: () => undefined,
+    });
+    keyInput().value = nip19.nsecEncode(store.secretKey);
+    byId('open').click();
+    await vi.waitFor(() => expect(byId('orders').querySelectorAll('tr')).toHaveLength(1));
+    expect(byId('products').textContent).not.toContain('x:');
+
+    // X's first order arrives after the page opened, and the course is repriced.
+    wraps.push(
+      wrapOf(
+        orderBody(store, 'b3a7c2d4-0000-4000-8000-00000000e002', {
+          items: [{ product: `30402:${store.pubkey}:x`, quantity: 1 }],
+          total: { amount: '2', currency: 'USD' },
+        }),
+        buyer,
+        store,
+      ),
+    );
+    events.push(listingOf(D, '3', T0 + 10));
+    byId('refresh').click();
+    await vi.waitFor(() => expect(byId('orders').querySelectorAll('tr')).toHaveLength(2));
+    expect(byId('products').textContent).toContain('x: x, 2 USD, on sale');
+    expect(byId('products').textContent).toContain(`${D}: ${D}, 3 USD, on sale`);
+  });
+
+  it('shows one count line for orders naming unknown products, and keeps a listing a later read misses', async () => {
+    const store = key();
+    const owner = key();
+    let events = storeEvents(store, owner);
+    const wraps = [
+      wrapOf(orderBody(store, 'b3a7c2d4-0000-4000-8000-00000000f000'), key(), store),
+      ...Array.from({ length: 50 }, (_, index) =>
+        wrapOf(
+          orderBody(store, `b3a7c2d4-0000-4000-8000-0000000f${String(index).padStart(4, '0')}`, {
+            items: [{ product: `30402:${store.pubkey}:spam-${index}`, quantity: 1 }],
+          }),
+          key(),
+          store,
+        ),
+      ),
+    ];
+    startAdmin(document, {
+      client: {
+        ...relayLike([]),
+        query: (relays, filters) => relayLike(events).query(relays, filters),
+      },
+      pool: fakePool(wraps),
+      now: () => Math.floor(Date.now() / 1000),
+      forget: () => undefined,
+    });
+    keyInput().value = nip19.nsecEncode(store.secretKey);
+    byId('open').click();
+    await vi.waitFor(() => expect(byId('orders').querySelectorAll('tr')).toHaveLength(1));
+    const lines = [...byId('warnings').querySelectorAll('li')].map((item) => item.textContent);
+    expect(lines.filter((line) => line?.includes('no listing found'))).toEqual([
+      '50 orders name products with no listing found (an unknown product, or the relays did not answer): they are hidden.',
+    ]);
+    // A later read that finds nothing never drops a listing already read.
+    events = [];
+    byId('refresh').click();
+    await vi.waitFor(() =>
+      expect(byId('warnings').textContent).toMatch(/did not answer for the store/),
+    );
+    expect(byId('orders').querySelectorAll('tr')).toHaveLength(1);
   });
 });

@@ -7,8 +7,11 @@ import {
   checkInboxRelays,
   inboxRelaysNotRead,
   newest,
+  newestListings,
   offerProblems,
   offersNotHonoured,
+  readBeforeSetup,
+  readRelayViews,
 } from '../src/checks';
 import type { PublishRelay } from '../src/publish';
 import { deliveryDone } from '../src/reply';
@@ -18,7 +21,9 @@ const MAINNET_USDC =
   'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const TEMPO_USDC = 'eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50';
 const TEMPO_PAYOUT = '0x1111111111111111111111111111111111111111';
-const STANDING = [{ caip19: USDC_DEVNET_CAIP19, payout: PAYOUT as string, amount: '1000000' }];
+const STANDING = [
+  { d: 'course', caip19: USDC_DEVNET_CAIP19, payout: PAYOUT as string, amount: '1000000' },
+];
 
 type Behaviour = 'serves' | 'takes' | 'refuses' | 'auth-then-recipient-only';
 
@@ -226,14 +231,14 @@ describe('what the relays offer that the node does not honour', () => {
   const oneUsd = listing('1', [USDC_DEVNET_CAIP19]);
 
   it('is nothing when the ledger stands behind every payable offer', () => {
-    expect(offersNotHonoured(oneUsd, usdc, 'devnet', STANDING)).toEqual([]);
+    expect(offersNotHonoured([oneUsd], usdc, 'devnet', STANDING)).toEqual([]);
   });
 
   it('is a price the listing asks that the ledger does not record', () => {
     // A setup stopped after publishing the new listing, before writing the ledger.
     expect(
-      offersNotHonoured(listing('0.80', [USDC_DEVNET_CAIP19]), usdc, 'devnet', STANDING),
-    ).toEqual([`${USDC_DEVNET_CAIP19} at 800000`]);
+      offersNotHonoured([listing('0.80', [USDC_DEVNET_CAIP19])], usdc, 'devnet', STANDING),
+    ).toEqual([`course: ${USDC_DEVNET_CAIP19} at 800000`]);
   });
 
   it('is a payout on another rail or network, or at an address the ledger does not know', () => {
@@ -241,35 +246,226 @@ describe('what the relays offer that the node does not honour', () => {
       { caip19: USDC_DEVNET_CAIP19, address: PAYOUT },
       { caip19: TEMPO_USDC, address: TEMPO_PAYOUT },
     ]);
-    expect(offersNotHonoured(oneUsd, tempo, 'devnet', STANDING)).toEqual([
+    expect(offersNotHonoured([oneUsd], tempo, 'devnet', STANDING)).toEqual([
       `${TEMPO_USDC} ${TEMPO_PAYOUT}`,
     ]);
     const mainnet = list([{ caip19: MAINNET_USDC, address: PAYOUT }]);
-    expect(offersNotHonoured(undefined, mainnet, 'devnet', STANDING)).toEqual([
+    expect(offersNotHonoured([oneUsd], mainnet, 'devnet', STANDING)).toEqual([
       `${MAINNET_USDC} ${PAYOUT}`,
     ]);
     const other = '9vSzVjVGUKqs6vEk1sKc3RPCRkAQfKHDzEkqM6ErqJkz';
     const moved = list([{ caip19: USDC_DEVNET_CAIP19, address: other }]);
-    expect(offersNotHonoured(oneUsd, moved, 'devnet', STANDING)).toEqual([
+    expect(offersNotHonoured([oneUsd], moved, 'devnet', STANDING)).toEqual([
       `${USDC_DEVNET_CAIP19} ${other}`,
-      `${USDC_DEVNET_CAIP19} at 1000000`,
+      `course: ${USDC_DEVNET_CAIP19} at 1000000`,
     ]);
   });
 
   it('compares the coin too, not only the address', () => {
     const lsm =
       'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump';
-    const standing = [{ caip19: MAINNET_USDC, payout: PAYOUT as string, amount: '1000000' }];
+    const standing = [
+      { d: 'course', caip19: MAINNET_USDC, payout: PAYOUT as string, amount: '1000000' },
+    ];
+    const mainnetListing = finalizeEvent(
+      buildProductEvent({
+        d: 'course',
+        title: 'Course',
+        description: '',
+        price: { amount: '1', currency: 'USD' },
+        accept: [MAINNET_USDC],
+        createdAt: T0,
+      }),
+      store.secretKey,
+    );
     expect(
-      offersNotHonoured(undefined, list([{ caip19: lsm, address: PAYOUT }]), 'mainnet', standing),
+      offersNotHonoured(
+        [mainnetListing],
+        list([{ caip19: lsm, address: PAYOUT }]),
+        'mainnet',
+        standing,
+      ),
     ).toEqual([`${lsm} ${PAYOUT}`]);
   });
 
   it('skips a listed coin no payout list pays, and says when nothing was served', () => {
     expect(
-      offersNotHonoured(listing('5', [USDC_DEVNET_CAIP19]), undefined, 'devnet', STANDING),
+      offersNotHonoured([listing('5', [USDC_DEVNET_CAIP19])], undefined, 'devnet', STANDING),
     ).toEqual([]);
-    expect(offersNotHonoured(undefined, undefined, 'devnet', STANDING)).toBeUndefined();
+    expect(offersNotHonoured([], undefined, 'devnet', STANDING)).toBeUndefined();
+  });
+});
+
+describe('what the relays offer, product by product', () => {
+  const owner = key();
+  const store = key();
+  const usdc = finalizeEvent(
+    buildPaytoEvent({
+      ownerPubkey: owner.pubkey,
+      accept: [{ caip19: USDC_DEVNET_CAIP19, address: PAYOUT }],
+      createdAt: T0,
+    }),
+    owner.secretKey,
+  );
+  const listingOf = (d: string, amount: string, visibility = 'on-sale') =>
+    finalizeEvent(
+      buildProductEvent({
+        d,
+        title: d,
+        description: '',
+        price: { amount, currency: 'USD' },
+        visibility,
+        accept: [USDC_DEVNET_CAIP19],
+        createdAt: T0,
+      }),
+      store.secretKey,
+    );
+  const course = { d: 'course', caip19: USDC_DEVNET_CAIP19, payout: PAYOUT as string };
+
+  it("checks each listing against its own product's terms only", () => {
+    const standing = [
+      { ...course, amount: '1000000' },
+      { ...course, d: 'deposit', amount: '10000000' },
+    ];
+    expect(
+      offersNotHonoured(
+        [listingOf('course', '1'), listingOf('deposit', '10')],
+        usdc,
+        'devnet',
+        standing,
+      ),
+    ).toEqual([]);
+    // The cheap product's terms never stand behind the dear one's listing.
+    expect(
+      offersNotHonoured([listingOf('deposit', '1')], usdc, 'devnet', [
+        { ...course, amount: '1000000' },
+      ]),
+    ).toEqual([`deposit: ${USDC_DEVNET_CAIP19} at 1000000`]);
+  });
+
+  it('M16 S1: does not price a sold-out listing: a stopped product offers nothing', () => {
+    expect(
+      offersNotHonoured(
+        [listingOf('course', '1'), listingOf('stopped', '5', 'sold-out')],
+        usdc,
+        'devnet',
+        [{ ...course, amount: '1000000' }],
+      ),
+    ).toEqual([]);
+  });
+
+  it('M17 S2: judges the payout list only where something is on sale', () => {
+    // Every product stopped and its terms retired: nothing stands, and the node still starts.
+    expect(offersNotHonoured([listingOf('course', '1', 'sold-out')], usdc, 'devnet', [])).toEqual(
+      [],
+    );
+    expect(offersNotHonoured([listingOf('course', '1')], usdc, 'devnet', [])).toEqual([
+      `${USDC_DEVNET_CAIP19} ${PAYOUT}`,
+      `course: ${USDC_DEVNET_CAIP19} at 1000000`,
+    ]);
+  });
+
+  it('flags a listing still on sale for a stopped product once its terms are retired', () => {
+    const standing = [{ ...course, d: 'other', amount: '1000000' }];
+    expect(offersNotHonoured([listingOf('course', '1')], usdc, 'devnet', standing)).toEqual([
+      `course: ${USDC_DEVNET_CAIP19} at 1000000`,
+    ]);
+  });
+});
+
+/**
+ * A relay pool that serves `listings` by `#d`, and refuses (answers nothing
+ * for) any subscription past `cap` open at once on one relay, counting every
+ * read, as a relay capping subscriptions per connection does.
+ */
+function cappedPool(events: NostrEvent[], cap: number) {
+  const open = new Map<string, number>();
+  let refused = 0;
+  let mostOpen = 0;
+  const pool = {
+    querySync: async (urls: string[], filter: Filter) => {
+      const taken = urls.filter((url) => (open.get(url) ?? 0) < cap);
+      refused += urls.length - taken.length;
+      for (const url of taken) {
+        open.set(url, (open.get(url) ?? 0) + 1);
+        mostOpen = Math.max(mostOpen, open.get(url) ?? 0);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      for (const url of taken) {
+        open.set(url, (open.get(url) ?? 1) - 1);
+      }
+      if (taken.length === 0) {
+        return [];
+      }
+      return events.filter(
+        (event) =>
+          filter.kinds?.includes(event.kind) === true &&
+          (filter['#d'] === undefined ||
+            event.tags.some(
+              (tag) => tag[0] === 'd' && filter['#d']?.includes(tag[1] ?? '') === true,
+            )),
+      );
+    },
+  };
+  return { pool, stats: () => ({ refused, mostOpen }) };
+}
+
+describe('reading many products', () => {
+  const owner = key();
+  const store = key();
+  const listingOf = (d: string, createdAt = T0) =>
+    finalizeEvent(
+      buildProductEvent({
+        d,
+        title: d,
+        description: '',
+        price: { amount: '1', currency: 'USD' },
+        accept: [USDC_DEVNET_CAIP19],
+        createdAt,
+      }),
+      store.secretKey,
+    );
+  const payoutList = finalizeEvent(
+    buildPaytoEvent({
+      ownerPubkey: owner.pubkey,
+      accept: [{ caip19: USDC_DEVNET_CAIP19, address: PAYOUT }],
+      createdAt: T0,
+    }),
+    owner.secretKey,
+  );
+  const inboxList = finalizeEvent(
+    { kind: 10050, created_at: T0, tags: [['relay', 'wss://a.example']], content: '' },
+    store.secretKey,
+  );
+
+  it('reads 120 products in chunks, the newest listing of each', async () => {
+    const ds = Array.from({ length: 120 }, (_, index) => `p${index}`);
+    const events = [...ds.map((d) => listingOf(d)), listingOf('p7', T0 + 5)];
+    const { pool } = cappedPool(events, 4);
+    const found = await newestListings(pool, ['wss://a.example'], store.pubkey, ds);
+    expect(found.size).toBe(120);
+    expect(found.get('p7')?.created_at).toBe(T0 + 5);
+  });
+
+  it('M43 M45: never holds more than 4 subscriptions on a relay, so 1500 products are all read', async () => {
+    const ds = Array.from({ length: 1500 }, (_, index) => `p${index}`);
+    const events = [...ds.map((d) => listingOf(d)), payoutList, inboxList];
+    const pubkeys = { storePubkey: store.pubkey, ownerPubkey: owner.pubkey };
+    const relaysOf = ['wss://a.example', 'wss://b.example'];
+    const viewed = cappedPool(events, 4);
+    const views = await readRelayViews(viewed.pool, [relaysOf, relaysOf], pubkeys, ds);
+    expect(viewed.stats().refused).toBe(0);
+    expect(viewed.stats().mostOpen).toBeLessThanOrEqual(4);
+    for (const view of views) {
+      expect(view.listings).toHaveLength(1500);
+      expect(view.payoutList?.id).toBe(payoutList.id);
+      expect(view.inboxList?.id).toBe(inboxList.id);
+    }
+    const { pool, stats } = cappedPool(events, 4);
+    const setup = await readBeforeSetup(pool, relaysOf, relaysOf, pubkeys, ds);
+    expect(stats().refused).toBe(0);
+    expect(setup.listings.size).toBe(1500);
+    expect(setup.payoutList?.id).toBe(payoutList.id);
   });
 });
 
@@ -346,7 +542,7 @@ describe('judging every set of relays a page may read', () => {
   );
 
   it('passes a store whose every view the node honours', () => {
-    const view = { listing: listing('1'), payoutList, inboxList: inbox };
+    const view = { listings: [listing('1')], payoutList, inboxList: inbox };
     expect(offerProblems([view, view], ['wss://a.example'], 'devnet', STANDING)).toEqual({
       problems: [],
       served: true,
@@ -355,11 +551,11 @@ describe('judging every set of relays a page may read', () => {
 
   it('refuses when the default relays still serve an older price than the ledger records', () => {
     // The new listing reached only the store's own relay; pages hinting the old relays read the old one.
-    const defaults = { listing: listing('0.80'), payoutList, inboxList: inbox };
-    const all = { listing: listing('1'), payoutList, inboxList: inbox };
+    const defaults = { listings: [listing('0.80')], payoutList, inboxList: inbox };
+    const all = { listings: [listing('1')], payoutList, inboxList: inbox };
     expect(
       offerProblems([defaults, all], ['wss://a.example'], 'devnet', STANDING).problems,
-    ).toEqual([`${USDC_DEVNET_CAIP19} at 800000`]);
+    ).toEqual([`course: ${USDC_DEVNET_CAIP19} at 800000`]);
   });
 
   it('refuses an inbox relay the node does not read, in any view', () => {
@@ -367,7 +563,7 @@ describe('judging every set of relays a page may read', () => {
       { kind: 10050, created_at: T0 + 1, tags: [['relay', 'wss://old.example']], content: '' },
       store.secretKey,
     );
-    const view = { listing: listing('1'), payoutList, inboxList: moved };
+    const view = { listings: [listing('1')], payoutList, inboxList: moved };
     expect(
       offerProblems([view, { ...view, inboxList: inbox }], ['wss://a.example'], 'devnet', STANDING)
         .problems,
@@ -375,7 +571,7 @@ describe('judging every set of relays a page may read', () => {
   });
 
   it('says when nothing was served', () => {
-    const empty = { listing: undefined, payoutList: undefined, inboxList: undefined };
+    const empty = { listings: [], payoutList: undefined, inboxList: undefined };
     expect(offerProblems([empty, empty], ['wss://a.example'], 'devnet', STANDING)).toEqual({
       problems: [],
       served: false,

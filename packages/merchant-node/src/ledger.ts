@@ -21,8 +21,8 @@ export interface MerchantOrder {
   email?: string;
   /** The merchant's own id for the buyer's account, as the order carried it. */
   customerRef?: string;
-  /** The product address the order named (`30402:<store>:<d>`); absent on orders older than 0.7.0. */
-  product?: string;
+  /** The product address the order named (`30402:<store>:<d>`): its terms and delivery are that product's. */
+  product: string;
   /** Transactions the buyer reported (kind 17), at most `MAX_RECEIPTS_PER_ORDER`. */
   reportedTxs: string[];
   /** Reported transactions judged finally NOT a payment for this order: never checked again. */
@@ -144,9 +144,23 @@ export interface HandAnswer {
   noLegTxs: string[];
 }
 
+/** The last listing of a product that went out: what setup compares against to publish only changes. */
+export interface PublishedListing {
+  /** See `listingHash`: the listing's content, never its date. */
+  hash: string;
+  eventId: string;
+  createdAt: number;
+}
+
+/** The only ledger version this node reads and writes (a 0.7 node refuses it). */
+export const LEDGER_VERSION = 3;
+
+/** Why a home made by merchant-node 0.7 or earlier is refused. */
+export const OLD_HOME_PROBLEM =
+  'this home was made by merchant-node 0.7 or earlier: create a new home with init';
+
 export interface LedgerState {
-  /** 2 once it holds Tempo data: an older node, which reads 0x hashes as Solana, refuses it. */
-  version: 1 | 2;
+  version: typeof LEDGER_VERSION;
   orders: Record<string, MerchantOrder>;
   /** Every rumor id already read (orders and receipts alike). */
   seenRumors: Record<string, true>;
@@ -169,8 +183,11 @@ export interface LedgerState {
    * binds: each is fetched and read once, however many orders are open.
    */
   scans: Record<string, ScannedTransaction>;
-  /** The product id (`d`) the store published: another one would strand the old listing. */
-  productD?: string;
+  /**
+   * The last listing of each product that went out, by `d`: its keys are every
+   * product ever published, whose directory may never be deleted.
+   */
+  listings: Record<string, PublishedListing>;
   /** The payouts the owner's 10133 lists, and when it was signed: republished unchanged, it keeps its date. */
   payto?: { createdAt: number; payouts: string };
 }
@@ -182,7 +199,15 @@ export interface ScannedTransaction {
 }
 
 export function emptyLedger(): LedgerState {
-  return { version: 1, orders: {}, seenRumors: {}, claims: {}, terms: [], scans: {} };
+  return {
+    version: LEDGER_VERSION,
+    orders: {},
+    seenRumors: {},
+    claims: {},
+    terms: [],
+    scans: {},
+    listings: {},
+  };
 }
 
 /**
@@ -252,16 +277,16 @@ export function loadLedger(path: string): LedgerState {
     throw error;
   }
   const state = JSON.parse(text) as LedgerState;
-  if (state.version !== 1 && state.version !== 2) {
+  const version: unknown = state.version;
+  if (version === 1 || version === 2) {
+    throw new Error(`${path}: ${OLD_HOME_PROBLEM}`);
+  }
+  if (version !== LEDGER_VERSION) {
     throw new Error(`Unknown ledger version in ${path}`);
   }
   state.scans ??= {};
+  state.listings ??= {};
   return state;
-}
-
-/** The ledger now holds Tempo data: from here on only a node that reads it may load it. */
-export function markTempo(state: LedgerState): void {
-  state.version = 2;
 }
 
 /** Write the whole ledger, atomically: a crash leaves the old file or the new one, never half. */

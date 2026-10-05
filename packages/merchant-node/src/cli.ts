@@ -3,11 +3,11 @@
  * `setup` checks the inbox relays and publishes the store, `run` takes orders,
  * verifies payments by the direct-mode contract and delivers.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { KIND_INBOX_RELAYS, KIND_PAYTO, KIND_PRODUCT, splitNip05 } from '@elisym/commerce';
+import { splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
 import { SimplePool } from 'nostr-tools/pool';
 import { type EventTemplate, finalizeEvent } from 'nostr-tools/pure';
@@ -15,21 +15,26 @@ import { ADMIN_HOST, DEFAULT_ADMIN_PORT, isAdminPort, startAdminServer } from '.
 import {
   checkDomain,
   checkInboxRelays,
-  newestInboxList,
-  newestListing,
-  newestPayoutList,
   offerProblems,
+  readBeforeSetup,
+  readRelayViews,
 } from './checks';
-import { type MerchantConfig, configTemplate, loadConfig, tempoRegistryNetwork } from './config';
 import {
-  CATCH_UP_INTERVAL_MS,
-  OFFER_RELAYS,
-  SOLANA_MEDIUMS,
-  TERMS_CLOCK_MARGIN_SECS,
-  WEBHOOK_TICK_MS,
-} from './constants';
+  type MerchantConfig,
+  configTemplate,
+  loadConfig,
+  priceProblems,
+  tempoRegistryNetwork,
+} from './config';
+import { CATCH_UP_INTERVAL_MS, OFFER_RELAYS, SOLANA_MEDIUMS, WEBHOOK_TICK_MS } from './constants';
 import { deliverOrder, publishSelfCopy } from './deliver';
-import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } from './hand';
+import {
+  type HandRequest,
+  applyHandAnswer,
+  buildHandAnswer,
+  handDelivery,
+  planHandAnswer,
+} from './hand';
 import { handOutcome, publishHandAnswer } from './hand-publish';
 import {
   type MerchantHome,
@@ -55,11 +60,27 @@ import {
 import { type LedgerState, type WebhookOutbox, loadLedger, saveLedger } from './ledger';
 import { InboxListener } from './listener';
 import { printable } from './printable';
-import { publishToRelays } from './publish';
+import {
+  PRODUCT_FILE,
+  type Product,
+  deliveryFor,
+  intakeProductIds,
+  loadProducts,
+  orderProductD,
+  productTemplateText,
+  uneditedProducts,
+} from './products';
+import { setupPublisher } from './publish';
 import { MerchantRuntime } from './runtime';
 import { SelfCopies } from './self-copies';
-import { payoutListDate, recordPublished, setupRefusal } from './setup-ledger';
-import { buildStoreEvents, storeNostrJson } from './store-events';
+import {
+  historyRefusal,
+  payoutListDate,
+  planListings,
+  publishAndRecord,
+  setupClockProblems,
+} from './setup-ledger';
+import { buildStoreWideEvents, productNaddr, storeNostrJson } from './store-events';
 import { tempoContextFor } from './tempo';
 import { standingTerms } from './terms';
 import {
@@ -79,8 +100,10 @@ import { type RearmKind, orderLines, rearmWebhook } from './webhook-commands';
 const USAGE = `usage: elisym-merchant <command> [--home <dir>]
 
   init [--network devnet|mainnet]
-         make the home: a config.json to edit and the store's keys
-  setup  check the inbox relays and publish the store (after editing config.json)
+         make the home: a config.json and products/my-product/PRODUCT.md to edit,
+         and the store's keys
+  setup  check the inbox relays and publish the store: every product in products/
+         (one directory each), republishing only what changed
   run    take orders, verify payments, deliver
   orders list the orders: paid, delivered, the buyer's email, the customer
          reference, the webhook state and its event id
@@ -93,8 +116,10 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
   admin [--port <port>]
          serve the admin page on 127.0.0.1 (default port ${DEFAULT_ADMIN_PORT}): paste the
          store key there to see the orders your inbox relays hold
-  deliver <buyer>:<orderId> [--yes]
-         answer an unpaid order by hand with the configured delivery
+  deliver <buyer>:<orderId> [--product <d>] [--yes]
+         answer an unpaid order by hand with its product's delivery
+         (--product: needed for an order no longer in the ledger when the store
+         has several products)
   refund <buyer>:<orderId> --tx <refund tx> --amount <subunits> [--asset <caip19>] [--yes]
          answer an unpaid order by hand with a refund you already sent
          (--asset: the refunded coin; required when the store has several payouts,
@@ -158,6 +183,7 @@ interface Args {
   tx: string | undefined;
   amount: string | undefined;
   asset: string | undefined;
+  product: string | undefined;
   port: string | undefined;
   yes: boolean;
   ownerOnly: boolean;
@@ -169,6 +195,7 @@ const VALUE_FLAGS = {
   '--tx': 'tx',
   '--amount': 'amount',
   '--asset': 'asset',
+  '--product': 'product',
   '--port': 'port',
 } as const;
 
@@ -186,6 +213,7 @@ function parseArgs(argv: readonly string[]): Args {
     tx: undefined,
     amount: undefined,
     asset: undefined,
+    product: undefined,
     port: undefined,
     yes: false,
     ownerOnly: false,
@@ -255,6 +283,17 @@ function init(home: MerchantHome, network: string | undefined, ownerOnly: boolea
     );
     console.log(`config  ${home.config} (edit it)`);
   }
+  if (existsSync(home.products)) {
+    console.log(`product ${home.products} (kept)`);
+  } else {
+    const example = join(home.products, 'my-product');
+    mkdirSync(example, { recursive: true, mode: 0o700 });
+    writeFileSync(join(example, PRODUCT_FILE), productTemplateText(), {
+      mode: 0o600,
+      flag: 'wx',
+    });
+    console.log(`product ${join(example, PRODUCT_FILE)} (edit it: one directory per product)`);
+  }
   const { keys, created, keptPlain } = initKeys(home, passphrase, ownerOnly);
   console.log(`store   ${keys.storePubkey}`);
   console.log(`owner   ${keys.ownerPubkey}`);
@@ -274,7 +313,10 @@ function init(home: MerchantHome, network: string | undefined, ownerOnly: boolea
       `keys    kept plain: run encrypt-keys${ownerOnly ? ' --owner-only' : ''} to encrypt them`,
     );
   }
-  console.log('next    edit config.json, then run setup');
+  console.log('next    edit config.json and the product, then run setup');
+  console.log(
+    'note    a delivery value can be a secret link: never publish or commit the products directory',
+  );
   console.log(
     'note    to tell your backend about payments, add "webhook" to config.json and a secret: openssl rand -hex 32',
   );
@@ -356,21 +398,51 @@ async function reportDomain(
   );
 }
 
+/**
+ * The home's config and products, checked together: a payout must be able to
+ * carry every product's price. Throws with every problem found.
+ */
+function loadStore(home: MerchantHome): { config: MerchantConfig; products: Map<string, Product> } {
+  const config = loadConfig(home.config);
+  const products = loadProducts(home.products);
+  const problems = priceProblems(config, products.values());
+  if (problems.length > 0) {
+    throw new Error(`the products are not usable:\n- ${problems.join('\n- ')}`);
+  }
+  return { config, products };
+}
+
+/** Refuse a home whose ledger has a history for a product with no directory (see `historyRefusal`). */
+function refuseLostHistory(state: LedgerState, products: ReadonlyMap<string, Product>): void {
+  const refusal = historyRefusal(state, products);
+  if (refusal !== undefined) {
+    throw new Error(refusal);
+  }
+}
+
 async function setup(home: MerchantHome): Promise<void> {
   // A running merchant rewrites the whole ledger from memory: new terms written
   // under it would be lost, and the old price or payout would stay payable. The
   // lock is held for the whole setup, so a merchant cannot start in between.
   takeLock(home);
-  const config = loadConfig(home.config);
+  const { config, products } = loadStore(home);
+  if (products.size === 0) {
+    throw new Error(
+      `no products: add one as ${join(home.products, '<id>', PRODUCT_FILE)} (init scaffolds one)`,
+    );
+  }
+  const unedited = uneditedProducts(products.values());
+  if (unedited.length > 0) {
+    throw new Error(
+      `these products still deliver the example link: ${unedited.map((product) => product.file).join(', ')}. Set what the buyer gets.`,
+    );
+  }
   // Both secrets first, before anything is checked, signed or published: a
   // missing or wrong passphrase must never leave a half-published store.
   const loaded = loadKeys(home);
   const keys = openSetupKeys(loaded, readPassphrase());
   const state = loadLedger(home.ledger);
-  const refusal = setupRefusal(state, config.product.d);
-  if (refusal !== undefined) {
-    throw new Error(refusal);
-  }
+  refuseLostHistory(state, products);
   const pool = new SimplePool();
   try {
     const failing = await reportInboxRelays(pool, config, keys.storeSecretKey);
@@ -380,72 +452,65 @@ async function setup(home: MerchantHome): Promise<void> {
       );
     }
     const relays = [...new Set([...OFFER_RELAYS, ...config.inboxRelays])];
-    const now = nowSecs();
+    // New terms start before the first publish: a buyer may read them at once.
+    const startedAt = nowSecs();
     const payouts = JSON.stringify(config.payouts);
-    const newest = await newestPayoutList(pool, relays, loaded.ownerPubkey);
-    const paytoCreatedAt = payoutListDate(state, payouts, newest?.created_at, now);
-    const built = buildStoreEvents(config, keys, now, {
-      hints: config.inboxRelays.slice(0, 2),
-      paytoCreatedAt,
-    });
-    const acceptedKinds = new Set<number>();
-    // Kinds a default relay took: every page reads those, whatever its naddr's hints.
-    const everywhereKinds = new Set<number>();
-    for (const event of built.events) {
-      const accepted = await publishToRelays(
-        pool,
-        relays,
-        event,
-        storeAuth(keys.storeSecretKey),
-        log,
-      );
-      log(`kind ${event.kind}: accepted by ${accepted.length}/${relays.length}`);
-      if (accepted.length > 0) {
-        acceptedKinds.add(event.kind);
-      }
-      if (accepted.some((relay) => OFFER_RELAYS.includes(relay))) {
-        everywhereKinds.add(event.kind);
-      }
-    }
-    const outcome = {
-      listing: acceptedKinds.has(KIND_PRODUCT),
-      payouts: acceptedKinds.has(KIND_PAYTO),
-    };
-    if (!outcome.listing && !outcome.payouts) {
-      throw new Error(
-        'neither the listing nor the payout list reached a relay: the ledger is left as it was',
-      );
-    }
-    // Dated a little before now: a local clock running ahead of chain time must not
-    // refuse a payment made right after the change.
-    recordPublished(
-      state,
-      built.terms,
-      outcome,
-      now - TERMS_CLOCK_MARGIN_SECS,
-      { createdAt: paytoCreatedAt, payouts },
-      config.product.d,
+    const { payoutList: newestList, listings: served } = await readBeforeSetup(
+      pool,
+      relays,
+      OFFER_RELAYS,
+      loaded,
+      [...new Set([...products.keys(), ...Object.keys(state.listings)])],
     );
+    const paytoCreatedAt = payoutListDate(state, payouts, newestList?.created_at, startedAt);
+    const plans = planListings(state, products.values(), config.payouts, served, startedAt);
+    const clock = setupClockProblems(state, plans, paytoCreatedAt, startedAt);
+    if (clock.length > 0) {
+      throw new Error(clock.join('; '));
+    }
+    const wide = buildStoreWideEvents(config, keys, startedAt, paytoCreatedAt);
+    const publisher = setupPublisher(
+      pool,
+      relays,
+      OFFER_RELAYS,
+      storeAuth(keys.storeSecretKey),
+      log,
+    );
+    const outcomes = await publishAndRecord(state, {
+      plans,
+      payouts: config.payouts,
+      storeSecretKey: keys.storeSecretKey,
+      wide,
+      publish: publisher.publish,
+      payoutList: { createdAt: paytoCreatedAt, payouts },
+      startedAt,
+      now: nowSecs,
+    });
+    const { missedDefaults } = publisher;
     // Orders can come from the moment the store is published: a later first run
     // reads back from here, not from its own start.
-    state.resumeAt ??= now;
+    state.resumeAt ??= startedAt;
     saveLedger(home.ledger, state);
     console.log(`store   ${loaded.storePubkey}`);
     console.log(`owner   ${loaded.ownerPubkey}`);
-    console.log(`naddr   ${built.naddr}`);
-    await reportDomain(home, config, built.nostrJson);
+    const hints = config.inboxRelays.slice(0, 2);
+    for (const outcome of outcomes) {
+      const selling = outcome.onSale ? 'on sale' : 'stopped';
+      const what = { out: 'published', unchanged: 'unchanged', failed: 'failed' }[outcome.listing];
+      console.log(
+        `product ${outcome.d} ${selling} ${what} ${productNaddr(loaded.storePubkey, outcome.d, hints)}`,
+      );
+    }
+    await reportDomain(
+      home,
+      config,
+      storeNostrJson(config, loaded.storePubkey, loaded.ownerPubkey),
+    );
     // Buyers send orders to the inbox list: one that did not go out may leave them
     // writing to relays the node no longer reads.
-    const missing = [
-      [KIND_PRODUCT, 'the listing'],
-      [KIND_PAYTO, 'the payout list'],
-      [KIND_INBOX_RELAYS, 'the inbox list'],
-    ]
-      .filter(([kind]) => !everywhereKinds.has(kind as number))
-      .map(([, name]) => name);
-    if (missing.length > 0) {
+    if (missedDefaults.length > 0) {
       throw new Error(
-        `${missing.join(', ')} reached none of the default relays: buyers may see part of the change (the ledger follows what they see). Run setup again.`,
+        `${missedDefaults.join(', ')} reached none of the default relays: buyers may see part of the change (the ledger follows what they see). Run setup again.`,
       );
     }
   } finally {
@@ -462,21 +527,12 @@ async function refuseOffersNotHonoured(
   config: MerchantConfig,
   pubkeys: { storePubkey: string; ownerPubkey: string },
   state: LedgerState,
+  products: ReadonlyMap<string, Product>,
 ): Promise<void> {
-  const { storePubkey, ownerPubkey } = pubkeys;
   // Judged twice: from the default relays, which every page reads, and with the
   // store's own inbox relays too, which a page reads when its naddr hints them.
   const views = [OFFER_RELAYS, [...new Set([...OFFER_RELAYS, ...config.inboxRelays])]];
-  const read = await Promise.all(
-    views.map(async (relays) => {
-      const [listing, payoutList, inboxList] = await Promise.all([
-        newestListing(pool, relays, storePubkey, config.product.d),
-        newestPayoutList(pool, relays, ownerPubkey),
-        newestInboxList(pool, relays, storePubkey),
-      ]);
-      return { listing, payoutList, inboxList };
-    }),
-  );
+  const read = await readRelayViews(pool, views, pubkeys, [...products.keys()]);
   const { problems, served } = offerProblems(
     read,
     config.inboxRelays,
@@ -486,12 +542,12 @@ async function refuseOffersNotHonoured(
   );
   if (problems.length > 0) {
     throw new Error(
-      `the relays offer buyers what this node does not honour: ${problems.join('; ')}. Run setup (it publishes what the config names and records it) before taking orders.`,
+      `the relays offer buyers what this node does not honour: ${problems.join('; ')}. Run setup (it publishes what the products name and records it) before taking orders.`,
     );
   }
   if (!served) {
     log(
-      'warning: no relay served the listing or the payout list; run setup if the store is not published',
+      'warning: no relay served a listing or the payout list; run setup if the store is not published',
     );
   }
 }
@@ -526,7 +582,7 @@ function deferSignals(): () => number | undefined {
 }
 
 async function run(home: MerchantHome): Promise<void> {
-  const config = loadConfig(home.config);
+  const { config, products } = loadStore(home);
   // Before the lock and any relay: a configured webhook without its secret never runs.
   const { target, warning } = webhookTarget(config.webhook, readWebhookSecret());
   if (warning !== undefined) {
@@ -539,7 +595,8 @@ async function run(home: MerchantHome): Promise<void> {
   // Pings find a half-open socket, which would otherwise never close.
   const pool = new SimplePool({ enablePing: true });
   const state = loadLedger(home.ledger);
-  await refuseOffersNotHonoured(pool, config, loaded, state);
+  refuseLostHistory(state, products);
+  await refuseOffersNotHonoured(pool, config, loaded, state, products);
 
   // One queue: every ledger change happens in order, and is saved before anything is sent.
   let queue: Promise<void> = Promise.resolve();
@@ -576,7 +633,7 @@ async function run(home: MerchantHome): Promise<void> {
       );
     }
   });
-  const store = storeIdentity(storePubkey, config.product.d, mediums);
+  const store = storeIdentity(storePubkey, intakeProductIds(products), mediums);
   const runtime = new MerchantRuntime({
     state,
     store,
@@ -591,12 +648,18 @@ async function run(home: MerchantHome): Promise<void> {
     // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
     ...(config.rpcUrl === undefined ? { catchUp: async () => ({ paid: [], incomplete: [] }) } : {}),
     save: () => saveLedger(home.ledger, state),
-    deliver: (order, skip) =>
-      deliverOrder(
+    deliver: async (order, skip) => {
+      // The order's own product, by its exact directory name: never another one's.
+      const delivery = deliveryFor(order, products);
+      if (delivery === undefined) {
+        log(`delivery for ${order.key}: no product directory ${orderProductD(order)}, skipped`);
+        throw new Error(`no product ${orderProductD(order)}`);
+      }
+      return await deliverOrder(
         {
           pool,
           inboxRelays: config.inboxRelays,
-          delivery: config.product.delivery,
+          delivery,
           storeSecretKey,
           auth: storeAuth(storeSecretKey),
           log,
@@ -604,7 +667,8 @@ async function run(home: MerchantHome): Promise<void> {
         },
         order,
         skip,
-      ),
+      );
+    },
     selfCopies,
     inboxRelayCount: config.inboxRelays.length,
     log,
@@ -666,7 +730,7 @@ async function run(home: MerchantHome): Promise<void> {
  */
 function startWebhooks(
   state: LedgerState,
-  store: { storePubkey: string; productAddress: string },
+  store: { storePubkey: string },
   target: WebhookTarget,
   home: MerchantHome,
   enqueue: (task: () => Promise<void>) => void,
@@ -756,13 +820,12 @@ async function webhookAgain(home: MerchantHome, kind: RearmKind, key: string): P
   if (plan.order.customerRef !== undefined) {
     console.log(`ref     ${printable(plan.order.customerRef)}`);
   }
-  const store = storeIdentity(storePubkey, config.product.d, []);
   const result = await sendWebhook(
     target,
     {
       name: 'order.paid',
       eventId: plan.entry.eventId,
-      body: orderPaidBody(plan.order, plan.entry, store),
+      body: orderPaidBody(plan.order, plan.entry, { storePubkey }),
     },
     { now: nowSecs, userAgent: USER_AGENT },
   );
@@ -790,7 +853,9 @@ async function webhookCommand(home: MerchantHome, args: Args): Promise<void> {
 }
 
 async function check(home: MerchantHome): Promise<void> {
-  const config = loadConfig(home.config);
+  const { config, products } = loadStore(home);
+  const state = loadLedger(home.ledger);
+  refuseLostHistory(state, products);
   const loaded = loadKeys(home);
   // The relay probe is signed and AUTHed by the store key; nostr.json is written
   // only for an owner key that opens here.
@@ -803,7 +868,7 @@ async function check(home: MerchantHome): Promise<void> {
     const failing = await reportInboxRelays(pool, config, storeSecretKey);
     let offers: unknown;
     try {
-      await refuseOffersNotHonoured(pool, config, loaded, loadLedger(home.ledger));
+      await refuseOffersNotHonoured(pool, config, loaded, state, products);
     } catch (error) {
       offers = error;
     }
@@ -858,16 +923,22 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   const storeSecretKey = openSecret(loadKeys(home), 'store', readPassphrase());
   takeLock(home);
   const state = loadLedger(home.ledger);
-  const request: HandRequest =
-    args.command === 'deliver'
-      ? { kind: 'delivered', delivery: config.product.delivery }
-      : {
-          kind: 'refunded',
-          tx: args.tx ?? '',
-          amount: args.amount ?? '',
-          ...(args.asset === undefined ? {} : { asset: args.asset }),
-          payoutAssets: config.payouts.map((payout) => payout.caip19),
-        };
+  let request: HandRequest;
+  if (args.command === 'deliver') {
+    const chosen = handDelivery(state, key, loadProducts(home.products), args.product);
+    if (!chosen.ok) {
+      throw new Error(chosen.problem);
+    }
+    request = { kind: 'delivered', delivery: chosen.delivery };
+  } else {
+    request = {
+      kind: 'refunded',
+      tx: args.tx ?? '',
+      amount: args.amount ?? '',
+      ...(args.asset === undefined ? {} : { asset: args.asset }),
+      payoutAssets: config.payouts.map((payout) => payout.caip19),
+    };
+  }
   const plan = planHandAnswer(state, key, request);
   if (!plan.ok) {
     throw new Error(plan.problem);
@@ -980,6 +1051,9 @@ async function main(): Promise<void> {
   }
   if (args.network !== undefined && args.command !== 'init') {
     throw new Error('--network is for init; the config names the network');
+  }
+  if (args.product !== undefined && args.command !== 'deliver') {
+    throw new Error('--product is for deliver');
   }
   if (args.ownerOnly && args.command !== 'init' && args.command !== 'encrypt-keys') {
     throw new Error('--owner-only is for init and encrypt-keys');

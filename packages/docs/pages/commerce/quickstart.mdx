@@ -1,12 +1,12 @@
 # Sell with the checkout
 
-The elisym checkout sells a digital product from any web page. The buyer pays in USDC on Solana (or in a Tempo stablecoin), directly to your wallet, and gets what they bought: a link or a text. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
+The elisym checkout sells digital products from any web page. The buyer pays in USDC on Solana (or in a Tempo stablecoin), directly to your wallet, and gets what they bought: a link or a text. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
 
 The pieces:
 
-- **Your node** ([`@elisym/merchant-node`](https://www.npmjs.com/package/@elisym/merchant-node)) publishes the product to Nostr, takes orders, checks each payment on chain and delivers.
+- **Your node** ([`@elisym/merchant-node`](https://www.npmjs.com/package/@elisym/merchant-node)) publishes your products to Nostr, takes orders, checks each payment on chain and delivers. One node is one store, with any number of products.
 - **The widget** (`<elisym-buy>`) runs on your page. It frames the checkout from `pay.elisym.network`, where the offer is verified and the buyer's wallet signs.
-- **Nostr relays** carry the listing, the orders and the replies. Orders and replies are encrypted end to end between the buyer and your node, and no server of ours touches the money: the payment goes from the buyer's wallet to yours.
+- **Nostr relays** carry the listings, the orders and the replies. Orders and replies are encrypted end to end between the buyer and your node, and no server of ours touches the money: the payment goes from the buyer's wallet to yours.
 
 This page takes you from nothing to a working purchase on **mainnet**, with real money. To try it first with test tokens, see [Try it free on devnet](#try-it-free-on-devnet) at the end. [The widget](/commerce/widget) page has every attribute, the status events and the security model.
 
@@ -28,9 +28,9 @@ Then create the passphrase (once; the line never overwrites an existing one) and
 npx @elisym/merchant-node init --network mainnet
 ```
 
-`init` encrypts the store key and the owner key in `keys.json` and writes a `config.json` to edit. An existing home is kept; `init` never switches its network. The passphrase is never typed or printed: back up the home and the passphrase file off this machine, because without the passphrase the keys are lost. The node's README has the details, including `--owner-only` for a node that must run without it.
+`init` encrypts the store key and the owner key in `keys.json`, writes a `config.json` to edit, and scaffolds one product, `products/my-product/PRODUCT.md`. An existing home is kept; `init` never switches its network. A home made by merchant-node 0.7 or earlier is not upgraded: create a new home with `init`. The passphrase is never typed or printed: back up the home and the passphrase file off this machine, because without the passphrase the keys are lost. The node's README has the details, including `--owner-only` for a node that must run without it.
 
-Open `$ELISYM_MERCHANT_HOME/config.json` and fill in:
+Open `$ELISYM_MERCHANT_HOME/config.json`, which holds what the whole store shares, and fill in:
 
 ```json
 {
@@ -38,13 +38,6 @@ Open `$ELISYM_MERCHANT_HOME/config.json` and fill in:
   "network": "mainnet",
   "rpcUrl": "https://mainnet.helius-rpc.com/?api-key=<a server-side key>",
   "inboxRelays": ["wss://relay.elisym.network", "wss://nos.lol"],
-  "product": {
-    "d": "my-product",
-    "title": "My product",
-    "description": "What the buyer gets.",
-    "priceUsd": "1",
-    "delivery": { "method": "access", "value": "https://example.com/the-link-the-buyer-gets" }
-  },
   "payouts": [
     {
       "caip19": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -55,9 +48,29 @@ Open `$ELISYM_MERCHANT_HOME/config.json` and fill in:
 ```
 
 - `rpcUrl` is your own Solana RPC endpoint that keeps the full transaction history. The public mainnet one is rate-limited and not meant for a server, and a key restricted to a browser origin does not work from a server.
-- `priceUsd` is paid 1:1 in USDC.
-- `delivery.value` is what the buyer sees once paid: a link (opened only if it is `https:`) or a text such as a license key.
-- `payouts[0].address` is the Solana wallet the money goes to. The `caip19` above is mainnet USDC.
+- `payouts[0].address` is the Solana wallet the money goes to, for every product. The `caip19` above is mainnet USDC.
+
+Each product is a directory under `$ELISYM_MERCHANT_HOME/products`, named with the product's id: `products/my-product/PRODUCT.md`. Open it and fill in:
+
+```markdown
+---
+title: My product
+priceUsd: "1"
+delivery:
+  method: access
+  value: https://example.com/<the link the buyer gets>
+---
+
+What the buyer gets, in markdown.
+```
+
+- `priceUsd` is paid 1:1 in USDC. Quote it: a bare number is refused.
+- `delivery.value` is what the buyer sees once paid: a link (opened only if it is `https:`) or a text such as a license key. Replace the example: `setup` refuses a product that still delivers it.
+- The body below the second `---` is the product's description.
+
+To sell a second product, add another directory with its own `PRODUCT.md`, for example `products/deposit-10/PRODUCT.md`. The directory name is the product's id: letters, digits, dots, dashes or underscores, at most 64.
+
+**A delivery value can be a secret link.** Never publish the `products` directory or commit it to a public repository.
 
 **Real money.** Payments go straight from the buyer's wallet to these addresses: nothing holds them for you, and nothing can pull them back. Start with a small price, buy it yourself once, and only then share the page.
 
@@ -67,13 +80,16 @@ Open `$ELISYM_MERCHANT_HOME/config.json` and fill in:
 npx @elisym/merchant-node setup
 ```
 
-`setup` first checks that every inbox relay can do what the store needs. Then it publishes the product, the store profile, the inbox list, your payout list and your authorization of the store. It prints the product's address:
+`setup` first checks that every inbox relay can do what the store needs. Then it publishes your payout list, a listing per product, the store profile, the inbox list and your authorization of the store. It prints one line per product, with its address:
 
 ```text
-naddr   naddr1...
+product my-product on sale published naddr1...
+product deposit-10 on sale published naddr1...
 ```
 
-After a change to `config.json`, stop the node, run `setup` again, then start the node again: `setup` refuses while the node runs. The product id (`product.d`) cannot change. A new product needs its own home (another `ELISYM_MERCHANT_HOME`).
+After a change to `config.json` or to a product, stop the node, run `setup` again, then start the node again: `setup` refuses while the node runs. `setup` republishes only what changed (`unchanged` in its report).
+
+**Stopping a product.** Add `onSale: false` to its `PRODUCT.md` and run `setup`: its listing is republished as sold out, and the checkout shows Sold out. An order a buyer already placed is still honored within the usual window. Never delete the directory of a product that was published: the node refuses to start without it, because its orders could be paid and never delivered. A product id cannot change either: a new id is a new product, and the old one stays (stop it with `onSale: false`).
 
 ## 3. Run the node
 
@@ -94,7 +110,7 @@ Keep it running. It reads orders from your inbox relays, checks each payment on 
 ></script>
 ```
 
-The page shows a Buy button that opens the checkout in a modal. Add `display="inline"` to show it in the page instead, `theme="light"` for a light page, and `label="..."` to change the button's text (see [the widget](/commerce/widget)). A React app can use [`@elisym/react`](https://www.npmjs.com/package/@elisym/react) instead. The `integrity` hash pins the exact loader your page runs. The file under `/v3/` never changes, so the hash stays valid. A new loader would ship under a new path.
+The page shows a Buy button that opens the checkout in a modal. For several products, put one `<elisym-buy>` per product, each with its own `naddr`; the script is included once. Add `display="inline"` to show it in the page instead, `theme="light"` for a light page, and `label="..."` to change the button's text (see [the widget](/commerce/widget)). A React app can use [`@elisym/react`](https://www.npmjs.com/package/@elisym/react) instead. The `integrity` hash pins the exact loader your page runs. The file under `/v3/` never changes, so the hash stays valid. A new loader would ship under a new path.
 
 No page yet? The repository has a ready one: [`examples/demo-store`](https://github.com/elisymlabs/elisym/tree/main/examples/demo-store) serves a store page on localhost that takes the `naddr` and the network from its URL, and logs the checkout's status events.
 
@@ -113,7 +129,7 @@ npx @elisym/merchant-node store-key --yes
 npx @elisym/merchant-node admin
 ```
 
-Open [http://127.0.0.1:5199/](http://127.0.0.1:5199/). The page reads your inbox relays with the store key and lists each order: the total the buyer claims, the email, whether it was paid and delivered, and the transaction, with totals per coin. The key stays in the tab: it is never stored or sent. With encrypted keys, `store-key` reads the passphrase like `run` does (`ELISYM_MERCHANT_PASSPHRASE` or `ELISYM_MERCHANT_PASSPHRASE_FILE`). `--yes` lets it print without a terminal; leave it out to have it refuse when its output would land in a log. Run `admin` with `npx`, not in Docker.
+Open [http://127.0.0.1:5199/](http://127.0.0.1:5199/). The page reads your inbox relays with the store key and lists each order: its product, the total the buyer claims, the email, whether it was paid and delivered, and the transaction, with totals per coin. A product list shows each ordered product, on sale or sold out. The key stays in the tab: it is never stored or sent. With encrypted keys, `store-key` reads the passphrase like `run` does (`ELISYM_MERCHANT_PASSPHRASE` or `ELISYM_MERCHANT_PASSPHRASE_FILE`). `--yes` lets it print without a terminal; leave it out to have it refuse when its output would land in a log. Run `admin` with `npx`, not in Docker.
 
 ## Level A: let your domain vouch for the store
 
@@ -166,7 +182,7 @@ npx @elisym/merchant-node deliver <buyer>:<orderId>
 npx @elisym/merchant-node refund <buyer>:<orderId> --tx <your refund transaction> --amount <subunits> --asset <caip19 of the refunded coin>
 ```
 
-`deliver` sends the configured delivery; `refund` reports a refund you already sent (above zero; an unpaid order is released with `deliver`, never a zero refund). `--asset` names the refunded coin as CAIP-19, the same id as in your config's `payouts`: it may be left out when the store has one payout, and is required when it has several. The refund transaction must be on that coin's chain. Running `refund` again for an answer kept by an older node sends it unchanged, without an asset. The command prints what the ledger holds for the order and asks before it sends (`--yes` for scripts); the order is then closed for good, and running the same command again sends the same answer again. Check the payment yourself (the node's log and a block explorer) before you answer.
+`deliver` sends the delivery of the order's product (`--product <id>` names it for an order the ledger no longer holds, when the store has several products); `refund` reports a refund you already sent (above zero; an unpaid order is released with `deliver`, never a zero refund). `--asset` names the refunded coin as CAIP-19, the same id as in your config's `payouts`: it may be left out when the store has one payout, and is required when it has several. The refund transaction must be on that coin's chain. Running `refund` again for an answer kept by an older node sends it unchanged, without an asset. The command prints what the ledger holds for the order and asks before it sends (`--yes` for scripts); the order is then closed for good, and running the same command again sends the same answer again. Check the payment yourself (the node's log and a block explorer) before you answer.
 
 An order answered by hand sends no webhook (see below): `orders` and the command show its customer reference, so you can credit it yourself.
 
@@ -191,6 +207,6 @@ Then:
 npx @elisym/merchant-node init --network devnet
 ```
 
-In `$ELISYM_MERCHANT_HOME/config.json` the template already has `"network": "devnet"`, the public devnet RPC `https://api.devnet.solana.com`, and devnet USDC `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`: set the product and your devnet wallet address. Run `setup` and `run` as above, and put the `naddr` this devnet setup prints in the snippet, with `network="devnet"`. Switch the wallet to devnet (testnet mode in Phantom or Solflare). The wallet needs devnet SOL for fees ([faucet.solana.com](https://faucet.solana.com)) and devnet USDC for the price ([faucet.circle.com](https://faucet.circle.com), Solana -> Devnet).
+In `$ELISYM_MERCHANT_HOME/config.json` the template already has `"network": "devnet"`, the public devnet RPC `https://api.devnet.solana.com`, and devnet USDC `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`: set your devnet wallet address, and fill in `products/my-product/PRODUCT.md`. Run `setup` and `run` as above, and put the `naddr` this devnet setup prints in the snippet, with `network="devnet"`. Switch the wallet to devnet (testnet mode in Phantom or Solflare). The wallet needs devnet SOL for fees ([faucet.solana.com](https://faucet.solana.com)) and devnet USDC for the price ([faucet.circle.com](https://faucet.circle.com), Solana -> Devnet).
 
 For a Tempo payout on devnet, use Moderato, Tempo's testnet: the script above with `config.tempo = { network: "moderato" }` and `caip19: "eip155:42431/erc20:0x20c0000000000000000000000000000000000000"` (pathUSD).

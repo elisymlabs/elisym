@@ -29,7 +29,8 @@ this page cannot show it.
 npx @elisym/merchant-node init --network devnet --home ~/.elisym-demo-devnet
 ```
 
-Set the payout address and the price (put your own devnet Solana address):
+Set the store's name and payout address (put your own devnet Solana address), and replace the
+example product with the demo one:
 
 ```bash
 node -e '
@@ -38,22 +39,28 @@ const path = `${process.env.HOME}/.elisym-demo-devnet/config.json`;
 const config = JSON.parse(fs.readFileSync(path, "utf8"));
 config.name = "elisym demo store";
 config.rpcUrl = "https://api.devnet.solana.com";
-config.product = {
-  d: "demo",
-  title: "Demo product",
-  description: "A test purchase through the elisym checkout.",
-  priceUsd: "0.01",
-  delivery: { method: "access", value: "https://elisym.network" },
-};
 config.payouts[0].address = "<your devnet payout address>";
 fs.writeFileSync(path, JSON.stringify(config, null, 2));
 '
+rm -rf ~/.elisym-demo-devnet/products/my-product
+mkdir -p ~/.elisym-demo-devnet/products/demo
+cat > ~/.elisym-demo-devnet/products/demo/PRODUCT.md <<'PRODUCT'
+---
+title: Demo product
+priceUsd: "0.01"
+delivery:
+  method: access
+  value: https://elisym.network
+---
+
+A test purchase through the elisym checkout.
+PRODUCT
 npx @elisym/merchant-node setup --home ~/.elisym-demo-devnet
 npx @elisym/merchant-node run --home ~/.elisym-demo-devnet
 ```
 
-`setup` prints a line starting with `naddr`: that is the product. Keep `run` running in its own
-terminal.
+`setup` prints a line per product, ending with its `naddr`: that is the product. Keep `run`
+running in its own terminal.
 
 ## 2. Open the page
 
@@ -104,10 +111,10 @@ Use a separate home, so the devnet store keeps working:
 npx @elisym/merchant-node init --network mainnet --home ~/.elisym-demo-mainnet
 ```
 
-Fill in `~/.elisym-demo-mainnet/config.json` the way step 1 did, with the mainnet home and your
-own product. The template's delivery link is a placeholder that passes the checks, so a real
-buyer would get it: the snippet empties it instead. `setup` then refuses the config until you put the link the
-buyer gets in `delivery.value`, the RPC URL in `rpcUrl` and your address in the payout.
+Fill in the mainnet home the way step 1 did, with your own product. The snippet leaves the
+delivery link empty, so a real buyer never gets a placeholder: `setup` refuses the product until
+you put the link the buyer gets in its `delivery.value`, the RPC URL in `rpcUrl` and your
+address in the payout.
 
 ```bash
 node -e '
@@ -116,16 +123,22 @@ const path = `${process.env.HOME}/.elisym-demo-mainnet/config.json`;
 const config = JSON.parse(fs.readFileSync(path, "utf8"));
 config.name = "elisym demo store";
 config.rpcUrl = "<a server-side Solana RPC URL>";
-config.product = {
-  d: "demo",
-  title: "Demo product",
-  description: "A test purchase through the elisym checkout.",
-  priceUsd: "1",
-  delivery: { method: "access", value: "" },
-};
 config.payouts[0].address = "<your mainnet payout address>";
 fs.writeFileSync(path, JSON.stringify(config, null, 2));
 '
+rm -rf ~/.elisym-demo-mainnet/products/my-product
+mkdir -p ~/.elisym-demo-mainnet/products/demo
+cat > ~/.elisym-demo-mainnet/products/demo/PRODUCT.md <<'PRODUCT'
+---
+title: Demo product
+priceUsd: "1"
+delivery:
+  method: access
+  value: ""
+---
+
+A test purchase through the elisym checkout.
+PRODUCT
 ```
 
 For `rpcUrl`, a provider key restricted to a browser origin answers 403 from a server: use a

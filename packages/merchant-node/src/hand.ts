@@ -10,8 +10,9 @@ import {
   parseCaip19,
   wrapOrderMessage,
 } from '@elisym/commerce';
-import { type HandAnswer, type LedgerState, markTempo } from './ledger';
+import type { HandAnswer, LedgerState } from './ledger';
 import { TEMPO_HASH_RE } from './order-rules';
+import { type Product, orderProductD } from './products';
 import type { Delivery } from './reply';
 import { isSolanaSignature } from './signature';
 
@@ -138,6 +139,75 @@ export function planHandAnswer(state: LedgerState, key: string, request: HandReq
 }
 
 /**
+ * The delivery a hand `deliver` of order `key` sends: on a rerun the stored
+ * one (no `--product` needed; one whose delivery differs is refused, like
+ * `--asset`); for a held order its own product's (a differing `--product` is
+ * refused); for a pruned order that was never answered, `--product`, which is
+ * required when the store has more than one product. A lookup goes by the
+ * exact directory names read, and never falls back to another product.
+ */
+export function handDelivery(
+  state: LedgerState,
+  key: string,
+  products: ReadonlyMap<string, Product>,
+  productFlag: string | undefined,
+): { ok: true; delivery: Delivery } | { ok: false; problem: string } {
+  const flagged = productFlag === undefined ? undefined : products.get(productFlag);
+  if (productFlag !== undefined && flagged === undefined) {
+    return { ok: false, problem: `--product ${productFlag}: no product directory has that name` };
+  }
+  const stored = state.answeredByHand?.[key];
+  if (stored !== undefined && stored.kind !== 'delivered') {
+    return {
+      ok: false,
+      problem: `${key} was already answered as ${stored.kind}: the other answer is refused`,
+    };
+  }
+  if (stored?.kind === 'delivered' && stored.delivery !== undefined) {
+    if (
+      flagged !== undefined &&
+      (flagged.delivery.method !== stored.delivery.method ||
+        flagged.delivery.value !== stored.delivery.value)
+    ) {
+      return {
+        ok: false,
+        problem: `${key} was delivered by hand with another delivery: --product ${productFlag ?? ''} is refused`,
+      };
+    }
+    return { ok: true, delivery: stored.delivery };
+  }
+  const order = state.orders[key];
+  if (order !== undefined) {
+    const d = orderProductD(order);
+    if (productFlag !== undefined && productFlag !== d) {
+      return {
+        ok: false,
+        problem: `${key} is an order of ${d}: --product ${productFlag} is refused`,
+      };
+    }
+    const delivery = products.get(d)?.delivery;
+    if (delivery === undefined) {
+      return {
+        ok: false,
+        problem: `${key} is an order of ${d}, which has no product directory: restore products/${d}/PRODUCT.md`,
+      };
+    }
+    return { ok: true, delivery };
+  }
+  if (flagged !== undefined) {
+    return { ok: true, delivery: flagged.delivery };
+  }
+  const [only, ...others] = products.values();
+  if (only === undefined || others.length > 0) {
+    return {
+      ok: false,
+      problem: `${key} is no longer in the ledger, so its product is not known: pass --product <d>`,
+    };
+  }
+  return { ok: true, delivery: only.delivery };
+}
+
+/**
  * The asset of a new refund: `--asset`, else the only configured payout. It must
  * be a coin the registry knows (a refund may be in one since removed from the
  * config), and the refund tx must be of its chain.
@@ -177,9 +247,6 @@ export function applyHandAnswer(state: LedgerState, key: string, answer: HandAns
   delete state.orders[key];
   (state.closedOrders ??= {})[key] = true;
   (state.answeredByHand ??= {})[key] = answer;
-  if (answer.tx !== undefined && TEMPO_HASH_RE.test(answer.tx)) {
-    markTempo(state);
-  }
 }
 
 /** The signed status of a hand answer: `completed` with the delivery, or `cancelled` with the refund. */

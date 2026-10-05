@@ -123,3 +123,12 @@ export const WEBHOOK_MAX_ANSWER_BYTES = 4 * 1024;
 
 /** A webhook secret is at least this many bytes (`openssl rand -hex 32` gives 64). */
 export const WEBHOOK_MIN_SECRET_BYTES = 32;
+
+/** Product ids per `'#d'` filter: each yields one listing per relay, well under any relay's default limit. */
+export const LISTING_CHUNK_SIZE = 50;
+
+/**
+ * Our subscriptions on one relay connection at a time, counting every read:
+ * a relay caps them, and a refused one comes back silently empty.
+ */
+export const MAX_SUBSCRIPTIONS_PER_RELAY = 4;

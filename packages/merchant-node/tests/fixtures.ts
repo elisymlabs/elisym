@@ -42,6 +42,11 @@ export const T0 = 1_790_000_000;
 export const D = 'course-101';
 const BLOCKHASH = '4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi' as Blockhash;
 
+/** The product address of `D` (or `d`) at `store`. */
+export function productAt(store: Key, d = D): string {
+  return `30402:${store.pubkey}:${d}`;
+}
+
 export function signatureOf(fill: number): string {
   return getBase58Decoder().decode(new Uint8Array(64).fill(fill));
 }
@@ -68,10 +73,11 @@ export function world(): World {
   const state = emptyLedger();
   state.terms = publishTerms(
     [],
-    { caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+    { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+    T0,
     T0,
   );
-  return { store, identity: storeIdentity(store.pubkey, D, ['solana-devnet']), state };
+  return { store, identity: storeIdentity(store.pubkey, [D], ['solana-devnet']), state };
 }
 
 /** A message from `sender` to `recipient`, wrapped and unwrapped as the store would read it. */

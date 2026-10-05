@@ -55,6 +55,14 @@ function webhookHome(webhookUrl = 'http://127.0.0.1:9/hook'): string {
   return home;
 }
 
+/** Give the scaffolded product a real delivery, as an operator does before setup. */
+function editProduct(home: string): void {
+  writeFileSync(
+    join(home, 'products', 'my-product', 'PRODUCT.md'),
+    '---\ntitle: My product\npriceUsd: "10"\ndelivery:\n  method: access\n  value: https://shop.example/x\n---\n\nWhat the buyer gets.\n',
+  );
+}
+
 function storePubkeyOf(home: string): string {
   return (JSON.parse(readFileSync(join(home, 'keys.json'), 'utf8')) as { storePubkey: string })
     .storePubkey;
@@ -70,6 +78,7 @@ function writePaidLedger(home: string): string {
     rumorId: 'r'.repeat(64),
     createdAt: T0,
     reference: 'ref',
+    product: `30402:${storePubkeyOf(home)}:my-product`,
     reportedTxs: [],
     customerRef: 'user-123',
     paid: {
@@ -114,10 +123,74 @@ describe('the merchant CLI', () => {
     // A relay that refuses at once: reaching it would fail with a relay error instead.
     config.inboxRelays = ['ws://localhost:9'];
     writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+    editProduct(home);
     const run = cli(['setup', '--home', home]);
     expect(run.code).not.toBe(0);
     expect(run.output).toMatch(/encrypted owner key/);
     expect(run.output).not.toMatch(/inbox relays/);
+  });
+
+  it('init scaffolds a product setup refuses until its delivery is real (M37), before any relay', () => {
+    const home = scratchDir();
+    const init = cli(['init', '--home', home]);
+    expect(init.code).toBe(0);
+    expect(existsSync(join(home, 'products', 'my-product', 'PRODUCT.md'))).toBe(true);
+    const config = configTemplate('devnet');
+    config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
+    config.inboxRelays = ['ws://localhost:9'];
+    writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+    const run = cli(['setup', '--home', home]);
+    expect(run.code).not.toBe(0);
+    expect(run.output).toMatch(/still deliver the example link/);
+    expect(run.output).not.toMatch(/inbox relays/);
+  });
+
+  it('refuses a home made by 0.7: a config naming its one product, or a version 1 or 2 ledger', () => {
+    const home = scratchDir();
+    expect(cli(['init', '--home', home]).code).toBe(0);
+    const config = configTemplate('devnet');
+    config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
+    config.inboxRelays = ['ws://localhost:9'];
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ ...config, product: { d: 'x' } }));
+    const old = cli(['check', '--home', home]);
+    expect(old.code).not.toBe(0);
+    expect(old.output).toMatch(/create a new home with init/);
+    writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+    editProduct(home);
+    writeFileSync(join(home, 'ledger.json'), JSON.stringify({ ...emptyLedger(), version: 2 }));
+    const ledger = cli(['check', '--home', home]);
+    expect(ledger.code).not.toBe(0);
+    expect(ledger.output).toMatch(/create a new home with init/);
+  });
+
+  it('M19: run and check refuse a product with a history whose directory is gone, before any relay', () => {
+    const home = scratchDir();
+    expect(cli(['init', '--home', home]).code).toBe(0);
+    const config = configTemplate('devnet');
+    config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
+    config.inboxRelays = ['ws://localhost:9'];
+    writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+    editProduct(home);
+    const state = emptyLedger();
+    state.terms = [
+      { terms: { d: 'gone', caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: '1' }, from: T0 },
+    ];
+    writeFileSync(join(home, 'ledger.json'), JSON.stringify(state));
+    for (const command of ['run', 'check', 'setup']) {
+      const run = cli([command, '--home', home]);
+      expect(run.code).not.toBe(0);
+      expect(run.output).toMatch(
+        /product gone has a history in this store: restore products\/gone/,
+      );
+      expect(run.output).not.toMatch(/inbox relays|relay /);
+    }
+  });
+
+  it('takes --product for deliver only', () => {
+    const home = scratchDir();
+    const run = cli(['orders', '--product', 'x', '--home', home]);
+    expect(run.code).not.toBe(0);
+    expect(run.output).toMatch(/--product is for deliver/);
   });
 
   it('a failing init leaves no half-made home', () => {
@@ -216,7 +289,7 @@ describe('the merchant CLI', () => {
     const run = cli(['orders', '--home', home]);
     expect(run.code).toBe(0);
     expect(run.output).toContain(
-      `${key} 1000000 ${PAID_SIG} ref=user-123 webhook=failed event=${webhookEventId(storePubkeyOf(home), key, PAID_SIG)}`,
+      `${key} product=my-product 1000000 ${PAID_SIG} ref=user-123 webhook=failed event=${webhookEventId(storePubkeyOf(home), key, PAID_SIG)}`,
     );
   });
 

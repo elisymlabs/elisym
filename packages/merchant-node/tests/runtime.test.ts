@@ -21,6 +21,7 @@ import {
   requestFor,
   signatureOf,
   world,
+  productAt,
 } from './fixtures';
 
 const ORDER_ID = 'b3a7c2d4-0000-4000-8000-00000000c001';
@@ -103,7 +104,7 @@ function harness(
       type: 'order',
       storePubkey: setup.store.pubkey,
       orderId: ORDER_ID,
-      items: [{ product: setup.identity.productAddress, quantity: 1 }],
+      items: [{ product: productAt(setup.store), quantity: 1 }],
       total: { amount: '1', currency: 'USD' },
     },
     buyer,
@@ -243,7 +244,7 @@ describe('handling wraps', () => {
   it('checks receipts on arrival only within a per-minute budget', async () => {
     // One frozen minute, so the budget cannot roll over mid-test.
     const frozen = Math.floor(Date.now() / 1000);
-    const { runtime, events, store, identity } = harness('ask_again', true, () => frozen);
+    const { runtime, events, store } = harness('ask_again', true, () => frozen);
     for (let index = 0; index < MAX_LIVE_CHECKS_PER_MINUTE + 5; index += 1) {
       const buyer = key();
       const orderId = `b3a7c2d4-0000-4000-8000-0000000d${String(index).padStart(4, '0')}`;
@@ -253,7 +254,7 @@ describe('handling wraps', () => {
             type: 'order',
             storePubkey: store.pubkey,
             orderId,
-            items: [{ product: identity.productAddress, quantity: 1 }],
+            items: [{ product: productAt(store), quantity: 1 }],
             total: { amount: '1', currency: 'USD' },
           },
           buyer,
@@ -300,6 +301,7 @@ describe('the sweep', () => {
       rumorId: 'r',
       createdAt: T0,
       reference: 'Ref',
+      product: `30402:${'s'.repeat(64)}:course-101`,
       reportedTxs: [],
       paid: { signature: SIG, amount: '1', blockTime: T0, caip19: 'x', medium: 'solana-devnet' },
     };
@@ -332,6 +334,7 @@ describe('the sweep', () => {
       rumorId: 'r',
       createdAt: Math.floor(Date.now() / 1000) - 4 * 24 * 60 * 60,
       reference: 'Ref',
+      product: `30402:${'s'.repeat(64)}:course-101`,
       reportedTxs: [],
     };
     await runtime.sweep(false, T0);
@@ -357,6 +360,7 @@ describe('the sweep', () => {
       rumorId: 'r',
       createdAt: T0,
       reference: 'Ref',
+      product: `30402:${'s'.repeat(64)}:course-101`,
       reportedTxs: [],
       paid: { signature: SIG, amount: '1', blockTime: T0, caip19: 'x', medium: 'solana-devnet' },
     };
@@ -474,7 +478,7 @@ describe('a delivered order read again', () => {
           type: 'order',
           storePubkey: store.pubkey,
           orderId,
-          items: [{ product: deps.store.productAddress, quantity: 1 }],
+          items: [{ product: productAt(store), quantity: 1 }],
           total: { amount: '1', currency: 'USD' },
         },
         buyer,
@@ -565,6 +569,7 @@ describe('delivering to the inbox relays', () => {
       rumorId: 'r',
       createdAt: T0,
       reference: 'x',
+      product: `30402:${'s'.repeat(64)}:course-101`,
       reportedTxs: [],
       paid: {
         signature: signatureOf(41),
@@ -603,6 +608,7 @@ describe('delivering to the inbox relays', () => {
         rumorId: `r${index}`,
         createdAt: T0,
         reference: 'x',
+        product: `30402:${'s'.repeat(64)}:course-101`,
         reportedTxs: [],
         paid: { signature, amount: '1', blockTime: T0, caip19: 'x', medium: 'solana-devnet' },
       };
@@ -701,6 +707,7 @@ describe("the store's copy of a delivery", () => {
         rumorId: 'r',
         createdAt: T0,
         reference: 'x',
+        product: `30402:${'s'.repeat(64)}:course-101`,
         reportedTxs: [],
         paid: {
           signature: signatureOf(53),
@@ -728,6 +735,7 @@ describe("the store's copy of a delivery", () => {
       rumorId: 'r',
       createdAt: T0,
       reference: 'x',
+      product: `30402:${'s'.repeat(64)}:course-101`,
       reportedTxs: [],
       paid: {
         signature: signatureOf(51),
@@ -768,6 +776,7 @@ describe("the store's copy of a delivery", () => {
       rumorId: 'r',
       createdAt: T0,
       reference: 'x',
+      product: `30402:${'s'.repeat(64)}:course-101`,
       reportedTxs: [],
       deliveredTo: [INBOX[0] as string],
       paid: {
@@ -837,7 +846,7 @@ describe('Tempo receipts at the runtime', () => {
     const order = Object.values(run.state.orders)[0];
     expect(order?.noLegTxs).toEqual([TEMPO_HASH]);
     expect(order?.refusedTxs).toBeUndefined();
-    expect(run.state.version).toBe(2);
+    expect(run.state.version).toBe(3);
   });
 
   it('leaves a Tempo hash alone on a node with no tempo block', async () => {

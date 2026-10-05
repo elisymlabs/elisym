@@ -5,6 +5,7 @@ import {
   KIND_PRODUCT,
   LIMITS,
   buildOrderMessage,
+  isPurchasable,
   parseCaip19,
   parsePayto,
   parseProduct,
@@ -20,6 +21,7 @@ import {
   generateSecretKey,
   getPublicKey,
 } from 'nostr-tools/pure';
+import { readListingChunks } from './listing-reads';
 import { type AuthSigner, type PublishPool, publishToRelays } from './publish';
 import { checkoutRelaySpelling } from './relays';
 import type { OfferTerms } from './terms';
@@ -148,25 +150,33 @@ export async function checkDomain(
 
 /**
  * What buyers are offered that this node does not honour, read from the relays'
- * newest listing (kind 30402) and owner payout list (kind 10133): a payout on
- * another rail or network, an address its ledger does not stand behind, or a
- * coin the listing prices at an amount the ledger does not record (a listing
- * published by a setup that stopped before writing the ledger). A buyer could
- * pay one and never get a delivery. `undefined` when no relay served either.
+ * newest listing of each product (kind 30402) and owner payout list (kind
+ * 10133): a payout on another rail or network, an address its ledger does not
+ * stand behind, or a coin a listing on sale prices at an amount the ledger
+ * does not record for that product (a listing published by a setup that stopped
+ * before writing the ledger, or one still on sale after its terms retired). A
+ * buyer could pay one and never get a delivery. A sold-out listing offers
+ * nothing; the payout list is judged only where something is on sale, so a
+ * store whose products are all stopped still starts. `undefined` when no relay
+ * served a listing or the payout list.
  */
 export function offersNotHonoured(
-  listing: NostrEvent | undefined,
+  listings: readonly NostrEvent[],
   payoutList: NostrEvent | undefined,
   network: Network,
   standing: readonly OfferTerms[],
   /** The registry network of the node's Tempo block, when it has one. */
   tempoNetwork?: Network,
 ): string[] | undefined {
-  if (listing === undefined && payoutList === undefined) {
+  if (listings.length === 0 && payoutList === undefined) {
     return undefined;
   }
+  const onSale = listings.flatMap((listing) => {
+    const product = parseProduct(listing);
+    return product !== undefined && isPurchasable(product) ? [product] : [];
+  });
   const targets = payoutList === undefined ? [] : parsePayto(payoutList).targets;
-  const found = targets
+  const found = (onSale.length === 0 ? [] : targets)
     .filter(
       (target) =>
         (target.caip19.chain.family === 'solana'
@@ -179,26 +189,30 @@ export function offersNotHonoured(
         ),
     )
     .map((target) => `${target.caip19.id} ${target.address}`);
-  const product = listing === undefined ? undefined : parseProduct(listing);
-  for (const id of product?.accept ?? []) {
-    const caip19 = parseCaip19(id);
-    const target = targets.find((candidate) => candidate.caip19.id === caip19?.id);
-    // A coin with no payout, or one the widget cannot price, is not payable at all.
-    if (caip19 === undefined || target === undefined || product === undefined) {
-      continue;
-    }
-    let amount: string;
-    try {
-      amount = priceInSubunits(product.price, caip19.asset).toString();
-    } catch {
-      continue;
-    }
-    const honoured = standing.some(
-      (terms) =>
-        terms.caip19 === caip19.id && terms.payout === target.address && terms.amount === amount,
-    );
-    if (!honoured) {
-      found.push(`${caip19.id} at ${amount}`);
+  for (const product of onSale) {
+    for (const id of product.accept) {
+      const caip19 = parseCaip19(id);
+      const target = targets.find((candidate) => candidate.caip19.id === caip19?.id);
+      // A coin with no payout, or one the widget cannot price, is not payable at all.
+      if (caip19 === undefined || target === undefined) {
+        continue;
+      }
+      let amount: string;
+      try {
+        amount = priceInSubunits(product.price, caip19.asset).toString();
+      } catch {
+        continue;
+      }
+      const honoured = standing.some(
+        (terms) =>
+          terms.d === product.d &&
+          terms.caip19 === caip19.id &&
+          terms.payout === target.address &&
+          terms.amount === amount,
+      );
+      if (!honoured) {
+        found.push(`${product.d}: ${caip19.id} at ${amount}`);
+      }
     }
   }
   return [...new Set(found)];
@@ -230,9 +244,9 @@ export function inboxRelaysNotRead(
   return listed.slice(0, CHECKOUT_INBOX_CAP).filter((relay) => !reading.includes(relay));
 }
 
-/** What one set of relays serves: the newest listing, payout list and inbox list. */
+/** What one set of relays serves: the newest listing of each product, payout list and inbox list. */
 export interface RelayView {
-  listing: NostrEvent | undefined;
+  listings: NostrEvent[];
   payoutList: NostrEvent | undefined;
   inboxList: NostrEvent | undefined;
 }
@@ -257,7 +271,7 @@ export function offerProblems(
       problems.add(`orders sent to ${relay}, which this node does not read`);
     }
     const notHonoured = offersNotHonoured(
-      view.listing,
+      view.listings,
       view.payoutList,
       network,
       standing,
@@ -289,28 +303,47 @@ export async function newestInboxList(
   );
 }
 
-/** The store's newest listing of product `d` the relays serve (the newest wins, then the lowest id). */
-export async function newestListing(
+/**
+ * The store's newest listing of each product in `ds` the relays serve (the
+ * newest wins, then the lowest id), keyed by `d`: chunked `'#d'` reads, a few
+ * subscriptions per relay at a time (see `readListingChunks`).
+ */
+export async function newestListings(
   pool: QueryPool,
   relays: readonly string[],
   storePubkey: string,
-  d: string,
-): Promise<NostrEvent | undefined> {
-  const events = await pool
-    .querySync(
-      [...relays],
-      { kinds: [KIND_PRODUCT], authors: [storePubkey], '#d': [d] },
-      { maxWait: READ_WAIT_MS },
-    )
-    .catch(() => []);
-  return newest(
-    events.filter(
-      (event) =>
-        event.pubkey === storePubkey &&
-        event.kind === KIND_PRODUCT &&
-        event.tags.some((tag) => tag[0] === 'd' && tag[1] === d),
-    ),
+  ds: readonly string[],
+): Promise<Map<string, NostrEvent>> {
+  const wanted = new Set(ds);
+  const events = await readListingChunks(ds, (chunk) =>
+    pool
+      .querySync(
+        [...relays],
+        { kinds: [KIND_PRODUCT], authors: [storePubkey], '#d': chunk },
+        { maxWait: READ_WAIT_MS },
+      )
+      .catch(() => []),
   );
+  const byD = new Map<string, NostrEvent[]>();
+  for (const event of events) {
+    const d = event.tags.find((tag) => tag[0] === 'd')?.[1];
+    if (
+      event.pubkey === storePubkey &&
+      event.kind === KIND_PRODUCT &&
+      d !== undefined &&
+      wanted.has(d)
+    ) {
+      byD.set(d, [...(byD.get(d) ?? []), event]);
+    }
+  }
+  const found = new Map<string, NostrEvent>();
+  for (const [d, candidates] of byD) {
+    const best = newest(candidates);
+    if (best !== undefined) {
+      found.set(d, best);
+    }
+  }
+  return found;
 }
 
 /** The newest event, and of two in the same second the lowest id (NIP-01), as the checkout picks. */
@@ -346,4 +379,43 @@ export async function newestPayoutList(
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Read each set of relays a page may read, one view after the other, and in
+ * each the listings, then the payout list, then the inbox list: never two
+ * reads at once beside the listing chunks, so no relay carries more than
+ * `MAX_SUBSCRIPTIONS_PER_RELAY` of our subscriptions.
+ */
+export async function readRelayViews(
+  pool: QueryPool,
+  views: readonly (readonly string[])[],
+  pubkeys: { storePubkey: string; ownerPubkey: string },
+  ds: readonly string[],
+): Promise<RelayView[]> {
+  const read: RelayView[] = [];
+  for (const relays of views) {
+    const listings = await newestListings(pool, relays, pubkeys.storePubkey, ds);
+    const payoutList = await newestPayoutList(pool, relays, pubkeys.ownerPubkey);
+    const inboxList = await newestInboxList(pool, relays, pubkeys.storePubkey);
+    read.push({ listings: [...listings.values()], payoutList, inboxList });
+  }
+  return read;
+}
+
+/**
+ * What setup reads before it publishes: the owner's newest payout list from
+ * `relays`, then the newest listing of each of `ds` from the default relays -
+ * one after the other, never side by side.
+ */
+export async function readBeforeSetup(
+  pool: QueryPool,
+  relays: readonly string[],
+  defaultRelays: readonly string[],
+  pubkeys: { storePubkey: string; ownerPubkey: string },
+  ds: readonly string[],
+): Promise<{ payoutList: NostrEvent | undefined; listings: Map<string, NostrEvent> }> {
+  const payoutList = await newestPayoutList(pool, relays, pubkeys.ownerPubkey);
+  const listings = await newestListings(pool, defaultRelays, pubkeys.storePubkey, ds);
+  return { payoutList, listings };
 }

@@ -140,7 +140,7 @@ In this order:
 1. **Authenticate.** Read the raw body. Refuse a timestamp more than 300 seconds from your clock, and a signature that does not match, compared in constant time on equal-length buffers.
 2. **Check the event.** Answer `event: "test"` with 2xx and credit nothing. For `order.paid`, every one of these must hold:
    - `store` is your store's key;
-   - `product.address` is in your own allowlist of deposit products (`30402:<store>:<d>`);
+   - `product.address` is in your own allowlist of deposit products (`30402:<store>:<d>`, where `<d>` is the product's directory name under `products/`). List each deposit product of the store; its other products stay `queued`;
    - `payment.asset` is in your own allowlist of exact asset ids, which also gives its decimals (never take them from the body);
    - `customerRef` names an account you know.
 

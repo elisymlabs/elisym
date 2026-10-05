@@ -1,7 +1,5 @@
 import { readFileSync } from 'node:fs';
 import {
-  DELIVERY_METHODS,
-  LIMITS,
   canonicalPayoutAddress,
   isPublicHostname,
   parseCaip19,
@@ -10,10 +8,10 @@ import {
 } from '@elisym/commerce';
 import { EVM_ASSETS, type Network } from '@elisym/pay-core';
 import { TEMPO_UNPAYABLE_ADDRESSES } from '@elisym/pay-core/evm';
-import Decimal from 'decimal.js-light';
 import { z } from 'zod';
+import { OLD_HOME_PROBLEM } from './ledger';
+import type { Product } from './products';
 import { checkoutRelaySpelling } from './relays';
-import type { Delivery } from './reply';
 import type { StoreConfig } from './store-events';
 
 export type TempoNetwork = 'mainnet' | 'moderato';
@@ -27,10 +25,6 @@ export interface MerchantConfig extends StoreConfig {
   rpcUrl?: string;
   /** Present when the store takes Tempo payouts: the network, and a server-side RPC. */
   tempo?: { network: TempoNetwork; rpcUrl?: string };
-  product: StoreConfig['product'] & {
-    /** What the buyer gets once paid: a link (a Blossom URL is one) or text. */
-    delivery: Delivery;
-  };
   /** Where the node tells the merchant's backend about each payment it verified. */
   webhook?: WebhookConfig;
 }
@@ -61,8 +55,6 @@ function urlWith(secure: string, insecure: string) {
     { message: `must be a ${secure}// URL` },
   );
 }
-
-const PRICE_RE = /^\d{1,9}(\.\d{1,6})?$/;
 
 /**
  * Why a webhook URL is refused, or `undefined`. The URL is the merchant's own,
@@ -121,21 +113,6 @@ const configSchema = z
       )
       .min(1)
       .max(MAX_INBOX_RELAYS),
-    product: z.object({
-      d: z
-        .string()
-        .regex(/^[A-Za-z0-9._-]{1,64}$/, 'use 1-64 letters, digits, dots, dashes or underscores'),
-      title: z.string().trim().min(1).max(200),
-      description: z.string().max(LIMITS.MAX_CONTENT_LENGTH),
-      summary: z.string().max(LIMITS.MAX_TAG_VALUE_LENGTH).optional(),
-      priceUsd: z.string().refine((value) => PRICE_RE.test(value) && new Decimal(value).gt(0), {
-        message: 'must be a USD amount above 0, such as "49" or "0.50"',
-      }),
-      delivery: z.object({
-        method: z.enum(DELIVERY_METHODS),
-        value: z.string().min(1).max(LIMITS.MAX_TAG_VALUE_LENGTH),
-      }),
-    }),
     payouts: z
       .array(
         z.object({
@@ -232,18 +209,6 @@ const configSchema = z
           });
         }
       }
-      const price = config.product.priceUsd;
-      if (PRICE_RE.test(price) && new Decimal(price).gt(0)) {
-        try {
-          priceInSubunits({ amount: price, currency: 'USD' }, caip19.asset);
-        } catch {
-          context.addIssue({
-            code: 'custom',
-            path: [...path, 'caip19'],
-            message: `${caip19.asset.symbol} cannot be paid a USD price`,
-          });
-        }
-      }
       if (seen.has(caip19.id)) {
         context.addIssue({
           code: 'custom',
@@ -290,6 +255,10 @@ function isPayableTempoAddress(address: string): boolean {
 type ParsedConfig = { ok: true; config: MerchantConfig } | { ok: false; problems: string[] };
 
 function parseConfig(value: unknown): ParsedConfig {
+  // A 0.7 config names its one product here: that home is not upgraded.
+  if (typeof value === 'object' && value !== null && 'product' in value) {
+    return { ok: false, problems: [OLD_HOME_PROBLEM] };
+  }
   const parsed = configSchema.safeParse(value);
   if (parsed.success) {
     const config = parsed.data as MerchantConfig;
@@ -343,13 +312,33 @@ export function configTemplate(network: Network): MerchantConfig {
         ? 'https://mainnet.helius-rpc.com/?api-key=<a server-side key>'
         : 'https://api.devnet.solana.com',
     inboxRelays: ['wss://relay.elisym.network', 'wss://nos.lol'],
-    product: {
-      d: 'my-product',
-      title: 'My product',
-      description: 'What the buyer gets.',
-      priceUsd: '10',
-      delivery: { method: 'access', value: 'https://example.com/<the link the buyer gets>' },
-    },
     payouts: [{ caip19: usdc, address: '<your Solana wallet address>' }],
   };
+}
+
+/**
+ * Every product price a configured payout cannot carry: a coin must be able to
+ * pay each product's USD price, or that product's listing could not be paid.
+ */
+export function priceProblems(
+  config: Pick<MerchantConfig, 'payouts'>,
+  products: Iterable<Product>,
+): string[] {
+  const problems: string[] = [];
+  for (const product of products) {
+    for (const payout of config.payouts) {
+      const caip19 = parseCaip19(payout.caip19);
+      if (caip19 === undefined) {
+        continue;
+      }
+      try {
+        priceInSubunits({ amount: product.priceUsd, currency: 'USD' }, caip19.asset);
+      } catch {
+        problems.push(
+          `products/${product.d}: ${caip19.asset.symbol} cannot be paid its price of ${product.priceUsd} USD`,
+        );
+      }
+    }
+  }
+  return problems;
 }

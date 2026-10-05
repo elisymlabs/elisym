@@ -26,6 +26,7 @@ import {
   blockAtTime,
   catchUpTempo,
   checkTempoPayment,
+  orderTempoCandidates,
   recordTempoCheck,
   tempoMemo,
 } from '../src/tempo';
@@ -93,8 +94,13 @@ function setup(price = PRICE, chainId = '0x1079', caip19 = TEMPO_USDC, payout = 
   const store = key();
   const buyer = key();
   const state = emptyLedger();
-  state.terms = publishTerms([], { caip19, payout, amount: price.toString() }, T0 - 86_400);
-  const identity = storeIdentity(store.pubkey, D, ['tempo', 'tempo-moderato']);
+  state.terms = publishTerms(
+    [],
+    { d: D, caip19, payout, amount: price.toString() },
+    T0 - 86_400,
+    T0 - 86_400,
+  );
+  const identity = storeIdentity(store.pubkey, [D], ['tempo', 'tempo-moderato']);
   const taken = intake(
     state,
     orderFrom(buyer, store, 'b3a7c2d4-0000-4000-8000-000000000001'),
@@ -186,7 +192,7 @@ describe('checkTempoPayment', () => {
     expect(Object.entries(run.state.claims)).toEqual([
       [`eip155:4217:${HASH}:${run.memo}`, run.order.key],
     ]);
-    expect(run.state.version).toBe(2);
+    expect(run.state.version).toBe(3);
     expect(run.order.webhook).toBeUndefined();
   });
 
@@ -214,7 +220,7 @@ describe('checkTempoPayment', () => {
     land(run, HASH, `0x${'99'.repeat(32)}`);
     const check = await checkTempoPayment(run.state, run.order, HASH, run.context);
     expect(check).toEqual({ kind: 'no_leg' });
-    recordTempoCheck(run.state, run.order, HASH, check);
+    recordTempoCheck(run.order, HASH, check);
     expect(run.order.noLegTxs).toEqual([HASH]);
     expect(run.order.refusedTxs).toBeUndefined();
   });
@@ -224,7 +230,7 @@ describe('checkTempoPayment', () => {
     // The receipt read came back with no logs (a lagging backend); the scan sees the leg.
     land(run, HASH, run.memo, { receiptLogs: false });
     const check = await checkTempoPayment(run.state, run.order, HASH, run.context);
-    recordTempoCheck(run.state, run.order, HASH, check);
+    recordTempoCheck(run.order, HASH, check);
     expect(run.order.noLegTxs).toEqual([HASH]);
     // The receipt is whole by the next sweep.
     land(run, HASH, run.memo);
@@ -239,7 +245,8 @@ describe('checkTempoPayment', () => {
     // the old price is a candidate by the order's date, but not at the leg's block time.
     run.state.terms = publishTerms(
       run.state.terms,
-      { caip19: TEMPO_USDC, payout: PAYOUT, amount: (PRICE * 2n).toString() },
+      { d: D, caip19: TEMPO_USDC, payout: PAYOUT, amount: (PRICE * 2n).toString() },
+      T0 + 600,
       T0 + 600,
     );
     land(run, HASH, run.memo);
@@ -252,7 +259,8 @@ describe('checkTempoPayment', () => {
     const run = setup();
     run.state.terms = publishTerms(
       run.state.terms,
-      { caip19: TEMPO_USDC, payout: PAYOUT, amount: (PRICE / 2n).toString() },
+      { d: D, caip19: TEMPO_USDC, payout: PAYOUT, amount: (PRICE / 2n).toString() },
+      T0 + 600,
       T0 + 600,
     );
     // Paid the OLD (higher) price after the change: the new, lower term is paid in full
@@ -313,7 +321,7 @@ describe('Tempo receipts and the ledger', () => {
     const store = key();
     const buyer = key();
     const state = emptyLedger();
-    const identity = storeIdentity(store.pubkey, D, ['tempo']);
+    const identity = storeIdentity(store.pubkey, [D], ['tempo']);
     const orderId = 'b3a7c2d4-0000-4000-8000-000000000002';
     intake(state, orderFrom(buyer, store, orderId), identity);
     const memo = deriveOrderPaymentReference({
@@ -336,21 +344,26 @@ describe('Tempo receipts and the ledger', () => {
     expect(intake(state, receipt(memo, HASH, 'tempo-moderato'), identity)).toMatchObject({
       reason: 'foreign_payment',
     });
-    expect(state.version).toBe(1);
+    expect(state.version).toBe(3);
     expect(intake(state, receipt(memo, HASH), identity)).toMatchObject({
       kind: 'receipt',
       tx: HASH,
     });
-    expect(state.version).toBe(2);
+    // V2: a Tempo event leaves a 0.8 ledger at version 3.
+    expect(state.version).toBe(3);
   });
 
-  it('is read at version 1 and 2, and an unknown version is refused', () => {
+  it('V1: refuses a 0.7 ledger (version 1 or 2) as an old home, and an unknown version', () => {
     const path = `${process.env.TMPDIR ?? '/tmp'}/elisym-ledger-${Date.now()}-${Math.random()}.json`;
     const state = emptyLedger();
-    state.version = 2;
+    expect(state.version).toBe(3);
     saveLedger(path, state);
-    expect(loadLedger(path).version).toBe(2);
-    saveLedger(path, { ...state, version: 3 as never });
+    expect(loadLedger(path).version).toBe(3);
+    for (const version of [1, 2]) {
+      saveLedger(path, { ...state, version: version as never });
+      expect(() => loadLedger(path)).toThrow('create a new home with init');
+    }
+    saveLedger(path, { ...state, version: 4 as never });
     expect(() => loadLedger(path)).toThrow('Unknown ledger version');
   });
 
@@ -383,7 +396,8 @@ describe('catchUpTempo', () => {
     // The price doubled after the order; the buyer paid the old price after that.
     run.state.terms = publishTerms(
       run.state.terms,
-      { caip19: TEMPO_USDC, payout: PAYOUT, amount: (PRICE * 2n).toString() },
+      { d: D, caip19: TEMPO_USDC, payout: PAYOUT, amount: (PRICE * 2n).toString() },
+      T0 + 600,
       T0 + 600,
     );
     land(run, HASH, run.memo);
@@ -415,5 +429,100 @@ describe('catchUpTempo', () => {
     run.context.client = steady;
     const second = await catchUpTempo(run.state, run.context, T0 + 3700);
     expect(second.paid).toEqual([run.order]);
+  });
+});
+
+describe('one product never pays at another product of the store (T1)', () => {
+  const B = 'other-product';
+  /** A second product B of the same store, on the same coin and payout, since long ago. */
+  function withB(run: Setup, price: bigint): void {
+    run.state.terms = publishTerms(
+      run.state.terms,
+      { d: B, caip19: TEMPO_USDC, payout: PAYOUT, amount: price.toString() },
+      T0 - 86_400,
+      T0 - 86_400,
+    );
+  }
+
+  it("orderTempoCandidates returns only the order's own product", () => {
+    const run = setup();
+    withB(run, PRICE * 5n);
+    expect(
+      orderTempoCandidates(run.state, run.order, run.context).map((each) => each.terms.d),
+    ).toEqual([D]);
+  });
+
+  /** P3: A doubles after the order, B costs A's old price; a payment of the old price lands late. */
+  function p3(): Setup {
+    const run = setup();
+    withB(run, PRICE);
+    run.state.terms = publishTerms(
+      run.state.terms,
+      { d: D, caip19: TEMPO_USDC, payout: PAYOUT, amount: (PRICE * 2n).toString() },
+      T0 + 600,
+      T0 + 600,
+    );
+    land(run, HASH, run.memo);
+    return run;
+  }
+
+  it('P3 M3a: the receipt path does not credit A at B price', async () => {
+    const run = p3();
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toEqual({
+      kind: 'no_leg',
+    });
+    expect(run.order.paid).toBeUndefined();
+  });
+
+  it('P3 M3a: the memo scan does not credit A at B price', async () => {
+    const run = p3();
+    const swept = await catchUpTempo(run.state, run.context, T0 + 3600);
+    expect(swept.paid).toEqual([]);
+    expect(run.order.paid).toBeUndefined();
+    expect(run.order.tempoNoLeg).toEqual([HASH]);
+  });
+
+  /**
+   * P4: A at PRICE is retired before the payment's window; B costs five times
+   * as much on the same coin and payout. `dropCoin`: the store dropped its
+   * Tempo coin instead, retiring A and B together.
+   */
+  function p4(dropCoin: boolean): Setup {
+    const run = setup();
+    withB(run, PRICE * 5n);
+    const retireAt = T0 + 700;
+    run.state.terms = run.state.terms.map((period) =>
+      period.terms.d === D || dropCoin ? { ...period, until: retireAt } : period,
+    );
+    land(run, HASH, run.memo);
+    return run;
+  }
+
+  for (const dropCoin of [false, true]) {
+    const how = dropCoin ? 'its Tempo coin dropped' : 'A stopped';
+    it(`P4 M3b (${how}): the receipt path refuses it for good`, async () => {
+      const run = p4(dropCoin);
+      const check = await checkTempoPayment(run.state, run.order, HASH, run.context);
+      expect(check).toEqual({ kind: 'refused', reason: 'not_a_payment_for_this_order' });
+      recordTempoCheck(run.order, HASH, check);
+      expect(run.order.refusedTxs).toEqual([HASH]);
+    });
+
+    it(`P4 M3b (${how}): the memo scan refuses it for good`, async () => {
+      const run = p4(dropCoin);
+      await catchUpTempo(run.state, run.context, T0 + 3600);
+      expect(run.order.paid).toBeUndefined();
+      expect(run.order.refusedTxs).toEqual([HASH]);
+      expect(run.order.tempoNoLeg).toBeUndefined();
+    });
+  }
+
+  it("each product's own price is credited", async () => {
+    const run = setup();
+    withB(run, PRICE * 5n);
+    land(run, HASH, run.memo);
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toMatchObject({
+      kind: 'paid',
+    });
   });
 });

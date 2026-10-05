@@ -28,13 +28,13 @@ import {
   type MerchantOrder,
   type WebhookOutbox,
   claimPayment,
-  markTempo,
   openOrders,
   recordPayment,
 } from './ledger';
 import { TEMPO_HASH_RE } from './order-rules';
+import { orderProductD } from './products';
 import type { CatchUpResult, PaymentCheck } from './solana';
-import { type OfferTerms, termsAt, termsSince } from './terms';
+import { type OfferTerms, termsAt, termsSince, termsSinceAll } from './terms';
 
 export interface TempoContext {
   client: Eip1193Client;
@@ -94,7 +94,7 @@ export function tempoMemo(order: MerchantOrder, storePubkey: string): string {
   }).tempo;
 }
 
-interface TempoTerms {
+export interface TempoTerms {
   terms: OfferTerms;
   token: string;
 }
@@ -108,6 +108,18 @@ function tempoTerms(terms: readonly OfferTerms[], context: TempoContext): TempoT
     }
     return [{ terms: each, token: mint.toLowerCase() }];
   });
+}
+
+/** The terms of the order's own product a payment for it may pay: the candidates a leg is verified against. */
+export function orderTempoCandidates(
+  state: LedgerState,
+  order: MerchantOrder,
+  context: TempoContext,
+): TempoTerms[] {
+  return tempoTerms(
+    termsSince(state.terms, orderProductD(order), order.createdAt - ORDER_SCAN_MARGIN_SECS),
+    context,
+  );
 }
 
 async function blockTime(context: TempoContext, number: number): Promise<number | undefined> {
@@ -234,7 +246,8 @@ async function verifyTerms(
         verdicts.push('ask');
         continue;
       }
-      const offered = termsAt(state.terms, at).some(
+      // The block-time guard: only the order's own product, at exactly these terms.
+      const offered = termsAt(state.terms, orderProductD(order), at).some(
         (standing) =>
           standing.caip19 === candidate.terms.caip19 &&
           standing.payout === candidate.terms.payout &&
@@ -247,7 +260,6 @@ async function verifyTerms(
       if (!claimPayment(state, result.settlementId, order.key)) {
         return 'claimed';
       }
-      markTempo(state);
       recordPayment(
         order,
         {
@@ -312,10 +324,7 @@ export async function checkTempoPayment(
       ? { kind: 'paid', order }
       : { kind: 'refused', reason: 'order_already_paid' };
   }
-  const candidates = tempoTerms(
-    termsSince(state.terms, order.createdAt - ORDER_SCAN_MARGIN_SECS),
-    context,
-  );
+  const candidates = orderTempoCandidates(state, order, context);
   if (candidates.length === 0) {
     return { kind: 'refused', reason: 'not_a_payment_for_this_order' };
   }
@@ -344,7 +353,6 @@ export async function checkTempoPayment(
   if (named.length === 0) {
     if (pre.blocked.length > 0) {
       order.blockedTx = hash;
-      markTempo(state);
       return { kind: 'blocked' };
     }
     return { kind: 'no_leg' };
@@ -357,18 +365,12 @@ export async function checkTempoPayment(
 }
 
 /** Keep what a reported hash came out as: refused and set-aside hashes are not rechecked. */
-export function recordTempoCheck(
-  state: LedgerState,
-  order: MerchantOrder,
-  hash: string,
-  check: TempoCheck,
-): void {
+export function recordTempoCheck(order: MerchantOrder, hash: string, check: TempoCheck): void {
   if (check.kind === 'refused') {
     order.refusedTxs = [...(order.refusedTxs ?? []), hash];
   } else if (check.kind === 'no_leg' && order.noLegTxs?.includes(hash) !== true) {
     order.noLegTxs = [...(order.noLegTxs ?? []), hash];
   }
-  markTempo(state);
 }
 
 /**
@@ -410,13 +412,17 @@ export async function catchUpTempo(
     }
     order.recheckedAt = { ...order.recheckedAt, [hash]: now };
     const check = await checkTempoPayment(state, order, hash, context);
-    recordTempoCheck(state, order, hash, check);
+    recordTempoCheck(order, hash, check);
     if (check.kind === 'paid') {
       result.paid.push(order);
     }
   }
   const oldest = Math.min(...open.map((order) => order.createdAt));
-  const candidates = tempoTerms(termsSince(state.terms, oldest - ORDER_SCAN_MARGIN_SECS), context);
+  // Every product's terms: the scan only finds legs, each judged for its order's product.
+  const candidates = tempoTerms(
+    termsSinceAll(state.terms, oldest - ORDER_SCAN_MARGIN_SECS),
+    context,
+  );
   if (candidates.length === 0) {
     return result;
   }
@@ -471,10 +477,7 @@ export async function catchUpTempo(
     if (orderFloorBlock === undefined) {
       continue;
     }
-    const orderTerms = tempoTerms(
-      termsSince(state.terms, order.createdAt - ORDER_SCAN_MARGIN_SECS),
-      context,
-    );
+    const orderTerms = orderTempoCandidates(state, order, context);
     const verdict = await verifyTerms(
       state,
       order,
@@ -487,7 +490,6 @@ export async function catchUpTempo(
         candidate.terms.payout === leg.to &&
         leg.amount >= BigInt(candidate.terms.amount),
     );
-    markTempo(state);
     // A match lifts a hash the pre-read set aside.
     if (order.noLegTxs?.includes(hash) === true) {
       order.noLegTxs = order.noLegTxs.filter((each) => each !== hash);

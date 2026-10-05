@@ -7,7 +7,16 @@ import { describe, expect, it } from 'vitest';
 import { applyHandAnswer, buildHandAnswer, planHandAnswer } from '../src/hand';
 import { intake } from '../src/intake';
 import { pruneExpiredOrders } from '../src/ledger';
-import { T0, USDC_DEVNET_CAIP19, delivered, key, orderFrom, signatureOf, world } from './fixtures';
+import {
+  T0,
+  USDC_DEVNET_CAIP19,
+  delivered,
+  key,
+  orderFrom,
+  signatureOf,
+  world,
+  productAt,
+} from './fixtures';
 
 const ORDER_ID = 'b3a7c2d4-0000-4000-8000-00000000d001';
 const DELIVERY = { method: 'access' as const, value: 'https://shop.example/course' };
@@ -63,7 +72,7 @@ describe('answering by hand', () => {
         type: 'order',
         storePubkey: run.store.pubkey,
         orderId: ORDER_ID,
-        items: [{ product: run.identity.productAddress, quantity: 1 }],
+        items: [{ product: productAt(run.store), quantity: 1 }],
         total: { amount: '2', currency: 'USD' },
       },
       run.buyer,

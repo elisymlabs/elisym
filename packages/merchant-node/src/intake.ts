@@ -5,13 +5,10 @@ import {
   productAddress,
 } from '@elisym/commerce';
 import { MAX_RECEIPTS_PER_ORDER } from './constants';
-import { type LedgerState, type MerchantOrder, markTempo, recordReport } from './ledger';
+import { type LedgerState, type MerchantOrder, recordReport } from './ledger';
 import { type StoreRules, isDirectOrder, orderKey, receiptProblem } from './order-rules';
 
-export interface StoreIdentity extends StoreRules {
-  /** The one product this store sells in direct mode: `30402:<store>:<d>`. */
-  productAddress: string;
-}
+export type StoreIdentity = StoreRules;
 
 export type IntakeResult =
   | { kind: 'ignored'; reason: IgnoreReason }
@@ -39,13 +36,21 @@ export type IgnoreReason =
   /** A message type the merchant does not act on (status, payment request). */
   | 'not_handled';
 
+/**
+ * The store as intake judges orders: every product it has a directory for,
+ * stopped ones included (an order backfilled after a stop still needs its
+ * record; what a stopped product accepts is bounded by its retired terms).
+ */
 export function storeIdentity(
   storePubkey: string,
-  d: string,
+  ds: readonly string[],
   mediums: readonly string[],
 ): StoreIdentity {
-  const address = productAddress({ storePubkey, d });
-  return { storePubkey, productAddress: address, productAddresses: new Set([address]), mediums };
+  return {
+    storePubkey,
+    productAddresses: new Set(ds.map((d) => productAddress({ storePubkey, d }))),
+    mediums,
+  };
 }
 
 /**
@@ -83,6 +88,11 @@ export function intake(
     if (state.orders[key] !== undefined || state.closedOrders?.[key] === true) {
       return { kind: 'ignored', reason: 'order_id_reused' };
     }
+    const [item] = message.items;
+    // `isDirectOrder` checked it: one item of a product of this store.
+    if (item === undefined) {
+      return { kind: 'ignored', reason: 'not_a_direct_order' };
+    }
     const reference = deriveOrderPaymentReference({
       storePubkey: store.storePubkey,
       buyerPubkey: unwrapped.senderPubkey,
@@ -97,8 +107,7 @@ export function intake(
       reference: reference.solana,
       reportedTxs: [],
       ...(message.email === undefined ? {} : { email: message.email }),
-      // A direct order is one item of this store's own product (`isDirectOrder`).
-      ...(message.items[0] === undefined ? {} : { product: message.items[0].product }),
+      product: item.product,
       // Checked again here, though the parser drops a bad one: it reaches the webhook.
       ...(isCustomerRef(message.customerRef) ? { customerRef: message.customerRef } : {}),
     };
@@ -116,8 +125,7 @@ export function intake(
     if (receiptProblem(message, order, store) !== undefined) {
       return { kind: 'ignored', reason: 'foreign_payment' };
     }
-    const { medium, tx } = message.payment;
-    const tempo = medium.startsWith('tempo');
+    const { tx } = message.payment;
     if (!order.reportedTxs.includes(tx) && order.reportedTxs.length >= MAX_RECEIPTS_PER_ORDER) {
       return { kind: 'ignored', reason: 'too_many_receipts' };
     }
@@ -125,9 +133,6 @@ export function intake(
     const isNew = !order.reportedTxs.includes(tx);
     if (isNew) {
       recordReport(order, tx, now);
-      if (tempo) {
-        markTempo(state);
-      }
     }
     return { kind: 'receipt', order, tx, isNew };
   }

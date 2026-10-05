@@ -27,13 +27,14 @@ import {
 } from './keys';
 
 /**
- * Where a merchant keeps its state: `config.json` (the operator's), `keys.json`
- * (the store and owner secret keys), `ledger.json`, `run.lock` and the
- * `nostr.json` a level A domain serves.
+ * Where a merchant keeps its state: `config.json` (the operator's), `products/`
+ * (one directory per product, the operator's), `keys.json` (the store and owner
+ * secret keys), `ledger.json`, `run.lock` and the `nostr.json` a level A domain serves.
  */
 export interface MerchantHome {
   dir: string;
   config: string;
+  products: string;
   keys: string;
   ledger: string;
   lock: string;
@@ -55,6 +56,7 @@ export function merchantHome(
   return {
     dir,
     config: join(dir, 'config.json'),
+    products: join(dir, 'products'),
     keys: join(dir, 'keys.json'),
     ledger: join(dir, 'ledger.json'),
     lock: join(dir, 'run.lock'),
