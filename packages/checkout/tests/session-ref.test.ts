@@ -744,3 +744,152 @@ describe('what a page hears of a refusal, with or without an earlier order', () 
     expect(heardAtRun).toEqual(['resize:60', 'status:refused', 'resize:180']);
   });
 });
+
+describe('a sold-out product', () => {
+  const soldOut: LoadDeps['loadOffer'] = async () => ({
+    ok: false,
+    refusal: 'product_not_on_sale',
+    message: 'The listing is sold-out',
+  });
+
+  function params(world: Browser, customerRef?: string): CheckoutParams {
+    return {
+      naddr: world.shop.naddr,
+      network: 'devnet',
+      strictOrigin: false,
+      theme: 'auto',
+      collectEmail: false,
+      display: 'modal',
+      ...(customerRef === undefined ? {} : { customerRef }),
+    };
+  }
+
+  /** How many times the page read this browser's orders of a product. */
+  function countReads(): { reads: () => number; restore: () => void } {
+    const forProduct = store.forProduct.bind(store);
+    let reads = 0;
+    store.forProduct = async (address) => {
+      reads += 1;
+      return forProduct(address);
+    };
+    return { reads: () => reads, restore: () => (store.forProduct = forProduct) };
+  }
+
+  async function frame(world: Browser, loadOfferFor: LoadDeps['loadOffer'] = soldOut) {
+    const run = await framePage({
+      params: params(world),
+      pageOrigin: PAGE,
+      client: world.relays,
+      store,
+      loadOffer: loadOfferFor,
+      session: {
+        readClient: world.relays,
+        clientFor: () => world.relays,
+        rpcFor: () => world.chain.rpc,
+        wallets: () => [{ name: 'Fake', connect: async () => world.wallet }],
+        reloadOffer: async () => world.load(world.now()),
+        now: world.now,
+        chainTime: async () => world.now(),
+        setInterval: world.timers.set,
+        clearInterval: world.timers.clear,
+        setTimeout: world.timers.set,
+        clearTimeout: world.timers.clear,
+      },
+    });
+    await world.timers.tick();
+    await world.timers.tick();
+    await run.settle();
+    return run;
+  }
+
+  it('without a reference or an order: sold out, never the store text; the page hears refused', async () => {
+    const world = await browser();
+    expect(
+      await openPage(params(world), PAGE, { client: world.relays, store, loadOffer: soldOut }),
+    ).toEqual({
+      kind: 'refused',
+      screen: { kind: 'refused', reason: 'sold_out' },
+    });
+    const run = await frame(world);
+    expect(run.shown().screen).toEqual({ kind: 'refused', reason: 'sold_out' });
+    expect(run.heard).toEqual(['resize:60', 'status:refused', 'resize:180']);
+    run.dispose();
+  });
+
+  it('without a reference and with a paid order: followed, and the page hears exactly a refusal', async () => {
+    // The baseline is the same sold-out refusal with no order: the claim stands on its own.
+    const plainWorld = await browser();
+    const refusal = await frame(plainWorld);
+    const expected = refusal.heard;
+    refusal.dispose();
+    const world = await browser();
+    const record = await paidOrder(world, undefined);
+    expect(
+      await openPage(params(world), PAGE, { client: world.relays, store, loadOffer: soldOut }),
+    ).toMatchObject({
+      kind: 'offer',
+      followOnly: {
+        reason: 'sold_out',
+        message: 'Sold out. This product is not available right now.',
+        orderId: record.orderId,
+      },
+      refusal: { kind: 'refused', reason: 'sold_out' },
+    });
+    const run = await frame(world);
+    expect(run.shown().view?.kind).toBe('waiting_store');
+    expect(run.heard).toEqual(expected);
+    expect(run.heardAtRun).toEqual(run.heard);
+    run.dispose();
+  });
+
+  it('a reference page of a level A store whose product stopped: sold out, final, no order read', async () => {
+    const world = await browser();
+    await paidOrder(world, 'user_b');
+    const counted = countReads();
+    try {
+      expect(
+        await openPage(params(world, 'user_b'), PAGE, {
+          client: world.relays,
+          store,
+          loadOffer: soldOut,
+        }),
+      ).toEqual({ kind: 'refused', screen: { kind: 'refused', reason: 'sold_out' } });
+      expect(counted.reads()).toBe(0);
+    } finally {
+      counted.restore();
+    }
+  });
+
+  it('a reference page off the store domain: still refused as such on sale, sold out once stopped', async () => {
+    const world = await browser();
+    await paidOrder(world, 'user_b');
+    const counted = countReads();
+    try {
+      const offDomain: LoadDeps['loadOffer'] = async () => ({
+        ok: false,
+        refusal: 'origin_mismatch',
+        message: 'not this domain',
+      });
+      expect(
+        await openPage(params(world, 'user_b'), PAGE, {
+          client: world.relays,
+          store,
+          loadOffer: offDomain,
+        }),
+      ).toEqual({
+        kind: 'refused',
+        screen: { kind: 'refused', reason: 'ref_needs_verified_store' },
+      });
+      expect(
+        await openPage(params(world, 'user_b'), PAGE, {
+          client: world.relays,
+          store,
+          loadOffer: soldOut,
+        }),
+      ).toEqual({ kind: 'refused', screen: { kind: 'refused', reason: 'sold_out' } });
+      expect(counted.reads()).toBe(0);
+    } finally {
+      counted.restore();
+    }
+  });
+});

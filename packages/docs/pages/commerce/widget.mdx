@@ -13,6 +13,8 @@
 
 The element shows a Buy button. A click opens the checkout in a modal over your page: a centered card on a wide screen, a sheet at the bottom on a phone. The buyer closes it with its close button, Escape, a click on the dimmed backdrop, or the checkout's own Done button once the purchase is delivered. Focus goes back to the button. With `display="inline"` the checkout sits in the page instead, where the element is, with no button.
 
+Each product has its own `naddr`: to sell several, put one `<elisym-buy>` per product on the page.
+
 ## Attributes
 
 | Attribute       | Value                          | Meaning                                                                                                                                     |
@@ -137,6 +139,8 @@ With `customer-ref`, the checkout also refuses when:
 The loader itself frames nothing, and logs an error, when the element with `customer-ref` sits in a frame or the value is not a valid reference.
 
 In every case but the first, and those the loader refuses itself, the page receives `refused`.
+
+A product the store has stopped selling shows as **Sold out** instead of the store or domain refusals above: no Pay button, and a note that an order already paid is still delivered. The page receives `refused`, as for any refusal.
 
 On a page without `customer-ref`, a buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later. On a page with `customer-ref` a refusal is final: it shows no order. That order is still followed and answered by your node, and shown on the next visit the checkout accepts.
 

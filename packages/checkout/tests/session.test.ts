@@ -1199,7 +1199,11 @@ describe('a purchase', () => {
     run.chain.dropSends = false;
     const follow = new CheckoutSession(snapshot.offer, {
       ...run.deps,
-      followOnly: { message: 'This product cannot be bought here.', orderId: snapshot.orderId },
+      followOnly: {
+        reason: 'offer_refused',
+        message: 'This product cannot be bought here.',
+        orderId: snapshot.orderId,
+      },
     });
     await follow.start();
     await run.timers.tick();
@@ -1233,11 +1237,16 @@ describe('a purchase', () => {
       ...run.deps,
       // Its network is not served either: the store's refusal is still what shows.
       rpcFor: () => undefined,
-      followOnly: { message: 'This product cannot be bought here.', orderId: snapshot.orderId },
+      followOnly: {
+        reason: 'offer_refused',
+        message: 'This product cannot be bought here.',
+        orderId: snapshot.orderId,
+      },
     });
     await follow.start();
     expect(run.last()).toEqual({
       kind: 'refused',
+      reason: 'offer_refused',
       message: 'This product cannot be bought here.',
       // An order's old snapshot: its name only, never a trust level it may no longer have.
       store: { name: run.offer.offer.profile.name },
@@ -1247,6 +1256,31 @@ describe('a purchase', () => {
     await follow.pay('Fake');
     expect(run.wallet.requests).toBe(1);
     expect(await store.forProduct(run.offer.productAddress)).toHaveLength(1);
+  });
+
+  it('a follow-only order of a sold-out product: once it ended, sold out shows', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    await run.session.startOver();
+    run.session.dispose();
+    const { followOnlyOffer } = await import('../src/app/controller');
+    const snapshot = await followOnlyOffer(run.shop.naddr, store, undefined);
+    if (snapshot === undefined) {
+      throw new Error('nothing to follow');
+    }
+    const follow = new CheckoutSession(snapshot.offer, {
+      ...run.deps,
+      followOnly: {
+        reason: 'sold_out',
+        message: 'This product cannot be bought here.',
+        orderId: snapshot.orderId,
+      },
+    });
+    await follow.start();
+    expect(run.last()).toMatchObject({ kind: 'refused', reason: 'sold_out' });
   });
 
   it('shows a delivery for the current order that arrived during an action', async () => {
@@ -1315,7 +1349,7 @@ describe('a purchase', () => {
     run.chain.dropSends = false;
     const follow = new CheckoutSession(snapshot?.offer as Ready, {
       ...run.deps,
-      followOnly: { message: 'Withdrawn.', orderId: paying.orderId },
+      followOnly: { reason: 'offer_refused', message: 'Withdrawn.', orderId: paying.orderId },
     });
     await follow.start();
     await run.timers.tick();
@@ -1357,6 +1391,62 @@ describe('a purchase', () => {
     // Once that order ends, the refusal shows: never a new purchase with the old trust level.
     await run.session.startOver();
     expect(run.last()).toMatchObject({ kind: 'refused', message: 'gone' });
+  });
+
+  it('a product stopped at press time: the live order is followed, then sold out shows', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    run.advance(600);
+    run.deps.reloadOffer = async () => ({
+      ok: false,
+      refusal: 'product_not_on_sale',
+      message: 'The listing is sold-out',
+    });
+    run.wallet.behaviour = 'sign';
+    await run.session.retry('Fake');
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', problem: { reason: 'sold_out' } });
+    expect(run.wallet.requests).toBe(1);
+    // A redraw keeps the reason.
+    run.session.refresh();
+    expect(run.last()).toMatchObject({ problem: { reason: 'sold_out' } });
+    // Once that order ends: the sold-out view, never the store's own words.
+    await run.session.startOver();
+    expect(run.last()).toMatchObject({ kind: 'refused', reason: 'sold_out' });
+    expect(run.statuses.at(-1)).toBe('refused');
+  });
+
+  it('a product stopped at press time with no live order: sold out, nothing ordered', async () => {
+    const run = await setup();
+    await run.session.start();
+    run.advance(600);
+    run.deps.reloadOffer = async () => ({
+      ok: false,
+      refusal: 'product_not_on_sale',
+      message: 'The listing is sold-out',
+    });
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({ kind: 'refused', reason: 'sold_out' });
+    expect(run.statuses.at(-1)).toBe('refused');
+    expect(run.wallet.requests).toBe(0);
+    expect(await run.deps.store.forProduct(run.offer.productAddress)).toEqual([]);
+  });
+
+  it('any other refusal at press time stays the store refusal', async () => {
+    const run = await setup();
+    await run.session.start();
+    run.advance(600);
+    run.deps.reloadOffer = async () => ({
+      ok: false,
+      refusal: 'no_payable_payout',
+      message: 'gone',
+    });
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({ kind: 'refused', reason: 'offer_refused', message: 'gone' });
   });
 
   it('shows the trust level again once a later reload accepts the page', async () => {

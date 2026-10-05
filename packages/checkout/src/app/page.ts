@@ -1,6 +1,6 @@
 import type { OrderStore } from '@elisym/commerce/buyer';
 import type { CheckoutParams, CheckoutState } from '../embed/protocol';
-import { type LoadDeps, type Screen, openPage, refRefusal } from './controller';
+import { type FollowOnly, type LoadDeps, type Screen, openPage, refRefusal } from './controller';
 import type { HeightAnimator } from './height';
 
 type ReadyOffer = Extract<Screen, { kind: 'offer' }>['offer'];
@@ -31,7 +31,7 @@ export interface PageDeps {
   run(
     offer: ReadyOffer,
     store: OrderStore,
-    followOnly: { message: string; orderId: string } | undefined,
+    followOnly: FollowOnly | undefined,
     onStatus: (state: CheckoutState) => void,
   ): Promise<void>;
   /** The session failed: stop it and forget its view. */

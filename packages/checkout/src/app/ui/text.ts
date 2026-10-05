@@ -10,10 +10,14 @@ export const REFUSALS: Record<RefusalReason, string> = {
   no_storage:
     'This browser blocks storage for the checkout (private mode?). Payments need it to stay safe.',
   offer_refused: 'This product cannot be bought here.',
+  sold_out: 'Sold out. This product is not available right now.',
   failed: 'The checkout could not start. Reload the page to try again.',
   bad_customer_ref: 'The page passed an invalid customer reference.',
   ref_needs_verified_store: REF_NEEDS_VERIFIED_STORE,
 };
+
+/** Under a sold-out screen: the same for every buyer, so it tells no one's state. */
+export const SOLD_OUT_PAID_LINE = 'An order already paid is still delivered.';
 
 export const WORKING: Record<Extract<View, { kind: 'working' }>['step'], string> = {
   checking: 'Checking…',
@@ -100,6 +104,8 @@ export function problemText(problem: Problem, asset: Asset): string {
       return 'The store changed this offer. Review it before paying.';
     case 'offer_refused':
       return 'The store no longer offers this product here. Your order is still being followed.';
+    case 'sold_out':
+      return 'This product is sold out now. Your order is still being followed.';
     case 'other_purchase':
       return 'Another purchase of this product is in progress in this browser. Try again in a few minutes.';
     case 'bad_email':

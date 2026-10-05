@@ -19,6 +19,7 @@ import { PayingLine } from './ui/PayingLine';
 import { ProductBlock } from './ui/ProductBlock';
 import { ProgressStep } from './ui/ProgressStep';
 import { ReceiptBlock } from './ui/ReceiptBlock';
+import { SoldOutStep } from './ui/SoldOutStep';
 import { REFUSALS, payoutLabel, slowLoading } from './ui/text';
 
 export interface Actions {
@@ -216,7 +217,9 @@ export function Checkout({
 
   let body: ComponentChildren;
   if (view === undefined) {
-    if (screen.kind === 'refused') {
+    if (screen.kind === 'refused' && screen.reason === 'sold_out') {
+      body = <SoldOutStep />;
+    } else if (screen.kind === 'refused') {
       body = (
         <EndedStep glyph={STOP_GLYPH} title="Not available" alert>
           <p>{REFUSALS[screen.reason]}</p>
@@ -344,6 +347,10 @@ export function Checkout({
         );
         break;
       case 'refused':
+        if (view.reason === 'sold_out') {
+          body = <SoldOutStep />;
+          break;
+        }
         body = (
           <EndedStep glyph={STOP_GLYPH} title="Not available" alert>
             <p>{REFUSALS.offer_refused}</p>

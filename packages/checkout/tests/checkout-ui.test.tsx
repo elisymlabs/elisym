@@ -13,6 +13,7 @@ import {
 import { type Actions, Checkout } from '../src/app/Checkout';
 import type { Screen } from '../src/app/controller';
 import type { Banner, Paying, Problem, Receipt, View } from '../src/app/session';
+import { SOLD_OUT_GLYPH } from '../src/app/ui/glyphs';
 import { PROBLEM_PLACE } from '../src/app/ui/panel';
 import { receiptText as fullReceiptText } from '../src/app/ui/text';
 
@@ -176,6 +177,7 @@ const OFFER_PROBLEMS: Problem[] = [
   { reason: 'offer_changed' },
   { reason: 'bad_email' },
   { reason: 'offer_refused' },
+  { reason: 'sold_out' },
   { reason: 'other_purchase' },
   { reason: 'too_late' },
 ];
@@ -939,6 +941,55 @@ describe('progress', () => {
   });
 });
 
+describe('a sold-out product', () => {
+  const SOLD_OUT = 'Sold out. This product is not available right now.';
+  const PAID_LINE = 'An order already paid is still delivered.';
+
+  function soldOutShown(ui: Ui): void {
+    expect(ui.text()).toContain(SOLD_OUT);
+    expect(ui.text()).toContain(PAID_LINE);
+    // Information, not a warning, and never the store's own words.
+    expect(ui.alerts()).toEqual([]);
+    expect(ui.text()).not.toContain('The listing is sold-out');
+    expect(ui.text()).not.toContain('Not available');
+    expect(ui.container.querySelector('img.mark')?.getAttribute('src')).toBe(SOLD_OUT_GLYPH);
+  }
+
+  it('the first screen: sold out, plainly', () => {
+    const ui = mount(undefined);
+    ui.draw({ screen: { kind: 'refused', reason: 'sold_out' } });
+    soldOutShown(ui);
+  });
+
+  it('a refused view: the same, the store text dropped', () => {
+    const ui = mount(undefined);
+    ui.draw({
+      view: {
+        kind: 'refused',
+        reason: 'sold_out',
+        message: 'The listing is sold-out',
+        store: { name: 'Demo Shop' },
+      },
+    });
+    soldOutShown(ui);
+  });
+
+  it('any other refused view keeps the store refusal and its note', () => {
+    const ui = mount(undefined);
+    ui.draw({ view: { kind: 'refused', reason: 'offer_refused', message: 'gone' } });
+    expect(ui.alerts().join(' ')).toContain('This product cannot be bought here.');
+    expect(ui.text()).toContain('gone');
+    expect(ui.text()).not.toContain(SOLD_OUT);
+  });
+
+  it('a followed order of a product stopped since: the problem says so', () => {
+    const ui = mount(waitingView(about, paying, { problem: { reason: 'sold_out' } }));
+    expect(ui.text()).toContain(
+      'This product is sold out now. Your order is still being followed.',
+    );
+  });
+});
+
 describe('a slow start', () => {
   it('says the checkout is still checking, and how to come back, inline', () => {
     const ui = mount(undefined);
@@ -1236,7 +1287,7 @@ describe('the banner', () => {
     { name: 'progress', view: { kind: 'working', step: 'checking', about } },
     { name: 'done', view: { kind: 'delivered', text: 'x' } },
     { name: 'refunded', view: { kind: 'refunded' } },
-    { name: 'refused', view: { kind: 'refused', message: 'no' } },
+    { name: 'refused', view: { kind: 'refused', reason: 'offer_refused', message: 'no' } },
   ];
   for (const { name, view } of views) {
     it(`shows on ${name}`, () => {
@@ -1278,7 +1329,14 @@ describe('the trust chip', () => {
     expect(ui.has('.chip')).toBe(true);
     ui.draw({ view: waitingView({ ...about, store: { name: 'Demo Shop' } }, paying) });
     expect(ui.has('.chip')).toBe(false);
-    ui.draw({ view: { kind: 'refused', message: 'gone', store: { name: 'Demo Shop' } } });
+    ui.draw({
+      view: {
+        kind: 'refused',
+        reason: 'offer_refused',
+        message: 'gone',
+        store: { name: 'Demo Shop' },
+      },
+    });
     expect(ui.has('.chip')).toBe(false);
   });
 
