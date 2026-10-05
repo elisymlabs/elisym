@@ -49,7 +49,18 @@ import { type Rpc, type SolanaRpcApi, isSignature } from '@solana/kit';
 import type { CheckoutState } from '../embed/protocol';
 import type { FollowOnly, RefusedReason } from './controller';
 import { type TempoWalletOption, TempoChainUnsupported, walletErrorKind } from './evm-wallets';
+import { type Purchase, purchaseOf, purchasesOf } from './history';
+import {
+  explorerFor,
+  receiptBase,
+  recordNetwork,
+  recordPaying,
+  recordRail,
+  recordTarget,
+} from './receipts';
 import { REF_NEEDS_VERIFIED_STORE, sameRef } from './ref-scope';
+
+export { explorerLink } from './receipts';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 
@@ -149,7 +160,14 @@ export interface Receipt {
   sent?: { tx: string; explorer?: string };
   /** When the store's answer was accepted (seconds): the date row when no payment was seen. */
   answeredAt?: number;
+  /** When the order was placed (seconds, the order's own time): "Ordered on" of an open purchase. */
+  orderedAt?: number;
+  /** Set only on the history's receipt of a purchase not finished yet: its `Status:` line. */
+  openStatus?: OpenStatus;
 }
+
+/** Where a purchase that is not delivered or refunded stands. */
+export type OpenStatus = 'waiting_store' | 'paying' | 'blocked' | 'cancelled_paid';
 
 /** A time estimate: `seconds` left as of `at` (unix seconds, device clock). */
 export interface Countdown {
@@ -300,6 +318,8 @@ export interface SessionDeps {
    * where the offer would be.
    */
   followOnly?: FollowOnly;
+  /** Every order record of this browser (on this site), read only: "Your purchases". */
+  readAll?(): Promise<OrderRecord[]>;
 }
 
 /** A late answer or find for an order that is not on screen. */
@@ -331,22 +351,6 @@ function railOf(payout: PricedPayout): Rail {
   return payout.target.caip19.chain.family === 'evm' ? 'tempo' : 'solana';
 }
 
-function recordRail(record: OrderRecord): Rail {
-  return record.payout.caip19.startsWith('eip155:') ? 'tempo' : 'solana';
-}
-
-/**
- * The payout target an order was placed to, from the order's own snapshot: a
- * store that lists another network first later must never move the order's
- * chain work (watching, ending, retrying) to that network.
- */
-function recordTarget(record: OrderRecord): PricedPayout['target'] | undefined {
-  return record.offer.payouts.find(
-    (payout) =>
-      payout.caip19.id === record.payout.caip19 && payout.address === record.payout.address,
-  );
-}
-
 const NO_NETWORK = 'This network is not available here yet.';
 /** The reloaded offer has no payout this widget can pay on the page's network. */
 const NO_PAYABLE_PAYOUT = 'This product cannot be paid here';
@@ -355,19 +359,6 @@ function samePayout(left: PricedPayout, right: PricedPayout): boolean {
   return (
     left.target.caip19.id === right.target.caip19.id && left.target.address === right.target.address
   );
-}
-
-/** What an order is paying, from the order's own snapshot. */
-function recordPaying(record: OrderRecord): Paying | undefined {
-  const target = recordTarget(record);
-  return target === undefined
-    ? undefined
-    : {
-        amount: record.amount,
-        asset: target.caip19.asset,
-        network: target.caip19.chain.network,
-        chain: recordRail(record),
-      };
 }
 
 /** A product as a progress view names it. */
@@ -389,19 +380,10 @@ export function payoutPaying(payout: PricedPayout): Paying {
   };
 }
 
-/** The explorer page of a transaction on the record's own chain. */
-function explorerFor(record: OrderRecord, tx: string, network: Network): string {
-  if (recordRail(record) === 'solana') {
-    return explorerLink(tx, network);
-  }
-  const template = recordTarget(record)?.caip19.chain.explorerTx;
-  return template === undefined ? '' : template.replace('{tx}', encodeURIComponent(tx));
-}
-
-/** The block explorer page of a Solana transaction. */
-export function explorerLink(signature: string, network: Network): string {
-  const cluster = network === 'mainnet' ? '' : `?cluster=${network}`;
-  return `https://explorer.solana.com/tx/${encodeURIComponent(signature)}${cluster}`;
+/** A receipt with the transaction this checkout sent, once its chain check succeeded. */
+function withSent(record: OrderRecord, base: Receipt, tx: string, network: Network): Receipt {
+  const explorer = explorerFor(record, tx, network);
+  return { ...base, sent: { tx, ...(explorer.startsWith('https://') ? { explorer } : {}) } };
 }
 
 /** A wallet's connect answer: the wallet, or why there is none. */
@@ -534,6 +516,8 @@ export class CheckoutSession {
   private readonly receiptCandidates = new Map<string, string>();
   /** The one on-chain look-up of each such transaction, by order and transaction. */
   private readonly txChecks = new Map<string, 'pending' | boolean>();
+  /** That look-up's own promise, by the same key: a receipt opened later awaits it, never a second one. */
+  private readonly txLookups = new Map<string, Promise<boolean>>();
   /**
    * Why a re-check refused this page, while an order kept it from ending: the
    * trust level is no longer shown, and no new purchase is offered.
@@ -600,7 +584,10 @@ export class CheckoutSession {
             record.state !== 'created' &&
             record.state !== 'ordered' &&
             !gone(record) &&
-            (isTerminal(record) || this.recordServed(record)),
+            // A finished order is never followed here: this page is accepted, and the page
+            // would hear `completed` where a visitor without one hears `refused`.
+            !isTerminal(record) &&
+            this.recordServed(record),
         ),
       );
       this.followOnly = {
@@ -628,6 +615,12 @@ export class CheckoutSession {
       return;
     }
     if (isTerminal(shown)) {
+      if (followed === undefined) {
+        // A finished purchase does not reopen the checkout: a fresh one starts,
+        // and the old one is under "Your purchases".
+        this.showOffer();
+        return;
+      }
       await this.follow(shown);
       return;
     }
@@ -1154,25 +1147,9 @@ export class CheckoutSession {
    * up once, after the view is drawn, never shown while unknown.
    */
   private receiptOf(record: OrderRecord, network: Network): Receipt {
-    const paying = recordPaying(record);
-    const base = {
-      store: record.offer.profile.name ?? 'Unnamed store',
-      product: record.offer.product.title,
-      ...(paying === undefined ? {} : { paying }),
-      orderId: record.orderId,
-      ...(record.status === undefined ? {} : { answeredAt: record.status.at }),
-    };
-    const paidTx = record.paidTx;
-    if (paidTx !== undefined) {
-      const explorer = explorerFor(record, paidTx, network);
-      return {
-        ...base,
-        paid: {
-          tx: paidTx,
-          ...(record.paidAt === undefined ? {} : { at: record.paidAt }),
-          ...(explorer.startsWith('https://') ? { explorer } : {}),
-        },
-      };
+    const base = receiptBase(record, network);
+    if (base.paid !== undefined) {
+      return base;
     }
     const tx = this.receiptCandidate(record);
     if (tx === undefined) {
@@ -1180,17 +1157,73 @@ export class CheckoutSession {
     }
     const checked = this.txChecks.get(`${record.orderId}:${tx}`);
     if (checked === undefined) {
-      this.checkSentTx(record, tx);
+      void this.checkSentTx(record, tx);
       return base;
     }
-    if (checked !== true) {
+    return checked === true ? withSent(record, base, tx, network) : base;
+  }
+
+  /**
+   * This store's purchases in this browser for "Your purchases": the page's own
+   * account only. Read only: it writes nothing, tells the page nothing, and
+   * touches no part of the purchase on screen.
+   */
+  async purchases(): Promise<Purchase[]> {
+    const records = (await this.deps.readAll?.()) ?? [];
+    return purchasesOf(records, {
+      storePubkey: this.offer.offer.storePubkey,
+      customerRef: this.customerRef,
+      productAddress: this.offer.productAddress,
+    });
+  }
+
+  /**
+   * One purchase as it stands now, for its detail: its status, its delivery
+   * and its receipt from the record read once, never the list's older snapshot.
+   */
+  async purchase(orderId: string): Promise<Purchase | undefined> {
+    const record = await this.ownStoreRecord(orderId);
+    const purchase =
+      record === undefined ? undefined : purchaseOf(record, this.offer.productAddress);
+    if (record === undefined || purchase === undefined) {
+      return undefined;
+    }
+    return { ...purchase, receipt: await this.receiptFor(record) };
+  }
+
+  /** A record of this store and this page's account, or nothing. */
+  private async ownStoreRecord(orderId: string): Promise<OrderRecord | undefined> {
+    const record = await this.deps.store.get(orderId);
+    return record !== undefined &&
+      record.storePubkey === this.offer.offer.storePubkey &&
+      this.own(record)
+      ? record
+      : undefined;
+  }
+
+  /**
+   * A purchase's receipt for its detail. A finished order's sent transaction is
+   * named only after its one chain check (shared with the receipt panel's); an
+   * unfinished one gets no check, so its later receipt is never pinned to a
+   * look-up made too early.
+   */
+  private async receiptFor(record: OrderRecord): Promise<Receipt> {
+    const network = recordNetwork(record);
+    const base = receiptBase(record, network);
+    if (!isTerminal(record) || base.paid !== undefined) {
       return base;
     }
-    const explorer = explorerFor(record, tx, network);
-    return {
-      ...base,
-      sent: { tx, ...(explorer.startsWith('https://') ? { explorer } : {}) },
-    };
+    const tx = this.receiptCandidate(record);
+    if (tx === undefined) {
+      return base;
+    }
+    const key = `${record.orderId}:${tx}`;
+    const checked = this.txChecks.get(key);
+    const found =
+      checked === true || checked === false
+        ? checked
+        : await (this.txLookups.get(key) ?? this.checkSentTx(record, tx));
+    return found ? withSent(record, base, tx, network) : base;
   }
 
   /**
@@ -1198,10 +1231,9 @@ export class CheckoutSession {
    * successful, or nothing. A late answer only fills the cache; it redraws only
    * the same finished order, and never during an action.
    */
-  private checkSentTx(record: OrderRecord, tx: string): void {
+  private checkSentTx(record: OrderRecord, tx: string): Promise<boolean> {
     const key = `${record.orderId}:${tx}`;
-    this.txChecks.set(key, 'pending');
-    void this.sentTxSucceeded(record, tx)
+    const lookup = this.sentTxSucceeded(record, tx)
       .catch(() => false)
       .then((found) => {
         this.txChecks.set(key, found);
@@ -1216,7 +1248,11 @@ export class CheckoutSession {
         ) {
           this.render();
         }
+        return found;
       });
+    this.txChecks.set(key, 'pending');
+    this.txLookups.set(key, lookup);
+    return lookup;
   }
 
   private async sentTxSucceeded(record: OrderRecord, tx: string): Promise<boolean> {

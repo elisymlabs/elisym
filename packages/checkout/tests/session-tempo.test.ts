@@ -40,9 +40,12 @@ const HASH = `0x${'ab'.repeat(32)}`;
 type Ready = Extract<LoadedOffer, { ok: true }>;
 
 let store: OrderStore;
+/** The store's backend: a test may write a record as another tab left it. */
+let backend: IndexedDbOrderBackend;
 
 beforeEach(async () => {
-  store = new OrderStore(new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory())));
+  backend = new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory()));
+  store = new OrderStore(backend);
 });
 
 function word(value: bigint | string): string {
@@ -351,6 +354,81 @@ describe('paying on Tempo in the widget', () => {
       expect.objectContaining({ orderId: (over as OrderRecord).orderId, state: 'paid' }),
     ]);
     expect((await records(run.offer))[0]).toMatchObject({ state: 'paid', paidTx: HASH });
+  });
+
+  it('a late approval found while a delivered purchase is the newest: the offer, the banner, no second payment (F3)', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'fail';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    const [paying] = await records(run.offer);
+    run.pastDeadline(paying as OrderRecord);
+    await run.timers.tick();
+    run.session.dispose();
+    const [over] = (await records(run.offer)) as OrderRecord[];
+    if (over === undefined) {
+      throw new Error('no ended order');
+    }
+    // A newer purchase of the product was delivered meanwhile (another tab).
+    const { marker: _marker, ...rest } = over;
+    const delivered: OrderRecord = {
+      ...rest,
+      orderId: 'd'.repeat(64),
+      createdAt: over.createdAt + 10,
+      version: 1,
+      state: 'completed',
+      status: { status: 'completed', at: over.createdAt + 20, delivery: 'https://shop.example/x' },
+    };
+    await backend.transactProduct(delivered.productAddress, () => ({
+      write: [delivered],
+      result: undefined,
+    }));
+    // The old prompt is approved after all: found while this load starts.
+    run.land(over.reference);
+    const again = new CheckoutSession(run.offer, run.deps);
+    await again.start();
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+    expect(run.banners).toEqual([
+      expect.objectContaining({ orderId: over.orderId, state: 'paid' }),
+    ]);
+    run.wallet.behaviour = 'land';
+    const requests = run.wallet.requests;
+    await again.pay('MetaMask');
+    // The paid order holds the product: it is followed, and no wallet opens.
+    expect(run.wallet.requests).toBe(requests);
+    expect(run.last()).toMatchObject({ kind: 'waiting_store' });
+  });
+
+  it('resumes a paying Tempo order before a newer delivered purchase (F4)', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'fail';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    run.session.dispose();
+    const [paying] = (await records(run.offer)) as OrderRecord[];
+    if (paying === undefined || paying.state !== 'paying') {
+      throw new Error('no paying order');
+    }
+    const { marker: _marker, ...rest } = paying;
+    const delivered: OrderRecord = {
+      ...rest,
+      orderId: 'd'.repeat(64),
+      createdAt: paying.createdAt + 10,
+      version: 1,
+      state: 'completed',
+      status: {
+        status: 'completed',
+        at: paying.createdAt + 20,
+        delivery: 'https://shop.example/x',
+      },
+    };
+    await backend.transactProduct(delivered.productAddress, () => ({
+      write: [delivered],
+      result: undefined,
+    }));
+    const again = new CheckoutSession(run.offer, run.deps);
+    await again.start();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', tempo: true });
   });
 
   it('watches a payment approved after another tab ended the order, and shows it when found', async () => {

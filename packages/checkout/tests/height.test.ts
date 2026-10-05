@@ -270,3 +270,19 @@ describe('the frame height', () => {
     expect(view.state.posts).toEqual([260]);
   });
 });
+
+describe('a held frame', () => {
+  it('posts nothing more: opening the purchases, a detail or a download in it changes nothing (H4)', () => {
+    const view = page();
+    view.animator.flush(240);
+    view.animator.hold();
+    const posted = [...view.state.posts];
+    for (const height of [600, 240, 900]) {
+      view.animator.target(height);
+      for (let elapsed = 0; elapsed < HEIGHT_ANIMATION_MS + 32; elapsed += 16) {
+        view.frame();
+      }
+    }
+    expect(view.state.posts).toEqual(posted);
+  });
+});

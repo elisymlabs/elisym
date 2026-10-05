@@ -12,8 +12,10 @@ import {
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
 } from '@elisym/pay-core';
+import type { Purchase, PurchaseStatus } from '../../src/app/history';
 import { type About, type View, payoutPaying } from '../../src/app/session';
 import { nowSeconds } from '../../src/app/ui/clock';
+import type { PurchasesSource } from '../../src/app/ui/PurchasesStep';
 
 export type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 export type OfferView = Extract<View, { kind: 'offer' }>;
@@ -174,6 +176,56 @@ export interface CannedProps {
   initialWalletsOpen?: boolean;
   initialListOpen?: boolean;
   hintAfterMs?: number;
+  purchases?: PurchasesSource;
+  initialPurchasesOpen?: boolean;
+}
+
+const CANNED_STATUSES: readonly PurchaseStatus[] = [
+  'delivered',
+  'refunded',
+  'waiting_store',
+  'paying',
+  'blocked',
+  'cancelled_paid',
+];
+
+/** `count` purchases of mixed states, newest first (the fixture page and the UI tests). */
+export function cannedPurchases(count: number, now = nowSeconds()): Purchase[] {
+  const paying = payoutPaying(priced('solana-devnet'));
+  return Array.from({ length: count }, (_, index) => {
+    const status = CANNED_STATUSES[index % CANNED_STATUSES.length] ?? 'delivered';
+    const orderId = `${index.toString(16).padStart(8, '0')}-c7e7-47c0-b790-cfdebe6d55a3`;
+    const createdAt = now - index * 86_400;
+    const delivered = status === 'delivered';
+    return {
+      orderId,
+      createdAt,
+      status,
+      receipt: {
+        store: 'Demo Shop',
+        product: index % 2 === 0 ? 'Deposit 1 USD' : 'A course with a much longer title than most',
+        paying,
+        orderId,
+        orderedAt: createdAt,
+        ...(delivered || status === 'refunded' ? { answeredAt: createdAt + 60 } : {}),
+        ...(delivered || status === 'refunded' ? {} : { openStatus: status }),
+      },
+      ...(delivered
+        ? { delivery: { text: 'https://shop.example/course', link: 'https://shop.example/course' } }
+        : {}),
+      assetId:
+        'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+      thisProduct: index % 2 === 0,
+    };
+  });
+}
+
+/** A read-only source of fixed purchases. */
+export function cannedSource(purchases: Purchase[]): PurchasesSource {
+  return {
+    purchases: async () => purchases,
+    purchase: async (orderId) => purchases.find((each) => each.orderId === orderId),
+  };
 }
 
 /** A Solana signature and a Tempo hash, for receipts. */
@@ -430,5 +482,10 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
         product: about.product,
       },
     },
+    ...[0, 3, 40].map((count) => ({
+      name: `your purchases: ${count}`,
+      view: offerView(solana),
+      props: { purchases: cannedSource(cannedPurchases(count, now)), initialPurchasesOpen: true },
+    })),
   ];
 }

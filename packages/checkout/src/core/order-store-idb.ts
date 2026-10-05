@@ -74,6 +74,12 @@ export class IndexedDbOrderBackend implements OrderBackend {
     )) as OrderRecord[];
   }
 
+  /** Every order record of this browser (on this site), read only: "Your purchases". */
+  async all(): Promise<OrderRecord[]> {
+    const transaction = this.database.transaction(ORDERS, 'readonly');
+    return (await requestResult(transaction.objectStore(ORDERS).getAll())) as OrderRecord[];
+  }
+
   private async transact<T>(
     storeName: string,
     run: (store: IDBObjectStore) => Promise<{ commit: boolean; result: T }>,

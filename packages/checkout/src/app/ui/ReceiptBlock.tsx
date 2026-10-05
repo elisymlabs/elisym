@@ -5,7 +5,10 @@ import { TransactionLine } from './TransactionLine';
 
 interface Props {
   receipt: Receipt;
-  kind: 'delivered' | 'refunded';
+  /** `open`: a purchase not delivered or refunded (in progress, waiting, blocked, cancelled). */
+  kind: 'delivered' | 'refunded' | 'open';
+  /** Added to what "Copy receipt" copies only, never to the rows shown (a delivery). */
+  copyExtra?: string;
 }
 
 /** The line that starts the order id in the receipt text. */
@@ -18,7 +21,7 @@ const ORDER_LINE = 'Order: ';
  * checkout confirmed, "Transaction sent" for one it only sent. A short note
  * under the order id says what it is for.
  */
-export function ReceiptBlock({ receipt, kind }: Props) {
+export function ReceiptBlock({ receipt, kind, copyExtra }: Props) {
   const text = receiptText(receipt, kind);
   let transaction: { label: string; tx: string; explorer?: string } | undefined;
   if (receipt.paid !== undefined) {
@@ -52,7 +55,7 @@ export function ReceiptBlock({ receipt, kind }: Props) {
     <section class="receipt" aria-label="Receipt">
       <p class="receipt-title">Receipt</p>
       <CopyText
-        text={text}
+        text={copyExtra === undefined ? text : `${text}\n${copyExtra}`}
         shown={shown}
         label="Copy receipt"
         copiedText="Receipt copied."

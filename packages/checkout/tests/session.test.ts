@@ -32,9 +32,12 @@ const PAGE = 'https://merchant.example';
 type Ready = Extract<LoadedOffer, { ok: true }>;
 
 let store: OrderStore;
+/** The store's backend: a test may write a record as another tab or an older version left it. */
+let backend: IndexedDbOrderBackend;
 
 beforeEach(async () => {
-  store = new OrderStore(new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory())));
+  backend = new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory()));
+  store = new OrderStore(backend);
 });
 
 /** Intervals the test runs by hand. */
@@ -248,6 +251,7 @@ describe('a purchase', () => {
           chain: 'solana',
         },
         orderId: paid.orderId,
+        orderedAt: paid.createdAt,
         paid: {
           tx: paidTx,
           at: paid.paidAt,
@@ -402,7 +406,7 @@ describe('a purchase', () => {
     expect(run.last()).toMatchObject({ kind: 'waiting_store' });
   });
 
-  it('shows a delivered order when no network is served', async () => {
+  it('a delivered order on an unserved network: refused, exactly as with no order (F6b)', async () => {
     const run = await setup();
     await run.session.start();
     await run.session.pay('Fake');
@@ -410,9 +414,35 @@ describe('a purchase', () => {
     await storeSays(run.shop, run.relays, await recordOf(run.offer));
     expect(run.last()).toMatchObject({ kind: 'delivered' });
     run.session.dispose();
-    const again = new CheckoutSession(run.offer, { ...run.deps, rpcFor: () => undefined });
+    const statuses: CheckoutState[] = [];
+    const again = new CheckoutSession(run.offer, {
+      ...run.deps,
+      rpcFor: () => undefined,
+      onStatus: (state) => statuses.push(state),
+    });
     await again.start();
+    // The page hears what a visitor without the order hears: the delivery is in Your purchases.
+    expect(run.last()).toMatchObject({ kind: 'refused' });
+    expect(statuses).toEqual(['refused']);
+  });
+
+  it('a delivered order on a served network while the offer network is not: refused (F6b)', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    await storeSays(run.shop, run.relays, await recordOf(run.offer));
     expect(run.last()).toMatchObject({ kind: 'delivered' });
+    run.session.dispose();
+    const statuses: CheckoutState[] = [];
+    const again = new CheckoutSession(withMainnetFirst(run.offer), {
+      ...run.deps,
+      rpcFor: (network) => (network === 'devnet' ? run.chain.rpc : undefined),
+      onStatus: (state) => statuses.push(state),
+    });
+    await again.start();
+    expect(run.last()).toMatchObject({ kind: 'refused' });
+    expect(statuses).toEqual(['refused']);
   });
 
   it('still hears an order that ended unpaid when no network is served', async () => {
@@ -2810,7 +2840,9 @@ describe('the transaction a receipt names', () => {
     const again = new CheckoutSession(run.offer, run.deps);
     await again.start();
     await settle();
-    expect(receiptOfView(run.last())).not.toHaveProperty('sent');
+    // Reopened from Your purchases: the new session has no client to check it with.
+    const order = await recordOf(run.offer);
+    expect((await again.purchase(order.orderId))?.receipt).not.toHaveProperty('sent');
     expect(probe.state?.reads).toBe(1);
   });
 
@@ -2966,5 +2998,310 @@ describe('a decline in the wallet', () => {
       kind: 'waiting_payment',
       problem: { reason: 'wallet_failed' },
     });
+  });
+});
+
+/** A purchase the store delivered, its session closed: what a later page load finds. */
+async function deliveredBefore(run: Awaited<ReturnType<typeof setup>>): Promise<OrderRecord> {
+  await run.session.start();
+  await run.session.pay('Fake');
+  await run.timers.tick();
+  await storeSays(run.shop, run.relays, await recordOf(run.offer));
+  run.session.dispose();
+  const delivered = await recordOf(run.offer);
+  if (delivered.state !== 'completed') {
+    throw new Error(`expected a delivered order, found ${delivered.state}`);
+  }
+  return delivered;
+}
+
+/** A finished purchase of the product, added beside `record`: newer, and otherwise the same. */
+async function finishedBeside(record: OrderRecord): Promise<OrderRecord> {
+  const { marker: _marker, paidTx: _paidTx, paidAt: _paidAt, ...rest } = record;
+  const finished: OrderRecord = {
+    ...rest,
+    orderId: 'd'.repeat(64),
+    createdAt: record.createdAt + 10,
+    version: 1,
+    state: 'completed',
+    status: { status: 'completed', at: record.createdAt + 20, delivery: 'https://shop.example/x' },
+  };
+  await backend.transactProduct(finished.productAddress, () => ({
+    write: [finished],
+    result: undefined,
+  }));
+  return finished;
+}
+
+/** A fresh session on the same page, its views and statuses recorded apart. */
+function reload(run: Awaited<ReturnType<typeof setup>>, extra: Partial<SessionDeps> = {}) {
+  const views: View[] = [];
+  const statuses: CheckoutState[] = [];
+  const session = new CheckoutSession(run.offer, {
+    ...run.deps,
+    onView: (view) => views.push(view),
+    onStatus: (state) => statuses.push(state),
+    ...extra,
+  });
+  return { session, views, statuses, last: () => views.at(-1) };
+}
+
+describe('a reload after a finished purchase (D1)', () => {
+  it('starts a new purchase at the first step, and the page hears only "ready" (F1)', async () => {
+    const run = await setup();
+    await deliveredBefore(run);
+    const again = reload(run);
+    await again.session.start();
+    expect(again.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(again.statuses).toEqual(['ready']);
+  });
+
+  it('starts a new purchase after a refund too (F1)', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    await storeSays(run.shop, run.relays, await recordOf(run.offer), {
+      status: 'cancelled',
+      delivery: undefined,
+      refund: { tx: '6'.repeat(88), amount: '49000000' },
+    } as Partial<OrderMessage>);
+    run.session.dispose();
+    expect((await recordOf(run.offer)).state).toBe('refunded');
+    const again = reload(run);
+    await again.session.start();
+    expect(again.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(again.statuses).toEqual(['ready']);
+  });
+
+  it('resumes an older paid order before a newer delivered one (F2)', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    run.session.dispose();
+    const paid = await recordOf(run.offer);
+    expect(paid.state).toBe('paid');
+    await finishedBeside(paid);
+    const again = reload(run);
+    await again.session.start();
+    expect(again.last()).toMatchObject({ kind: 'waiting_store' });
+    expect(again.statuses).toEqual(['paid']);
+  });
+
+  it('resumes a paying order before a newer delivered one, and watches it (F4)', async () => {
+    const run = await setup();
+    run.chain.dropSends = true;
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.session.dispose();
+    const paying = await recordOf(run.offer);
+    expect(paying.state).toBe('paying');
+    await finishedBeside(paying);
+    const again = reload(run);
+    await again.session.start();
+    expect(again.last()).toMatchObject({ kind: 'waiting_payment' });
+    expect(run.timers.running.size).toBeGreaterThan(0);
+  });
+
+  it('a press after the fresh start places a new order; beside a live one it opens no wallet (F5)', async () => {
+    const run = await setup();
+    const delivered = await deliveredBefore(run);
+    const fresh = reload(run);
+    await fresh.session.start();
+    expect(fresh.last()).toMatchObject({ kind: 'offer' });
+    // Another tab of the same page pays meanwhile, and its payment does not land yet.
+    run.chain.dropSends = true;
+    const other = reload(run);
+    await other.session.start();
+    await other.session.pay('Fake');
+    const requests = run.wallet.requests;
+    await fresh.session.pay('Fake');
+    expect(run.wallet.requests).toBe(requests);
+    expect(fresh.last()).toMatchObject({ kind: 'waiting_payment' });
+    // Without the other tab: a new order, never the delivered one.
+    other.session.dispose();
+    fresh.session.dispose();
+    const records = await store.forProduct(run.offer.productAddress);
+    expect(records.filter((record) => record.orderId === delivered.orderId)).toHaveLength(1);
+    expect(records.some((record) => record.orderId !== delivered.orderId)).toBe(true);
+  });
+
+  it('places a new order on a press after the fresh start (F5)', async () => {
+    const run = await setup();
+    const delivered = await deliveredBefore(run);
+    const fresh = reload(run);
+    await fresh.session.start();
+    const requests = run.wallet.requests;
+    await fresh.session.pay('Fake');
+    expect(run.wallet.requests).toBe(requests + 1);
+    const records = await store.forProduct(run.offer.productAddress);
+    const placed = records.filter((record) => record.orderId !== delivered.orderId);
+    expect(placed).toHaveLength(1);
+    expect((await store.get(delivered.orderId))?.state).toBe('completed');
+  });
+
+  it('a page refused with an order to follow still shows the finished one (F6)', async () => {
+    const run = await setup();
+    const delivered = await deliveredBefore(run);
+    const followed = reload(run, {
+      followOnly: {
+        reason: 'offer_refused',
+        message: 'This product cannot be bought here.',
+        orderId: delivered.orderId,
+      },
+    });
+    await followed.session.start();
+    expect(followed.last()).toMatchObject({ kind: 'delivered' });
+  });
+
+  it('a delivery that arrives while the checkout is open still shows and is told (F8)', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    await storeSays(run.shop, run.relays, await recordOf(run.offer));
+    expect(run.last()).toMatchObject({ kind: 'delivered' });
+    expect(run.statuses.at(-1)).toBe('completed');
+  });
+});
+
+describe('Your purchases: the session side', () => {
+  it('lists this store’s payments of this account only, read from every record', async () => {
+    const run = await setup();
+    const delivered = await deliveredBefore(run);
+    const otherStore = { ...delivered, orderId: 'e'.repeat(64), storePubkey: 'f'.repeat(64) };
+    const otherAccount = { ...delivered, orderId: 'c'.repeat(64), customerRef: 'user_a' };
+    const page = reload(run, {
+      readAll: async () => [...(await backend.all()), otherStore, otherAccount],
+    });
+    await page.session.start();
+    const listed = await page.session.purchases();
+    expect(listed.map((purchase) => purchase.orderId)).toEqual([delivered.orderId]);
+    expect(listed[0]).toMatchObject({ status: 'delivered', thisProduct: true });
+    expect(page.statuses).toEqual(['ready']);
+  });
+
+  it('lists nothing, and reads nothing it writes, without a reader', async () => {
+    const run = await setup();
+    await deliveredBefore(run);
+    const page = reload(run);
+    await page.session.start();
+    expect(await page.session.purchases()).toEqual([]);
+  });
+
+  it('names a sent transaction only after its check, and checks it once across opens (H15)', async () => {
+    const probe: { state?: { reads: number } } = {};
+    const { run, signature } = await answeredFirst((chain) => {
+      const made = statusRpc(chain, () => 'real');
+      probe.state = made.state;
+      return () => made.rpc;
+    });
+    run.session.dispose();
+    const order = await recordOf(run.offer);
+    const page = reload(run);
+    await page.session.start();
+    const reads = probe.state?.reads ?? 0;
+    const first = (await page.session.purchase(order.orderId))?.receipt;
+    expect(first?.sent?.tx).toBe(signature);
+    expect(first).not.toHaveProperty('paid');
+    const second = (await page.session.purchase(order.orderId))?.receipt;
+    expect(second?.sent?.tx).toBe(signature);
+    expect(probe.state?.reads).toBe(reads + 1);
+  });
+
+  it('shares a look-up still pending from the receipt panel: one call (H15)', async () => {
+    let release: ((value: unknown) => void) | undefined;
+    const probe: { state?: { reads: number } } = {};
+    const { run, signature } = await answeredFirst((chain) => {
+      const made = statusRpc(chain, () => 'real');
+      probe.state = made.state;
+      return () => made.rpc;
+    });
+    const order = await recordOf(run.offer);
+    // The receipt panel's look-up ran already (one read); a new page holds its own pending.
+    run.session.dispose();
+    const held = statusRpc(run.chain, () => new Promise((resolve) => (release = resolve)));
+    const page = reload(run, { rpcFor: () => held.rpc });
+    await page.session.start();
+    // The delivered order is not on screen (fresh start), so only the history opens it.
+    const opened = page.session.purchase(order.orderId);
+    const again = page.session.purchase(order.orderId);
+    await settle();
+    expect(held.state.reads).toBe(1);
+    release?.({ value: [{ err: null, confirmationStatus: 'finalized' }] });
+    expect((await opened)?.receipt.sent?.tx).toBe(signature);
+    expect((await again)?.receipt.sent?.tx).toBe(signature);
+    expect(held.state.reads).toBe(1);
+  });
+
+  it('checks nothing for an unfinished purchase, so its later receipt still checks (H15)', async () => {
+    const made: { state?: { reads: number }; rpc?: ReturnType<typeof statusRpc>['rpc'] } = {};
+    const run = await setup();
+    const probe = statusRpc(run.chain, () => 'real');
+    made.state = probe.state;
+    run.deps.rpcFor = () => probe.rpc;
+    // The transaction lands, but the watch cannot read it yet: no `paidTx`.
+    run.chain.indexLag = true;
+    await run.session.start();
+    await run.session.pay('Fake');
+    const paying = await recordOf(run.offer);
+    expect(paying.state).toBe('paying');
+    const opened = (await run.session.purchase(paying.orderId))?.receipt;
+    expect(opened).toMatchObject({ openStatus: 'paying' });
+    expect(opened).not.toHaveProperty('sent');
+    expect(probe.state.reads).toBe(0);
+    // Then the store delivers it before the watch finds the payment.
+    await storeSays(run.shop, run.relays, paying);
+    await settle();
+    const receipt = receiptOfView(run.last());
+    expect(receipt?.sent).toBeDefined();
+    expect(probe.state.reads).toBe(1);
+    // Opened again now: the record as it stands, delivered, not the paying snapshot.
+    const now = await run.session.purchase(paying.orderId);
+    expect(now).toMatchObject({
+      status: 'delivered',
+      delivery: { text: 'https://shop.example/course' },
+    });
+    expect(now?.receipt).not.toHaveProperty('openStatus');
+    expect(now?.receipt.sent).toBeDefined();
+    expect(probe.state.reads).toBe(1);
+  });
+
+  it('opens nothing of another store or another account', async () => {
+    const run = await setup();
+    const delivered = await deliveredBefore(run);
+    const otherAccount = reload(run, { customerRef: 'user_b' });
+    await otherAccount.session.start();
+    expect(await otherAccount.session.purchase(delivered.orderId)).toBeUndefined();
+    // A record of another store on this site, same account and product address.
+    const otherStore = { ...delivered, orderId: 'e'.repeat(64), storePubkey: 'f'.repeat(64) };
+    await backend.transactProduct(otherStore.productAddress, () => ({
+      write: [otherStore],
+      result: undefined,
+    }));
+    const own = reload(run);
+    await own.session.start();
+    expect(await own.session.purchase(otherStore.orderId)).toBeUndefined();
+    expect(await own.session.purchase(delivered.orderId)).toMatchObject({ status: 'delivered' });
+  });
+});
+
+describe('Your purchases: a transaction the chain does not confirm', () => {
+  it('names nothing sent for it in the purchase’s receipt (M11)', async () => {
+    const run = await setup();
+    run.chain.dropSends = true;
+    await run.session.start();
+    await run.session.pay('Fake');
+    await storeSays(run.shop, run.relays, await recordOf(run.offer));
+    run.session.dispose();
+    const order = await recordOf(run.offer);
+    expect(order.state).toBe('completed');
+    const page = reload(run);
+    await page.session.start();
+    const receipt = (await page.session.purchase(order.orderId))?.receipt;
+    expect(receipt).toBeDefined();
+    expect(receipt).not.toHaveProperty('sent');
+    expect(receipt).not.toHaveProperty('paid');
   });
 });
