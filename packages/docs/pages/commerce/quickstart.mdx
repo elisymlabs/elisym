@@ -168,7 +168,34 @@ npx @elisym/merchant-node refund <buyer>:<orderId> --tx <your refund transaction
 
 `deliver` sends the configured delivery; `refund` reports a refund you already sent (above zero; an unpaid order is released with `deliver`, never a zero refund). `--asset` names the refunded coin as CAIP-19, the same id as in your config's `payouts`: it may be left out when the store has one payout, and is required when it has several. The refund transaction must be on that coin's chain. Running `refund` again for an answer kept by an older node sends it unchanged, without an asset. The command prints what the ledger holds for the order and asks before it sends (`--yes` for scripts); the order is then closed for good, and running the same command again sends the same answer again. Check the payment yourself (the node's log and a block explorer) before you answer.
 
-The node's README covers the rest: the full config, Docker, the lock, and what to keep safe.
+An order answered by hand sends no webhook (see below): `orders` and the command show its customer reference, so you can credit it yourself.
+
+## Credit an account on your backend
+
+To credit a user's account after a payment (a deposit, a top-up), let the node tell your backend: once it has verified a payment on chain, it sends a signed `order.paid` webhook carrying the asset and the amount paid, the order and, when the page passed one, your own `customerRef` for the account. Never credit from the browser: a buyer can forge anything a page reports.
+
+Add the URL to `config.json` and make a secret (at least 32 bytes) that only the node and your backend hold, then check that your receiver takes a signed test event:
+
+```bash
+node -e '
+const fs = require("fs");
+const home = process.env.ELISYM_MERCHANT_HOME;
+if (!home) throw new Error("run the export block first");
+const path = `${home}/config.json`;
+const config = JSON.parse(fs.readFileSync(path, "utf8"));
+config.webhook = { url: "https://<your backend>/elisym/webhook" };
+fs.writeFileSync(path, JSON.stringify(config, null, 2));
+'
+[ -s ~/.elisym-merchant-webhook ] || (umask 077 && openssl rand -hex 32 > ~/.elisym-merchant-webhook)
+export ELISYM_MERCHANT_WEBHOOK_SECRET_FILE=~/.elisym-merchant-webhook
+npx @elisym/merchant-node webhook test
+```
+
+Restart the node with that variable set: it refuses to start with a webhook and no secret. Your receiver checks the `X-Elisym-Signature` header (HMAC-SHA256 of `timestamp.body`) and a timestamp within 300 seconds, then, in one database transaction, records the event (unique by `eventId`, and by store, buyer and order id) and credits `payment.amount` only when that row is new: the node sends each event at least once, retrying for seven days. `orders` shows each paid order's webhook state and event id; `webhook retry <buyer>:<orderId>` and `webhook resend <buyer>:<orderId>` send one again (node stopped).
+
+No webhook is sent for an order answered by hand, for a payment verified before the webhook was configured (`webhook resend` sends it), or for a payment the node never saw: a node offline for longer than the three days it watches an order can miss payments. The node's README has the headers, the body, a receiver and the table to copy. In Docker the node runs on Bun, which sends the webhook through the proxy `HTTP_PROXY` / `HTTPS_PROXY` name, if set; list your backend in `NO_PROXY` when it should go direct.
+
+The node's README covers the rest: the full config, the webhook, Docker, the lock, and what to keep safe.
 
 ## Try it free on devnet
 

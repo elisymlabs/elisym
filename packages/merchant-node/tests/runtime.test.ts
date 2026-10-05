@@ -12,7 +12,16 @@ import type { MerchantOrder } from '../src/ledger';
 import { type DeliveryAttempt, MerchantRuntime, type RuntimeDeps } from '../src/runtime';
 import { SelfCopies } from '../src/self-copies';
 import type { PaymentCheck } from '../src/solana';
-import { T0, chain, key, referenceFor, signatureOf, world } from './fixtures';
+import {
+  T0,
+  chain,
+  key,
+  landedPayment,
+  referenceFor,
+  requestFor,
+  signatureOf,
+  world,
+} from './fixtures';
 
 const ORDER_ID = 'b3a7c2d4-0000-4000-8000-00000000c001';
 const SIG = signatureOf(7);
@@ -129,6 +138,36 @@ describe('admitting wraps', () => {
     } as NostrEvent;
     expect(runtime.admit(future)).toBe(false);
     expect(runtime.seenWraps.size).toBe(1);
+  });
+});
+
+describe('the webhook outbox', () => {
+  it('is on disk in every save that holds the payment, never after it', async () => {
+    const setup = harness();
+    const saved: string[] = [];
+    const reference = referenceFor(setup.store, setup.buyer, ORDER_ID);
+    const { rpc } = chain({ [SIG]: await landedPayment(requestFor(reference)) });
+    const { checkPayment: _replaced, ...deps } = setup.deps;
+    const runtime = new MerchantRuntime({
+      ...deps,
+      // The real check: it records the payment and its entry in one change.
+      context: {
+        rpc,
+        network: 'devnet',
+        outbox: { storePubkey: setup.store.pubkey, now: () => T0 + 500 },
+      },
+      save: () => saved.push(JSON.stringify(setup.state)),
+    });
+    await runtime.handleWrap(setup.order);
+    await runtime.handleWrap(setup.receipt);
+    const key = `${setup.buyer.pubkey}:${ORDER_ID}`;
+    const withPayment = saved
+      .map((text) => JSON.parse(text) as typeof setup.state)
+      .filter((snapshot) => snapshot.orders[key]?.paid !== undefined);
+    expect(withPayment.length).toBeGreaterThan(0);
+    for (const snapshot of withPayment) {
+      expect(snapshot.orders[key]?.webhook?.state).toBe('pending');
+    }
   });
 });
 

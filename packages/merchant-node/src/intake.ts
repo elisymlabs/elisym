@@ -1,6 +1,7 @@
 import {
   type UnwrappedOrderMessage,
   deriveOrderPaymentReference,
+  isCustomerRef,
   productAddress,
 } from '@elisym/commerce';
 import { MAX_RECEIPTS_PER_ORDER } from './constants';
@@ -96,6 +97,10 @@ export function intake(
       reference: reference.solana,
       reportedTxs: [],
       ...(message.email === undefined ? {} : { email: message.email }),
+      // A direct order is one item of this store's own product (`isDirectOrder`).
+      ...(message.items[0] === undefined ? {} : { product: message.items[0].product }),
+      // Checked again here, though the parser drops a bad one: it reaches the webhook.
+      ...(isCustomerRef(message.customerRef) ? { customerRef: message.customerRef } : {}),
     };
     state.orders[key] = order;
     return { kind: 'order', order };

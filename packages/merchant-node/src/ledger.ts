@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
-import { CATCH_UP_SECS } from './constants';
+import { CATCH_UP_SECS, WEBHOOK_DEADLINE_SECS } from './constants';
 import { replaceFileDurably } from './durable-file';
 import type { Delivery } from './reply';
 import type { TermsPeriod } from './terms';
@@ -18,6 +19,10 @@ export interface MerchantOrder {
   /** The Solana reference derived from (store, buyer, orderId). */
   reference: string;
   email?: string;
+  /** The merchant's own id for the buyer's account, as the order carried it. */
+  customerRef?: string;
+  /** The product address the order named (`30402:<store>:<d>`); absent on orders older than 0.7.0. */
+  product?: string;
   /** Transactions the buyer reported (kind 17), at most `MAX_RECEIPTS_PER_ORDER`. */
   reportedTxs: string[];
   /** Reported transactions judged finally NOT a payment for this order: never checked again. */
@@ -35,18 +40,92 @@ export interface MerchantOrder {
   blockedTx?: string;
   /** Queue position of each reported transaction: when it arrived, then when the sweep last checked it. */
   recheckedAt?: Record<string, number>;
-  paid?: {
-    signature: string;
-    /** Decimal string of subunits the bound transfer paid. */
-    amount: string;
-    blockTime: number;
-    caip19: string;
-    medium: string;
-  };
+  paid?: VerifiedPayment;
+  /** The `order.paid` webhook, written in the same save as `paid` (see `recordPayment`). */
+  webhook?: WebhookEntry;
   /** Inbox relays that took the delivery so far: a retry goes to the others only. */
   deliveredTo?: string[];
   /** Set once the delivery counts as done (see `deliveryDone`). */
   deliveredAt?: number;
+}
+
+/** A payment the node verified on chain for one order. */
+export interface VerifiedPayment {
+  signature: string;
+  /** Decimal string of subunits the bound transfer paid. */
+  amount: string;
+  blockTime: number;
+  caip19: string;
+  medium: string;
+}
+
+/** One order's `order.paid` webhook: an outbox entry, sent until a 2xx or its deadline. */
+export interface WebhookEntry {
+  state: 'pending' | 'sent' | 'failed';
+  /** See `webhookEventId`: the same for every send of this payment. */
+  eventId: string;
+  /** When the entry was written (or written again by `webhook retry` / `resend`). */
+  createdAt: number;
+  /** Past this, a pending entry fails instead of being sent. */
+  deadline: number;
+  attempts: number;
+  /** The earliest moment of the next attempt. */
+  nextAt: number;
+  /** The HTTP status of the last attempt that got an answer. */
+  lastStatus?: number;
+  /** Why the last attempt failed, short and printable. */
+  lastError?: string;
+  sentAt?: number;
+}
+
+/** Where a payment verified while a webhook is configured is queued: the store, and the clock. */
+export interface WebhookOutbox {
+  storePubkey: string;
+  now: () => number;
+}
+
+/**
+ * The webhook event id of a payment: hex sha256 of `<store>:<order key>:<payment
+ * signature>`. A frozen contract (receivers dedupe on it): a resend or a reloaded
+ * ledger gives the same id, and two orders paid by one transaction differ by key.
+ */
+export function webhookEventId(storePubkey: string, key: string, signature: string): string {
+  return createHash('sha256').update(`${storePubkey}:${key}:${signature}`, 'utf8').digest('hex');
+}
+
+/** A pending webhook entry for a paid order, due now. */
+export function newWebhookEntry(
+  storePubkey: string,
+  order: MerchantOrder,
+  now: number,
+): WebhookEntry {
+  if (order.paid === undefined) {
+    throw new Error(`${order.key} is not paid: no webhook`);
+  }
+  return {
+    state: 'pending',
+    eventId: webhookEventId(storePubkey, order.key, order.paid.signature),
+    createdAt: now,
+    deadline: now + WEBHOOK_DEADLINE_SECS,
+    attempts: 0,
+    nextAt: now,
+  };
+}
+
+/**
+ * Record a verified payment on its order and, with a webhook configured, its
+ * outbox entry in the same change: the one save that records the payment
+ * records the entry, so a crash can never keep one without the other.
+ */
+export function recordPayment(
+  order: MerchantOrder,
+  paid: VerifiedPayment,
+  outbox: WebhookOutbox | undefined,
+): void {
+  order.paid = paid;
+  if (outbox !== undefined) {
+    order.webhook = newWebhookEntry(outbox.storePubkey, order, outbox.now());
+  }
 }
 
 /** The answer the owner sent by hand for an order, exactly as sent (a rerun sends it again). */
@@ -57,6 +136,8 @@ export interface HandAnswer {
   amount?: string;
   /** The refunded asset: absent in an answer kept by a node older than 0.4.0. */
   caip19?: string;
+  /** The order's customer reference: a hand answer sends no webhook, so the owner credits it. */
+  customerRef?: string;
   /** What the ledger held for the order when it was closed. */
   reportedTxs: string[];
   refusedTxs: string[];

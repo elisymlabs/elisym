@@ -23,8 +23,10 @@ import {
   type LedgerState,
   type MerchantOrder,
   type ScannedTransaction,
+  type WebhookOutbox,
   claimPayment,
   openOrders,
+  recordPayment,
 } from './ledger';
 import { isSolanaSignature } from './signature';
 import { type OfferTerms, termsAt, termsSince } from './terms';
@@ -32,6 +34,8 @@ import { type OfferTerms, termsAt, termsSince } from './terms';
 export interface SolanaContext {
   rpc: Rpc<SolanaRpcApi>;
   network: Network;
+  /** With a webhook configured: a payment verified here queues its `order.paid` webhook. */
+  outbox?: WebhookOutbox;
 }
 
 export type PaymentCheck =
@@ -118,13 +122,17 @@ export async function checkPayment(
     if (!claimPayment(state, signature, order.key)) {
       return { kind: 'refused', reason: 'claimed_by_another_order' };
     }
-    order.paid = {
-      signature,
-      amount: verdict.amount.toString(),
-      blockTime: verdict.blockTime,
-      caip19: terms.caip19,
-      medium: SOLANA_MEDIUMS[context.network],
-    };
+    recordPayment(
+      order,
+      {
+        signature,
+        amount: verdict.amount.toString(),
+        blockTime: verdict.blockTime,
+        caip19: terms.caip19,
+        medium: SOLANA_MEDIUMS[context.network],
+      },
+      context.outbox,
+    );
     return { kind: 'paid', order };
   }
   return askAgain

@@ -3,6 +3,7 @@ import {
   DELIVERY_METHODS,
   LIMITS,
   canonicalPayoutAddress,
+  isPublicHostname,
   parseCaip19,
   priceInSubunits,
   splitNip05,
@@ -30,6 +31,14 @@ export interface MerchantConfig extends StoreConfig {
     /** What the buyer gets once paid: a link (a Blossom URL is one) or text. */
     delivery: Delivery;
   };
+  /** Where the node tells the merchant's backend about each payment it verified. */
+  webhook?: WebhookConfig;
+}
+
+export interface WebhookConfig {
+  url: string;
+  /** Allows `http:`, and a host that is not a public DNS name (local tests). */
+  allowInsecure?: boolean;
 }
 
 /** At most this many inbox relays: each is read and written for every order. */
@@ -54,6 +63,34 @@ function urlWith(secure: string, insecure: string) {
 }
 
 const PRICE_RE = /^\d{1,9}(\.\d{1,6})?$/;
+
+/**
+ * Why a webhook URL is refused, or `undefined`. The URL is the merchant's own,
+ * so this guards a mistake, not an attacker: https to a public DNS name, unless
+ * `allowInsecure` says a plain or local endpoint is meant.
+ */
+export function webhookUrlProblem(value: string, allowInsecure: boolean): string | undefined {
+  if (!URL.canParse(value)) {
+    return 'must be a URL';
+  }
+  const url = new URL(value);
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return 'must be an https:// URL';
+  }
+  if (url.username !== '' || url.password !== '') {
+    return 'must not hold a user name or password';
+  }
+  if (allowInsecure) {
+    return undefined;
+  }
+  if (url.protocol !== 'https:') {
+    return 'must be an https:// URL (set "allowInsecure": true for a plain http endpoint)';
+  }
+  if (!isPublicHostname(url.hostname)) {
+    return 'must name a public DNS host (set "allowInsecure": true for a local or private one)';
+  }
+  return undefined;
+}
 
 const configSchema = z
   .object({
@@ -108,9 +145,20 @@ const configSchema = z
         }),
       )
       .min(1),
+    // Only `order.paid` for now: an `events` list can come later without a break.
+    webhook: z
+      .object({ url: z.string(), allowInsecure: z.boolean().optional() })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((config, context) => {
+    if (config.webhook !== undefined) {
+      const problem = webhookUrlProblem(config.webhook.url, config.webhook.allowInsecure === true);
+      if (problem !== undefined) {
+        context.addIssue({ code: 'custom', path: ['webhook', 'url'], message: problem });
+      }
+    }
     // One relay under two spellings would count twice toward a delivery.
     const spellings = config.inboxRelays.map(
       (relay) => checkoutRelaySpelling(relay) ?? relay.replace(/\/+$/, ''),

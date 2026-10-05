@@ -105,6 +105,7 @@ function rowElement(doc: Document, row: OrderRow): HTMLTableRowElement {
   tr.append(claimCell);
 
   tr.append(element(doc, 'td', row.order?.email ?? ''));
+  tr.append(element(doc, 'td', row.order?.customerRef ?? '', 'mono'));
 
   const stateCell = element(doc, 'td');
   stateCell.append(element(doc, 'div', STATE_LABELS[row.state], `state state-${row.state}`));

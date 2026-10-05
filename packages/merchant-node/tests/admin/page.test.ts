@@ -132,7 +132,11 @@ describe('the admin page', () => {
     const buyer = key();
     const orderId = 'b3a7c2d4-0000-4000-8000-000000000001';
     const wraps = [
-      wrapOf(orderBody(store, orderId, { email: HOSTILE_EMAIL }), buyer, store),
+      wrapOf(
+        orderBody(store, orderId, { email: HOSTILE_EMAIL, customerRef: 'user-42' }),
+        buyer,
+        store,
+      ),
       selfCopyOf(deliveredBody(buyer, orderId, { caip19: USDC_DEVNET_CAIP19 }), store, buyer),
     ];
     startAdmin(document, {
@@ -153,6 +157,11 @@ describe('the admin page', () => {
     expect(rows).toHaveLength(1);
     const text = rows[0]?.textContent ?? '';
     expect(text).toContain(HOSTILE_EMAIL);
+    // The Ref column sits under its header, beside Email.
+    const headers = [...document.querySelectorAll('thead th')].map((cell) => cell.textContent);
+    const cells = [...(rows[0]?.querySelectorAll('td') ?? [])].map((cell) => cell.textContent);
+    expect(cells).toHaveLength(headers.length);
+    expect(cells[headers.indexOf('Ref')]).toBe('user-42');
     expect(text).toContain('delivered');
     expect(text).toContain('1 USDC');
     expect(byId('orders').querySelector('img')).toBeNull();

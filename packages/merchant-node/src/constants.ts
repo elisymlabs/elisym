@@ -100,3 +100,26 @@ export const DELIVERY_SETTLE_SECS = 60 * 60;
 
 /** New terms are dated this much before the local clock, which may run ahead of chain time. */
 export const TERMS_CLOCK_MARGIN_SECS = 60;
+
+/** How long a webhook is sent before it fails: retries back off to an hour, for seven days. */
+export const WEBHOOK_DEADLINE_SECS = 7 * 24 * 60 * 60;
+
+/** The first retry pause of a failed webhook, doubled per attempt up to `WEBHOOK_MAX_PAUSE_SECS`. */
+export const WEBHOOK_FIRST_PAUSE_SECS = 30;
+
+export const WEBHOOK_MAX_PAUSE_SECS = 60 * 60;
+
+/** How often a running node looks for webhooks due. */
+export const WEBHOOK_TICK_MS = 5_000;
+
+/** Webhooks sent at once: a slow receiver never piles up connections. */
+export const MAX_WEBHOOKS_IN_FLIGHT = 4;
+
+/** One webhook request, its answer read included. */
+export const WEBHOOK_TIMEOUT_MS = 10_000;
+
+/** The answer body is read up to this much and dropped. */
+export const WEBHOOK_MAX_ANSWER_BYTES = 4 * 1024;
+
+/** A webhook secret is at least this many bytes (`openssl rand -hex 32` gives 64). */
+export const WEBHOOK_MIN_SECRET_BYTES = 32;

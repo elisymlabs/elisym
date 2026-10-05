@@ -4,7 +4,7 @@ import { address } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
 import { MAX_RECHECKS_PER_SWEEP, TERMS_WINDOW_SECS } from '../src/constants';
 import { intake } from '../src/intake';
-import type { MerchantOrder } from '../src/ledger';
+import { type MerchantOrder, webhookEventId } from '../src/ledger';
 import { catchUp, checkPayment, receivingAccount } from '../src/solana';
 import { publishTerms } from '../src/terms';
 import {
@@ -49,10 +49,30 @@ describe('checkPayment', () => {
       medium: 'solana-devnet',
     });
     expect(state.claims[SIG]).toBe(order.key);
+    // No webhook configured: no outbox entry.
+    expect(order.webhook).toBeUndefined();
     // Checking the same payment again is harmless.
     expect(await checkPayment(state, order, SIG, { rpc, network: 'devnet' })).toMatchObject({
       kind: 'paid',
     });
+  });
+
+  it('queues the webhook in the same change that records the payment, with one configured', async () => {
+    const { state, order, store } = placeOrder();
+    const { rpc } = chain({ [SIG]: await landedPayment(requestFor(order.reference)) });
+    const outbox = { storePubkey: store.pubkey, now: () => T0 + 500 };
+    await checkPayment(state, order, SIG, { rpc, network: 'devnet', outbox });
+    expect(order.paid?.signature).toBe(SIG);
+    expect(order.webhook).toMatchObject({
+      state: 'pending',
+      eventId: webhookEventId(store.pubkey, order.key, SIG),
+      createdAt: T0 + 500,
+      nextAt: T0 + 500,
+    });
+    // Checked again (a re-sent receipt), the entry is left as it is.
+    const entry = order.webhook;
+    await checkPayment(state, order, SIG, { rpc, network: 'devnet', outbox });
+    expect(order.webhook).toBe(entry);
   });
 
   it('never credits one payment to two orders', async () => {
@@ -167,8 +187,11 @@ describe('catchUp', () => {
       [OTHER_SIG, SIG],
       { account },
     );
-    const result = await catchUp(state, { rpc, network: 'devnet' }, T0 + 600);
+    const outbox = { storePubkey: 'c'.repeat(64), now: () => T0 + 600 };
+    const result = await catchUp(state, { rpc, network: 'devnet', outbox }, T0 + 600);
     expect(result.paid.map((entry: MerchantOrder) => entry.key)).toEqual([order.key]);
+    // Found by the sweep, queued the same way.
+    expect(order.webhook?.eventId).toBe(webhookEventId('c'.repeat(64), order.key, SIG));
     expect(result.incomplete).toEqual([]);
     expect(order.paid?.signature).toBe(SIG);
     // It lists the token account, never the wallet, starting from the newest page.
