@@ -61,7 +61,7 @@ document.querySelector('elisym-buy').addEventListener('elisym-status', (event) =
 | `completed` | The store delivered.                                                         |
 | `refunded`  | The store cancelled the order and refunded it.                               |
 | `ended`     | The buyer left an order that was never paid.                                 |
-| `refused`   | The checkout will not sell here (see below).                                 |
+| `refused`   | The checkout will not sell here (see below). When the buyer has an earlier order of this product, the checkout still shows it to them inside a frame that keeps the refusal's height (the order scrolls within it), and the page hears `refused` only: a page never learns what a visitor bought. |
 
 Use them for analytics, or to show your own "thank you" next to the checkout. Never unlock anything on the strength of an event: it tells you a state, not who paid. Your node is what knows who paid, and the delivery is what the buyer gets.
 

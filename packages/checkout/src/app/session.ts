@@ -15,6 +15,7 @@ import {
   cancelledUnpaid,
   endOrder,
   gone,
+  holdsPayExclusion,
   isTerminal,
   onOtherTerms,
   recordToShow,
@@ -47,6 +48,7 @@ import { type Eip1193Client, readQuantity, withAbort } from '@elisym/pay-core/ev
 import { type Rpc, type SolanaRpcApi, isSignature } from '@solana/kit';
 import type { CheckoutState } from '../embed/protocol';
 import { type TempoWalletOption, TempoChainUnsupported, walletErrorKind } from './evm-wallets';
+import { REF_NEEDS_VERIFIED_STORE, sameRef } from './ref-scope';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 
@@ -98,6 +100,8 @@ export type Problem =
   | { reason: 'wallet_failed' | 'wallet_unsupported' }
   | { reason: 'policy_blocked' | 'wrong_chain' | 'rejected' | 'attempt_over' | 'late_approval' }
   | { reason: 'offer_changed' | 'offer_refused' }
+  /** Another account's purchase of this product holds it in this browser: try later. */
+  | { reason: 'other_purchase' }
   | { reason: 'insufficient_token' | 'insufficient_sol'; needed: bigint; available: bigint };
 
 /** The payment a progress screen is about: the live order's, else the payout chosen. */
@@ -264,6 +268,12 @@ export interface SessionDeps {
   onStatus(state: CheckoutState): void;
   /** The merchant set `collect-email`: the offer asks for one (optional). */
   collectEmail?: boolean;
+  /**
+   * The page's account (v3 `customer-ref`), already checked: a level-A store on
+   * this page's domain, in the top window. Orders of other accounts are never
+   * shown, resumed or reported here; they are only resolved in the background.
+   */
+  customerRef?: string;
   /** Tempo: a read RPC of a Tempo network, or `undefined` when none is configured. */
   tempoFor?(network: Network): Eip1193Client | undefined;
   /** Tempo: wallets (EIP-6963) that can pay on this Tempo network. */
@@ -480,6 +490,8 @@ export class CheckoutSession {
   private readonly background = new Map<string, { close(): void }>();
   /** When each background-heard order was placed (the cap keeps the newest). */
   private readonly backgroundCreated = new Map<string, number>();
+  /** The background-heard orders of another account (the cap drops them first). */
+  private readonly backgroundOther = new Set<string>();
   /** Deliveries or refunds heard for ended orders, shown once nothing live is on screen. */
   private readonly pendingAnswers = new Map<string, OrderRecord>();
   /** A Tempo hash returned in this session that could not be stored yet: the watch retries it. */
@@ -529,6 +541,17 @@ export class CheckoutSession {
    * network first never moves a purchase to it.
    */
   private readonly network: Network;
+  /** The page's account, if the page named one (see `SessionDeps.customerRef`). */
+  private readonly customerRef: string | undefined;
+  /**
+   * Silent followers of other accounts' orders that hold the product in this
+   * browser: they resolve them (store answers, watch verdicts) and show nothing.
+   */
+  private readonly followers = new Map<string, { timer: unknown; listener: { close(): void } }>();
+  /** A follower saw the product freed while a press was running: the press's end redraws. */
+  private exclusionFreed = false;
+  /** The offer on screen carries the "another purchase is in progress" note. */
+  private noteShown = false;
 
   constructor(
     offer: ReadyOffer,
@@ -550,11 +573,15 @@ export class CheckoutSession {
     this.network = networkOf(first);
     this.payout = payout;
     this.loadedAt = deps.now();
+    this.customerRef = deps.customerRef;
   }
 
   /** Resume the product's open record (published again, the store's inbox read again), or show the offer. */
   async start(): Promise<void> {
-    const records = await this.deps.store.forProduct(this.offer.productAddress);
+    // Two sets: every record is listened to, reconciled and resolved; only the
+    // page's own account's records are shown, resumed or followed.
+    const allRecords = await this.deps.store.forProduct(this.offer.productAddress);
+    const records = allRecords.filter((record) => this.own(record));
     if (this.followOnly === undefined && !this.servable(this.payout)) {
       // No new payment on this network. An order paid or paying on a served one is
       // still followed, and orders that ended unpaid are still heard.
@@ -572,9 +599,14 @@ export class CheckoutSession {
         ...(stillFollowed === undefined ? {} : { orderId: stillFollowed.orderId }),
       };
     }
-    this.listenToEnded(records);
+    this.listenToEnded(allRecords);
     // A Tempo order that ended with its prompt still open may have been paid since.
-    await this.reconcileEnded(records);
+    await this.reconcileEnded(allRecords);
+    for (const record of allRecords) {
+      if (!this.own(record) && holdsPayExclusion(record)) {
+        this.followOther(record);
+      }
+    }
     // Follow-only: exactly the order the snapshot was built from, never another.
     const followed = this.followOnly;
     const shown =
@@ -669,6 +701,7 @@ export class CheckoutSession {
       // A cancelled press ends later: it never releases a newer press's flag.
       if (this.press === press) {
         this.pressing = false;
+        this.redrawIfFreed();
       }
     }
   }
@@ -705,7 +738,8 @@ export class CheckoutSession {
     // A new order is certain: a typo never costs a wallet prompt or the open order.
     // (Both rails: `payTempo` starts below.) An order continued on its own terms
     // went with its email already, so no typed value blocks it.
-    const newOrder = this.record === undefined || onOtherTerms(this.record, this.payout, undefined);
+    const newOrder =
+      this.record === undefined || onOtherTerms(this.record, this.payout, this.customerRef);
     if (newOrder && this.emailUnusable()) {
       this.showOffer({ reason: 'bad_email' });
       return;
@@ -915,7 +949,7 @@ export class CheckoutSession {
         const holder =
           result.holder === undefined ? undefined : await this.deps.store.get(result.holder);
         if (holder !== undefined) {
-          await this.follow(holder);
+          await this.followHolder(holder);
           return;
         }
         this.showOffer({ reason: 'failed' });
@@ -933,7 +967,12 @@ export class CheckoutSession {
     }
   }
 
-  /** A payment refused for an ended Tempo order whose prompt may still be approved: ask. */
+  /**
+   * A payment refused for an ended Tempo order whose prompt may still be
+   * approved: ask. Every order counts (another account's too, since its prompt
+   * would pay as well), but only the date comes from them: what is shown is
+   * this page's own terms.
+   */
   private async askOldPrompt(unconfirmed: string[]): Promise<void> {
     this.oldPrompt = { walletName: this.lastWallet, action: this.lastAction, unconfirmed };
     let until = 0;
@@ -950,7 +989,7 @@ export class CheckoutSession {
     }
     const terms = this.termsShown(false);
     const paying = this.payingOf(terms);
-    this.deps.onView({
+    this.show({
       kind: 'old_prompt',
       orders: unconfirmed.length,
       until,
@@ -1055,7 +1094,7 @@ export class CheckoutSession {
   private termsShown(signing: boolean): OrderRecord | undefined {
     const record = this.record;
     return record !== undefined &&
-      (signing || this.retrying || !onOtherTerms(record, this.payout, undefined))
+      (signing || this.retrying || !onOtherTerms(record, this.payout, this.customerRef))
       ? record
       : undefined;
   }
@@ -1229,7 +1268,7 @@ export class CheckoutSession {
   private working(step: 'checking' | 'ordering' | 'signing', cancellable = false): void {
     const terms = this.termsShown(step === 'signing');
     const paying = this.payingOf(terms);
-    this.deps.onView({
+    this.show({
       kind: 'working',
       step,
       about: this.aboutOf(terms),
@@ -1303,6 +1342,10 @@ export class CheckoutSession {
   }
 
   private banner(record: OrderRecord): void {
+    // Another account's answer never reaches this page.
+    if (!this.own(record)) {
+      return;
+    }
     const state = record.state;
     if (state !== 'paid' && state !== 'blocked' && state !== 'completed' && state !== 'refunded') {
       return;
@@ -1341,6 +1384,7 @@ export class CheckoutSession {
     } finally {
       if (this.press === press) {
         this.pressing = false;
+        this.redrawIfFreed();
       }
     }
   }
@@ -1483,9 +1527,154 @@ export class CheckoutSession {
     }
     this.background.clear();
     this.backgroundCreated.clear();
+    this.backgroundOther.clear();
+    for (const orderId of [...this.followers.keys()]) {
+      this.stopFollowing(orderId);
+    }
   }
 
   // ---- internals -----------------------------------------------------------
+
+  /** The record is the page's own account's (the same reference, or none on both). */
+  private own(record: OrderRecord): boolean {
+    return sameRef(record, this.customerRef);
+  }
+
+  /** Every view goes here: the "another purchase" note is tracked by what is on screen. */
+  private show(view: View): void {
+    this.noteShown = view.kind === 'offer' && view.problem?.reason === 'other_purchase';
+    this.deps.onView(view);
+  }
+
+  /**
+   * The order holding the product's payment: followed when it is this
+   * account's; another account's is never shown, only resolved silently, and
+   * the offer says the product is busy in this browser for now.
+   */
+  private async followHolder(holder: OrderRecord): Promise<void> {
+    if (this.own(holder)) {
+      await this.follow(holder);
+      return;
+    }
+    this.followOther(holder);
+    this.showOffer({ reason: 'other_purchase' });
+  }
+
+  /**
+   * Resolve another account's order that holds the product, showing nothing:
+   * the store's answers are stored, and its own rail is watched (an attempt
+   * proven over is ended). Once it no longer holds the product, the offer
+   * shows again. One follower per order, one tick at a time.
+   */
+  private followOther(record: OrderRecord): void {
+    const orderId = record.orderId;
+    if (this.disposed || this.own(record) || this.followers.has(orderId)) {
+      return;
+    }
+    const listener = listenForStatus(record, record.inboxRelays, this.orderDeps(), (message) => {
+      void applyStatus(this.deps.store, orderId, message, this.deps.now()).catch(() => undefined);
+    });
+    let ticking = false;
+    const tick = async () => {
+      if (ticking || this.disposed || !this.followers.has(orderId)) {
+        return;
+      }
+      ticking = true;
+      try {
+        const current = await this.deps.store.get(orderId);
+        if (current === undefined || !holdsPayExclusion(current)) {
+          this.stopFollowing(orderId);
+          this.exclusionFreedNow();
+          return;
+        }
+        if (await this.resolveOther(current)) {
+          this.stopFollowing(orderId);
+          this.exclusionFreedNow();
+        }
+      } finally {
+        ticking = false;
+      }
+    };
+    const timer = this.deps.setInterval(() => void tick().catch(() => undefined), WATCH_EVERY_MS);
+    this.followers.set(orderId, { timer, listener });
+    void tick().catch(() => undefined);
+  }
+
+  /**
+   * One silent pass over another account's order on its own rail: `true` once
+   * it no longer holds the product (an attempt proven over and ended).
+   */
+  private async resolveOther(record: OrderRecord): Promise<boolean> {
+    if (recordRail(record) === 'tempo') {
+      const client = this.tempoOfRecord(record);
+      if (client === undefined) {
+        return false;
+      }
+      const watched = await watchTempoPayment(record, this.tempoDeps(client));
+      if (watched.state !== 'over') {
+        return !holdsPayExclusion(watched.record);
+      }
+      const ended = await endTempoOrder(watched.record, this.tempoDeps(client));
+      return ended.ended;
+    }
+    const rpc = this.rpcOfRecord(record);
+    if (rpc === undefined) {
+      return false;
+    }
+    const watched = await watchSolanaPayment(record, this.payDeps(rpc));
+    if (watched.state !== 'over') {
+      return !holdsPayExclusion(watched.record);
+    }
+    const ended = await endSolanaOrder(watched.record, this.payDeps(rpc));
+    return ended.ended;
+  }
+
+  private stopFollowing(orderId: string): void {
+    const follower = this.followers.get(orderId);
+    if (follower === undefined) {
+      return;
+    }
+    this.deps.clearInterval(follower.timer);
+    follower.listener.close();
+    this.followers.delete(orderId);
+  }
+
+  /**
+   * Another account's order stopped holding the product: the note gives way to
+   * the offer - now if nothing else is going on, else at the end of the press.
+   */
+  private exclusionFreedNow(): void {
+    if (!this.noteShown) {
+      return;
+    }
+    if (this.busy || this.pressing) {
+      this.exclusionFreed = true;
+      return;
+    }
+    this.redrawNote();
+  }
+
+  /** A press ended: a product freed during it shows its offer, if the note is still up. */
+  private redrawIfFreed(): void {
+    if (!this.exclusionFreed) {
+      return;
+    }
+    this.exclusionFreed = false;
+    this.redrawNote();
+  }
+
+  private redrawNote(): void {
+    if (
+      this.noteShown &&
+      !this.busy &&
+      !this.pressing &&
+      this.oldPrompt === undefined &&
+      !this.disposed &&
+      !this.refused
+    ) {
+      this.showOffer();
+    }
+  }
 
   /**
    * Run one action at a time, owned by `press`: a press cancelled meanwhile
@@ -1611,7 +1800,7 @@ export class CheckoutSession {
 
   private refuse(message: string): void {
     this.refused = true;
-    this.deps.onView({
+    this.show({
       kind: 'refused',
       message,
       store: { name: this.offer.offer.profile.name },
@@ -1642,6 +1831,9 @@ export class CheckoutSession {
     const reloaded = await this.deps.reloadOffer();
     if (!reloaded.ok) {
       return this.refusedOnReload(reloaded.message);
+    }
+    if (this.customerRef !== undefined && reloaded.offer.level !== 'A') {
+      return this.refusedOnReload(REF_NEEDS_VERIFIED_STORE);
     }
     // The fresh offer's own warnings are passed: only the payout and its amount decide.
     const verdict = compareOffers(this.payout, reloaded.confirm, reloaded);
@@ -1700,7 +1892,7 @@ export class CheckoutSession {
       this.setRecord(undefined);
       record = undefined;
     }
-    const stale = record !== undefined && onOtherTerms(record, this.payout, undefined);
+    const stale = record !== undefined && onOtherTerms(record, this.payout, this.customerRef);
     if (record !== undefined && stale) {
       const ended = await this.endOrder(record);
       if (!ended.ended) {
@@ -1723,6 +1915,12 @@ export class CheckoutSession {
         this.showOffer({ reason: 'bad_email' });
         return undefined;
       }
+      // A reference credits an account: never on an offer that is not level A.
+      if (this.customerRef !== undefined && this.offer.offer.level !== 'A') {
+        this.setRecord(undefined);
+        this.refuse(REF_NEEDS_VERIFIED_STORE);
+        return undefined;
+      }
       this.working('ordering');
       const email = this.deps.collectEmail === true ? usableEmail(this.email) : undefined;
       const placed = await placeOrder(
@@ -1732,6 +1930,7 @@ export class CheckoutSession {
           chainTime,
           deviceTime: this.deps.now(),
           ...(email === undefined ? {} : { email }),
+          ...(this.customerRef === undefined ? {} : { customerRef: this.customerRef }),
         },
         this.orderDeps(),
       );
@@ -1851,7 +2050,7 @@ export class CheckoutSession {
         const holder =
           result.holder === undefined ? undefined : await this.deps.store.get(result.holder);
         if (holder !== undefined) {
-          await this.follow(holder);
+          await this.followHolder(holder);
           return;
         }
         this.showOffer({ reason: 'failed' });
@@ -1922,7 +2121,7 @@ export class CheckoutSession {
     }
     this.listen(record);
     if (cancelledUnpaid(record)) {
-      this.deps.onView({
+      this.show({
         kind: 'cancelled',
         store: this.storeInfo(),
         product: productOf(record.offer.product),
@@ -1962,7 +2161,7 @@ export class CheckoutSession {
     }
     if (record === undefined || record.state === 'created' || record.state === 'ordered') {
       if (record !== undefined && cancelledUnpaid(record)) {
-        this.deps.onView({
+        this.show({
           kind: 'cancelled',
           store: this.storeInfo(),
           product: productOf(record.offer.product),
@@ -1981,7 +2180,7 @@ export class CheckoutSession {
     if (record.state === 'completed') {
       const text = status?.delivery ?? '';
       const link = deliveryLink(text);
-      this.deps.onView({
+      this.show({
         kind: 'delivered',
         text,
         ...(link === undefined ? {} : { link }),
@@ -1992,7 +2191,7 @@ export class CheckoutSession {
       return;
     }
     if (record.state === 'refunded') {
-      this.deps.onView({
+      this.show({
         kind: 'refunded',
         store,
         product,
@@ -2005,7 +2204,7 @@ export class CheckoutSession {
       if (status === undefined) {
         this.redrawAtNoAnswer(record);
       }
-      this.deps.onView({
+      this.show({
         kind: 'waiting_store',
         ...(paying === undefined ? {} : { paying }),
         about,
@@ -2020,12 +2219,12 @@ export class CheckoutSession {
       return;
     }
     if (record.state === 'blocked') {
-      this.deps.onView({ kind: 'blocked', store, product });
+      this.show({ kind: 'blocked', store, product });
       return;
     }
     // The store cancelled and the attempt is over: only a new order is left.
     if (this.attemptOver && status?.status === 'cancelled') {
-      this.deps.onView({ kind: 'cancelled', store, product });
+      this.show({ kind: 'cancelled', store, product });
       return;
     }
     const marker = record.marker;
@@ -2048,7 +2247,7 @@ export class CheckoutSession {
     const problem = extra.problem ?? this.attemptProblem ?? refused;
     const retryIn = this.retryCountdown(record);
     const requestEndsIn = tempo && !signed ? this.requestCountdown(record) : undefined;
-    this.deps.onView({
+    this.show({
       kind: 'waiting_payment',
       ...(paying === undefined ? {} : { paying }),
       about,
@@ -2162,7 +2361,7 @@ export class CheckoutSession {
       return;
     }
     if (this.followOnly !== undefined) {
-      this.deps.onView({
+      this.show({
         kind: 'refused',
         message: this.followOnly.message,
         store: { name: this.offer.offer.profile.name },
@@ -2183,7 +2382,7 @@ export class CheckoutSession {
       shown = { reason: 'offer_changed' };
     }
     this.offerProblem = shown;
-    this.deps.onView({
+    this.show({
       kind: 'offer',
       offer: this.offer,
       payout: this.payout,
@@ -2203,7 +2402,7 @@ export class CheckoutSession {
   /** The open order a pay press continues on its own terms, if any (its email went with it). */
   private continuing(): false | 'created' | 'ordered' {
     const record = this.record;
-    if (record === undefined || onOtherTerms(record, this.payout, undefined)) {
+    if (record === undefined || onOtherTerms(record, this.payout, this.customerRef)) {
       return false;
     }
     return record.state === 'created' || record.state === 'ordered' ? record.state : false;
@@ -2411,9 +2610,13 @@ export class CheckoutSession {
         this.noteOver(record);
       }
     }
+    // This account's orders first: another's only resolve silently, so they yield.
     const ended = records
       .filter((record) => gone(record) && !this.background.has(record.orderId))
-      .sort((left, right) => right.createdAt - left.createdAt);
+      .sort(
+        (left, right) =>
+          Number(this.own(right)) - Number(this.own(left)) || right.createdAt - left.createdAt,
+      );
     const now = this.deps.now();
     for (const record of ended) {
       if (this.disposed) {
@@ -2422,16 +2625,14 @@ export class CheckoutSession {
       // A Tempo order whose prompt may still be approved always listens (the cap is for the rest).
       const openPrompt = recordRail(record) === 'tempo' && mayStillBePaid(record, now);
       if (!openPrompt && this.background.size >= MAX_ENDED_LISTENERS) {
-        // Full: the newest ended orders matter most - drop the oldest heard one if older.
-        const oldest = [...this.backgroundCreated.entries()].sort(
-          (left, right) => left[1] - right[1],
-        )[0];
-        if (oldest === undefined || oldest[1] >= record.createdAt) {
+        const evicted = this.listenerToDrop(record);
+        if (evicted === undefined) {
           continue;
         }
-        this.background.get(oldest[0])?.close();
-        this.background.delete(oldest[0]);
-        this.backgroundCreated.delete(oldest[0]);
+        this.background.get(evicted)?.close();
+        this.background.delete(evicted);
+        this.backgroundCreated.delete(evicted);
+        this.backgroundOther.delete(evicted);
       }
       const heardOn = [...new Set([...record.inboxRelays, ...relays])];
       const closer = listenForStatus(record, heardOn, this.orderDeps(), (message) => {
@@ -2443,6 +2644,11 @@ export class CheckoutSession {
             this.background.get(record.orderId)?.close();
             this.background.delete(record.orderId);
             this.backgroundCreated.delete(record.orderId);
+            this.backgroundOther.delete(record.orderId);
+            // Another account's answer is stored, never shown here.
+            if (!this.own(updated)) {
+              return;
+            }
             // Never held: a Tempo order's answer shows at once, whatever is on screen.
             if (recordRail(updated) === 'tempo') {
               this.banner(updated);
@@ -2454,7 +2660,27 @@ export class CheckoutSession {
       });
       this.background.set(record.orderId, closer);
       this.backgroundCreated.set(record.orderId, record.createdAt);
+      if (!this.own(record)) {
+        this.backgroundOther.add(record.orderId);
+      }
     }
+  }
+
+  /**
+   * The listener a full set drops for `record`, if any: another account's
+   * first (the oldest), whatever its age, when `record` is this account's;
+   * otherwise the oldest of the same kind, only when it is older than `record`.
+   */
+  private listenerToDrop(record: OrderRecord): string | undefined {
+    const byAge = [...this.backgroundCreated.entries()].sort((left, right) => left[1] - right[1]);
+    const others = byAge.filter(([orderId]) => this.backgroundOther.has(orderId));
+    const own = this.own(record);
+    if (own && others[0] !== undefined) {
+      return others[0][0];
+    }
+    const sameKind = own ? byAge : others;
+    const oldest = sameKind[0];
+    return oldest === undefined || oldest[1] >= record.createdAt ? undefined : oldest[0];
   }
 
   /**

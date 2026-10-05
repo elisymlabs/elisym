@@ -48,6 +48,12 @@ export function acceptHandshake(
   const parent = self.parent as ParentWindow | undefined;
   let pageOrigin: string | undefined;
   let settled = false;
+  /**
+   * The frame has told the page a state: it knows the frame is there, so a
+   * repeated hello is no longer answered (an answer's timing would tell the
+   * page how busy the frame is). A loader's hello only waits for the first ack.
+   */
+  let spoken = false;
   const post = (message: FrameMessage) => {
     if (pageOrigin !== undefined && parent !== undefined) {
       parent.postMessage(message, pageOrigin);
@@ -65,7 +71,7 @@ export function acceptHandshake(
       return;
     }
     if (pageOrigin !== undefined) {
-      if (event.origin === pageOrigin) {
+      if (event.origin === pageOrigin && !spoken) {
         post({ type: 'ack' });
       }
       return;
@@ -94,7 +100,12 @@ export function acceptHandshake(
   }, HELLO_TIMEOUT_MS);
   return {
     post,
-    status: (state) => post({ type: 'status', state }),
+    status: (state) => {
+      if (pageOrigin !== undefined) {
+        spoken = true;
+      }
+      post({ type: 'status', state });
+    },
     close: () => {
       self.clearTimeout(timer);
       self.removeEventListener('message', listener);

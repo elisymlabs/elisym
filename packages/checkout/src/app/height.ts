@@ -34,6 +34,12 @@ export interface HeightAnimator {
   target(height: number): void;
   /** The page said hello: what was posted before was dropped, so post the target now. */
   flush(height?: number): void;
+  /**
+   * Keep the frame at the height already aimed for: later targets are ignored
+   * (an animation under way still lands). What the frame shows afterwards
+   * scrolls inside it, and its height tells the page nothing more.
+   */
+  hold(): void;
 }
 
 /** An ease-out curve: fast first, settling softly. */
@@ -52,6 +58,7 @@ export function createHeightAnimator<FrameHandle, TimerHandle>(
   let frame: FrameHandle | undefined;
   let stall: TimerHandle | undefined;
   let growing = false;
+  let held = false;
 
   const post = (height: number) => {
     posted = height;
@@ -116,6 +123,9 @@ export function createHeightAnimator<FrameHandle, TimerHandle>(
 
   return {
     target(height: number) {
+      if (held) {
+        return;
+      }
       const next = Math.ceil(height);
       goal = next;
       if (posted === undefined || deps.reducedMotion() || deps.innerWidth() !== postedWidth) {
@@ -147,6 +157,9 @@ export function createHeightAnimator<FrameHandle, TimerHandle>(
       if (goal !== undefined) {
         settle(goal, true);
       }
+    },
+    hold() {
+      held = true;
     },
   };
 }

@@ -24,7 +24,7 @@ afterEach(() => {
 function scratchPackage(): string {
   const dir = mkdtempSync(join(tmpdir(), 'elisym-frozen-'));
   scratchDirs.push(dir);
-  for (const path of ['src/embed/v1', 'src/embed/v2', 'embed-prod']) {
+  for (const path of ['src/embed/v1', 'src/embed/v2', 'src/embed/v3', 'embed-prod']) {
     cpSync(join(PACKAGE_DIR, path), join(dir, path), { recursive: true });
   }
   return dir;
@@ -32,7 +32,7 @@ function scratchPackage(): string {
 
 describe('the pinned loaders', () => {
   it('the committed bytes are the ones merchants pin', () => {
-    for (const version of ['v1', 'v2']) {
+    for (const version of ['v1', 'v2', 'v3']) {
       const pinned = readFileSync(join(PACKAGE_DIR, 'src', 'embed', `${version}.sri`), 'utf8');
       expect(sriOf(join(PACKAGE_DIR, 'embed-prod', version, 'embed.js'))).toBe(pinned.trim());
     }
@@ -43,13 +43,16 @@ describe('the pinned loaders', () => {
     expect(readFileSync(join(PACKAGE_DIR, 'src', 'embed', 'v2.sri'), 'utf8').trim()).toBe(
       'sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ',
     );
+    expect(readFileSync(join(PACKAGE_DIR, 'src', 'embed', 'v3.sri'), 'utf8').trim()).toBe(
+      'sha384-FPsJfAuhwQU0mlPKTKLwCTp1YGK6aFRh0pT+Gl1T3UML2jlIK7EkW8FW5ue2qFJX',
+    );
   });
 
   it('are served with CORS (SRI fails without it) and an immutable cache', () => {
     const config = JSON.parse(readFileSync(join(PACKAGE_DIR, 'vercel.json'), 'utf8')) as {
       headers: { source: string; headers: { key: string; value: string }[] }[];
     };
-    for (const source of ['/v1/(.*)', '/v2/(.*)']) {
+    for (const source of ['/v1/(.*)', '/v2/(.*)', '/v3/(.*)']) {
       const rule = config.headers.find((each) => each.source === source);
       expect(rule?.headers).toEqual(
         expect.arrayContaining([

@@ -1,5 +1,6 @@
 import { type Asset, NATIVE_SOL, type Network, formatAssetAmount } from '@elisym/pay-core';
 import type { RefusalReason } from '../controller';
+import { REF_NEEDS_VERIFIED_STORE } from '../ref-scope';
 import type { Paying, Problem, Rail, Receipt, View } from '../session';
 
 export const REFUSALS: Record<RefusalReason, string> = {
@@ -10,6 +11,8 @@ export const REFUSALS: Record<RefusalReason, string> = {
     'This browser blocks storage for the checkout (private mode?). Payments need it to stay safe.',
   offer_refused: 'This product cannot be bought here.',
   failed: 'The checkout could not start. Reload the page to try again.',
+  bad_customer_ref: 'The page passed an invalid customer reference.',
+  ref_needs_verified_store: REF_NEEDS_VERIFIED_STORE,
 };
 
 export const WORKING: Record<Extract<View, { kind: 'working' }>['step'], string> = {
@@ -97,6 +100,8 @@ export function problemText(problem: Problem, asset: Asset): string {
       return 'The store changed this offer. Review it before paying.';
     case 'offer_refused':
       return 'The store no longer offers this product here. Your order is still being followed.';
+    case 'other_purchase':
+      return 'Another purchase of this product is in progress in this browser. Try again in a few minutes.';
     case 'bad_email':
       return 'That email does not look right. Fix it, or leave the field empty.';
     case 'insufficient_token':

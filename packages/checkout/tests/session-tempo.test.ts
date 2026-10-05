@@ -21,6 +21,7 @@ import { type FakeChainOptions, fakeTempoChain } from '../../pay-core/tests/temp
 import { TempoChainUnsupported } from '../src/app/evm-wallets';
 import { type Banner, CheckoutSession, type SessionDeps, type View } from '../src/app/session';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
+import { framePage } from './page-harness';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
 const PAGE = 'https://merchant.example';
@@ -665,5 +666,178 @@ describe('the transaction a Tempo receipt names', () => {
     const view = run.last();
     expect(view).toMatchObject({ kind: 'delivered' });
     expect(sentOf(view)?.tx).toBe(HASH);
+  });
+});
+
+/** The fixture store is level C: a page with a reference needs level A on its domain. */
+function levelA(offer: Ready): Ready {
+  return { ...offer, offer: { ...offer.offer, level: 'A', domain: 'merchant.example' } };
+}
+
+describe('another account in the same browser, on Tempo', () => {
+  it('a late approval of another account’s ended order is stored, never a banner here', async () => {
+    const run = await setup(levelA);
+    run.wallet.behaviour = 'fail';
+    const theirs = new CheckoutSession(run.offer, { ...run.deps, customerRef: 'user_a' });
+    await theirs.start();
+    await theirs.pay('MetaMask');
+    const [paying] = await records(run.offer);
+    run.pastDeadline(paying as OrderRecord);
+    await run.timers.tick();
+    theirs.dispose();
+    const [over] = await records(run.offer);
+    run.land((over as OrderRecord).reference);
+    const views: View[] = [];
+    const page = new CheckoutSession(run.offer, {
+      ...run.deps,
+      customerRef: 'user_b',
+      onView: (view) => views.push(view),
+    });
+    await page.start();
+    // Reconciled here (the record is paid now), never announced to this account.
+    expect((await records(run.offer))[0]).toMatchObject({ state: 'paid', paidTx: HASH });
+    expect(run.banners).toEqual([]);
+    expect(views.at(-1)).toMatchObject({ kind: 'offer' });
+  });
+
+  it('another account’s attempt holding the product: a note, then the offer once it is proven over', async () => {
+    const run = await setup(levelA);
+    run.wallet.behaviour = 'fail';
+    const theirs = new CheckoutSession(run.offer, { ...run.deps, customerRef: 'user_a' });
+    await theirs.start();
+    await theirs.pay('MetaMask');
+    theirs.dispose();
+    const [paying] = await records(run.offer);
+    expect(paying).toMatchObject({ state: 'paying', customerRef: 'user_a' });
+    const views: View[] = [];
+    const page = new CheckoutSession(run.offer, {
+      ...run.deps,
+      customerRef: 'user_b',
+      onView: (view) => views.push(view),
+    });
+    await page.start();
+    run.wallet.behaviour = 'land';
+    await page.pay('MetaMask');
+    expect(views.at(-1)).toMatchObject({ kind: 'offer', problem: { reason: 'other_purchase' } });
+    // Their request lapses with nothing on chain: this page's follower ends it, silently.
+    run.pastDeadline(paying as OrderRecord);
+    await run.timers.tick();
+    const ended = (await records(run.offer)).find((record) => record.customerRef === 'user_a');
+    expect(ended).toMatchObject({ state: 'ended-unpaid', endedBy: 'over' });
+    expect(views.at(-1)).toMatchObject({ kind: 'offer' });
+    expect(views.at(-1)).not.toHaveProperty('problem');
+    expect(run.banners).toEqual([]);
+  });
+
+  it('another account’s ended order with an open prompt: asked about by count and date only, then paid', async () => {
+    const run = await setup(levelA);
+    run.wallet.behaviour = 'fail';
+    const theirs = new CheckoutSession(run.offer, { ...run.deps, customerRef: 'user_a' });
+    await theirs.start();
+    await theirs.pay('MetaMask');
+    const [paying] = await records(run.offer);
+    run.pastDeadline(paying as OrderRecord);
+    await run.timers.tick();
+    theirs.dispose();
+    const [ended] = await records(run.offer);
+    expect(ended).toMatchObject({ state: 'ended-unpaid', endedBy: 'over', customerRef: 'user_a' });
+    const views: View[] = [];
+    const page = new CheckoutSession(run.offer, {
+      ...run.deps,
+      customerRef: 'user_b',
+      onView: (view) => views.push(view),
+    });
+    await page.start();
+    run.wallet.behaviour = 'land';
+    await page.pay('MetaMask');
+    const asked = views.at(-1);
+    expect(asked).toMatchObject({ kind: 'old_prompt', orders: 1 });
+    // Only the count and the date come from their order; the rest is this page's terms.
+    expect(
+      JSON.stringify(asked, (_key, value: unknown) =>
+        typeof value === 'bigint' ? value.toString() : value,
+      ),
+    ).not.toContain((ended as OrderRecord).orderId);
+    const requested = run.wallet.requests;
+    await page.confirmOldPrompt();
+    expect(run.wallet.requests).toBe(requested + 1);
+    const mine = (await records(run.offer)).find((record) => record.customerRef === 'user_b');
+    expect(mine?.confirmedOverIds).toEqual([(ended as OrderRecord).orderId]);
+    expect(run.banners).toEqual([]);
+  });
+});
+
+describe('what a page hears of a refusal with an earlier Tempo order', () => {
+  async function frame(run: Awaited<ReturnType<typeof setup>>) {
+    const page = await framePage({
+      params: {
+        naddr: run.shop.naddr,
+        network: 'devnet',
+        strictOrigin: false,
+        theme: 'auto',
+        collectEmail: false,
+        display: 'modal',
+      },
+      pageOrigin: PAGE,
+      client: run.relays,
+      store,
+      loadOffer: async () => ({ ok: false, refusal: 'no_payable_payout', message: 'none' }),
+      session: {
+        readClient: run.relays,
+        clientFor: () => run.relays,
+        rpcFor: () => undefined,
+        wallets: () => [],
+        tempoFor: run.deps.tempoFor,
+        tempoWallets: run.deps.tempoWallets,
+        tempoChainTime: run.deps.tempoChainTime,
+        reloadOffer: run.deps.reloadOffer,
+        now: run.deps.now,
+        chainTime: run.deps.chainTime,
+        setInterval: run.timers.set,
+        clearInterval: run.timers.clear,
+        setTimeout: run.timers.set,
+        clearTimeout: run.timers.clear,
+      },
+    });
+    await run.timers.tick();
+    await page.settle();
+    page.dispose();
+    return page;
+  }
+
+  /** A Tempo order whose wallet failed: paying, its request still open. */
+  async function payingOrder(run: Awaited<ReturnType<typeof setup>>): Promise<OrderRecord> {
+    run.wallet.behaviour = 'fail';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    run.session.dispose();
+    const [paying] = await records(run.offer);
+    expect(paying).toMatchObject({ state: 'paying' });
+    return paying as OrderRecord;
+  }
+
+  const NO_ORDER = ['resize:60', 'status:refused', 'resize:180'];
+
+  it('with no order', async () => {
+    const run = await setup();
+    expect((await frame(run)).heard).toEqual(NO_ORDER);
+  });
+
+  it('a paying Tempo order: the buyer sees it, the page hears the no-order sequence', async () => {
+    const run = await setup();
+    await payingOrder(run);
+    const page = await frame(run);
+    expect(page.shown().view?.kind).toBe('waiting_payment');
+    expect(page.heard).toEqual(NO_ORDER);
+  });
+
+  it('a blocked Tempo order: the buyer sees it, the page hears the no-order sequence', async () => {
+    const run = await setup();
+    const paying = await payingOrder(run);
+    const blocked = await store.update(paying.orderId, paying.version, { state: 'blocked' });
+    expect(blocked.ok).toBe(true);
+    const page = await frame(run);
+    expect(page.shown().view?.kind).toBe('blocked');
+    expect(page.heard).toEqual(NO_ORDER);
   });
 });

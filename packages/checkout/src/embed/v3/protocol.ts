@@ -7,7 +7,6 @@
  * The loaders keep frozen copies of this file (`v1/`, `v2/`, `v3/`): a change here
  * reaches the checkout app only. A change the page must see ships as a new loader.
  */
-import { isCustomerRef } from '@elisym/commerce';
 
 /** Page -> iframe: re-sent until acknowledged. */
 export interface HelloMessage {
@@ -60,13 +59,15 @@ export interface CheckoutParams {
    * A v1 loader never sends it, so its absence means `inline`.
    */
   display: 'modal' | 'inline';
-  /**
-   * The merchant's own id of the account to credit (v3 only): honoured only
-   * for a level-A store on this page's verified domain, in the top window.
-   */
+  /** The merchant's own id of the account to credit: forces strict origin. */
   customerRef?: string;
-  /** The fragment carried a `ref` that is not a valid reference: the page is refused. */
-  badCustomerRef?: true;
+}
+
+/** The checkout's own rule (`isCustomerRef` in `@elisym/commerce`), kept here so the loader stays small. */
+const CUSTOMER_REF_RE = /^[A-Za-z0-9._:@-]{1,128}$/;
+
+export function isCustomerRef(value: unknown): value is string {
+  return typeof value === 'string' && CUSTOMER_REF_RE.test(value);
 }
 
 export function encodeCheckoutParams(params: CheckoutParams): string {
@@ -111,10 +112,6 @@ export function decodeCheckoutParams(fragment: string): CheckoutParams | undefin
   };
 }
 
-/** A merchant bug must never become an order nobody credits: a bad reference refuses. */
-function refOf(ref: string | null): Pick<CheckoutParams, 'customerRef' | 'badCustomerRef'> {
-  if (ref === null) {
-    return {};
-  }
-  return isCustomerRef(ref) ? { customerRef: ref } : { badCustomerRef: true };
+function refOf(ref: string | null): Pick<CheckoutParams, 'customerRef'> {
+  return ref !== null && isCustomerRef(ref) ? { customerRef: ref } : {};
 }

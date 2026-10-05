@@ -9,17 +9,12 @@ import { render } from 'preact';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../core/order-store-idb';
 import { decodeCheckoutParams } from '../embed/protocol';
 import { type Actions, Checkout } from './Checkout';
-import {
-  type Screen,
-  followOnlyOffer,
-  loadWithPins,
-  screenForPage,
-  startWithHint,
-} from './controller';
+import { type Screen, loadWithPins, startWithHint } from './controller';
 import { discoverEvmWallets, tempoWalletOptions } from './evm-wallets';
 import { acceptHandshake } from './handshake';
 import { createHeightAnimator } from './height';
 import { armFirstFocus, closeOnEscape } from './modal-frame';
+import { holdFrame, startPage } from './page';
 import { type Banner, CheckoutSession, type View } from './session';
 import { discoverWallets, payingWallets, solanaChain } from './wallets';
 
@@ -140,85 +135,69 @@ async function openStore(): Promise<OrderStore | undefined> {
 async function start(pageOrigin: string): Promise<void> {
   // Whatever was posted before the hello was dropped: the page gets the height now.
   heights.flush(contentHeight());
-  if (params === undefined) {
-    show({ kind: 'refused', reason: 'no_product' });
-    handshake.status('refused');
-    return;
-  }
-  show({ kind: 'loading' });
-  try {
-    const store = await openStore();
-    const next = await screenForPage(params, pageOrigin, { client: readClient, store });
-    let followOnly: { message: string; orderId: string } | undefined;
-    let offer: Extract<Screen, { kind: 'offer' }>['offer'] | undefined =
-      next.kind === 'offer' ? next.offer : undefined;
-    if (offer === undefined && store !== undefined && next.kind === 'refused') {
-      // Refused now, but an order of this product is still followed (never paid again).
-      const followed = await followOnlyOffer(params.naddr, store);
-      if (followed !== undefined) {
-        offer = followed.offer;
-        followOnly = {
-          message: next.message ?? 'This product cannot be bought here.',
-          orderId: followed.orderId,
-        };
+  await startPage({
+    params,
+    pageOrigin,
+    client: readClient,
+    openStore,
+    frame: window,
+    show,
+    status: (state) => handshake.status(state),
+    holdHeight: () => holdFrame(document.documentElement, heights, contentHeight()),
+    run: (offer, store, followOnly, onStatus) => {
+      if (params === undefined) {
+        return Promise.resolve();
       }
-    }
-    if (offer === undefined || store === undefined) {
-      show(next);
-      handshake.status('refused');
-      return;
-    }
-    session = new CheckoutSession(offer, {
-      store,
-      readClient,
-      clientFor: (buyerSecretKey) =>
-        createRelayClient({ auth: async (template) => finalizeEvent(template, buyerSecretKey) }),
-      rpcFor,
-      wallets: (network) => payingWallets(wallets.list(), solanaChain(network)),
-      tempoFor,
-      tempoWallets: (network) => {
-        const chain = chainByCaip2(tempoCaip2(network));
-        return chain === undefined ? [] : tempoWalletOptions(evmWallets.list(), chain);
-      },
-      onBanner: (next) => {
-        banner = next;
-        draw();
-      },
-      // With this store's pins, as on the first load: a re-verification never skips them.
-      reloadOffer: () => loadWithPins(params, pageOrigin, { client: readClient, store }),
-      now: () => Math.floor(Date.now() / 1000),
-      chainTime: readChainTime,
-      setInterval: (handler, ms) => window.setInterval(handler, ms),
-      clearInterval: (handle) => window.clearInterval(handle as number),
-      setTimeout: (handler, ms) => window.setTimeout(handler, ms),
-      clearTimeout: (handle) => window.clearTimeout(handle as number),
-      onView: (next) => {
-        view = next;
-        draw();
-      },
-      onStatus: (state) => handshake.status(state),
-      collectEmail: params.collectEmail,
-      ...(followOnly === undefined ? {} : { followOnly }),
-    });
-    const started = session;
-    await startWithHint(
-      () => started.start(),
-      () => {
-        // Only the loading line gains a hint: the session's first view replaces it.
-        if (view === undefined && screen.kind === 'loading') {
-          show({ kind: 'loading', slow: true });
-        }
-      },
-    );
-  } catch {
-    // Storage or a relay failed in a way no check caught: never a Buy button then,
-    // and nothing of the half-started session keeps running or drawing.
-    session?.dispose();
-    session = undefined;
-    view = undefined;
-    show({ kind: 'refused', reason: 'failed' });
-    handshake.status('refused');
-  }
+      const started = new CheckoutSession(offer, {
+        store,
+        readClient,
+        clientFor: (buyerSecretKey) =>
+          createRelayClient({ auth: async (template) => finalizeEvent(template, buyerSecretKey) }),
+        rpcFor,
+        wallets: (network) => payingWallets(wallets.list(), solanaChain(network)),
+        tempoFor,
+        tempoWallets: (network) => {
+          const chain = chainByCaip2(tempoCaip2(network));
+          return chain === undefined ? [] : tempoWalletOptions(evmWallets.list(), chain);
+        },
+        onBanner: (next) => {
+          banner = next;
+          draw();
+        },
+        // With this store's pins, as on the first load: a re-verification never skips them.
+        reloadOffer: () => loadWithPins(params, pageOrigin, { client: readClient, store }),
+        now: () => Math.floor(Date.now() / 1000),
+        chainTime: readChainTime,
+        setInterval: (handler, ms) => window.setInterval(handler, ms),
+        clearInterval: (handle) => window.clearInterval(handle as number),
+        setTimeout: (handler, ms) => window.setTimeout(handler, ms),
+        clearTimeout: (handle) => window.clearTimeout(handle as number),
+        onView: (next) => {
+          view = next;
+          draw();
+        },
+        onStatus,
+        collectEmail: params.collectEmail,
+        ...(params.customerRef === undefined ? {} : { customerRef: params.customerRef }),
+        ...(followOnly === undefined ? {} : { followOnly }),
+      });
+      session = started;
+      return startWithHint(
+        () => started.start(),
+        () => {
+          // Only the loading line gains a hint: the session's first view replaces it.
+          if (view === undefined && screen.kind === 'loading') {
+            show({ kind: 'loading', slow: true });
+          }
+        },
+      );
+    },
+    dropSession: () => {
+      session?.dispose();
+      session = undefined;
+      view = undefined;
+    },
+  });
 }
 
 /** The content's own height (the body has no margin), never the frame's current one. */

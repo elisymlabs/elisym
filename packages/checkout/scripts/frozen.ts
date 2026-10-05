@@ -9,7 +9,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 /** The frozen loader sources, relative to the package. */
-export const FROZEN_DIRS = ['src/embed/v1', 'src/embed/v2'];
+export const FROZEN_DIRS = ['src/embed/v1', 'src/embed/v2', 'src/embed/v3'];
 export const FROZEN_MANIFEST = 'embed-prod/frozen.sha256';
 
 function frozenFiles(packageDir: string): string[] {

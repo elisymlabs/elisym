@@ -1,5 +1,5 @@
 /**
- * Builds the loaders into `dist/v1/` and `dist/v2/`. For the production origin
+ * Builds the loaders into `dist/v1/`, `dist/v2/` and `dist/v3/`. For the production origin
  * the committed bytes in `embed-prod/` are copied as they are: merchants pin
  * them with an SRI hash, so a toolchain update must never rebuild them. For any
  * other origin (a preview, a local demo) they are built from the frozen sources.
@@ -17,6 +17,7 @@ const PACKAGE_DIR = fileURLToPath(new URL('..', import.meta.url));
 const LOADERS = [
   { version: 'v1', config: 'vite.embed.config.ts' },
   { version: 'v2', config: 'vite.embed-v2.config.ts' },
+  { version: 'v3', config: 'vite.embed-v3.config.ts' },
 ] as const;
 
 const fromSource = process.argv.includes('--from-source');
