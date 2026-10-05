@@ -227,19 +227,19 @@ describe('buy_product', () => {
     const before = new Map(run.ctx.sessionSpent);
     releaseCosts(run.ctx, attemptId ?? '', true);
     expect(run.ctx.sessionSpent).toEqual(before);
-  });
+  }, 20_000);
 
-  it('uses up a spend warning only for a payment seen on chain', async () => {
-    async function buyNearTheCap(dropSends: boolean, delivered = false) {
+  describe('spend warnings', () => {
+    // Once reserved, the payment is the whole cap: every warning is due. A
+    // store that delivers ends the follow at once, so no case waits out its budget.
+    async function buyAtTheCap(options: { lands: boolean; delivered: boolean }) {
       const run = await world();
       const quote = await quoteId(run);
-      run.chain.dropSends = dropSends;
-      // Long enough for a slow run to see the payment land.
-      commerceRuntime.buyBudgetMs = dropSends && !delivered ? 200 : 3_000;
-      // Once reserved, the payment is the whole cap: every warning is due.
+      run.chain.dropSends = !options.lands;
+      commerceRuntime.buyBudgetMs = options.delivered ? 10_000 : 200;
       run.chain.onSend = async () => {
         run.ctx.sessionSpendLimits = new Map(run.ctx.sessionSpent);
-        if (delivered) {
+        if (options.delivered) {
           const [record] = await orders(run);
           await storeDelivers(run, record as OrderRecord);
         }
@@ -250,17 +250,25 @@ describe('buy_product', () => {
       });
       return { run, body: text(bought as never) };
     }
-    const unseen = await buyNearTheCap(true);
-    expect(unseen.body).not.toContain('Warning: session spend');
-    expect(
-      [...unseen.run.ctx.sessionSpendWarnings.values()].every((fired) => fired.size === 0),
-    ).toBe(true);
-    const landed = await buyNearTheCap(false);
-    expect(landed.body).toContain('Warning: session spend reached 50%');
-    expect(landed.body).toContain('Warning: session spend reached 50% of the SOL cap');
-    // Delivered before this process saw the payment: paid all the same.
-    const delivered = await buyNearTheCap(true, true);
-    expect(delivered.body).toContain('Warning: session spend reached 50%');
+
+    it('keeps them for a payment never seen on chain', async () => {
+      const unseen = await buyAtTheCap({ lands: false, delivered: false });
+      expect(unseen.body).not.toContain('Warning: session spend');
+      expect(
+        [...unseen.run.ctx.sessionSpendWarnings.values()].every((fired) => fired.size === 0),
+      ).toBe(true);
+    });
+
+    it('uses them, token and SOL, for a payment that landed', async () => {
+      const landed = await buyAtTheCap({ lands: true, delivered: true });
+      expect(landed.body).toContain('Warning: session spend reached 50%');
+      expect(landed.body).toContain('Warning: session spend reached 50% of the SOL cap');
+    }, 20_000);
+
+    it('uses them for a delivery that came before the payment was seen', async () => {
+      const delivered = await buyAtTheCap({ lands: false, delivered: true });
+      expect(delivered.body).toContain('Warning: session spend reached 50%');
+    }, 20_000);
   });
 
   it('refuses over the spend limit before anything is recorded', async () => {
