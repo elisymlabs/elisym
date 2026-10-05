@@ -129,6 +129,7 @@ export function planHandAnswer(state: LedgerState, key: string, request: HandReq
           amount: request.amount,
           ...(asset === undefined ? {} : { caip19: asset }),
         }),
+    ...(order?.customerRef === undefined ? {} : { customerRef: order.customerRef }),
     reportedTxs: [...(order?.reportedTxs ?? [])],
     refusedTxs: [...(order?.refusedTxs ?? [])],
     noLegTxs: [...(order?.noLegTxs ?? [])],

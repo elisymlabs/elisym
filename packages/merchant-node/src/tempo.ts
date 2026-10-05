@@ -26,9 +26,11 @@ import { CATCH_UP_SECS, MAX_RECHECKS_PER_SWEEP, ORDER_SCAN_MARGIN_SECS } from '.
 import {
   type LedgerState,
   type MerchantOrder,
+  type WebhookOutbox,
   claimPayment,
   markTempo,
   openOrders,
+  recordPayment,
 } from './ledger';
 import { TEMPO_HASH_RE } from './order-rules';
 import type { CatchUpResult, PaymentCheck } from './solana';
@@ -40,6 +42,8 @@ export interface TempoContext {
   /** The receipt medium of the chain: `tempo` or `tempo-moderato`. */
   medium: string;
   storePubkey: string;
+  /** With a webhook configured: a payment verified here queues its `order.paid` webhook. */
+  outbox?: WebhookOutbox;
   /** Block timestamps read so far (a restart costs a few binary-search reads). */
   samples?: Map<number, number>;
 }
@@ -244,13 +248,17 @@ async function verifyTerms(
         return 'claimed';
       }
       markTempo(state);
-      order.paid = {
-        signature: leg.transactionHash,
-        amount: leg.amount.toString(),
-        blockTime: at,
-        caip19: candidate.terms.caip19,
-        medium: context.medium,
-      };
+      recordPayment(
+        order,
+        {
+          signature: leg.transactionHash,
+          amount: leg.amount.toString(),
+          blockTime: at,
+          caip19: candidate.terms.caip19,
+          medium: context.medium,
+        },
+        context.outbox,
+      );
       return 'paid';
     }
     if (

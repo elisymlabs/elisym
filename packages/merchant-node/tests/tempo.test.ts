@@ -13,7 +13,13 @@ import {
   recordedReceipt,
 } from '../../pay-core/tests/tempo-chain';
 import { intake, storeIdentity } from '../src/intake';
-import { type MerchantOrder, emptyLedger, loadLedger, saveLedger } from '../src/ledger';
+import {
+  type MerchantOrder,
+  emptyLedger,
+  loadLedger,
+  saveLedger,
+  webhookEventId,
+} from '../src/ledger';
 import { catchUp } from '../src/solana';
 import {
   type TempoContext,
@@ -181,6 +187,19 @@ describe('checkTempoPayment', () => {
       [`eip155:4217:${HASH}:${run.memo}`, run.order.key],
     ]);
     expect(run.state.version).toBe(2);
+    expect(run.order.webhook).toBeUndefined();
+  });
+
+  it('queues the webhook with the payment, keyed by the transaction hash', async () => {
+    const run = setup();
+    land(run, HASH, run.memo);
+    const outbox = { storePubkey: run.context.storePubkey, now: () => HEAD_TIME };
+    await checkTempoPayment(run.state, run.order, HASH, { ...run.context, outbox });
+    expect(run.order.webhook).toMatchObject({
+      state: 'pending',
+      eventId: webhookEventId(run.context.storePubkey, run.order.key, HASH),
+      createdAt: HEAD_TIME,
+    });
   });
 
   it('asks again for a hash the chain does not know yet', async () => {

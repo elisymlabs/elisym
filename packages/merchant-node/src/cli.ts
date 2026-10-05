@@ -3,7 +3,8 @@
  * `setup` checks the inbox relays and publishes the store, `run` takes orders,
  * verifies payments by the direct-mode contract and delivers.
  */
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { KIND_INBOX_RELAYS, KIND_PAYTO, KIND_PRODUCT, splitNip05 } from '@elisym/commerce';
@@ -25,6 +26,7 @@ import {
   OFFER_RELAYS,
   SOLANA_MEDIUMS,
   TERMS_CLOCK_MARGIN_SECS,
+  WEBHOOK_TICK_MS,
 } from './constants';
 import { deliverOrder, publishSelfCopy } from './deliver';
 import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } from './hand';
@@ -50,7 +52,7 @@ import {
   readPassphrase,
   storeKeyForAdmin,
 } from './keys';
-import { type LedgerState, type MerchantOrder, loadLedger, saveLedger } from './ledger';
+import { type LedgerState, type WebhookOutbox, loadLedger, saveLedger } from './ledger';
 import { InboxListener } from './listener';
 import { printable } from './printable';
 import { publishToRelays } from './publish';
@@ -60,6 +62,19 @@ import { payoutListDate, recordPublished, setupRefusal } from './setup-ledger';
 import { buildStoreEvents, storeNostrJson } from './store-events';
 import { tempoContextFor } from './tempo';
 import { standingTerms } from './terms';
+import {
+  type WebhookTarget,
+  WEBHOOK_SECRET_HINT,
+  WebhookSender,
+  applySendResult,
+  orderPaidBody,
+  outcomeText,
+  readWebhookSecret,
+  sendWebhook,
+  testBody,
+  webhookTarget,
+} from './webhook';
+import { type RearmKind, orderLines, rearmWebhook } from './webhook-commands';
 
 const USAGE = `usage: elisym-merchant <command> [--home <dir>]
 
@@ -67,7 +82,8 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
          make the home: a config.json to edit and the store's keys
   setup  check the inbox relays and publish the store (after editing config.json)
   run    take orders, verify payments, deliver
-  orders list the orders: paid, delivered, the buyer's email
+  orders list the orders: paid, delivered, the buyer's email, the customer
+         reference, the webhook state and its event id
   check  check the inbox relays, the owner's payout list and the domain
   encrypt-keys [--owner-only]
          encrypt the keys in keys.json with $ELISYM_MERCHANT_PASSPHRASE
@@ -84,11 +100,20 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
          (--asset: the refunded coin; required when the store has several payouts,
          and ignored, with a warning, when re-sending an answer kept without one)
          (both need the node stopped; --yes skips the confirmation)
+  webhook test
+         send a signed test event to config.json's webhook (it credits nothing)
+  webhook retry <buyer>:<orderId>
+         send a pending or failed order.paid webhook again now, with a fresh deadline
+  webhook resend <buyer>:<orderId>
+         send the order.paid webhook of any paid order again (receivers dedupe on its
+         event id); retry and resend need the node stopped
 
 The home is --home, else $ELISYM_MERCHANT_HOME, else ~/.elisym-merchant.
 It holds the store's secret keys: keep it private and back it up. init encrypts
 new keys when $ELISYM_MERCHANT_PASSPHRASE (or ..._FILE) is set (--owner-only:
-the owner key only); a command that needs an encrypted key reads it from there.`;
+the owner key only); a command that needs an encrypted key reads it from there.
+A webhook in config.json needs its secret in $ELISYM_MERCHANT_WEBHOOK_SECRET
+(or the file $ELISYM_MERCHANT_WEBHOOK_SECRET_FILE names), at least 32 bytes.`;
 
 /** Answers a relay's NIP-42 challenge with the store key. */
 function storeAuth(storeSecretKey: Uint8Array) {
@@ -107,9 +132,26 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** This package's version, for the webhook's User-Agent (src/ and dist/ sit beside package.json). */
+function packageVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const read = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')) as {
+      version?: unknown;
+    };
+    return typeof read.version === 'string' ? read.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+const USER_AGENT = `elisym-merchant-node/${packageVersion()}`;
+
 interface Args {
   command: string | undefined;
-  /** The order key of `deliver` / `refund`. */
+  /** `webhook`'s own command: test, retry or resend. */
+  subcommand: string | undefined;
+  /** The order key of `deliver` / `refund` / `webhook retry` / `webhook resend`. */
   target: string | undefined;
   home: string | undefined;
   network: string | undefined;
@@ -137,6 +179,7 @@ function isValueFlag(arg: string): arg is keyof typeof VALUE_FLAGS {
 function parseArgs(argv: readonly string[]): Args {
   const args: Args = {
     command: undefined,
+    subcommand: undefined,
     target: undefined,
     home: undefined,
     network: undefined,
@@ -162,6 +205,21 @@ function parseArgs(argv: readonly string[]): Args {
       args.ownerOnly = true;
     } else if (args.command === undefined && arg !== undefined && !arg.startsWith('--')) {
       args.command = arg;
+    } else if (
+      args.command === 'webhook' &&
+      args.subcommand === undefined &&
+      arg !== undefined &&
+      !arg.startsWith('--')
+    ) {
+      args.subcommand = arg;
+    } else if (
+      args.command === 'webhook' &&
+      (args.subcommand === 'retry' || args.subcommand === 'resend') &&
+      args.target === undefined &&
+      arg !== undefined &&
+      !arg.startsWith('--')
+    ) {
+      args.target = arg;
     } else if (
       (args.command === 'deliver' || args.command === 'refund') &&
       args.target === undefined &&
@@ -217,6 +275,9 @@ function init(home: MerchantHome, network: string | undefined, ownerOnly: boolea
     );
   }
   console.log('next    edit config.json, then run setup');
+  console.log(
+    'note    to tell your backend about payments, add "webhook" to config.json and a secret: openssl rand -hex 32',
+  );
 }
 
 /**
@@ -466,6 +527,11 @@ function deferSignals(): () => number | undefined {
 
 async function run(home: MerchantHome): Promise<void> {
   const config = loadConfig(home.config);
+  // Before the lock and any relay: a configured webhook without its secret never runs.
+  const { target, warning } = webhookTarget(config.webhook, readWebhookSecret());
+  if (warning !== undefined) {
+    log(`warning: ${warning}`);
+  }
   const loaded = loadKeys(home);
   const storeSecretKey = openSecret(loaded, 'store', readPassphrase());
   const storePubkey = loaded.storePubkey;
@@ -483,7 +549,12 @@ async function run(home: MerchantHome): Promise<void> {
     });
   };
 
-  const tempo = tempoContextFor(config, storePubkey);
+  // Payments verified from now on queue their webhook in the save that records them.
+  const outbox: WebhookOutbox | undefined =
+    target === undefined ? undefined : { storePubkey, now: nowSecs };
+  const tempoContext = tempoContextFor(config, storePubkey);
+  const tempo =
+    tempoContext === undefined || outbox === undefined ? tempoContext : { ...tempoContext, outbox };
   const mediums = [
     ...(config.rpcUrl === undefined ? [] : [SOLANA_MEDIUMS[config.network]]),
     ...(tempo === undefined ? [] : [tempo.medium]),
@@ -505,14 +576,16 @@ async function run(home: MerchantHome): Promise<void> {
       );
     }
   });
+  const store = storeIdentity(storePubkey, config.product.d, mediums);
   const runtime = new MerchantRuntime({
     state,
-    store: storeIdentity(storePubkey, config.product.d, mediums),
+    store,
     storeSecretKey,
     // With no Solana payout the Solana catch-up has no terms to scan and reads nothing.
     context: {
       rpc: createSolanaRpc(config.rpcUrl ?? 'https://api.devnet.solana.com'),
       network: config.network,
+      ...(outbox === undefined ? {} : { outbox }),
     },
     ...(tempo === undefined ? {} : { tempo }),
     // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
@@ -581,32 +654,139 @@ async function run(home: MerchantHome): Promise<void> {
   };
   sweep();
   setInterval(sweep, CATCH_UP_INTERVAL_MS);
+  if (target !== undefined) {
+    startWebhooks(state, store, target, home, enqueue);
+  }
 }
 
-function orderStatus(order: MerchantOrder): string {
-  if (order.paid === undefined) {
-    return 'open';
-  }
-  return order.deliveredAt === undefined ? 'paid, delivering' : 'delivered';
+/**
+ * Send the webhooks due, every `WEBHOOK_TICK_MS`. Each pick runs on the queue,
+ * between tasks, so it only sees entries already saved; the requests run off
+ * it, and each outcome is queued back and saved.
+ */
+function startWebhooks(
+  state: LedgerState,
+  store: { storePubkey: string; productAddress: string },
+  target: WebhookTarget,
+  home: MerchantHome,
+  enqueue: (task: () => Promise<void>) => void,
+): void {
+  const sender = new WebhookSender({
+    state,
+    store,
+    target,
+    commit: (change) => {
+      enqueue(async () => {
+        change();
+        saveLedger(home.ledger, state);
+      });
+    },
+    log,
+    now: nowSecs,
+    userAgent: USER_AGENT,
+  });
+  // Like the sweep: a busy queue holds one pick, never a pile of them.
+  let tickQueued = false;
+  const tick = () => {
+    if (tickQueued) {
+      return;
+    }
+    tickQueued = true;
+    enqueue(async () => {
+      tickQueued = false;
+      void sender.tick();
+    });
+  };
+  tick();
+  setInterval(tick, WEBHOOK_TICK_MS);
+  log(`webhook to ${new URL(target.url).origin} (order.paid)`);
 }
 
 function listOrders(home: MerchantHome): void {
   const state = loadLedger(home.ledger);
-  const all = Object.values(state.orders).sort((left, right) => left.createdAt - right.createdAt);
-  for (const order of all) {
-    const when = new Date(order.createdAt * 1000).toISOString();
-    const paid = order.paid === undefined ? '' : ` ${order.paid.amount} ${order.paid.signature}`;
-    const email = order.email === undefined ? '' : ` email=${printable(order.email)}`;
-    console.log(`${when} ${orderStatus(order)} ${order.key}${paid}${email}`);
+  for (const line of orderLines(state, loadKeys(home).storePubkey)) {
+    console.log(line);
   }
-  console.log(`${all.length} order(s)`);
-  for (const [key, answer] of Object.entries(state.answeredByHand ?? {})) {
-    const detail =
-      answer.kind === 'delivered'
-        ? (answer.delivery?.value ?? '')
-        : `${answer.amount ?? ''} in ${answer.tx ?? ''}`;
-    console.log(`answered by hand: ${key} ${answer.kind} ${detail}`);
+}
+
+/** The configured webhook and its secret, for a `webhook` command. */
+function commandTarget(config: MerchantConfig): WebhookTarget {
+  if (config.webhook === undefined) {
+    throw new Error('config.json has no webhook: add "webhook": { "url": "https://..." }');
   }
+  const { target } = webhookTarget(config.webhook, readWebhookSecret());
+  if (target === undefined) {
+    throw new Error(`no webhook secret: ${WEBHOOK_SECRET_HINT}`);
+  }
+  return target;
+}
+
+/** `webhook test`: one signed `test` event; it fails unless the receiver answers 2xx. */
+async function webhookTest(home: MerchantHome): Promise<void> {
+  const target = commandTarget(loadConfig(home.config));
+  const { body, eventId } = testBody(loadKeys(home).storePubkey);
+  const result = await sendWebhook(
+    target,
+    { name: 'test', eventId, body },
+    { now: nowSecs, userAgent: USER_AGENT },
+  );
+  if (!result.ok) {
+    throw new Error(`the receiver did not take the test event: ${result.error}`);
+  }
+  console.log(`webhook test event ${eventId} taken (${result.status})`);
+}
+
+/**
+ * `webhook retry` / `resend`: make the order's entry pending with a fresh
+ * deadline and send it once now. The node must be stopped (the lock): a running
+ * node rewrites the ledger from memory. The entry is saved before the send, so
+ * a failed send stays pending for the next run.
+ */
+async function webhookAgain(home: MerchantHome, kind: RearmKind, key: string): Promise<void> {
+  const config = loadConfig(home.config);
+  const target = commandTarget(config);
+  const storePubkey = loadKeys(home).storePubkey;
+  takeLock(home);
+  const state = loadLedger(home.ledger);
+  const plan = rearmWebhook(state, key, kind, storePubkey, nowSecs());
+  if (!plan.ok) {
+    throw new Error(plan.problem);
+  }
+  saveLedger(home.ledger, state);
+  if (plan.order.customerRef !== undefined) {
+    console.log(`ref     ${printable(plan.order.customerRef)}`);
+  }
+  const store = storeIdentity(storePubkey, config.product.d, []);
+  const result = await sendWebhook(
+    target,
+    {
+      name: 'order.paid',
+      eventId: plan.entry.eventId,
+      body: orderPaidBody(plan.order, plan.entry, store),
+    },
+    { now: nowSecs, userAgent: USER_AGENT },
+  );
+  applySendResult(plan.entry, result, nowSecs(), Math.random());
+  saveLedger(home.ledger, state);
+  console.log(`webhook ${plan.entry.eventId} for ${key}: ${outcomeText(plan.entry, result)}`);
+  if (!result.ok) {
+    throw new Error('not taken: the node sends it again when it runs, or run this again');
+  }
+}
+
+async function webhookCommand(home: MerchantHome, args: Args): Promise<void> {
+  if (args.subcommand === 'test') {
+    await webhookTest(home);
+    return;
+  }
+  if (args.subcommand === 'retry' || args.subcommand === 'resend') {
+    if (args.target === undefined) {
+      throw new Error(`webhook ${args.subcommand} needs the order: <buyer>:<orderId> (see orders)`);
+    }
+    await webhookAgain(home, args.subcommand, args.target);
+    return;
+  }
+  throw new Error('webhook takes test, retry <buyer>:<orderId> or resend <buyer>:<orderId>');
 }
 
 async function check(home: MerchantHome): Promise<void> {
@@ -698,6 +878,11 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   console.log(`reported ${held.reportedTxs.join(', ') || '-'}`);
   console.log(`refused  ${(held.refusedTxs ?? []).join(', ') || '-'}`);
   console.log(`no leg   ${(held.noLegTxs ?? []).join(', ') || '-'}`);
+  if (plan.answer.customerRef !== undefined) {
+    console.log(
+      `ref      ${printable(plan.answer.customerRef)} (a hand answer sends no webhook: credit it by hand)`,
+    );
+  }
   if (order?.blockedTx !== undefined) {
     console.log(`blocked  ${order.blockedTx}`);
   }
@@ -841,6 +1026,10 @@ async function main(): Promise<void> {
     case 'deliver':
     case 'refund':
       await answerByHand(home, args);
+      process.exit(0);
+      return;
+    case 'webhook':
+      await webhookCommand(home, args);
       process.exit(0);
       return;
     default:

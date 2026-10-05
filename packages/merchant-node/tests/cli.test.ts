@@ -3,13 +3,17 @@
  * runs before the passphrase is read, and what a failing command leaves behind.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configTemplate } from '../src/config';
-import { PAYOUT } from './fixtures';
+import { emptyLedger, newWebhookEntry, webhookEventId } from '../src/ledger';
+import { PAYOUT, T0, USDC_DEVNET_CAIP19 } from './fixtures';
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 const PASSPHRASE = 'correct horse battery staple';
@@ -28,6 +32,77 @@ function cli(args: string[], env: Record<string, string> = {}, timeoutMs = 20_00
 
 function scratchDir(): string {
   return join(mkdtempSync(join(tmpdir(), 'merchant-cli-')), 'home');
+}
+
+const WEBHOOK_SECRET = 's'.repeat(40);
+const BUYER = 'b'.repeat(64);
+const ORDER_ID = 'b3a7c2d4-0000-4000-8000-000000000001';
+const PAID_SIG =
+  '5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW';
+
+/** An initialised home whose config names `webhookUrl` (local, so allowInsecure). */
+function webhookHome(webhookUrl = 'http://127.0.0.1:9/hook'): string {
+  const home = scratchDir();
+  expect(cli(['init', '--home', home]).code).toBe(0);
+  const config = configTemplate('devnet');
+  config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
+  // A relay that refuses at once: a command that reached it fails with a relay error.
+  config.inboxRelays = ['ws://localhost:9'];
+  writeFileSync(
+    join(home, 'config.json'),
+    JSON.stringify({ ...config, webhook: { url: webhookUrl, allowInsecure: true } }),
+  );
+  return home;
+}
+
+function storePubkeyOf(home: string): string {
+  return (JSON.parse(readFileSync(join(home, 'keys.json'), 'utf8')) as { storePubkey: string })
+    .storePubkey;
+}
+
+/** A ledger holding one paid order with a customer reference and a failed webhook. */
+function writePaidLedger(home: string): string {
+  const state = emptyLedger();
+  const order = {
+    key: `${BUYER}:${ORDER_ID}`,
+    buyerPubkey: BUYER,
+    orderId: ORDER_ID,
+    rumorId: 'r'.repeat(64),
+    createdAt: T0,
+    reference: 'ref',
+    reportedTxs: [],
+    customerRef: 'user-123',
+    paid: {
+      signature: PAID_SIG,
+      amount: '1000000',
+      blockTime: T0 + 60,
+      caip19: USDC_DEVNET_CAIP19,
+      medium: 'solana-devnet',
+    },
+  };
+  state.orders[order.key] = {
+    ...order,
+    webhook: { ...newWebhookEntry(storePubkeyOf(home), order, T0), state: 'failed' },
+  };
+  writeFileSync(join(home, 'ledger.json'), JSON.stringify(state));
+  return order.key;
+}
+
+/** Run the CLI without blocking this process, so a local receiver can answer it. */
+function cliAsync(args: string[], env: Record<string, string> = {}) {
+  return new Promise<{ code: number | null; output: string }>((resolve) => {
+    const child = spawn('bun', [CLI, ...args], {
+      env: { PATH: process.env.PATH ?? '', HOME: tmpdir(), ...env },
+    });
+    let output = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+    });
+    child.on('exit', (code) => resolve({ code, output }));
+  });
 }
 
 describe('the merchant CLI', () => {
@@ -103,6 +178,92 @@ describe('the merchant CLI', () => {
     const run = cli(['check', '--home', home], {}, 50_000);
     expect(run.output).toMatch(/nostr {3}not written/);
     expect(existsSync(join(home, 'nostr.json'))).toBe(false);
+  }, 60_000);
+
+  it('run with a webhook and no secret refuses before any relay or lock', () => {
+    const home = webhookHome();
+    const run = cli(['run', '--home', home]);
+    expect(run.code).not.toBe(0);
+    expect(run.output).toMatch(/no secret is set/);
+    expect(existsSync(join(home, 'run.lock'))).toBe(false);
+    const short = cli(['run', '--home', home], { ELISYM_MERCHANT_WEBHOOK_SECRET: 'too short' });
+    expect(short.code).not.toBe(0);
+    expect(short.output).toMatch(/shorter than 32 bytes/);
+    expect(short.output).not.toContain('too short');
+  });
+
+  it('webhook retry and resend refuse while a node holds the home', () => {
+    const home = webhookHome();
+    const key = writePaidLedger(home);
+    writeFileSync(join(home, 'run.lock'), 'another-node');
+    for (const kind of ['retry', 'resend']) {
+      const run = cli(['webhook', kind, key, '--home', home], {
+        ELISYM_MERCHANT_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      });
+      expect(run.code).not.toBe(0);
+      expect(run.output).toMatch(/another merchant holds/);
+    }
+    // Nothing was rearmed.
+    const ledger = JSON.parse(readFileSync(join(home, 'ledger.json'), 'utf8')) as ReturnType<
+      typeof emptyLedger
+    >;
+    expect(ledger.orders[key]?.webhook?.state).toBe('failed');
+  });
+
+  it('orders prints the customer reference, the webhook state and the event id', () => {
+    const home = webhookHome();
+    const key = writePaidLedger(home);
+    const run = cli(['orders', '--home', home]);
+    expect(run.code).toBe(0);
+    expect(run.output).toContain(
+      `${key} 1000000 ${PAID_SIG} ref=user-123 webhook=failed event=${webhookEventId(storePubkeyOf(home), key, PAID_SIG)}`,
+    );
+  });
+
+  it('webhook test and retry send signed events a receiver can check', async () => {
+    const received: { headers: Record<string, unknown>; body: string }[] = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        received.push({ headers: request.headers, body: Buffer.concat(chunks).toString('utf8') });
+        response.writeHead(200).end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const home = webhookHome(`http://127.0.0.1:${port}/hook`);
+      const env = { ELISYM_MERCHANT_WEBHOOK_SECRET: WEBHOOK_SECRET };
+      const test = await cliAsync(['webhook', 'test', '--home', home], env);
+      expect(test.code).toBe(0);
+      const key = writePaidLedger(home);
+      const retry = await cliAsync(['webhook', 'retry', key, '--home', home], env);
+      expect(retry.output).toMatch(/sent \(200\)/);
+      expect(retry.code).toBe(0);
+      expect(received.map((request) => JSON.parse(request.body).event)).toEqual([
+        'test',
+        'order.paid',
+      ]);
+      for (const request of received) {
+        const timestamp = String(request.headers['x-elisym-timestamp']);
+        const mac = createHmac('sha256', WEBHOOK_SECRET)
+          .update(`${timestamp}.${request.body}`)
+          .digest('hex');
+        expect(request.headers['x-elisym-signature']).toBe(`v1=${mac}`);
+        expect(String(request.headers['user-agent'])).toMatch(
+          /^elisym-merchant-node\/\d+\.\d+\.\d+$/,
+        );
+      }
+      expect(JSON.parse(received[1]?.body ?? '{}')).toMatchObject({ customerRef: 'user-123' });
+      const ledger = JSON.parse(readFileSync(join(home, 'ledger.json'), 'utf8')) as ReturnType<
+        typeof emptyLedger
+      >;
+      expect(ledger.orders[key]?.webhook).toMatchObject({ state: 'sent', attempts: 1 });
+      expect(existsSync(join(home, 'run.lock'))).toBe(false);
+    } finally {
+      server.close();
+    }
   }, 60_000);
 
   it('init on a plain home says so', () => {

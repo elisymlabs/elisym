@@ -54,18 +54,21 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 
 ## Commands
 
-| Command        | What it does                                                                                                                                                                                                                                           |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `init`         | Creates the home: a `config.json` template (never overwritten) and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest))                                                                                            |
-| `setup`        | Checks the inbox relays, publishes the store, and records the terms it offers                                                                                                                                                                          |
-| `run`          | Takes orders, verifies payments and delivers                                                                                                                                                                                                           |
-| `orders`       | Lists the orders: open, paid, delivered, and the buyer's email                                                                                                                                                                                         |
-| `check`        | Checks the inbox relays, the owner's payout list and the domain                                                                                                                                                                                        |
-| `deliver`      | Answers an unpaid order by hand with the configured delivery (node stopped)                                                                                                                                                                            |
-| `refund`       | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
-| `encrypt-keys` | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                       |
-| `store-key`    | Prints the store's secret key (nsec), for the admin page on this machine: only to a terminal, or with `--yes`                                                                                                                                          |
-| `admin`        | Serves the admin page on `127.0.0.1` (`--port`, default 5199): paste the store key there to see the orders (see [Admin](#admin)); reads no home                                                                                                        |
+| Command                            | What it does                                                                                                                                                                                                                                           |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `init`                             | Creates the home: a `config.json` template (never overwritten) and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest))                                                                                            |
+| `setup`                            | Checks the inbox relays, publishes the store, and records the terms it offers                                                                                                                                                                          |
+| `run`                              | Takes orders, verifies payments and delivers                                                                                                                                                                                                           |
+| `orders`                           | Lists the orders: open, paid, delivered, the buyer's email, the customer reference, and for a paid order its webhook state and event id                                                                                                                |
+| `check`                            | Checks the inbox relays, the owner's payout list and the domain                                                                                                                                                                                        |
+| `deliver`                          | Answers an unpaid order by hand with the configured delivery (node stopped)                                                                                                                                                                            |
+| `refund`                           | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
+| `encrypt-keys`                     | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                       |
+| `store-key`                        | Prints the store's secret key (nsec), for the admin page on this machine: only to a terminal, or with `--yes`                                                                                                                                          |
+| `admin`                            | Serves the admin page on `127.0.0.1` (`--port`, default 5199): paste the store key there to see the orders (see [Admin](#admin)); reads no home                                                                                                        |
+| `webhook test`                     | Sends a signed `test` event to the configured webhook; fails unless the receiver answers 2xx (see [Credit an account](#credit-an-account-the-webhook))                                                                                                 |
+| `webhook retry <buyer>:<orderId>`  | Sends a pending or failed `order.paid` webhook again now, with a fresh 7-day deadline (node stopped)                                                                                                                                                   |
+| `webhook resend <buyer>:<orderId>` | Sends the `order.paid` webhook of any paid order again, also one paid before the webhook was configured (node stopped)                                                                                                                                 |
 
 Every command takes `--home <dir>`. Without it, the home is `$ELISYM_MERCHANT_HOME`, else
 `~/.elisym-merchant`.
@@ -88,22 +91,23 @@ it starts.
 
 ## The config
 
-| Field                     | Meaning                                                                                             |
-| ------------------------- | --------------------------------------------------------------------------------------------------- |
-| `name`                    | The store's name, shown in the checkout                                                             |
-| `nip05`                   | Optional. `_@your-domain.com` for level A (see below)                                               |
-| `network`                 | `devnet` or `mainnet`                                                                               |
-| `rpcUrl`                  | The node's Solana RPC (`https:`). Needed with a Solana payout                                       |
-| `tempo`                   | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl` |
-| `inboxRelays`             | 1 to 5 relays (`wss:`) where the store reads orders and replies                                     |
-| `product.d`               | The product's id in the store (letters, digits, `.`, `-`, `_`)                                      |
-| `product.title`           | Title                                                                                               |
-| `product.description`     | Description                                                                                         |
-| `product.summary`         | Optional short line                                                                                 |
-| `product.priceUsd`        | Price in USD, such as `"49"` or `"0.50"`                                                            |
-| `product.delivery.method` | `access`, `download`, `license`, `api` or `webhook`: how the checkout labels it                     |
-| `product.delivery.value`  | The link or text the buyer gets (up to 1024 characters)                                             |
-| `payouts`                 | One `{ "caip19": ..., "address": ... }` per coin, see [Tempo payouts](#tempo-payouts)               |
+| Field                     | Meaning                                                                                                                                         |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                    | The store's name, shown in the checkout                                                                                                         |
+| `nip05`                   | Optional. `_@your-domain.com` for level A (see below)                                                                                           |
+| `network`                 | `devnet` or `mainnet`                                                                                                                           |
+| `rpcUrl`                  | The node's Solana RPC (`https:`). Needed with a Solana payout                                                                                   |
+| `tempo`                   | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl`                                             |
+| `inboxRelays`             | 1 to 5 relays (`wss:`) where the store reads orders and replies                                                                                 |
+| `product.d`               | The product's id in the store (letters, digits, `.`, `-`, `_`)                                                                                  |
+| `product.title`           | Title                                                                                                                                           |
+| `product.description`     | Description                                                                                                                                     |
+| `product.summary`         | Optional short line                                                                                                                             |
+| `product.priceUsd`        | Price in USD, such as `"49"` or `"0.50"`                                                                                                        |
+| `product.delivery.method` | `access`, `download`, `license`, `api` or `webhook`: how the checkout labels it                                                                 |
+| `product.delivery.value`  | The link or text the buyer gets (up to 1024 characters)                                                                                         |
+| `payouts`                 | One `{ "caip19": ..., "address": ... }` per coin, see [Tempo payouts](#tempo-payouts)                                                           |
+| `webhook`                 | Optional. `{ "url": "https://..." }`: where the node tells your backend about payments, see [Credit an account](#credit-an-account-the-webhook) |
 
 The node refuses to start with a config it cannot use, and names every problem.
 
@@ -208,7 +212,7 @@ npx @elisym/merchant-node admin       # open http://127.0.0.1:5199/ and paste it
 
 The page reads the store's inbox relays (its inbox list, or the default relays when it has
 none) with the store key and shows each order: when it was placed, the total the buyer's order
-claims, the email, the state, what the node credited and the transaction. The totals add up
+claims, the email, the customer reference, the state, what the node credited and the transaction. The totals add up
 what the node credited, per coin.
 
 | State            | Meaning                                                               |
@@ -290,6 +294,191 @@ Leave the `--mount` and `-e` out for plain keys: `init` then says `keys    plain
 
 To edit the config in the volume, mount a host directory instead, for example
 `-v "$PWD/shop:/data"`, and edit `shop/config.json`. The directory must be writable by uid 1000.
+
+## Credit an account: the webhook
+
+To credit a user's account on your own backend after a payment (a deposit, a top-up), let the
+node tell your backend. The node, and only the node, sends a signed `order.paid` webhook once it
+has verified the payment on chain. Never credit from the browser: anything a page reports can be
+forged by the buyer.
+
+```json
+"webhook": { "url": "https://shop.example.com/elisym/webhook" }
+```
+
+The URL must be `https:` on a public DNS name. For a local test receiver, add
+`"allowInsecure": true` (it allows `http:` and local or private hosts). The node signs with a
+secret only it and your backend hold, read from `ELISYM_MERCHANT_WEBHOOK_SECRET` or from the file
+`ELISYM_MERCHANT_WEBHOOK_SECRET_FILE` names (the passphrase's rules: one trailing newline dropped,
+an empty file or both set is an error). It must be at least 32 bytes:
+
+```bash
+[ -s ~/.elisym-merchant-webhook ] || (umask 077 && openssl rand -hex 32 > ~/.elisym-merchant-webhook)
+export ELISYM_MERCHANT_WEBHOOK_SECRET_FILE=~/.elisym-merchant-webhook
+npx @elisym/merchant-node webhook test
+```
+
+`run` refuses to start with a webhook and no secret. The secret is never written to the home,
+never logged and never shown by `orders`. In Docker, mount the file and name it with `-e`, as the
+passphrase above.
+
+Each request is a `POST` with `Content-Type: application/json` and these headers:
+
+| Header               | Value                                                                   |
+| -------------------- | ----------------------------------------------------------------------- |
+| `X-Elisym-Event`     | `order.paid` (or `test` from `webhook test`)                            |
+| `X-Elisym-Event-Id`  | The event id, also in the body                                          |
+| `X-Elisym-Timestamp` | Unix seconds of this attempt                                            |
+| `X-Elisym-Signature` | `v1=` and the hex HMAC-SHA256, keyed by the secret, of `timestamp.body` |
+
+The body (compact JSON; `customerRef` and `email` only when the order has them; the display
+fields only for a coin the node knows):
+
+```json
+{
+  "event": "order.paid",
+  "eventId": "<hex>",
+  "store": "<store pubkey hex>",
+  "orderId": "<uuid>",
+  "buyerPubkey": "<hex>",
+  "customerRef": "user-123",
+  "product": { "address": "30402:<store>:<d>" },
+  "payment": {
+    "asset": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "amount": "1000000",
+    "amountDisplay": "1",
+    "decimals": 6,
+    "symbol": "USDC",
+    "tx": "<transaction>",
+    "medium": "solana",
+    "paidAt": 1791100000
+  },
+  "email": "buyer@example.com"
+}
+```
+
+`payment.amount` is what the node verified on chain, in subunits: credit that, never a total the
+buyer claims. `customerRef` is your own id for the account, which the page passed to the checkout.
+
+What your receiver does, in this order:
+
+1. Read the raw body. Refuse a timestamp more than 300 seconds from your clock, and a signature
+   that does not match (compare with `crypto.timingSafeEqual` on equal-length buffers).
+2. Check `event` is `order.paid` (answer `test` with 2xx and credit nothing), `store` is your
+   store's key, and `payment.asset` is in your own allowlist of exact asset ids. Take the decimals
+   from your allowlist, not from the body.
+3. In one database transaction: insert the event, and credit the account only when the row was
+   inserted. A duplicate (the node sends at least once) answers 2xx and credits nothing. An order
+   with no or an unknown `customerRef` is inserted as `queued`, credits nothing and answers 2xx;
+   you credit it by hand later.
+4. Answer 2xx only after the commit. Any other answer, or none within 10 seconds, is retried.
+
+The events table keeps every row for good, with two unique keys: the event id, and the order
+itself, so neither a resend nor a hand credit of the same order credits twice:
+
+```sql
+CREATE TABLE elisym_events (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  event_id     TEXT UNIQUE,              -- null for an order answered by hand (no webhook)
+  store        TEXT NOT NULL,
+  buyer_pubkey TEXT NOT NULL,
+  order_id     TEXT NOT NULL,
+  account      TEXT,
+  status       TEXT NOT NULL,            -- 'credited' or 'queued'
+  UNIQUE (store, buyer_pubkey, order_id)
+);
+
+-- From the webhook, in the transaction that credits: credit only when a row comes back.
+INSERT INTO elisym_events (event_id, store, buyer_pubkey, order_id, account, status)
+VALUES ($1, $2, $3, $4, $5, 'credited')
+ON CONFLICT DO NOTHING
+RETURNING id;
+
+-- No or unknown customerRef: kept for you, nothing credited.
+INSERT INTO elisym_events (event_id, store, buyer_pubkey, order_id, status)
+VALUES ($1, $2, $3, $4, 'queued')
+ON CONFLICT DO NOTHING;
+
+-- Crediting a queued event by hand, in one transaction with the credit: credit only when a row comes back.
+UPDATE elisym_events SET status = 'credited', account = $1
+WHERE event_id = $2 AND status = 'queued'
+RETURNING id;
+```
+
+An order answered by hand sends no webhook: credit it with the plain insert, `event_id` null and
+the order's store, buyer and order id (`orders` lists them), in the same transaction as the credit.
+
+```js
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createServer } from 'node:http';
+
+const SECRET = process.env.ELISYM_MERCHANT_WEBHOOK_SECRET;
+if (!SECRET) {
+  throw new Error('set ELISYM_MERCHANT_WEBHOOK_SECRET');
+}
+const MAX_BODY_BYTES = 64 * 1024;
+
+createServer((request, response) => {
+  const chunks = [];
+  let size = 0;
+  request.on('data', (chunk) => {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      response.writeHead(413).end();
+      request.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+  request.on('end', async () => {
+    const body = Buffer.concat(chunks).toString('utf8');
+    const timestamp = String(request.headers['x-elisym-timestamp'] ?? '');
+    const mac = createHmac('sha256', SECRET).update(`${timestamp}.${body}`).digest('hex');
+    const expected = Buffer.from(`v1=${mac}`);
+    const given = Buffer.from(String(request.headers['x-elisym-signature'] ?? ''));
+    const fresh = Math.abs(Date.now() / 1000 - Number(timestamp)) <= 300;
+    if (!fresh || expected.length !== given.length || !timingSafeEqual(expected, given)) {
+      response.writeHead(401).end();
+      return;
+    }
+    try {
+      await creditOnce(JSON.parse(body)); // steps 2 and 3: your code
+      response.writeHead(200).end();
+    } catch {
+      response.writeHead(500).end(); // the node sends it again later
+    }
+  });
+}).listen(8080);
+```
+
+Delivery and retries:
+
+- The entry is written in the same ledger save that records the payment, so a crash never loses
+  it: a restarted node sends what is pending. Delivery to the buyer never waits on it.
+- A failed attempt is retried after 30 seconds, doubling to an hour, for 7 days; then it is
+  `failed`. `orders` shows each paid order's webhook state (`pending`, `sent`, `failed`, or
+  `none`) and its event id. `webhook retry` sends a pending or failed one again now (node stopped).
+- No redirect is followed, the answer body is read up to 4 KiB and ignored.
+- Under Bun (the Docker image runs the node with Bun), the webhook request goes through the proxy
+  that `HTTP_PROXY` / `HTTPS_PROXY` name, as every other request of the node does; Bun has no
+  per-request way to turn that off. Unset them for the node, or list your backend's host in
+  `NO_PROXY` when the node starts, unless you mean the webhook to go through that proxy. Under
+  Node.js (`npx`), it uses no proxy unless Node is told to (`NODE_USE_ENV_PROXY=1`).
+- `eventId` is the hex sha256 of `<store pubkey>:<buyer>:<orderId>:<payment transaction>`: the
+  same for every send of a payment, and different for two orders one Tempo transaction paid.
+- To rotate the secret, let the receiver accept the old and the new one, set the new one and
+  restart the node (it signs every attempt afresh, pending ones too), then drop the old one.
+
+What sends no webhook on its own (a credit made by hand records the event id, or the order key
+when there is none, so a later webhook never credits it twice):
+
+- A payment verified while no webhook was configured, or by a node older than 0.7.0:
+  `webhook resend <buyer>:<orderId>` sends it now.
+- An order answered by hand (`deliver`, `refund`): `orders` and the command show its reference.
+- A payment the node never saw: a node offline for longer than the three-day catch-up window
+  can miss payments for orders placed before it went down.
+
+The [admin page](#admin) shows each order's reference; the webhook state is in `orders` only.
 
 ## Keeping it safe
 
