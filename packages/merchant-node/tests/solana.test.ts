@@ -8,6 +8,7 @@ import { type MerchantOrder, webhookEventId } from '../src/ledger';
 import { catchUp, checkPayment, receivingAccount } from '../src/solana';
 import { publishTerms } from '../src/terms';
 import {
+  D,
   PAYOUT,
   PRICE,
   T0,
@@ -116,7 +117,8 @@ describe('checkPayment', () => {
     // The price doubled an hour after the order; the old price paid later is refused.
     state.terms = publishTerms(
       state.terms,
-      { caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: (PRICE * 2n).toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: (PRICE * 2n).toString() },
+      T0 + 3600,
       T0 + 3600,
     );
     const late = T0 + 3600 + TERMS_WINDOW_SECS + 1;
@@ -171,7 +173,7 @@ describe('catchUp', () => {
   }
 
   it('lands SOL on the wallet itself, a token on its associated account', async () => {
-    const terms = { caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() };
+    const terms = { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() };
     expect(await receivingAccount(terms, USDC_SOLANA_DEVNET)).toBe(await payoutAccount());
     expect(await receivingAccount(terms, NATIVE_SOL)).toBe(PAYOUT);
   });
@@ -377,7 +379,8 @@ describe('an order paid once', () => {
     const { state, identity, store } = world();
     state.terms = publishTerms(
       state.terms,
-      { caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: (PRICE * 2n).toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: (PRICE * 2n).toString() },
+      T0 + 100,
       T0 + 100,
     );
     const taken = intake(

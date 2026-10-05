@@ -28,8 +28,9 @@ import {
   openOrders,
   recordPayment,
 } from './ledger';
+import { orderProductD } from './products';
 import { isSolanaSignature } from './signature';
-import { type OfferTerms, termsAt, termsSince } from './terms';
+import { type OfferTerms, termsAt, termsSince, termsSinceAll } from './terms';
 
 export interface SolanaContext {
   rpc: Rpc<SolanaRpcApi>;
@@ -85,7 +86,9 @@ export async function checkPayment(
       ? { kind: 'paid', order }
       : { kind: 'refused', reason: 'order_already_paid' };
   }
-  const candidates = termsSince(state.terms, order.createdAt - ORDER_SCAN_MARGIN_SECS);
+  // Defence in depth: the block-time check below is the guard.
+  const d = orderProductD(order);
+  const candidates = termsSince(state.terms, d, order.createdAt - ORDER_SCAN_MARGIN_SECS);
   let askAgain = false;
   for (const terms of candidates) {
     const asset = solanaAsset(terms, context.network);
@@ -110,7 +113,8 @@ export async function checkPayment(
       askAgain = true;
       continue;
     }
-    const offered = termsAt(state.terms, verdict.blockTime).some(
+    // The guard: the order's own product offered exactly these terms at block time.
+    const offered = termsAt(state.terms, d, verdict.blockTime).some(
       (standing) =>
         standing.caip19 === terms.caip19 &&
         standing.payout === terms.payout &&
@@ -297,7 +301,8 @@ export async function catchUp(
   }
   oldest -= ORDER_SCAN_MARGIN_SECS;
   const scannedAccounts = new Set<string>();
-  for (const terms of termsSince(state.terms, oldest)) {
+  // Every product's terms: the scan only finds candidates, each checked for its order's product.
+  for (const terms of termsSinceAll(state.terms, oldest)) {
     const asset = solanaAsset(terms, context.network);
     if (asset === undefined) {
       continue;

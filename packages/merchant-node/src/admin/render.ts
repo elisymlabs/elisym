@@ -4,6 +4,7 @@
  */
 import type { ClaimCheck, History, NodeAmount, OrderRow, OrderState } from './history';
 import { wholeUnits } from './history';
+import type { ProductLine } from './store';
 
 const STATE_LABELS: Record<OrderState, string> = {
   ordered: 'ordered',
@@ -88,6 +89,8 @@ function rowElement(doc: Document, row: OrderRow): HTMLTableRowElement {
   }
   tr.append(orderCell);
 
+  tr.append(element(doc, 'td', row.product ?? ''));
+
   const claimCell = element(doc, 'td');
   if (row.order !== undefined) {
     claimCell.append(element(doc, 'div', `${row.order.total.amount} ${row.order.total.currency}`));
@@ -171,4 +174,24 @@ export function renderHistory(
     totals.push(element(doc, 'li', 'nothing credited yet', 'note'));
   }
   targets.totals.replaceChildren(...totals);
+}
+
+/** List the store's products read so far: id, title, price, and on sale or sold out. */
+export function renderProducts(
+  doc: Document,
+  products: readonly ProductLine[],
+  target: HTMLElement,
+): void {
+  const items = products.map((product) =>
+    element(
+      doc,
+      'li',
+      `${product.d}: ${product.title}, ${product.price}, ${product.onSale ? 'on sale' : 'sold out'}`,
+      product.onSale ? undefined : 'note',
+    ),
+  );
+  if (items.length === 0) {
+    items.push(element(doc, 'li', 'no product read yet (the products your orders name)', 'note'));
+  }
+  target.replaceChildren(...items);
 }

@@ -10,7 +10,7 @@ import {
 import { intake } from '../src/intake';
 import { pruneExpiredOrders, recordReport } from '../src/ledger';
 import { catchUp, checkPayment } from '../src/solana';
-import { publishTerms } from '../src/terms';
+import { publishTerms, retireTerms } from '../src/terms';
 import {
   PAYOUT,
   PRICE,
@@ -24,6 +24,8 @@ import {
   requestFor,
   signatureOf,
   world,
+  productAt,
+  D,
 } from './fixtures';
 
 const SIG = signatureOf(7);
@@ -60,12 +62,14 @@ describe("the payout at the payment's block time", () => {
     // The payout was OLD_PAYOUT until T0 + 1000, then PAYOUT (same coin, same price).
     setup.state.terms = publishTerms(
       [],
-      { caip19: USDC_DEVNET_CAIP19, payout: OLD_PAYOUT, amount: PRICE.toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: OLD_PAYOUT, amount: PRICE.toString() },
+      T0 - 5000,
       T0 - 5000,
     );
     setup.state.terms = publishTerms(
       setup.state.terms,
-      { caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      T0 + 1000,
       T0 + 1000,
     );
     const order = orderIn(setup, 'b3a7c2d4-0000-4000-8000-00000000a001', T0 + 1000 - 600);
@@ -83,12 +87,14 @@ describe("the payout at the payment's block time", () => {
     const setup = world();
     setup.state.terms = publishTerms(
       [],
-      { caip19: USDC_DEVNET_CAIP19, payout: OLD_PAYOUT, amount: PRICE.toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: OLD_PAYOUT, amount: PRICE.toString() },
+      T0 - 5000,
       T0 - 5000,
     );
     setup.state.terms = publishTerms(
       setup.state.terms,
-      { caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      T0 - 40 * 60,
       T0 - 40 * 60,
     );
     // Ordered 40 minutes after the rotation, the old payout paid a minute later.
@@ -108,12 +114,14 @@ describe('the order scan margin', () => {
     const rotation = T0 + 10_000;
     setup.state.terms = publishTerms(
       [],
-      { caip19: USDC_DEVNET_CAIP19, payout: OLD_PAYOUT, amount: PRICE.toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: OLD_PAYOUT, amount: PRICE.toString() },
+      T0 - 5000,
       T0 - 5000,
     );
     setup.state.terms = publishTerms(
       setup.state.terms,
-      { caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      rotation,
       rotation,
     );
     const paidAt = rotation + 40 * 60;
@@ -149,12 +157,14 @@ describe('two candidate terms', () => {
     const setup = world();
     setup.state.terms = publishTerms(
       [],
-      { caip19: USDC_DEVNET_CAIP19, payout: OLD_PAYOUT, amount: PRICE.toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: OLD_PAYOUT, amount: PRICE.toString() },
+      T0 - 5000,
       T0 - 5000,
     );
     setup.state.terms = publishTerms(
       setup.state.terms,
-      { caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      T0 - 60,
       T0 - 60,
     );
     const order = orderIn(setup, 'b3a7c2d4-0000-4000-8000-00000000a009');
@@ -179,7 +189,8 @@ describe('the catch-up scan', () => {
     const setup = world();
     setup.state.terms = publishTerms(
       [],
-      { caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      T0 - 5000,
       T0 - 5000,
     );
     const order = orderIn(setup, 'b3a7c2d4-0000-4000-8000-00000000a004');
@@ -277,7 +288,7 @@ describe('pruning', () => {
         type: 'order',
         storePubkey: setup.store.pubkey,
         orderId,
-        items: [{ product: setup.identity.productAddress, quantity: 1 }],
+        items: [{ product: productAt(setup.store), quantity: 1 }],
         total: { amount: '2', currency: 'USD' },
       },
       buyer,
@@ -286,6 +297,96 @@ describe('pruning', () => {
     expect(intake(setup.state, again, setup.identity)).toEqual({
       kind: 'ignored',
       reason: 'order_id_reused',
+    });
+  });
+});
+
+describe('one product never pays at another product of the store (T1, Solana)', () => {
+  const T1 = T0 + 1000;
+  /** A goes from 1 to 100 USDC at T1; B costs 1 on the same coin and payout. The order is A's, placed before. */
+  function twoProducts() {
+    const setup = world();
+    setup.state.terms = publishTerms(
+      setup.state.terms,
+      { d: 'b', caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: PRICE.toString() },
+      T0,
+      T0,
+    );
+    const order = orderIn(setup, 'b3a7c2d4-0000-4000-8000-00000000b001', T0 + 60);
+    setup.state.terms = publishTerms(
+      setup.state.terms,
+      { d: D, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: (PRICE * 100n).toString() },
+      T1,
+      T1,
+    );
+    return { setup, order };
+  }
+
+  it("P1 M2: refuses a payment of B's price for A after the window", async () => {
+    const { setup, order } = twoProducts();
+    const { rpc } = chain({
+      [SIG]: await landedPayment(paidTo(order.reference, PAYOUT), {
+        blockTime: T1 + TERMS_WINDOW_SECS + 1,
+      }),
+    });
+    expect(await checkPayment(setup.state, order, SIG, { rpc, network: 'devnet' })).toEqual({
+      kind: 'refused',
+      reason: 'not_a_payment_for_this_order',
+    });
+  });
+
+  it("P2: credits A's old price inside the window", async () => {
+    const { setup, order } = twoProducts();
+    const { rpc } = chain({
+      [SIG]: await landedPayment(paidTo(order.reference, PAYOUT), { blockTime: T1 + 60 }),
+    });
+    expect(await checkPayment(setup.state, order, SIG, { rpc, network: 'devnet' })).toMatchObject({
+      kind: 'paid',
+    });
+  });
+});
+
+describe('a stopped product (D4)', () => {
+  const STOP = T0 + 1000;
+  function stopped() {
+    const setup = world();
+    setup.state.terms = retireTerms(setup.state.terms, D, [], STOP);
+    return setup;
+  }
+
+  it('credits an order taken before the stop and paid in the window', async () => {
+    const setup = stopped();
+    const order = orderIn(setup, 'b3a7c2d4-0000-4000-8000-00000000c101', T0 + 60);
+    const { rpc } = chain({
+      [SIG]: await landedPayment(paidTo(order.reference, PAYOUT), { blockTime: STOP + 600 }),
+    });
+    expect(await checkPayment(setup.state, order, SIG, { rpc, network: 'devnet' })).toMatchObject({
+      kind: 'paid',
+    });
+  });
+
+  it('records and credits an order backfilled after the stop, paid in the window', async () => {
+    const setup = stopped();
+    const order = orderIn(setup, 'b3a7c2d4-0000-4000-8000-00000000c102', STOP + 100);
+    const { rpc } = chain({
+      [SIG]: await landedPayment(paidTo(order.reference, PAYOUT), { blockTime: STOP + 900 }),
+    });
+    expect(await checkPayment(setup.state, order, SIG, { rpc, network: 'devnet' })).toMatchObject({
+      kind: 'paid',
+    });
+  });
+
+  it('refuses a payment after the window', async () => {
+    const setup = stopped();
+    const order = orderIn(setup, 'b3a7c2d4-0000-4000-8000-00000000c103', T0 + 60);
+    const { rpc } = chain({
+      [SIG]: await landedPayment(paidTo(order.reference, PAYOUT), {
+        blockTime: STOP + TERMS_WINDOW_SECS + 1,
+      }),
+    });
+    expect(await checkPayment(setup.state, order, SIG, { rpc, network: 'devnet' })).toEqual({
+      kind: 'refused',
+      reason: 'not_a_payment_for_this_order',
     });
   });
 });

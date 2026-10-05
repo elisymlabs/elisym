@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { configProblems, configTemplate, loadConfig } from '../src/config';
+import { configProblems, priceProblems, configTemplate, loadConfig } from '../src/config';
 import { PAYOUT, USDC_DEVNET_CAIP19 } from './fixtures';
 
 const MAINNET_USDC =
@@ -152,42 +152,34 @@ describe('the merchant config', () => {
     ).toHaveLength(1);
   });
 
-  it('refuses a price, product or delivery the store cannot sell', () => {
-    const product = valid().product;
-    for (const priceUsd of ['0', '-1', '1e3', '1.1234567', 'ten']) {
-      expect(configProblems({ ...valid(), product: { ...product, priceUsd } })).toHaveLength(1);
-    }
-    expect(configProblems({ ...valid(), product: { ...product, d: 'has space' } })).toHaveLength(1);
-    expect(
-      configProblems({
-        ...valid(),
-        product: { ...product, delivery: { method: 'email', value: 'x' } },
-      }),
-    ).toHaveLength(1);
-    expect(
-      configProblems({
-        ...valid(),
-        product: { ...product, delivery: { method: 'access', value: '' } },
-      }),
-    ).toHaveLength(1);
-    expect(
-      configProblems({
-        ...valid(),
-        product: { ...product, delivery: { method: 'access', value: 'x'.repeat(1025) } },
-      }),
-    ).toHaveLength(1);
+  it('refuses a 0.7 config, which names its one product, as an old home', () => {
+    expect(configProblems({ ...valid(), product: { d: 'x' } })).toEqual([
+      'this home was made by merchant-node 0.7 or earlier: create a new home with init',
+    ]);
   });
 
-  it('refuses a coin that cannot be paid a USD price, and the name "owner"', () => {
+  it('refuses a coin that cannot be paid a product price, and the name "owner"', () => {
     const lsm =
       'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump';
+    const config = {
+      ...valid(),
+      network: 'mainnet' as const,
+      payouts: [{ caip19: lsm, address: PAYOUT }],
+    };
+    expect(configProblems(config)).toEqual([]);
     expect(
-      configProblems({
-        ...valid(),
-        network: 'mainnet',
-        payouts: [{ caip19: lsm, address: PAYOUT }],
-      }),
-    ).toEqual(['payouts.0.caip19: LSM cannot be paid a USD price']);
+      priceProblems(config, [
+        {
+          d: 'course',
+          title: 'Course',
+          description: '',
+          priceUsd: '1',
+          onSale: true,
+          delivery: { method: 'access', value: 'https://shop.example/x' },
+          file: 'x',
+        },
+      ]),
+    ).toEqual(['products/course: LSM cannot be paid its price of 1 USD']);
     expect(configProblems({ ...valid(), nip05: 'owner@shop.example' })).toHaveLength(1);
   });
 

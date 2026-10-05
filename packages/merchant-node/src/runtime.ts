@@ -176,7 +176,7 @@ export class MerchantRuntime {
         tx,
         this.deps.tempo,
       );
-      recordTempoCheck(state, order, tx, check);
+      recordTempoCheck(order, tx, check);
     } else {
       check = await this.check(state, order, tx, context);
       if (check.kind === 'refused') {

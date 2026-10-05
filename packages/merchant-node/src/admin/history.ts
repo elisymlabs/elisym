@@ -23,10 +23,17 @@ import { type StoreRules, isDirectOrder, orderKey, receiptProblem } from '../ord
 /** Plain notation for any amount, and room for sums of many 39-digit subunit counts. */
 const AmountDecimal = Decimal.clone({ toExpNeg: -100, toExpPos: 100, precision: 100 });
 
+/** A product's current listing as the admin reads it. */
+export interface AdminListing {
+  price: ProductPrice;
+  createdAt: number;
+  title: string;
+}
+
 /** The store as the admin reads it from its published events. */
 export interface AdminStore extends StoreRules {
-  /** The current listing of each product address: its price and publication date. */
-  listings: ReadonlyMap<string, { price: ProductPrice; createdAt: number }>;
+  /** The current listing of each product address: its price, publication date and title. */
+  listings: ReadonlyMap<string, AdminListing>;
 }
 
 export type OrderState = 'ordered' | 'payment_reported' | 'delivered' | 'released' | 'refunded';
@@ -63,6 +70,8 @@ export interface OrderRow {
   createdAt: number;
   /** The buyer's order, when exactly one is loaded. */
   order?: OrderRequest;
+  /** The title of the product the order named, else its `d`. */
+  product?: string;
   /** Two or more different orders under one buyer and order id. */
   conflict: boolean;
   /** No order is loaded for what was read about this one. */
@@ -286,6 +295,12 @@ function rowOf(key: string, group: Group, store: AdminStore): OrderRow | undefin
     ...(order === undefined ? {} : { order }),
     conflict: orders.length > 1,
     orderNotLoaded: orders.length === 0,
+    ...(item === undefined
+      ? {}
+      : {
+          product:
+            store.listings.get(item.product)?.title ?? item.product.split(':').slice(2).join(':'),
+        }),
     ...(order === undefined || item === undefined
       ? {}
       : { claimCheck: claimCheck(order.total, createdAt, store.listings.get(item.product)) }),

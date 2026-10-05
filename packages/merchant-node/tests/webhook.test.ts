@@ -39,7 +39,7 @@ import {
   webhookTarget,
 } from '../src/webhook';
 import { orderLines, rearmWebhook, shownRef } from '../src/webhook-commands';
-import { PAYOUT, T0, USDC_DEVNET_CAIP19, key, orderFrom, world } from './fixtures';
+import { PAYOUT, T0, USDC_DEVNET_CAIP19, key, orderFrom, world, productAt } from './fixtures';
 
 const SECRET = 'x'.repeat(32);
 const STORE = 'a'.repeat(64);
@@ -66,6 +66,7 @@ function paidOrder(overrides: Partial<MerchantOrder> = {}, orderId = ORDER_ID): 
     rumorId: 'r'.repeat(64),
     createdAt: T0,
     reference: 'ref',
+    product: PRODUCT,
     reportedTxs: [],
     paid: { ...PAID },
     ...overrides,
@@ -136,7 +137,7 @@ function sender(
 ) {
   return new WebhookSender({
     state,
-    store: { storePubkey: STORE, productAddress: PRODUCT },
+    store: { storePubkey: STORE },
     target: { url, secret: SECRET },
     commit: (change) => {
       change();
@@ -205,7 +206,7 @@ describe('the order.paid body', () => {
   it('carries what the node verified, in a fixed key order, without title or price', () => {
     const order = paidOrder({ customerRef: 'user-123', email: 'buyer@example.com' });
     const entry = newWebhookEntry(STORE, order, NOW);
-    expect(orderPaidBody(order, entry, { storePubkey: STORE, productAddress: PRODUCT })).toBe(
+    expect(orderPaidBody(order, entry, { storePubkey: STORE })).toBe(
       JSON.stringify({
         event: 'order.paid',
         eventId: entry.eventId,
@@ -229,29 +230,18 @@ describe('the order.paid body', () => {
     );
   });
 
-  it("names the product the order named, else the store's current one", () => {
-    const store = { storePubkey: STORE, productAddress: `30402:${STORE}:new-product` };
-    const order = paidOrder({ product: PRODUCT });
-    const named = JSON.parse(orderPaidBody(order, newWebhookEntry(STORE, order, NOW), store)) as {
-      product: { address: string };
-    };
-    expect(named.product.address).toBe(PRODUCT);
-    const older = paidOrder();
-    const fallback = JSON.parse(
-      orderPaidBody(older, newWebhookEntry(STORE, older, NOW), store),
-    ) as {
-      product: { address: string };
-    };
-    expect(fallback.product.address).toBe(`30402:${STORE}:new-product`);
+  it('names the product the order named', () => {
+    const order = paidOrder({ product: `30402:${STORE}:deposit-10` });
+    const named = JSON.parse(
+      orderPaidBody(order, newWebhookEntry(STORE, order, NOW), { storePubkey: STORE }),
+    ) as { product: { address: string } };
+    expect(named.product.address).toBe(`30402:${STORE}:deposit-10`);
   });
 
   it('has no customerRef or email key when the order has none, and no display for an unknown asset', () => {
     const order = paidOrder({ paid: { ...PAID, caip19: 'solana:unknown/token:nothing' } });
     const body = JSON.parse(
-      orderPaidBody(order, newWebhookEntry(STORE, order, NOW), {
-        storePubkey: STORE,
-        productAddress: PRODUCT,
-      }),
+      orderPaidBody(order, newWebhookEntry(STORE, order, NOW), { storePubkey: STORE }),
     ) as Record<string, unknown>;
     expect(Object.keys(body)).not.toContain('customerRef');
     expect(Object.keys(body)).not.toContain('email');
@@ -656,7 +646,7 @@ describe('the customer reference', () => {
     );
     expect(taken).toMatchObject({
       kind: 'order',
-      order: { customerRef: 'user-123', product: identity.productAddress },
+      order: { customerRef: 'user-123', product: productAt(store) },
     });
     const bad = orderFrom(buyer, store, 'b3a7c2d4-0000-4000-8000-000000000002');
     const dropped = intake(

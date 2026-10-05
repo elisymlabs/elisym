@@ -24,6 +24,7 @@ function order(
     rumorId: key,
     createdAt,
     reference: 'Ref',
+    product: `30402:${'s'.repeat(64)}:d`,
     reportedTxs: [],
     ...overrides,
   };

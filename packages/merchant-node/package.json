@@ -1,6 +1,6 @@
 {
   "name": "@elisym/merchant-node",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "elisym merchant node: self-hosted store for the elisym checkout - takes orders over Nostr, verifies Solana payments, delivers.",
   "keywords": [
     "checkout",
@@ -49,6 +49,7 @@
     "@solana/kit": "~6.8.0",
     "decimal.js-light": "~2.5.1",
     "nostr-tools": "~2.23.0",
+    "yaml": "~2.8.3",
     "zod": "~3.25.0"
   },
   "devDependencies": {

@@ -10,6 +10,7 @@ import {
   webhookEventId,
 } from './ledger';
 import { printable } from './printable';
+import { orderProductD } from './products';
 import { rearm } from './webhook';
 
 /** A customer reference is shown at most this long in `orders`. */
@@ -97,7 +98,7 @@ export function orderLines(state: LedgerState, storePubkey: string): string[] {
       order.paid === undefined
         ? ''
         : ` webhook=${order.webhook?.state ?? 'none'} event=${webhookEventId(storePubkey, order.key, order.paid.signature)}`;
-    return `${when} ${orderStatus(order)} ${order.key}${paid}${email}${ref}${webhook}`;
+    return `${when} ${orderStatus(order)} ${order.key} product=${printable(orderProductD(order))}${paid}${email}${ref}${webhook}`;
   });
   lines.push(`${all.length} order(s)`);
   for (const [key, answer] of Object.entries(state.answeredByHand ?? {})) {

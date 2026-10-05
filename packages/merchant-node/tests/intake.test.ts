@@ -1,7 +1,16 @@
 import { buildOrderMessage, unwrapOrderMessage, wrapOrderMessage } from '@elisym/commerce';
 import { describe, expect, it } from 'vitest';
 import { intake } from '../src/intake';
-import { T0, delivered, key, orderFrom, referenceFor, signatureOf, world } from './fixtures';
+import {
+  T0,
+  delivered,
+  key,
+  orderFrom,
+  referenceFor,
+  signatureOf,
+  world,
+  productAt,
+} from './fixtures';
 
 const TX1 = signatureOf(1);
 const TX2 = signatureOf(2);
@@ -36,7 +45,7 @@ describe('intake of an order', () => {
         type: 'order',
         storePubkey: store.pubkey,
         orderId: ORDER_ID,
-        items: [{ product: identity.productAddress, quantity: 1 }],
+        items: [{ product: productAt(store), quantity: 1 }],
         total: { amount: '0.01', currency: 'USD' },
       },
       buyer,
@@ -60,10 +69,10 @@ describe('intake of an order', () => {
     const buyer = key();
     const cases = [
       [{ product: `30402:${store.pubkey}:other`, quantity: 1 }],
-      [{ product: identity.productAddress, quantity: 2 }],
+      [{ product: productAt(store), quantity: 2 }],
       [
-        { product: identity.productAddress, quantity: 1 },
-        { product: identity.productAddress, quantity: 1 },
+        { product: productAt(store), quantity: 1 },
+        { product: productAt(store), quantity: 1 },
       ],
     ];
     cases.forEach((items, index) => {
@@ -93,7 +102,7 @@ describe('intake of an order', () => {
         type: 'order',
         storePubkey: store.pubkey,
         orderId: ORDER_ID,
-        items: [{ product: identity.productAddress, quantity: 1 }],
+        items: [{ product: productAt(store), quantity: 1 }],
         total: { amount: '1', currency: 'USD' },
       },
       key(),
@@ -114,7 +123,7 @@ describe('intake of an order', () => {
         type: 'order',
         storePubkey: other.pubkey,
         orderId: ORDER_ID,
-        items: [{ product: identity.productAddress, quantity: 1 }],
+        items: [{ product: productAt(store), quantity: 1 }],
         total: { amount: '1', currency: 'USD' },
       },
       key(),

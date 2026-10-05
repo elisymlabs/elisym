@@ -109,7 +109,7 @@ export function webhookSignature(secret: string, timestamp: number, body: string
 export function orderPaidBody(
   order: MerchantOrder,
   entry: Pick<WebhookEntry, 'eventId'>,
-  store: { storePubkey: string; productAddress: string },
+  store: { storePubkey: string },
 ): string {
   const paid = order.paid;
   if (paid === undefined) {
@@ -133,8 +133,8 @@ export function orderPaidBody(
     orderId: order.orderId,
     buyerPubkey: order.buyerPubkey,
     ...(order.customerRef === undefined ? {} : { customerRef: order.customerRef }),
-    // The product the order named: the config may sell another one since.
-    product: { address: order.product ?? store.productAddress },
+    // The product the order named: every order carries one.
+    product: { address: order.product },
     payment: {
       asset: paid.caip19,
       amount: paid.amount,
@@ -299,7 +299,7 @@ export function rearm(entry: WebhookEntry, now: number): void {
 
 export interface WebhookSenderDeps {
   state: LedgerState;
-  store: { storePubkey: string; productAddress: string };
+  store: { storePubkey: string };
   target: WebhookTarget;
   /**
    * Apply a change to the ledger and save it, on the node's one queue: the

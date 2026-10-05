@@ -10,8 +10,19 @@ import { type EventTemplate, finalizeEvent } from 'nostr-tools/pure';
 import { buildHistory } from './history';
 import { type StoreKey, parseStoreKey } from './key';
 import { WrapReader, type LoadResult, type WrapPool } from './reader';
-import { renderHistory } from './render';
-import { type StoreView, keepWhatWasRead, readStore } from './store';
+import { renderHistory, renderProducts } from './render';
+import {
+  type KeptListings,
+  type StoreView,
+  adminStoreOf,
+  hiddenOrders,
+  keepWhatWasRead,
+  namedProducts,
+  productLines,
+  readListings,
+  readStore,
+  storeRelays,
+} from './store';
 
 export interface AdminDeps {
   client: RelayClient;
@@ -55,6 +66,7 @@ export function startAdmin(doc: Document, deps: AdminDeps): void {
     totals: element('totals'),
     empty: element('no-orders'),
   };
+  const productList = element('products');
 
   let busy = false;
 
@@ -73,18 +85,34 @@ export function startAdmin(doc: Document, deps: AdminDeps): void {
     result: LoadResult,
     reader: WrapReader,
     loaded: StoreView,
+    listings: KeptListings,
+    storePubkey: string,
     base: readonly string[],
   ) => {
-    renderHistory(doc, buildHistory(reader.messages, loaded.store), targets);
+    renderHistory(
+      doc,
+      buildHistory(reader.messages, adminStoreOf(storePubkey, loaded, listings)),
+      targets,
+    );
+    renderProducts(doc, productLines(listings), productList);
     moreRow.hidden = !result.more;
     status.textContent = `Read ${reader.messages.length} order messages from ${loaded.relays.length} relays.`;
+    const hidden = hiddenOrders(namedProducts(reader.messages, storePubkey), listings);
     const partial =
       result.partial.length === 0
         ? []
         : [
             `Partial: these relays were not read through (no answer in time, or a broken relay): ${result.partial.join(', ')}.`,
           ];
-    setWarnings([...base, ...partial]);
+    setWarnings([
+      ...base,
+      ...(hidden === 0
+        ? []
+        : [
+            `${hidden} orders name products with no listing found (an unknown product, or the relays did not answer): they are hidden.`,
+          ]),
+      ...partial,
+    ]);
   };
 
   const run = async (task: () => Promise<void>) => {
@@ -106,24 +134,12 @@ export function startAdmin(doc: Document, deps: AdminDeps): void {
   };
 
   /** What to tell the merchant about the store's own events. */
-  const storeWarnings = (loaded: StoreView): string[] => {
-    const base: string[] = [];
-    if (loaded.noInboxList) {
-      base.push(
-        'No inbox list (kind 10050) found, or the relays did not answer: reading the default relays instead.',
-      );
-    }
-    if (loaded.listings.length === 0) {
-      base.push(
-        'No listing found for this store, or the relays did not answer: no order can be matched to a product. Refresh to try again.',
-      );
-    } else if (loaded.listings.length > 1) {
-      base.push(
-        `This store published several listings (${loaded.listings.join(', ')}): orders for any of them are shown.`,
-      );
-    }
-    return base;
-  };
+  const storeWarnings = (loaded: StoreView): string[] =>
+    loaded.noInboxList
+      ? [
+          'No inbox list (kind 10050) found, or the relays did not answer: reading the default relays instead.',
+        ]
+      : [];
 
   const sameRelays = (first: readonly string[], second: readonly string[]) =>
     first.length === second.length && first.every((relay) => second.includes(relay));
@@ -155,13 +171,37 @@ export function startAdmin(doc: Document, deps: AdminDeps): void {
       ...storeWarnings(view),
       ...(stale
         ? [
-            'The relays did not answer for the store this time: its listings and inbox relays are the ones read before.',
+            'The relays did not answer for the store this time: its inbox relays and payout list are the ones read before.',
           ]
         : []),
     ];
 
     let loaded = await readView();
     let reader = newReader(loaded.relays);
+    /** Every listing read so far, by product address: never dropped once read. */
+    let listings: KeptListings = new Map();
+    /**
+     * Read the listings the loaded orders name: the ones not read yet, or on
+     * Refresh every one (a reprice or a stop must reach the claim check).
+     */
+    const readNamed = async (everything: boolean) => {
+      const named = [...namedProducts(reader.messages, storeKey.pubkey).keys()];
+      const addresses = everything
+        ? [...new Set([...listings.keys(), ...named])]
+        : named.filter((address) => !listings.has(address));
+      if (addresses.length > 0) {
+        listings = await readListings(
+          deps.client,
+          storeRelays(loaded),
+          storeKey.pubkey,
+          addresses,
+          listings,
+          deps.now(),
+        );
+      }
+    };
+    const show = (result: LoadResult) =>
+      showLoad(result, reader, loaded, listings, storeKey.pubkey, warningsFor(loaded));
     status.textContent = 'Reading orders...';
     // Refresh reads the store again too: its listings, payout list or inbox
     // relays may have changed, or not have answered the first time.
@@ -171,19 +211,28 @@ export function startAdmin(doc: Document, deps: AdminDeps): void {
         stale = kept.stale;
         const fresh = kept.view;
         showName(fresh);
+        let result: LoadResult;
         if (sameRelays(fresh.relays, loaded.relays)) {
           loaded = fresh;
-          showLoad(await reader.refresh(), reader, loaded, warningsFor(loaded));
-          return;
+          result = await reader.refresh();
+        } else {
+          loaded = fresh;
+          reader = newReader(loaded.relays);
+          result = await reader.load();
         }
-        loaded = fresh;
-        reader = newReader(loaded.relays);
-        showLoad(await reader.load(), reader, loaded, warningsFor(loaded));
+        await readNamed(true);
+        show(result);
       });
     moreButton.onclick = () =>
-      void run(async () => showLoad(await reader.load(), reader, loaded, warningsFor(loaded)));
+      void run(async () => {
+        const result = await reader.load();
+        await readNamed(false);
+        show(result);
+      });
     showName(loaded);
-    showLoad(await reader.load(), reader, loaded, warningsFor(loaded));
+    const first = await reader.load();
+    await readNamed(false);
+    show(first);
   };
 
   const submit = () => {

@@ -1,6 +1,6 @@
 # @elisym/merchant-node
 
-The self-hosted store behind the elisym checkout. It publishes your product to Nostr, takes
+The self-hosted store behind the elisym checkout. It publishes your products to Nostr, takes
 orders sent by the checkout widget, checks each payment on chain (USDC on Solana, or a
 stablecoin on Tempo), and sends the buyer what they bought.
 
@@ -23,22 +23,23 @@ ledger on your own disk.
 npx @elisym/merchant-node init --network devnet
 ```
 
-This creates `~/.elisym-merchant/` with a `config.json` to edit and the store's keys. Edit
-`config.json`:
+This creates `~/.elisym-merchant/` with a `config.json` to edit, one product to edit in
+`products/my-product/PRODUCT.md`, and the store's keys. Edit `config.json`:
 
-- `name`, `product.title`, `product.description` and `product.priceUsd`: what the store
-  sells, at what price, in USD. It is paid 1:1 in USDC.
-- `payouts[0].address`: your Solana wallet address.
-- `product.delivery.value`: the link or text the buyer gets.
+- `name`: the store's name.
+- `payouts[0].address`: your Solana wallet address, paid for every product.
 
-Then publish the store and start taking orders:
+Then edit `products/my-product/PRODUCT.md` (see [Products](#products)): the title, the price in
+USD (paid 1:1 in USDC) and the link or text the buyer gets. Add a directory per further
+product. Then publish the store and start taking orders:
 
 ```bash
 npx @elisym/merchant-node setup
 npx @elisym/merchant-node run
 ```
 
-`setup` prints the product's `naddr`. Put it in the checkout snippet on your page:
+`setup` prints each product's `naddr`. Put it in a checkout snippet on your page, one
+`<elisym-buy>` per product:
 
 ```html
 <elisym-buy product="naddr1..." network="devnet" theme="dark"></elisym-buy>
@@ -56,12 +57,12 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 
 | Command                            | What it does                                                                                                                                                                                                                                           |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `init`                             | Creates the home: a `config.json` template (never overwritten) and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest))                                                                                            |
-| `setup`                            | Checks the inbox relays, publishes the store, and records the terms it offers                                                                                                                                                                          |
+| `init`                             | Creates the home: a `config.json` template (never overwritten), an example product in `products/my-product/PRODUCT.md`, and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest))                                   |
+| `setup`                            | Checks the inbox relays, publishes the store and the listing of every new or changed product, and records the terms it offers                                                                                                                          |
 | `run`                              | Takes orders, verifies payments and delivers                                                                                                                                                                                                           |
-| `orders`                           | Lists the orders: open, paid, delivered, the buyer's email, the customer reference, and for a paid order its webhook state and event id                                                                                                                |
+| `orders`                           | Lists the orders: open, paid, delivered, the product, the buyer's email, the customer reference, and for a paid order its webhook state and event id                                                                                                   |
 | `check`                            | Checks the inbox relays, the owner's payout list and the domain                                                                                                                                                                                        |
-| `deliver`                          | Answers an unpaid order by hand with the configured delivery (node stopped)                                                                                                                                                                            |
+| `deliver`                          | Answers an unpaid order by hand with its product's delivery (node stopped); `--product <d>` names the product of an order the ledger no longer holds, required when the store has several products                                                     |
 | `refund`                           | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
 | `encrypt-keys`                     | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                       |
 | `store-key`                        | Prints the store's secret key (nsec), for the admin page on this machine: only to a terminal, or with `--yes`                                                                                                                                          |
@@ -73,15 +74,19 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 Every command takes `--home <dir>`. Without it, the home is `$ELISYM_MERCHANT_HOME`, else
 `~/.elisym-merchant`.
 
-Run `setup` again after every change to `config.json`, except `product.d`: a store sells one
-product, and `setup` refuses a new id (the old listing would stay payable with no one taking its
-orders). Give a new product its own home. Stop `run` first: `setup` refuses to
-run while a node holds the home. Run `run` again afterwards. If only part of a change reaches
-the relays (for example the payout list but not the listing), `setup` records what buyers can
-now see, says so and fails: run it again. Each of the listing, the payout list and the inbox
-list must also reach at least one of the relays every checkout reads
-(`wss://relay.elisym.network`, `wss://relay.damus.io`, `wss://nos.lol`), whatever inbox
-relays the store uses; `setup` fails until one takes it.
+Run `setup` again after every change to `config.json` or to a product. Stop `run` first: `setup`
+refuses to run while a node holds the home. Run `run` again afterwards. `setup` publishes the
+payout list first, then the listing of each product that is new or changed (or that the relays
+no longer serve), then the store-wide events; an unchanged listing is not republished. A relay
+that cannot be reached is skipped for the rest of that setup. If only part of a change reaches
+the relays (for example the payout list but not a listing), `setup` records what buyers can now
+see, says so and fails: run it again. Each event it publishes must also reach at least one of
+the relays every checkout reads (`wss://relay.elisym.network`, `wss://relay.damus.io`,
+`wss://nos.lol`), whatever inbox relays the store uses; `setup` fails until one takes it. It
+prints one line per product: on sale or stopped, published, unchanged or failed, and its `naddr`.
+
+A home made by merchant-node 0.7 or earlier (a `config.json` with `product`, or an older ledger)
+is not upgraded: every command refuses it. Create a new home with `init`.
 
 The home's lock (`run.lock`) keeps two processes from writing the ledger at once, wherever they
 run (containers and hosts sharing the home included). Its holder refreshes it every 20 seconds.
@@ -91,25 +96,63 @@ it starts.
 
 ## The config
 
-| Field                     | Meaning                                                                                                                                         |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                    | The store's name, shown in the checkout                                                                                                         |
-| `nip05`                   | Optional. `_@your-domain.com` for level A (see below)                                                                                           |
-| `network`                 | `devnet` or `mainnet`                                                                                                                           |
-| `rpcUrl`                  | The node's Solana RPC (`https:`). Needed with a Solana payout                                                                                   |
-| `tempo`                   | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl`                                             |
-| `inboxRelays`             | 1 to 5 relays (`wss:`) where the store reads orders and replies                                                                                 |
-| `product.d`               | The product's id in the store (letters, digits, `.`, `-`, `_`)                                                                                  |
-| `product.title`           | Title                                                                                                                                           |
-| `product.description`     | Description                                                                                                                                     |
-| `product.summary`         | Optional short line                                                                                                                             |
-| `product.priceUsd`        | Price in USD, such as `"49"` or `"0.50"`                                                                                                        |
-| `product.delivery.method` | `access`, `download`, `license`, `api` or `webhook`: how the checkout labels it                                                                 |
-| `product.delivery.value`  | The link or text the buyer gets (up to 1024 characters)                                                                                         |
-| `payouts`                 | One `{ "caip19": ..., "address": ... }` per coin, see [Tempo payouts](#tempo-payouts)                                                           |
-| `webhook`                 | Optional. `{ "url": "https://..." }`: where the node tells your backend about payments, see [Credit an account](#credit-an-account-the-webhook) |
+| Field         | Meaning                                                                                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`        | The store's name, shown in the checkout                                                                                                         |
+| `nip05`       | Optional. `_@your-domain.com` for level A (see below)                                                                                           |
+| `network`     | `devnet` or `mainnet`                                                                                                                           |
+| `rpcUrl`      | The node's Solana RPC (`https:`). Needed with a Solana payout                                                                                   |
+| `tempo`       | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl`                                             |
+| `inboxRelays` | 1 to 5 relays (`wss:`) where the store reads orders and replies                                                                                 |
+| `payouts`     | One `{ "caip19": ..., "address": ... }` per coin, for every product, see [Tempo payouts](#tempo-payouts)                                        |
+| `webhook`     | Optional. `{ "url": "https://..." }`: where the node tells your backend about payments, see [Credit an account](#credit-an-account-the-webhook) |
 
 The node refuses to start with a config it cannot use, and names every problem.
+
+## Products
+
+Each product is a directory under `products/` in the home, named with the product's id (its
+`d`): `products/<d>/PRODUCT.md`. The name is 1 to 64 letters, digits, dots, dashes or
+underscores, starting with a letter or digit. A `PRODUCT.md` is YAML frontmatter between two
+`---` lines, then the description in markdown:
+
+```markdown
+---
+title: Deposit 10 USD
+priceUsd: '10'
+summary: Adds 10 USD to your account balance.
+delivery:
+  method: access
+  value: https://example.com/<the link the buyer gets>
+---
+
+What the buyer gets, in markdown. This body is the listing's description.
+```
+
+| Key               | Meaning                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------- |
+| `title`           | Title (1 to 200 characters)                                                             |
+| `priceUsd`        | Price in USD, quoted: `"49"` or `"0.50"`. A bare number is refused                      |
+| `onSale`          | Optional, `true` by default. `false` stops selling the product (see below)              |
+| `summary`         | Optional short line                                                                     |
+| `delivery.method` | `access`, `download`, `license`, `api` or `webhook`: how the checkout labels it         |
+| `delivery.value`  | The link or text the buyer gets (up to 1024 characters), quoted if it reads as a number |
+
+- An unknown or misspelled key is refused, also inside `delivery`: a misspelled `onSale` would
+  otherwise leave the product on sale.
+- A malformed `PRODUCT.md` stops `setup`, `run` and `check`, naming the file: a product is never
+  skipped. A link, a pipe or a directory without `PRODUCT.md` is refused too. Entries starting
+  with `.` (such as `.git`) and files placed directly in `products/` are ignored.
+- `setup` refuses a product whose delivery is still the example `init` wrote.
+- A delivery value can be a secret link: never publish the `products/` directory or commit it to
+  a public repository.
+
+**Stopping a product.** Set `onSale: false` and run `setup`: its listing is republished as sold
+out, every checkout shows Sold out, and its terms end once that listing reached a relay. An
+order already placed is still honored within the usual window. **Never delete the directory of a
+product that was published** (or ever had terms): `setup`, `run` and `check` refuse to start
+without it, because its orders could be paid and never delivered. A product's id cannot change:
+a new directory is a new product, and the old one stays, stopped with `onSale: false`.
 
 ### Inbox relays
 
@@ -211,9 +254,12 @@ npx @elisym/merchant-node admin       # open http://127.0.0.1:5199/ and paste it
 ```
 
 The page reads the store's inbox relays (its inbox list, or the default relays when it has
-none) with the store key and shows each order: when it was placed, the total the buyer's order
-claims, the email, the customer reference, the state, what the node credited and the transaction. The totals add up
-what the node credited, per coin.
+none) with the store key and shows each order: when it was placed, its product, the total the
+buyer's order claims, the email, the customer reference, the state, what the node credited and the
+transaction. The totals add up what the node credited, per coin. A product list shows each product
+the loaded orders name, with its price and whether it is on sale or sold out. Orders naming a
+product whose listing was not found (an unknown product, or relays that did not answer) are
+hidden, and one line counts them.
 
 | State            | Meaning                                                               |
 | ---------------- | --------------------------------------------------------------------- |
@@ -269,7 +315,7 @@ container can read it before anything else runs:
 docker run --rm --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly --entrypoint cat elisym-merchant /run/secrets/merchant > /dev/null && docker run --rm --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant init --network devnet
 ```
 
-Edit `config.json` in the volume, then publish and start the node:
+Edit `config.json` and `products/my-product/PRODUCT.md` in the volume, then publish and start the node:
 
 ```bash
 docker run --rm --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant setup
@@ -293,7 +339,7 @@ Leave the `--mount` and `-e` out for plain keys: `init` then says `keys    plain
 `--owner-only` keys, `run` needs no passphrase.
 
 To edit the config in the volume, mount a host directory instead, for example
-`-v "$PWD/shop:/data"`, and edit `shop/config.json`. The directory must be writable by uid 1000.
+`-v "$PWD/shop:/data"`, and edit `shop/config.json` and the products in `shop/products/`. The directory must be writable by uid 1000.
 
 ## Credit an account: the webhook
 
@@ -516,10 +562,10 @@ The [admin page](#admin) shows each order's reference; the webhook state is in `
 
 ## Limits
 
-- One product per node, on one network: USDC on Solana and stablecoins on Tempo (Moderato on
-  devnet).
-- Delivery is the configured link or text. Uploading a file to Blossom is up to you; the link
-  goes in `product.delivery.value`.
+- One network per node; any number of products, each in its own directory: USDC on Solana and
+  stablecoins on Tempo (Moderato on devnet). Every product shares the store's payout list.
+- Delivery is each product's link or text. Uploading a file to Blossom is up to you; the link
+  goes in the product's `delivery.value`.
 - Refunds are made by hand from your wallet. `refund` reports one to the buyer of an order the
   node did not credit; a refund of a delivered order is between you and the buyer.
 - Every answer the node sends a buyer (a delivery, a hand answer) is also wrapped to the store's

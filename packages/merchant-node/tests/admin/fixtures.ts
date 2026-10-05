@@ -60,7 +60,10 @@ export function adminStore(store: Key, overrides: Partial<AdminStore> = {}): Adm
     productAddresses: new Set([productOf(store)]),
     mediums: ['solana-devnet'],
     listings: new Map([
-      [productOf(store), { price: { amount: '1', currency: 'USD' }, createdAt: T0 }],
+      [
+        productOf(store),
+        { price: { amount: '1', currency: 'USD' }, createdAt: T0, title: 'Course' },
+      ],
     ]),
     ...overrides,
   };

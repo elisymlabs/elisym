@@ -32,6 +32,7 @@ describe('delivering a paid order', () => {
       rumorId: 'r',
       createdAt: T0,
       reference: 'x',
+      product: `30402:${'s'.repeat(64)}:course-101`,
       reportedTxs: [],
       paid: {
         signature: signatureOf(61),
