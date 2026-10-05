@@ -75,6 +75,8 @@ const FOLLOW_BUDGET_MS = 20_000;
 const WATCH_EVERY_MS = 3_000;
 const MAX_TITLE_LENGTH = 200;
 const MAX_NAME_LENGTH = 100;
+// The checkout widget's rule, so the store gets the same addresses from both.
+const USABLE_EMAIL_RE = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]+$/;
 
 /** elisym's own words for each warning: never the store's. */
 const WARNING_TEXT: Record<OfferWarning, string> = {
@@ -169,7 +171,6 @@ function storageVerdict(agentDir: string) {
 interface Purchase {
   agent: AgentInstance;
   agentDir: string;
-  secretKey: Uint8Array;
   store: OrderStore;
   readClient: RelayClient;
   clientFor: (buyerSecretKey: Uint8Array) => RelayClient;
@@ -219,7 +220,6 @@ async function preparePurchase(
   return {
     agent,
     agentDir: agent.agentDir,
-    secretKey: agent.solanaKeypair.secretKey,
     store,
     readClient,
     clientFor,
@@ -288,6 +288,13 @@ export function releaseCosts(ctx: AgentContext, attemptId: string, includingFee:
   const lamports = includingFee ? reserved.lamports : reserved.lamports - reserved.fee;
   if (lamports > 0n) {
     releaseSpend(ctx, NATIVE_SOL, lamports);
+  }
+}
+
+/** Forget a paid attempt's reservation: the spend stays counted, it is spent. */
+function settleCosts(attemptId: string | undefined): void {
+  if (attemptId !== undefined) {
+    reservations.delete(attemptId);
   }
 }
 
@@ -463,10 +470,11 @@ async function follow(
   purchase: Purchase,
   record: OrderRecord,
   deadline: number,
-): Promise<{ record: OrderRecord; over: boolean; canProveOver: boolean }> {
+): Promise<{ record: OrderRecord; over: boolean; paid: boolean; canProveOver: boolean }> {
   const deps = await depsFor(purchase, record);
   let current = record;
   let over = false;
+  let attemptId = record.marker?.attemptId;
   const listener = listenForStatus(
     current,
     current.inboxRelays,
@@ -479,6 +487,7 @@ async function follow(
     while (Date.now() < deadline) {
       const stored = (await purchase.store.get(current.orderId)) ?? current;
       current = stored;
+      attemptId = current.marker?.attemptId ?? attemptId;
       if (isTerminal(current)) {
         break;
       }
@@ -487,9 +496,9 @@ async function follow(
         current = watched.record;
         if (watched.state === 'over') {
           over = true;
-          const attemptId = current.marker?.attemptId;
-          if (attemptId !== undefined) {
-            releaseCosts(ctx, attemptId, false);
+          const overAttempt = current.marker?.attemptId;
+          if (overAttempt !== undefined) {
+            releaseCosts(ctx, overAttempt, false);
           }
           break;
         }
@@ -501,11 +510,13 @@ async function follow(
   } finally {
     listener.close();
   }
-  return {
-    record: (await purchase.store.get(current.orderId)) ?? current,
-    over,
-    canProveOver: deps.canProveOver === true,
-  };
+  const final = (await purchase.store.get(current.orderId)) ?? current;
+  // A store that delivered or refunded was paid, even before this process saw it.
+  const paid = !over && (final.paidTx !== undefined || isTerminal(final));
+  if (paid) {
+    settleCosts(attemptId);
+  }
+  return { record: final, over, paid, canProveOver: deps.canProveOver === true };
 }
 
 async function quote(ctx: AgentContext, naddr: string, heading: string) {
@@ -549,6 +560,10 @@ async function buy(
     return errorResult(
       `accept_warnings must list exactly the warnings of the quote the user confirmed: ${saved.confirm.join(', ') || '(none)'}.`,
     );
+  }
+  const email = input.email?.trim();
+  if (email !== undefined && email !== '' && !USABLE_EMAIL_RE.test(email)) {
+    return errorResult('email is not a usable address: ask the user again, or leave it out.');
   }
   const purchase = await preparePurchase(ctx, true);
   if ('refusal' in purchase) {
@@ -607,7 +622,7 @@ async function buy(
         return textResult(stateText(followed.record, followed.canProveOver, followed.over));
       }
     }
-    if (current !== undefined && onOtherTerms(current, payout)) {
+    if (current !== undefined && onOtherTerms(current, payout, undefined)) {
       const ended = await endOrder(current, await depsFor(purchase, current));
       if (!ended.ended) {
         const followed = await follow(ctx, purchase, ended.record, deadline);
@@ -632,7 +647,6 @@ async function buy(
     } else if (current?.state === 'ordered') {
       record = current;
     } else {
-      const email = input.email?.trim();
       const placed = await placeOrder(
         {
           offer: fresh,
@@ -734,7 +748,7 @@ async function retryIfOver(
   const payout = fresh.payouts[0] as PricedPayout;
   // Terms that moved (another network is another CAIP-19, so an order paid on
   // the agent's old network lands here too): ended, and a new order is placed.
-  if (onOtherTerms(watched.record, payout)) {
+  if (onOtherTerms(watched.record, payout, undefined)) {
     const ended = await endOrder(watched.record, deps);
     return ended.ended ? ('ended' as const) : undefined;
   }
@@ -773,13 +787,19 @@ async function afterPay(
   deadline: number,
   payout: PricedPayout,
 ) {
-  const warnings = takeSpendWarnings(ctx, payout.target.caip19.asset).join('\n');
-  const withWarnings = (text: string) => (warnings === '' ? text : `${text}\n${warnings}`);
   if (result.ok) {
     const followed = await follow(ctx, purchase, result.record, deadline);
-    return textResult(
-      withWarnings(stateText(followed.record, followed.canProveOver, followed.over)),
-    );
+    const text = stateText(followed.record, followed.canProveOver, followed.over);
+    // Only a payment seen on chain uses up a spend warning, so one rolled back
+    // or still unconfirmed leaves it for the next payment that lands.
+    // Both counters: a token price also spends SOL on the fee and rent.
+    const warnings = followed.paid
+      ? [
+          ...takeSpendWarnings(ctx, payout.target.caip19.asset),
+          ...takeSpendWarnings(ctx, NATIVE_SOL),
+        ]
+      : [];
+    return textResult([text, ...warnings].join('\n'));
   }
   const id = result.record?.orderId;
   const suffix = id === undefined ? '' : ` (order ${id})`;

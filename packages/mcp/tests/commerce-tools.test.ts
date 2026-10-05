@@ -203,6 +203,66 @@ describe('buy_product', () => {
     expect(spent).toBeGreaterThan(0n);
   });
 
+  it('settles a landed attempt: its reservation can no longer be given back', async () => {
+    const run = await world();
+    const quote = await quoteId(run);
+    let attemptId: string | undefined;
+    run.chain.onSend = async () => {
+      const [record] = await orders(run);
+      attemptId = record?.marker?.attemptId;
+    };
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: quote.id,
+      accept_warnings: quote.warnings,
+    });
+    expect(attemptId).toBeDefined();
+    // A slow run may end the buy before the payment is seen: following the
+    // order again (as get_order does) settles it the same way.
+    let [record] = await orders(run);
+    for (let tries = 0; tries < 50 && record?.paidTx === undefined; tries++) {
+      await tool('get_order').handler(run.ctx, { order_id: record?.orderId });
+      [record] = await orders(run);
+    }
+    expect(record?.paidTx).toBeDefined();
+    const before = new Map(run.ctx.sessionSpent);
+    releaseCosts(run.ctx, attemptId ?? '', true);
+    expect(run.ctx.sessionSpent).toEqual(before);
+  });
+
+  it('uses up a spend warning only for a payment seen on chain', async () => {
+    async function buyNearTheCap(dropSends: boolean, delivered = false) {
+      const run = await world();
+      const quote = await quoteId(run);
+      run.chain.dropSends = dropSends;
+      // Long enough for a slow run to see the payment land.
+      commerceRuntime.buyBudgetMs = dropSends && !delivered ? 200 : 3_000;
+      // Once reserved, the payment is the whole cap: every warning is due.
+      run.chain.onSend = async () => {
+        run.ctx.sessionSpendLimits = new Map(run.ctx.sessionSpent);
+        if (delivered) {
+          const [record] = await orders(run);
+          await storeDelivers(run, record as OrderRecord);
+        }
+      };
+      const bought = await tool('buy_product').handler(run.ctx, {
+        quote_id: quote.id,
+        accept_warnings: quote.warnings,
+      });
+      return { run, body: text(bought as never) };
+    }
+    const unseen = await buyNearTheCap(true);
+    expect(unseen.body).not.toContain('Warning: session spend');
+    expect(
+      [...unseen.run.ctx.sessionSpendWarnings.values()].every((fired) => fired.size === 0),
+    ).toBe(true);
+    const landed = await buyNearTheCap(false);
+    expect(landed.body).toContain('Warning: session spend reached 50%');
+    expect(landed.body).toContain('Warning: session spend reached 50% of the SOL cap');
+    // Delivered before this process saw the payment: paid all the same.
+    const delivered = await buyNearTheCap(true, true);
+    expect(delivered.body).toContain('Warning: session spend reached 50%');
+  });
+
   it('refuses over the spend limit before anything is recorded', async () => {
     const run = await world();
     run.ctx.sessionSpendLimits = new Map([...run.ctx.sessionSpendLimits].map(([key]) => [key, 1n]));
@@ -263,6 +323,26 @@ describe('buy_product', () => {
     });
     expect((refused as { isError?: boolean }).isError).toBe(true);
     expect(await orders(run)).toEqual([]);
+  });
+
+  it('refuses an email the checkout widget would not send, before ordering', async () => {
+    const run = await world();
+    const quote = await quoteId(run);
+    for (const email of [
+      'alice at example.com',
+      'alice@example',
+      'a@b.com\nBcc: x@y.com',
+      `${'a'.repeat(65)}@example.com`,
+    ]) {
+      const refused = await tool('buy_product').handler(run.ctx, {
+        quote_id: quote.id,
+        accept_warnings: quote.warnings,
+        email,
+      });
+      expect((refused as { isError?: boolean }).isError).toBe(true);
+    }
+    expect(await orders(run)).toEqual([]);
+    expect(run.chain.sent).toEqual([]);
   });
 
   it('refuses to buy when the terms changed since the quote', async () => {

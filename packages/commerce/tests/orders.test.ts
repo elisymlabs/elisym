@@ -10,6 +10,7 @@ import {
   type OrderRequest,
   type PaymentReceipt,
   buildOrderMessage,
+  isCustomerRef,
   parseOrderMessage,
 } from '../src/orders/messages';
 import { nostrKey } from './fixtures';
@@ -223,6 +224,87 @@ describe('order messages', () => {
       orderId: ORDER_ID,
       status: 'completed',
     });
+  });
+
+  it('drops a payment option whose payload is longer than a builder may write', () => {
+    const longest = 'p'.repeat(4096);
+    const paymentRequest = (payload: string) => ({
+      kind: KIND_ORDER_MESSAGE,
+      tags: [
+        ['p', BUYER],
+        ['type', '2'],
+        ['order', ORDER_ID],
+        ['amount', '49', 'USD'],
+        ['payment', 'elisym-v2', payload],
+      ],
+    });
+    expect(parseOrderMessage(paymentRequest(longest))).toMatchObject({
+      options: [{ medium: 'elisym-v2', payload: longest }],
+    });
+    expect(parseOrderMessage(paymentRequest(`${longest}p`))).toBeUndefined();
+  });
+});
+
+const INVALID_CUSTOMER_REFS = [
+  '',
+  'x'.repeat(129),
+  'user 123',
+  'user\n123',
+  '<script>',
+  'user"123',
+  "user'123",
+  'usér',
+  '../etc',
+  'user/123',
+  '{"id":1}',
+];
+
+describe('customer_ref', () => {
+  const VALID_REF = 'user-123_a.b:c@shop';
+
+  it('round-trips a reference as the last order tag', () => {
+    const order: OrderRequest = { ...ORDER, customerRef: VALID_REF };
+    const rumor = buildOrderMessage(order, 1_000);
+    expect(rumor.tags.at(-1)).toEqual(['customer_ref', VALID_REF]);
+    expect(parseOrderMessage(rumor)).toEqual(order);
+    const longest = { ...ORDER, customerRef: 'x'.repeat(128) };
+    expect(parseOrderMessage(buildOrderMessage(longest, 1_000))).toEqual(longest);
+  });
+
+  it('writes no tag and reads no reference when there is none', () => {
+    const rumor = buildOrderMessage(ORDER, 1_000);
+    expect(rumor.tags.some((tag) => tag[0] === 'customer_ref')).toBe(false);
+    expect(parseOrderMessage(rumor)).not.toHaveProperty('customerRef');
+  });
+
+  it.each(INVALID_CUSTOMER_REFS)('refuses to build, and drops on read, %j', (customerRef) => {
+    expect(isCustomerRef(customerRef)).toBe(false);
+    expect(() => buildOrderMessage({ ...ORDER, customerRef })).toThrow(/customer_ref/);
+    const rumor = buildOrderMessage(ORDER, 1_000);
+    const parsed = parseOrderMessage({
+      kind: rumor.kind,
+      tags: [...rumor.tags, ['customer_ref', customerRef]],
+    });
+    // The order stays valid; only the reference is dropped.
+    expect(parsed).toEqual(ORDER);
+  });
+
+  it('reads the first of duplicate tags only, and nothing from a non-string', () => {
+    const rumor = buildOrderMessage({ ...ORDER, customerRef: 'first' }, 1_000);
+    const doubled = { kind: rumor.kind, tags: [...rumor.tags, ['customer_ref', 'second']] };
+    expect(parseOrderMessage(doubled)).toMatchObject({ customerRef: 'first' });
+    const badFirst = {
+      kind: rumor.kind,
+      tags: [
+        ...buildOrderMessage(ORDER, 1_000).tags,
+        ['customer_ref', 'bad ref'],
+        ['customer_ref', 'second'],
+      ],
+    };
+    expect(parseOrderMessage(badFirst)).toEqual(ORDER);
+    expect(isCustomerRef(123)).toBe(false);
+    expect(isCustomerRef(undefined)).toBe(false);
+    expect(isCustomerRef(VALID_REF)).toBe(true);
   });
 });
 

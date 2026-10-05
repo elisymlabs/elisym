@@ -26,16 +26,23 @@ export function gone(record: OrderRecord): boolean {
 }
 
 /**
- * Whether `record` can still be paid on `payout`: an order is placed for one
- * payout and price, so an order on other terms, or one the store cancelled
- * while unpaid, must end before a new one is placed.
+ * Whether `record` can still be paid on `payout` for `customerRef`: an order is
+ * placed for one payout, price and account, so an order on other terms, or one
+ * the store cancelled while unpaid, must end before a new one is placed. A
+ * missing and an empty reference are the same account. The reference is
+ * required so that every caller states the one it pays for.
  */
-export function onOtherTerms(record: OrderRecord, payout: PricedPayout): boolean {
+export function onOtherTerms(
+  record: OrderRecord,
+  payout: PricedPayout,
+  customerRef: string | undefined,
+): boolean {
   return (
     cancelledUnpaid(record) ||
     record.payout.caip19 !== payout.target.caip19.id ||
     record.payout.address !== payout.target.address ||
-    record.amount !== payout.amount.toString()
+    record.amount !== payout.amount.toString() ||
+    (record.customerRef ?? '') !== (customerRef ?? '')
   );
 }
 

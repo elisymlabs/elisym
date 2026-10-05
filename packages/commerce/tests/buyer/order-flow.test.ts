@@ -172,6 +172,58 @@ describe('placeOrder', () => {
   });
 });
 
+describe('a customer reference', () => {
+  it('travels in the order, stays on the record, and survives a resume unchanged', async () => {
+    const shop = makeShop();
+    const relays = new MemoryRelays(
+      [...shop.events, inboxList(shop.store, INBOX)],
+      [INBOX[1] ?? ''],
+    );
+    const { loaded, payout } = await ready(shop, relays);
+    const result = await placeOrder(
+      { offer: loaded, payout, chainTime: NOW, deviceTime: NOW + 30, customerRef: 'user-42' },
+      deps(relays),
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'not_acknowledged' });
+    const record = result.record;
+    if (record === undefined) {
+      throw new Error('no record');
+    }
+    expect(record.customerRef).toBe('user-42');
+    expect((await store.get(record.orderId))?.customerRef).toBe('user-42');
+    expect(asStore(shop, record.orderWrap).message).toMatchObject({ customerRef: 'user-42' });
+    relays.refuse = [];
+    const resumed = await resumeOrder(record, deps(relays), NOW + 60);
+    expect(resumed.record).toMatchObject({ state: 'ordered', customerRef: 'user-42' });
+    expect((await store.get(record.orderId))?.customerRef).toBe('user-42');
+    expect(relays.published.at(-1)?.event).toEqual(record.orderWrap);
+  });
+
+  it('is absent from the order and the record when none is given', async () => {
+    const shop = makeShop();
+    const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
+    const { result } = await placed(shop, relays);
+    if (!result.ok) {
+      throw new Error(result.reason);
+    }
+    expect(result.record).not.toHaveProperty('customerRef');
+    expect(asStore(shop, result.record.orderWrap).message).not.toHaveProperty('customerRef');
+  });
+
+  it('places nothing for an invalid reference', async () => {
+    const shop = makeShop();
+    const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
+    const { loaded, payout } = await ready(shop, relays);
+    await expect(
+      placeOrder(
+        { offer: loaded, payout, chainTime: NOW, deviceTime: NOW + 30, customerRef: 'a b' },
+        deps(relays),
+      ),
+    ).rejects.toThrow(/customer_ref/);
+    expect(await store.forProduct(loaded.productAddress)).toEqual([]);
+  });
+});
+
 describe('fresh offers and acknowledgements', () => {
   it('refuses a stale offer, or a payout it does not hold at that price', async () => {
     const shop = makeShop();

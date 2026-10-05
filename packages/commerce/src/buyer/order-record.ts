@@ -89,6 +89,8 @@ export interface OrderRecord {
   reference: string;
   /** The verified offer the order was placed against. */
   offer: VerifiedOffer;
+  /** The `customer_ref` the order was sent with, written once at creation and never changed. */
+  customerRef?: string;
   /** The composed payment request, written once before the first marker. */
   paymentRequest?: string;
   /** Signed wraps, republished byte for byte on resume. */

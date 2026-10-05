@@ -57,6 +57,7 @@ export {
   type PaymentReceipt,
   type PaymentRequestMessage,
   buildOrderMessage,
+  isCustomerRef,
   isOrderId,
   parseOrderMessage,
 } from './orders/messages';
