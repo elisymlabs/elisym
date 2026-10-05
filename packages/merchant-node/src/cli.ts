@@ -1,7 +1,7 @@
 /**
  * elisym merchant node. `init` makes the home (config template and keys),
  * `setup` checks the inbox relays and publishes the store, `run` takes orders,
- * verifies payments by the direct-mode contract and delivers.
+ * verifies payments by the direct-mode contract and completes the orders.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -28,13 +28,7 @@ import {
 } from './config';
 import { CATCH_UP_INTERVAL_MS, OFFER_RELAYS, SOLANA_MEDIUMS, WEBHOOK_TICK_MS } from './constants';
 import { deliverOrder, publishSelfCopy } from './deliver';
-import {
-  type HandRequest,
-  applyHandAnswer,
-  buildHandAnswer,
-  handDelivery,
-  planHandAnswer,
-} from './hand';
+import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } from './hand';
 import { handOutcome, publishHandAnswer } from './hand-publish';
 import {
   type MerchantHome,
@@ -63,10 +57,8 @@ import { printable } from './printable';
 import {
   PRODUCT_FILE,
   type Product,
-  deliveryFor,
   intakeProductIds,
   loadProducts,
-  orderProductD,
   productTemplateText,
   uneditedProducts,
 } from './products';
@@ -104,8 +96,8 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
          and the store's keys
   setup  check the inbox relays and publish the store: every product in products/
          (one directory each), republishing only what changed
-  run    take orders, verify payments, deliver
-  orders list the orders: paid, delivered, the buyer's email, the customer
+  run    take orders, verify payments, complete them
+  orders list the orders: paid, completed, the buyer's email, the customer
          reference, the webhook state and its event id
   check  check the inbox relays, the owner's payout list and the domain
   encrypt-keys [--owner-only]
@@ -116,10 +108,8 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
   admin [--port <port>]
          serve the admin page on 127.0.0.1 (default port ${DEFAULT_ADMIN_PORT}): paste the
          store key there to see the orders your inbox relays hold
-  deliver <buyer>:<orderId> [--product <d>] [--yes]
-         answer an unpaid order by hand with its product's delivery
-         (--product: needed for an order no longer in the ledger when the store
-         has several products)
+  complete <buyer>:<orderId> [--yes]
+         answer an unpaid order by hand: close it and send "completed"
   refund <buyer>:<orderId> --tx <refund tx> --amount <subunits> [--asset <caip19>] [--yes]
          answer an unpaid order by hand with a refund you already sent
          (--asset: the refunded coin; required when the store has several payouts,
@@ -176,14 +166,13 @@ interface Args {
   command: string | undefined;
   /** `webhook`'s own command: test, retry or resend. */
   subcommand: string | undefined;
-  /** The order key of `deliver` / `refund` / `webhook retry` / `webhook resend`. */
+  /** The order key of `complete` / `refund` / `webhook retry` / `webhook resend`. */
   target: string | undefined;
   home: string | undefined;
   network: string | undefined;
   tx: string | undefined;
   amount: string | undefined;
   asset: string | undefined;
-  product: string | undefined;
   port: string | undefined;
   yes: boolean;
   ownerOnly: boolean;
@@ -195,9 +184,11 @@ const VALUE_FLAGS = {
   '--tx': 'tx',
   '--amount': 'amount',
   '--asset': 'asset',
-  '--product': 'product',
   '--port': 'port',
 } as const;
+
+const DELIVER_RENAMED =
+  'deliver was renamed complete in 0.9.0: complete <buyer>:<orderId> (the node sends no delivery)';
 
 function isValueFlag(arg: string): arg is keyof typeof VALUE_FLAGS {
   return arg in VALUE_FLAGS;
@@ -213,7 +204,6 @@ function parseArgs(argv: readonly string[]): Args {
     tx: undefined,
     amount: undefined,
     asset: undefined,
-    product: undefined,
     port: undefined,
     yes: false,
     ownerOnly: false,
@@ -249,15 +239,20 @@ function parseArgs(argv: readonly string[]): Args {
     ) {
       args.target = arg;
     } else if (
-      (args.command === 'deliver' || args.command === 'refund') &&
+      (args.command === 'complete' || args.command === 'refund') &&
       args.target === undefined &&
       arg !== undefined &&
       !arg.startsWith('--')
     ) {
       args.target = arg;
+    } else if (args.command === 'deliver') {
+      throw new Error(DELIVER_RENAMED);
     } else {
       throw new Error(`unknown argument ${arg ?? ''}`);
     }
+  }
+  if (args.command === 'deliver') {
+    throw new Error(DELIVER_RENAMED);
   }
   return args;
 }
@@ -315,9 +310,6 @@ function init(home: MerchantHome, network: string | undefined, ownerOnly: boolea
   }
   console.log('next    edit config.json and the product, then run setup');
   console.log(
-    'note    a delivery value can be a secret link: never publish or commit the products directory',
-  );
-  console.log(
     'note    to tell your backend about payments, add "webhook" to config.json and a secret: openssl rand -hex 32',
   );
 }
@@ -325,7 +317,7 @@ function init(home: MerchantHome, network: string | undefined, ownerOnly: boolea
 /**
  * Print what the inbox relays can do; the ones that do not take and serve gift
  * wraps for any key. Every one must: buyers send orders to all of them, and a
- * delivery one of them took counts toward the two a delivery wants.
+ * completed status one of them took counts toward the two it wants.
  */
 async function reportInboxRelays(
   pool: SimplePool,
@@ -434,7 +426,7 @@ async function setup(home: MerchantHome): Promise<void> {
   const unedited = uneditedProducts(products.values());
   if (unedited.length > 0) {
     throw new Error(
-      `these products still deliver the example link: ${unedited.map((product) => product.file).join(', ')}. Set what the buyer gets.`,
+      `these products are still the init example: ${unedited.map((product) => product.file).join(', ')}. Set the title and description.`,
     );
   }
   // Both secrets first, before anything is checked, signed or published: a
@@ -520,7 +512,7 @@ async function setup(home: MerchantHome): Promise<void> {
 
 /**
  * Refuse to run when the relays offer buyers something this node does not
- * honour (see `offersNotHonoured`): a buyer could pay it and never get a delivery.
+ * honour (see `offersNotHonoured`): a buyer could pay it and never get the order completed.
  */
 async function refuseOffersNotHonoured(
   pool: SimplePool,
@@ -584,9 +576,12 @@ function deferSignals(): () => number | undefined {
 async function run(home: MerchantHome): Promise<void> {
   const { config, products } = loadStore(home);
   // Before the lock and any relay: a configured webhook without its secret never runs.
-  const { target, warning } = webhookTarget(config.webhook, readWebhookSecret());
+  const { target, warning, notice } = webhookTarget(config.webhook, readWebhookSecret());
   if (warning !== undefined) {
     log(`warning: ${warning}`);
+  }
+  if (notice !== undefined) {
+    log(`notice: ${notice}`);
   }
   const loaded = loadKeys(home);
   const storeSecretKey = openSecret(loaded, 'store', readPassphrase());
@@ -648,18 +643,12 @@ async function run(home: MerchantHome): Promise<void> {
     // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
     ...(config.rpcUrl === undefined ? { catchUp: async () => ({ paid: [], incomplete: [] }) } : {}),
     save: () => saveLedger(home.ledger, state),
-    deliver: async (order, skip) => {
-      // The order's own product, by its exact directory name: never another one's.
-      const delivery = deliveryFor(order, products);
-      if (delivery === undefined) {
-        log(`delivery for ${order.key}: no product directory ${orderProductD(order)}, skipped`);
-        throw new Error(`no product ${orderProductD(order)}`);
-      }
-      return await deliverOrder(
+    // Completion needs no product: the status carries only the receipt.
+    deliver: async (order, skip) =>
+      await deliverOrder(
         {
           pool,
           inboxRelays: config.inboxRelays,
-          delivery,
           storeSecretKey,
           auth: storeAuth(storeSecretKey),
           log,
@@ -667,8 +656,7 @@ async function run(home: MerchantHome): Promise<void> {
         },
         order,
         skip,
-      );
-    },
+      ),
     selfCopies,
     inboxRelayCount: config.inboxRelays.length,
     log,
@@ -911,7 +899,7 @@ async function confirmed(question: string, yes: boolean): Promise<boolean> {
 /**
  * Answer an order by hand. The node must be stopped (the lock): a running node
  * rewrites the ledger from memory. The close is saved first, then the answer
- * published to the store's inbox relays; below the delivery threshold the
+ * published to the store's inbox relays; below the two-relay threshold the
  * command fails, and a rerun sends the same answer again.
  */
 async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
@@ -924,12 +912,8 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   takeLock(home);
   const state = loadLedger(home.ledger);
   let request: HandRequest;
-  if (args.command === 'deliver') {
-    const chosen = handDelivery(state, key, loadProducts(home.products), args.product);
-    if (!chosen.ok) {
-      throw new Error(chosen.problem);
-    }
-    request = { kind: 'delivered', delivery: chosen.delivery };
+  if (args.command === 'complete') {
+    request = { kind: 'delivered' };
   } else {
     request = {
       kind: 'refunded',
@@ -962,7 +946,7 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   }
   const what =
     plan.answer.kind === 'delivered'
-      ? `deliver "${plan.answer.delivery?.value ?? ''}"`
+      ? 'send "completed"'
       : `report a refund of ${plan.answer.amount ?? ''}${plan.answer.caip19 === undefined ? '' : ` ${plan.answer.caip19}`} in ${plan.answer.tx ?? ''}`;
   if (
     !(await confirmed(`${plan.rerun ? 'Send again' : 'Close the order and'} ${what}?`, args.yes))
@@ -1052,9 +1036,6 @@ async function main(): Promise<void> {
   if (args.network !== undefined && args.command !== 'init') {
     throw new Error('--network is for init; the config names the network');
   }
-  if (args.product !== undefined && args.command !== 'deliver') {
-    throw new Error('--product is for deliver');
-  }
   if (args.ownerOnly && args.command !== 'init' && args.command !== 'encrypt-keys') {
     throw new Error('--owner-only is for init and encrypt-keys');
   }
@@ -1097,7 +1078,7 @@ async function main(): Promise<void> {
       await check(home);
       process.exit(0);
       return;
-    case 'deliver':
+    case 'complete':
     case 'refund':
       await answerByHand(home, args);
       process.exit(0);

@@ -3,13 +3,14 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { handDelivery, planHandAnswer } from '../src/hand';
+import { planHandAnswer } from '../src/hand';
 import { emptyLedger } from '../src/ledger';
 import {
-  PLACEHOLDER_DELIVERY_VALUE,
+  DELIVERY_REMOVED,
   type Product,
   type ProductsFs,
-  deliveryFor,
+  TEMPLATE_BODY,
+  TEMPLATE_TITLE,
   intakeProductIds,
   loadProducts,
   parseProductText,
@@ -18,21 +19,12 @@ import {
 } from '../src/products';
 import { historyRefusal } from '../src/setup-ledger';
 
-const STORE = 's'.repeat(64);
-
-function productText(frontmatter: string, body = 'What the buyer gets.'): string {
+function productText(frontmatter: string, body = 'Adds 10 USD to your account.'): string {
   return `---\n${frontmatter}\n---\n\n${body}\n`;
 }
 
 const VALID = productText(
-  [
-    'title: Deposit 10 USD',
-    'priceUsd: "10"',
-    'summary: Adds 10 USD.',
-    'delivery:',
-    '  method: access',
-    '  value: https://shop.example/credit',
-  ].join('\n'),
+  ['title: Deposit 10 USD', 'priceUsd: "10"', 'summary: Adds 10 USD.'].join('\n'),
 );
 
 /** A products directory holding `entries` (name -> PRODUCT.md text). */
@@ -61,9 +53,9 @@ describe('a product directory', () => {
       priceUsd: '10',
       onSale: true,
       summary: 'Adds 10 USD.',
-      description: 'What the buyer gets.',
-      delivery: { method: 'access', value: 'https://shop.example/credit' },
+      description: 'Adds 10 USD to your account.',
     });
+    expect(products.get('deposit-10')).not.toHaveProperty('delivery');
   });
 
   it('reads onSale, and several products, each its own', () => {
@@ -145,8 +137,6 @@ describe('a product directory', () => {
     const state = emptyLedger();
     state.listings.Deposit = { hash: 'h', eventId: 'e', createdAt: 1 };
     expect(historyRefusal(state, products)).toContain('restore products/Deposit');
-    expect(deliveryFor({ product: `30402:${STORE}:Deposit` }, products)).toBeUndefined();
-    expect(handDelivery(state, 'b:o', products, 'Deposit')).toMatchObject({ ok: false });
   });
 });
 
@@ -173,40 +163,41 @@ describe('the PRODUCT.md file', () => {
     ]);
   });
 
-  it('M29: refuses an unknown or misspelled key, also inside delivery', () => {
+  it('M29: refuses an unknown or misspelled key', () => {
     for (const key of ['onsale: false', 'on_sale: false', 'pricUsd: "1"']) {
       expect(problemsOf(VALID.replace('summary: Adds 10 USD.', key)).join(' ')).toContain(
         'Unrecognized key',
       );
     }
-    expect(
-      problemsOf(
-        VALID.replace('  value: https://shop.example/credit', '  value: x\n  extra: y'),
-      ).join(' '),
-    ).toContain('Unrecognized key');
   });
 
-  it('refuses a missing title, price or delivery', () => {
+  it('M1: refuses a leftover delivery by name, with what to do instead', () => {
+    const withDelivery = VALID.replace(
+      'summary: Adds 10 USD.',
+      'delivery:\n  method: access\n  value: https://shop.example/credit',
+    );
+    expect(problemsOf(withDelivery)).toEqual([DELIVERY_REMOVED]);
+    expect(DELIVERY_REMOVED).toContain('order.paid webhook');
+    // Even an empty one, and alongside any other problem, each named.
+    expect(problemsOf(VALID.replace('summary: Adds 10 USD.', 'delivery:'))).toEqual([
+      DELIVERY_REMOVED,
+    ]);
+    const both = problemsOf(withDelivery.replace('priceUsd: "10"', 'priceUsd: 10'));
+    expect(both[0]).toBe(DELIVERY_REMOVED);
+    expect(both.join(' ')).toContain('quote it');
+  });
+
+  it('refuses a missing title or price', () => {
     for (const line of ['title: Deposit 10 USD', 'priceUsd: "10"']) {
       expect(problemsOf(VALID.replace(line, ''))).toHaveLength(1);
     }
-    expect(problemsOf(productText(['title: x', 'priceUsd: "1"'].join('\n')))).toEqual([
-      'delivery: Required',
-    ]);
+    expect(problemsOf(productText(['title: x', 'priceUsd: "1"'].join('\n')))).toEqual([]);
   });
 
   it('M34: refuses YAML scalars of the wrong type, never reinterpreted', () => {
     expect(problemsOf(VALID.replace('priceUsd: "10"', 'priceUsd: 10')).join(' ')).toContain(
       'quote it',
     );
-    expect(
-      problemsOf(VALID.replace('  value: https://shop.example/credit', '  value: 012345')).join(
-        ' ',
-      ),
-    ).toContain('quote it');
-    expect(
-      problemsOf(VALID.replace('  value: https://shop.example/credit', '  value: "012345"')),
-    ).toEqual([]);
     expect(problemsOf(VALID.replace('summary: Adds 10 USD.', 'onSale: no')).join(' ')).toContain(
       'onSale',
     );
@@ -221,53 +212,25 @@ describe('the PRODUCT.md file', () => {
     expect(problemsOf(VALID.replace('priceUsd: "10"', 'priceUsd: "0.5"'))).toEqual([]);
   });
 
-  it('refuses a duplicate key and a bad delivery method', () => {
+  it('refuses a duplicate key', () => {
     expect(problemsOf(VALID.replace('summary: Adds 10 USD.', 'title: again'))).toHaveLength(1);
-    expect(problemsOf(VALID.replace('method: access', 'method: email'))).toHaveLength(1);
   });
 
-  it('M37: the init template is still the placeholder, which setup refuses', () => {
-    const parsed = parseProductText(productTemplateText());
-    expect(parsed.ok).toBe(true);
-    const product: Product = {
-      d: 'my-product',
-      file: 'x',
-      ...(parsed.ok
-        ? parsed.product
-        : {
-            title: '',
-            description: '',
-            priceUsd: '1',
-            onSale: true,
-            delivery: { method: 'access', value: '' },
-          }),
-    };
-    expect(product.delivery.value).toBe(PLACEHOLDER_DELIVERY_VALUE);
+  it('M27: the init template parses, has no delivery, and setup refuses it until edited', () => {
+    const text = productTemplateText();
+    expect(text).not.toContain('delivery');
+    const parsed = parseProductText(text);
+    if (!parsed.ok) {
+      throw new Error(parsed.problems.join('; '));
+    }
+    const product: Product = { d: 'my-product', file: 'x', ...parsed.product };
+    expect(product).toMatchObject({ title: TEMPLATE_TITLE, description: TEMPLATE_BODY });
     expect(uneditedProducts([product])).toEqual([product]);
-    expect(
-      uneditedProducts([
-        { ...product, delivery: { method: 'access', value: 'https://shop.example/x' } },
-      ]),
-    ).toEqual([]);
-  });
-});
-
-describe('the delivery of an order', () => {
-  const products = loadProducts(
-    productsDir({
-      a: VALID,
-      b: VALID.replace('https://shop.example/credit', 'https://shop.example/b'),
-    }),
-  );
-
-  it("is its own product's, never another's (M6)", () => {
-    expect(deliveryFor({ product: `30402:${STORE}:a` }, products)?.value).toBe(
-      'https://shop.example/credit',
-    );
-    expect(deliveryFor({ product: `30402:${STORE}:b` }, products)?.value).toBe(
-      'https://shop.example/b',
-    );
-    expect(deliveryFor({ product: `30402:${STORE}:gone` }, products)).toBeUndefined();
+    expect(uneditedProducts([{ ...product, title: 'Deposit 10 USD' }])).toEqual([]);
+    expect(uneditedProducts([{ ...product, description: 'Adds 10 USD.' }])).toEqual([]);
+    // A home a 0.8 init made is still the example too.
+    const old = { ...product, description: 'What the buyer gets.' };
+    expect(uneditedProducts([old])).toEqual([old]);
   });
 });
 
@@ -283,63 +246,10 @@ describe('the products intake takes orders for', () => {
   });
 });
 
-describe('a hand delivery', () => {
-  const products = loadProducts(
-    productsDir({
-      a: VALID,
-      b: VALID.replace('https://shop.example/credit', 'https://shop.example/b'),
-    }),
-  );
+describe('a hand answer', () => {
   const KEY = `${'b'.repeat(64)}:o-1`;
 
-  function held(d: string) {
-    const state = emptyLedger();
-    state.orders[KEY] = {
-      key: KEY,
-      buyerPubkey: 'b'.repeat(64),
-      orderId: 'o-1',
-      rumorId: 'r',
-      createdAt: 1,
-      reference: 'x',
-      product: `30402:${STORE}:${d}`,
-      reportedTxs: [],
-    };
-    return state;
-  }
-
-  it("of a held order is its own product's, and a differing --product is refused", () => {
-    expect(handDelivery(held('b'), KEY, products, undefined)).toEqual({
-      ok: true,
-      delivery: { method: 'access', value: 'https://shop.example/b' },
-    });
-    expect(handDelivery(held('b'), KEY, products, 'b')).toMatchObject({ ok: true });
-    expect(handDelivery(held('b'), KEY, products, 'a')).toMatchObject({ ok: false });
-    expect(handDelivery(held('b'), KEY, products, 'nope')).toMatchObject({ ok: false });
-  });
-
-  it('M6: of an order whose product has no directory is refused, never another product', () => {
-    expect(handDelivery(held('gone'), KEY, products, undefined)).toMatchObject({
-      ok: false,
-      problem: expect.stringContaining('restore products/gone'),
-    });
-  });
-
-  it('M20: of a pruned order needs --product when the store has several products', () => {
-    const state = emptyLedger();
-    state.closedOrders = { [KEY]: true };
-    expect(handDelivery(state, KEY, products, undefined)).toMatchObject({
-      ok: false,
-      problem: expect.stringContaining('--product'),
-    });
-    expect(handDelivery(state, KEY, products, 'a')).toEqual({
-      ok: true,
-      delivery: { method: 'access', value: 'https://shop.example/credit' },
-    });
-    const one = loadProducts(productsDir({ only: VALID }));
-    expect(handDelivery(state, KEY, one, undefined)).toMatchObject({ ok: true });
-  });
-
-  it('refuses a key already answered as refunded, whatever the products', () => {
+  it('refuses completing a key already answered as refunded', () => {
     const state = emptyLedger();
     state.closedOrders = { [KEY]: true };
     state.answeredByHand = {
@@ -352,37 +262,9 @@ describe('a hand delivery', () => {
         noLegTxs: [],
       },
     };
-    const refusal = {
+    expect(planHandAnswer(state, KEY, { kind: 'delivered' })).toEqual({
       ok: false,
       problem: `${KEY} was already answered as refunded: the other answer is refused`,
-    };
-    expect(handDelivery(state, KEY, products, undefined)).toEqual(refusal);
-    expect(handDelivery(state, KEY, products, 'a')).toEqual(refusal);
-    // The same wording planHandAnswer gives.
-    expect(
-      planHandAnswer(state, KEY, {
-        kind: 'delivered',
-        delivery: { method: 'access', value: 'https://shop.example/b' },
-      }),
-    ).toEqual(refusal);
-  });
-
-  it('M24: a rerun needs no --product, and refuses one whose delivery differs', () => {
-    const state = emptyLedger();
-    state.answeredByHand = {
-      [KEY]: {
-        kind: 'delivered',
-        delivery: { method: 'access', value: 'https://shop.example/b' },
-        reportedTxs: [],
-        refusedTxs: [],
-        noLegTxs: [],
-      },
-    };
-    expect(handDelivery(state, KEY, products, undefined)).toEqual({
-      ok: true,
-      delivery: { method: 'access', value: 'https://shop.example/b' },
     });
-    expect(handDelivery(state, KEY, products, 'b')).toMatchObject({ ok: true });
-    expect(handDelivery(state, KEY, products, 'a')).toMatchObject({ ok: false });
   });
 });

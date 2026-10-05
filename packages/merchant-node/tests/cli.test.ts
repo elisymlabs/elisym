@@ -55,11 +55,11 @@ function webhookHome(webhookUrl = 'http://127.0.0.1:9/hook'): string {
   return home;
 }
 
-/** Give the scaffolded product a real delivery, as an operator does before setup. */
+/** Give the scaffolded product its own title and text, as an operator does before setup. */
 function editProduct(home: string): void {
   writeFileSync(
     join(home, 'products', 'my-product', 'PRODUCT.md'),
-    '---\ntitle: My product\npriceUsd: "10"\ndelivery:\n  method: access\n  value: https://shop.example/x\n---\n\nWhat the buyer gets.\n',
+    '---\ntitle: Deposit 10 USD\npriceUsd: "10"\n---\n\nAdds 10 USD to your account.\n',
   );
 }
 
@@ -130,18 +130,24 @@ describe('the merchant CLI', () => {
     expect(run.output).not.toMatch(/inbox relays/);
   });
 
-  it('init scaffolds a product setup refuses until its delivery is real (M37), before any relay', () => {
+  it('init scaffolds a product setup refuses until it is edited (M27), before any relay', () => {
     const home = scratchDir();
     const init = cli(['init', '--home', home]);
     expect(init.code).toBe(0);
     expect(existsSync(join(home, 'products', 'my-product', 'PRODUCT.md'))).toBe(true);
+    expect(readFileSync(join(home, 'products', 'my-product', 'PRODUCT.md'), 'utf8')).not.toMatch(
+      /delivery/,
+    );
+    // No delivery, so no secret link to warn about.
+    expect(init.output).not.toMatch(/delivery|secret link/);
     const config = configTemplate('devnet');
     config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
     config.inboxRelays = ['ws://localhost:9'];
     writeFileSync(join(home, 'config.json'), JSON.stringify(config));
     const run = cli(['setup', '--home', home]);
     expect(run.code).not.toBe(0);
-    expect(run.output).toMatch(/still deliver the example link/);
+    expect(run.output).toMatch(/still the init example/);
+    expect(run.output).not.toMatch(/example link/);
     expect(run.output).not.toMatch(/inbox relays/);
   });
 
@@ -186,11 +192,48 @@ describe('the merchant CLI', () => {
     }
   });
 
-  it('takes --product for deliver only', () => {
+  it('M6: has no --product and no deliver: complete answers by hand', () => {
     const home = scratchDir();
-    const run = cli(['orders', '--product', 'x', '--home', home]);
+    expect(cli(['init', '--home', home]).code).toBe(0);
+    const key = `${BUYER}:${ORDER_ID}`;
+    const flagged = cli(['complete', key, '--product', 'x', '--home', home]);
+    expect(flagged.code).not.toBe(0);
+    expect(flagged.output).toMatch(/unknown argument --product/);
+    // deliver is gone: it says what replaced it, with or without its order.
+    for (const args of [['deliver', key], ['deliver']]) {
+      const old = cli([...args, '--home', home]);
+      expect(old.code).toBe(1);
+      expect(old.output).toMatch(
+        /deliver was renamed complete in 0\.9\.0: complete <buyer>:<orderId>/,
+      );
+    }
+    // complete reaches the hand rules: an unknown order is refused by name.
+    const config = configTemplate('devnet');
+    config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
+    config.inboxRelays = ['ws://localhost:9'];
+    writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+    const unknown = cli(['complete', key, '--yes', '--home', home]);
+    expect(unknown.code).not.toBe(0);
+    expect(unknown.output).toMatch(new RegExp(`no order ${key} in the ledger`));
+  });
+
+  it('M7: run on a home with no webhook says so once, before anything else can fail', () => {
+    const home = scratchDir();
+    expect(cli(['init', '--home', home]).code).toBe(0);
+    editProduct(home);
+    const config = configTemplate('devnet');
+    config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
+    config.inboxRelays = ['ws://localhost:9'];
+    writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+    // No keys: run fails right after the webhook check, before any relay.
+    writeFileSync(join(home, 'keys.json'), '{}');
+    const run = cli(['run', '--home', home]);
     expect(run.code).not.toBe(0);
-    expect(run.output).toMatch(/--product is for deliver/);
+    const notices = run.output
+      .split('\n')
+      .filter((line) => line.includes('no webhook: paid orders reach you only'));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('notice:');
   });
 
   it('a failing init leaves no half-made home', () => {

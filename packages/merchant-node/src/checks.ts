@@ -155,7 +155,7 @@ export async function checkDomain(
  * stand behind, or a coin a listing on sale prices at an amount the ledger
  * does not record for that product (a listing published by a setup that stopped
  * before writing the ledger, or one still on sale after its terms retired). A
- * buyer could pay one and never get a delivery. A sold-out listing offers
+ * buyer could pay one and never get it completed. A sold-out listing offers
  * nothing; the payout list is judged only where something is on sale, so a
  * store whose products are all stopped still starts. `undefined` when no relay
  * served a listing or the payout list.

@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs';
 import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
 import { CATCH_UP_SECS, WEBHOOK_DEADLINE_SECS } from './constants';
 import { replaceFileDurably } from './durable-file';
-import type { Delivery } from './reply';
 import type { TermsPeriod } from './terms';
 
 /** A direct-mode order as the merchant holds it. */
@@ -21,7 +20,7 @@ export interface MerchantOrder {
   email?: string;
   /** The merchant's own id for the buyer's account, as the order carried it. */
   customerRef?: string;
-  /** The product address the order named (`30402:<store>:<d>`): its terms and delivery are that product's. */
+  /** The product address the order named (`30402:<store>:<d>`): its terms are that product's. */
   product: string;
   /** Transactions the buyer reported (kind 17), at most `MAX_RECEIPTS_PER_ORDER`. */
   reportedTxs: string[];
@@ -43,9 +42,9 @@ export interface MerchantOrder {
   paid?: VerifiedPayment;
   /** The `order.paid` webhook, written in the same save as `paid` (see `recordPayment`). */
   webhook?: WebhookEntry;
-  /** Inbox relays that took the delivery so far: a retry goes to the others only. */
+  /** Inbox relays that took the completed status so far (persisted name): a retry goes to the others only. */
   deliveredTo?: string[];
-  /** Set once the delivery counts as done (see `deliveryDone`). */
+  /** Set once the completed status counts as sent (see `deliveryDone`; persisted name). */
   deliveredAt?: number;
 }
 
@@ -130,8 +129,8 @@ export function recordPayment(
 
 /** The answer the owner sent by hand for an order, exactly as sent (a rerun sends it again). */
 export interface HandAnswer {
+  /** `delivered` is the stored token of a `complete` (persisted name, never renamed). */
   kind: 'delivered' | 'refunded';
-  delivery?: { method: Delivery['method']; value: string };
   tx?: string;
   amount?: string;
   /** The refunded asset: absent in an answer kept by a node older than 0.4.0. */
@@ -166,7 +165,7 @@ export interface LedgerState {
   seenRumors: Record<string, true>;
   /** Keys of unpaid orders pruned after the catch-up window, or answered by hand: the id stays used. */
   closedOrders?: Record<string, true>;
-  /** Orders the owner answered by hand (`deliver` / `refund`). */
+  /** Orders the owner answered by hand (`complete` / `refund`). */
   answeredByHand?: Record<string, HandAnswer>;
   /** Payment signature -> the order it paid: each payment credits one order, once. */
   claims: Record<string, string>;
@@ -213,7 +212,7 @@ export function emptyLedger(): LedgerState {
 /**
  * Claim `signature` for the order `key`: true when it is now (or already was)
  * that order's, false when another order holds it. The claim must be saved
- * before the delivery goes out.
+ * before the completed status goes out.
  */
 export function claimPayment(state: LedgerState, signature: string, key: string): boolean {
   const holder = state.claims[signature];
@@ -231,7 +230,7 @@ export function openOrders(state: LedgerState, now: number, catchUpSecs: number)
   );
 }
 
-/** Orders paid but not yet delivered: a crash between the two resumes here. */
+/** Orders paid but not yet completed: a crash between the two resumes here. */
 export function undeliveredOrders(state: LedgerState): MerchantOrder[] {
   return Object.values(state.orders).filter(
     (order) => order.paid !== undefined && order.deliveredAt === undefined,

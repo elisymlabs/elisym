@@ -1,10 +1,10 @@
 # Sell with the checkout
 
-The elisym checkout sells digital products from any web page. The buyer pays in USDC on Solana (or in a Tempo stablecoin), directly to your wallet, and gets what they bought: a link or a text. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
+The elisym checkout sells digital products from any web page. The buyer pays in USDC on Solana (or in a Tempo stablecoin), directly to your wallet; your backend learns of each payment from your node's signed webhook. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
 
 The pieces:
 
-- **Your node** ([`@elisym/merchant-node`](https://www.npmjs.com/package/@elisym/merchant-node)) publishes your products to Nostr, takes orders, checks each payment on chain and delivers. One node is one store, with any number of products.
+- **Your node** ([`@elisym/merchant-node`](https://www.npmjs.com/package/@elisym/merchant-node)) publishes your products to Nostr, takes orders, checks each payment on chain and completes the order. One node is one store, with any number of products.
 - **The widget** (`<elisym-buy>`) runs on your page. It frames the checkout from `pay.elisym.network`, where the offer is verified and the buyer's wallet signs.
 - **Nostr relays** carry the listings, the orders and the replies. Orders and replies are encrypted end to end between the buyer and your node, and no server of ours touches the money: the payment goes from the buyer's wallet to yours.
 
@@ -54,23 +54,20 @@ Each product is a directory under `$ELISYM_MERCHANT_HOME/products`, named with t
 
 ```markdown
 ---
-title: My product
+title: Deposit 1 USD
 priceUsd: "1"
-delivery:
-  method: access
-  value: https://example.com/<the link the buyer gets>
 ---
 
-What the buyer gets, in markdown.
+Adds 1 USD to your account.
 ```
 
 - `priceUsd` is paid 1:1 in USDC. Quote it: a bare number is refused.
-- `delivery.value` is what the buyer sees once paid: a link (opened only if it is `https:`) or a text such as a license key. Replace the example: `setup` refuses a product that still delivers it.
 - The body below the second `---` is the product's description.
+- `setup` refuses the product while it is still `init`'s example (its title and text unchanged).
+
+The store returns nothing to the buyer: once the node has checked the payment on chain, it completes the order and the checkout shows **Payment complete** with a receipt. What the buyer paid for happens on your side: your backend learns of each payment from the node's signed `order.paid` webhook ([below](#credit-an-account-on-your-backend)). A `PRODUCT.md` that still names a `delivery` (from a node older than 0.9.0) is refused: remove the key.
 
 To sell a second product, add another directory with its own `PRODUCT.md`, for example `products/deposit-10/PRODUCT.md`. The directory name is the product's id: letters, digits, dots, dashes or underscores, at most 64.
-
-**A delivery value can be a secret link.** Never publish the `products` directory or commit it to a public repository.
 
 **Real money.** Payments go straight from the buyer's wallet to these addresses: nothing holds them for you, and nothing can pull them back. Start with a small price, buy it yourself once, and only then share the page.
 
@@ -89,7 +86,7 @@ product deposit-10 on sale published naddr1...
 
 After a change to `config.json` or to a product, stop the node, run `setup` again, then start the node again: `setup` refuses while the node runs. `setup` republishes only what changed (`unchanged` in its report).
 
-**Stopping a product.** Add `onSale: false` to its `PRODUCT.md` and run `setup`: its listing is republished as sold out, and the checkout shows Sold out. An order a buyer already placed is still honored within the usual window. Never delete the directory of a product that was published: the node refuses to start without it, because its orders could be paid and never delivered. A product id cannot change either: a new id is a new product, and the old one stays (stop it with `onSale: false`).
+**Stopping a product.** Add `onSale: false` to its `PRODUCT.md` and run `setup`: its listing is republished as sold out, and the checkout shows Sold out. An order a buyer already placed is still honored within the usual window. Never delete the directory of a product that was published: the node refuses to start without it, because its orders could be paid and never completed. A product id cannot change either: a new id is a new product, and the old one stays (stop it with `onSale: false`).
 
 ## 3. Run the node
 
@@ -97,7 +94,7 @@ After a change to `config.json` or to a product, stop the node, run `setup` agai
 npx @elisym/merchant-node run
 ```
 
-Keep it running. It reads orders from your inbox relays, checks each payment on chain and sends the delivery. If it stops, it catches up on what it missed when it starts again. The node refuses to start if the published store offers buyers anything it would not honor, such as a payout on another network or a price it did not record. In another terminal (after the export block), `npx @elisym/merchant-node orders` lists the orders, paid or not.
+Keep it running. It reads orders from your inbox relays, checks each payment on chain and completes the order. If it stops, it catches up on what it missed when it starts again. The node refuses to start if the published store offers buyers anything it would not honor, such as a payout on another network or a price it did not record. In another terminal (after the export block), `npx @elisym/merchant-node orders` lists the orders, paid or not.
 
 ## 4. Add the checkout to your page
 
@@ -118,7 +115,7 @@ No page yet? The repository has a ready one: [`examples/demo-store`](https://git
 
 Serve the page over http(s), for example with `npx serve .` on localhost. A page opened from disk (`file://`) has no origin, and the checkout refuses it. Open it in a browser with a Solana wallet that supports Wallet Standard (Phantom, Solflare, ...) holding the price in USDC and a little SOL for the fee.
 
-Click Buy: the checkout opens and shows the product, the price and who is selling it. Pay, and within seconds the node logs the order and the payment, and the checkout shows the delivery with a receipt.
+Click Buy: the checkout opens and shows the product, the price and who is selling it. Pay, and within seconds the node logs the order and the payment, and the checkout shows Payment complete with a receipt.
 
 ## See your orders
 
@@ -129,7 +126,7 @@ npx @elisym/merchant-node store-key --yes
 npx @elisym/merchant-node admin
 ```
 
-Open [http://127.0.0.1:5199/](http://127.0.0.1:5199/). The page reads your inbox relays with the store key and lists each order: its product, the total the buyer claims, the email, whether it was paid and delivered, and the transaction, with totals per coin. A product list shows each ordered product, on sale or sold out. The key stays in the tab: it is never stored or sent. With encrypted keys, `store-key` reads the passphrase like `run` does (`ELISYM_MERCHANT_PASSPHRASE` or `ELISYM_MERCHANT_PASSPHRASE_FILE`). `--yes` lets it print without a terminal; leave it out to have it refuse when its output would land in a log. Run `admin` with `npx`, not in Docker.
+Open [http://127.0.0.1:5199/](http://127.0.0.1:5199/). The page reads your inbox relays with the store key and lists each order: its product, the total the buyer claims, the email, whether it was paid and completed, and the transaction, with totals per coin. A product list shows each ordered product, on sale or sold out. The key stays in the tab: it is never stored or sent. With encrypted keys, `store-key` reads the passphrase like `run` does (`ELISYM_MERCHANT_PASSPHRASE` or `ELISYM_MERCHANT_PASSPHRASE_FILE`). `--yes` lets it print without a terminal; leave it out to have it refuse when its output would land in a log. Run `admin` with `npx`, not in Docker.
 
 ## Level A: let your domain vouch for the store
 
@@ -178,11 +175,11 @@ The buyer's page shows a choice between the store's payouts on the page's networ
 A buyer who cannot finish a purchase is told to contact the store: a payment the node refused (paid after a price change, or after the three days it watches an order), or one that never landed. With the node **stopped**, answer the order from its key (`orders` lists them):
 
 ```bash
-npx @elisym/merchant-node deliver <buyer>:<orderId>
+npx @elisym/merchant-node complete <buyer>:<orderId>
 npx @elisym/merchant-node refund <buyer>:<orderId> --tx <your refund transaction> --amount <subunits> --asset <caip19 of the refunded coin>
 ```
 
-`deliver` sends the delivery of the order's product (`--product <id>` names it for an order the ledger no longer holds, when the store has several products); `refund` reports a refund you already sent (above zero; an unpaid order is released with `deliver`, never a zero refund). `--asset` names the refunded coin as CAIP-19, the same id as in your config's `payouts`: it may be left out when the store has one payout, and is required when it has several. The refund transaction must be on that coin's chain. Running `refund` again for an answer kept by an older node sends it unchanged, without an asset. The command prints what the ledger holds for the order and asks before it sends (`--yes` for scripts); the order is then closed for good, and running the same command again sends the same answer again. Check the payment yourself (the node's log and a block explorer) before you answer.
+`complete` closes the order and sends it `completed`, as for a paid one; `refund` reports a refund you already sent (above zero; an unpaid order is released with `complete`, never a zero refund). `--asset` names the refunded coin as CAIP-19, the same id as in your config's `payouts`: it may be left out when the store has one payout, and is required when it has several. The refund transaction must be on that coin's chain. Running `refund` again for an answer kept by an older node sends it unchanged, without an asset. The command prints what the ledger holds for the order and asks before it sends (`--yes` for scripts); the order is then closed for good, and running the same command again sends the same answer again. Check the payment yourself (the node's log and a block explorer) before you answer.
 
 An order answered by hand sends no webhook (see below): `orders` and the command show its customer reference, so you can credit it yourself.
 

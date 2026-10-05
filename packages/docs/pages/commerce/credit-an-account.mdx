@@ -2,9 +2,11 @@
 
 Sell a deposit or a top-up: the buyer pays through the checkout on your page, and your backend credits their account with what they paid. The payment goes straight from the buyer's wallet to yours; what tells your backend is your own node, in a signed webhook, once it has verified the payment on chain.
 
+This is the pattern for every product, not only deposits. The checkout delivers nothing: once the payment is checked it shows **Payment complete** with a receipt, and whatever the buyer paid for happens on your side when the webhook arrives (credit an account, enqueue a job, send an email).
+
 ## Why the browser is never trusted
 
-A page hears the checkout's status events (`completed`, `onPaid` in React), but a buyer can fake anything a page hears: devtools, a forged event, a call to your handler. So the page shows a thank-you, and nothing more. Credit only from the webhook:
+A page hears the checkout's status events (`elisym-status` such as `paying` and `completed`, `onPaid` in React), but a buyer can fake anything a page hears: devtools, a forged event, a call to your handler. So the page shows a thank-you, and nothing more. There is no webhook at `paying`: nothing is paid yet. Credit only from the webhook:
 
 1. Your page passes your own id of the logged-in account (`customer-ref`) to the checkout.
 2. The checkout puts it into the order, encrypted end to end to your node.
@@ -74,6 +76,17 @@ export function Deposit({ account }: { account: { id: string; name: string } | u
 ```
 
 With `requireCustomerRef`, the component waits (disabled button) until `customerRef` is set. `onPaid` is for the UI only.
+
+The product itself is a plain `PRODUCT.md` in the node's home, with nothing to deliver (see [the quick start](/commerce/quickstart#1-create-the-store)):
+
+```markdown
+---
+title: Deposit 1 USD
+priceUsd: "1"
+---
+
+Adds 1 USD to your account.
+```
 
 ## 2. The node's webhook
 
@@ -276,14 +289,14 @@ Never parse the body as JSON before the check: the signature covers the exact by
 
 ## Retries and gaps
 
-- The event is written in the same ledger save that records the payment, so a crash never loses it, and a restarted node sends what is pending. Delivery to the buyer never waits on it.
+- The event is written in the same ledger save that records the payment, so a crash never loses it, and a restarted node sends what is pending. The completed status never waits on it.
 - A failed attempt is retried after 30 seconds, doubling to an hour, for 7 days; then it is `failed`. No redirect is followed, and an answer slower than 10 seconds counts as failed.
 - `npx @elisym/merchant-node orders` shows each paid order's reference, webhook state (`pending`, `sent`, `failed` or `none`) and event id. With the node stopped, `webhook retry <buyer>:<orderId>` sends a pending or failed event again now, and `webhook resend <buyer>:<orderId>` sends one for any paid order.
 
 What sends no webhook on its own, so you credit it by hand (record the event id, or the order with a null `event_id`, in the same transaction as the credit):
 
 - a payment verified before the webhook was configured, or by a node older than 0.7.0: `webhook resend` sends it;
-- an order answered by hand (`deliver`, `refund`): `orders` and the command show its reference;
+- an order answered by hand (`complete`, `refund`): `orders` and the command show its reference;
 - a payment the node never saw: a node offline for longer than the three days it watches an order can miss payments for orders placed before it went down.
 
 In Docker the node runs on Bun, which sends the webhook through the proxy `HTTP_PROXY` / `HTTPS_PROXY` name, if set; list your backend in `NO_PROXY` when it should go direct.

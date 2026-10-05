@@ -19,7 +19,6 @@ import {
 } from './fixtures';
 
 const ORDER_ID = 'b3a7c2d4-0000-4000-8000-00000000d001';
-const DELIVERY = { method: 'access' as const, value: 'https://shop.example/course' };
 const TEMPO_TX = `0x${'ab'.repeat(32)}`;
 const PATHUSD_MODERATO = 'eip155:42431/erc20:0x20c0000000000000000000000000000000000000';
 const ONE_PAYOUT = [USDC_DEVNET_CAIP19];
@@ -36,14 +35,11 @@ function withOrder() {
 }
 
 describe('answering by hand', () => {
-  it('delivers an unpaid order, closes its key and keeps what was sent', () => {
+  it('completes an unpaid order, closes its key and keeps what was sent', () => {
     const run = withOrder();
     run.order.reportedTxs.push(TEMPO_TX);
     run.order.noLegTxs = [TEMPO_TX];
-    const plan = planHandAnswer(run.state, run.order.key, {
-      kind: 'delivered',
-      delivery: DELIVERY,
-    });
+    const plan = planHandAnswer(run.state, run.order.key, { kind: 'delivered' });
     expect(plan).toMatchObject({ ok: true, rerun: false });
     if (!plan.ok) {
       throw new Error(plan.problem);
@@ -51,21 +47,23 @@ describe('answering by hand', () => {
     applyHandAnswer(run.state, run.order.key, plan.answer);
     expect(run.state.orders[run.order.key]).toBeUndefined();
     expect(run.state.closedOrders?.[run.order.key]).toBe(true);
+    // M5: the stored token stays `delivered` (the ledger format never moves).
     expect(run.state.answeredByHand?.[run.order.key]).toMatchObject({
       kind: 'delivered',
-      delivery: DELIVERY,
       reportedTxs: [TEMPO_TX],
       noLegTxs: [TEMPO_TX],
     });
-    // The signed status is a delivery the widget reads, with no receipt.
+    expect(run.state.answeredByHand?.[run.order.key]).not.toHaveProperty('delivery');
+    // The signed status is a `completed` the widget reads, with no delivery and no receipt.
     const wrap = buildHandAnswer(plan, run.store.secretKey, T0 + 100);
     const read = unwrapOrderMessage(wrap.recipientWrap, run.buyer.secretKey);
     expect(read?.message).toMatchObject({
       type: 'status',
       status: 'completed',
       orderId: ORDER_ID,
-      delivery: DELIVERY,
     });
+    expect(read?.message).not.toHaveProperty('delivery');
+    expect(read?.message).not.toHaveProperty('receipt');
     // The id stays used: a new order under the same id is refused, also by today's intake.
     const recreated = delivered(
       {
@@ -83,19 +81,13 @@ describe('answering by hand', () => {
 
   it('re-sends the stored answer, and refuses the opposite one', () => {
     const run = withOrder();
-    const first = planHandAnswer(run.state, run.order.key, {
-      kind: 'delivered',
-      delivery: DELIVERY,
-    });
+    const first = planHandAnswer(run.state, run.order.key, { kind: 'delivered' });
     if (!first.ok) {
       throw new Error(first.problem);
     }
     applyHandAnswer(run.state, run.order.key, first.answer);
-    const again = planHandAnswer(run.state, run.order.key, {
-      kind: 'delivered',
-      delivery: { method: 'access', value: 'https://changed.example' },
-    });
-    expect(again).toMatchObject({ ok: true, rerun: true, answer: { delivery: DELIVERY } });
+    const again = planHandAnswer(run.state, run.order.key, { kind: 'delivered' });
+    expect(again).toMatchObject({ ok: true, rerun: true, answer: { kind: 'delivered' } });
     expect(
       planHandAnswer(run.state, run.order.key, {
         kind: 'refunded',
@@ -104,6 +96,29 @@ describe('answering by hand', () => {
         payoutAssets: ONE_PAYOUT,
       }),
     ).toMatchObject({ ok: false });
+  });
+
+  it('M4: re-sends an answer kept by 0.8 with a delivery as a completed status without it', () => {
+    const run = withOrder();
+    const first = planHandAnswer(run.state, run.order.key, { kind: 'delivered' });
+    if (!first.ok) {
+      throw new Error(first.problem);
+    }
+    applyHandAnswer(run.state, run.order.key, first.answer);
+    // What a 0.8 node kept: the answer with the delivery it sent (read as plain JSON).
+    const kept: Record<string, unknown> = { ...first.answer };
+    kept.delivery = { method: 'access', value: 'https://shop.example/course' };
+    const ledger = JSON.parse(JSON.stringify(run.state));
+    ledger.answeredByHand[run.order.key] = kept;
+    const again = planHandAnswer(ledger, run.order.key, { kind: 'delivered' });
+    if (!again.ok) {
+      throw new Error(again.problem);
+    }
+    expect(again.rerun).toBe(true);
+    const wrap = buildHandAnswer(again, run.store.secretKey, T0 + 200);
+    const read = unwrapOrderMessage(wrap.recipientWrap, run.buyer.secretKey);
+    expect(read?.message).toMatchObject({ status: 'completed', orderId: ORDER_ID });
+    expect(read?.message).not.toHaveProperty('delivery');
   });
 
   it('refunds with a real refund only, and reads back as a refund', () => {
@@ -249,14 +264,11 @@ describe('answering by hand', () => {
     const run = withOrder();
     pruneExpiredOrders(run.state, T0 + 10 * 86_400);
     expect(run.state.orders[run.order.key]).toBeUndefined();
+    expect(planHandAnswer(run.state, run.order.key, { kind: 'delivered' })).toMatchObject({
+      ok: true,
+    });
     expect(
-      planHandAnswer(run.state, run.order.key, { kind: 'delivered', delivery: DELIVERY }),
-    ).toMatchObject({ ok: true });
-    expect(
-      planHandAnswer(run.state, `${'c'.repeat(64)}:${ORDER_ID}`, {
-        kind: 'delivered',
-        delivery: DELIVERY,
-      }),
+      planHandAnswer(run.state, `${'c'.repeat(64)}:${ORDER_ID}`, { kind: 'delivered' }),
     ).toMatchObject({ ok: false });
     const paid = withOrder();
     paid.order.paid = {
@@ -266,8 +278,8 @@ describe('answering by hand', () => {
       caip19: 'x',
       medium: 'solana-devnet',
     };
-    expect(
-      planHandAnswer(paid.state, paid.order.key, { kind: 'delivered', delivery: DELIVERY }),
-    ).toMatchObject({ ok: false });
+    expect(planHandAnswer(paid.state, paid.order.key, { kind: 'delivered' })).toMatchObject({
+      ok: false,
+    });
   });
 });

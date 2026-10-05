@@ -175,7 +175,6 @@ describe('the merchant config', () => {
           description: '',
           priceUsd: '1',
           onSale: true,
-          delivery: { method: 'access', value: 'https://shop.example/x' },
           file: 'x',
         },
       ]),

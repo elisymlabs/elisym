@@ -1,13 +1,12 @@
 /**
- * Every example delivery value the docs show is the one `init` writes (or
- * empty), so an example copied into a product is refused by `setup` and never
- * sold: a buyer would get example.com.
+ * Every PRODUCT.md example the docs show is one a node accepts: it parses as a
+ * product, and none names a delivery (removed in 0.9.0, refused by name).
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { PLACEHOLDER_DELIVERY_VALUE } from '../src/products';
+import { parseProductText, uneditedProducts } from '../src/products';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -21,38 +20,76 @@ function pages(dir: string): string[] {
   });
 }
 
-/** The `value` of every delivery an example writes, in YAML or JSON. */
-function deliveryValues(text: string): string[] {
-  const yaml = [...text.matchAll(/^\s*value:\s*"?([^"\n]*)"?\s*$/gm)].map(
-    (match) => match[1] ?? '',
-  );
-  const json = [...text.matchAll(/delivery[^}]*?"?value"?\s*:\s*"([^"]*)"/g)].map(
-    (match) => match[1] ?? '',
-  );
-  return [...yaml, ...json];
+/**
+ * The PRODUCT.md examples in a page: a `---` frontmatter naming `priceUsd`, its
+ * closing `---`, and the body up to the end of its code fence or heredoc.
+ */
+export function productExamples(text: string): string[] {
+  const lines = text.split('\n');
+  const examples: string[] = [];
+  for (let start = 0; start < lines.length; start += 1) {
+    if (lines[start]?.trim() !== '---') {
+      continue;
+    }
+    const close = lines.findIndex((line, index) => index > start && line.trim() === '---');
+    if (close === -1) {
+      break;
+    }
+    const frontmatter = lines.slice(start + 1, close);
+    if (!frontmatter.some((line) => /^\s*priceUsd:/.test(line))) {
+      continue;
+    }
+    const after = lines.slice(close + 1);
+    // The end of a code fence, or of a heredoc (`<<'EOF'`, `<<'PRODUCT'`).
+    const end = after.findIndex((line) => /^\s*(```|EOF$|PRODUCT$)/.test(line));
+    const body = end === -1 ? after : after.slice(0, end);
+    const indent = /^\s*/.exec(lines[start] ?? '')?.[0].length ?? 0;
+    examples.push(
+      [lines[start], ...frontmatter, lines[close], ...body]
+        .map((line) => (line ?? '').slice(indent))
+        .join('\n'),
+    );
+    start = close;
+  }
+  return examples;
 }
 
-describe('the example delivery values in the docs', () => {
+describe('the PRODUCT.md examples in the docs', () => {
   const files = [
     ...pages(join(ROOT, 'packages/docs/pages')),
     join(ROOT, 'packages/merchant-node/README.md'),
     join(ROOT, 'examples/demo-store/README.md'),
   ];
 
-  it('are the init placeholder, or not an example.com link at all', () => {
-    const found: string[] = [];
+  it('parse as products, and none names a delivery', () => {
+    const problems: string[] = [];
     for (const file of files) {
-      for (const value of deliveryValues(readFileSync(file, 'utf8'))) {
-        if (value.includes('example.com') && value !== PLACEHOLDER_DELIVERY_VALUE) {
-          found.push(`${file}: ${value}`);
+      for (const example of productExamples(readFileSync(file, 'utf8'))) {
+        if (/^\s*delivery:/m.test(example)) {
+          problems.push(`${file}: names a delivery`);
+        }
+        const parsed = parseProductText(example);
+        if (!parsed.ok) {
+          problems.push(`${file}: ${parsed.problems.join('; ')}`);
         }
       }
     }
-    expect(found).toEqual([]);
+    expect(problems).toEqual([]);
+  });
+
+  it('leave the mainnet demo product as the init example, which setup refuses until edited', () => {
+    const text = readFileSync(join(ROOT, 'examples/demo-store/README.md'), 'utf8');
+    const mainnet = productExamples(text.slice(text.indexOf('.elisym-demo-mainnet/products')));
+    const parsed = mainnet[0] === undefined ? undefined : parseProductText(mainnet[0]);
+    if (parsed === undefined || !parsed.ok) {
+      throw new Error('no mainnet demo product found');
+    }
+    const product = { d: 'demo', file: 'x', ...parsed.product };
+    expect(uneditedProducts([product])).toEqual([product]);
   });
 
   it('finds the examples it checks', () => {
-    const all = files.flatMap((file) => deliveryValues(readFileSync(file, 'utf8')));
-    expect(all).toContain(PLACEHOLDER_DELIVERY_VALUE);
+    const found = files.flatMap((file) => productExamples(readFileSync(file, 'utf8')));
+    expect(found.length).toBeGreaterThanOrEqual(3);
   });
 });

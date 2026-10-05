@@ -79,7 +79,7 @@ function orderStatus(order: MerchantOrder): string {
   if (order.paid === undefined) {
     return 'open';
   }
-  return order.deliveredAt === undefined ? 'paid, delivering' : 'delivered';
+  return order.deliveredAt === undefined ? 'paid, completing' : 'completed';
 }
 
 /**
@@ -102,12 +102,13 @@ export function orderLines(state: LedgerState, storePubkey: string): string[] {
   });
   lines.push(`${all.length} order(s)`);
   for (const [key, answer] of Object.entries(state.answeredByHand ?? {})) {
-    const detail =
+    // `delivered` is the stored token of a `complete`.
+    const what =
       answer.kind === 'delivered'
-        ? (answer.delivery?.value ?? '')
-        : `${answer.amount ?? ''} in ${answer.tx ?? ''}`;
+        ? 'completed'
+        : `refunded ${answer.amount ?? ''} in ${answer.tx ?? ''}`;
     const ref = answer.customerRef === undefined ? '' : ` ref=${shownRef(answer.customerRef)}`;
-    lines.push(`answered by hand: ${key} ${answer.kind} ${detail}${ref}`);
+    lines.push(`answered by hand: ${key} ${what}${ref}`);
   }
   return lines;
 }

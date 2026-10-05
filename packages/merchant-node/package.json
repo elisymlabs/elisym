@@ -1,7 +1,7 @@
 {
   "name": "@elisym/merchant-node",
-  "version": "0.8.0",
-  "description": "elisym merchant node: self-hosted store for the elisym checkout - takes orders over Nostr, verifies Solana payments, delivers.",
+  "version": "0.9.0",
+  "description": "elisym merchant node: self-hosted store for the elisym checkout - takes orders over Nostr, verifies payments, completes orders.",
   "keywords": [
     "checkout",
     "commerce",
