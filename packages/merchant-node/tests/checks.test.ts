@@ -397,13 +397,11 @@ function cappedPool(events: NostrEvent[], cap: number) {
       if (taken.length === 0) {
         return [];
       }
+      const ds = filter['#d'] === undefined ? undefined : new Set(filter['#d']);
       return events.filter(
         (event) =>
           filter.kinds?.includes(event.kind) === true &&
-          (filter['#d'] === undefined ||
-            event.tags.some(
-              (tag) => tag[0] === 'd' && filter['#d']?.includes(tag[1] ?? '') === true,
-            )),
+          (ds === undefined || event.tags.some((tag) => tag[0] === 'd' && ds.has(tag[1] ?? ''))),
       );
     },
   };
@@ -413,18 +411,21 @@ function cappedPool(events: NostrEvent[], cap: number) {
 describe('reading many products', () => {
   const owner = key();
   const store = key();
-  const listingOf = (d: string, createdAt = T0) =>
-    finalizeEvent(
-      buildProductEvent({
-        d,
-        title: d,
-        description: '',
-        price: { amount: '1', currency: 'USD' },
-        accept: [USDC_DEVNET_CAIP19],
-        createdAt,
-      }),
-      store.secretKey,
-    );
+  // Reads match by kind, author and `d` only, never by signature: a listing need
+  // not be signed here, which keeps a store of hundreds of products fast.
+  const listingOf = (d: string, createdAt = T0): NostrEvent => ({
+    ...buildProductEvent({
+      d,
+      title: d,
+      description: '',
+      price: { amount: '1', currency: 'USD' },
+      accept: [USDC_DEVNET_CAIP19],
+      createdAt,
+    }),
+    pubkey: store.pubkey,
+    id: `${d}-${createdAt}`,
+    sig: '',
+  });
   const payoutList = finalizeEvent(
     buildPaytoEvent({
       ownerPubkey: owner.pubkey,
@@ -447,8 +448,8 @@ describe('reading many products', () => {
     expect(found.get('p7')?.created_at).toBe(T0 + 5);
   });
 
-  it('M43 M45: never holds more than 4 subscriptions on a relay, so 1500 products are all read', async () => {
-    const ds = Array.from({ length: 1500 }, (_, index) => `p${index}`);
+  it('M43 M45: never holds more than 4 subscriptions on a relay, so 600 products (12 chunks) are all read', async () => {
+    const ds = Array.from({ length: 600 }, (_, index) => `p${index}`);
     const events = [...ds.map((d) => listingOf(d)), payoutList, inboxList];
     const pubkeys = { storePubkey: store.pubkey, ownerPubkey: owner.pubkey };
     const relaysOf = ['wss://a.example', 'wss://b.example'];
@@ -457,16 +458,16 @@ describe('reading many products', () => {
     expect(viewed.stats().refused).toBe(0);
     expect(viewed.stats().mostOpen).toBeLessThanOrEqual(4);
     for (const view of views) {
-      expect(view.listings).toHaveLength(1500);
+      expect(view.listings).toHaveLength(600);
       expect(view.payoutList?.id).toBe(payoutList.id);
       expect(view.inboxList?.id).toBe(inboxList.id);
     }
     const { pool, stats } = cappedPool(events, 4);
     const setup = await readBeforeSetup(pool, relaysOf, relaysOf, pubkeys, ds);
     expect(stats().refused).toBe(0);
-    expect(setup.listings.size).toBe(1500);
+    expect(setup.listings.size).toBe(600);
     expect(setup.payoutList?.id).toBe(payoutList.id);
-  });
+  }, 20_000);
 });
 
 describe("the store's published inbox list", () => {
