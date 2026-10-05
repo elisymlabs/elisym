@@ -215,9 +215,9 @@ describe('what a purchase carries', () => {
     }
   });
 
-  it('the delivery of a delivered order only, link only when https', async () => {
+  it('a delivery an older node sent is never carried into the list or the export (M9)', async () => {
     const offer = await loaded();
-    const [linked, text] = purchasesOf(
+    const listed = purchasesOf(
       [
         recordOf(offer, {
           orderId: 'b'.repeat(64),
@@ -226,16 +226,16 @@ describe('what a purchase carries', () => {
         }),
         recordOf(offer, {
           orderId: 'a'.repeat(64),
-          status: { status: 'completed', at: NOW, delivery: 'javascript:alert(1)' },
+          status: { status: 'completed', at: NOW, delivery: 'LICENSE-KEY' },
         }),
       ],
       scope(offer),
     );
-    expect(linked?.delivery).toEqual({
-      text: 'https://shop.example/d',
-      link: 'https://shop.example/d',
-    });
-    expect(text?.delivery).toEqual({ text: 'javascript:alert(1)' });
+    expect(listed.map((each) => each.status)).toEqual(['delivered', 'delivered']);
+    expect(listed.every((each) => !('delivery' in each))).toBe(true);
+    const everything = `${JSON.stringify(listed)}\n${purchasesCsv(listed)}`;
+    expect(everything).not.toContain('shop.example/d');
+    expect(everything).not.toContain('LICENSE-KEY');
   });
 });
 
@@ -268,10 +268,10 @@ describe('the export (D3)', () => {
     expect(csv.startsWith('\uFEFFdate,')).toBe(true);
     const [header, row] = csv.slice(1).trimEnd().split('\r\n');
     expect(header).toBe(
-      'date,store,product,status,amount,asset,network,asset_id,order_id,transaction,explorer,delivery',
+      'date,store,product,status,amount,asset,network,asset_id,order_id,transaction,explorer',
     );
     expect(
-      row?.startsWith(`"${new Date(NOW * 1000).toISOString()}","Shop","Course","Delivered"`),
+      row?.startsWith(`"${new Date(NOW * 1000).toISOString()}","Shop","Course","Completed"`),
     ).toBe(true);
     expect(purchasesCsv([])).toBe(`\uFEFF${header}\r\n`);
   });
@@ -296,31 +296,15 @@ describe('the export (D3)', () => {
 
   it('a store’s formula is never run: sanitised, then prefixed, then quoted (H9, H16)', () => {
     const csv = purchasesCsv([
-      purchase(
-        { store: ' =cmd', product: '+cmd' },
-        { delivery: { text: '\n=HYPERLINK("https://evil","x")' } },
-      ),
-      purchase({ store: '@x', product: '-1' }, { delivery: { text: ' =cmd' } }),
-      purchase({ store: '\t=cmd', product: 'say "hi"' }, { delivery: { text: 'plain' } }),
+      purchase({ store: ' =cmd', product: '+cmd' }),
+      purchase({ store: '@x', product: '-1' }),
+      purchase({ store: '\t=cmd', product: 'say "hi"' }),
     ]);
     expect(csv).toContain(`"'=cmd"`);
     expect(csv).toContain(`"'+cmd"`);
-    expect(csv).toContain(`"'\n=HYPERLINK(""https://evil"",""x"")"`);
     expect(csv).toContain(`"'@x"`);
     expect(csv).toContain(`"'-1"`);
-    expect(csv).toContain(`"' =cmd"`);
     expect(csv).toContain(`"say ""hi"""`);
-    expect(csv).toContain(`"plain"`);
-  });
-
-  it('a delivery is kept whole: lines and length, bidi controls replaced (H9, H16)', () => {
-    const long = `line one\n${'k'.repeat(300)}\nline three`;
-    const csv = purchasesCsv([
-      purchase({}, { delivery: { text: long } }),
-      purchase({}, { delivery: { text: 'a‮b' } }),
-    ]);
-    expect(csv).toContain(`"${long}"`);
-    expect(csv).toContain('"a b"');
   });
 
   it('names a transaction only when this checkout confirmed the payment', () => {

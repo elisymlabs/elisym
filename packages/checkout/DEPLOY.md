@@ -96,7 +96,13 @@ or use Protection Bypass for Automation and open the preview once with
       preview's `/v1/embed.js` shows the offer. The page receives `ready` and nothing else
       about the product.
 - [ ] A devnet purchase from the test store (`packages/merchant-node`) goes
-      `ready -> ordered -> paying -> paid -> completed` and shows the delivery.
+      `ready -> ordered -> paying -> paid -> completed` and shows Payment complete (Buy again
+      primary). No delivery shows anywhere, in the done step or Your purchases.
+- [ ] After a finished purchase, closing and reopening the modal shows the first step (try the
+      close button, Escape, a click on the backdrop and the checkout's own Done). The page hears
+      `ready` again. An inline checkout keeps its receipt.
+- [ ] The first screen shows the wallets under Pay with, and a click on one opens its prompt (the
+      popup is not blocked). After a price change the wallets close and Choose wallet opens them.
 - [ ] Reloading during `paying` resumes the same order, and no second wallet prompt appears.
 - [ ] With site data blocked for the checkout's origin (the browser's "block all cookies and
       site data" setting, so IndexedDB fails), the checkout shows "This browser blocks

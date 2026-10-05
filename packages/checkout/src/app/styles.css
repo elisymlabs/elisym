@@ -576,20 +576,6 @@ button:disabled {
   text-align: center;
 }
 
-.open .note {
-  margin: 4px 0 0;
-  text-align: center;
-  word-break: break-all;
-}
-
-.delivery {
-  padding: 8px 12px;
-  border-radius: var(--radius-small);
-  background: var(--surface);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 .receipt {
   display: flex;
   flex-direction: column;

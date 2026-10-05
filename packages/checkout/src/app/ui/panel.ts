@@ -43,25 +43,27 @@ export interface Panel {
   dismissed: Problem | undefined;
 }
 
+/** The wallets show at once: a wallet click is the whole payment gesture. */
 export const INITIAL_PANEL: Panel = {
-  walletsOpen: false,
+  walletsOpen: true,
   problem: undefined,
   dismissed: undefined,
 };
 
 /**
  * The panel after `view` arrives. Progress and the old-prompt question keep it
- * (they resume the same payment); any other non-offer view closes the wallet
- * section, so whatever offer comes next starts closed. On an offer, only a new
- * offer-class problem object closes it: a wallet registering (the same object)
- * or the buyer's own payout choice never does.
+ * (they resume the same payment); any other non-offer view opens the wallet
+ * section again, so whatever offer comes next (after Buy again, an ended order)
+ * starts with the wallets. On an offer, only a new offer-class problem object
+ * closes it - the buyer reviews that offer before a wallet can be clicked; a
+ * wallet registering (the same object) or the buyer's own payout choice never does.
  */
 export function advancePanel(panel: Panel, view: View | undefined): Panel {
   if (view === undefined || view.kind === 'working' || view.kind === 'old_prompt') {
     return panel;
   }
   if (view.kind !== 'offer') {
-    return { ...panel, walletsOpen: false };
+    return { ...panel, walletsOpen: true };
   }
   const problem = view.problem;
   const newOfferProblem =

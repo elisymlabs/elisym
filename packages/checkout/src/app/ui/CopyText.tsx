@@ -9,7 +9,7 @@ interface Props {
   /** Said once the clipboard took it. */
   copiedText?: string;
   /** The shown block's class. */
-  textClass?: string;
+  textClass: string;
   /**
    * What is shown instead of `text` (a shortened, linked form). When the
    * clipboard is refused, the exact `text` replaces it visibly and is selected.
@@ -43,7 +43,7 @@ export function CopyText({
   text,
   label = 'Copy',
   copiedText = 'Copied.',
-  textClass = 'delivery',
+  textClass,
   shown,
 }: Props) {
   const box = useRef<HTMLParagraphElement>(null);

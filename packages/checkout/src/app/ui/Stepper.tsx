@@ -3,7 +3,7 @@ interface Props {
   active: number;
 }
 
-const STAGES = ['Order sent', 'Confirm in wallet', 'Payment confirmed', 'Delivered'];
+const STAGES = ['Order sent', 'Confirm in wallet', 'Payment confirmed', 'Complete'];
 
 export function Stepper({ active }: Props) {
   return (

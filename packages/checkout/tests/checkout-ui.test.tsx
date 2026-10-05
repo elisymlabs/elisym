@@ -39,11 +39,6 @@ function currentLabel(ui: { container: HTMLElement }): string | undefined {
   return ui.container.querySelector('.label-option[data-current="true"]')?.textContent ?? undefined;
 }
 
-/** What the copy button's hidden live region says. */
-function said(ui: { container: HTMLElement }): string {
-  return ui.container.querySelector('.visually-hidden[role="status"]')?.textContent ?? '';
-}
-
 /** A `Checkout` in the page, with actions that record what they were asked. */
 function mount(
   view?: View,
@@ -147,9 +142,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The wallets show at once on the first offer (D5). */
 function withWallets(view: View): Ui {
   const ui = mount(view);
-  ui.click('Choose wallet');
   expect(ui.walletsOpen()).toBe(true);
   return ui;
 }
@@ -216,10 +211,8 @@ describe('the panel rule', () => {
     expect(offerClass.sort()).toEqual(OFFER_PROBLEMS.map((problem) => problem.reason).sort());
   });
 
-  it('opens the wallets below the offer, hiding nothing above them', () => {
+  it('shows the wallets at once below the offer, hiding nothing above them (D5, M16)', () => {
     const ui = mount(offerView(cannedOffer({ payouts: ['solana-devnet', 'tempo-devnet'] })));
-    expect(ui.walletsOpen()).toBe(false);
-    ui.click('Choose wallet');
     expect(ui.walletsOpen()).toBe(true);
     expect(ui.container.querySelector('.product-title')?.textContent).toBe('Agents 101');
     expect(ui.container.querySelector('.price')?.textContent).toBe('49 USD');
@@ -240,14 +233,14 @@ describe('the panel rule', () => {
     });
   }
 
-  it('after a declined retry, shows the decline above Choose wallet', () => {
+  it('after a declined retry, shows the decline among the wallets', () => {
     const offer = cannedOffer();
     const ui = mount(waitingView(about, paying, { canRetry: true }));
     ui.draw({ view: offerView(offer, { problem: { reason: 'rejected' } }) });
-    expect(ui.walletsOpen()).toBe(false);
-    expect(ui.alerts()).toHaveLength(1);
-    expect(ui.alerts()[0]).toContain('You declined in the wallet');
-    expect(ui.buttons().some((each) => each.textContent === 'Choose wallet')).toBe(true);
+    expect(ui.walletsOpen()).toBe(true);
+    const section = ui.container.querySelector('[data-step="wallets"]');
+    expect(section?.textContent).toContain('You declined in the wallet');
+    expect(ui.buttons().some((each) => each.textContent === 'Choose wallet')).toBe(false);
   });
 
   for (const problem of WALLET_PROBLEMS) {
@@ -262,9 +255,10 @@ describe('the panel rule', () => {
     });
   }
 
-  it('shows a wallet problem above the button while the wallets are closed', () => {
+  it('shows a wallet problem above the button while a review keeps the wallets closed', () => {
     const offer = cannedOffer({ payouts: ['tempo-devnet'] });
-    const ui = mount(waitingView(about, tempoPaying, { tempo: true, signed: false }));
+    const ui = mount(offerView(offer, { problem: { reason: 'offer_changed' } }));
+    expect(ui.walletsOpen()).toBe(false);
     ui.draw({ view: offerView(offer, { problem: { reason: 'attempt_over' } }) });
     expect(ui.walletsOpen()).toBe(false);
     expect(ui.alerts().join(' ')).toContain('reject it');
@@ -303,12 +297,24 @@ describe('the panel rule', () => {
     expect(ui.text()).not.toContain('switches to Tempo');
   });
 
-  it('starts closed on the offer after a payment ended back on it', () => {
+  it('starts with the wallets on the offer after a payment ended back on it (M18)', () => {
     const offer = cannedOffer();
-    const ui = withWallets(offerView(offer));
+    const ui = mount(offerView(offer, { problem: { reason: 'offer_changed' } }));
+    expect(ui.walletsOpen()).toBe(false);
     ui.draw({ view: waitingView(about, paying, { canRetry: true }) });
     ui.draw({ view: offerView(offer) });
+    expect(ui.walletsOpen()).toBe(true);
+  });
+
+  it('opens the wallets again after Buy again, and a review problem closes them (M17)', () => {
+    const offer = cannedOffer();
+    const ui = mount({ kind: 'delivered', receipt: receipt() });
+    ui.draw({ view: offerView(offer) });
+    expect(ui.walletsOpen()).toBe(true);
+    ui.draw({ view: offerView(offer, { problem: { reason: 'offer_changed' } }) });
     expect(ui.walletsOpen()).toBe(false);
+    ui.click('Choose wallet');
+    expect(ui.walletsOpen()).toBe(true);
   });
 
   it('keeps the wallets open when one registers, and never shows a problem moved on from', () => {
@@ -498,13 +504,13 @@ describe('the payout dropdown', () => {
 describe('the email', () => {
   const input = (ui: Ui) => ui.container.querySelector('input[type="email"]') as HTMLInputElement;
 
-  it('keeps what was typed while the wallets open below', () => {
+  it('keeps what was typed above the wallets', () => {
     const ui = mount(offerView(cannedOffer(), { askEmail: true }));
     act(() => {
       input(ui).value = 'buyer@example.com';
       input(ui).dispatchEvent(new Event('input', { bubbles: true }));
     });
-    ui.click('Choose wallet');
+    expect(ui.walletsOpen()).toBe(true);
     expect(input(ui).value).toBe('buyer@example.com');
     expect(ui.calls.email.at(-1)).toBe('buyer@example.com');
   });
@@ -512,7 +518,6 @@ describe('the email', () => {
   it('is reseeded from the session on every offer', () => {
     const offer = cannedOffer();
     const ui = mount(offerView(offer, { askEmail: true, email: 'a@example.com' }));
-    ui.click('Choose wallet');
     ui.draw({ view: { kind: 'working', step: 'checking', about } });
     ui.draw({
       view: offerView(offer, {
@@ -532,16 +537,12 @@ describe('the email', () => {
     expect(field?.nextElementSibling?.textContent).toContain('That email does not look right');
   });
 
-  it('is not asked while an open order on the same terms continues', () => {
+  it('is always the same field, labelled for the store', () => {
     const offer = cannedOffer();
-    const ui = mount(offerView(offer, { askEmail: true, continuing: 'ordered' }));
-    expect(input(ui)).toBeNull();
-    expect(ui.text()).toContain('Your earlier order is still open; an email, if given, was sent');
-    ui.draw({ view: offerView(offer, { askEmail: true, continuing: 'created' }) });
-    expect(input(ui)).toBeNull();
-    expect(ui.text()).toContain('Your earlier order is being sent; an email, if given, goes');
-    ui.draw({ view: offerView(offer, { askEmail: true, continuing: false }) });
+    const ui = mount(offerView(offer, { askEmail: true }));
     expect(input(ui)).not.toBeNull();
+    expect(ui.text()).toContain('Email for the store (optional)');
+    expect(ui.text()).not.toContain('earlier order');
   });
 
   it('is shown read-only during a payment, only when this session sent it', () => {
@@ -715,7 +716,6 @@ describe('progress', () => {
   it('a cancelled press ending late never unlocks the press that followed it', async () => {
     const offer = cannedOffer();
     const ui = mount(offerView(offer), { cancelDraws: offerView(offer) });
-    ui.click('Choose wallet');
     let endFirst: () => void = () => undefined;
     ui.hold(
       new Promise<void>((resolve) => {
@@ -737,7 +737,6 @@ describe('progress', () => {
   it('after Cancel, focus is on the wallet list it went back to', () => {
     const offer = cannedOffer();
     const ui = mount(offerView(offer), { cancelDraws: offerView(offer) });
-    ui.click('Choose wallet');
     ui.hold(new Promise<void>(() => undefined));
     ui.click('Phantom');
     ui.draw({ view: { kind: 'working', step: 'checking', paying, about, cancellable: true } });
@@ -926,14 +925,15 @@ describe('progress', () => {
 
   it('shows the wait for the store', () => {
     const ui = mount({ kind: 'waiting_store', paying, about, cancelled: false, noAnswer: false });
-    expect(ui.text()).toContain('Paid. Waiting for the store to deliver');
+    expect(ui.text()).toContain('Paid. Waiting for the store to confirm');
     expect(ui.text()).toContain('Stores usually answer within minutes');
-    expect(ui.container.querySelector('[aria-current="step"]')?.textContent).toBe('Delivered');
+    expect(ui.container.querySelector('[aria-current="step"]')?.textContent).toBe('Complete');
   });
 
   it('asks about an old prompt with its two buttons, the payment read-only above', () => {
     const ui = mount({ kind: 'old_prompt', orders: 1, until: 0, about, paying: tempoPaying });
-    expect(ui.alerts().join(' ')).toContain('may still be open in your wallet');
+    expect(ui.alerts().join(' ')).toContain('Your wallet may still show a payment request');
+    expect(ui.alerts().join(' ')).toContain('will not complete that order on its own');
     expect(ui.container.querySelector('.pay-label')?.textContent).toBe('USDC · Tempo devnet');
     expect(ui.has('button.select')).toBe(false);
     expect(ui.button('I understand, continue')).toBeDefined();
@@ -943,7 +943,7 @@ describe('progress', () => {
 
 describe('a sold-out product', () => {
   const SOLD_OUT = 'Sold out. This product is not available right now.';
-  const PAID_LINE = 'An order already paid is still delivered.';
+  const PAID_LINE = 'An order already paid is still completed.';
 
   function soldOutShown(ui: Ui): void {
     expect(ui.text()).toContain(SOLD_OUT);
@@ -985,16 +985,17 @@ describe('a sold-out product', () => {
   it('a followed order of a product stopped since: the problem says so', () => {
     const ui = mount(waitingView(about, paying, { problem: { reason: 'sold_out' } }));
     expect(ui.text()).toContain(
-      'This product is sold out now. Your order is still being followed.',
+      'This product is sold out now. Your earlier order is still being checked.',
     );
   });
 });
 
 describe('a slow start', () => {
-  it('says the checkout is still checking, and how to come back, inline', () => {
+  it('says it is slow, never about an earlier order, and how to come back, inline', () => {
     const ui = mount(undefined);
     ui.draw({ screen: { kind: 'loading', slow: true } });
-    expect(ui.text()).toContain('still checking your earlier order');
+    expect(ui.text()).toContain('This is taking longer than usual.');
+    expect(ui.text()).not.toContain('earlier order');
     expect(ui.text()).toContain('Keep this page open');
     expect(ui.text()).not.toContain('Not available');
   });
@@ -1007,54 +1008,45 @@ describe('a slow start', () => {
 });
 
 describe('the done step', () => {
-  it('opens an https: delivery from a button, naming its host', () => {
-    const ui = mount({
-      kind: 'delivered',
-      text: 'https://shop.example/course',
-      link: 'https://shop.example/course',
-    });
-    const open = ui.container.querySelector('a.button') as HTMLAnchorElement;
-    expect(open.textContent).toBe('Open');
-    expect(open.getAttribute('href')).toBe('https://shop.example/course');
-    expect(open.getAttribute('rel')).toBe('noopener noreferrer');
-    expect(ui.text()).toContain('shop.example');
-    expect(ui.text()).not.toContain('https://shop.example/course');
-    expect(ui.text()).not.toContain('View transaction');
+  it('says Payment complete, Buy again first as the primary button, nothing delivered (M8)', () => {
+    const ui = mount({ kind: 'delivered', receipt: receipt() });
+    expect(ui.container.querySelector('[data-heading]')?.textContent).toBe('Payment complete');
+    const buttons = ui.buttons();
+    expect(buttons[0]?.textContent).toBe('Buy again');
+    expect(buttons[0]?.classList.contains('primary')).toBe(true);
+    expect(ui.has('a.button')).toBe(false);
+    expect(ui.buttons().some((each) => each.textContent === 'Copy')).toBe(false);
+    expect(ui.text()).not.toContain('Delivered');
     ui.click('Buy again');
     expect(ui.calls.startOver).toBe(1);
   });
 
-  it('copies a text delivery', async () => {
-    const writeText = vi.fn(async () => undefined);
-    vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
-    expect(ui.has('a.button')).toBe(false);
-    const before = ui.container.querySelectorAll('.card *').length;
-    await act(async () => ui.button('Copy').click());
-    expect(writeText).toHaveBeenCalledWith('KEY-1234');
-    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
-    // The button says it; the live region announces it; nothing is added to the card.
-    expect(currentLabel(ui)).toBe('✓ Copied');
-    expect(said(ui)).toBe('Copied.');
-    expect(ui.container.querySelectorAll('.card *').length).toBe(before);
-    expect(ui.has('.note[role="status"]')).toBe(false);
+  it('says Payment complete for a sent transaction confirmed on chain (M28)', () => {
+    const ui = mount({
+      kind: 'delivered',
+      receipt: receipt({ paid: undefined, sent: { tx: TX } }),
+    });
+    expect(ui.container.querySelector('[data-heading]')?.textContent).toBe('Payment complete');
   });
 
-  it('selects the text when the clipboard is refused', async () => {
-    const writeText = vi.fn(async () => {
-      throw new Error('denied');
+  it('says Order complete when no payment is known (a hand answer, a reverted payment) (M25)', () => {
+    const ui = mount({ kind: 'delivered', receipt: receipt({ paid: undefined }) });
+    expect(ui.container.querySelector('[data-heading]')?.textContent).toBe('Order complete');
+    expect(ui.text()).not.toContain('Payment complete');
+  });
+
+  it('switches the heading in the same render as the Transaction sent row', () => {
+    const ui = mount({ kind: 'delivered', receipt: receipt({ paid: undefined }) });
+    expect(ui.text()).not.toContain('Transaction sent');
+    ui.draw({
+      view: { kind: 'delivered', receipt: receipt({ paid: undefined, sent: { tx: TX } }) },
     });
-    vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
-    await act(async () => ui.button('Copy').click());
-    expect(window.getSelection()?.toString()).toBe('KEY-1234');
-    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
-    expect(currentLabel(ui)).toMatch(/^Press (Ctrl\+C|⌘C)$/);
-    expect(said(ui)).toContain('Selected');
+    expect(ui.container.querySelector('[data-heading]')?.textContent).toBe('Payment complete');
+    expect(ui.text()).toContain('Transaction sent');
   });
 
   it('keeps naming the store', () => {
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234', store: about.store });
+    const ui = mount({ kind: 'delivered', store: about.store });
     expect(ui.container.querySelector('.store-name')?.textContent).toBe('Demo Shop');
   });
 });
@@ -1087,7 +1079,7 @@ describe('the receipt', () => {
   const SHORT = `${TX.slice(0, 6)}…${TX.slice(-4)}`;
 
   it('says what was paid, when it was seen, the order and the full transaction', () => {
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    const ui = mount({ kind: 'delivered', receipt: receipt() });
     const text = receiptText(ui);
     expect(text).toContain('Store: Demo Shop');
     expect(text).toContain('Product: Agents 101');
@@ -1099,7 +1091,7 @@ describe('the receipt', () => {
   });
 
   it('shows the transaction shortened, as the link itself, with no separate link', () => {
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    const ui = mount({ kind: 'delivered', receipt: receipt() });
     const shown = shownText(ui);
     expect(shown).toContain(`Transaction: ${SHORT} ↗`);
     expect(shown).not.toContain(TX);
@@ -1118,7 +1110,6 @@ describe('the receipt', () => {
   it('links no transaction without an https explorer page: the short id as text', () => {
     const ui = mount({
       kind: 'delivered',
-      text: 'KEY-1234',
       receipt: receipt({ paid: { tx: TX, at: PAID_AT, explorer: 'http://explorer.example/tx' } }),
     });
     expect(ui.container.querySelector('.receipt a')).toBeNull();
@@ -1127,7 +1118,7 @@ describe('the receipt', () => {
   });
 
   it('says what the order number is for, on screen only', () => {
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    const ui = mount({ kind: 'delivered', receipt: receipt() });
     const hint = ui.container.querySelector('.receipt .receipt-hint');
     expect(hint?.textContent).toBe('Give this number to the store if you need help.');
     expect(receiptText(ui)).not.toContain('Give this number');
@@ -1153,7 +1144,7 @@ describe('the receipt', () => {
   it('copies the full receipt, under its own name', async () => {
     const writeText = vi.fn(async () => undefined);
     vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    const ui = mount({ kind: 'delivered', receipt: receipt() });
     await act(async () => ui.button('Copy receipt').click());
     expect(writeText).toHaveBeenCalledWith(receiptText(ui));
     expect(receiptText(ui)).toContain(`Transaction: ${TX}`);
@@ -1174,7 +1165,7 @@ describe('the receipt', () => {
         throw new Error('denied');
       });
       vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
-      const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+      const ui = mount({ kind: 'delivered', receipt: receipt() });
       expect(shownText(ui)).not.toContain(TX);
       await act(async () => ui.button('Copy receipt').click());
       const block = ui.container.querySelector('.receipt-text');
@@ -1188,7 +1179,7 @@ describe('the receipt', () => {
   it('a successful copy never changes what the receipt shows', async () => {
     const writeText = vi.fn(async () => undefined);
     vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
+    const ui = mount({ kind: 'delivered', receipt: receipt() });
     const before = shownText(ui);
     await act(async () => ui.button('Copy receipt').click());
     expect(shownText(ui)).toBe(before);
@@ -1196,7 +1187,7 @@ describe('the receipt', () => {
 
   it('keeps a store-made title on one line, as text', () => {
     const title = 'X\nPaid: 999 USDC\u202e<b>bold</b>';
-    const ui = mount({ kind: 'delivered', text: 'KEY', receipt: receipt({ product: title }) });
+    const ui = mount({ kind: 'delivered', receipt: receipt({ product: title }) });
     const full = receiptText(ui, receipt({ product: title }));
     const lines = full.split('\n');
     expect(lines.filter((line) => line.startsWith('Product:'))).toHaveLength(1);
@@ -1211,8 +1202,8 @@ describe('the receipt', () => {
     const ui = mount({ kind: 'working', step: 'checking', paying, about, cancellable: true });
     ui.button('Cancel').focus();
     expect(document.activeElement?.textContent).toBe('Cancel');
-    ui.draw({ view: { kind: 'delivered', text: 'KEY-1234', receipt: receipt() } });
-    expect(document.activeElement?.textContent).toBe('Delivered');
+    ui.draw({ view: { kind: 'delivered', receipt: receipt() } });
+    expect(document.activeElement?.textContent).toBe('Payment complete');
     expect(document.activeElement?.hasAttribute('data-heading')).toBe(true);
   });
 
@@ -1232,23 +1223,17 @@ describe('the receipt', () => {
     second !== undefined &&
     (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 
-  it('comes last when delivered: the delivery, then Buy again, then the receipt', () => {
-    const ui = mount({
-      kind: 'delivered',
-      text: 'https://shop.example/course',
-      link: 'https://shop.example/course',
-      receipt: receipt(),
-    });
+  it('comes last when complete: the heading, Buy again, Done, then the receipt', () => {
+    const ui = mount({ kind: 'delivered', receipt: receipt() });
+    ui.draw({ onClose: () => undefined });
     const heading = ui.container.querySelector('[data-heading]');
-    const open = ui.container.querySelector('a.button');
     const buyAgain = ui.button('Buy again');
+    const done = ui.button('Done');
     const block = ui.container.querySelector('.receipt');
-    expect(before(heading, open)).toBe(true);
-    expect(before(open, buyAgain)).toBe(true);
-    expect(before(buyAgain, block)).toBe(true);
-    const text = mount({ kind: 'delivered', text: 'KEY-1234', receipt: receipt() });
-    expect(before(text.button('Copy'), text.button('Buy again'))).toBe(true);
-    expect(before(text.button('Buy again'), text.button('Copy receipt'))).toBe(true);
+    expect(before(heading, buyAgain)).toBe(true);
+    expect(before(buyAgain, done)).toBe(true);
+    expect(done.classList.contains('secondary')).toBe(true);
+    expect(before(done, block)).toBe(true);
   });
 
   it('comes last when refunded: the outcome, then Start a new order, then the receipt', () => {
@@ -1264,7 +1249,7 @@ describe('the receipt', () => {
 describe('the done step in a modal', () => {
   it('has Done, which asks the page to close; inline has none', () => {
     const closes: string[] = [];
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
+    const ui = mount({ kind: 'delivered' });
     expect(ui.buttons().some((each) => each.textContent === 'Done')).toBe(false);
     ui.draw({ onClose: () => closes.push('close') });
     ui.click('Done');
@@ -1274,18 +1259,13 @@ describe('the done step in a modal', () => {
 });
 
 describe('the banner', () => {
-  const banner: Banner = {
-    orderId: 'x',
-    state: 'completed',
-    text: 'https://shop.example/a',
-    link: 'https://shop.example/a',
-  };
+  const banner: Banner = { orderId: 'x', state: 'completed' };
   const offer = cannedOffer();
   const views: { name: string; view: View | undefined }[] = [
     { name: 'loading', view: undefined },
     { name: 'the offer', view: offerView(offer) },
     { name: 'progress', view: { kind: 'working', step: 'checking', about } },
-    { name: 'done', view: { kind: 'delivered', text: 'x' } },
+    { name: 'done', view: { kind: 'delivered' } },
     { name: 'refunded', view: { kind: 'refunded' } },
     { name: 'refused', view: { kind: 'refused', reason: 'offer_refused', message: 'no' } },
   ];
@@ -1293,9 +1273,11 @@ describe('the banner', () => {
     it(`shows on ${name}`, () => {
       const ui = mount(view);
       ui.draw({ banner });
-      expect(ui.container.querySelector('.banner a')?.getAttribute('href')).toBe(
-        'https://shop.example/a',
+      expect(ui.container.querySelector('.banner')?.textContent).toBe(
+        'A purchase from earlier is complete.',
       );
+      // Nothing delivered is shown, even from an older node.
+      expect(ui.container.querySelector('.banner a')).toBeNull();
     });
   }
 
@@ -1356,8 +1338,10 @@ describe('store data', () => {
     expect(ui.container.querySelectorAll('img[src="x"]')).toHaveLength(0);
     expect(ui.container.querySelector('.store-name')?.textContent).toBe(hostile);
     expect(ui.container.querySelector('.product-title')?.textContent).toBe(hostile);
-    ui.draw({ view: { kind: 'delivered', text: hostile } });
-    expect(ui.container.querySelector('.delivery')?.textContent).toBe(hostile);
+    ui.draw({
+      view: { kind: 'delivered', receipt: receipt({ product: hostile, store: hostile }) },
+    });
+    expect(ui.container.querySelector('.receipt-text')?.textContent).toContain(hostile);
     expect(ui.container.querySelectorAll('img[src="x"]')).toHaveLength(0);
   });
 
@@ -1377,12 +1361,11 @@ describe('focus', () => {
 
   it('never moves at load', () => {
     const ui = mount(offerView(cannedOffer()));
-    expect(heading(ui)).toBeNull();
     expect(ui.container.contains(document.activeElement)).toBe(false);
   });
 
-  it('moves to the wallet heading on Choose wallet', () => {
-    const ui = mount(offerView(cannedOffer()));
+  it('moves to the wallet heading on Choose wallet after a review', () => {
+    const ui = mount(offerView(cannedOffer(), { problem: { reason: 'offer_changed' } }));
     ui.click('Choose wallet');
     expect(document.activeElement).toBe(heading(ui));
     expect(document.activeElement?.textContent).toBe('Choose a wallet');
@@ -1510,7 +1493,7 @@ describe('the header', () => {
       waitingView({ ...about, product }, paying),
       { kind: 'cancelled', store: about.store, product } as View,
       { kind: 'blocked', store: about.store, product } as View,
-      { kind: 'delivered', text: 'KEY', store: about.store, product } as View,
+      { kind: 'delivered', store: about.store, product } as View,
       { kind: 'refunded', store: about.store, product } as View,
     ]) {
       const ui = mount(view);
@@ -1538,7 +1521,7 @@ describe('the receipt of a transaction this checkout only sent', () => {
   });
 
   it('names it last, says Total (never Paid), as "Transaction sent" linked', () => {
-    const ui = mount({ kind: 'delivered', text: 'KEY', receipt: sent() });
+    const ui = mount({ kind: 'delivered', receipt: sent() });
     const text = fullReceiptText(sent(), 'delivered');
     expect(text).toContain('Total: 1.5 USDC · Solana mainnet');
     expect(text).not.toContain('Paid');
@@ -1555,7 +1538,7 @@ describe('the receipt of a transaction this checkout only sent', () => {
 
 describe('copy buttons', () => {
   it('fit every label in one cell, the inactive ones hidden from view and from the name', () => {
-    const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
+    const ui = mount({ kind: 'delivered', receipt: receipt() });
     const options = [...ui.container.querySelectorAll('.copy-button .label-option')];
     expect(options.map((option) => option.getAttribute('data-current'))).toEqual([
       'true',
@@ -1570,13 +1553,13 @@ describe('copy buttons', () => {
     try {
       const writeText = vi.fn(async () => undefined);
       vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
-      const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
-      await act(async () => ui.button('Copy').click());
+      const ui = mount({ kind: 'delivered', receipt: receipt() });
+      await act(async () => ui.button('Copy receipt').click());
       expect(currentLabel(ui)).toBe('✓ Copied');
       await act(async () => {
         vi.advanceTimersByTime(2000);
       });
-      expect(currentLabel(ui)).toBe('Copy');
+      expect(currentLabel(ui)).toBe('Copy receipt');
     } finally {
       vi.useRealTimers();
     }
@@ -1587,20 +1570,20 @@ describe('copy buttons', () => {
     try {
       const writeText = vi.fn(async () => undefined);
       vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
-      const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
+      const ui = mount({ kind: 'delivered', receipt: receipt() });
       const region = ui.container.querySelector('.visually-hidden[role="status"]') as HTMLElement;
       const texts: string[] = [];
       const observer = new MutationObserver(() => texts.push(region.textContent ?? ''));
       observer.observe(region, { childList: true, characterData: true, subtree: true });
       for (let click = 0; click < 2; click += 1) {
-        await act(async () => ui.button('Copy').click());
+        await act(async () => ui.button('Copy receipt').click());
         await act(async () => {
           vi.advanceTimersByTime(1);
         });
       }
       await act(async () => Promise.resolve());
       observer.disconnect();
-      expect(texts.filter((text) => text === 'Copied.').length).toBe(2);
+      expect(texts.filter((text) => text === 'Receipt copied.').length).toBe(2);
     } finally {
       vi.useRealTimers();
     }
@@ -1629,8 +1612,8 @@ describe('copy buttons', () => {
           throw new Error('denied');
         });
         vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
-        const ui = mount({ kind: 'delivered', text: 'KEY-1234' });
-        await act(async () => ui.button('Copy').click());
+        const ui = mount({ kind: 'delivered', receipt: receipt() });
+        await act(async () => ui.button('Copy receipt').click());
         await act(async () => {
           vi.advanceTimersByTime(1);
         });
@@ -1647,7 +1630,7 @@ describe('copy buttons', () => {
 
 describe('sections that appear', () => {
   it('fade in only outside a step that already does, with no fill that could hide them', () => {
-    const ui = mount(offerView(cannedOffer(), { problem: { reason: 'rpc_error' } }));
+    const ui = mount(offerView(cannedOffer(), { problem: { reason: 'offer_changed' } }));
     const note = ui.container.querySelector('[data-problem-note]');
     expect(note?.classList.contains('reveal')).toBe(true);
     expect(note?.closest('.step')).toBeNull();

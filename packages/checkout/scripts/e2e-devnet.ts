@@ -1,7 +1,7 @@
 /**
  * The checkout core end to end on devnet, against the test merchant
  * (`packages/merchant-node`, `elisym-merchant run`): load the offer, order, pay with
- * a local key standing in for the wallet, watch the payment, hear the delivery.
+ * a local key standing in for the wallet, watch the payment, hear the store complete it.
  *
  *   BUYER_SECRETS=~/.elisym/<agent>/.secrets.json bun scripts/e2e-devnet.ts <naddr>
  *
@@ -130,13 +130,13 @@ async function main(): Promise<void> {
   }
   log(`sent ${paid.signature}; receipt ${paid.record.receiptWrap === undefined ? 'not ' : ''}sent`);
 
-  let delivered: string | undefined;
+  let completed = false;
   const listening = listenForStatus(paid.record, paid.record.inboxRelays, deps, (message) => {
     log(`store status: ${message.status}`);
     void applyStatus(store, paid.record.orderId, message, Math.floor(Date.now() / 1000)).then(
       (record) => {
         if (record?.state === 'completed') {
-          delivered = record.status?.delivery;
+          completed = true;
         }
       },
     );
@@ -153,12 +153,12 @@ async function main(): Promise<void> {
   }
 
   async function watchUntilAnswered(): Promise<void> {
-    while (Date.now() - started < GIVE_UP_MS && delivered === undefined) {
+    while (Date.now() - started < GIVE_UP_MS && !completed) {
       const current = await store.get(orderId);
       if (current === undefined) {
         throw new Error('record lost');
       }
-      // Delivered or refunded: the store has answered.
+      // Completed or refunded: the store has answered.
       if (isTerminal(current)) {
         break;
       }
@@ -179,10 +179,9 @@ async function main(): Promise<void> {
     }
   }
   const final = await store.get(paid.record.orderId);
-  const delivery = final?.state === 'completed' ? final.status?.delivery : delivered;
-  log(`final state ${final?.state}, delivery ${delivery ?? 'none'}`);
-  if (delivery === undefined) {
-    throw new Error(`no delivery (state ${final?.state})`);
+  log(`final state ${final?.state}`);
+  if (final?.state !== 'completed') {
+    throw new Error(`not completed (state ${final?.state})`);
   }
 }
 

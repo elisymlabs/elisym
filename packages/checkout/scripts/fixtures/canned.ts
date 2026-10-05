@@ -127,7 +127,6 @@ export function offerView(offer: ReadyOffer, overrides: Partial<OfferView> = {})
     payouts: offer.payouts,
     payoutIndex,
     wallets: [{ name: 'Phantom' }, { name: 'Solflare' }],
-    continuing: false,
     askEmail: false,
     email: '',
     ...overrides,
@@ -173,7 +172,6 @@ export function waitingView(
 
 /** A dev-only start for the fixture page: what is open, and the hint at once. */
 export interface CannedProps {
-  initialWalletsOpen?: boolean;
   initialListOpen?: boolean;
   hintAfterMs?: number;
   purchases?: PurchasesSource;
@@ -210,9 +208,6 @@ export function cannedPurchases(count: number, now = nowSeconds()): Purchase[] {
         ...(delivered || status === 'refunded' ? { answeredAt: createdAt + 60 } : {}),
         ...(delivered || status === 'refunded' ? {} : { openStatus: status }),
       },
-      ...(delivered
-        ? { delivery: { text: 'https://shop.example/course', link: 'https://shop.example/course' } }
-        : {}),
       assetId:
         'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
       thisProduct: index % 2 === 0,
@@ -258,15 +253,13 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
       props: { initialListOpen: true },
     },
     {
-      name: 'offer: wallets open',
-      view: offerView(many, { askEmail: true }),
-      props: { initialWalletsOpen: true },
+      name: 'offer: a changed price (Choose wallet)',
+      view: offerView(many, { askEmail: true, problem: { reason: 'offer_changed' } }),
     },
     { name: 'offer: Tempo mainnet', view: offerView(tempo, { wallets: [{ name: 'MetaMask' }] }) },
     {
       name: 'offer: Tempo wallets',
       view: offerView(tempo, { wallets: [{ name: 'MetaMask' }] }),
-      props: { initialWalletsOpen: true },
     },
     {
       name: 'offer: a wallet without Tempo',
@@ -274,11 +267,6 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
         wallets: [{ name: 'MetaMask' }],
         problem: { reason: 'tempo_unsupported' },
       }),
-      props: { initialWalletsOpen: true },
-    },
-    {
-      name: 'offer: continuing',
-      view: offerView(solana, { askEmail: true, continuing: 'ordered' }),
     },
     {
       name: 'offer: a problem',
@@ -287,7 +275,6 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
     {
       name: 'no wallet',
       view: offerView(solana, { wallets: [] }),
-      props: { initialWalletsOpen: true },
     },
     {
       name: 'working: waiting for the wallet',
@@ -364,11 +351,9 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
       view: { kind: 'old_prompt', orders: 1, until: now + 900, about, paying: tempoPaying },
     },
     {
-      name: 'delivered: link',
+      name: 'payment complete',
       view: {
         kind: 'delivered',
-        text: 'https://shop.example/course',
-        link: 'https://shop.example/course',
         store: about.store,
         product: about.product,
         receipt: {
@@ -386,10 +371,9 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
       },
     },
     {
-      name: 'delivered: text',
+      name: 'payment complete: Tempo',
       view: {
         kind: 'delivered',
-        text: 'LICENSE-KEY-1234-5678',
         store: about.store,
         product: about.product,
         receipt: {
@@ -418,11 +402,9 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
       },
     },
     {
-      name: 'delivered: the store answered first (transaction sent)',
+      name: 'payment complete: the store answered first (transaction sent)',
       view: {
         kind: 'delivered',
-        text: 'https://shop.example/course',
-        link: 'https://shop.example/course',
         store: about.store,
         product: about.product,
         receipt: {

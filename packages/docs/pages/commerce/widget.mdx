@@ -11,7 +11,7 @@
 ></script>
 ```
 
-The element shows a Buy button. A click opens the checkout in a modal over your page: a centered card on a wide screen, a sheet at the bottom on a phone. The buyer closes it with its close button, Escape, a click on the dimmed backdrop, or the checkout's own Done button once the purchase is delivered. Focus goes back to the button. With `display="inline"` the checkout sits in the page instead, where the element is, with no button.
+The element shows a Buy button. A click opens the checkout in a modal over your page: a centered card on a wide screen, a sheet at the bottom on a phone. The buyer closes it with its close button, Escape, a click on the dimmed backdrop, or the checkout's own Done button once the purchase is complete. Focus goes back to the button. With `display="inline"` the checkout sits in the page instead, where the element is, with no button.
 
 Each product has its own `naddr`: to sell several, put one `<elisym-buy>` per product on the page.
 
@@ -37,9 +37,9 @@ The checkout is one panel inside the frame that grows as the purchase goes on:
 1. The product and its price.
 2. **Pay with**: a dropdown of the coins and networks the store takes, when there are several (a label when there is one).
 3. The email field, when you set `collect-email`.
-4. **Choose wallet**, which opens the wallets the buyer's browser has right below. The payout and the email above stay editable until a payment starts.
+4. The wallets the buyer's browser has, at once under **Pay with**. The payout and the email above stay editable until a payment starts. After a price change, the wallets close and the buyer presses **Choose wallet** to open them again, so the new price is seen before any wallet can be clicked.
 5. Once the buyer picks a wallet, the payment's progress takes the wallets' place, and the payment shows read-only above it.
-6. The delivery or the refund with a receipt: what the order cost, the order number (to give the store if the buyer needs help), and the transaction this checkout sent once the chain says it went through, shown shortened as its explorer link ("Paid" when this checkout confirmed the payment itself; "Copy receipt" copies the full id), or how the order ended. The receipt stays until the buyer leaves. Opening the checkout again later starts a new purchase, and earlier purchases are under **Your purchases**.
+6. **Payment complete** (or **Order complete** when the receipt shows no payment, such as an order the store completed by hand), or the refund, with a receipt: what the order cost, the order number (to give the store if the buyer needs help), and the transaction this checkout sent once the chain says it went through, shown shortened as its explorer link ("Paid" when this checkout confirmed the payment itself; "Copy receipt" copies the full id), or how the order ended. **Buy again** starts a new purchase. Nothing is delivered through the checkout: the store acts on its node's webhook (see [Credit an account](/commerce/credit-an-account)). The receipt stays until the buyer leaves. In a modal, closing it after a finished purchase returns the checkout to its first step, so opening it again starts a new purchase (the page hears `ready`). Earlier purchases are under **Your purchases**.
 
 While the wallet connects, the buyer can cancel and choose another wallet.
 
@@ -58,15 +58,17 @@ document.querySelector('elisym-buy').addEventListener('elisym-status', (event) =
 | State       | Meaning                                                                      |
 | ----------- | ---------------------------------------------------------------------------- |
 | `ready`     | The verified offer is shown.                                                 |
-| `ordered`   | The order reached the store's inbox relays. Nothing is paid yet.            |
+| `ordered`   | The order reached the store's inbox relays. Nothing is paid yet. Posted when it happens in this session; a page loaded over an earlier unpaid order hears `ready`. |
 | `paying`    | A payment was requested from the buyer's wallet. It may still land, or expire. When the buyer declines in the wallet, the order is `ordered` again (a page that already heard `paying` hears `ordered`): nothing was paid, and the same order can be paid again. |
-| `paid`      | The payment is confirmed on chain. Waiting for the store's delivery.        |
-| `completed` | The store delivered, while the checkout was open (or on the next load of an order still in progress). A reload after a finished purchase starts a new one: the page hears `ready`, not `completed` again. |
+| `paid`      | The payment is confirmed on chain. Waiting for the store to confirm.        |
+| `completed` | The store completed the order, while the checkout was open (or on the next load of a paid order still waiting for the store). A reload after a finished purchase starts a new one: the page hears `ready`, not `completed` again. |
 | `refunded`  | The store cancelled the order and refunded it.                               |
 | `ended`     | The buyer left an order that was never paid.                                 |
 | `refused`   | The checkout will not sell here (see below). On a page without `customer-ref`, when the buyer has an earlier order of this product, the checkout still shows it to them inside a frame that keeps the refusal's height (the order scrolls within it), and the page hears `refused` only: a page never learns what a visitor bought. A refusal on a page with `customer-ref` shows no order at all. A page whose network this checkout does not serve hears `refused` whether or not the visitor bought before. |
 
-Use them for analytics, or to show your own "thank you" next to the checkout. Never unlock anything on the strength of an event: it tells you a state, not who paid. Your node is what knows who paid, and the delivery is what the buyer gets.
+Use them for analytics, or to show your own "thank you" next to the checkout. Never unlock or credit anything on an event: it tells you a state, not who paid. Your backend learns from your node's signed `order.paid` webhook ([Credit an account](/commerce/credit-an-account)).
+
+A returning buyer with an earlier unpaid order of the product sees the same checkout as a new visitor, and their order is continued silently when they pay. An email typed then goes with a new order instead.
 
 In modal display the element also fires `elisym-open` when the modal opens and `elisym-close` when it closes (both bubble). `elisym-close` carries the element in `event.detail.element`. If your page removes the element while its modal is open, the element no longer bubbles to your page, so `elisym-close` is also fired once on `document`.
 
@@ -97,15 +99,14 @@ The checkout inside the frame is never styled by your page: only `theme` changes
 
 ## What your page never learns
 
-The frame tells your page state names, its own height and, in a modal, when to close, and nothing else. Your page does not learn the delivery link, the buyer's key, the order id, the wallet address or the email. A script on your page, including a compromised third-party one, cannot read them or act in the buyer's name. The frame accepts nothing from your page but the initial handshake.
+The frame tells your page state names, its own height and, in a modal, when to close, and nothing else. Your page does not learn the buyer's key, the order id, the wallet address or the email. A script on your page, including a compromised third-party one, cannot read them or act in the buyer's name. The frame accepts nothing from your page but the initial handshake.
 
 ## Your purchases
 
-Under every purchase, the checkout offers **Your purchases**: this browser's payments at this store (delivered, refunded, paid and waiting for the store, cancelled by the store with no refund stated, in progress, blocked), each with its receipt, its delivery, and a **Download CSV** export (UTF-8, opens in a spreadsheet). On a page with `customer-ref`, it lists only that account's purchases.
+Under every purchase, the checkout offers **Your purchases**: this browser's payments at this store (completed, refunded, paid and waiting for the store, cancelled by the store with no refund stated, in progress, blocked), each with its receipt, and a **Download CSV** export (UTF-8, opens in a spreadsheet; no delivery). On a page with `customer-ref`, it lists only that account's purchases.
 
 - Your page learns nothing of it: the button is the same with or without purchases, the list keeps one height whatever it holds, and no event is fired.
 - The records live in this browser, for this site only. Browsers keep a framed checkout's storage per site, so another site embedding the same store, or another browser, shows other purchases.
-- The export contains the delivery links, and the checkout says so next to the button. Keep the file private.
 
 ## Trust levels and warnings
 
@@ -148,7 +149,7 @@ The loader itself frames nothing, and logs an error, when the element with `cust
 
 In every case but the first, and those the loader refuses itself, the page receives `refused`.
 
-A product the store has stopped selling shows as **Sold out** instead of the store or domain refusals above: no Pay button, and a note that an order already paid is still delivered. The page receives `refused`, as for any refusal.
+A product the store has stopped selling shows as **Sold out** instead of the store or domain refusals above: no Pay button, and a note that an order already paid is still completed. The page receives `refused`, as for any refusal.
 
 On a page without `customer-ref`, a buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later. On a page with `customer-ref` a refusal is final: it shows no order. That order is still followed and answered by your node, and shown on the next visit the checkout accepts, or under Your purchases.
 
@@ -166,7 +167,7 @@ A Tempo wallet request never expires, so the checkout never retries a Tempo paym
 
 Two cases can only be settled by hand, and the buyer is told to contact the store:
 
-- an old request approved more than three days after the order, or more than 45 minutes after the store changed its price or payout: the money reaches the store, and the node does not deliver on its own;
+- an old request approved more than three days after the order, or more than 45 minutes after the store changed its price or payout: the money reaches the store, and the node does not complete it on its own;
 - a payment the store's node has not answered 30 minutes after it was found (on either rail).
 
 The store answers such an order with its node's `deliver` or `refund` command (see [the quick start](/commerce/quickstart#answering-an-order-by-hand)). The checkout also re-checks, on each visit, Tempo orders that ended in the last three days: a late payment found there shows as a note on whatever is on screen.

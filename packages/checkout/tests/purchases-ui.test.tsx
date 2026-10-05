@@ -181,8 +181,7 @@ describe('the purchases box (T2, T3)', () => {
     }
     const long = cannedPurchases(1, NOW).map((purchase) => ({
       ...purchase,
-      receipt: { ...purchase.receipt, product: 'P'.repeat(400) },
-      delivery: { text: `${'K'.repeat(300)}\n${'L'.repeat(300)}` },
+      receipt: { ...purchase.receipt, product: 'P'.repeat(400), store: 'S'.repeat(300) },
     }));
     const opened = mount(counted(long));
     opened.click('Your purchases');
@@ -214,14 +213,13 @@ describe('the purchases box (T2, T3)', () => {
     }
   });
 
-  it('lists nothing with a note when there is nothing, and the export warning always', async () => {
+  it('lists nothing with a note when there is nothing, and no export warning', async () => {
     const ui = mount(counted([]));
     ui.click('Your purchases');
     await flush();
     expect(ui.container.textContent).toContain('No purchases from this store in this browser yet.');
-    expect(ui.container.textContent).toContain(
-      'The file contains your delivery links. Keep it private.',
-    );
+    expect(ui.container.textContent).not.toContain('Keep it private');
+    expect(ui.container.textContent).not.toContain('delivery');
     expect(ui.button('Download CSV').disabled).toBe(false);
   });
 });
@@ -258,10 +256,9 @@ describe('the detail', () => {
     expect(ui.container.textContent).not.toContain('Transaction sent');
   });
 
-  it('copies the delivery whole, never as a row of the receipt shown (H16)', async () => {
+  it('shows and copies a completed purchase with no delivery anywhere (M9)', async () => {
     const writeText = vi.fn(async (_text: string) => undefined);
     vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
-    const delivery = `line one\n${'k'.repeat(300)}\nline three`;
     const tx = '7'.repeat(88);
     const [base] = cannedPurchases(1, NOW);
     if (base === undefined) {
@@ -270,7 +267,6 @@ describe('the detail', () => {
     const purchase: Purchase = {
       ...base,
       receipt: { ...base.receipt, paid: { tx } },
-      delivery: { text: delivery },
     };
     const ui = mount(counted([purchase]));
     ui.click('Your purchases');
@@ -280,13 +276,16 @@ describe('the detail', () => {
     const rows = [...ui.container.querySelectorAll('.receipt .receipt-line')].map(
       (row) => row.textContent ?? '',
     );
-    expect(rows.some((row) => row.includes('Delivery:'))).toBe(false);
+    expect(rows.some((row) => row.includes('Delivery'))).toBe(false);
+    expect(ui.container.querySelector('.purchase-detail')?.textContent).toContain('Completed');
+    expect(ui.container.querySelector('.purchase-detail')?.textContent).not.toContain('Delivered');
     expect(ui.container.querySelector('.receipt-text')?.lastElementChild?.textContent).toContain(
       tx.slice(0, 6),
     );
     await act(async () => ui.button('Copy receipt').click());
     const copied = String(writeText.mock.calls.at(-1)?.[0] ?? '');
-    expect(copied.endsWith(`\nDelivery: ${delivery}`)).toBe(true);
+    expect(copied).not.toContain('Delivery');
+    expect(copied).toContain(tx);
   });
 
   it('says where an unfinished purchase stands, in the rows and the copy, never "Delivered on" (H11)', async () => {
@@ -308,8 +307,7 @@ describe('the detail', () => {
           ...(status === 'paying' || status === 'blocked' ? {} : { paid: { tx } }),
         },
       };
-      const { delivery: _delivery, ...withoutDelivery } = purchase;
-      const ui = mount(counted([withoutDelivery]));
+      const ui = mount(counted([purchase]));
       ui.click('Your purchases');
       await flush();
       act(() => ui.container.querySelector<HTMLButtonElement>('.purchase-row')?.click());
@@ -349,7 +347,7 @@ describe('the detail', () => {
 });
 
 describe('the detail, as it stands now', () => {
-  it('a paying row delivered since: shown as delivered, with its delivery, no Status line (fix 3)', async () => {
+  it('a paying row completed since: shown as completed, no Status line (fix 3)', async () => {
     const paying = cannedPurchases(4, NOW)[3];
     if (paying === undefined || paying.status !== 'paying') {
       throw new Error('no paying purchase');
@@ -359,7 +357,6 @@ describe('the detail, as it stands now', () => {
       ...paying,
       status: 'delivered',
       receipt: { ...receipt, answeredAt: NOW + 60 },
-      delivery: { text: 'KEY-NOW' },
     };
     const ui = mount(counted([paying], async () => delivered));
     ui.click('Your purchases');
@@ -367,8 +364,7 @@ describe('the detail, as it stands now', () => {
     act(() => ui.container.querySelector<HTMLButtonElement>('.purchase-row')?.click());
     await flush();
     const text = ui.container.querySelector('.purchase-detail')?.textContent ?? '';
-    expect(text).toContain('Delivered');
-    expect(text).toContain('KEY-NOW');
+    expect(text).toContain('Completed');
     expect(text).not.toContain('Status:');
     expect(text).not.toContain("Open this product's checkout");
   });
@@ -395,13 +391,12 @@ describe('focus in Your purchases (fix 1, fix 2)', () => {
     const ui = mount(counted(cannedPurchases(3, NOW)));
     let release: () => void = () => undefined;
     ui.hold(new Promise<void>((resolve) => (release = resolve)));
-    ui.click('Choose wallet');
     ui.click('Solflare');
     ui.click('Your purchases');
     await flush();
     const row = ui.container.querySelector<HTMLButtonElement>('.purchase-row');
     act(() => row?.focus());
-    ui.draw({ kind: 'delivered', text: 'KEY-1234' });
+    ui.draw({ kind: 'delivered' });
     expect(document.activeElement).toBe(row);
     release();
     await flush();
@@ -415,11 +410,11 @@ describe('around the purchase on screen', () => {
     await flush();
     expect(document.activeElement?.textContent).toBe('Your purchases');
     expect(document.activeElement?.tagName).toBe('H2');
-    // A delivery arrives while the history is open: drawn under it.
-    ui.draw({ kind: 'delivered', text: 'KEY-1234' });
-    expect(ui.container.textContent).not.toContain('KEY-1234');
+    // A completion arrives while the history is open: drawn under it.
+    ui.draw({ kind: 'delivered' });
+    expect(ui.container.textContent).not.toContain('Buy again');
     ui.click('Back');
-    expect(ui.container.textContent).toContain('KEY-1234');
+    expect(ui.container.textContent).toContain('Buy again');
     expect(document.activeElement?.textContent?.trim()).toBe('Your purchases');
     expect(document.activeElement?.tagName).toBe('BUTTON');
   });
@@ -428,7 +423,6 @@ describe('around the purchase on screen', () => {
     const ui = mount(counted(cannedPurchases(1, NOW)));
     let release: () => void = () => undefined;
     ui.hold(new Promise<void>((resolve) => (release = resolve)));
-    ui.click('Choose wallet');
     ui.click('Solflare');
     expect(ui.calls.pay).toBe(1);
     ui.click('Your purchases');
@@ -498,5 +492,58 @@ describe('the download (D3)', () => {
     expect(revoke).not.toHaveBeenCalled();
     vi.advanceTimersByTime(REVOKE_DOWNLOAD_AFTER_MS);
     expect(revoke).toHaveBeenCalledWith('blob:purchases');
+  });
+});
+
+describe('the card after a reset on reopen (D4)', () => {
+  it('closes Your purchases and shows the wallets again', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const actions: Actions = {
+      choosePayout: () => undefined,
+      confirmOldPrompt: async () => undefined,
+      cancelOldPrompt: () => undefined,
+      setEmail: () => undefined,
+      pay: async () => undefined,
+      retry: async () => undefined,
+      startOver: async () => undefined,
+      cancel: () => undefined,
+    };
+    const source = counted(cannedPurchases(2, NOW));
+    const draw = (view: View, resetCount: number) =>
+      act(() => {
+        render(
+          <Checkout
+            screen={{ kind: 'loading' }}
+            view={view}
+            actions={actions}
+            purchases={source}
+            resetCount={resetCount}
+          />,
+          container,
+        );
+      });
+    const wallets = () =>
+      [...container.querySelectorAll('button')].some(
+        (each) => each.textContent?.trim().endsWith('Solflare') === true,
+      );
+    const changed = offerView(cannedOffer(), { problem: { reason: 'offer_changed' } });
+    draw(changed, 0);
+    expect(wallets()).toBe(false);
+    act(() =>
+      [...container.querySelectorAll('button')]
+        .find((each) => each.textContent?.trim() === 'Your purchases')
+        ?.click(),
+    );
+    await flush();
+    expect(container.querySelector('.purchase-list, [data-purchases-region]')).not.toBeNull();
+    // The same view drawn again changes nothing; a reset does.
+    draw(OFFER_VIEW, 0);
+    expect(container.textContent).toContain('Back');
+    draw(OFFER_VIEW, 1);
+    await flush();
+    expect(container.querySelector('[data-purchases-region]')).toBeNull();
+    expect(wallets()).toBe(true);
+    expect(container.textContent).not.toContain('Choose wallet');
   });
 });

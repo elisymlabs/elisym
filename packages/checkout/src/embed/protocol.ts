@@ -1,8 +1,8 @@
 /**
  * The messages between the merchant page (`embed.js`) and the checkout iframe.
  * The page learns a state name, the content's height and when to close - never
- * the delivery link, the buyer key or the order id: a scam page framing a real
- * store must not get the buyer's access.
+ * the buyer key, the order id or the email: a scam page framing a real store
+ * must not get the buyer's access.
  *
  * The loaders keep frozen copies of this file (`v1/`, `v2/`, `v3/`): a change here
  * reaches the checkout app only. A change the page must see ships as a new loader.
@@ -20,7 +20,7 @@ export type FrameMessage =
   /** The height the iframe's content needs, in CSS pixels. */
   | { type: 'resize'; height: number }
   | { type: 'status'; state: CheckoutState }
-  /** In a modal only: the buyer is done (Escape, or Done after a delivery). */
+  /** In a modal only: the buyer is done (Escape, or Done after a finished purchase). */
   | { type: 'close' };
 
 /** What the page may learn about the purchase. */

@@ -4,7 +4,7 @@ interface Props {
   view: Extract<View, { kind: 'waiting_store' }>;
 }
 
-/** Paid: the money is with the store, which delivers. Nothing to do but wait, or contact it. */
+/** Paid: the money is with the store, which completes the order. Nothing to do but wait, or contact it. */
 export function WaitingStore({ view }: Props) {
   return (
     <>
@@ -14,7 +14,7 @@ export function WaitingStore({ view }: Props) {
         </p>
       ) : (
         <p class="status" role="status">
-          Paid. Waiting for the store to deliver…
+          Paid. Waiting for the store to confirm…
         </p>
       )}
       {view.noAnswer ? (
