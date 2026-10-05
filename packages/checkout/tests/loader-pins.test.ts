@@ -94,3 +94,36 @@ describe('the frozen loader sources', () => {
     expect(frozenProblems(emptied)).toContain('embed-prod/frozen.sha256 lists nothing');
   });
 });
+
+/** What merchants copy: every snippet that loads a loader. */
+const SNIPPET_FILES = [
+  '../docs/pages/commerce/widget.mdx',
+  '../docs/pages/commerce/quickstart.mdx',
+  '../docs/pages/commerce/credit-an-account.mdx',
+  '../merchant-node/README.md',
+  '../../examples/demo-store/index.html',
+];
+
+describe('the snippets merchants copy', () => {
+  it('pin each loader with its own hash, and new pages load v3', () => {
+    const pins = new Map(
+      ['v1', 'v2', 'v3'].map((version) => [
+        version,
+        readFileSync(join(PACKAGE_DIR, 'src', 'embed', `${version}.sri`), 'utf8').trim(),
+      ]),
+    );
+    for (const file of SNIPPET_FILES) {
+      const text = readFileSync(join(PACKAGE_DIR, file), 'utf8');
+      const snippets = [
+        ...text.matchAll(
+          /src="https:\/\/pay\.elisym\.network\/(v\d+)\/embed\.js"\s+integrity="([^"]+)"/g,
+        ),
+      ];
+      expect(snippets.length, file).toBeGreaterThan(0);
+      for (const [, version, integrity] of snippets) {
+        expect(version, file).toBe('v3');
+        expect(integrity, file).toBe(pins.get(version ?? ''));
+      }
+    }
+  });
+});

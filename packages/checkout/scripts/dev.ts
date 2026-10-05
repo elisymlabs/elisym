@@ -66,10 +66,10 @@ const app = await createServer({
 });
 await app.listen();
 
-/** The demo page: v2 in a modal by default; `?display=inline`, `?loader=v1`, or `?loader=v3` (with `?ref=`). */
+/** The demo page: v3 in a modal by default; `?display=inline`, `?loader=v1`, `?loader=v2`, or `?ref=` (v3). */
 function page(search: URLSearchParams): string {
   const requested = search.get('loader');
-  const loader = requested === 'v1' || requested === 'v3' ? requested : 'v2';
+  const loader = requested === 'v1' || requested === 'v2' ? requested : 'v3';
   const v1 = loader === 'v1';
   const display = v1 ? '' : ` display="${search.get('display') === 'inline' ? 'inline' : 'modal'}"`;
   // Shown on a local page only; still never written into the HTML unchecked.
@@ -83,7 +83,7 @@ function page(search: URLSearchParams): string {
   <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Demo store</title></head>
   <body style="font-family: system-ui; max-width: 480px; margin: 40px auto">
     <h2>Demo store page</h2>
-    <p><a href="/">v2 modal</a> · <a href="/?display=inline">v2 inline</a> · <a href="/?loader=v1">v1</a> · <a href="/?loader=v3&ref=demo_user">v3 with a ref</a></p>
+    <p><a href="/">v3 modal</a> · <a href="/?display=inline">v3 inline</a> · <a href="/?ref=demo_user">v3 with a ref</a> · <a href="/?loader=v2">v2</a> · <a href="/?loader=v1">v1</a></p>
     <elisym-buy product="${naddr}" network="${network}"${display}${customerRef}></elisym-buy>
     <pre id="status"></pre>
     <script src="/${loader}/embed.js"></script>

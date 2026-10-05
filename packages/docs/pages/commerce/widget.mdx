@@ -5,8 +5,8 @@
 ```html
 <elisym-buy product="naddr1..." network="mainnet" theme="dark"></elisym-buy>
 <script
-  src="https://pay.elisym.network/v2/embed.js"
-  integrity="sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ"
+  src="https://pay.elisym.network/v3/embed.js"
+  integrity="sha384-FPsJfAuhwQU0mlPKTKLwCTp1YGK6aFRh0pT+Gl1T3UML2jlIK7EkW8FW5ue2qFJX"
   crossorigin="anonymous"
 ></script>
 ```
@@ -24,8 +24,9 @@ The element shows a Buy button. A click opens the checkout in a modal over your 
 | `theme`         | `auto`, `light` or `dark`      | The checkout's colors. `auto` (the default) follows the buyer's system; the snippets use `dark`.                                          |
 | `display`       | `modal` or `inline`            | `modal` (the default): a Buy button opens the checkout in a modal. `inline`: the checkout sits in the page.                                |
 | `label`         | text                           | The Buy button's text. Without it, or when empty, the button reads "Buy". Changing it never reloads the checkout.                          |
+| `customer-ref`  | your account id                | The account a payment credits, through your node's webhook (see [Credit an account](/commerce/credit-an-account)). Honoured only for a level A store on its own domain, in the top-level page; it turns `strict-origin` on. Empty means "not known yet": the button shows disabled and nothing is framed. |
 
-Changing any other attribute re-frames the checkout when what the checkout receives changes. An open modal stays open, unless the change is to `display="inline"` or removes `product` (or makes it something other than an `naddr1...`), which close it. A purchase that is in progress is not lost: the checkout keeps it in the browser and resumes it.
+Changing any other attribute re-frames the checkout when what the checkout receives changes. A different `customer-ref` is a different account: its orders and its history in the browser are its own, and the checkout never shows or continues another reference's order. An open modal stays open, unless the change is to `display="inline"` or removes `product` (or makes it something other than an `naddr1...`), which close it. A purchase that is in progress is not lost: the checkout keeps it in the browser and resumes it.
 
 ## What the buyer sees
 
@@ -61,11 +62,21 @@ document.querySelector('elisym-buy').addEventListener('elisym-status', (event) =
 | `completed` | The store delivered.                                                         |
 | `refunded`  | The store cancelled the order and refunded it.                               |
 | `ended`     | The buyer left an order that was never paid.                                 |
-| `refused`   | The checkout will not sell here (see below). When the buyer has an earlier order of this product, the checkout still shows it to them inside a frame that keeps the refusal's height (the order scrolls within it), and the page hears `refused` only: a page never learns what a visitor bought. |
+| `refused`   | The checkout will not sell here (see below). On a page without `customer-ref`, when the buyer has an earlier order of this product, the checkout still shows it to them inside a frame that keeps the refusal's height (the order scrolls within it), and the page hears `refused` only: a page never learns what a visitor bought. A refusal on a page with `customer-ref` shows no order at all. |
 
 Use them for analytics, or to show your own "thank you" next to the checkout. Never unlock anything on the strength of an event: it tells you a state, not who paid. Your node is what knows who paid, and the delivery is what the buyer gets.
 
 In modal display the element also fires `elisym-open` when the modal opens and `elisym-close` when it closes (both bubble). `elisym-close` carries the element in `event.detail.element`. If your page removes the element while its modal is open, the element no longer bubbles to your page, so `elisym-close` is also fired once on `document`.
+
+## In React
+
+[`@elisym/react`](https://www.npmjs.com/package/@elisym/react) renders the element and adds the pinned v3 loader once per document (React 18 and 19). Props map to the attributes (`collectEmail` to `collect-email`, `customerRef` to `customer-ref`), and the events to `onOpen`, `onClose`, `onStatus` and `onPaid` (on `completed`, for your UI only):
+
+```tsx
+import { ElisymBuy } from '@elisym/react';
+
+<ElisymBuy product="naddr1..." network="mainnet" theme="dark" onStatus={(state) => console.log(state)} />;
+```
 
 ## Styling
 
@@ -118,9 +129,16 @@ The checkout shows no Pay button when:
 - the network is not served by this checkout yet;
 - the browser blocks storage for the checkout, for example with all site data blocked. The order record is what keeps a buyer from paying twice, so without it nothing is sold.
 
-In every case but the first, the page receives `refused`.
+With `customer-ref`, the checkout also refuses when:
 
-A buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later.
+- the store is not level A, or the page is not on its domain (this holds whatever `strict-origin` says);
+- the page is not the top-level window (the element sits in a frame).
+
+The loader itself frames nothing, and logs an error, when the element with `customer-ref` sits in a frame or the value is not a valid reference.
+
+In every case but the first, and those the loader refuses itself, the page receives `refused`.
+
+On a page without `customer-ref`, a buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later. On a page with `customer-ref` a refusal is final: it shows no order. That order is still followed and answered by your node, and shown on the next visit the checkout accepts.
 
 ## Paying on Tempo
 
@@ -143,6 +161,6 @@ The store answers such an order with its node's `deliver` or `refund` command (s
 
 ## One loader, pinned
 
-The checkout never changes the bytes of a published loader, so the `integrity` hash in the snippet stays valid. A changed loader ships under a new path with its own hash. `https://pay.elisym.network/v1/embed.js`, the first loader, keeps working unchanged: it shows the checkout inline only.
+The checkout never changes the bytes of a published loader, so the `integrity` hash in the snippet stays valid. A changed loader ships under a new path with its own hash. The earlier loaders keep working unchanged: `https://pay.elisym.network/v1/embed.js` shows the checkout inline only, and `v2/embed.js` is v3 without `customer-ref`.
 
-To move a page from v1 to v2, replace the v1 `<script>` with the v2 one. Never load both: whichever loads first defines `<elisym-buy>` for every element on the page, and v2 logs a warning in the console when it finds the element already defined.
+To move a page to v3, replace its `<script>` with the v3 one. Never load two: whichever loads first defines `<elisym-buy>` for every element on the page. v3 logs a warning in the console when it finds the element already defined, and an error when an element on the page carries `customer-ref`, which an older loader ignores.

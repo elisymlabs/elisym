@@ -79,6 +79,7 @@ export default defineConfig({
       items: [
         { text: 'Quickstart', link: '/commerce/quickstart' },
         { text: 'The widget', link: '/commerce/widget' },
+        { text: 'Credit an account', link: '/commerce/credit-an-account' },
       ],
     },
     {

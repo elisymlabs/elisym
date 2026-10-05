@@ -208,3 +208,4 @@ noreferrer
 nosniff
 logomark
 rdns
+SAMEORIGIN
