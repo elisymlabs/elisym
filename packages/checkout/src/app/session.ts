@@ -297,7 +297,7 @@ const MAX_EMAIL_LENGTH = 254;
 /** The email to send with the order, or `undefined` for none or a malformed one. */
 export function usableEmail(value: string): string | undefined {
   const email = value.trim();
-  return email.length <= MAX_EMAIL_LENGTH && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+  return email.length <= MAX_EMAIL_LENGTH && /^[^\s@]{1,64}@[^\s@]+\.[^\s@]+$/.test(email)
     ? email
     : undefined;
 }
@@ -705,7 +705,7 @@ export class CheckoutSession {
     // A new order is certain: a typo never costs a wallet prompt or the open order.
     // (Both rails: `payTempo` starts below.) An order continued on its own terms
     // went with its email already, so no typed value blocks it.
-    const newOrder = this.record === undefined || onOtherTerms(this.record, this.payout);
+    const newOrder = this.record === undefined || onOtherTerms(this.record, this.payout, undefined);
     if (newOrder && this.emailUnusable()) {
       this.showOffer({ reason: 'bad_email' });
       return;
@@ -1054,7 +1054,8 @@ export class CheckoutSession {
    */
   private termsShown(signing: boolean): OrderRecord | undefined {
     const record = this.record;
-    return record !== undefined && (signing || this.retrying || !onOtherTerms(record, this.payout))
+    return record !== undefined &&
+      (signing || this.retrying || !onOtherTerms(record, this.payout, undefined))
       ? record
       : undefined;
   }
@@ -1699,7 +1700,7 @@ export class CheckoutSession {
       this.setRecord(undefined);
       record = undefined;
     }
-    const stale = record !== undefined && onOtherTerms(record, this.payout);
+    const stale = record !== undefined && onOtherTerms(record, this.payout, undefined);
     if (record !== undefined && stale) {
       const ended = await this.endOrder(record);
       if (!ended.ended) {
@@ -2202,7 +2203,7 @@ export class CheckoutSession {
   /** The open order a pay press continues on its own terms, if any (its email went with it). */
   private continuing(): false | 'created' | 'ordered' {
     const record = this.record;
-    if (record === undefined || onOtherTerms(record, this.payout)) {
+    if (record === undefined || onOtherTerms(record, this.payout, undefined)) {
       return false;
     }
     return record.state === 'created' || record.state === 'ordered' ? record.state : false;

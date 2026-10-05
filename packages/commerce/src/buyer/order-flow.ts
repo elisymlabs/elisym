@@ -68,6 +68,8 @@ export interface PlaceOrderInput {
   offer: ReadyOffer;
   payout: PricedPayout;
   email?: string;
+  /** The merchant's id for the account to credit; travels in the order and stays on the record. */
+  customerRef?: string;
   /** Chain time read just before ordering (seconds). */
   chainTime: number;
   /** The device clock at the same moment (seconds). */
@@ -152,6 +154,7 @@ export async function placeOrder(
         currency: offer.offer.product.price.currency,
       },
       ...(input.email === undefined ? {} : { email: input.email }),
+      ...(input.customerRef === undefined ? {} : { customerRef: input.customerRef }),
     },
     input.chainTime,
   );
@@ -171,6 +174,7 @@ export async function placeOrder(
     medium: mediumOf(chain),
     reference: chain.family === 'solana' ? reference.solana : reference.tempo,
     offer: offer.offer,
+    ...(input.customerRef === undefined ? {} : { customerRef: input.customerRef }),
     // Kept before it is sent: a crash in between is resumed by sending the same wrap.
     orderWrap: wrapped.recipientWrap,
     inboxRelays: inbox.relays,

@@ -26,12 +26,13 @@ const DEPS_WITHOUT_RPC = {
 
 describe('a purchase deciding about its records', () => {
   it('knows an order on other terms, or one the store cancelled unpaid', () => {
-    expect(onOtherTerms(record('same'), PAYOUT)).toBe(false);
-    expect(onOtherTerms(record('dearer', { amount: '50000000' }), PAYOUT)).toBe(true);
+    expect(onOtherTerms(record('same'), PAYOUT, undefined)).toBe(false);
+    expect(onOtherTerms(record('dearer', { amount: '50000000' }), PAYOUT, undefined)).toBe(true);
     expect(
       onOtherTerms(
         record('moved', { payout: { caip19: 'solana:x/token:y', address: 'X' } }),
         PAYOUT,
+        undefined,
       ),
     ).toBe(true);
     const cancelled = record('cancelled', {
@@ -39,9 +40,20 @@ describe('a purchase deciding about its records', () => {
       status: { status: 'cancelled' } as never,
     });
     expect(cancelledUnpaid(cancelled)).toBe(true);
-    expect(onOtherTerms(cancelled, PAYOUT)).toBe(true);
+    expect(onOtherTerms(cancelled, PAYOUT, undefined)).toBe(true);
     expect(cancelledUnpaid({ ...cancelled, paidTx: 'Sig' })).toBe(false);
     expect(cancelledUnpaid({ ...cancelled, state: 'paying' })).toBe(false);
+  });
+
+  it('knows an order placed for another account as on other terms', () => {
+    const forA = record('a', { customerRef: 'user-a' });
+    expect(onOtherTerms(forA, PAYOUT, 'user-a')).toBe(false);
+    expect(onOtherTerms(forA, PAYOUT, 'user-b')).toBe(true);
+    expect(onOtherTerms(forA, PAYOUT, undefined)).toBe(true);
+    expect(onOtherTerms(record('none'), PAYOUT, 'user-a')).toBe(true);
+    // A missing and an empty reference are the same account.
+    expect(onOtherTerms(record('none'), PAYOUT, '')).toBe(false);
+    expect(onOtherTerms(record('empty', { customerRef: '' }), PAYOUT, undefined)).toBe(false);
   });
 
   it('knows an order that ended with no payment found', () => {

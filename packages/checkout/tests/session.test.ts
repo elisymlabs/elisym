@@ -1495,6 +1495,8 @@ describe('a purchase', () => {
     const { usableEmail } = await import('../src/app/session');
     expect(usableEmail('not an email')).toBeUndefined();
     expect(usableEmail(`${'a'.repeat(250)}@b.co`)).toBeUndefined();
+    expect(usableEmail(`${'a'.repeat(65)}@b.co`)).toBeUndefined();
+    expect(usableEmail(`${'a'.repeat(64)}@b.co`)).toBe(`${'a'.repeat(64)}@b.co`);
     const run = await setup();
     await run.session.start();
     run.session.setEmail('buyer@example.com');

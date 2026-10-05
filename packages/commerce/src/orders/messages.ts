@@ -25,6 +25,15 @@ const CURRENCY_RE = /^[A-Z]{3}$/;
 const MEDIUM_RE = /^[a-z0-9-]{1,32}$/;
 const TX_RE = /^[A-Za-z0-9]{1,128}$/;
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}$/;
+const CUSTOMER_REF_RE = /^[A-Za-z0-9._:@-]{1,128}$/;
+
+/**
+ * Whether `value` is a customer reference this protocol carries: the merchant's
+ * own opaque id for its logged-in user, 1 to 128 of `A-Za-z0-9._:@-`.
+ */
+export function isCustomerRef(value: unknown): value is string {
+  return typeof value === 'string' && CUSTOMER_REF_RE.test(value);
+}
 /** The shape of a CAIP-19 asset id (`<namespace>:<reference>/<asset namespace>:<asset reference>`). */
 const CAIP19_RE = /^[-a-z0-9]{3,8}:[-_a-zA-Z0-9]{1,32}\/[-a-z0-9]{3,8}:[-.%a-zA-Z0-9]{1,128}$/;
 
@@ -55,6 +64,8 @@ export interface OrderRequest {
   items: OrderItem[];
   total: Money;
   email?: string;
+  /** The merchant's own id for the account to credit. Asserted by the buyer's browser, never an identity proof. */
+  customerRef?: string;
 }
 
 /** Store -> buyer: kind 16, type 2 (quoted mode). `payload` is opaque here: the payer parses it with pay-core. */
@@ -151,6 +162,10 @@ export function buildOrderMessage(
       if (message.email !== undefined) {
         assertMatches(message.email, EMAIL_RE, 'email');
         tags.push(['email', message.email]);
+      }
+      if (message.customerRef !== undefined) {
+        assertMatches(message.customerRef, CUSTOMER_REF_RE, 'customer_ref');
+        tags.push(['customer_ref', message.customerRef]);
       }
       return { kind: KIND_ORDER_MESSAGE, created_at: createdAt, tags, content: '' };
     }
@@ -289,6 +304,11 @@ function readOrderRequest(tags: Tags, orderId: string): OrderRequest | undefined
   if (email !== undefined && EMAIL_RE.test(email)) {
     order.email = email;
   }
+  // An invalid reference drops only the reference, never the order.
+  const customerRef = tagValue(tags, 'customer_ref');
+  if (isCustomerRef(customerRef)) {
+    order.customerRef = customerRef;
+  }
   return order;
 }
 
@@ -302,7 +322,12 @@ function readPaymentRequest(tags: Tags, orderId: string): PaymentRequestMessage 
   for (const tag of tagsNamed(tags, 'payment')) {
     const medium = tag[1];
     const payload = tag[2];
-    if (medium && MEDIUM_RE.test(medium) && payload) {
+    if (
+      medium &&
+      MEDIUM_RE.test(medium) &&
+      payload &&
+      payload.length <= LIMITS.MAX_TAG_VALUE_LENGTH * 4
+    ) {
       options.push({ medium, payload });
     }
   }
