@@ -1,7 +1,7 @@
 import { type Asset, NATIVE_SOL, type Network, formatAssetAmount } from '@elisym/pay-core';
 import type { RefusalReason } from '../controller';
 import { REF_NEEDS_VERIFIED_STORE } from '../ref-scope';
-import type { Paying, Problem, Rail, Receipt, View } from '../session';
+import type { OpenStatus, Paying, Problem, Rail, Receipt, View } from '../session';
 
 export const REFUSALS: Record<RefusalReason, string> = {
   not_framed: 'This checkout only works embedded in a store page.',
@@ -176,6 +176,25 @@ export function receiptField(value: string): string {
     .slice(0, RECEIPT_FIELD_MAX);
 }
 
+/**
+ * A delivery the store sent, made safe as text but kept whole: bidi and
+ * control characters other than a newline are replaced, nothing is trimmed,
+ * collapsed or cut (a cut link or key is broken; parsing already bounds it).
+ */
+export function deliveryField(value: string): string {
+  return Array.from(value, (character) =>
+    character !== '\n' && unsafeCharacter(character) ? ' ' : character,
+  ).join('');
+}
+
+/** An unfinished purchase's `Status:` line in its receipt. */
+export const OPEN_STATUS_LINES: Record<OpenStatus, string> = {
+  waiting_store: 'waiting for the store',
+  paying: 'payment in progress',
+  blocked: 'payment blocked by the recipient',
+  cancelled_paid: 'cancelled by the store (no refund stated)',
+};
+
 /** A transaction id shortened for the screen: its first 6 and last 4 characters. */
 export function shortTx(tx: string): string {
   return tx.length <= 12 ? tx : `${tx.slice(0, 6)}…${tx.slice(-4)}`;
@@ -192,7 +211,7 @@ export function paidLine(paying: Paying): string {
  * verifier found the payment; otherwise the order total, and the transaction
  * this checkout sent once the chain says it went through - last, after the order.
  */
-export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded'): string {
+export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded' | 'open'): string {
   const lines = [
     `Store: ${receiptField(receipt.store)}`,
     `Product: ${receiptField(receipt.product)}`,
@@ -204,12 +223,21 @@ export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded'): s
   }
   if (paid?.at !== undefined) {
     lines.push(`Payment confirmed on: ${new Date(paid.at * 1000).toLocaleString()}`);
-  } else if (receipt.answeredAt !== undefined) {
+  } else if (receipt.answeredAt !== undefined && kind !== 'open') {
     const label = kind === 'refunded' ? 'Refunded on' : 'Delivered on';
     lines.push(`${label}: ${new Date(receipt.answeredAt * 1000).toLocaleString()}`);
   }
   if (kind === 'refunded') {
     lines.push('Refunded by the store');
+  }
+  if (kind === 'open') {
+    // Never a delivery or refund date: this purchase is not finished.
+    if (receipt.orderedAt !== undefined) {
+      lines.push(`Ordered on: ${new Date(receipt.orderedAt * 1000).toLocaleString()}`);
+    }
+    if (receipt.openStatus !== undefined) {
+      lines.push(`Status: ${OPEN_STATUS_LINES[receipt.openStatus]}`);
+    }
   }
   lines.push(`Order: ${receiptField(receipt.orderId)}`);
   if (paid !== undefined) {

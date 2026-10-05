@@ -17,6 +17,8 @@
   --radius: 12px;
   --radius-large: 16px;
   --motion: 160ms ease;
+  /* "Your purchases" keeps this one height whatever it holds: the frame says nothing of it. */
+  --history-height: 320px;
   color-scheme: light dark;
 }
 
@@ -659,10 +661,82 @@ button:disabled {
 }
 
 .footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   padding-top: 8px;
   border-top: 1px solid var(--border);
   font-size: 12px;
   text-align: center;
+}
+
+.link-button {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: underline;
+}
+
+/* Fixed, whatever it holds (loading, none, many, one opened): it scrolls inside. */
+.purchases-region {
+  height: var(--history-height);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  padding: 8px;
+}
+
+.purchase-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.purchase-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  width: 100%;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 400;
+  text-align: left;
+}
+
+.purchase-product {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.purchase-date,
+.purchase-amount,
+.purchase-state {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.purchase-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.purchase-detail > .link-button {
+  align-self: flex-start;
+}
+
+.purchase-status {
+  margin: 0;
+  font-weight: 600;
 }
 
 @media (prefers-reduced-motion: reduce) {

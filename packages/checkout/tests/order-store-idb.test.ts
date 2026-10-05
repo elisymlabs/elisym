@@ -61,3 +61,15 @@ describe('a write that does not commit', () => {
     expect(stored?.marker).toBeUndefined();
   });
 });
+
+describe('reading every record (Your purchases)', () => {
+  it('returns the records of every product, and writes nothing', async () => {
+    const backend = new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory()));
+    const store = new OrderStore(backend);
+    await store.add(record('one'));
+    await store.add({ ...record('two'), productAddress: '30402:other:product' });
+    const all = await backend.all();
+    expect(all.map((each) => each.orderId).sort()).toEqual(['one', 'two']);
+    expect((await store.get('one'))?.version).toBe(1);
+  });
+});

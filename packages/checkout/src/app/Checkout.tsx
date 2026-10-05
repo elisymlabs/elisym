@@ -18,6 +18,7 @@ import { INITIAL_PANEL, advancePanel, openWallets, shownProblem } from './ui/pan
 import { PayingLine } from './ui/PayingLine';
 import { ProductBlock } from './ui/ProductBlock';
 import { ProgressStep } from './ui/ProgressStep';
+import { type PurchasesSource, PurchasesStep } from './ui/PurchasesStep';
 import { ReceiptBlock } from './ui/ReceiptBlock';
 import { SoldOutStep } from './ui/SoldOutStep';
 import { REFUSALS, payoutLabel, slowLoading } from './ui/text';
@@ -53,6 +54,10 @@ interface Props {
   initialListOpen?: boolean;
   /** How long an unanswered action waits before its hint (the fixture page shows it at once). */
   hintAfterMs?: number;
+  /** "Your purchases", offered on every session view (the same with or without any). */
+  purchases?: PurchasesSource;
+  /** Dev only (the fixture page): "Your purchases" starts open. */
+  initialPurchasesOpen?: boolean;
 }
 
 /** The network a view is about, when it says. */
@@ -127,7 +132,11 @@ export function Checkout({
   initialWalletsOpen = false,
   initialListOpen = false,
   hintAfterMs = HINT_AFTER_MS,
+  purchases,
+  initialPurchasesOpen = false,
 }: Props) {
+  /** "Your purchases" is open over the session, which keeps running underneath. */
+  const [historyOpen, setHistoryOpen] = useState(initialPurchasesOpen);
   const panel = useRef(
     initialWalletsOpen ? { ...INITIAL_PANEL, walletsOpen: true } : INITIAL_PANEL,
   );
@@ -139,7 +148,7 @@ export function Checkout({
   /** A buyer's action is running: the first view it produces takes focus. */
   const armed = useRef(false);
   /** After this render: focus the new section heading, or fall back (`focusFallback`). */
-  const focusNext = useRef<'wallets' | 'fallback' | undefined>(undefined);
+  const focusNext = useRef<'wallets' | 'fallback' | 'purchases' | undefined>(undefined);
   /** The element that had focus when a new view arrived: if the view removed it, focus falls back. */
   const focusedBefore = useRef<HTMLElement | null>(null);
   /** A wallet was pressed: the payout and the wallets wait for the next view (or the press to end). */
@@ -165,7 +174,10 @@ export function Checkout({
     }
     if (armed.current && view !== undefined) {
       armed.current = false;
-      focusNext.current = 'fallback';
+      // Under "Your purchases" the new view is not on screen: focus stays where the buyer is.
+      if (!historyOpen) {
+        focusNext.current = 'fallback';
+      }
     }
   }
 
@@ -174,7 +186,13 @@ export function Checkout({
     const before = focusedBefore.current;
     focusNext.current = undefined;
     focusedBefore.current = null;
-    if (next === 'wallets') {
+    if (next === 'purchases') {
+      if (document.hasFocus()) {
+        card.current
+          ?.querySelector<HTMLElement>('[data-purchases-button]')
+          ?.focus({ preventScroll: true });
+      }
+    } else if (next === 'wallets') {
       // Never pulls focus back once the buyer is elsewhere.
       if (document.hasFocus()) {
         card.current?.querySelector<HTMLElement>('[data-heading]')?.focus({ preventScroll: true });
@@ -215,8 +233,27 @@ export function Checkout({
       actions.cancel();
     });
 
+  const openPurchases = () => {
+    if (!historyOpen) {
+      focusNext.current = 'wallets';
+      setHistoryOpen(true);
+    }
+  };
+  const closePurchases = () => {
+    focusNext.current = 'purchases';
+    setHistoryOpen(false);
+  };
+
   let body: ComponentChildren;
-  if (view === undefined) {
+  if (view !== undefined && purchases !== undefined && historyOpen) {
+    body = (
+      <PurchasesStep
+        source={purchases}
+        {...(store.current?.name === undefined ? {} : { storeName: store.current.name })}
+        onBack={closePurchases}
+      />
+    );
+  } else if (view === undefined) {
     if (screen.kind === 'refused' && screen.reason === 'sold_out') {
       body = <SoldOutStep />;
     } else if (screen.kind === 'refused') {
@@ -371,7 +408,9 @@ export function Checkout({
           testNetwork={network.current !== undefined && network.current !== 'mainnet'}
         />
         {body}
-        <Footer />
+        <Footer
+          {...(view === undefined || purchases === undefined ? {} : { onPurchases: openPurchases })}
+        />
       </section>
     </>
   );

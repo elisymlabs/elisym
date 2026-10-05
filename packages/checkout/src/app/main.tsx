@@ -16,6 +16,7 @@ import { createHeightAnimator } from './height';
 import { armFirstFocus, closeOnEscape } from './modal-frame';
 import { holdFrame, startPage } from './page';
 import { type Banner, CheckoutSession, type View } from './session';
+import type { PurchasesSource } from './ui/PurchasesStep';
 import { discoverWallets, payingWallets, solanaChain } from './wallets';
 
 const root = document.getElementById('app');
@@ -30,6 +31,8 @@ const readClient = createRelayClient();
 let screen: Screen = { kind: 'waiting' };
 let view: View | undefined;
 let banner: Banner | undefined;
+/** The opened order database's backend: "Your purchases" reads every record through it. */
+let backend: IndexedDbOrderBackend | undefined;
 
 // The session's own promises reach the UI: a step change caused by the buyer
 // takes focus only until the action that caused it settles.
@@ -42,6 +45,17 @@ const actions: Actions = {
   confirmOldPrompt: async () => session?.confirmOldPrompt(),
   cancelOldPrompt: () => session?.cancelOldPrompt(),
   cancel: () => session?.cancel(),
+};
+
+/** "Your purchases": read from the running session only (none before it starts). */
+const purchases: PurchasesSource = {
+  purchases: async () => {
+    if (session === undefined) {
+      throw new Error('no session');
+    }
+    return session.purchases();
+  },
+  purchase: async (orderId) => session?.purchase(orderId),
 };
 
 /** Shown in the page's modal dialog: the frame can ask to close it. */
@@ -61,6 +75,7 @@ function draw(): void {
         view={view}
         banner={banner}
         actions={actions}
+        purchases={purchases}
         {...(closeModal === undefined ? {} : { onClose: closeModal })}
       />,
       root,
@@ -126,7 +141,8 @@ function tempoFor(network: Network): Eip1193Client | undefined {
 
 async function openStore(): Promise<OrderStore | undefined> {
   try {
-    return new OrderStore(new IndexedDbOrderBackend(await openOrderDatabase()));
+    backend = new IndexedDbOrderBackend(await openOrderDatabase());
+    return new OrderStore(backend);
   } catch {
     return undefined;
   }
@@ -177,6 +193,13 @@ async function start(pageOrigin: string): Promise<void> {
           draw();
         },
         onStatus,
+        readAll: async () => {
+          if (backend === undefined) {
+            // Never an empty history: a read that cannot happen says so.
+            throw new Error('the order database is not open');
+          }
+          return backend.all();
+        },
         collectEmail: params.collectEmail,
         ...(params.customerRef === undefined ? {} : { customerRef: params.customerRef }),
         ...(followOnly === undefined ? {} : { followOnly }),

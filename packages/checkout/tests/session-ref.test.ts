@@ -282,10 +282,11 @@ describe('a page with a customer reference', () => {
     sawNothingOf(shown, theirs);
     await shown.session.pay('Fake');
     expect((await only(world, 'user_b')).orderId).not.toBe(theirs.orderId);
-    // Their own page still shows their delivery.
+    // Their own page starts a new purchase; their delivery is in its Your purchases.
     const own = page(world, 'user_a');
     await own.session.start();
-    expect(own.last()).toMatchObject({ kind: 'delivered' });
+    expect(own.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(own.statuses).toEqual(['ready']);
   });
 
   it('never continues another account’s open order: a press places its own', async () => {

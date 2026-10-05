@@ -39,7 +39,7 @@ The checkout is one panel inside the frame that grows as the purchase goes on:
 3. The email field, when you set `collect-email`.
 4. **Choose wallet**, which opens the wallets the buyer's browser has right below. The payout and the email above stay editable until a payment starts.
 5. Once the buyer picks a wallet, the payment's progress takes the wallets' place, and the payment shows read-only above it.
-6. The delivery or the refund with a receipt: what the order cost, the order number (to give the store if the buyer needs help), and the transaction this checkout sent once the chain says it went through, shown shortened as its explorer link ("Paid" when this checkout confirmed the payment itself; "Copy receipt" copies the full id), or how the order ended.
+6. The delivery or the refund with a receipt: what the order cost, the order number (to give the store if the buyer needs help), and the transaction this checkout sent once the chain says it went through, shown shortened as its explorer link ("Paid" when this checkout confirmed the payment itself; "Copy receipt" copies the full id), or how the order ended. The receipt stays until the buyer leaves. Opening the checkout again later starts a new purchase, and earlier purchases are under **Your purchases**.
 
 While the wallet connects, the buyer can cancel and choose another wallet.
 
@@ -61,10 +61,10 @@ document.querySelector('elisym-buy').addEventListener('elisym-status', (event) =
 | `ordered`   | The order reached the store's inbox relays. Nothing is paid yet.            |
 | `paying`    | A payment was requested from the buyer's wallet. It may still land, or expire. When the buyer declines in the wallet, the order is `ordered` again (a page that already heard `paying` hears `ordered`): nothing was paid, and the same order can be paid again. |
 | `paid`      | The payment is confirmed on chain. Waiting for the store's delivery.        |
-| `completed` | The store delivered.                                                         |
+| `completed` | The store delivered, while the checkout was open (or on the next load of an order still in progress). A reload after a finished purchase starts a new one: the page hears `ready`, not `completed` again. |
 | `refunded`  | The store cancelled the order and refunded it.                               |
 | `ended`     | The buyer left an order that was never paid.                                 |
-| `refused`   | The checkout will not sell here (see below). On a page without `customer-ref`, when the buyer has an earlier order of this product, the checkout still shows it to them inside a frame that keeps the refusal's height (the order scrolls within it), and the page hears `refused` only: a page never learns what a visitor bought. A refusal on a page with `customer-ref` shows no order at all. |
+| `refused`   | The checkout will not sell here (see below). On a page without `customer-ref`, when the buyer has an earlier order of this product, the checkout still shows it to them inside a frame that keeps the refusal's height (the order scrolls within it), and the page hears `refused` only: a page never learns what a visitor bought. A refusal on a page with `customer-ref` shows no order at all. A page whose network this checkout does not serve hears `refused` whether or not the visitor bought before. |
 
 Use them for analytics, or to show your own "thank you" next to the checkout. Never unlock anything on the strength of an event: it tells you a state, not who paid. Your node is what knows who paid, and the delivery is what the buyer gets.
 
@@ -98,6 +98,14 @@ The checkout inside the frame is never styled by your page: only `theme` changes
 ## What your page never learns
 
 The frame tells your page state names, its own height and, in a modal, when to close, and nothing else. Your page does not learn the delivery link, the buyer's key, the order id, the wallet address or the email. A script on your page, including a compromised third-party one, cannot read them or act in the buyer's name. The frame accepts nothing from your page but the initial handshake.
+
+## Your purchases
+
+Under every purchase, the checkout offers **Your purchases**: this browser's payments at this store (delivered, refunded, paid and waiting for the store, cancelled by the store with no refund stated, in progress, blocked), each with its receipt, its delivery, and a **Download CSV** export (UTF-8, opens in a spreadsheet). On a page with `customer-ref`, it lists only that account's purchases.
+
+- Your page learns nothing of it: the button is the same with or without purchases, the list keeps one height whatever it holds, and no event is fired.
+- The records live in this browser, for this site only. Browsers keep a framed checkout's storage per site, so another site embedding the same store, or another browser, shows other purchases.
+- The export contains the delivery links, and the checkout says so next to the button. Keep the file private.
 
 ## Trust levels and warnings
 
@@ -142,7 +150,7 @@ In every case but the first, and those the loader refuses itself, the page recei
 
 A product the store has stopped selling shows as **Sold out** instead of the store or domain refusals above: no Pay button, and a note that an order already paid is still delivered. The page receives `refused`, as for any refusal.
 
-On a page without `customer-ref`, a buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later. On a page with `customer-ref` a refusal is final: it shows no order. That order is still followed and answered by your node, and shown on the next visit the checkout accepts.
+On a page without `customer-ref`, a buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later. On a page with `customer-ref` a refusal is final: it shows no order. That order is still followed and answered by your node, and shown on the next visit the checkout accepts, or under Your purchases.
 
 ## Paying on Tempo
 
