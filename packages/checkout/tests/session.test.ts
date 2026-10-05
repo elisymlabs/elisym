@@ -1192,7 +1192,7 @@ describe('a purchase', () => {
     run.session.dispose();
     // Later the store withdraws the product: the offer is refused on load.
     const { followOnlyOffer } = await import('../src/app/controller');
-    const snapshot = await followOnlyOffer(run.shop.naddr, store);
+    const snapshot = await followOnlyOffer(run.shop.naddr, store, undefined);
     if (snapshot === undefined) {
       throw new Error('nothing to follow');
     }
@@ -1225,7 +1225,7 @@ describe('a purchase', () => {
     await run.session.startOver();
     run.session.dispose();
     const { followOnlyOffer } = await import('../src/app/controller');
-    const snapshot = await followOnlyOffer(run.shop.naddr, store);
+    const snapshot = await followOnlyOffer(run.shop.naddr, store, undefined);
     if (snapshot === undefined) {
       throw new Error('nothing to follow');
     }
@@ -1310,7 +1310,7 @@ describe('a purchase', () => {
     );
     expect(newer).toMatchObject({ ok: true, record: { state: 'ordered' } });
     const { followOnlyOffer } = await import('../src/app/controller');
-    const snapshot = await followOnlyOffer(run.shop.naddr, store);
+    const snapshot = await followOnlyOffer(run.shop.naddr, store, undefined);
     expect(snapshot?.orderId).toBe(paying.orderId);
     run.chain.dropSends = false;
     const follow = new CheckoutSession(snapshot?.offer as Ready, {

@@ -23,7 +23,7 @@ const PACKAGE_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST = join(PACKAGE_DIR, 'dist');
 const EMBED_BUDGET = 5 * 1024;
 const FIRST_SCREEN_BUDGET = 250 * 1024;
-const LOADERS = ['v1', 'v2'] as const;
+const LOADERS = ['v1', 'v2', 'v3'] as const;
 
 const problems: string[] = [];
 

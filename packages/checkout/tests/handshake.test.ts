@@ -119,3 +119,22 @@ describe('the handshake', () => {
     expect(frame.posted).toEqual([]);
   });
 });
+
+describe('repeated hellos', () => {
+  it('are acknowledged until the frame tells a state, then never again', () => {
+    const frame = run();
+    frame.send({ type: 'hello' }, PAGE);
+    frame.send({ type: 'hello' }, PAGE);
+    expect(
+      frame.posted.filter((each) => (each.message as { type: string }).type === 'ack'),
+    ).toHaveLength(2);
+    frame.handshake.status('refused');
+    frame.send({ type: 'hello' }, PAGE);
+    frame.send({ type: 'hello' }, PAGE);
+    expect(frame.posted.map((each) => (each.message as { type: string }).type)).toEqual([
+      'ack',
+      'ack',
+      'status',
+    ]);
+  });
+});

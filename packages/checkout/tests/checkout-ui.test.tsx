@@ -176,6 +176,7 @@ const OFFER_PROBLEMS: Problem[] = [
   { reason: 'offer_changed' },
   { reason: 'bad_email' },
   { reason: 'offer_refused' },
+  { reason: 'other_purchase' },
   { reason: 'too_late' },
 ];
 

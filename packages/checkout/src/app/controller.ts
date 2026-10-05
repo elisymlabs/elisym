@@ -6,6 +6,7 @@ import type { RelayClient } from '@elisym/commerce/buyer';
 import type { Network } from '@elisym/pay-core';
 import type { CheckoutParams } from '../embed/protocol';
 import type { HandshakeRefusal } from './handshake';
+import { ordersForRef } from './ref-scope';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 
@@ -47,7 +48,40 @@ export type RefusalReason =
   /** `verifyOffer` or the widget's own policy refused the offer. */
   | 'offer_refused'
   /** Something failed unexpectedly (storage, the network): nothing is offered. */
-  | 'failed';
+  | 'failed'
+  /** The page passed a customer reference that is not a valid one. */
+  | 'bad_customer_ref'
+  /**
+   * The page passed a customer reference, but the store is not level A on this
+   * page's own domain, or the page is not the top window.
+   */
+  | 'ref_needs_verified_store';
+
+/** The part of `window` the reference check reads. */
+export interface FramedWindow {
+  parent: unknown;
+  top: unknown;
+}
+
+/**
+ * Why a page's customer reference refuses it before anything is loaded:
+ * `undefined` when the page has none, or when it may be honoured once the store
+ * proves level A on the page's domain. A reference binds the widget to the
+ * store's own page, so that page must be the top window (a scam page framing it
+ * would otherwise lend it its address bar).
+ */
+export function refRefusal(
+  params: CheckoutParams,
+  frame: FramedWindow,
+): 'bad_customer_ref' | 'ref_needs_verified_store' | undefined {
+  if (params.badCustomerRef === true) {
+    return 'bad_customer_ref';
+  }
+  if (params.customerRef !== undefined && frame.parent !== frame.top) {
+    return 'ref_needs_verified_store';
+  }
+  return undefined;
+}
 
 export interface LoadDeps {
   client: RelayClient;
@@ -77,7 +111,8 @@ export async function loadWithPins(
     pageOrigin,
     families: PAYABLE_FAMILIES,
     ...(params.network === undefined ? {} : { network: params.network as Network }),
-    ...(params.strictOrigin ? { strictOrigin: true } : {}),
+    // A reference credits an account: only the store's own verified page may pass one.
+    ...(params.strictOrigin || params.customerRef !== undefined ? { strictOrigin: true } : {}),
     ...(deps.skipUnreachable === true ? { skipUnreachable: true } : {}),
     ...(pins === undefined
       ? {}
@@ -108,10 +143,68 @@ export async function screenForPage(
     store: deps.store,
     skipUnreachable: true,
   });
+  if (params.customerRef !== undefined) {
+    // Strict origin refuses any store that is not level A on this page's domain.
+    if (
+      (!loaded.ok && loaded.refusal === 'origin_mismatch') ||
+      (loaded.ok && loaded.offer.level !== 'A')
+    ) {
+      return { kind: 'refused', reason: 'ref_needs_verified_store' };
+    }
+  }
   if (!loaded.ok) {
     return { kind: 'refused', reason: 'offer_refused', message: loaded.message };
   }
   return { kind: 'offer', offer: loaded };
+}
+
+/** What a page opens on: the offer to sell (maybe follow-only), or a refusal. */
+export type PageStart =
+  | { kind: 'refused'; screen: Extract<Screen, { kind: 'refused' }> }
+  | {
+      kind: 'offer';
+      offer: ReadyOffer;
+      followOnly?: { message: string; orderId: string };
+      /** Follow-only: the refusal the page is shown (and told) all the same. */
+      refusal?: Extract<Screen, { kind: 'refused' }>;
+    };
+
+/**
+ * The offer for the page, or why not. Refused, a page without a reference
+ * still follows an order of this product it has (never paying again); a page
+ * with one only shows the refusal: its refusals are terminal, so a hostile page
+ * never learns of the visitor's orders by failing the checks on purpose.
+ */
+export async function openPage(
+  params: CheckoutParams,
+  pageOrigin: string,
+  deps: LoadDeps,
+): Promise<PageStart> {
+  const screen = await screenForPage(params, pageOrigin, deps);
+  if (screen.kind === 'offer') {
+    return { kind: 'offer', offer: screen.offer };
+  }
+  const refused: Extract<Screen, { kind: 'refused' }> =
+    screen.kind === 'refused' ? screen : { kind: 'refused', reason: 'failed' };
+  if (deps.store === undefined || params.customerRef !== undefined) {
+    return { kind: 'refused', screen: refused };
+  }
+  // A record that cannot be read must not show as a different screen than none.
+  const followed = await followOnlyOffer(params.naddr, deps.store, undefined).catch(
+    () => undefined,
+  );
+  if (followed === undefined) {
+    return { kind: 'refused', screen: refused };
+  }
+  return {
+    kind: 'offer',
+    offer: followed.offer,
+    followOnly: {
+      message: refused.message ?? 'This product cannot be bought here.',
+      orderId: followed.orderId,
+    },
+    refusal: refused,
+  };
 }
 
 /**
@@ -123,13 +216,14 @@ export async function screenForPage(
 export async function followOnlyOffer(
   naddr: string,
   store: OrderStore,
+  customerRef: string | undefined,
 ): Promise<{ offer: ReadyOffer; orderId: string } | undefined> {
   const pointer = decodeProductNaddr(naddr);
   if (pointer === undefined) {
     return undefined;
   }
   const address = productAddress(pointer);
-  const records = await store.forProduct(address);
+  const records = await ordersForRef(store, address, customerRef);
   const followed = records.filter(
     (record) => record.state !== 'created' && record.state !== 'ordered',
   );

@@ -48,7 +48,11 @@ const DEV_DIR = fileURLToPath(new URL('../.dev', import.meta.url));
 
 // The loaders, built for the local checkout origin (never the pinned files).
 process.env.CHECKOUT_ORIGIN = APP_ORIGIN;
-for (const [index, config] of ['vite.embed.config.ts', 'vite.embed-v2.config.ts'].entries()) {
+for (const [index, config] of [
+  'vite.embed.config.ts',
+  'vite.embed-v2.config.ts',
+  'vite.embed-v3.config.ts',
+].entries()) {
   await build({
     configFile: fileURLToPath(new URL(`../${config}`, import.meta.url)),
     build: { outDir: DEV_DIR, emptyOutDir: index === 0 },
@@ -62,19 +66,27 @@ const app = await createServer({
 });
 await app.listen();
 
-/** The demo page: v2 in a modal by default; `?display=inline`, or `?loader=v1`. */
+/** The demo page: v2 in a modal by default; `?display=inline`, `?loader=v1`, or `?loader=v3` (with `?ref=`). */
 function page(search: URLSearchParams): string {
-  const v1 = search.get('loader') === 'v1';
+  const requested = search.get('loader');
+  const loader = requested === 'v1' || requested === 'v3' ? requested : 'v2';
+  const v1 = loader === 'v1';
   const display = v1 ? '' : ` display="${search.get('display') === 'inline' ? 'inline' : 'modal'}"`;
+  // Shown on a local page only; still never written into the HTML unchecked.
+  const ref = search.get('ref');
+  const customerRef =
+    loader === 'v3' && ref !== null && /^[A-Za-z0-9._:@-]{0,128}$/.test(ref)
+      ? ` customer-ref="${ref}"`
+      : '';
   return `<!doctype html>
 <html lang="en">
   <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Demo store</title></head>
   <body style="font-family: system-ui; max-width: 480px; margin: 40px auto">
     <h2>Demo store page</h2>
-    <p><a href="/">v2 modal</a> · <a href="/?display=inline">v2 inline</a> · <a href="/?loader=v1">v1</a></p>
-    <elisym-buy product="${naddr}" network="${network}"${display}></elisym-buy>
+    <p><a href="/">v2 modal</a> · <a href="/?display=inline">v2 inline</a> · <a href="/?loader=v1">v1</a> · <a href="/?loader=v3&ref=demo_user">v3 with a ref</a></p>
+    <elisym-buy product="${naddr}" network="${network}"${display}${customerRef}></elisym-buy>
     <pre id="status"></pre>
-    <script src="/${v1 ? 'v1' : 'v2'}/embed.js"></script>
+    <script src="/${loader}/embed.js"></script>
     <script>
       for (const type of ['elisym-status', 'elisym-open', 'elisym-close']) {
         document.addEventListener(type, (event) => {
@@ -89,7 +101,7 @@ function page(search: URLSearchParams): string {
 
 createHttpServer((request, response) => {
   const url = new URL(request.url ?? '/', `http://localhost:${PAGE_PORT}`);
-  if (url.pathname === '/v1/embed.js' || url.pathname === '/v2/embed.js') {
+  if (['/v1/embed.js', '/v2/embed.js', '/v3/embed.js'].includes(url.pathname)) {
     response.writeHead(200, { 'content-type': 'text/javascript' });
     response.end(readFileSync(`${DEV_DIR}${url.pathname}`));
     return;

@@ -23,6 +23,7 @@
     "packages/docs/cache/**",
     "packages/checkout/src/embed/v1/**",
     "packages/checkout/src/embed/v2/**",
+    "packages/checkout/src/embed/v3/**",
     "packages/checkout/embed-prod/**"
   ],
   "language": "en",

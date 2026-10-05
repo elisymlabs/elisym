@@ -2,17 +2,18 @@
 
 The checkout is two things served from one origin, `https://pay.elisym.network`:
 
-- `/v1/embed.js` and `/v2/embed.js` - the loaders merchants include, each pinned by an SRI
-  hash (`src/embed/v1.sri`, `src/embed/v2.sri`). v1 frames the checkout in place; v2 shows it
-  in a modal behind a button by default (`display="inline"` frames it in place). Their bytes
-  never change under their path; a changed loader ships as `/v3/embed.js`.
+- `/v1/embed.js`, `/v2/embed.js` and `/v3/embed.js` - the loaders merchants include, each
+  pinned by an SRI hash (`src/embed/v1.sri`, `src/embed/v2.sri`, `src/embed/v3.sri`). v1
+  frames the checkout in place; v2 shows it in a modal behind a button by default
+  (`display="inline"` frames it in place); v3 is v2 plus `customer-ref`, the account a payment
+  credits. Their bytes never change under their path; a changed loader ships as `/v4/embed.js`.
 - `/checkout` - the iframe app the loaders frame.
 
-The production bytes of both loaders are committed (`embed-prod/v1/embed.js`,
-`embed-prod/v2/embed.js`), and a production build copies them as they are, so a toolchain
-update can never change them. Other origins build the loaders from their frozen sources
-(`src/embed/v1/`, `src/embed/v2/`), which are never edited: `embed-prod/frozen.sha256` lists
-their hashes. `bun scripts/build-embeds.ts --from-source` rebuilds them for production to
+The production bytes of the loaders are committed (`embed-prod/v1/embed.js`,
+`embed-prod/v2/embed.js`, `embed-prod/v3/embed.js`), and a production build copies them as
+they are, so a toolchain update can never change them. Other origins build the loaders from
+their frozen sources (`src/embed/v1/`, `src/embed/v2/`, `src/embed/v3/`), which are never
+edited: `embed-prod/frozen.sha256` lists their hashes. `bun scripts/build-embeds.ts --from-source` rebuilds them for production to
 compare with the committed bytes.
 
 The build (`vite.config.ts`, `scripts/build-embeds.ts`, `scripts/check-size.ts`) refuses to
@@ -48,7 +49,7 @@ The build fails when:
   `api.mainnet-beta.solana.com` (it rejects browser requests and keeps no full history);
 - any RPC URL is not `https:` (plain `http:` is accepted only for `localhost` / `127.0.0.1`);
 - a Production build would frame any origin other than `https://pay.elisym.network`;
-- the production-origin `v1/embed.js` or `v2/embed.js` differs from its `.sri`, or a committed
+- a production-origin `v1/embed.js`, `v2/embed.js` or `v3/embed.js` differs from its `.sri`, or a committed
   `embed-prod/` file does;
 - a frozen loader source differs from `embed-prod/frozen.sha256`;
 - the size budgets or the loaders' global-scope check fail.
@@ -72,7 +73,7 @@ One full-history endpoint per network, used for both sending and finding payment
 
 A preview's loader frames that very deployment's checkout (`https://$VERCEL_URL`), never
 production and never a newer deployment of the same branch. A preview build without
-`VERCEL_URL` fails. Its `v1/embed.js` and `v2/embed.js` therefore differ from the pinned bytes,
+`VERCEL_URL` fails. Its `v1/embed.js`, `v2/embed.js` and `v3/embed.js` therefore differ from the pinned bytes,
 and the SRI check is skipped. Those files are for testing only.
 
 Vercel Deployment Protection must allow the preview to be framed by a test page on another
